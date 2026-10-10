@@ -293,3 +293,85 @@ describe("LaunchTarget:describe (status/listing)", function()
         assert.equals("app (unresolved)", lt({ _project = { key = "app" } }):describe())
     end)
 end)
+
+describe("run_prep.resolve_debug (the debug-spec seam, step 5k)", function()
+    local run_prep = require("loomworks.run_prep")
+    local expand = require("loomworks.expand")
+    local function lt(fields) return setmetatable(fields, LaunchTarget) end
+
+    it("a module target debugs its artifact in the build dir, primary-language adapter", function()
+        local t = Target.new(stub_unit("/b", "app"), "app", { type = "executable", artifact = "app.exe" })
+        local spec, err = run_prep.resolve_debug(lt({
+            _workspace = { _debug_settings = { adapters = { ["c++"] = "cppdbg" } } }, _target = t }))
+        assert.is_nil(err)
+        assert.same({
+            name = "app: debug app", program = "/b/app.exe", cwd = "/b", language = "c++",
+            adapters = { { language = "c++", adapter = "cppdbg" } },
+        }, spec)
+    end)
+
+    it("a module target without a build directory is refused with a warning", function()
+        local t = Target.new(stub_unit(nil, "app"), "app", { type = "executable", artifact = "app.exe" })
+        local spec, err, severity = run_prep.resolve_debug(lt({ _workspace = {}, _target = t }))
+        assert.is_nil(spec)
+        assert.equals("no build directory for app", err)
+        assert.equals("warn", severity)
+    end)
+
+    it("a command launch resolves command/args/cwd and its debug languages in order", function()
+        local orig = expand.launch_context
+        expand.launch_context = function() return { BIN = "/out" } end
+        local ok, spec = pcall(run_prep.resolve_debug, lt({
+            _workspace = { root = "/ws" }, _project = { key = "app", path = "src/app" },
+            _launch_name = "gui",
+            _launch_config = { command = "${BIN}/gui", args = { "-v" }, debug = { "typescript", "c++" } },
+        }))
+        expand.launch_context = orig
+        assert.is_true(ok, spec)
+        assert.same({
+            name = "app: debug gui", program = "/out/gui", args = { "-v" }, cwd = "/ws/src/app",
+            language = "c++",
+            adapters = { { language = "typescript", adapter = "pwa-node" },
+                { language = "c++", adapter = "codelldb" } },
+        }, spec)
+    end)
+    it("a target-backed launch config resolves through its config target, like a run", function()
+        local orig = expand.launch_context
+        expand.launch_context = function() return {} end
+        local t = Target.new(stub_unit("/b", "app"), "app", { type = "executable", artifact = "app.exe" })
+        local target_lt = lt({
+            _workspace = { root = "/ws" }, _project = { key = "app", path = "src/app" },
+            _launch_name = "tool", _config_target = t,
+            _launch_config = { target = "app", args = { "-x" } },
+        })
+        local ok, spec, err = pcall(run_prep.resolve_debug, target_lt)
+        -- the editor's multi-adapter path keeps the command reading (program nil)
+        local ok2, legacy = pcall(run_prep.resolve_command_debug, target_lt)
+        local run = target_lt:resolve_command_spec()
+        expand.launch_context = orig
+        assert.is_true(ok, spec)
+        assert.is_nil(err)
+        assert.equals("/b/app.exe", spec.program)
+        assert.equals(run.cmd, spec.program)
+        assert.same({ "-x" }, spec.args)
+        assert.equals(run.cwd, spec.cwd)
+        assert.equals("app: debug tool", spec.name)
+        assert.same({ { language = "c++", adapter = "codelldb" } }, spec.adapters)
+        assert.is_true(ok2, legacy)
+        assert.is_nil(legacy.program)
+    end)
+
+    it("a target-backed launch config whose target is unknown is refused", function()
+        local orig = expand.launch_context
+        expand.launch_context = function() return {} end
+        local ok, spec, err, severity = pcall(run_prep.resolve_debug, lt({
+            _workspace = { root = "/ws" }, _project = { key = "app" },
+            _launch_name = "tool", _launch_config = { target = "gone" },
+        }))
+        expand.launch_context = orig
+        assert.is_true(ok, spec)
+        assert.is_nil(spec)
+        assert.matches("^cannot debug: launch config 'tool' references target 'gone'", err)
+        assert.equals("error", severity)
+    end)
+end)

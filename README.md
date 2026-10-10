@@ -941,6 +941,85 @@ require("loomworks").setup({
 
 Clipping appends a `…` so it's visually obvious the line was cut.
 
+**Builds started from a terminal (experimental).** With
+`lw settings set runtime-mode daemon`, `setup({ runtime = { mode = "daemon" } })`
+or `LOOMWORKS_RUNTIME=daemon` (the environment wins over the setup option, which
+wins over `lw`'s setting; `LOOMWORKS_NO_DAEMON=1` and `CI=true` keep the editor
+in-process) the editor connects to the workspace daemon (`lw daemon`, see the `lw`
+command table) and shows the builds it runs — e.g. `lw build` in a
+terminal — like its own: the same fidget popup, the profile's progress and
+timer and its units `building` on the status page and in the statusline, and
+normal rows in the status page's Tasks section ending in a dim `lw` (or
+`editor`) marker, whose Enter shows the output (it cannot cancel them: they
+belong to the terminal that started them). Builds already running when the
+editor connects are picked up too. Its own builds still run in the
+editor. It connects through `lw daemon run --stdio` from the `lw` it finds
+(the same shared daemon the `lw` commands use), which starts the daemon when
+you open the workspace or run `:LoomworksDaemon connect` and none is running;
+it never restarts one you stopped with `lw daemon stop`, but picks up one a
+terminal `lw` starts later. With no `lw` found it stays in-process and does
+not watch for a daemon. It looks, in this order, at `LOOMWORKS_LW`,
+`setup({ binary = { path = "/path/to/lw" } })` (a relative path is taken
+against Neovim's current directory; a path that names no file, or on Windows
+no `.exe`, stops the search with a note), `lw` in an absolute `PATH` entry
+(never the current directory, so an `lw` inside an opened repository is never
+started; on Windows `lw.exe`), and an
+`lw` the plugin manages under Neovim's data directory. Before starting the
+daemon from an `lw` on `PATH` or one you named, the editor asks it `lw version
+--json` in the background (at most about 3 s, once per binary per session;
+the status page says "checking ..." meanwhile). An `lw` on `PATH` that is too
+old or otherwise incompatible with the plugin is skipped with a note naming
+why, and the plugin's own `lw` is used instead; one you named is still used,
+with the note. An `lw` that does not answer (one older than `version --json`)
+is used, and the connection decides. A daemon that is already running but
+that the plugin cannot use (no common protocol, older file formats) is
+retired when it is idle and the `lw` the editor selected is known to work
+and is another version: the editor asks it to finish and exit, then starts
+its own, and tells you once. A busy one is retired once it is idle; one
+with newer file formats, or one already retired in this Neovim session for
+the same version (say, a repository pin keeps starting it), is left alone
+with a note. One whose only problem is older file formats stays observed
+(its tasks show as usual) until it is retired, and for the session when the
+editor will not retire it. Any other daemon it leaves alone (or cannot
+use at all) is not connected to again: the editor keeps working in-process
+and picks up the next daemon that is started for the workspace (say, after
+you stop the old one with `lw daemon stop` and a terminal `lw` starts a new
+one), without starting one itself. When the plugin wants
+its own `lw` and it is not there yet, the editor downloads the official
+release binary in the background (it keeps working in-process meanwhile; the
+status page says so), checks its SHA-256 against the one the plugin carries,
+and starts the daemon from it; a failed download is one note and is retried by
+`:LoomworksDaemon connect`. `binary = { download = false }` turns downloads
+off; `binary = { release_url = "/path/to/mirror" }` (or `LOOMWORKS_RELEASE_URL`)
+fetches from a mirror instead. Everything the plugin installs stays under
+Neovim's data directory, and older managed binaries that no editor has used
+for 14 days are removed after a new one is installed. The plugin pins one
+`lw` release (the latest published one when the plugin was released; a
+platform without a published binary, i.e. other than Linux x86_64, macOS
+arm64 and Windows x86_64, gets none). `binary = { channel = "stable" }` (or
+`"unstable"`; default unset = the pinned release only) lets the plugin's own
+`lw` move ahead of the pin: in daemon mode, at most once a day and on
+`:LoomworksDaemon connect`, the pinned `lw` asks the channel for its newest
+release (`lw release query`, verified against the release's signed hashes);
+a newer release that this plugin can use is downloaded in the background and
+used from the next daemon launch on (a running daemon is not switched). It
+never goes below the pin; moving from `unstable` to `stable` keeps an
+installed newer pre-release until stable overtakes it; removing the option
+returns to the pin. A release the plugin cannot use, no network, or a pinned
+`lw` too old to ask is one note on the `Runtime:` line, and the current
+binary stays. The channel only moves the plugin's own `lw`: an `lw` on `PATH`,
+`binary.path` / `LOOMWORKS_LW` and `binary.source` are never changed (the
+note says when the option has no effect). `binary = { prefer = "managed" }` tries the plugin's own
+`lw` before `PATH`; the daemon's version can then depend on whether the editor
+or a terminal started it. A repository's `lw.pin` is followed by `lw` itself,
+not by the editor. `binary = { source = "/path/to/lua" }` (or `true` for this
+plugin's tree) is for plugin development only: it runs the chosen `lw` with
+that Lua source. `:LoomworksDaemon status` and `:checkhealth loomworks` list
+every place it looked and why each was or was not used. The status page's `Runtime:` line (the header's last line)
+names the mode and what chose it (`env`, `setup`, `lw setting`, `default`) and
+says what it is doing; a daemon of another version it cannot follow is named
+there in the warning colour, with the fix.
+
 If a fidget popup gets stuck spinning after every overseer task has
 already completed (typically because a dap session terminated before
 initialising, or an adapter wasn't configured), `:LoomworksFidgetClear`
@@ -1175,6 +1254,7 @@ automatically from your system.
 | `:LoomworksTrust` | Review a working copy not signed by this machine: trust (re-sign), discard, or cancel |
 | `:LoomworksCompileCommand [file]` | Show the compile command loomworks' owned clangd database uses for a file (default: current buffer) |
 | `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
+| `:LoomworksDaemon [status\|connect]` | **Experimental** (`runtime = { mode = "daemon" }`): show the editor's connection to the workspace daemon, or connect (starting the daemon when none runs) |
 
 ## Standalone `lw` runner
 
@@ -1199,10 +1279,12 @@ a small fused bootstrap); it needs no Neovim and no Lua install.
   your local checkout). `lw settings set default-source dev` makes `--dev` the
   default, or use `LOOMWORKS_LUA=<dir>` for a one-off override.
 
-Releases are cut from `master`; CI builds the host binary for Linux, macOS,
-and Windows and publishes the signed bundle. See
+Releases are cut from `master` (betas from `staging/daemon`); CI builds the
+host binary for Linux, macOS, and Windows and the signed bundle into a draft
+release, the plugin is pinned to that draft's binaries, and the tag on the pin
+commit publishes it. See
 [ARCHITECTURE.md](ARCHITECTURE.md#standalone-runner--distribution) for the
-release layout and update flow.
+release layout, the procedure and the update flow.
 
 **Update channels** (spec §16.29). `lw self-update` follows an update
 **channel** — which release to track, not how it is trusted:
@@ -1239,6 +1321,26 @@ used as-is. If you pass a non-default `--channel` while a `release-url` override
 `lw self-update` warns that the channel was ignored — the override wins by
 design, so unset it to follow a channel. `lw version` shows the active channel.
 
+**Querying a channel** (spec §16.42). `lw release query` tells you which release
+a channel offers without downloading or installing anything — what the editor's
+managed `lw` uses to look for a newer compatible release:
+
+```
+lw release query --channel unstable          # channel, version, prerelease
+lw release query --channel unstable --json   # + host-binary hashes and descriptor
+```
+
+It verifies the release's signed `SHA256SUMS` and checks the release's
+descriptor (`lw-<version>-descriptor.json`, what `lw version --json` prints)
+against it; `--json` prints `query`, `channel`, `channel_ignored`, `source`,
+`version`, `prerelease`, `assets` (host binary → SHA-256) and `descriptor`.
+`--channel` applies to the query only (it is never saved), a `release-url`
+override supersedes it (`channel_ignored: true`), and `--timeout <seconds>`
+bounds the whole query (default 60). It always runs as the `lw` you invoked,
+never a repository's pinned one, and writes nothing. Any failure — offline, a
+signature or hash that does not verify, a release older than the descriptor —
+exits non-zero with one line on stderr and nothing on stdout.
+
 **Updating the `lw` binary itself** (spec §16.32). `lw self-update` updates the
 release bundle *and then the `lw` executable*, from the same release, so fixes
 to the binary's own argument handling and update logic reach you too. The new
@@ -1254,12 +1356,20 @@ for a binary built from a checkout, which never replaces itself; `unknown
 release` for a release binary without an embedded version, which
 `lw self-update` does replace). A release binary that has not fetched a bundle
 yet says so — ``bundle: none installed (run `lw self-update`)`` — rather than
-naming one.
+naming one. `lw version --json` prints the binary's **descriptor** instead
+(spec §16.41): its release (`binary.lw_version`), the daemon transport range it
+speaks (`transport.min`..`max`), the working-copy and cache schema versions, and
+every interface a daemon of it serves with its versions and schema digests —
+for a program (the editor plugin) deciding whether it can use this `lw`. Each
+release publishes the same document as `lw-<version>-descriptor.json`, listed in
+its signed `SHA256SUMS`.
 
 - `lw self-update --no-host` updates only the bundle.
 - `--force` reinstalls the *bundle* only; it never forces a reinstall (or
   downgrade) of the `lw` binary. To repair a damaged binary, reinstall it as in
-  [Installing `lw`](#installing-lw).
+  [Installing `lw`](#installing-lw). It refuses to reinstall the version that
+  is running right now (that bundle is in use); run it from another `lw`
+  version to repair that one.
 - If a release needs a newer `lw` binary than yours (its bundle can't run on
   your binary), `lw self-update` updates the binary first, then prints
   ``lw binary updated to <ver>; re-run `lw self-update` to update the bundle``
@@ -1531,12 +1641,17 @@ the exact pinned release, and the machine-global install is left untouched.
   a failure) when `gh` is absent.
 
 **A globally-installed `lw` also honors the pin.** Run inside a pinned repo, a
-global `lw` resolves the pin for `build` / `run` / `test` / `clean`: if the pin
+global `lw` resolves the pin for `build` / `run` / `test` / `clean` / `reset` /
+`configure`, and for `lw daemon run` / `lw daemon restart`: if the pin
 matches its own version it runs in-process (no download); otherwise it fetches +
 verifies the pinned release and re-execs it, so you always get the pinned
 behavior. Bypass with `--no-pin` (run the global as-is) or `LOOMWORKS_LW=<path>`.
-Management commands (`version`, `self-update`, `install`, `bootstrap`) never
-redirect. The global host never executes the repo's `lw.sh`/`lw.cmd` — it
+The workspace daemon of a pinned repo is therefore always the pinned release,
+whether the editor, a command or `lw daemon restart` starts it; the other
+commands a global `lw` runs itself there (a profile selection, a config edit)
+never start or replace that daemon. `lw daemon status` / `list` / `stop` /
+`kill` work with a daemon of any version and do not redirect, nor do the
+management commands (`version`, `self-update`, `install`, `bootstrap`). The global host never executes the repo's `lw.sh`/`lw.cmd` — it
 resolves the pin declaratively and runs the official binary it fetched itself.
 
 **Pin only.** `lw bootstrap install --pin-only` commits just `lw.pin` (and its
@@ -1545,7 +1660,8 @@ installed `lw`, which runs the pinned release for `build` / `run` / `test` /
 `configure` / `clean` as above, so everyone (CI included) needs `lw` installed.
 `lw bootstrap` and `lw health` treat the missing launchers as intended; launchers
 already present are left alone by `--pin-only`; a later plain `lw bootstrap
-install` adds them, keeping the pin. The pin does not govern the editor plugin.
+install` adds them, keeping the pin. The pin reaches the editor plugin only
+through the workspace daemon it starts (above).
 
 Move the pin forward with `upgrade` — through the launcher, so no global `lw` is
 needed (it runs as the currently pinned release):
@@ -1587,7 +1703,23 @@ one ran it, so the commands it prints read `./lw.sh …` from `lw.sh` and
 `lw` with no command prints workspace status and the active profile, and
 ends with the everyday commands (`Common: build, run, test, clean, reset,
 health, pull, worktree add, publish`) and a pointer to `lw help`, which lists
-every command, its sub-commands and the help topics. Commands that create
+every command, its sub-commands and the help topics. Each profile row shows
+the profile's build state in parentheses after its name, the same label as the
+editor's status page: `(built)`, `(configured)`, `(unconfigured)`,
+`(unknown)`, or counts when the projects differ (`(1 built, 1
+unconfigured)`); a task the workspace daemon is running shows as
+`(1 building)` (or `configuring`, `cleaning`). On a terminal the state is
+colored as in the editor (built green, configured blue, unconfigured dim,
+running yellow, failed red). It is read fresh from the cache on every run, so
+it shows whether a `lw build` or `lw clean` took effect:
+
+```
+Profiles (2)
+*1 Release:ninja-msvc (built)
+ 2 Debug:ninja-msvc   (unconfigured)
+```
+
+Commands that create
 something end with the next step (`lw init` names `lw project add`,
 `lw profile create` names `lw build <profile>`), and empty lists name the
 command that fills them. In a fresh git worktree with no profiles, status
@@ -1610,11 +1742,12 @@ outside a workspace.
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset` \| `describe`. `describe <profile> [text/flags]` prints or sets the profile's [description](#descriptions) (the profile is required, never defaulted). `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `select <profile>` sets the active profile without a terminal (scriptable), `select --none` clears it; bare `select` is an interactive picker. `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchain installations: `types` \| `detect` \| `list` \| `add` \| `remove`. `add <type> <path>` declares an installation detection can't find; `add <type>` (no path) declares the one the provider detects — several → a picker, or under `--no-input` an error listing each as the explicit command. `detect [<type>]` lists what each provider finds on this host (read-only, no workspace needed) |
-| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. `--break-locks[=now]` recovers a [stuck lock](#stuck-locks) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)`; `-v`/`--verbose` also prints each step's full command line and directory (for an MSVC kit, the cmake command run inside vcvarsall). Every configure/build command line is written to `.nvim/loomworks.log` (shared by the editor and every `lw` invocation: appended to, never truncated; rotated to `loomworks.log.1` past 1 MB, one old file kept) |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) in the project that has it: name it as `lw target` lists it (`<project>:<target>`) or bare when only one project lists it (a bare name several projects list is refused, naming the choices; one no project lists, such as `install` or a custom target, goes to every project's build tool as before) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. `--break-locks[=now]` recovers a [stuck lock](#stuck-locks) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)`; `-v`/`--verbose` also prints each step's full command line and directory (for an MSVC kit, the cmake command run inside vcvarsall). Every configure/build command line is written to `.nvim/loomworks.log` (shared by the editor and every `lw` invocation: appended to, never truncated; rotated to `loomworks.log.1` past 1 MB, one old file kept) |
 | `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`), with the compile databases loomworks generated from them under `.nvim/cache/`, and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches, the generated compile databases in `.nvim/cache/cc/`); the remedy for a cache not written on this machine |
+| `lw cleanup [--dry-run \| --yes] [--all] [--pinned-older-than <dur>]` | List (default) or remove (`--yes`) what `lw` left behind outside the workspace after an interrupted run: download/staging leftovers, temporary files, a dead holder's device lock, a stale daemon socket. `--all` also prunes pinned releases unused for 30 days (`--pinned-older-than 90d` sets that). `lw` does the same by itself once a day. See [What lw keeps outside the workspace](#what-lw-keeps-outside-the-workspace) |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
@@ -1630,8 +1763,8 @@ outside a workspace.
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw health [<area>...] [--all]` | List the workspace's advisory items in full (never fails) — only what this workspace uses; `--all` for everything, areas (`lw`, `workspace`, `toolchains`, `cache`, `sdks`, `editor`, `launcher`, `submodules`) to narrow it (see [Scope and areas](#scope-and-areas)). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, required items first, the unused ones only with `--all`; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <sub>` | `list` \| `get` \| `set` \| `unset`: get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, `runtime-mode`, `daemon-idle-timeout`, …) |
-| `lw daemon [status] \| stop [--force] \| kill \| restart [--force] \| run` | **Experimental, opt-in.** The workspace daemon (one long-lived `lw` per workspace, spec §19): `status` shows the runtime mode (`runtime-mode` setting: `in-process` (default) \| `daemon`; `LOOMWORKS_RUNTIME` wins) and the daemon (never starts one; `lw status` shows the same on its `Runtime` row); `stop` asks it to exit and never kills (`--force` kills a daemon that does not stop within ~5 s, `kill` without asking); `restart` = stop + start; `run` serves in the foreground. Never touches a daemon on another host In `runtime-mode daemon` every workspace command keeps it running (starting it in the background when absent; `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true` never start one — Jenkins and Azure Pipelines do not set `CI`: set `LOOMWORKS_NO_DAEMON=1` there; `trust`, `nuke`, `unlock` and the commands that need no workspace never start one either; the daemon keeps the environment of the command that started it); it exits after `daemon-idle-timeout` (default 1h) without clients, or when the workspace is removed; nothing is routed through it yet |
+| `lw settings <sub>` | `list` \| `get` \| `set` \| `unset`: get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, `runtime-mode`, `daemon-idle-timeout`, `runtime-busy-wait`, …) |
+| `lw daemon [status] \| list [--json] \| stop [--force] \| kill \| restart [--force] \| run` | **Experimental, opt-in.** The workspace daemon (one long-lived `lw` per workspace, spec §19): `list` shows every daemon of yours on this machine, in any workspace (root, pid, uptime, idle/busy, clients, version; found by a process scan, nothing written outside your workspaces; a "stray" is a daemon that is no longer its workspace's runtime; "other data dir" marks one started with another `LOOMWORKS_DATA_DIR`, such as a test run's), and `lw daemon stop --all` / `kill --all` act on all of yours (`--under <dir>` narrows; strays only with `kill --all --strays`; another data dir's daemons are skipped); `status` shows the runtime mode (`runtime-mode` setting: `in-process` (default) \| `daemon`; `LOOMWORKS_RUNTIME` wins) and the daemon (never starts one; `lw status` shows the same on its `Runtime` row and, while the daemon is busy, one line per running task: operation, profile, who started it (`lw` / `editor`), elapsed time and percent); `stop` asks it to exit and never kills (`--force` kills a daemon that does not stop within ~5 s, `kill` without asking); `restart` = stop + start; `run` serves in the foreground. Never touches a daemon on another host In `runtime-mode daemon` every workspace command keeps it running (starting it in the background when absent; `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true` never start one — Jenkins and Azure Pipelines do not set `CI`: set `LOOMWORKS_NO_DAEMON=1` there; these, and a daemon that could not be started, run `lw build`, `lw test`, `lw run`'s preparation, `lw clean` and `lw reset` with the daemon's own code inside the `lw` process, holding the workspace for the command and printing no "through the workspace daemon" line (a daemon that is already running is used instead; when another such command holds the workspace, `lw` waits `runtime-busy-wait` — default 5s, or e.g. `500ms`, `0` — then fails "workspace busy", exit 1); `trust`, `nuke`, `unlock` and the commands that need no workspace never start one either; the daemon keeps the environment of the command that started it); it exits after `daemon-idle-timeout` (default 45s) without clients, or when the workspace is removed. `lw build` (all its forms) runs in the daemon, in the environment of the `lw build` that asked, with the same output and exit code, after one dim line `lw: building through the workspace daemon (pid N)`; Ctrl-C stops it there (`lw` asks the daemon to stop the task, prints `lw: stopping the build - press Ctrl-C again to stop waiting` and waits until it has stopped, printing `build stopped: ...`, exit 130; a second Ctrl-C leaves at once while the daemon finishes stopping it; the same for `lw test`, `lw clean`, `lw reset` and `lw run`'s preparation, and after a Ctrl-C `lw run` never starts the program; Ctrl-Break ends `lw` at once); `--break-locks` and interactive profile creation stay in-process. `lw test` (without `--target`) runs there the same way, after `lw: testing through the workspace daemon (pid N)`; `lw test --target` (local or on a device) stays in-process and says so in one line. `lw run` builds, deploys and resolves the launch there, after `lw: preparing the run through the workspace daemon (pid N)`, then runs the program itself, attached to your terminal: the program is never the daemon's (stopping or restarting the daemon does not touch it, and it holds no lock); a device run (a device option, a profile built by a cross kit, or a target found to run on a device) stays in-process and says so in one line. `lw clean` runs there too, after `lw: cleaning through the workspace daemon (pid N)`, under the same build-directory locks and with the same safety checks for a removed build directory; Ctrl-C stops it there (a removal stops between entries). `lw reset` runs there too, after `lw: resetting through the workspace daemon (pid N)`: `lw` prints the daemon's listing and asks you (the daemon never prompts), and the reset is refused when the build directories changed before you answered; if the daemon stops while you answer, the reset runs in-process with your answer. `lw nuke` and `lw device clean` stay in-process. Builds from other terminals share the daemon's loaded workspace (variables that only name a terminal or session — `WT_SESSION`, `TMUX_PANE`, `SSH_TTY`, `VSCODE_*`, … — do not count as another environment). The build tools write into a pipe, as with `lw build \| tee`: ninja prints every `[n/N]` line and terminal-only colour is off (set e.g. `CLICOLOR_FORCE=1` yourself to get it); a paused reader (`lw build \| less`) pauses the build tool |
 | `lw release-notes [<version> \| --since <v> \| --all \| -n <N>] [--json]` | What changed in each release, offline, from the notes the running release carries (see "Release notes" under [Standalone `lw` runner](#standalone-lw-runner)) |
 | `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
@@ -2122,6 +2255,11 @@ Customize which parts to show:
 Available fields: `set_name`, `project`, `configuration`, `tool_key`,
 `profile_key`, `status`.
 
+The component reads `lw.buf_status()`. With no active profile it shows just
+the project name of the buffer (the profile, configuration, tool and status
+fields are empty); `tool_key` is the tool the active profile uses for the
+buffer's project.
+
 Status markers: built is green, configured is dim, a failed configure or
 build is red, and so is **unconfigured** (its language server is withheld,
 see "No clangd without this machine's database"); a profile whose
@@ -2162,12 +2300,47 @@ workspace-root/
     ├── loomworks.health.json    Always gitignored. Advisory suggestion cache
     │                            (`lw health` / `N suggestions`); self-healing,
     │                            recomputed if missing or stale.
+    ├── loomworks.daemon.log     The workspace daemon's runtime log (2 MB + one .1).
+    ├── tmp/                     Temporary files of `lw test <target>` and
+    │                            `describe -e`, removed after use.
     └── build/
         ├── ProjectA/
         │   ├── Debug/
         │   └── Release/
         └── ProjectB/
 ```
+
+### What lw keeps outside the workspace
+
+Everything a workspace's operations produce stays under its `.nvim/`. Outside
+it, `lw` keeps only per-user state (spec §16.40): its settings
+(`config.json`), the machine key (`trust.key`), the tool scan cache
+(`tools.json`), the newest three releases, installed modules, the pinned
+releases repositories use, and an empty daemon working directory, in the data
+directory (`%LOCALAPPDATA%\loomworks`, `$XDG_DATA_HOME/loomworks` or
+`~/.local/share/loomworks`; `LOOMWORKS_DATA_DIR` overrides it).
+`LOOMWORKS_INSTALL_DIR=<absolute path>` moves only what `lw` downloads and
+installs — the releases, the pinned releases and the release-notes record — to
+another folder (the editor plugin sets it for an `lw` it runs, so that one's
+downloads stay in the editor's data); settings, the machine key, installed
+modules, the daemons' sockets, identity and logs stay in the data directory for
+every `lw`, and housekeeping and `lw cleanup` never look in the install folder.
+`lw` only lists, runs or removes the `lua-<version>` release folders it
+installed there (a real folder holding `loomworks/cli.lua`), never a link or
+anything else, so the install folder may be shared with other files. A pinned
+release older than `LOOMWORKS_INSTALL_DIR` ignores it: run by a redirect, it
+keeps its own copy of the pinned release in the data directory.
+
+A `lw` that is killed or loses power mid-operation can leave a partial
+download, a staging directory or a temporary file behind. The next `lw`
+command removes such leftovers (once a day, silently, after they are a day
+old), and `lw cleanup` lists them, `lw cleanup --yes` removes them now.
+`lw cleanup` also lists the runtime logs earlier versions kept in the data
+directory (`daemon/logs`), whatever their age (the automatic pass waits 30
+days). `lw cleanup --all` adds only the pinned releases no repository has used
+for 30 days (never the one the current repository pins). Only exact `lw` names in
+`lw`'s own directories are ever removed, never through a link, never while in
+use.
 
 ### Editor and `lw` at the same time
 
@@ -2230,10 +2403,22 @@ from (spec §17, `lw help trust`):
   Every write by `lw` or the editor signs the `.nvim` files with a per-machine
   key (`trust.key` in your per-user data directory, never in a repository). A
   working copy written by hand, by an earlier loomworks, or copied from
-  elsewhere is **refused** until you review it: `lw trust` (or `:LoomworksTrust`
+  another machine is **refused** until you review it: `lw trust` (or `:LoomworksTrust`
   / `T` on the status page) lists the program settings it contains and re-signs
-  it on confirmation; `lw trust --discard` (or `U`) deletes it instead. After
-  upgrading, each existing workspace asks for this once.
+  it on confirmation; `lw trust --discard` (or `U`) deletes it instead. A
+  refused working copy that becomes valid again (restored, or trusted with
+  `lw trust` from a terminal) loads in the editor on its own. After
+  upgrading, each existing workspace asks for this once. The signature does not
+  bind the directory: a working copy this machine signed stays trusted when you
+  move or copy it to another workspace on this machine (or seed a git
+  worktree), and its profiles, tools and launch commands are used there as-is.
+- **`lw status` shows the trust state on its `Trust` row**: whether your local
+  config is present (a refused one stops every command with the `lw trust`
+  instructions instead) and how many program settings in `loomworks.json` are
+  ignored. A build whose profile is affected prints one line saying so, on
+  both the in-process and the daemon path. The status title is the workspace's
+  *name* (a directory called `untrusted` shows as `loomworks — untrusted`), not
+  a trust state.
 - **Caches are regenerable.** An unsigned build cache (from an earlier
   loomworks) is ignored — units read as unconfigured and reconfigure into
   their existing build directories — and replaced by the next command that
@@ -2242,7 +2427,10 @@ from (spec §17, `lw help trust`):
   signed on another machine refuses the load until you reset it (`lw nuke`, or
   `<C-n>` on the status page). An unsigned health cache is ignored.
 - **Tool paths come from detection on this machine**, never from the cache. A
-  profile whose toolchain isn't detected here is not buildable.
+  profile whose toolchain isn't detected here is not buildable. A profile only
+  selects a detected toolchain by key; what that runs (the compiler, a
+  developer-environment script such as `vcvarsall.bat`) is what detection
+  found here.
 - **Opening a workspace runs nothing it names**: language servers start only
   with binaries/arguments from your signed working copy, detection, or `PATH`;
   SDK paths are probed only from the signed working copy; targets and tests are
@@ -2282,10 +2470,21 @@ end
 
 -- Projects
 lw.get_projects()                           -- all Project objects
-lw.project_for_buf(bufnr)                   -- find project for buffer
+lw.project_for_buf(bufnr)                   -- find project for buffer (loomworks.Project)
+lw.buf_project(bufnr)                       -- the buffer's project record: { key, label, type,
+                                            --   path, abs_path, active? = { configuration,
+                                            --   tool_key?, state } } (longest prefix on a
+                                            --   separator boundary), nil when none
+lw.view_header()                            -- { root, state, name?, active_profile?,
+                                            --   config_set?, diagnostics?, ... }
 
 -- Buffer status (for statusline/winbar)
-lw.buf_status(bufnr)                        -- { project, configuration, status, lsp, ... }
+lw.buf_status(bufnr)                        -- { project, configuration?, tool_key?, status?,
+                                            --   profile_key?, set_name?, ... }; nil when the
+                                            --   buffer is in no project. With no active profile
+                                            --   only `project` (and diagnostics) is set.
+                                            --   tool_key: the active profile's tool for the project
+                                            --   lsp: lw.lsp_buf_state(bufnr) (below)
 lw.lsp_buf_state(bufnr)                     -- "none" | "held" | "ok" | "withheld_unconfigured"
                                             --   | "withheld_no_db" | "withheld_error"
 

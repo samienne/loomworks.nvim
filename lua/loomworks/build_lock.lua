@@ -2,8 +2,9 @@
 ---
 --- Serializes configure/build/clean across separate processes (editor + CLI,
 --- or two CLIs) that share a build directory — advisory, host-provided
---- exclusion. The primitive is an O_EXCL lockfile
---- (`uv.fs_open(path, "wx")`): an atomic create-if-absent that works across
+--- exclusion. The primitive is an exclusively created lockfile
+--- (lock_record.create: a hard link of a written temp, else O_EXCL
+--- `uv.fs_open(path, "wx")`): an atomic create-if-absent that works across
 --- processes, unlike a `building=true` flag in a JSON file (a read-check-write
 --- of a shared file is a TOCTOU race — two processes can both see "free").
 ---
@@ -28,7 +29,15 @@ local M = {}
 M.HEARTBEAT_MS = 5000
 M.STALE_SECONDS = 20
 
-local function lock_path(build_dir) return build_dir .. ".loomworks-lock" end
+--- The lockfile of a build directory: `<dir>.loomworks-lock` beside the
+--- directory's IDENTITY (loomworks.dir_identity, spec §4.6) — its real path,
+--- or for a directory not created yet the real path of its nearest existing
+--- ancestor plus the rest — so every spelling of one folder (junction or
+--- symlink, 8.3 short name, aliased workspace root) finds the same lockfile,
+--- before and after configure creates the directory.
+local function lock_path(build_dir)
+    return require("loomworks.dir_identity").resolve(build_dir) .. ".loomworks-lock"
+end
 M.lock_path = lock_path
 
 --- Locks this process holds, by normalized lockfile path (for the phase
@@ -62,12 +71,9 @@ end
 --- success, else nil + the fs error (e.g. "EEXIST").
 --- @return table|nil record, string|nil err
 local function create_locked(path, action, extra)
-    local fd, err = uv.fs_open(path, "wx", tonumber("644", 8))
-    if not fd then return nil, err end
     local rec = lock_record.new(action, extra)
-    local body = vim.json.encode(rec)
-    uv.fs_write(fd, body)
-    uv.fs_close(fd)
+    local ok, err = lock_record.create(path, rec)
+    if not ok then return nil, err end
     return rec
 end
 
@@ -132,8 +138,11 @@ end
 
 --- Merge `fields` into a HELD lock's record and rewrite its lockfile (a
 --- `vim.NIL` value removes the field). A released handle is a no-op: the
---- lockfile may belong to another process by now. Best-effort — a failed
---- write leaves the previous record.
+--- lockfile may belong to another process by now. The new record replaces
+--- the old by a rename (lock_record.replace), so a reader never sees an
+--- empty lockfile; when no rename succeeds the lockfile is rewritten in
+--- place (M._rewrite_in_place), only while it still carries the handle's
+--- nonce. Best-effort — a failed write leaves the previous record.
 --- @param handle table|nil
 --- @param fields table
 function M.update_record(handle, fields)
@@ -141,6 +150,18 @@ function M.update_record(handle, fields)
     for k, v in pairs(fields or {}) do
         if v == vim.NIL then handle.record[k] = nil else handle.record[k] = v end
     end
+    local ok, err = lock_record.replace(handle.path, handle.record)
+    if ok or err == "lost" then return end
+    M._rewrite_in_place(handle)
+end
+
+--- Fallback of update_record when no rename succeeded: rewrite the lockfile
+--- in place (a reader may briefly see it empty). Nothing is written to a
+--- lockfile that no longer carries the handle's nonce (forced off or
+--- reclaimed). A field so tests can count or disable it.
+--- @param handle table
+function M._rewrite_in_place(handle)
+    if not lock_record.still_ours(handle.path, handle.record) then return end
     local body = vim.json.encode(handle.record)
     -- "r+" (never "w"): a lockfile that vanished (forced off by `lw unlock`)
     -- is not recreated behind another process's back.

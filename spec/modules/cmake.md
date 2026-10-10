@@ -57,6 +57,17 @@ refused. Any violation fails the task with the reason — the command never runs
 unwrapped instead. The environment snapshot the meson module takes from
 vcvarsall uses the same rules and an unpredictable temporary file name.
 
+**Visual Studio Installer on PATH.** vcvarsall (VsDevCmd and its extension
+scripts) runs the installation locator `vswhere.exe` by bare name, from the
+Visual Studio Installer folder (`<ProgramFiles(x86)>\Microsoft Visual
+Studio\Installer`, else the same under `<ProgramFiles>`), which is usually not
+on the search path. The wrapper's step environment, and the environment of the
+meson snapshot, therefore get that folder appended to the search path when it
+exists and is not already on it (case-insensitive) — otherwise every run prints
+"'vswhere.exe' is not recognized". It is part of the step's environment, so an
+in-process and a daemon-routed step (core §19.15) get the same. Output is not
+filtered: a real vcvarsall failure stays visible.
+
 **Build request.** The build task applies core's build request (core §8.1,
 headless `lw build --target <t> -- <args>`) to the native command before it is
 wrapped: `cmake --build <build_dir> [--config <variant>] [--target <t>…]

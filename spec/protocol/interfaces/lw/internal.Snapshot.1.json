@@ -1,0 +1,67 @@
+{
+  "interface": "lw.internal.Snapshot",
+  "version": 1,
+  "status": "draft",
+  "internal": true,
+  "same_build": true,
+  "description": "Object /internal (spec 19.13 As interfaces): a scope snapshot of the daemon's model for a same-build client's read-only projection (the CLI's read commands, the parity tests). Never a stable contract; the editor never uses it. The protocol-10 snapshot request stays as its v0 alias.",
+  "methods": {
+    "get": {
+      "description": "The scope's tables, the toolchain detection, the stripped program-bearing fields, the id index, seq and session generation (spec 19.13). Read-only: no lock, no task; loads the workspace in the client's environment when none is loaded.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "scope": { "enum": ["all", "config", "user", "cache"] } }
+      },
+      "result": {
+        "oneOf": [
+          { "$ref": "#/$defs/Snapshot" },
+          { "$ref": "loomworks.Common/1#/$defs/Refused" },
+          { "$ref": "loomworks.Common/1#/$defs/Declined" }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    }
+  },
+  "$defs": {
+    "Index": {
+      "description": "The semantic-key to id index (spec 19.12): per kind, the current key to the entity's id.",
+      "type": "object",
+      "properties": {
+        "projects": { "type": "object", "additionalProperties": { "$ref": "loomworks.Common/1#/$defs/Id" } },
+        "config_sets": { "type": "object", "additionalProperties": { "$ref": "loomworks.Common/1#/$defs/Id" } },
+        "profiles": { "type": "object", "additionalProperties": { "$ref": "loomworks.Common/1#/$defs/Id" } },
+        "config_units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["project", "configuration", "id"],
+            "properties": {
+              "project": { "type": "string" },
+              "configuration": { "type": "string" },
+              "id": { "$ref": "loomworks.Common/1#/$defs/Id" }
+            }
+          }
+        }
+      }
+    },
+    "Snapshot": {
+      "type": "object",
+      "required": ["outcome", "scope", "tools", "index", "seq", "session_generation"],
+      "properties": {
+        "outcome": { "const": "ok" },
+        "scope": { "enum": ["all", "config", "user", "cache"] },
+        "config": { "description": "The shared configuration (loomworks.json) as loaded.", "type": "object" },
+        "user": { "description": "The working copy as the daemon would save it.", "type": "object" },
+        "cache": { "description": "The cache as the daemon would save it.", "type": "object" },
+        "tools": { "description": "Per module type, the detected toolchains.", "type": "object" },
+        "shared_ignored": { "type": "object" },
+        "index": { "$ref": "#/$defs/Index" },
+        "seq": { "type": "integer" },
+        "session_generation": { "type": "integer" },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

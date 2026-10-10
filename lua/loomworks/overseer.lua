@@ -398,10 +398,12 @@ end
 --- Does not change the active profile. Uses registered ProfileProject and
 --- Project objects instead of recomputing from scratch.
 --- @param profile loomworks.Profile
---- @param opts? { force_full_reconfigure?: boolean, build_args?: string[], build_targets?: string[] }
+--- @param opts? { force_full_reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table<loomworks.Project, string[]> }
 ---   forwarded to the module context (§8.1): force_full_reconfigure makes every
 ---   configure take the module's full path; build_args / build_targets are the
----   caller's build request for the build tasks (headless `lw build`, §16.4)
+---   caller's build request for the build tasks (headless `lw build`, §16.4);
+---   build_targets_for (the resolved `--target` operands) replaces
+---   build_targets per project and skips every project it does not name
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_profile_tasks(profile, opts)
     opts = opts or {}
@@ -419,6 +421,10 @@ local function collect_profile_tasks(profile, opts)
     for _, pp in ipairs(pps) do
         local project = pp._project
         if not project then goto continue end
+
+        -- A resolved `--target` request (§16.4) builds only the projects it
+        -- selected, each with its own bare target names.
+        if opts.build_targets_for and not opts.build_targets_for[project] then goto continue end
 
         local mod = project._module and project._module.impl or nil
         if not mod or not mod.tasks then goto continue end
@@ -461,7 +467,7 @@ local function collect_profile_tasks(profile, opts)
             recorded_options = pp._config_unit and pp._config_unit._cached_options or nil,
             force_full_reconfigure = (opts.force_full_reconfigure or orphan_state) or nil,
             build_args = opts.build_args,
-            build_targets = opts.build_targets,
+            build_targets = opts.build_targets_for and opts.build_targets_for[project] or opts.build_targets,
         }
 
         local pt = mod.progress_parser
@@ -541,7 +547,16 @@ local function collect_configuration_clean_tasks(unit)
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
     }
 
-    return mod.clean_tasks(project_ctx, variant)
+    local clean = mod.clean_tasks(project_ctx, variant)
+    -- A wipe deletes this unit's build dir: the runner needs the unit for
+    -- crash safety and shared-dir protection (spec §4.6, §4.7).
+    for _, task_def in ipairs(clean or {}) do
+        if task_def.loomworks and task_def.loomworks.wipe_build_dir
+                and task_def.loomworks.unit == nil then
+            task_def.loomworks.unit = unit
+        end
+    end
+    return clean
 end
 
 --- Collect clean task definitions for all projects in a profile.
@@ -599,6 +614,15 @@ local function collect_profile_clean_tasks(profile)
         local clean = mod.clean_tasks(project_ctx, active_config)
         if clean then
             for _, task_def in ipairs(clean) do
+                -- The unit the task cleans. A wipe is a build-directory
+                -- deletion of this unit's dir: the runner needs the unit for
+                -- crash safety and shared-dir protection (spec §4.6). A module
+                -- clean's headless runner needs it to record the clean (the
+                -- unit back to `configured`, spec §3, §16.1).
+                task_def.loomworks = task_def.loomworks or {}
+                if task_def.loomworks.unit == nil then
+                    task_def.loomworks.unit = pp._config_unit
+                end
                 tasks[#tasks + 1] = task_def
             end
         end
@@ -609,23 +633,58 @@ local function collect_profile_clean_tasks(profile)
     return #tasks > 0 and tasks or nil
 end
 
+--- A module clean task (the build system's artifact clean, not a wipe)
+--- succeeded: record it — the unit's built state drops to `configured`
+--- (spec §4.7; `mark_cached_configs_cleaned` leaves every other state). The
+--- editor records only after success, as the headless runners do
+--- (build_run.after_clean_step): a failed clean keeps the unit `built`.
+--- @param ws loomworks.Workspace|nil
+--- @param unit loomworks.ConfigUnit|nil
+local function record_module_clean(ws, unit)
+    if ws and unit and ws.mark_cached_configs_cleaned then
+        ws:mark_cached_configs_cleaned({ { unit = unit } })
+    end
+end
+
 --- Core-performed clean for a clean task that declares
 --- `loomworks.wipe_build_dir = true` (spec §8.1): the module asks core to
 --- remove the build directory instead of spawning a command. Deletion safety
 --- (CLAUDE.md): nil/empty build_dir => nothing to wipe; the path (possibly
 --- cache-sourced) must pass `_validate_build_dir` (canonical, trailing-"/"
 --- boundary, never the workspace root); removal is in-process
---- (`io.rm_rf_async`: libuv calls, links not followed) — no shell. The caller
---- has already marked the cache (crash safety) as for any clean.
+--- (`io.rm_rf_async`: libuv calls, links not followed) — no shell.
+--- With the task's config unit (`loomworks.unit`, set by the clean task
+--- collectors) the wipe is a build-directory DELETION (spec §4.6, §4.7) via
+--- `Workspace:clean_wipe_build_dir`: cache `unknown` on disk before the tree
+--- is removed, the unit reset to unconfigured only after the removal
+--- succeeded, a directory still referenced by a config outside the clean
+--- kept. `units` (default: the task's own unit) are all the clean's units
+--- sharing this build directory, deleted as one batch. The Future rejects
+--- when the deletion reports it did not happen (lock refused or removal
+--- failed).
 --- @param ws loomworks.Workspace|nil
 --- @param task_def table
+--- @param units? loomworks.ConfigUnit[]
 --- @return loomworks.Future
-local function wipe_build_dir(ws, task_def)
+local function wipe_build_dir(ws, task_def, units)
     local future_mod = require("loomworks.future")
     local bd = task_def.loomworks and task_def.loomworks.build_dir
     if type(bd) ~= "string" or bd == "" then return future_mod.resolved(true) end
     if not ws or not ws:_validate_build_dir(bd, ws.root) then
         return future_mod.rejected("clean refused: unsafe build directory " .. tostring(bd))
+    end
+    local unit = task_def.loomworks.unit
+    units = units or (unit and { unit } or nil)
+    if units and #units > 0 and ws.clean_wipe_build_dir then
+        local f = ws:clean_wipe_build_dir(units, bd)
+        return f:next(function(ok)
+            -- The deletion's own outcome: `false` = a lock was refused or the
+            -- removal failed (both reported) — the clean did not happen.
+            if ok ~= true then
+                error("could not remove " .. bd, 0)
+            end
+            return true
+        end)
     end
     local io_dep = (ws._core and ws._core._deps and ws._core._deps.io) or require("loomworks.io")
     return io_dep.rm_rf_async(bd)
@@ -856,7 +915,10 @@ local function start_one_task(overseer, task_def, on_complete)
     return f
 end
 
---- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.
+--- Check whether a task should be launched, skipped, or deferred based on the
+--- ConfigUnit's local state: a task observed in the workspace daemon never
+--- holds an editor task back (spec §19.16) — the cross-process
+--- build-dir lock (§16.6) gates it.
 --- Configure tasks: only launch if unconfigured or configure_failed.
 --- Build tasks: skip if already building, defer if currently configuring,
 --- block if in unknown state.
@@ -865,7 +927,7 @@ end
 local function check_task_readiness(task_def)
     local lw_meta = task_def.loomworks
     local unit = lw_meta.unit
-    local state = unit:state()
+    local state = unit:local_state()
 
     -- Unknown state blocks all actions — user must clean/delete first
     if state == "unknown" then return "block" end
@@ -940,7 +1002,7 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
         local unit = task_def.loomworks.unit
         local unsub
         unsub = unit:on_state_change(function(u)
-            local new_state = u:state()
+            local new_state = u:local_state()
             if new_state == "configuring" then return end
             unsub()
             if new_state == "configure_failed" then
@@ -1077,7 +1139,7 @@ end
 --- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
 --- requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
---- @param opts? table { for_test?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[] }
+--- @param opts? table { for_test?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
 ---   for_test drops the build step of any unit whose native test runner
 ---   self-rebuilds — configuration is still planned for every unit; reconfigure
 ---   forces a FULL reconfigure of every unit (`lw build --reconfigure`, §16.4);
@@ -1092,6 +1154,7 @@ function M.plan_profile_build(profile, opts)
         force_full_reconfigure = opts.reconfigure or nil,
         build_args = opts.build_args,
         build_targets = opts.build_targets,
+        build_targets_for = opts.build_targets_for,
     })
     if not all_tasks then return nil end
     local needs_configure = filter_unconfigured_tasks(all_tasks, opts.reconfigure)
@@ -1145,6 +1208,10 @@ function M.plan_profile_build(profile, opts)
                         -- falls back / refuses otherwise.
                         applied_build_args = td.loomworks and td.loomworks.applied_build_args or nil,
                         applied_build_targets = td.loomworks and td.loomworks.applied_build_targets or nil,
+                        -- The module's progress parser name (`[N/M]` lines,
+                        -- `loomworks.progress`): the daemon runner's percent
+                        -- within the step, as the editor's task path does.
+                        progress_tool = td.loomworks and td.loomworks.progress_tool or nil,
                         cmd = spec.cmd,
                         -- The command a wrapper runs, for display (§8.1).
                         display_cmd = spec.display_cmd,
@@ -1168,8 +1235,10 @@ end
 --- e.g. never configured). Intended for the headless runner. Each step
 --- carries a ready-to-spawn `{cmd, cwd, env}`.
 --- @param profile loomworks.Profile
---- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env } — or
----   { kind, name, build_dir, wipe_build_dir = true } for a core-performed wipe
+--- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env, unit } — or
+---   { kind, name, build_dir, wipe_build_dir = true, unit } for a core-performed
+---   wipe (run it with `Workspace:clean_wipe_build_dir(units, build_dir)`,
+---   passing every wipe step's unit for the same build_dir as one batch)
 function M.plan_profile_clean(profile)
     local tasks = collect_profile_clean_tasks(profile)
     if not tasks then return nil end
@@ -1186,6 +1255,7 @@ function M.plan_profile_clean(profile)
                     name = td.name,
                     build_dir = build_dir,
                     wipe_build_dir = true,
+                    unit = td.loomworks.unit,
                 }
             end
         elseif td.builder and (not build_dir or uv.fs_stat(build_dir)) then
@@ -1198,6 +1268,7 @@ function M.plan_profile_clean(profile)
                     cmd = spec.cmd,
                     cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
                     env = spec.env,
+                    unit = td.loomworks and td.loomworks.unit or nil,
                 }
             end
         end
@@ -1529,7 +1600,10 @@ function M.run_configuration_clean(unit, on_complete)
                 if task and not task:is_complete() then task:stop() end
             end)
             task:subscribe("on_complete", function(_, status)
-                if status == "SUCCESS" then resolve(true)
+                if status == "SUCCESS" then
+                    record_module_clean(unit._workspace,
+                        task_def.loomworks and task_def.loomworks.unit or unit)
+                    resolve(true)
                 else reject("clean task failed") end
             end)
             task:start()
@@ -1571,11 +1645,42 @@ function M.run_profile_clean(profile, on_complete)
         return future_mod.resolved(true)
     end
 
+    -- Core-performed wipes of the same build directory are ONE deletion batch
+    -- (spec §4.6): wiped once when no config outside this clean uses it.
+    local ws = profile._workspace or require("loomworks").get_workspace()
+    local wipe_group = {}
+    do
+        local groups = {}
+        -- Grouped by build-dir identity (real path): one folder spelled two
+        -- ways is one batch.
+        local norm = ws and ws._build_dir_identity and function(p) return ws:_build_dir_identity(p) end
+            or (ws and ws._core and ws._core._deps and ws._core._deps.normalize)
+        for _, td in ipairs(tasks) do
+            local lw = td.loomworks
+            if norm and lw and lw.wipe_build_dir and lw.unit
+                    and type(lw.build_dir) == "string" and lw.build_dir ~= "" then
+                local key = norm(lw.build_dir)
+                local g = groups[key]
+                if not g then g = { units = {} }; groups[key] = g end
+                g.units[#g.units + 1] = lw.unit
+                wipe_group[td] = g
+            end
+        end
+    end
+
     local task_futures = {}
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
             if task_def.loomworks and task_def.loomworks.wipe_build_dir then
-                wipe_build_dir(profile._workspace or require("loomworks").get_workspace(), task_def)
+                local g = wipe_group[task_def]
+                local wf
+                if g then
+                    g.future = g.future or wipe_build_dir(ws, task_def, g.units)
+                    wf = g.future
+                else
+                    wf = wipe_build_dir(ws, task_def)
+                end
+                wf
                     :next(function() resolve(true) end)
                     :catch(function(e)
                         local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(e)
@@ -1599,7 +1704,9 @@ function M.run_profile_clean(profile, on_complete)
                 if task and not task:is_complete() then task:stop() end
             end)
             task:subscribe("on_complete", function(_, status)
-                if status == "SUCCESS" then resolve(true)
+                if status == "SUCCESS" then
+                    record_module_clean(ws, task_def.loomworks and task_def.loomworks.unit)
+                    resolve(true)
                 else reject("clean task failed") end
             end)
             task:start()
@@ -1816,7 +1923,7 @@ function M.launch_single_task(task_def, unit, on_complete)
         return future_mod.rejected("overseer.nvim not found")
     end
 
-    local state = unit:state()
+    local state = unit:local_state()
     if state == "unknown" or state == "building" then
         if on_complete then vim.schedule(function() on_complete(false) end) end
         return future_mod.rejected("unit in " .. state .. " state")

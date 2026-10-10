@@ -25,6 +25,28 @@ function M.read_file(path)
     return data, nil
 end
 
+--- Append `data` to `path` (created when missing) as one write that lands
+--- whole at the end of the file even while other processes append to it at
+--- the same moment: opened with libuv's O_APPEND, which on Windows is
+--- FILE_APPEND_DATA access — the system puts every write at the end. The C
+--- runtime's `io.open(path, "a")` does not: on Windows it seeks to the end,
+--- then writes, and two writers that seek together write at the same offset —
+--- one line overwrites the other (a log line lost; seen on fresh logs, where
+--- a client and the daemon it launched write their first lines at once).
+--- @param path string
+--- @param data string
+--- @param mode? integer creation mode (default 0644)
+--- @return integer|nil size the file's size after the write, string|nil err
+function M.append(path, data, mode)
+    local fd, err = uv.fs_open(path, "a", mode or 420)
+    if not fd then return nil, err end
+    local _, werr = uv.fs_write(fd, data, -1)
+    local st = uv.fs_fstat(fd)
+    uv.fs_close(fd)
+    if werr then return nil, werr end
+    return st and st.size or 0
+end
+
 --- The exclusive create (O_CREAT|O_EXCL; tests inject failures here).
 --- @return integer|nil fd, string|nil err, string|nil code
 function M._open_exclusive(path, mode)
@@ -286,7 +308,8 @@ end
 --- sorted, pretty encoding as `write_json`, with the signature member first.
 --- When the key is unavailable the file is still written, unsigned (it will be
 --- refused or discarded on the next read — never trusted) and the error is
---- returned as a third value so callers can report it.
+--- returned as a third value so callers can report it. A file that already
+--- holds exactly these bytes is left untouched (reported as written).
 --- @param path string
 --- @param kind "user"|"cache"|"health"
 --- @param tbl table
@@ -299,6 +322,12 @@ function M.write_json_signed(path, kind, tbl)
     if not pretty then return false, err end
     local signed, sign_err = require("loomworks.trust").sign(kind, pretty)
     local bytes = signed or pretty
+    -- Already on disk byte for byte: nothing to write (no rewrite another
+    -- process would see as a change). Inside a transaction every write is
+    -- staged as usual.
+    if not M._txn_hook and M.read_file(path) == bytes then
+        return true, nil, sign_err, bytes
+    end
     local wok, werr = M.write_file_atomic(path, bytes)
     return wok, werr, sign_err, wok and bytes or nil
 end
@@ -404,10 +433,15 @@ function M.rm_rf(dir)
 end
 
 --- Asynchronous tree removal over libuv's threadpool (no subprocess, no
---- shell). `done(err|nil)`; a missing path is success.
+--- shell). `done(err|nil, stopped|nil)`; a missing path is success. `stop`
+--- (optional) is asked before each entry: once it returns true no further
+--- entry is started (what was removed stays removed), the directories still
+--- holding entries are kept, and `done` reports `stopped = true`.
 --- @param path string
---- @param done fun(err: string|nil)
-local function rm_tree_async(path, done)
+--- @param done fun(err: string|nil, stopped: boolean|nil)
+--- @param stop? fun(): boolean
+local function rm_tree_async(path, done, stop)
+    if stop and stop() then return done(nil, true) end
     uv.fs_lstat(path, function(lerr, st)
         if not st then
             if lerr and not tostring(lerr):match("^ENOENT") then
@@ -430,8 +464,12 @@ local function rm_tree_async(path, done)
                 if not name then break end
                 names[#names + 1] = name
             end
-            local errors, pending = {}, #names
+            local errors, pending, stopped = {}, #names, false
             local function finish()
+                -- Stopped: entries remain below; the directory is kept.
+                if stopped or (stop and stop()) then
+                    return done(#errors > 0 and table.concat(errors, "; ") or nil, true)
+                end
                 uv.fs_rmdir(path, function(rerr)
                     if rerr then errors[#errors + 1] = "rmdir " .. path .. ": " .. tostring(rerr) end
                     done(#errors > 0 and table.concat(errors, "; ") or nil)
@@ -439,11 +477,12 @@ local function rm_tree_async(path, done)
             end
             if pending == 0 then return finish() end
             for _, name in ipairs(names) do
-                rm_tree_async(path .. "/" .. name, function(e)
+                rm_tree_async(path .. "/" .. name, function(e, s)
                     if e then errors[#errors + 1] = e end
+                    if s then stopped = true end
                     pending = pending - 1
                     if pending == 0 then finish() end
-                end)
+                end, stop)
             end
         end)
     end)
@@ -451,29 +490,39 @@ end
 
 --- Recursively remove a directory/file asynchronously (libuv filesystem
 --- calls — never a shell command built from the path). Links are removed,
---- not followed. Returns a Future.
+--- not followed. Returns a Future (rejected with "stopped" when stopped).
+--- `opts.stop` (optional) is asked before each entry: once it returns true no
+--- further entry is started — what was removed stays removed, the directories
+--- still holding entries are kept — and the callback gets `stopped = true`
+--- (the workspace daemon's cancellable clean wipe, spec §19.15 "Clean"). The
+--- CALLER validates `dir` (Deletion Safety) before calling.
 --- @param dir string
---- @param callback? fun(ok: boolean, err: string|nil) legacy callback (deprecated)
+--- @param callback? fun(ok: boolean, err: string|nil, stopped: boolean|nil) legacy callback (deprecated)
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function M.rm_rf_async(dir, callback)
+function M.rm_rf_async(dir, callback, opts)
     local future_mod = require("loomworks.future")
     if not uv.fs_lstat(dir) then
         if callback then callback(true, nil) end
         return future_mod.resolved(true)
     end
 
+    local stop = opts and opts.stop or nil
     local f = future_mod.create(function(resolve, reject)
-        rm_tree_async(dir, function(err)
+        rm_tree_async(dir, function(err, stopped)
             vim.schedule(function()
-                if err then reject(err) else resolve(true) end
+                if callback then
+                    if stopped then callback(false, err or "stopped", true)
+                    elseif err then callback(false, err)
+                    else callback(true, nil) end
+                end
+                if stopped then reject(err or "stopped")
+                elseif err then reject(err) else resolve(true) end
             end)
-        end)
+        end, stop)
     end)
-
-    if callback then
-        f:next(function() callback(true, nil) end)
-         :catch(function(err) callback(false, err) end)
-    end
+    -- (The callback ran above; a rejection it reports must not go unhandled.)
+    if callback then f:catch(function() end) end
     return f
 end
 

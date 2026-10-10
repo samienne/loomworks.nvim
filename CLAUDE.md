@@ -158,7 +158,11 @@ execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
 `lw nuke`, `lw trust --discard`, `remote/run.prune_runs` (`.device-runs`
 pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
 `clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
-pruning by `lw bootstrap install` / `upgrade`), owned LSP database cleanup
+pruning by `lw bootstrap install` / `upgrade`), `loomworks/housekeeping.lua`
+(the startup housekeeping pass and `lw cleanup`), `boot.update.gc` (release
+pruning by self-update), the install-folder temp removals (`.dl-<ver>.zip`,
+`.stage-<ver>`) and the plugin-managed `lw` (`provision/cache.prune`, the
+`.dl` temp file of `provision/fetch.ensure`), owned LSP database cleanup
 (`Workspace:_remove_owned_lsp_dbs`, `Core:_nuke_lsp_db_areas`,
 `lsp_db_cleanup.lua`)) **must** be reviewed for
 directory safety before merging:
@@ -192,7 +196,58 @@ directory safety before merging:
    `.nvim/cache` must be real directories (lstat, not links/junctions) whose
    realpath lies under the pin root's (separator-bounded). No recursion, no
    rm_rf; a failed unlink is skipped.
-9. **Owned LSP databases** (spec §4.6 "Owned LSP database cleanup"): a
+9. **Per-user state** (spec §16.40): housekeeping and `lw cleanup`
+   (`loomworks/housekeeping.lua`) remove only direct children of the fixed
+   directories (`<data>`, `<data>/pinned[/<sha256>]`, `<data>/modules`, default
+   `<data>/device-locks`, `<data>/daemon/logs`, `<tmp>`, the exe's directory,
+   the `<run>` socket dirs, `<root>/.nvim/tmp`, the tool cache dir `<cache>`
+   — only regular `tools.json.<pid>.<nonce>.tmp` files, unlinked by name) whose whole name matches an
+   exact pattern (release version `<n>.<n>.<n>[tail]` / sha256 / module name /
+   arch / hex nonce), past the pattern's age, and only when `<data>` carries an
+   lw marker (`is_lw_data`: trust.key, stamp, pinned/, a lua-<ver> release). Parents are real directories (lstat) whose realpath
+   is the expected one (under `<data>` separator-bounded); a candidate that is
+   a link/junction is skipped, file/dir/socket type must match; removal via
+   `housekeeping._rm_tree` (links unlinked, never followed; chmod only on a
+   single-link file); POSIX temp entries only of this uid; `<exe>.old` only on
+   Windows. Never in use: device locks only
+   dead-holder + no program record via `lock_record.reclaim`; sockets only
+   refused-connection + 1 h old + not a running daemon's hash (process scan)
+   + inode/dev/mtime-checked move-aside, the moved socket never unlinked when
+   put-back finds the name taken; pinned releases
+   never the current `lw.pin`'s, the running exe/bundle, or used within the
+   threshold, and renamed to `.trash-<nonce>` before rm_rf. Never `.leftover`,
+   trust.key, config, releases, modules.
+10. **Install folder** (spec §16.22): `install_dir()` may be any user-chosen
+   absolute `LOOMWORKS_INSTALL_DIR` (e.g. `$HOME`), so `installed_releases`
+   (what runs and what `gc` prunes) lists only `lua-<ver>` with
+   `paths.is_release_version` (strict `<n>.<n>.<n>[-pre]` + `valid_version`)
+   that `is_release_bundle_dir` accepts (lstat: real `lua-<ver>/` and
+   `loomworks/` dirs, regular `loomworks/cli.lua`; links/junctions skipped).
+   `gc` re-checks before `rm_rf`, requires the realpath to be a direct child
+   of the install folder's realpath (separator-bounded), never removes
+   `except` nor the running luaroot. `self_update` refuses (never removes) a
+   `lua-<ver>` there that is not such a bundle, and refuses a `--force`
+   reinstall whose `lua-<ver>` is the running bundle (`running_root`/luaroot,
+   same `canon_path` identity as gc: realpath, Windows case/8.3) before any
+   fetch - never rm_rf'd or swapped; temp names
+   (`.dl-<ver>.zip`, `.stage-<ver>`) only from a version that passed
+   `is_release_version`.
+11. **Plugin-managed lw** (spec §19.16): `provision/cache.prune` runs only with
+   a wanted hash and no download in flight; removes only `<64 lowercase hex>`
+   entries of `<stdpath data>/loomworks/lw` (itself lstat-real) that are real
+   directories (lstat; links/junctions skipped, never followed) whose realpath
+   is a direct child of that dir's realpath (separator-bounded), holding only
+   the regular file `lw`/`lw.exe`: unlink it, then `rmdir` (no rm_rf). Never
+   the wanted hash, a binary in use (launched, observed, live handle `exe`,
+   by path or realpath), nor a slot whose directory mtime (its last use:
+   creation/install, every selection via `managed.touch`, every connect to a
+   daemon running it) is younger than `cache.UNUSED_S` (14 days) — this is
+   what protects other editors' daemons, other plugin versions' binaries and
+   an install in progress. `fetch.ensure` only unlinks its own
+   `<sha256>.<pid>.<n>.dl` path (a file or link, never a directory; never
+   written through) and renames over a slot binary whose hash mismatches;
+   prune removes another pid's regular `.dl` file after 24 h.
+12. **Owned LSP databases** (spec §4.6 "Owned LSP database cleanup"): a
    module's mirror (`lsp_database_dir(ctx)`, under
    `<root>/.nvim/cache/<lsp_database_root>/`) is removed by
    `Workspace:_remove_owned_lsp_dbs` only for a build dir whose deletion was
@@ -329,14 +384,19 @@ These are implementation-specific details not covered by the spec or architectur
   All path comparisons (build dir refs, locks, stray detection, prefix checks) use normalized
   (lowercased) paths. Cached `build_dir` values retain original casing for display.
 - clangd auto-reloads when compile_commands.json changes on disk — no explicit restart needed
-- **Build dir reverse index**: `_build_dir_refs` maps normalized build dir → set
-  of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by
+- **Build dir reverse index**: `_build_dir_refs` maps the build dir's resolved
+  identity (`_build_dir_identity`: realpath; for a missing dir the realpath of
+  its nearest existing ancestor + the rest, normalized) → set of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by
   deletion safety (skip rm-rf of shared dirs) and UI hints ("shared" indicator).
 - **Build dir operation queue**: `_build_dir_locks` provides per-build-dir
   exclusive/shared locks with FIFO queue. Exclusive for configure/delete/clean,
   shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,
   `release_build_dir_lock()` in task_tracker on complete/dispose (idempotent).
   Prevents concurrent operations from corrupting shared build directories.
+  Keyed by the same identity as `_build_dir_refs` (`_find_lock`), as are the
+  file-lock table `_build_dir_file_locks` and the lockfile path
+  (`build_lock.lock_path` via `dir_identity.resolve`), so every spelling of one
+  folder is one lock.
 - **Module domain object** (`module.lua`): wraps a stateless module function
   table (cmake.lua, meson.lua, typescript.lua) as a per-workspace domain object.
   Owns the Tool registry for its module type. No `_workspace` back-reference.
@@ -458,7 +518,7 @@ These are implementation-specific details not covered by the spec or architectur
   (bundle → machine-local `<data>/pinned/<sha256>/lua-<ver>/`, never a
   repo-local dir — a clone can ship one; the redirect also refuses when a
   legacy `.nvim/cache/lua-<ver>/` differs from the verified bundle). `main.lua` provisions on the
-  `LOOMWORKS_PINNED` sentinel and redirects workspace ops (build/run/test/clean/
+  `LOOMWORKS_PINNED` sentinel and redirects workspace ops (build/run/test/clean/reset/`daemon run`/`daemon restart`/
   configure) to the pinned release. Invariants: fixed origin (user-overridable
   only via `LOOMWORKS_RELEASE_URL`), version+hash pin never a URL, mandatory
   hash even under `--insecure`, global host never execs the repo scripts.

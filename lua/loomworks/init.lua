@@ -12,6 +12,23 @@ local events = require("loomworks.events")
 --- @type loomworks.Core
 local core = Core.new()
 
+-- The editor's views (spec §19.13 "Two sources, one shape"): built from the
+-- in-process model whenever the observer holds no daemon subscription.
+local views = require("loomworks.views")
+views.set_builder("header", function() return core:view_header() end)
+views.set_builder("projects", function() return core:view_projects_index() end)
+-- An in-process view is built on read and has no change of its own: when the
+-- model it is built from may have changed, tell the store, which redraws the
+-- statusline (a running state then starts its spinner at once).
+for _, ev in ipairs({
+    "workspace_changed", "active_set_changed", "profile_renamed",
+    "task_started", "task_stopped", "task_result",
+    "operation_started", "operation_finished",
+    "deletion_started", "deletion_completed", "deletion_failed",
+}) do
+    events.on(ev, function() views.changed() end)
+end
+
 --- Auto-load mode. Default: "auto".
 --- @type string|false
 local auto_load_mode = "auto"
@@ -97,7 +114,29 @@ function M.setup(opts)
     end
     if opts and type(opts.runtime) == "table" then
         M._runtime_mode_config = opts.runtime.mode
-        M.runtime_mode() -- report an invalid value once, at setup
+        -- Report an invalid setup value once, at setup (lw's setting is read,
+        -- and its problems shown on the Runtime line, on each workspace load).
+        local _, _, warning = require("loomworks.daemon.runtime").resolve(M._runtime_mode_config,
+            { what = "runtime.mode" })
+        if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
+    end
+    if opts and opts.binary ~= nil then
+        -- The host binary the editor launches the daemon from (spec §19.16).
+        local setting, warning = require("loomworks.provision.select").check_setting(opts.binary)
+        M._binary_config = setting
+        if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
+    end
+    -- In `daemon` runtime mode every loaded workspace observes the workspace
+    -- daemon (spec §19.16). Only the editor attaches (the CLI never calls
+    -- setup); in `in-process` mode `attach` does nothing.
+    if not M._observer_hooked then
+        M._observer_hooked = true
+        events.on("workspace_changed", function(ws)
+            if ws then
+                require("loomworks.daemon.observer").attach(ws, { configured = M._runtime_mode_config,
+                    binary = M._binary_config })
+            end
+        end)
     end
 
     if opts and opts.log_level then
@@ -156,17 +195,62 @@ end
 --- @type string|nil
 M._runtime_mode_config = nil
 
---- The effective runtime mode (spec §19.1): `LOOMWORKS_RUNTIME` > the setup
---- option `runtime.mode` > `in-process`. Informational during the transition:
---- the editor connects to the daemon only from step 4 of §19.19, so the
---- plugin runs in-process whatever this returns. An invalid value is reported
---- and ignored.
---- @return string mode
+--- The setup option `binary` (spec §19.16 "Host binary"), checked.
+--- @type loomworks.provision.BinarySetting|nil
+M._binary_config = nil
+
+--- The host binary the editor would launch the workspace daemon from, with
+--- every source tried (spec §19.16): `:LoomworksDaemon status` and
+--- `:checkhealth loomworks`. Resolved afresh; launches nothing.
+--- @return loomworks.provision.Selection
+function M.host_binary_selection()
+    -- (The selection does not depend on the workspace: the editor reads no
+    -- lw.pin, a global or managed lw follows it itself.)
+    local _, _, sel = require("loomworks.provision.select").resolve(vim.fn.getcwd(),
+        { setting = M._binary_config })
+    return sel
+end
+
+--- The effective runtime mode (spec §19.1): the environment
+--- (`LOOMWORKS_RUNTIME`, then `LOOMWORKS_NO_DAEMON` and `CI`) > the setup
+--- option `runtime.mode` > lw's `runtime-mode` setting > `in-process`, and the
+--- source that decided. In `daemon` mode the editor observes the workspace
+--- daemon (spec §19.16) while running its own operations in-process. Invalid
+--- values are ignored (the Runtime line reports them).
+--- @return string mode, loomworks.daemon.RuntimeSource source
 function M.runtime_mode()
-    local runtime = require("loomworks.daemon.runtime")
-    local mode, _, warning = runtime.resolve(M._runtime_mode_config, { what = "runtime.mode" })
-    if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
-    return mode
+    local sel = require("loomworks.daemon.runtime").editor_select({ configured = M._runtime_mode_config })
+    return sel.mode, sel.source
+end
+
+--- The tasks observed in the workspace daemon (spec §19.16), in start order.
+--- @return loomworks.RemoteTask[]
+function M.get_daemon_tasks()
+    local ws = core:get_workspace()
+    return ws and ws:get_daemon_tasks() or {}
+end
+
+--- The status page's Runtime line (spec/ui.md §1.1): the runtime mode, the
+--- source that selected it and the observer's state or note; nil when the
+--- default picked `in-process` with nothing to report. `warn` selects the
+--- warning highlight.
+--- @return string|nil text, boolean warn
+function M.daemon_runtime_line()
+    return require("loomworks.daemon.observer").runtime_line(core:get_workspace())
+end
+
+--- `:LoomworksDaemon connect` (spec §19.16): connect to the workspace daemon,
+--- launching it when none is live. Returns false + why when it cannot.
+--- @return boolean ok, string|nil why
+function M.daemon_connect()
+    local ws = core:get_workspace()
+    if not ws then return false, "no workspace loaded" end
+    local observer = require("loomworks.daemon.observer")
+    local obs = observer.of(ws) or observer.attach(ws, { configured = M._runtime_mode_config,
+        binary = M._binary_config })
+    if not obs then return false, "the runtime mode is in-process (LOOMWORKS_RUNTIME, runtime.mode, lw settings runtime-mode)" end
+    obs:start(true)
+    return true
 end
 
 --- Get the merged active configuration set.
@@ -214,6 +298,13 @@ end
 --- @param fn function
 function M.on(event, fn)
     events.on(event, fn)
+end
+
+--- Emit `lsp_buf_state_changed` (spec §7) for the LSP layer, which reaches the
+--- event bus only through this facade.
+--- @param payload { bufnr: integer, server: string, state: loomworks.LspBufState }
+function M._emit_lsp_buf_state(payload)
+    events.emit("lsp_buf_state_changed", payload)
 end
 
 -- ---------------------------------------------------------------------------
@@ -286,6 +377,15 @@ function M.nuke_cache(root)
     core:nuke_cache(root)
 end
 
+--- Would a nuke of `root` run now (no other process's build or workspace
+--- operation in the way)? Checked before the confirmation, so a refused nuke
+--- shows only its refusal. Returns true, or nil + the refusal message.
+--- @param root string
+--- @return boolean|nil ok, string|nil message
+function M.nuke_check(root)
+    return core:nuke_check(root, { skip_own = true })
+end
+
 --- Delete user.json and reload the workspace.
 --- @param root string
 function M.delete_user_prefs(root)
@@ -313,6 +413,13 @@ function M.trust_user_prefs(root, opts)
     if review.status == "valid" then
         vim.notify("loomworks: .nvim/loomworks.user.json is already trusted (signed by this machine)",
             vim.log.levels.INFO)
+        -- Valid again since a load refused it (restored, or re-signed by
+        -- `lw trust`): load the workspace now (spec §17.4).
+        local norm = core._deps.normalize
+        if err and err.trust and err.trust.kind == "user" and err.root
+            and norm(err.root) == norm(root) then
+            core:setup({ root = root })
+        end
         return "valid"
     end
     local prog, other = require("loomworks.program_fields").review(review.data, require("loomworks.modules"))
@@ -498,6 +605,24 @@ function M.compile_command_for_file(file)
     return ws:compile_command_for_file(file)
 end
 
+--- The buffer's project as its `loomworks.view.ProjectsIndex/1` record (spec
+--- §19.13 "Views"): the record whose `abs_path` is the longest prefix of the
+--- buffer's path on a separator boundary, nil when none matches (or the
+--- workspace is not loaded, in the daemon too). Unlike `project_for_buf`, a
+--- project at `/a/foo` never claims a buffer in `/a/foobar`.
+--- @param bufnr? number defaults to the current buffer
+--- @return loomworks.ViewProjectRecord|nil
+function M.buf_project(bufnr)
+    return views.buf_project(bufnr)
+end
+
+--- The always-warm header (`loomworks.view.Header/1`): the daemon's while
+--- the editor is subscribed to it, otherwise built in-process.
+--- @return loomworks.ViewHeader|nil
+function M.view_header()
+    return views.header()
+end
+
 --- Per-buffer LSP status (spec §9.8): whether loomworks started, is holding,
 --- or withholds a managed language server for the buffer. Available without an
 --- active profile (unlike `buf_status`). "none" for buffers loomworks has no
@@ -511,93 +636,18 @@ function M.lsp_buf_state(bufnr)
 end
 
 --- Get status info for the buffer's project, suitable for statusline/winbar.
+--- Read from the two views (spec §19.13 "Two sources, one shape"): nil unless
+--- the header is `loaded` and the buffer is in a project.
 --- @param bufnr? number defaults to current buffer
 --- @return loomworks.BufStatus|nil
 function M.buf_status(bufnr)
-    bufnr = bufnr or 0
-    local active_set = core:get_active_configuration_set()
-    if not active_set then return nil end
-
-    local project = core:project_for_buf(bufnr)
-    if not project then return nil end
-
-    local profile = core:get_active_profile()
-    local set_name = profile and (profile._config_set_ref and profile._config_set_ref.name or profile._configuration_set_name) or nil
-
-    local status
-    if profile and project.configuration then
-        local pp = profile:project(project.key)
-        if pp then
-            status = pp:status()
-        end
-    end
-
-    -- Profile-aggregate state for the icon surface. Profile:status()
-    -- returns a human label that can be composite ("1 building,
-    -- 2 built"), so we compute a single icon-friendly key here. Order
-    -- matters: running and failed dominate the aggregate so the user
-    -- sees the actionable signal first.
-    local profile_state = nil
-    if profile then
-        local counts = {
-            unconfigured = 0, configured = 0, built = 0,
-            configure_failed = 0, build_failed = 0,
-            configuring = 0, building = 0,
-            deleting = 0, cleaning = 0,
-        }
-        local total = 0
-        for _, pp in ipairs(profile:projects()) do
-            local s = pp:status()
-            counts[s] = (counts[s] or 0) + 1
-            total = total + 1
-        end
-        if total == 0 then
-            profile_state = nil
-        elseif counts.deleting > 0 or counts.cleaning > 0 then
-            profile_state = "deleting"
-        elseif counts.configuring > 0 or counts.building > 0 then
-            profile_state = counts.building > 0 and "building" or "configuring"
-        elseif counts.configure_failed > 0 then
-            profile_state = "failed_configure"
-        elseif counts.build_failed > 0 then
-            profile_state = "failed_build"
-        elseif counts.built == total then
-            profile_state = "built"
-        elseif counts.configured + counts.built == total then
-            profile_state = "configured"
-        elseif counts.unconfigured == total then
-            profile_state = "unconfigured"
-        else
-            profile_state = "mixed"
-        end
-    end
-
-    -- Workspace-level diagnostic summary for the winbar indicator.
-    -- Highest severity wins (error trumps warn). Nil when clean.
-    local diagnostic_severity = nil
-    local ws = core:get_workspace()
-    if ws and ws.diagnostics then
-        for _, d in ipairs(ws:diagnostics()) do
-            if d.severity == "error" then
-                diagnostic_severity = "error"
-                break
-            elseif d.severity == "warn" then
-                diagnostic_severity = "warn"
-            end
-        end
-    end
-
-    return {
-        profile_key = active_set.name,
-        set_name = set_name,
-        tool_key = project._tool and project._tool.key or nil,
-        project = project.key,
-        configuration = project.configuration,
-        status = status,
-        profile_state = profile_state,
-        diagnostic_severity = diagnostic_severity,
-        lsp = M.lsp_buf_state(bufnr),
-    }
+    local header = views.header()
+    if not header or header.state ~= "loaded" then return nil end
+    local status = views.status_of(header, views.projects_index(), vim.api.nvim_buf_get_name(bufnr or 0))
+    -- The per-buffer LSP state is editor-local in every mode (the LSP layer
+    -- always runs in the editor), so it is added here, not in the views.
+    if status then status.lsp = M.lsp_buf_state(bufnr) end
+    return status
 end
 
 -- ---------------------------------------------------------------------------

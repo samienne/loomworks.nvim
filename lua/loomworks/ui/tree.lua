@@ -354,6 +354,14 @@ function Tree:_confirm_nuke()
     local err = lw.get_setup_error()
     local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
 
+    -- Refuse before listing what would be deleted (a build of another
+    -- process, or its workspace operation, is in the way): the refusal only.
+    local ok, why, areas = lw.nuke_check(root)
+    if not ok then
+        vim.notify("loomworks: " .. tostring(why), vim.log.levels.ERROR)
+        return
+    end
+
     local lines = {
         "  Reset workspace cache",
         "",
@@ -361,14 +369,9 @@ function Tree:_confirm_nuke()
         "    " .. root .. "/.nvim/build/",
         "    " .. root .. "/.nvim/loomworks.cache.json",
     }
-    -- Module-owned LSP database areas present on disk (spec ui §1.11). A
-    -- failed area check is shown here; the nuke itself then aborts.
-    local core = lw._core and lw._core()
-    if core and core._nuke_lsp_db_areas then
-        local areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root))
-        for _, a in ipairs(areas or {}) do lines[#lines + 1] = "    " .. a .. "/" end
-        if not areas then lines[#lines + 1] = "    (refused: " .. tostring(area_err) .. ")" end
-    end
+    -- Module-owned LSP database areas present on disk (spec ui §1.11), as
+    -- `nuke_check` found them; a failed area check already refused above.
+    for _, a in ipairs(areas or {}) do lines[#lines + 1] = "    " .. a .. "/" end
     local last_path = #lines
     lines[#lines + 1] = ""
     lines[#lines + 1] = "  Press y to confirm, q to cancel"

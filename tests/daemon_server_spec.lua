@@ -104,6 +104,58 @@ describe("daemon server (in-process)", function()
         trust._set_key_path(nil)
     end)
 
+    it("lw daemon stop waits for a starting daemon's handle instead of calling it unresponsive", function()
+        -- A daemon that holds R but has not published its handle yet
+        -- ("starting"): here its handle rewrite stays blocked for 4 s (readers
+        -- holding the file open on a loaded machine). stop used to give such a
+        -- daemon 3 s, then report "not responding".
+        local cmd = require("loomworks.daemon.command")
+        assert.is_true(uv.fs_unlink(dpaths.handle_path(root)))
+        local orig, t0 = uv.fs_rename, uv.hrtime()
+        uv.fs_rename = function(a, b)
+            if (uv.hrtime() - t0) / 1e6 < 4000 then return nil, "EPERM: operation not permitted", "EPERM" end
+            return orig(a, b)
+        end
+        local out = {}
+        local host = { out = function(l) out[#out + 1] = l end, note = function() end,
+            die = function(m, c) error({ die = m, code = c }, 0) end }
+        local ok, err = pcall(function()
+            assert.equals("starting", require("loomworks.daemon.inspect").state(root).kind)
+            return cmd.stop(root, host, {})
+        end)
+        uv.fs_rename = orig
+        assert.is_true(ok, vim.inspect(err))
+        assert.equals(0, exited)
+        assert.truthy(table.concat(out):find("stopped the workspace daemon", 1, true))
+    end)
+
+    it("lw daemon stop waits out a slow handshake instead of calling the daemon unresponsive", function()
+        -- A healthy daemon on a loaded machine (CI runs every spec at once)
+        -- answered the handshake after the old fixed 2 s request budget: the
+        -- client gave up before sending `stop`, then reported "not responding".
+        local cmd = require("loomworks.daemon.command")
+        local real = srv._handshake
+        local delayed = 0
+        srv._handshake = function(self, conn, msg)
+            if msg.kind == "auth" and delayed == 0 then
+                delayed = delayed + 1
+                local t = uv.new_timer()
+                t:start(2600, 0, function() t:close(); real(self, conn, msg) end)
+                return
+            end
+            return real(self, conn, msg)
+        end
+        local out = {}
+        local host = { out = function(l) out[#out + 1] = l end, note = function() end,
+            die = function(m, c) error({ die = m, code = c }, 0) end }
+        local ok, err = pcall(cmd.stop, root, host, {})
+        srv._handshake = real
+        assert.is_true(ok, vim.inspect(err))
+        assert.equals(1, delayed)
+        assert.equals(0, exited)
+        assert.truthy(table.concat(out):find("stopped the workspace daemon", 1, true))
+    end)
+
     it("holds the runtime lock and publishes the handle", function()
         local lk = rlock.read(root)
         assert.equals("daemon", lk.kind)
@@ -221,13 +273,39 @@ describe("daemon server (in-process)", function()
         if not H.is_win then assert.is_nil(uv.fs_lstat(addr)) end
     end)
 
-    it("retire: exits once the last client disconnects", function()
+    it("retire: exits once idle -- a command in flight holds it off, an idle client does not (§19.9 Busy)", function()
         local conn = assert(client.session(srv.address))
+        local sc
+        for c in pairs(srv.conns) do if c.authed then sc = c end end
+        sc.in_flight = { [99] = true }
         assert(client.request(conn, { kind = "retire" }))
+        vim.wait(200, function() return false end, 10)
         assert.is_nil(exited)
-        conn:close()
+        -- Its answer ends the command: the daemon is idle and exits, the
+        -- (idle) client still connected.
+        srv:_send(sc, { kind = "ok", req_id = 99 })
         assert.is_true(vim.wait(2000, function() return exited ~= nil end, 10))
         assert.equals(0, exited)
+        conn:close()
+    end)
+
+    it("a request in flight past the threshold is logged once as a warning, never cleared (§19.9 Busy)", function()
+        local lines = {}
+        srv.opts.log = function(l) lines[#lines + 1] = l end
+        local conn = assert(client.session(srv.address))
+        local sc
+        for c in pairs(srv.conns) do if c.authed then sc = c end end
+        sc.in_flight = sc.in_flight or {}
+        sc.in_flight[77] = { at = uv.now() - server_mod.STUCK_REQUEST_MS - 1000, kind = "x.Y/1.slow" }
+        sc.in_flight[78] = { at = uv.now(), kind = "x.Y/1.fresh" }
+        srv:_tick(); srv:_tick()
+        local warned = {}
+        for _, l in ipairs(lines) do if l:find("in flight for", 1, true) then warned[#warned + 1] = l end end
+        assert.equals(1, #warned)
+        assert.truthy(warned[1]:find("x.Y/1.slow", 1, true))
+        assert.truthy(sc.in_flight[77]) -- never cleared by force
+        assert.is_true(srv:conn_busy(sc))
+        conn:close()
     end)
 
     it("a replaced runtime-lock record means lost authority: exit 1, nothing touched", function()
@@ -467,6 +545,8 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
         assert.is_true(H.alive(lk.pid, lk.start_time))
         local s = lw({ "daemon", "status" })
         assert.truthy(s.stdout:find("answers      1 client", 1, true), s.stdout)
+        -- Step 5r D: the idle timeout in effect (the grace) and the deadline.
+        assert.truthy(s.stdout:find("  idle         timeout 45s, exits at ", 1, true), s.stdout)
         -- stop ends the process.
         local st = lw({ "daemon", "stop" })
         assert.equals(0, st.code, st.stderr)
@@ -536,7 +616,7 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
         assert.equals(1, running)
         local lk = rlock.read(root)
         assert.truthy(vim.tbl_contains(pids, lk.pid))
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("a suspended daemon: stop reports it not responding; stop --force kills and clears it", function()
@@ -582,7 +662,7 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
         -- And a new daemon starts at once (the dead holder's lock is reclaimed).
         assert.equals(0, lw({ "daemon", "restart" }).code)
         H.track_root(root)
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("a daemon on another host is never stopped or killed from here", function()
@@ -633,9 +713,67 @@ describe("version handshake (§19.9)", function()
         assert.is_nil(rlock.read(root))
     end)
 
+    it("an idle mismatched daemon with only an observer is stopped and replaced, not bypassed", function()
+        srv.identity = "0.1.0"
+        local observer = assert(client.session(srv.address, { client = "editor", role = "observer" }))
+        local launched
+        local conn = assert(client.session(srv.address))
+        local out = ensure.reconcile(root, conn, { launch = function(r) launched = r; return true end })
+        assert.equals("restarted", out)
+        assert.equals(0, exited)
+        assert.equals(root, launched)
+        observer:close()
+    end)
+
+    it("an idle client does not make a mismatched daemon busy: stopped and replaced (§19.9 Busy)", function()
+        srv.identity = "0.1.0"
+        local idle = assert(client.session(srv.address))
+        local launched
+        local conn = assert(client.session(srv.address))
+        local out = ensure.reconcile(root, conn, { launch = function(r) launched = r; return true end })
+        assert.equals("restarted", out)
+        assert.equals(0, exited)
+        assert.equals(root, launched)
+        idle:close()
+    end)
+
+    it("the policy compares describe's lw_version over transport 11, the challenge's before", function()
+        local first = assert(client.session(srv.address))
+        local match, v = ensure.policy(first)
+        first:close()
+        assert.is_true(match)
+        assert.equals(srv.identity, v)
+        -- describe() names the daemon's version (the challenge says the same
+        -- here; a daemon whose describe differs is judged by describe).
+        local conn = assert(client.session(srv.address))
+        local reg = srv:registry()
+        local root_e = reg.objects["/"].ifaces["loomworks.Root"][1]
+        local describe = root_e.impl.methods.describe
+        root_e.impl.methods.describe = function(ctx)
+            local d = describe(ctx)
+            d.binary.lw_version = "0.0.1"
+            return d
+        end
+        match, v = ensure.policy(conn)
+        root_e.impl.methods.describe = describe
+        conn:close()
+        assert.is_false(match)
+        assert.equals("0.0.1", v)
+        -- A protocol-10 daemon (no describe): the challenge's versions.
+        local fake = { transport = 10, challenge = { protocol = 10, lw_version = srv.identity,
+            schemas = require("loomworks.daemon.version").schemas() } }
+        match = ensure.policy(fake)
+        assert.is_false(match)
+        -- No transport overlap: a mismatch.
+        match = ensure.policy({ challenge = { protocol = 12, protocol_min = 12, lw_version = srv.identity } })
+        assert.is_false(match)
+    end)
+
     it("a busy mismatched daemon is retired, never stopped; the command bypasses it", function()
         srv.identity = "0.1.0"
         local other = assert(client.session(srv.address))
+        -- The other client has a command in flight (§19.9 Busy).
+        for c in pairs(srv.conns) do if c.authed then c.in_flight = { [99] = true } end end
         local conn = assert(client.session(srv.address))
         local out, line = ensure.reconcile(root, conn, { launch = function() error("must not launch") end })
         assert.equals("bypass", out)
@@ -826,6 +964,9 @@ end)
 describe("daemon processes", function()
     it("none was left running by any test of this file", function()
         H.cleanup()
-        assert.equals(0, H.leftovers, "a test left a daemon process running")
+        -- Never a process left behind, even by a failed test (cleanup kills).
+        assert.equals(0, H.survivors, "a daemon process survived the cleanup")
+        assert.equals(0, H.leftovers, "a test left a daemon process running (killed by the cleanup; "
+            .. "if a test above failed, this follows from it)")
     end)
 end)

@@ -27,14 +27,14 @@ jobs:
           $dest = "$env:LOCALAPPDATA\nvim-data\lazy\plenary.nvim"
           git clone --depth 1 https://github.com/nvim-lua/plenary.nvim $dest
 
-      # Plenary runs every spec file concurrently under ONE whole-suite budget
-      # (default 50 s); a file still running at the deadline prints no summary
-      # and fails the job. Size it for a loaded 4-core runner (see Makefile).
+      # Every spec file runs concurrently, as under PlenaryBustedDirectory,
+      # under ONE whole-suite budget sized for a loaded 4-core runner (see
+      # Makefile). scripts/run_specs.lua ends with a table naming each file
+      # that exited non-zero (also after a clean summary, with its nvim log),
+      # printed no summary, or was still running at the deadline.
       - name: Run test suite
         shell: pwsh
-        run: |
-          nvim --headless -u tests/minimal_init.lua `
-            -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua', timeout = 600000}"
+        run: nvim -l scripts/run_specs.lua --timeout 600000 --init tests/minimal_init.lua tests
 
   standalone:
     name: Standalone bootstrap tests (Linux)
@@ -174,3 +174,50 @@ jobs:
         env:
           REPO_SLUG: ${{ github.repository }}
         run: bash scripts/ci/old-host-compat.sh
+
+  # The plugin pin (spec 19.16 "Plugin pin"): lua/loomworks/provision/pinned.lua
+  # names the last published release; check its signed hashes and that its
+  # descriptor offers the interfaces this checkout's editor client needs. A
+  # WARNING only: a development checkout may need interfaces newer than any
+  # release (the editor then degrades with feature notes; developers point
+  # binary.path / LOOMWORKS_LW at a newer lw). The release workflow's publish
+  # stage runs the same check as a hard gate.
+  pin-check:
+    name: Plugin pin (warning only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Warning only, also when a tool breaks: a failed Neovim install or a
+      # crash of openssl/nvim becomes a ::warning::, never a red job.
+      - name: Install Neovim (stable)
+        id: nvim
+        continue-on-error: true
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Check the pinned release
+        continue-on-error: true
+        shell: bash
+        env:
+          REPO_SLUG: ${{ github.repository }}
+          NVIM_OUTCOME: ${{ steps.nvim.outcome }}
+        run: |
+          if [ "$NVIM_OUTCOME" != success ]; then
+            echo "::warning title=lw pin::Neovim did not install; the pin was not checked"; exit 0
+          fi
+          ver="$(sed -n 's/^ *version = "\([^"]*\)",$/\1/p' lua/loomworks/provision/pinned.lua)"
+          echo "pinned lw: $ver"
+          mkdir -p pin
+          base="https://github.com/$REPO_SLUG/releases/download/v$ver"
+          for f in SHA256SUMS SHA256SUMS.sig "lw-$ver-descriptor.json"; do
+            curl -fsSL -o "pin/$f" "$base/$f" || { echo "::warning title=lw pin::v$ver publishes no $f"; rm -f "pin/$f"; }
+          done
+          # No host binaries here (the release gate hashes those): --no-binaries.
+          rc=0
+          nvim -l scripts/release/pin.lua verify "$ver" pin --warn --no-binaries || rc=$?
+          if [ "$rc" != 0 ]; then
+            echo "::warning title=lw pin::the pin check itself failed (exit $rc); the pin was not checked"
+          fi

@@ -1,0 +1,46 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Launch",
+  "version": 1,
+  "description": "Object /launch (spec 19.15 Run, 19.20): prepare_run as a task-streamed method whose task result is the launch spec the client runs.",
+  "cases": [
+    {
+      "name": "prepare_run of a launch configuration ends with its launch spec",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "profile": { "key": "dev" }, "project": { "key": "app" }, "target": "hello", "kind": "launch", "extra": ["more"], "command": "lw run" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" }, "profile_key": "dev" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "kind": "run", "profile": "dev" }
+        } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
+            "result": {
+              "exit_code": 0, "error": { "$absent": true }, "device": { "$absent": true },
+              "launch": { "cmd": { "$type": "string" }, "args": { "$contains": ["--version", "more"] }, "cwd": { "$type": "string" } }
+            }
+        }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "an unknown launch ends the task with its error; a malformed kind is invalid",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "profile": { "key": "dev" }, "target": "nothing-like-this", "kind": "launch", "no_build": true }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 1, "result": { "exit_code": 1, "error": { "$type": "string" }, "launch": { "$absent": true } } }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "kind": "device" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    }
+  ]
+}

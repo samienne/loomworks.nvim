@@ -5,6 +5,7 @@
 
 local expand = require("loomworks.expand")
 local debug_mod = require("loomworks.debug")
+local debug_config = require("loomworks.debug_config")
 
 --- @class loomworks.LaunchTarget
 --- @field _workspace loomworks.Workspace
@@ -701,44 +702,6 @@ function LaunchTarget:debug()
     end
 end
 
---- Build the resolved spec data for debug from a command-type launch config.
---- Returns adapter-agnostic data. Adapter-specific transforms happen in debug.run().
---- @return table spec_data { program, args, cwd, env }
---- @return string adapter resolved adapter type
-function LaunchTarget:_resolve_debug_spec()
-    local cfg = self._launch_config
-    local ws = self._workspace
-    local ctx = expand.launch_context(ws, self._profile, self._project)
-
-    local cmd = expand.expand_string(cfg.command, ctx)
-    local args = expand.expand_array(cfg.args, ctx) or {}
-
-    local cwd
-    if cfg.working_dir then
-        local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
-        if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
-            cwd = expanded_cwd
-        else
-            cwd = ws.root .. "/" .. expanded_cwd
-        end
-    else
-        cwd = ws.root .. "/" .. (self._project.path or self._project.key)
-    end
-
-    -- Denylisted loader/interpreter variables are refused (spec §17.9).
-    local env = require("loomworks.env_policy").filter(
-        expand.expand_dict(cfg.env, ctx), { label = "launch " .. tostring(self._launch_name or "?") })
-    local lang = self._project._module and self._project._module:primary_language() or "c++"
-    local adapter = debug_mod.resolve_adapter(ws, lang)
-
-    return {
-        program = cmd,
-        args = args,
-        cwd = cwd,
-        env = env,
-    }, adapter
-end
-
 --- Check if this launch target has a multi-adapter debug config.
 --- @return boolean
 function LaunchTarget:is_multi_adapter()
@@ -750,15 +713,15 @@ end
 --- Returns adapter entries and the base spec data for the primary adapter.
 --- @return { adapter: string }[] adapters, table spec_data
 function LaunchTarget:multi_adapter_specs()
-    local cfg = self._launch_config
-    local spec_data = self:_resolve_debug_spec()
-    local ws = self._workspace
+    -- The command-launch reading for every launch configuration, as before
+    -- step 5k: a target-backed one has no `command`, so `program` stays nil
+    -- here (unchanged; run_prep.resolve_debug resolves that case).
+    local spec = require("loomworks.run_prep").resolve_command_debug(self)
     local parsed = {}
-    for _, entry in ipairs(cfg.debug) do
-        local language = type(entry) == "string" and entry or entry.language
-        parsed[#parsed + 1] = { adapter = debug_mod.resolve_adapter(ws, language) }
+    for _, a in ipairs(spec.adapters) do
+        parsed[#parsed + 1] = { adapter = a.adapter }
     end
-    return parsed, spec_data
+    return parsed, { program = spec.program, args = spec.args, cwd = spec.cwd, env = spec.env }
 end
 
 --- Debug from a command-type config (loomworks.json launch section).
@@ -767,56 +730,43 @@ function LaunchTarget:_debug_command()
     local cfg = self._launch_config
     if not cfg or not cfg.command then return end
 
-    local spec_data, adapter = self:_resolve_debug_spec()
+    local spec = require("loomworks.run_prep").resolve_debug(self)
 
-    -- Single adapter: use debug[] first entry if present, else module default
-    if cfg.debug and type(cfg.debug) == "table" and #cfg.debug == 1 then
-        local entry = cfg.debug[1]
-        local language = type(entry) == "string" and entry or entry.language
-        adapter = debug_mod.resolve_adapter(self._workspace, language)
+    -- Single adapter: the debug[] entry if there is exactly one, else the
+    -- module's primary language.
+    local adapter
+    if #spec.adapters == 1 then
+        adapter = spec.adapters[1].adapter
+    else
+        adapter = debug_config.resolve_adapter(self._workspace, spec.language)
     end
 
     debug_mod.run({
-        name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
+        name = spec.name,
         adapter = adapter,
-        program = spec_data.program,
-        args = spec_data.args,
-        cwd = spec_data.cwd,
-        env = spec_data.env,
-        extra = spec_data.extra,
+        program = spec.program,
+        args = spec.args,
+        cwd = spec.cwd,
+        env = spec.env,
     })
 end
 
 --- Debug a module target (executable produced by a module, e.g. cmake).
 function LaunchTarget:_debug_target()
-    local target = self._target
-    if not target:is_executable() or not target.artifact then return end
-
-    local unit = target._config_unit
-    if not unit then return end
-
-    local build_dir = unit:build_dir()
-    if not build_dir then
-        vim.notify("loomworks: no build directory for " .. target.id, vim.log.levels.WARN)
+    local spec, err, severity = require("loomworks.run_prep").resolve_debug(self)
+    if not spec then
+        if err then
+            vim.notify("loomworks: " .. err,
+                severity == "error" and vim.log.levels.ERROR or vim.log.levels.WARN)
+        end
         return
     end
-
-    local artifact_path = require("loomworks.paths").artifact_path(build_dir, target.artifact)
-    -- Debugging a foreign target is refused in this version (spec §18.11); it
-    -- must never start on the host (§18.1).
-    local host_ok, foreign_err = require("loomworks.remote.foreign").check_local(unit, artifact_path)
-    if not host_ok then
-        vim.notify("loomworks: " .. foreign_err, vim.log.levels.ERROR)
-        return
-    end
-    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
-    local lang = unit._project and unit._project._module and unit._project._module:primary_language() or "c++"
 
     debug_mod.run({
-        name = project_name .. ": debug " .. target.id,
-        program = artifact_path,
-        cwd = build_dir,
-        adapter = debug_mod.resolve_adapter(self._workspace, lang),
+        name = spec.name,
+        program = spec.program,
+        cwd = spec.cwd,
+        adapter = spec.adapters[1].adapter,
     })
 end
 

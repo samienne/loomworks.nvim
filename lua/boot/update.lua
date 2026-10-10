@@ -118,8 +118,9 @@ function M.newer_bundle_note(installed, target)
 end
 
 --- Resolve the newest release version for the `unstable` channel (§16.29) by
---- querying the releases API. The newest NON-DRAFT entry wins — pre-releases are
---- INCLUDED (that is what `unstable` means). Returns the version (leading `v`
+--- querying the releases API. The highest-versioned NON-DRAFT entry wins (by
+--- version, never list order; a pre-release ranks below its release) —
+--- pre-releases are INCLUDED (that is what `unstable` means). Returns the version (leading `v`
 --- stripped) or nil, err.
 ---
 --- SECURITY: the tag is network-derived, so it is validated with
@@ -141,7 +142,12 @@ function M.resolve_unstable_version(fetch_limits)
   if type(releases) ~= "table" then
     return nil, "releases API: " .. (derr or "unexpected response")
   end
-  -- The API returns releases newest-first; take the newest that is not a draft.
+  -- The API lists releases in PUBLISH order, not version order (a stable
+  -- release cut after a newer pre-release is listed first), so take the
+  -- HIGHEST non-draft version by the §16.29 ordering (a pre-release ranks
+  -- below its release). Every candidate tag is validated first: one unsafe
+  -- tag fails the whole query.
+  local best
   for _, rel in ipairs(releases) do
     if type(rel) == "table" and rel.draft ~= true and type(rel.tag_name) == "string" then
       local ver = (rel.tag_name:gsub("^v", ""))
@@ -149,9 +155,10 @@ function M.resolve_unstable_version(fetch_limits)
         return nil, "releases API returned an unsafe version '" ..
           tostring(rel.tag_name) .. "'"
       end
-      return ver
+      if not best or paths.version_gt(ver, best) then best = ver end
     end
   end
+  if best then return best end
   return nil, "no releases found on the unstable channel"
 end
 
@@ -258,9 +265,10 @@ function M.ensure_host_binary(version, asset, sha256, dest, opts)
 end
 
 --- The machine-local directory for everything a pinned run provisions:
---- `<data>/loomworks/pinned` (spec §16.22). Never inside a repository — a
+--- `<install>/pinned` — the install folder, `<data>` unless
+--- LOOMWORKS_INSTALL_DIR moves it (spec §16.22). Never inside a repository — a
 --- clone can ship any file under its own tree, so nothing there is trusted.
-function M.pinned_root() return paths.data_dir() .. "/pinned" end
+function M.pinned_root() return paths.install_dir() .. "/pinned" end
 
 --- Where the pinned bundle for (`version`, pinned bundle `sha256`) lives:
 --- `<data>/pinned/<sha256>/lua-<version>`. Keyed by the pinned hash, so a pin
@@ -461,12 +469,42 @@ function M.rename_with_retry(src, dst, opts)
   return false, last
 end
 
---- Remove installed releases beyond the `keep` newest (never touches the
---- version named in `except`). Best-effort.
-function M.gc(keep, except)
+--- A path resolved (realpath when it exists), forward-slashed, without a
+--- trailing slash, lowercased on Windows — for identity comparisons only.
+local function canon_path(p)
+  if type(p) ~= "string" or p == "" then return nil end
+  local rp = uv.fs_realpath(p) or p
+  rp = rp:gsub("\\", "/"):gsub("/+$", "")
+  if paths.is_windows then rp = rp:lower() end
+  return rp
+end
+
+--- Remove installed releases beyond the `keep` newest. Best-effort, and
+--- deletion-safe (spec §16.22 "Install folder"): only entries
+--- `installed_releases` lists (a `lua-<release version>` real bundle
+--- directory, never a link/junction), re-checked right before removal, whose
+--- resolved path is a direct child of the resolved install folder
+--- (separator-bounded); never the version named in `except`, nor the bundle
+--- this process runs from (`running_root`, default the loaded system Lua root).
+--- @param keep? integer how many newest releases to keep (default 3)
+--- @param except? string a version never removed (the one just installed)
+--- @param running_root? string the running bundle's root, never removed
+function M.gc(keep, except, running_root)
+  local base = canon_path(paths.install_dir())
+  if not base then return end
+  local running = canon_path(running_root or rawget(_G, "__loomworks_luaroot"))
   local rels = paths.installed_releases()
   for i = (keep or 3) + 1, #rels do
-    if rels[i].ver ~= except then paths.rm_rf(rels[i].dir) end
+    local r = rels[i]
+    if r.ver ~= except and paths.is_release_bundle_dir(r.dir) then
+      local rp = canon_path(r.dir)
+      local parent, name = (rp or ""):match("^(.*)/([^/]+)$")
+      local want = "lua-" .. r.ver
+      if paths.is_windows then want = want:lower() end
+      if rp and rp ~= running and parent == base and name == want then
+        paths.rm_rf(r.dir)
+      end
+    end
   end
 end
 
@@ -528,23 +566,51 @@ function M.self_update(opts)
   end
 
   local version = manifest.version
-  local dest_dir = paths.data_dir() .. "/lua-" .. version
+  -- `version` names a directory that is replaced (rm_rf) below and ranked by
+  -- installed_releases: only a strict release version is accepted.
+  if not paths.is_release_version(version) then
+    return nil, "manifest names an invalid release version '" .. tostring(version) .. "'"
+  end
+  -- Release bundles go to the install folder (spec §16.22 "Install folder").
+  local install = paths.install_dir()
+  local dest_dir = install .. "/lua-" .. version
+  -- The install folder may be any user-chosen directory: a `lua-<version>`
+  -- entry there that is not a real bundle directory (a link, a junction, a
+  -- foreign folder) is never replaced or removed.
+  if uv.fs_lstat(dest_dir) and not paths.is_release_bundle_dir(dest_dir) then
+    return nil, "the install folder already holds '" .. dest_dir ..
+      "', which is not a loomworks release bundle - move it away and re-run"
+  end
   if uv.fs_stat(dest_dir) and not opts.force then
     return { version = version, updated = false, dir = dest_dir,
       channel_overridden = channel_overridden }
   end
+  -- A forced reinstall replaces `dest_dir` (rm_rf + rename). When that is the
+  -- bundle this process runs from (`running_root`, default the loaded system
+  -- Lua root; same identity check as gc: realpath, Windows case/8.3) it is
+  -- refused, before anything is downloaded: deleting or swapping a bundle in
+  -- use is not safe (on Windows its files may be open), and the running
+  -- version is by definition installed.
+  if uv.fs_stat(dest_dir) then
+    local running = canon_path(opts.running_root or rawget(_G, "__loomworks_luaroot"))
+    if running and canon_path(dest_dir) == running then
+      return nil, "lw " .. version .. " is the version running now; its bundle at '" ..
+        dest_dir .. "' is not replaced while in use - to reinstall it, run " ..
+        "`lw self-update --force` from a different lw version"
+    end
+  end
 
-  local ok, err = paths.mkdirp(paths.data_dir())
+  local ok, err = paths.mkdirp(install)
   if not ok then return nil, "prepare data dir: " .. tostring(err) end
 
-  local tmpzip = paths.data_dir() .. "/.dl-" .. version .. ".zip"
+  local tmpzip = install .. "/.dl-" .. version .. ".zip"
   local okd, ed = download.fetch_to_file(base .. "/" .. bundle_name, tmpzip)
   if not okd then return nil, "fetch bundle: " .. ed end
 
   local okv, ev = verify.verify_artifact_file(tmpzip, bundle_name, manifest)
   if not okv then paths.rm_rf(tmpzip); return nil, "bundle verify: " .. ev end
 
-  local stage = paths.data_dir() .. "/.stage-" .. version
+  local stage = install .. "/.stage-" .. version
   paths.rm_rf(stage)
   local okx, ex = M.extract_zip(tmpzip, stage)
   paths.rm_rf(tmpzip)
@@ -557,7 +623,7 @@ function M.self_update(opts)
   local okr, er = M.rename_with_retry(stage, dest_dir)
   if not okr then paths.rm_rf(stage); return nil, "activate: " .. tostring(er) end
 
-  M.gc(3, version)
+  M.gc(3, version, opts.running_root)
   return { version = version, updated = true, dir = dest_dir,
     channel_overridden = channel_overridden }
 end

@@ -9,6 +9,7 @@
 --- @class loomworks.Core
 --- @field _deps table injected dependencies
 --- @field _workspace loomworks.Workspace|nil
+--- @field _refused_watch? loomworks.FileTracker watch on a file refused for trust (spec §17.4), reloading once it verifies
 --- @field _setup_error { root: string, message: string, trust?: { kind: "user"|"cache", status: string, path: string }, user_untrusted?: string, cache_untrusted?: boolean, user_version_mismatch?: boolean, newer?: boolean }|nil set when setup fails (`trust`: a refused `.nvim` file, spec §17.4; `newer`: a file with a newer schema, spec §2.7)
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _pending_root string|nil root passed to setup(), known before async init resolves
@@ -181,6 +182,8 @@ end
 function Core:setup(opts)
     if self._state == "initializing" then return end
 
+    -- A load (of this or another workspace) replaces any refusal.
+    self:_stop_refused_watch()
     self._setup_error = nil
     self._state = "initializing"
     self._deps.events.emit("workspace_initializing")
@@ -217,6 +220,14 @@ function Core:setup(opts)
         return
     end
 
+    -- The live workspace is being replaced: until this load completes (it
+    -- reads the files itself) the old one applies no file change — applying
+    -- one would save the working copy under the bytes this load read, leaving
+    -- the new workspace a stale baseline (spec §2.7). Resumed if the load fails
+    -- and the old workspace stays.
+    if self._workspace and self._workspace._tracker then
+        self._workspace._tracker:pause()
+    end
     self._deps.read_files_async(
         { paths.config, paths.user, paths.cache },
         function(results)
@@ -268,6 +279,35 @@ end
 --- @param paths table
 --- @param results table<string, string|nil>
 function Core:_on_files_read(root, paths, results)
+    -- `setup` paused the live workspace's tracker. On a normal return it is
+    -- either replaced (torn down) or resumed by `fail`; an error raised in
+    -- between would leave the kept workspace paused for good — resume it, then
+    -- rethrow.
+    local old = self._workspace
+    local ok, err = xpcall(self._load_files, function(e)
+        if type(e) == "string" and not e:find("stack traceback:", 1, true) then
+            return debug.traceback(e, 2)
+        end
+        return e
+    end, self, root, paths, results)
+    if not ok then
+        if old and self._workspace == old and old._tracker then
+            old._tracker:resume()
+        end
+        -- Leave `initializing` too, or every later `setup` returns early and
+        -- the workspace never loads again: a kept workspace stays live
+        -- (`initialized`), otherwise nothing is loaded.
+        self._state = self._workspace and "initialized" or "uninitialized"
+        self._deps.events.emit("workspace_changed", self._workspace)
+        error(err, 0)
+    end
+end
+
+--- Body of `_on_files_read`: assemble, validate and swap in the workspace.
+--- @param root string
+--- @param paths table
+--- @param results table<string, string|nil>
+function Core:_load_files(root, paths, results)
     local ws_mod = self._deps.workspace
 
     local function fail(msg, setup_error)
@@ -283,8 +323,13 @@ function Core:_on_files_read(root, paths, results)
             self._workspace:teardown()
             self._workspace = nil
         end
+        -- A workspace kept after a failed reload tracks its files again.
+        if self._workspace and self._workspace._tracker then
+            self._workspace._tracker:resume()
+        end
         self._setup_error = setup_error
         self._state = "uninitialized"
+        if setup_error and setup_error.trust then self:_watch_refused(setup_error) end
         self._deps.events.emit("workspace_changed", nil)
     end
 
@@ -479,6 +524,47 @@ function Core:_trust_error(root, data)
     return nil
 end
 
+--- Watch a file refused for trust (spec §17.4): when it becomes valid on
+--- disk (restored with its signature, or re-signed by `lw trust`), load the
+--- workspace again. A change that still does not verify is ignored, so an
+--- invalid file is never re-refused (and re-notified) in a loop. Only a host
+--- that tracks files itself keeps one (not the CLI, nor the daemon). Stopped
+--- by the next `setup` and by `shutdown`. Only the working copy is watched
+--- (a refused cache is reset, not restored).
+--- @param setup_error table the refusal (`{ root, trust = { kind, path } }`)
+function Core:_watch_refused(setup_error)
+    self:_stop_refused_watch()
+    if self._deps.quiet_trust_errors or self._deps.manual_file_tracking then return end
+    local t, root = setup_error.trust, setup_error.root
+    if t.kind ~= "user" then return end
+    local tracker
+    local function reload_if_valid(content)
+        if self._refused_watch ~= tracker then return end
+        if not content or self._deps.trust.verify(t.kind, content) ~= "valid" then return end
+        self:_stop_refused_watch()
+        self:setup({ root = root })
+    end
+    tracker = self._deps.FileTracker.new({
+        callback = function(_, content) reload_if_valid(content) end,
+        schedule = self._deps.schedule,
+        read_file = self._deps.io.read_file,
+    })
+    self._refused_watch = tracker
+    tracker:watch(t.path)
+    -- The watch takes its baseline from a fresh read: a file that became
+    -- valid since the refusing read would never report a change, so check
+    -- that baseline now.
+    local seeded = tracker:content(t.path)
+    self._deps.schedule(function() reload_if_valid(seeded) end)
+end
+
+--- Stop the watch on a file refused for trust, if any.
+function Core:_stop_refused_watch()
+    local tracker = self._refused_watch
+    self._refused_watch = nil
+    if tracker then tracker:stop() end
+end
+
 --- Read the working copy for review (spec §17.4 "trust"): its verification
 --- status, the exact content that trusting would sign, and the decoded data.
 --- @param root string
@@ -585,18 +671,63 @@ function Core:_retire_workspace()
 end
 
 --- The deletion half of `nuke_cache` (no reload): remove `.nvim/build/`, the
---- build cache (+ backup) and the health cache (+ backup), each checked to be
+--- build cache (+ backup), the health cache (+ backup) and the owned LSP
+--- database areas (`_nuke_lsp_db_areas`; a failed area check refuses the whole
+--- nuke in `_nuke_begin`), each checked to be
 --- under `root/.nvim/`. Shared by the editor's nuke and `lw nuke` (spec §17.4).
 --- Returns the normalized root when it ran (a failed rm is reported, and the
 --- reload shows what is left), nil when refused.
 --- @param root string
 --- @return string|nil norm_root
 function Core:_nuke_files(root)
+    local st, msg = self:_nuke_begin(root)
+    if not st then
+        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        return nil
+    end
+    return self:_nuke_run(st)
+end
+
+--- Would a nuke of `root` run now? Takes and at once releases what a nuke
+--- takes (the safety checks, the operation lock, the build locks), so a host
+--- can refuse BEFORE it lists what it would delete or asks to confirm (a
+--- refused nuke shows only its refusal). The editor passes
+--- `{ skip_own = true }`: its own builds are stopped by `nuke_cache` before
+--- the real acquisition. Returns true, or nil + the refusal message (no
+--- `loomworks:` prefix). When it would run, the third value lists the owned
+--- LSP database areas it would remove (spec §4.6), for the host's listing.
+--- @param root string
+--- @param opts? { skip_own?: boolean }
+--- @return boolean|nil ok, string|nil message, string[]|nil areas
+function Core:nuke_check(root, opts)
+    local st, msg = self:_nuke_begin(root, opts)
+    if not st then return nil, msg end
+    self:_nuke_release(st)
+    return true, nil, st.areas
+end
+
+--- Release what `_nuke_begin` took, deleting nothing (a declined or
+--- refused nuke). Idempotent.
+--- @param st table
+function Core:_nuke_release(st)
+    if not st or st.released then return end
+    st.released = true
+    for _, h in ipairs(st.held) do st.locks.build.release(h) end
+    st.locks.op.release(st.tok)
+end
+
+--- The first half of a nuke: the safety checks, then the locks in lock
+--- order (spec §19.3). Nothing is removed. Returns the state `_nuke_run`
+--- deletes under (the caller must run or release it), or nil + the refusal
+--- message (no `loomworks:` prefix; nothing held).
+--- @param root string
+--- @param opts? { skip_own?: boolean }
+--- @return table|nil state, string|nil message
+function Core:_nuke_begin(root, opts)
     -- Safety: root must be absolute (Unix /... or Windows C:/...)
     local norm_root = self._deps.normalize(root)
     if not norm_root:match("^/") and not norm_root:match("^%a:/") then
-        self._deps.notify("loomworks: nuke_cache requires an absolute path, got: " .. root, vim.log.levels.ERROR)
-        return nil
+        return nil, "nuke_cache requires an absolute path, got: " .. root
     end
 
     -- Safety: loomworks.json or the working copy must exist at root (confirms
@@ -604,31 +735,24 @@ function Core:_nuke_files(root)
     local config_path = norm_root .. "/loomworks.json"
     if not self._deps.io.read_file(config_path)
             and not self._deps.io.read_file(self._deps.user.filepath(norm_root)) then
-        self._deps.notify("loomworks: no loomworks.json or .nvim/loomworks.user.json found at "
-            .. norm_root .. ", aborting nuke", vim.log.levels.ERROR)
-        return nil
+        return nil, "no loomworks.json or .nvim/loomworks.user.json found at " .. norm_root .. ", aborting nuke"
     end
 
     local build_dir = norm_root .. "/.nvim/build"
     local cache_path = self._deps.cache.filepath(norm_root)
-    local cache_bak = cache_path .. ".bak"
     local health_path = norm_root .. "/.nvim/loomworks.health.json"
 
     -- Owned LSP database areas (spec §4.6, ui §1.11 check 4). A failed area
     -- check aborts the WHOLE nuke before anything is deleted.
     local areas, area_err = self:_nuke_lsp_db_areas(norm_root)
-    if not areas then
-        self._deps.notify("loomworks: " .. area_err .. ", aborting nuke", vim.log.levels.ERROR)
-        return nil
-    end
+    if not areas then return nil, area_err .. ", aborting nuke" end
 
     -- Safety: verify all paths are under root/.nvim/
-    local paths_to_delete = { build_dir, cache_path, cache_bak, health_path, health_path .. ".bak" }
+    local paths_to_delete = { build_dir, cache_path, cache_path .. ".bak", health_path, health_path .. ".bak" }
     for _, a in ipairs(areas) do paths_to_delete[#paths_to_delete + 1] = a end
     for _, p in ipairs(paths_to_delete) do
         if not self:_safe_nvim_path(p, norm_root) then
-            self._deps.notify("loomworks: refusing to delete path outside .nvim/: " .. p, vim.log.levels.ERROR)
-            return nil
+            return nil, "refusing to delete path outside .nvim/: " .. p
         end
     end
 
@@ -636,19 +760,27 @@ function Core:_nuke_files(root)
     -- lock of every build directory it removes — so a nuke refuses while a
     -- build runs instead of deleting under it. Nothing is removed on refusal.
     local locks = require("loomworks.op_lock").locks(self._deps, norm_root)
-    local op_lock = locks.op
-    local tok, lmsg = op_lock.acquire(norm_root, "nuke")
-    if not tok then
-        self._deps.notify("loomworks: cannot nuke: " .. lmsg, vim.log.levels.ERROR)
-        return nil
-    end
+    local tok, lmsg = locks.op.acquire(norm_root, "nuke")
+    if not tok then return nil, "cannot nuke: " .. tostring(lmsg) end
     if tok.recovered then self._deps.notify("loomworks: " .. tok.recovered, vim.log.levels.WARN) end
-    local held, berr = self:_nuke_build_locks(norm_root, build_dir, locks.build)
+    local held, berr = self:_nuke_build_locks(norm_root, build_dir, locks.build, opts)
     if not held then
-        op_lock.release(tok)
-        self._deps.notify("loomworks: " .. berr, vim.log.levels.ERROR)
-        return nil
+        locks.op.release(tok)
+        return nil, berr
     end
+    return { root = norm_root, build_dir = build_dir, cache_path = cache_path, health_path = health_path,
+        areas = areas, locks = locks, tok = tok, held = held }
+end
+
+--- The second half of a nuke, under the locks `_nuke_begin` took (released
+--- here). Returns the normalized root when it ran, nil when refused.
+--- @param st table
+--- @return string|nil norm_root
+function Core:_nuke_run(st)
+    local norm_root, build_dir, locks, held = st.root, st.build_dir, st.locks, st.held
+    local cache_path, health_path = st.cache_path, st.health_path
+    local areas = st.areas or {}
+    local cache_bak = cache_path .. ".bak"
 
     -- 1. The caches first (§15 invariant 1, deletion safety 4): once they are
     --    gone nothing claims a configured or built tree, whatever happens to
@@ -680,8 +812,7 @@ function Core:_nuke_files(root)
     if aside then
         targets[#targets + 1] = aside
     elseif rerr then
-        for _, h in ipairs(held) do locks.build.release(h) end
-        op_lock.release(tok)
+        self:_nuke_release(st)
         self._deps.notify("loomworks: cannot nuke: could not move .nvim/build aside (" .. rerr
             .. ") — close programs using files in it (the editor's build, a file explorer, a "
             .. "running program), then nuke again. The build caches were removed; the tree was "
@@ -694,6 +825,7 @@ function Core:_nuke_files(root)
     -- The lockfiles moved with the tree: nothing of theirs is left to release
     -- in `.nvim/build`; drop the handles.
     for _, h in ipairs(held) do locks.build.release(h) end
+    st.held = {}
 
     -- 3. Remove, keeping this process's event loop running so the operation
     --    lock heartbeats: a large tree must not look like a hung holder.
@@ -703,7 +835,7 @@ function Core:_nuke_files(root)
             self._deps.notify("loomworks: failed to delete build dir: " .. tostring(err), vim.log.levels.ERROR)
         end
     end
-    op_lock.release(tok)
+    self:_nuke_release(st)
     return norm_root
 end
 
@@ -791,8 +923,11 @@ function Core:_nuke_lock_dirs(build_dir)
     local function add(dir)
         local raw = tostring(dir):gsub("\\", "/")
         local k = normalize(raw)
-        if (k:sub(1, #build_dir + 1) == build_dir .. "/") and not seen[k] then
-            seen[k] = true
+        -- One folder spelled two ways (a scanned lockfile vs a unit's
+        -- build_dir) is one lock (spec §4.6): de-duplicate by identity.
+        local id = normalize(require("loomworks.dir_identity").resolve(raw, self._deps.realpath))
+        if (k:sub(1, #build_dir + 1) == build_dir .. "/") and not seen[id] then
+            seen[id] = true
             found[#found + 1] = { key = k, path = raw, shown = ".nvim/build" .. raw:sub(#build_dir + 1) }
         end
     end
@@ -823,20 +958,27 @@ function Core:_nuke_lock_dirs(build_dir)
 end
 
 --- Take the build lock of every directory `nuke` removes (canonical order,
---- skipping locks this process holds). Returns the handles, or nil + the
---- refusal message (nothing held).
+--- refusing a lock this process holds unless `opts.skip_own`). Returns the
+--- handles, or nil + the refusal message (nothing held).
 --- @param root string normalized workspace root
 --- @param build_dir string normalized `<root>/.nvim/build`
+--- @param build_lock? table
+--- @param opts? { skip_own?: boolean }
 --- @return table[]|nil handles, string|nil message
-function Core:_nuke_build_locks(root, build_dir, build_lock)
+function Core:_nuke_build_locks(root, build_dir, build_lock, opts)
     build_lock = build_lock or require("loomworks.op_lock").locks(self._deps, root).build
     local lock_break = require("loomworks.lock_break")
     local _ = root
     local dirs = self:_nuke_lock_dirs(build_dir)
     table.sort(dirs, function(a, b) return a.key < b.key end)
     local held = {}
+    -- The editor's check (`opts.skip_own`) passes over this process's own
+    -- builds: `nuke_cache` stops them before it takes the locks for real.
+    local skip_own = opts and opts.skip_own
     for _, e in ipairs(dirs) do
-        if build_lock.held_by_me(e.path) then
+        local mine = build_lock.held_by_me(e.path)
+        if mine and skip_own then goto continue end
+        if mine then
             -- A task of this very process still uses it (nuke_cache retires
             -- the workspace first, so this is some other holder here): never
             -- delete under it.
@@ -855,6 +997,7 @@ function Core:_nuke_build_locks(root, build_dir, build_lock)
             end
             held[#held + 1] = h
         end
+        ::continue::
     end
     return held
 end
@@ -975,9 +1118,34 @@ function Core:project_for_buf(bufnr)
     return best_project
 end
 
+--- `loomworks.view.Header/1`'s state built from the in-process model (spec
+--- §19.13 "Two sources, one shape"): the daemon's builder, without the
+--- session fields and ids only the daemon fills. A failed load reports as
+--- the daemon's `error_state` does (cli.lua).
+--- @return loomworks.ViewHeader
+function Core:view_header()
+    local ws = self._workspace
+    local e = not ws and self._setup_error or nil
+    local err
+    if e then
+        local kind = type(e.trust) == "table" and e.trust.kind or nil
+        err = { message = e.message, refused = (e.trust or e.newer or e.journal) and true or nil,
+            trust = (kind == "user" or kind == "cache") and kind or nil }
+    end
+    return require("loomworks.view_state").header(ws, err, { root = (ws and ws.root) or (e and e.root) or nil })
+end
+
+--- `loomworks.view.ProjectsIndex/1`'s state built from the in-process model
+--- (no ids; no projects when no workspace is loaded).
+--- @return loomworks.ViewProjectsIndex
+function Core:view_projects_index()
+    return require("loomworks.view_state").projects_index(self._workspace)
+end
+
 --- Detach the active workspace fully. Called on VimLeave-style shutdown.
 function Core:shutdown()
     local had = self._workspace ~= nil or self._pending_root ~= nil
+    self:_stop_refused_watch()
     if self._workspace then
         self._workspace:teardown()
         self._workspace = nil

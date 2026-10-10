@@ -5,6 +5,163 @@ they don't get lost.
 
 ---
 
+## `views.normalize` / `deps.normalize`: `vim.fs.normalize` expands `$VAR` and `~`
+
+`loomworks.views.normalize` (the separator-boundary match of `lw.buf_project`
+and `lw.buf_status`) and `deps.normalize` call `vim.fs.normalize`, which also
+expands environment variables (`$VAR`) and a leading `~`. A real path that
+contains `$` (e.g. `/src/a$b/...`) or starts with `~` is rewritten, so a buffer
+in such a project can mis-match (no project, or another one). Normalize
+separators, trailing slash and case only, e.g. `vim.fs.normalize(p, { expand_env = false })`
+where available, or a local implementation.
+
+## Split `cli.lua`: its main chunk is at Lua's 200-local limit
+
+`lua/loomworks/cli.lua`'s main chunk has reached Lua's limit of 200 local
+variables per function, so new top-level helpers must be `M.` fields (e.g.
+`M._interrupt_intercept`, step 5i PR F) or locals inside functions. Split the
+file into modules (e.g. the daemon delegation `_delegate*` / `_routed_*`, the
+interrupt handling, the per-command handlers) so the limit stops shaping the
+code.
+
+## Stable channel: resolve by highest version, not `/releases/latest`
+
+The stable update channel (lw self-update, `lw release query --channel
+stable`, and through it the editor's `binary.channel = "stable"`) resolves via
+GitHub's `/releases/latest`, which is the most recently *published* full
+release, not the highest version. A hotfix backported to an older release line
+and published after a newer stable release would become "latest", so the
+channel would offer a downgrade (or skip the newer stable). Resolve stable by
+listing releases and taking the highest non-prerelease version (spec 16.29
+ordering), as the unstable channel already does since #166.
+
+## `lw launch add` for build-target launches (LumeEditor request)
+
+`lw launch add` can only create command launch configs. LumeEditor asked for
+a target-kind form that creates a build-target launch (the executable of a
+project target, like the editor's launch editor does), e.g. `lw launch add
+<name> --target <project>:<target>`. Needs: the CLI surface, validation that
+the target exists in the active profile's configuration, and the same
+publish/intent defaults as the other CLI-created launch configs.
+
+## Daemon step 5d: route `lw reset`
+
+Decided 2026-10-05: `lw reset` shares build directories with build and clean,
+so it moves into the workspace daemon after step 5c, using the confirmation
+rule from spec/core/daemon.md section 19.15 (the client asks first and the
+request carries the answer). A standalone `lw configure` command was
+considered and not added: configuring stays a step of `lw build`
+(`--reconfigure` forces it).
+
+## Daemon follow-ups (after step 5e)
+
+- `lw daemon stop` on a daemon that is already retiring still triggers the
+  editor's relaunch (needs a stopping broadcast).
+- The successor launched after a version retirement is often the version
+  just retired: one wasted start per retirement.
+- Daemon log lines include the client name/version unescaped (newline
+  injection into the log).
+- `lw trust --discard` from the CLI does not make the editor reload.
+- Idea: show client-executed runs (the daemon only prepares `lw run`; its
+  task ends before the program exits) in `lw status` and the status page.
+- An attached selection whose runtime lock is held on another host still
+  runs in-process with only the "could not take" line; decide whether it
+  should wait and fail busy.
+- No end-to-end test for an attached device run found by probing (the
+  device stubs are in-process only).
+- `ensure.meet` with `no_launch` is only tested through a mocked meet.
+- Editor retirement after an editor stall: the unanswered-status bound is
+  one `retire_check_ms` tick (30 s default,
+  `lua/loomworks/daemon/observer.lua` ~883-929), so an editor event-loop
+  stall of 30 s or more while a status is in flight ends the retire wait for
+  that session (the daemon stays observed / editor runs in-process; nothing
+  breaks). Changing it is a spec 19.16 change; consider measuring from the
+  reply time or allowing one missed tick.
+- Relay progress line (step 5i PR G follow-up): a `daemon run --stdio`
+  relay reports nothing while it waits (attached run's lock, starting
+  daemon, retiring daemon, `--no-launch` wait), so the editor shows only a
+  generic note per relay form (spec/core/daemon.md section 19.16 "Waiting
+  notes"). Add a machine-readable progress line on the relay's stderr (what
+  it is waiting on, e.g. the retiring daemon's pid:start_time) so the
+  Runtime line can say what is happening. (Naming the retiring instance on
+  exit 14 is no longer open: spec section 19.10 "Retiring-instance line"
+  specifies it, and the editor passes it to `--retiring`.)
+- Behind a pin-redirect wrapper (the global `lw` redirecting to the
+  repository's pinned release) the editor's relay is a wrapper process
+  whose child is the real relay. The KILL_MS backstop (spec section 19.16
+  "The relay process") plain-kills only the wrapper's own pid, so a hung
+  inner relay is left running. Still rule-safe (never a tree kill, the
+  shared daemon is untouched); fix by having the wrapper end its child when
+  its own standard input closes or it is killed (e.g. a job object on
+  Windows), or by exec-ing the pinned relay where the platform allows.
+- `lw daemon status` is itself a connection (step 5r PR D follow-up): its
+  close restarts the idle clock, so the shown `idle_deadline` is always about
+  one idle timeout away (spec/core/daemon.md section 19.11 "Idle deadline").
+  Option: status-only connections do not count as activity; that is a
+  section 19.11 lifetime change ("Idle exit") and needs a decision.
+- Put `idle_timeout` in the daemon handle (`.nvim/loomworks.daemon.json`,
+  section 19.6, which already carries `idle_since`) so `lw daemon list` can
+  show each daemon's deadline (`idle_since + idle_timeout`) without
+  connecting.
+- Add a `loomworks.Root/1` transcript case for the `retiring` signal so it
+  can leave the guard's `transcripts_uncovered` exceptions
+  (`tests/split/allowlist.lua`). `objects_changed` stays there until a module
+  mounts objects (step 5q) and a transcript can show one appearing.
+- `view.Header/1` (step 5j): every views check while a client is subscribed
+  recomputes `ws:diagnostics()` for the header's `diagnostics` field. Cache
+  the level by model generation so an unchanged workspace costs nothing.
+
+## Lock record follow-ups (PR #180, atomic lock create/update)
+
+- Crash-leftover temps are never cleaned up: a process killed between
+  writing `<lock file>.new.<hex>` and removing it leaves `*.lock.new.<hex>` /
+  `*.loomworks-lock.new.<hex>` behind for good. Candidate: housekeeping
+  treats a name matching `%.lock%.new%.%x+$` (and the `.loomworks-lock`
+  form) as a transient temp, like the `.reclaim.` temps. This is a
+  deletion-safety change and needs the mandatory review (CLAUDE.md).
+- NFS: a retried `link` may return EEXIST after it actually succeeded (the
+  reply to the first attempt was lost), so the creator thinks the lock is
+  held by someone else while the lock file carries its own record; the lock
+  stays self-held until the process exits (or its heartbeat stops and it
+  goes stale). Consider comparing the existing record's nonce with ours on
+  EEXIST.
+- A lock file with no host recorded (empty, still being written) could get
+  its own "being written" state: held, not reclaimable, and a `--no-launch`
+  relay retries instead of exiting 13 with "runs on another host (?, pid ?)".
+  Spec change (spec/core/daemon.md section 19.5); deferred pending the
+  user's decision.
+
+## Two meanings of "clean"
+
+The editor's `C` action deletes the build directory and resets the unit to
+unconfigured (spec section 4.7), while `lw clean` runs the build system's own
+clean target. Decide whether to align the names or the behaviour.
+
+## Daemon tasks in overseer and build messages
+
+Decided 2026-10-05: in daemon observer mode, a CLI-started (remote) task shows
+in fidget, lualine and the status page, with its output, but not in overseer's
+task list, and its output is not parsed into the quickfix list or diagnostics
+(spec/core/daemon.md §19.16). Design both together in the step where editor
+operations themselves run in the daemon: then the editor's own builds leave
+overseer too unless daemon tasks can appear there.
+
+---
+
+## Withheld clangd (§9.8) when LSP moves into the daemon (step 5l)
+
+Merged from master (#192) into staging/daemon: the per-buffer withheld states
+(`lsp_buf_state`, `lsp_buf_state_changed`, `workspace_closed`) and the
+`db_state` of `lsp_configs` entries are decided by the editor's LSP layer from
+its in-process model, in every mode, as all LSP wiring is until step 5l
+(spec/core/daemon.md §19.13). `buf_status().lsp` is added by the editor on top
+of the two views. When step 5l moves LSP to the daemon, `loomworks.LspConfig/1`
+(`/lsp`) must carry each entry's `db_state` (and the editor must re-evaluate
+withheld buffers on its `changed` updates) so a configure run in the daemon
+starts or withholds clangd exactly as in-process. Not designed yet.
+
+---
+
 ## qmlls on an unconfigured build directory
 
 qmlls still gets `-b <unconfigured build dir>` when the active unit is not
@@ -407,6 +564,14 @@ Open follow-ups:
   a checkout that switches branches between pins (or a launcher-only user who
   never runs update) keeps accumulating them. Health reports them; the
   launcher could prune on a fresh fetch.
+- **Launcher "written by" label mixes a beta range with a stable pin.**
+  `lw bootstrap install` reports old launchers as "written by lw
+  0.1.36-beta.1-0.1.37-beta.1" (the range of versions with byte-identical
+  launcher content, from `boot/launcher.lua` GENERATIONS) even when
+  `lw.pin` is stable 0.1.36, so a stable pin looks like it sits beside beta
+  launchers. Prefer the stable version name in the range, and say plainly
+  when the launchers match the pin's own generation. (Reported by the
+  reactive repo during its 0.1.36 -> 0.1.43 repin.)
 - The per-user pinned cache (`<data>/loomworks/pinned/`) is still never GC'd
   (see the note under Workspace trust). The standalone suite runs in
 CI on Linux only, so the dynamic `lw.cmd` tests (retry, PATH shadowing) run only
@@ -476,6 +641,18 @@ implementations of the committed-ignore rule. Follow-ups:
   'nothing to pull'" failed once in a full local run ("not in a git
   repository") and passes alone; likely cwd/env leakage from another spec.~~
   DONE (#80): the cause was a slow git probe read as "git missing".
+- `tests/daemon_readonly_cli_spec.lua:260` ("lw status over the projection
+  shows the daemon's running task") shows "running tasks: unavailable
+  (timeout)" under parallel load / on the Windows CI runner; passes alone.
+  Seen on PR #168 CI and a local `make test`. Make the wait robust.
+  Failed once more on Windows CI on PR #175 ("running tasks: unavailable
+  (timeout)"), passed on rerun.
+- Standalone bootstrap tests (Windows): "the helper's children are
+  enumerated" failed with (0) on PR #177 (run 37891094721), passed on
+  rerun.
+- `tests/daemon_reset_cli_spec.lua` "every case: the same output..." failed
+  once on Windows CI (PR #171 run 37734890114, docs-only change), passed on
+  rerun.
 
 ### `lw health fix <n>` (deferred, user idea)
 

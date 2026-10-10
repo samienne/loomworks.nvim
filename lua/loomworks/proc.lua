@@ -306,6 +306,157 @@ local function snapshot()
     return list
 end
 
+--- An ASCII rendering of a NUL-terminated UTF-16 buffer (non-ASCII → `?`):
+--- enough to match the executable names lw looks for.
+local function ascii_of(w, max)
+    local t = {}
+    for i = 0, max - 1 do
+        local c = tonumber(w[i])
+        if c == 0 then break end
+        t[#t + 1] = c < 128 and string.char(c) or "?"
+    end
+    return table.concat(t)
+end
+
+local _mac_list
+local function mac_list()
+    if _mac_list ~= nil then return _mac_list or nil end
+    _mac_list = false
+    local ffi = ffi_mod()
+    if not ffi or OS ~= "OSX" then return nil end
+    cdef("int proc_listallpids(void* buffer, int buffersize);")
+    cdef("int proc_name(int pid, void* buffer, uint32_t buffersize);")
+    local ok = pcall(function() return ffi.C.proc_listallpids and ffi.C.proc_name end)
+    _mac_list = ok and ffi or false
+    return _mac_list or nil
+end
+
+--- Test seam: replace the process listing (`fn() -> { pid, name }[]`).
+M._processes_probe = nil
+
+--- The processes of this host with their executable base names, for the
+--- daemon scan (spec §19.6.1): `{ pid, name }[]`. Windows: one Toolhelp
+--- snapshot (`szExeFile`); Linux: the `/proc` entries owned by this uid
+--- (`comm`, at most 15 characters); macOS: `proc_listallpids` + `proc_name`
+--- (fallback `ps -x -o pid=,comm=`). Names are as the OS reports them (a path
+--- on the `ps` fallback); callers take the base name.
+--- @return { pid: integer, name: string }[]
+function M.processes()
+    if M._processes_probe then return M._processes_probe() end
+    local list = {}
+    if OS == "Windows" then
+        local ffi = win()
+        if not ffi then return list end
+        local snap = ffi.C.CreateToolhelp32Snapshot(2, 0) -- TH32CS_SNAPPROCESS
+        if is_null(snap) or ffi.cast("intptr_t", snap) == -1 then return list end
+        local pe = ffi.new("lw_PROCESSENTRY32W")
+        pe.dwSize = ffi.sizeof("lw_PROCESSENTRY32W")
+        local ok = ffi.C.Process32FirstW(snap, pe)
+        while ok ~= 0 do
+            list[#list + 1] = { pid = tonumber(pe.th32ProcessID), name = ascii_of(pe.szExeFile, 260) }
+            ok = ffi.C.Process32NextW(snap, pe)
+        end
+        ffi.C.CloseHandle(snap)
+        return list
+    end
+    if OS == "Linux" then
+        local req = uv().fs_scandir("/proc")
+        if req then
+            local me = uv().getuid and uv().getuid() or nil
+            while true do
+                local name = uv().fs_scandir_next(req)
+                if not name then break end
+                local pid = tonumber(name)
+                if pid then
+                    local st = uv().fs_stat("/proc/" .. name)
+                    if st and (me == nil or st.uid == me) then
+                        local f = io.open("/proc/" .. name .. "/comm", "r")
+                        if f then
+                            local comm = (f:read("*l") or ""):gsub("%s+$", "")
+                            f:close()
+                            list[#list + 1] = { pid = pid, name = comm }
+                        end
+                    end
+                end
+            end
+            return list
+        end
+    end
+    local ffi = mac_list()
+    if ffi then
+        local n = ffi.C.proc_listallpids(nil, 0)
+        if n > 0 then
+            local cap = n + 64
+            local pids = ffi.new("int[?]", cap)
+            n = ffi.C.proc_listallpids(pids, cap * 4)
+            if n > 0 then
+                local buf = ffi.new("char[?]", 256)
+                for i = 0, math.min(n, cap) - 1 do
+                    local pid = tonumber(pids[i])
+                    if pid > 0 then
+                        local len = ffi.C.proc_name(pid, buf, 256)
+                        if len > 0 then list[#list + 1] = { pid = pid, name = ffi.string(buf, len) } end
+                    end
+                end
+                return list
+            end
+        end
+    end
+    local p = io.popen("ps -x -o pid= -o comm= 2>/dev/null")
+    if p then
+        for line in p:lines() do
+            local a, b = line:match("^%s*(%d+)%s+(.-)%s*$")
+            if a then list[#list + 1] = { pid = tonumber(a), name = b } end
+        end
+        p:close()
+    end
+    return list
+end
+
+local _clk_tck
+--- The wall-clock time (seconds since the epoch) a start-time value of this
+--- OS's method denotes, or nil (another method, or not computable).
+--- @param st string|nil
+--- @return number|nil
+function M.start_epoch(st)
+    if type(st) ~= "string" then return nil end
+    local w = st:match("^win:(%d+)$")
+    if w then return tonumber(w) / 1e7 - 11644473600 end
+    local s, us = st:match("^mac:(%d+)%.(%d+)$")
+    if s then return tonumber(s) + (tonumber(us) or 0) / 1e6 end
+    local boot, ticks = st:match("^linux:([^:]+):(%d+)$")
+    if boot and OS == "Linux" then
+        _boot = _boot or linux_boot_id()
+        if boot ~= _boot then return nil end
+        local f = io.open("/proc/stat", "r")
+        if not f then return nil end
+        local btime = tonumber(((f:read("*a") or ""):match("\nbtime%s+(%d+)")))
+        f:close()
+        if not btime then return nil end
+        if _clk_tck == nil then
+            _clk_tck = 100
+            local ffi = ffi_mod()
+            if ffi then
+                cdef("long sysconf(int name);")
+                local ok, v = pcall(function() return tonumber(ffi.C.sysconf(2)) end) -- _SC_CLK_TCK
+                if ok and v and v > 0 then _clk_tck = v end
+            end
+        end
+        return btime + tonumber(ticks) / _clk_tck
+    end
+    return nil
+end
+
+--- Every process's parent, from one snapshot: `{ [pid] = ppid }`.
+--- @return table<integer, integer>
+function M.parents()
+    local out = {}
+    for _, e in ipairs(snapshot()) do
+        if e.pid and e.ppid and e.pid ~= e.ppid then out[e.pid] = e.ppid end
+    end
+    return out
+end
+
 --- The descendants of `pid` (children first-level first), from one snapshot,
 --- each with the start time it had then: `{ pid, start }`. A descendant whose
 --- start time cannot be read is left out — it is never signalled unverified.
@@ -687,16 +838,18 @@ function M.is_lw(args)
 end
 
 --- Is this command line `lw … daemon run` — for `root` when it names one
---- with `--root`?
+--- with `--root <dir>` or `--root=<dir>`?
 --- @param args string[]
 --- @param root? string
 --- @return boolean
 function M.is_daemon_for(args, root)
     if not M.is_lw(args) then return false end
     local run, named
-    for i = 1, #args - 1 do
-        if args[i] == "daemon" and args[i + 1] == "run" then run = true end
-        if args[i] == "--root" then named = args[i + 1] end
+    for i = 1, #args do
+        local a = args[i]
+        if a == "daemon" and args[i + 1] == "run" then run = true end
+        if a == "--root" then named = args[i + 1]
+        elseif type(a) == "string" and a:sub(1, 7) == "--root=" then named = a:sub(8) end
     end
     if not run then return false end
     if named and root then

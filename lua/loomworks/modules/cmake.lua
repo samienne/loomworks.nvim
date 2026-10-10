@@ -378,8 +378,12 @@ local function wrap_cmd(cmd, kit, generator, build_dir, tag, env)
         -- argv is identical under both spawning conventions (the editor's job
         -- runner hands cmd.exe its arguments verbatim; the standalone host
         -- quotes them). cmake spec §14.
-        local out_env = {}
-        for k, v in pairs(env or {}) do out_env[k] = v end
+        -- The Visual Studio Installer folder goes on the batch's PATH (when it
+        -- exists, once): vcvarsall runs `vswhere.exe` by bare name and would
+        -- otherwise print "'vswhere.exe' is not recognized" on every step.
+        -- Added here, in the step env, so in-process and daemon-routed runs
+        -- both get it.
+        local out_env = require("loomworks.msvc").with_installer_path(env)
         out_env[M.VCVARS_BAT_ENV] = (bat_path:gsub("/", "\\"))
         return { "cmd", "/d", "/v:on", "/c", "!" .. M.VCVARS_BAT_ENV .. "!" }, out_env,
             vim.list_extend({}, cmd)

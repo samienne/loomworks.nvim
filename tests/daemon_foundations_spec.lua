@@ -41,10 +41,14 @@ describe("runtime mode (§19.1)", function()
     end)
     it("the plugin option resolves the same way and is inert", function()
         local lw = require("loomworks")
-        local saved = lw._runtime_mode_config
+        local saved, saved_ci = lw._runtime_mode_config, vim.env.CI
+        vim.env.CI = nil
         lw._runtime_mode_config = "daemon"
-        assert.equals("daemon", lw.runtime_mode())
+        local mode, source = lw.runtime_mode()
         lw._runtime_mode_config = saved
+        vim.env.CI = saved_ci
+        assert.equals("daemon", mode)
+        assert.equals("setup", source)
     end)
 end)
 
@@ -178,6 +182,8 @@ describe("Runtime row and lw daemon status (§19.6, §19.11)", function()
         local st = inspect.state(root)
         assert.equals("stale", st.kind)
         assert.truthy(inspect.row(st, "daemon"):find("stale daemon handle (pid " .. h.pid, 1, true))
+        -- The hint names the self-recovery, not only `lw daemon stop`.
+        assert.truthy(inspect.row(st, "daemon"):find("the next workspace command recovers it", 1, true))
     end)
 
     it("names a daemon on another host and an attached run", function()
@@ -241,5 +247,8 @@ describe("test isolation", function()
         assert.equals(1, vim.fn.stridx(dpaths.state_dir(), base) + 1)
         local cfg = H.is_win and os.getenv("APPDATA") or os.getenv("XDG_CONFIG_HOME")
         assert.equals(base .. "/config", cfg)
+        -- The machine-level tool cache (spec §16.43) is the run's own too.
+        local tc_dir = require("loomworks.tool_cache").dir()
+        assert.equals(1, vim.fn.stridx(tc_dir, base .. "/cache/") + 1, tc_dir)
     end)
 end)

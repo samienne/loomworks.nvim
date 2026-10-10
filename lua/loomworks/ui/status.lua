@@ -17,20 +17,23 @@ local M = {}
 local function render_fn(tree)
     local lw = require("loomworks")
     local ws = lw.get_workspace()
+    -- The header reads `loomworks.view.Header/1` (spec §19.13 "Two sources,
+    -- one shape"): the daemon's while the editor is subscribed to it,
+    -- otherwise built in-process.
+    local hdr = lw.view_header() or { state = "unloaded" }
     if not ws then
-        local err = lw.get_setup_error()
-        if err then
+        if hdr.state == "error" or hdr.state == "refused" then
             tree._level = 1
             tree:leaf("loomworks.nvim " .. lw._version, "Title")
             tree:blank()
             tree:leaf("Failed to load workspace", "DiagnosticError")
-            tree:leaf("Root: " .. err.root, "Comment")
+            tree:leaf("Root: " .. tostring(hdr.root or ""), "Comment")
             tree:blank()
-            tree:leaf(err.message, "DiagnosticWarn")
-            if err.trust then
+            tree:leaf(tostring(hdr.error or ""), "DiagnosticWarn")
+            if hdr.trust then
                 -- A refused .nvim file (spec §17.4): its actions.
                 tree:blank()
-                if err.trust.kind == "user" then
+                if hdr.trust == "user" then
                     tree:leaf("[T] review & trust  [U] discard working copy", "Comment")
                 else
                     tree:leaf("[<C-n>] reset build cache", "Comment")
@@ -51,8 +54,17 @@ local function render_fn(tree)
 
     tree:leaf("loomworks.nvim " .. lw._version, "Title")
     tree:blank()
-    tree:leaf("Workspace: " .. ws.name, "Type")
-    tree:leaf("Root:      " .. ws.root, "Comment")
+    if hdr.state == "loaded" then
+        tree:leaf("Workspace: " .. tostring(hdr.name or ""), "Type")
+    elseif hdr.state == "unloaded" then
+        -- The workspace daemon has not loaded the workspace yet (it loads on
+        -- the first request that needs it).
+        tree:leaf("Workspace: not loaded in the workspace daemon", "Comment")
+    else
+        tree:leaf("Workspace: the workspace daemon could not load it: " .. tostring(hdr.error or hdr.state),
+            "DiagnosticWarn")
+    end
+    tree:leaf("Root:      " .. tostring(hdr.root or ws.root), "Comment")
     -- Banner when loomworks.json is missing on disk: the workspace still
     -- functions from user.json, and :w will publish it.
     local config_path = ws.root .. "/loomworks.json"
@@ -61,6 +73,12 @@ local function render_fn(tree)
             "DiagnosticWarn")
     end
     tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
+    -- The header's last line (spec/ui.md §1.1, core §19.1, §19.16): the
+    -- runtime mode, its source and the observer's state or one current note.
+    local runtime_line, runtime_warn = lw.daemon_runtime_line()
+    if runtime_line then
+        tree:leaf("Runtime:   " .. runtime_line, runtime_warn and "DiagnosticWarn" or "Comment")
+    end
     tree:blank()
 
     local active_set = lw.get_active_configuration_set()
@@ -79,7 +97,7 @@ local function render_fn(tree)
     -- Suggestions (spec/ui.md §1.1): a single compact advisory line pointing at
     -- `lw health`, shown only when the framework has findings. Not a diagnostic
     -- — it never gates anything; the page keeps only the count.
-    local ws_obj = lw.get_workspace()
+    local ws_obj = ws
     if ws_obj then
         -- Count only ACTIONABLE items — an affirmative "using <cache>" info item
         -- shows in `lw health`, never inflates this nag count (headless §16.31).
@@ -204,6 +222,11 @@ local view = View.new({
         "operation_started",
         "operation_finished",
         "profile_renamed",
+        "daemon_runtime_changed",
+        "daemon_view_changed",
+        "daemon_task_started",
+        "daemon_task_progress",
+        "daemon_task_stopped",
     },
 })
 
@@ -277,6 +300,9 @@ function M.close()
 end
 function M.toggle()  view:toggle() end
 function M.refresh() view:refresh() end
+
+--- Test seam: the render function (assembles the page into a Tree).
+M._render_fn = render_fn
 
 function M.is_open()
     return view:is_open()

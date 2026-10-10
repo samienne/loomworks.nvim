@@ -1,0 +1,109 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Root",
+  "version": 1,
+  "description": "Object / (spec 19.20 'The root object'): the private-pipe handshake, describe, schema, subscribe and unsubscribe, and the envelope's transport errors.",
+  "cases": [
+    {
+      "name": "hello is answered by welcome with the objects",
+      "handshake": false,
+      "steps": [
+        { "send": { "kind": "hello", "protocol": 11, "protocol_min": 10, "nonce": "0000000000000000000000000000000000000000000000000000000000000000", "lw_version": { "$var": "lw_version" }, "client": "cli" } },
+        { "expect": {
+            "kind": "welcome",
+            "header": {
+              "root": { "$type": "string" },
+              "pid": { "$type": "integer" },
+              "lw_version": { "$var": "lw_version" },
+              "session_generation": { "$type": "integer" },
+              "state": "unloaded"
+            },
+            "objects": { "$contains": [
+              { "path": "/", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Root", "versions": { "$contains": [1] }, "schema_digest": { "$absent": true } } ] } },
+              { "path": "/workspace", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Workspace", "versions": { "$contains": [1] } } ] } },
+              { "path": "/tasks", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Tasks", "versions": { "$contains": [1] } } ] } },
+              { "path": "/internal", "owner": "core", "interfaces": { "$contains": [ { "name": "lw.internal.Snapshot", "versions": { "$contains": [1] }, "same_build": true, "internal": true } ] } }
+            ] }
+        } }
+      ]
+    },
+    {
+      "name": "describe reports subscription delivery",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "describe", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "delivery": "subscription" } } }
+      ]
+    },
+    {
+      "name": "describe names the binary, the transport range, the objects with digests and the root methods",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "describe", "args": {} } },
+        { "expect": {
+            "kind": "ok", "req_id": 1,
+            "result": {
+              "binary": { "lw_version": { "$var": "lw_version" }, "impl": { "$type": "string" }, "dev": { "$type": "boolean" } },
+              "transport": { "min": 10, "max": 11 },
+              "session_generation": { "$var": "welcome.header.session_generation" },
+              "root_methods": { "$contains": ["describe", "schema", "subscribe", "unsubscribe"] },
+              "objects": { "$contains": [
+                { "path": "/", "interfaces": { "$contains": [ { "name": "loomworks.Root", "versions": { "$contains": [1] }, "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
+                { "path": "/workspace", "interfaces": { "$contains": [ { "name": "loomworks.Workspace", "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
+                { "path": "/tasks", "interfaces": { "$contains": [ { "name": "loomworks.Tasks", "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
+                { "path": "/internal", "interfaces": { "$contains": [ { "name": "lw.internal.Snapshot", "same_build": true } ] } },
+                { "path": "/build", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Build", "versions": { "$contains": [1] }, "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
+                { "path": "/tests", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Tests", "versions": { "$contains": [1] } } ] } },
+                { "path": "/launch", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Launch", "versions": { "$contains": [1] } } ] } },
+                { "path": "/toolchains", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Toolchains", "versions": { "$contains": [1] } } ] } },
+                { "path": "/profiles", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Profiles", "versions": { "$contains": [1] } } ] } }
+              ] }
+            }
+        } }
+      ]
+    },
+    {
+      "name": "schema serves a mounted interface and a types-only document, and names the versions it has",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "schema", "args": { "iface": "loomworks.Tasks", "v": 1 } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "interface": "loomworks.Tasks", "version": 1, "methods": { "list": { "$type": "object" }, "cancel": { "$type": "object" } } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "schema", "args": { "iface": "loomworks.Common", "v": 1 } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "interface": "loomworks.Common", "types_only": true } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "schema", "args": { "iface": "loomworks.Workspace", "v": 9 } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "unsupported_version", "data": { "versions": [1] } } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "schema", "args": { "iface": "nobody.Nothing", "v": 1 } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "unknown_interface", "message": { "$type": "string" } } } }
+      ]
+    },
+    {
+      "name": "a call that cannot be routed or whose args are invalid is a transport error",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/nowhere", "iface": "loomworks.Root", "v": 1, "method": "describe", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 1, "error": { "code": "unknown_object" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tasks", "iface": "loomworks.Workspace", "v": 1, "method": "header", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "unknown_interface" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/tasks", "iface": "loomworks.Tasks", "v": 2, "method": "list", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "unsupported_version", "data": { "versions": [1] } } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "frobnicate", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "unknown_method" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "schema", "args": { "v": 1 } } },
+        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args", "message": { "$type": "string" } } } }
+      ]
+    },
+    {
+      "name": "subscribe returns the seq baseline; a signal or args it does not declare is invalid; unsubscribe always succeeds",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1 } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub", "$type": "string" }, "seq": 0, "initial": { "$absent": true } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["nothing_like_this"] } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "args": { "x": 1 } } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/nowhere", "iface": "loomworks.Workspace", "v": 1 } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "unknown_object" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "unsubscribe", "args": { "sub_id": { "$var": "sub" } } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "$exact": {} } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "unsubscribe", "args": { "sub_id": "no-such-subscription" } } },
+        { "expect": { "kind": "ok", "req_id": 6 } }
+      ]
+    }
+  ]
+}

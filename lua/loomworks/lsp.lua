@@ -865,10 +865,11 @@ set_buf_state = function(bufnr, server, status)
     if t[server] == status then return end
     t[server] = status
     vim.schedule(function()
-        local ok_ev, events = pcall(require, "loomworks.events")
-        if ok_ev then
-            pcall(events.emit, "lsp_buf_state_changed",
-                { bufnr = bufnr, server = server, state = status })
+        -- Through the plugin facade (no direct require of the event bus:
+        -- tests/split/allowlist.lua ratchet 1).
+        local lw = package.loaded["loomworks"]
+        if type(lw) == "table" and type(lw._emit_lsp_buf_state) == "function" then
+            pcall(lw._emit_lsp_buf_state, { bufnr = bufnr, server = server, state = status })
         end
         pcall(vim.cmd, "redrawstatus")
     end)

@@ -76,6 +76,134 @@ describe("FileTracker", function()
         end)
     end)
 
+    describe("sync", function()
+        it("reads every watched file before delivering, inside one batch (spec §2.7)", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1", ["/c"] = "c1" }
+            local tracker, seen, batches
+            tracker = FileTracker.new({
+                callback = function(path, content)
+                    -- While /a is applied, /b already reads as its new bytes.
+                    seen[#seen + 1] = { path, content, tracker:content("/b") }
+                end,
+                batch = function(deliver) batches = batches + 1; deliver() end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b"); tracker:watch("/c")
+            seen, batches = {}, 0
+            tracker:sync()
+            assert.equals(0, batches)
+            disk["/a"], disk["/b"] = "a2", "b2"
+            tracker:sync()
+            assert.equals(1, batches)
+            assert.same({ { "/a", "a2", "b2" }, { "/b", "b2", "b2" } }, seen)
+        end)
+
+        it("skips a change an earlier callback already wrote (mark_written)", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1" }
+            local tracker, seen
+            tracker = FileTracker.new({
+                callback = function(path, content)
+                    seen[#seen + 1] = path
+                    if path == "/a" then disk["/b"] = "b3"; tracker:mark_written("/b", "b3") end
+                end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b")
+            seen = {}
+            disk["/a"], disk["/b"] = "a2", "b2"
+            tracker:sync()
+            assert.same({ "/a" }, seen)
+            assert.equals("b3", tracker:content("/b"))
+        end)
+
+        it("a callback that throws leaves the undelivered changes for the next sync", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1" }
+            local seen, fail = {}, true
+            local tracker = FileTracker.new({
+                callback = function(path, content)
+                    if path == "/a" and fail then error("remerge failed") end
+                    seen[#seen + 1] = { path, content }
+                end,
+                batch = function(deliver) deliver() end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b")
+            disk["/a"], disk["/b"] = "a2", "b2"
+            local ok, err = pcall(tracker.sync, tracker)
+            assert.is_false(ok)
+            assert.truthy(tostring(err):find("remerge failed", 1, true))
+            assert.same({}, seen)
+            -- Neither change was applied: the next sync delivers both.
+            fail = false
+            tracker:sync()
+            assert.same({ { "/a", "a2" }, { "/b", "b2" } }, seen)
+        end)
+
+        it("a paused tracker delivers nothing until resumed", function()
+            local disk = { ["/a"] = "a1" }
+            local seen = {}
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a")
+            tracker:pause()
+            disk["/a"] = "a2"
+            tracker:sync()
+            assert.same({}, seen)
+            assert.equals("a1", tracker:content("/a"))
+            tracker:resume()
+            tracker:sync()
+            assert.same({ { "/a", "a2" } }, seen)
+        end)
+
+        it("a change seen while paused is delivered after resume, with no further change", function()
+            local disk = { ["/a"] = "a1" }
+            local seen, queued = {}, {}
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                schedule = function(fn) queued[#queued + 1] = fn end,
+            })
+            tracker:watch("/a")
+            tracker:pause()
+            disk["/a"] = "a2"
+            -- The poll that saw the change fires while paused: nothing delivered.
+            tracker:sync()
+            assert.same({}, seen)
+            tracker:resume()
+            -- No further stat change (so no further poll): resume itself
+            -- schedules the deferred sync.
+            for _, fn in ipairs(queued) do fn() end
+            tracker:stop()
+            assert.same({ { "/a", "a2" } }, seen)
+        end)
+
+        it("a throw after some deliveries re-delivers only the rest", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1", ["/c"] = "c1" }
+            local seen, fail = {}, true
+            local tracker = FileTracker.new({
+                callback = function(path, content)
+                    if path == "/b" and fail then error("boom") end
+                    seen[#seen + 1] = { path, content }
+                end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b"); tracker:watch("/c")
+            disk["/a"], disk["/b"], disk["/c"] = "a2", "b2", "c2"
+            assert.is_false(pcall(tracker.sync, tracker))
+            assert.same({ { "/a", "a2" } }, seen)
+            fail = false
+            tracker:sync()
+            assert.same({ { "/a", "a2" }, { "/b", "b2" }, { "/c", "c2" } }, seen)
+        end)
+    end)
+
     describe("stop", function()
         it("clears all watches", function()
             local tracker = FileTracker.new({

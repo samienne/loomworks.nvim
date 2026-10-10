@@ -3,7 +3,8 @@
 -- The only Lua fused into the host binary. It carries no behavioral logic; it
 -- (1) resolves where *system Lua* (the loomworks implementation) comes from,
 -- (2) handles the host-level commands `version`, `self-update`, `install`,
--- and `bootstrap` (which must work even with no bundle installed) —
+-- `bootstrap` and `release query` (which must work even with no bundle
+-- installed) —
 -- and, when there is no system Lua at all, their help (boot.help) — and
 -- (3) runs the CLI from the resolved source.
 --
@@ -94,28 +95,11 @@ end
 --- Env read via libuv's view (sees in-process uv.os_setenv; used for tests).
 local function getenv(name) return paths.getenv(name) end
 
---- First non-flag token — the subcommand — ignoring leading global flags.
-local function subcommand(args)
-  for _, v in ipairs(args) do
-    if type(v) == "string" and v:sub(1, 1) ~= "-" then return v end
-  end
-  return nil
-end
-
 -- ---- args: peel off the bootstrap-level `--dev[=PATH]` / `--no-pin` flags ---
-local forwarded = {}
-local dev_flag, dev_flag_path, no_pin = false, nil, false
-for _, v in ipairs({ ... }) do
-  if v == "--dev" then
-    dev_flag = true
-  elseif type(v) == "string" and v:sub(1, 6) == "--dev=" then
-    dev_flag, dev_flag_path = true, v:sub(7)
-  elseif v == "--no-pin" then
-    no_pin = true
-  else
-    forwarded[#forwarded + 1] = v
-  end
-end
+-- Only where they are lw's own: never after `--` or from a program's
+-- arguments (`lw launch add … -- --dev`, spec §16.7).
+local forwarded, host_flags = pin.peel_host_flags({ ... })
+local dev_flag, dev_flag_path, no_pin = host_flags.dev, host_flags.dev_path, host_flags.no_pin
 
 -- ---- resolve the system-Lua source -----------------------------------------
 local cfg = paths.read_config()
@@ -127,10 +111,7 @@ if dev_opt_in then
   luaroot = env_lua or paths.norm(dev_flag_path) or paths.norm(cfg["dev-lua"])
   source_kind = "dev"
   if not luaroot then
-    io.stderr:write(
-      "lw: development source requested but no directory is configured.\n" ..
-      "    Set one with `lw settings set dev-lua <path>`, pass `--dev=<path>`,\n" ..
-      "    or export LOOMWORKS_LUA=<path>.\n")
+    io.stderr:write(pin.dev_unconfigured_message(host_flags.dev_in_args and not env_lua))
     os.exit(1)
   end
   if not uv.fs_stat(luaroot .. "/loomworks") then
@@ -147,16 +128,30 @@ end
 -- ---- pin: sentinel, override, and workspace root ----------------------------
 local pinned_sentinel = getenv("LOOMWORKS_PINNED")
 local lw_override = getenv("LOOMWORKS_LW") ~= nil
+-- The command and its sub-command (`daemon run`), tolerant of a leading
+-- global flag (e.g. `lw --no-input self-update`), the same way the redirect
+-- classifies it — otherwise a flag-prefixed host command would fall through
+-- to the nvim-hosted CLI.
+local command, command_sub = pin.command_words(forwarded)
 -- The workspace root the pin (and the repo-local cache) live at — the same
 -- upward walk the CLI uses to bind a workspace, seeded from LW_ROOT when a
--- launcher passes the user's cwd.
-local pin_root = pin.find_pin_root(paths.norm(getenv("LW_ROOT")) or uv.cwd())
+-- launcher passes the user's cwd. A daemon started for a workspace (`lw
+-- daemon run --root <dir>`, which runs from the per-user state directory)
+-- names its workspace with --root (spec §16.23).
+-- For a daemon command its --root wins over LW_ROOT: a launcher's LW_ROOT is
+-- the user's cwd, which may lie in another (nested / submodule) pinned root.
+local pin_start = (command == "daemon") and paths.norm(pin.root_option(forwarded)) or nil
+pin_start = pin_start or paths.norm(getenv("LW_ROOT"))
+local pin_root = pin.find_pin_root(pin_start or uv.cwd())
+
+-- The install folder (spec §16.22): a relative LOOMWORKS_INSTALL_DIR is not
+-- honoured; say so once (stderr — stdout may be a protocol stream).
+do
+  local _, ignored = paths.install_dir_override()
+  if ignored then io.stderr:write("lw: " .. ignored .. "\n") end
+end
 
 -- ---- host commands: version / self-update (work without a bundle) -----------
--- Detect the subcommand tolerant of a leading global flag (e.g.
--- `lw --no-input self-update`), the same way the redirect classifies it — otherwise a
--- flag-prefixed host command would fall through to the nvim-hosted CLI.
-local command = subcommand(forwarded)
 -- `--version` / `-v` are the conventional spellings; accept them as aliases so
 -- they don't fall through to workspace resolution and error about a missing
 -- loomworks.json.
@@ -175,7 +170,8 @@ local function fused_system_lua() return bundle.readfile("loomworks/cli.lua") ~=
 -- Lua to run it, to the host's own help (boot.help, before the "no release"
 -- error).
 local help_requested = false
-for _, v in ipairs(forwarded) do
+for i = 1, pin.own_end(forwarded) - 1 do -- never a program's `--help`
+  local v = forwarded[i]
   if v == "--help" or v == "-h" then help_requested = true; break end
 end
 
@@ -255,6 +251,18 @@ if host_command == "bootstrap" then
   exit(0)
 end
 
+-- ---- release query (spec §16.42) -------------------------------------------
+-- `lw release query` resolves a channel to a verified release for a caller
+-- that runs a verified lw (the editor's managed lw). A host command: handled
+-- here, BEFORE pinned-bundle provisioning and pin redirection, so it never
+-- runs a repo's pinned lw, needs no bundle or workspace and writes nothing.
+if host_command == "release" then
+  local code, out, err = require("boot.release_query").run(forwarded)
+  if err then io.stderr:write(err) end
+  if out then io.write(out) end
+  exit(code)
+end
+
 -- ---- pinned context: provision the pinned bundle ----------------------------
 -- Set by the launcher script or the redirect below. We are the pinned host;
 -- load system Lua from the pinned bundle — provisioned and verified into the
@@ -273,11 +281,25 @@ if pinned_sentinel and not dev_opt_in then
         ": " .. tostring(err) .. "\n")
       exit(1)
     end
+    -- Record its last use (spec §16.40): `lw cleanup --all` prunes pinned
+    -- releases unused for long. The directory's mtime, never a file inside
+    -- it (the bundle tree must stay byte-identical to the release).
+    pcall(uv.fs_utime, dir, os.time(), os.time())
     luaroot, source_kind = dir, "release"
   end
 end
 
+-- `lw version --json` (spec §16.41, the binary descriptor) describes what this
+-- binary implements — protocol range, interfaces, schemas — which lives in
+-- system Lua, so it runs after the system-Lua searcher is installed (below).
+local version_json = false
 if host_command == "version" then
+  for _, v in ipairs(forwarded) do
+    if v == "--json" then version_json = true end
+  end
+end
+
+if host_command == "version" and not version_json then
   local upd = require("boot.update")
   -- Same dev-build predicate self-update uses (§16.32), so the label never
   -- calls a host a dev build that self-update would replace, or vice versa.
@@ -346,7 +368,8 @@ elseif host_command == "self-update" then
   -- The bundle that was newest before this update: "what's new" is measured
   -- from it (spec §16.32).
   local prev_bundle = (paths.installed_releases()[1] or {}).ver
-  local res, err, info = require("boot.update").self_update({ force = force, channel = channel })
+  local res, err, info = require("boot.update").self_update({ force = force, channel = channel,
+    running_root = luaroot })
   if not res and info and info.host_incompatible then
     -- The (verified) release needs a newer host than this one. Replace the
     -- host first — otherwise the first release raising min_host_version would
@@ -424,7 +447,7 @@ elseif host_command == "self-update" then
         silenced = wn.silenced(getenv, cfg),
       })
       for _, l in ipairs(lines) do io.write(l .. "\n") end
-      if #lines > 0 then wn.record_seen(paths.data_dir(), res.version) end
+      if #lines > 0 then wn.record_seen(paths.install_dir(), res.version) end
     end)
   end
   end
@@ -492,15 +515,40 @@ do
   local self_version = (source_kind == "release" and luaroot)
     and luaroot:match("lua%-(.+)$") or nil
   local p = pin_root and pin.read(pin_root)
-  local action = pin.decide({
+  local stdio = false
+  for i = 1, pin.own_end(forwarded) - 1 do if forwarded[i] == "--stdio" then stdio = true end end
+  local decision = {
     command = command,
+    sub = command_sub,
+    stdio = stdio,
     pin = p,
     self_version = self_version,
     pinned_sentinel = pinned_sentinel,
     no_pin = no_pin,
     lw_override = lw_override,
     dev = dev_opt_in,
-  })
+  }
+  local action, _, since = pin.decide(decision)
+  -- A command this host runs itself in a repository that pins another lw
+  -- leaves the workspace daemon to the pinned lw (spec §16.23): the CLI's
+  -- ensure step neither starts nor replaces one (loomworks.daemon.ensure).
+  if action ~= "redirect" then _G.__loomworks_foreign_pin = pin.foreign_pin(decision) end
+  -- The pinned lw predates the command (spec §16.23 "A pin older than the
+  -- command"): never redirect to a host that would only say "unknown command".
+  -- A daemon this host would start instead is the pinned lw's to start: refuse
+  -- (the editor then runs without a daemon, §19.16). Anything else runs here,
+  -- leaving the workspace daemon alone (foreign_pin above).
+  if action == "unsupported" then
+    local what = "lw " .. command .. (command_sub and pin.REDIRECT_SUBCOMMANDS[command]
+      and (" " .. command_sub .. ((stdio and command_sub == "run") and " --stdio" or "")) or "")
+    if command == "daemon" then
+      io.stderr:write("lw: this repo pins lw " .. p.version .. ", which predates `" .. what ..
+        "` (added in " .. since .. "); the workspace daemon is left to the pinned lw - not started\n")
+      exit(1)
+    end
+    io.stderr:write("lw: this repo pins lw " .. p.version .. ", which predates `" .. what ..
+      "` (added in " .. since .. "); running it as this lw, without the workspace daemon\n")
+  end
   if action == "redirect" then
     local asset, aerr = pin.detect_asset()
     if not asset then
@@ -510,8 +558,11 @@ do
     -- Machine-local (never the repo's .nvim/cache): a clone could ship a
     -- binary there together with a pin naming its hash (spec §16.22/§16.23).
     local bin = require("boot.update").pinned_binary_path(p.version, asset)
-    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it...\n")
-    io.stdout:flush()
+    -- A daemon's stdout may be its protocol stream (`daemon run --stdio`):
+    -- the notice goes to stderr there.
+    local notice = command == "daemon" and io.stderr or io.stdout
+    notice:write("lw: this repo pins lw " .. p.version .. "; fetching and running it...\n")
+    notice:flush()
     local ok, err = require("boot.update").ensure_host_binary(
       p.version, asset, p.hashes[asset], bin)
     if not ok then
@@ -532,6 +583,10 @@ do
         ": " .. tostring(verr) .. "\n")
       exit(1)
     end
+    -- Record the last use of both (spec §16.40): `lw cleanup --all` prunes
+    -- pinned releases unused for long.
+    pcall(uv.fs_utime, vdir, os.time(), os.time())
+    pcall(uv.fs_utime, bin, os.time(), os.time())
     local okl, lerr = upd.check_legacy_pinned_bundle(
       pin_root .. "/.nvim/cache/lua-" .. p.version, vdir)
     if not okl then
@@ -542,7 +597,8 @@ do
     -- Carry the sentinel + workspace root across the exec; the child inherits
     -- our environment (uv.os_setenv is visible to spawned children).
     uv.os_setenv("LOOMWORKS_PINNED", p.version)
-    uv.os_setenv("LW_ROOT", getenv("LW_ROOT") or uv.cwd())
+    -- (A daemon's root is its --root: it runs from the per-user state dir.)
+    uv.os_setenv("LW_ROOT", pin_start or uv.cwd())
     local code = require("boot.exe").run_in_place(bin, forwarded)
     if not code then
       io.stderr:write("lw: cannot exec pinned lw at " .. bin .. "\n")
@@ -630,6 +686,20 @@ end
 
 if not _G.vim then
   _G.vim = require("loomworks.shim")
+end
+
+-- `lw version --json`: the binary descriptor (spec §16.41), from the system
+-- Lua this invocation resolved — never a workspace, never a daemon.
+if version_json then
+  local ok, doc = pcall(function()
+    return require("loomworks.daemon.descriptor").describe()
+  end)
+  if not ok then
+    io.stderr:write("lw: cannot describe this binary: " .. tostring(doc) .. "\n")
+    exit(1)
+  end
+  io.write(require("loomworks.daemon.descriptor").encode(doc) .. "\n")
+  exit(0)
 end
 
 _G.arg = forwarded

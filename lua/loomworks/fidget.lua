@@ -32,6 +32,9 @@ local ACTION_TITLE = {
     ["configure+build"] = "Building",
     delete = "Deleting",
     clean = "Cleaning",
+    reset = "Resetting",
+    test = "Testing",
+    run = "Preparing",
 }
 
 --- Create a fidget handle for an operation or task.
@@ -200,6 +203,34 @@ function M.setup(opts)
         -- Only finish standalone task handles; operation handles finish via operation_finished
         local task_key = "task:" .. data.task_id
         finish_handle(task_key)
+    end)
+
+    -- Operations observed in the workspace daemon (spec §19.16): e.g. `lw
+    -- build` in a terminal — the same entry as a local operation of the kind
+    -- and profile, plus the origin marker. Keyed by the daemon's task id.
+    lw.on("daemon_task_started", function(data)
+        local task = data.task
+        local origin = task:origin_label()
+        create_handle("daemon:" .. task.id,
+            (ACTION_TITLE[task.kind] or task.kind) .. (origin and (" (" .. origin .. ")") or ""),
+            task.profile_name or task.name)
+    end)
+
+    lw.on("daemon_task_progress", function(data)
+        local handle = handles["daemon:" .. data.task.id]
+        if handle and data.task.pct then
+            handle:report({ percentage = data.task.pct })
+        end
+    end)
+
+    lw.on("daemon_task_stopped", function(data)
+        local task = data.task
+        local key = "daemon:" .. task.id
+        local handle = handles[key]
+        if not handle then return end
+        handle:report({ message = clip(task:outcome()) })
+        handle:finish()
+        handles[key] = nil
     end)
 end
 

@@ -1,0 +1,98 @@
+{
+  "interface": "loomworks.Launch",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /launch (spec 19.15 Run, 19.20): the preparation of lw run as a task-streamed method; the protocol-10 prepare_run request stays as its v0 alias. The client runs the program of the launch spec in its own process. prepare_debug and device_log land in later steps.",
+  "methods": {
+    "prepare_run": {
+      "description": "Build (unless no_build), deploy and resolve the launch of the profile's target or launch configuration; the task result carries the launch spec, or device for a program that runs on a device in the client.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote (lw build, ...).",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target or launch configuration name.",
+            "type": "string"
+          },
+          "project": {
+            "description": "The project the target belongs to.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "kind": {
+            "description": "Which kind of name target is (--target / --launch); absent: either.",
+            "enum": [
+              "target",
+              "launch"
+            ]
+          },
+          "cwd": {
+            "description": "Overrides the launch's working directory.",
+            "type": "string"
+          },
+          "extra": {
+            "description": "The program's arguments (after --).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_build": {
+            "type": "boolean"
+          },
+          "quiet": {
+            "description": "--print / --dry-run: the build's lines go to stderr.",
+            "type": "boolean"
+          },
+          "prefix": {
+            "description": "The client wraps the program (--prefix): a device target is refused.",
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The preparation's end: the launch spec on success.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "launch": {
+              "$ref": "loomworks.Common/1#/$defs/LaunchSpec"
+            },
+            "device": {
+              "description": "The program runs on a device: the client runs it (spec 19.15 Run).",
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    }
+  }
+}

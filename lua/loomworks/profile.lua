@@ -193,6 +193,7 @@ end
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
 --- @field _last_operation { message: string, success: boolean }|nil
+--- @field _remote_tasks loomworks.RemoteTask[]|nil tasks observed in the workspace daemon that run this profile (spec §19.16); runtime only
 --- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
 local Profile = {}
 Profile.__index = Profile
@@ -663,6 +664,28 @@ function Profile:projects()
     return self._projects_list or {}
 end
 
+--- The `Cache:` row text of a compiler-cache status (`Profile:compiler_cache_status`
+--- fields `policy`, `applicable`, `not_applied_reason`, `tool`,
+--- `msvc_auto_off`). Pure: also formats the structured result of the daemon's
+--- `profile_cache` query (spec §19.14).
+--- @param st { policy: string, applicable: boolean, not_applied_reason?: string, tool?: string, msvc_auto_off?: boolean }
+--- @return string
+local function compiler_cache_text(st)
+    local policy = st.policy or "auto"
+    if policy == "off" then
+        return "Cache: off"
+    elseif st.applicable == false then
+        return "Cache: not applied (" .. (st.not_applied_reason or "not supported") .. ")"
+    elseif st.tool then
+        return "Cache: " .. st.tool
+    elseif st.msvc_auto_off then
+        return "Cache: auto (off for MSVC-style)"
+    elseif policy == "auto" then
+        return "Cache: auto (none found)"
+    end
+    return "Cache: " .. policy .. " (not found)"
+end
+
 --- Profile-level compiler-cache status (spec/ui.md profile Cache row, headless
 --- §16.18). Returns nil when the profile contains no C/C++-caching module.
 --- Otherwise a display-ready descriptor: the effective `cache` policy, the
@@ -728,22 +751,7 @@ function Profile:compiler_cache_status(pp)
         end
     end
 
-    local text
-    if policy == "off" then
-        text = "Cache: off"
-    elseif not applicable then
-        text = "Cache: not applied (" .. (not_applied_reason or "not supported") .. ")"
-    elseif resolved then
-        text = "Cache: " .. resolved.tool
-    elseif msvc_auto_off then
-        text = "Cache: auto (off for MSVC-style)"
-    elseif policy == "auto" then
-        text = "Cache: auto (none found)"
-    else
-        text = "Cache: " .. policy .. " (not found)"
-    end
-
-    return {
+    local status = {
         policy = policy,
         tool = resolved and resolved.tool or nil,
         path = resolved and resolved.path or nil,
@@ -755,8 +763,9 @@ function Profile:compiler_cache_status(pp)
         not_applied_hint = not_applied_hint,
         project = project,
         configuration = configuration,
-        text = text,
     }
+    status.text = compiler_cache_text(status)
+    return status
 end
 
 -- ---------------------------------------------------------------------------
@@ -1171,10 +1180,50 @@ function Profile:active_operations()
     return self._operations or {}
 end
 
---- Check if this profile has any active operations.
+--- Register a task observed in the workspace daemon that runs this profile
+--- (spec §19.16): it counts as an active operation (spec/ui.md §1.5).
+--- Runtime only; it never blocks an editor operation.
+--- @param task loomworks.RemoteTask
+function Profile:add_remote_task(task)
+    self._remote_tasks = self._remote_tasks or {}
+    for _, t in ipairs(self._remote_tasks) do
+        if t == task then return end
+    end
+    self._remote_tasks[#self._remote_tasks + 1] = task
+end
+
+--- Remove a remote task; once it ended, its end message becomes the
+--- profile's last operation result, as a local operation's does. A task
+--- cleared by workspace teardown (spec §19.16 Teardown) did not end: it
+--- leaves the last result alone.
+--- @param task loomworks.RemoteTask
+function Profile:remove_remote_task(task)
+    local list = self._remote_tasks
+    if not list then return end
+    for i, t in ipairs(list) do
+        if t == task then
+            table.remove(list, i)
+            if task.finished and not task.cleared then
+                self._last_operation = { message = task:outcome(), success = task.exit_code == 0 }
+            end
+            break
+        end
+    end
+    if #list == 0 then self._remote_tasks = nil end
+end
+
+--- The running tasks observed in the workspace daemon on this profile.
+--- @return loomworks.RemoteTask[]
+function Profile:remote_tasks()
+    return self._remote_tasks or {}
+end
+
+--- Check if this profile has any active operations — local, or a task
+--- observed in the workspace daemon (spec §19.16).
 --- @return boolean
 function Profile:has_active_operation()
-    return self._operations ~= nil and #self._operations > 0
+    return (self._operations ~= nil and #self._operations > 0)
+        or (self._remote_tasks ~= nil and #self._remote_tasks > 0)
 end
 
 --- Get the last completed operation result.
@@ -1186,8 +1235,16 @@ end
 --- Get elapsed seconds for the first active operation.
 --- @return number|nil seconds
 function Profile:operation_elapsed()
-    if not self._operations or #self._operations == 0 then return nil end
-    return self._operations[1]:elapsed()
+    if self._operations and #self._operations > 0 then
+        return self._operations[1]:elapsed()
+    end
+    local remote = self._remote_tasks and self._remote_tasks[1]
+    if remote then
+        local ws = self._workspace
+        local clock = ws and ws._core and ws._core._deps and ws._core._deps.clock
+        return remote:elapsed(clock and clock() or ((vim.uv or vim.loop).hrtime() / 1e9))
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -1452,7 +1509,7 @@ end
 function Profile:is_configured()
     for _, pp in ipairs(self:projects()) do
         if pp._config_unit then
-            local state = pp._config_unit:state()
+            local state = pp._config_unit:local_state()
             if state and state ~= "unconfigured" then
                 return true
             end
@@ -1461,7 +1518,9 @@ function Profile:is_configured()
     return false
 end
 
---- Check if this profile has any running tasks.
+--- Check if this profile has any running tasks of this editor (the ones it
+--- can cancel). A task observed in the workspace daemon is not one
+--- (`has_active_operation` covers it, spec §19.16).
 --- @return boolean
 function Profile:is_running()
     if not self.mappings then return false end
@@ -1487,6 +1546,7 @@ function Profile:status()
         configuring = 0,
         building = 0,
         deleting = 0,
+        unknown = 0,
     }
 
     for _, pp in ipairs(pps) do
@@ -1524,6 +1584,7 @@ function Profile:status()
     if counts.built == total then return "built", STATUS_HL.built end
     if counts.configured == total then return "configured", STATUS_HL.configured end
     if counts.unconfigured == total then return "unconfigured", STATUS_HL.unconfigured end
+    if counts.unknown == total then return "unknown", STATUS_HL.unconfigured end
 
     if failed > 0 then
         local parts = {}
@@ -1544,6 +1605,7 @@ function Profile:status()
     if counts.built > 0 then parts[#parts + 1] = counts.built .. " built" end
     if counts.configured > 0 then parts[#parts + 1] = counts.configured .. " configured" end
     if counts.unconfigured > 0 then parts[#parts + 1] = counts.unconfigured .. " unconfigured" end
+    if counts.unknown > 0 then parts[#parts + 1] = counts.unknown .. " unknown" end
     return table.concat(parts, ", "), STATUS_HL.configured
 end
 
@@ -1659,17 +1721,23 @@ end
 
 --- Hard-reset this profile (plan + execute, no UI confirmation): rm -rf the
 --- build directories and drop the config units back to `unconfigured`, keeping
---- the profile itself (spec §16.30). Returns a Future.
+--- the profile itself (spec §16.30). Returns a Future (`true` when every
+--- removal succeeded). `opts.stop` (the daemon's cancellation, §19.15
+--- "Reset") is asked before each entry of the removal; a stopped reset
+--- resolves `false` with the cache left `unknown` (never reset after a
+--- partial removal).
 --- @param on_done? function
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Profile:reset(on_done)
+function Profile:reset(on_done, opts)
     -- No Operation is created: an Operation drives the editor's live progress UI
     -- and only completes when its units reach their target state via task
     -- tracking. The headless reset runs no tasks, so an Operation here would
     -- never complete — leaking a progress handle at process teardown. The CLI
     -- reports its own result instead.
     -- No profile removal, no deactivation — reset preserves the active profile.
-    return self._workspace:execute_deletion(self:plan_reset(), nil, on_done)
+    local stop = opts and opts.stop or nil
+    return self._workspace:execute_deletion(self:plan_reset(), stop and { stop = stop } or nil, on_done)
 end
 
 --- Clean this profile's configs. Returns a Future.
@@ -1698,8 +1766,8 @@ function Profile:clean(on_done)
         unit:mark_deleting(true, "cleaning")
     end
     self._workspace:create_operation(self, "clean", units, target_states)
-
-    self._workspace:mark_cached_configs_cleaned(items)
+    -- The built state is recorded per module clean task once it succeeds
+    -- (overseer.record_module_clean); a wipe resets the unit itself.
 
     local running = self._workspace:find_running_tasks_for_items(items)
     local task_ids = {}
@@ -1731,4 +1799,4 @@ function Profile:rebuild()
     end)
 end
 
-return { Profile = Profile, ProfileProject = ProfileProject }
+return { Profile = Profile, ProfileProject = ProfileProject, compiler_cache_text = compiler_cache_text }

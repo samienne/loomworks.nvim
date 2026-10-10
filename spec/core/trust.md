@@ -64,7 +64,12 @@ deterministic sorted encoding of §2 — avoids any canonicalization ambiguity, 
 the fixed first-line position cannot be confused with a nested member of the
 same name. The workspace root is deliberately **not** bound: moving or renaming
 the workspace directory, or seeding a git worktree from the main checkout on the
-same machine (§16.25), keeps the files valid. Both hosts produce identical
+same machine (§16.25), keeps the files valid. Copying a working copy from
+one workspace to another on the same machine is the same case: the copy is
+**valid** there, and everything it names (profiles, toolchain selections,
+launch configurations, environment) is used as from any signed working copy —
+it was written by this machine's user, which is what the signature attests;
+it does not attest which workspace it was written for. Both hosts produce identical
 signatures for identical content. Readers remove the member before decoding, so
 it never appears in loaded data; older loomworks versions read a signed file as
 ordinary JSON.
@@ -135,6 +140,10 @@ way: an unsigned or invalid working copy, or an invalid cache, puts the
 workspace back into the refused state rather than merging the change; an
 unsigned cache change is ignored (the in-memory state is kept, and the next save
 replaces the file).
+
+A refused working copy that becomes valid on disk (restored, or re-signed by
+`lw trust`) loads the workspace again. Likewise, the **trust** action on a
+working copy that is already valid loads a workspace refused for trust.
 
 ### 17.5 Writers
 
@@ -268,6 +277,15 @@ or a file was viewed — run only what trusted state names:
   configured on this machine; a build directory that merely exists on disk (it
   came with the copy) is never introspected and its binaries are never
   executed passively.
+- **The editor's host binary** (§19.16): opening a workspace in daemon mode
+  may download and run **official releases only** (the plugin-managed `lw`,
+  verified against the hash the plugin pin carries, §19.16 "Plugin pin", or
+  against a hash the plugin-pinned `lw` obtained from an official release's
+  signed `SHA256SUMS`, §19.16 "Channel upgrades", §16.42); never a binary, a
+  URL or a channel that a workspace file names. The channel and the release
+  source come only from the editor's setup and the user's environment, and
+  the channel query and the pre-launch probe (§19.16) never run with the
+  workspace as working directory or with workspace-sourced environment.
 - **Version-control queries** (§16.25–§16.27, status hints, the `lw health`
   submodule report §16.31) disable
   repository-configured command hooks (file-system monitor, hooks path) on
@@ -308,6 +326,16 @@ comes only from the staging manifest.
   build lock of every build directory it removes (§19.3): it refuses while a
   build runs instead of deleting under it.
   `lw help trust` explains this section.
+  `lw status` (which a refused workspace never reaches) shows a `Trust` row:
+  whether a working copy is present — then signed on this machine — or absent,
+  and the number of program-bearing fields ignored in `loomworks.json` that
+  the working copy does not supply (§17.6). It is the page's only statement of
+  trust; the title is the workspace's name, which may be any word. A build
+  whose profile's projects (or the workspace) have such ignored fields prints
+  one notice line on standard error after naming the profile — the count, that
+  only the local config may name programs or environment, and pointers to
+  `lw status` and `lw help trust` — on the in-process and the daemon path
+  alike (§19.15).
 - **Editor.** The status page shows the refusal with the same actions (trust,
   discard, reset); a trust command shows the summary in a confirmation prompt.
 

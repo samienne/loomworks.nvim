@@ -34,6 +34,7 @@
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID
 --- @field _action string|nil "configure" or "build" while running
+--- @field _remote_task loomworks.RemoteTask|nil a task observed in the workspace daemon that runs this unit (spec §19.16); runtime only
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
 --- @field _last_progress_notify number|nil clock() value of last progress notify
@@ -295,10 +296,31 @@ function ConfigUnit:configured_here()
     return s == "configured" or s == "built" or s == "failed_build"
 end
 
---- Get the derived state for this unit.
---- Priority: deleting > running > first-class field.
+--- Get the derived state for this unit, as shown.
+--- Priority: deleting > running (this editor's task, else a task observed in
+--- the workspace daemon) > first-class field. For display: a remote task never
+--- blocks an editor operation (spec §19.16), so readiness and gating decisions
+--- use `local_state()`.
 --- @return loomworks.ConfigUnitState
 function ConfigUnit:state()
+    if not self._deleting and not self._action
+            and self._remote_task and not self._remote_task.finished then
+        -- A build another client runs in the workspace daemon (spec §19.16);
+        -- a clean shows as a local clean does (`deleting`, reason `cleaning`),
+        -- a reset as the in-process reset's deletion (`deleting`).
+        local a = self._remote_task.action
+        if a == "clean" or a == "reset" then return "deleting" end
+        return a == "configure" and "configuring" or "building"
+    end
+    return self:local_state()
+end
+
+--- The unit's state as this process knows it, ignoring a task observed in
+--- the workspace daemon (spec §19.16). What every decision (task readiness,
+--- the build gate, operation progress) reads: the cross-process build-dir
+--- locks (§16.6), not a remote task, serialize the editor behind `lw`.
+--- @return loomworks.ConfigUnitState
+function ConfigUnit:local_state()
     if self._deleting then return "deleting" end
     if self._action then
         return self._action == "configure" and "configuring" or "building"
@@ -322,6 +344,45 @@ end
 --- @return string|nil "configure" or "build"
 function ConfigUnit:running_action()
     return self._action
+end
+
+--- The action this unit is shown running: its own task's, else that of a task
+--- observed in the workspace daemon (spec §19.16). Display only — never a
+--- reason to block or cancel anything (`running_action` is).
+--- A remote clean is shown as a local clean is (`state()` "deleting",
+--- `deleting_reason()` "cleaning"), a remote reset as a deletion (`state()`
+--- "deleting", `deleting_reason()` "deleting"), not as a running action.
+--- @return string|nil "configure" or "build"
+function ConfigUnit:shown_action()
+    if self._action then return self._action end
+    local t = self._remote_task
+    if t and not t.finished and t.action ~= "clean" and t.action ~= "reset" then return t.action end
+    return nil
+end
+
+--- Mark this unit as run by a task observed in the workspace daemon (spec
+--- §19.16). Reporting only: it never blocks an editor operation (the
+--- cross-process build-directory locks do).
+--- @param task loomworks.RemoteTask
+function ConfigUnit:begin_remote_task(task)
+    self._remote_task = task
+    self:_notify()
+end
+
+--- Clear the mark `task` set (a later task's mark is left alone).
+--- @param task loomworks.RemoteTask
+function ConfigUnit:end_remote_task(task)
+    if self._remote_task ~= task then return end
+    self._remote_task = nil
+    self:_notify()
+end
+
+--- The task observed in the workspace daemon that runs this unit, if any.
+--- @return loomworks.RemoteTask|nil
+function ConfigUnit:remote_task()
+    local t = self._remote_task
+    if t and not t.finished then return t end
+    return nil
 end
 
 --- Check if this unit is being deleted/cleaned.
@@ -365,7 +426,7 @@ end
 --- build directory to lose.
 --- @return boolean
 function ConfigUnit:missing_build_dir_needs_reconfigure()
-    local state = self:state()
+    local state = self:local_state()
     if state ~= "configured" and state ~= "built"
             and state ~= "build_failed" and state ~= "configure_failed" then
         return false
@@ -685,7 +746,7 @@ ConfigUnit.ORPHAN_STATE_REASON = "configure record missing (existing build direc
 --- @param build_dir? string the unit's build directory (default: its own)
 --- @return boolean
 function ConfigUnit:has_orphan_configure_state(build_dir)
-    if self:state() ~= "unconfigured" then return false end
+    if self:local_state() ~= "unconfigured" then return false end
     local bd = build_dir or self:build_dir()
     if type(bd) ~= "string" or bd == "" then return false end
     local mod = self:_module_impl()
@@ -710,7 +771,7 @@ end
 --- @param orphan_state? boolean the build directory already holds configure state
 --- @return string|nil
 function ConfigUnit:configure_reason(forced, profile, orphan_state)
-    local state = self:state()
+    local state = self:local_state()
     if state == "unconfigured" then
         return orphan_state and ConfigUnit.ORPHAN_STATE_REASON or "first configure"
     end
@@ -912,7 +973,12 @@ end
 --- Get elapsed seconds since the running task started.
 --- @return number|nil seconds
 function ConfigUnit:elapsed()
-    if not self._start_time then return nil end
+    if not self._start_time then
+        -- A task observed in the workspace daemon (spec §19.16).
+        local t = self:remote_task()
+        if t then return t:elapsed(self._workspace._core._deps.clock()) end
+        return nil
+    end
     return self._workspace._core._deps.clock() - self._start_time
 end
 
@@ -1067,8 +1133,8 @@ function ConfigUnit:clean(on_done)
     local refs = self:referencing_profiles()
     local profile = refs[1] or nil
     ws:create_operation(profile, "clean", { self }, { [self] = "configured" })
-
-    ws:mark_cached_configs_cleaned(items)
+    -- The built state is recorded per module clean task once it succeeds
+    -- (overseer.record_module_clean); a wipe resets the unit itself.
 
     local running = ws:find_running_tasks_for_items(items)
     local task_ids = {}
@@ -1246,10 +1312,18 @@ function ConfigUnit:mark_deleting(flag, reason)
     self:_notify()
 end
 
---- Get the reason this unit is being deleted/cleaned.
+--- Get the reason this unit is being deleted/cleaned — its own, else
+--- "cleaning" while a clean observed in the workspace daemon runs it,
+--- "deleting" while a reset does (spec §19.16; display only, `state()`).
 --- @return "deleting"|"cleaning"|nil
 function ConfigUnit:deleting_reason()
-    return self._deleting_reason
+    if self._deleting_reason then return self._deleting_reason end
+    if not self._action then
+        local t = self._remote_task
+        if t and not t.finished and t.action == "clean" then return "cleaning" end
+        if t and not t.finished and t.action == "reset" then return "deleting" end
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------

@@ -1,0 +1,31 @@
+{
+  "description": "Meta-schema of the transport document (spec 19.8, 19.20): the frames of the transport layer and its error codes. The frame schemas use the restricted keyword set of interface.schema.json.",
+  "type": "object",
+  "required": ["transport", "protocol_min", "error_codes", "frames"],
+  "additionalProperties": false,
+  "properties": {
+    "transport": { "description": "The newest transport (protocol) version this document describes.", "type": "integer", "minimum": 1 },
+    "protocol_min": { "type": "integer", "minimum": 1 },
+    "description": { "type": "string" },
+    "error_codes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "description": { "type": "string" } }
+      }
+    },
+    "frames": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } },
+    "v0": {
+      "description": "The protocol-10 reply shapes, by request kind.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "replies": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } },
+        "$defs": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } }
+      }
+    },
+    "$defs": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } }
+  }
+}

@@ -481,10 +481,10 @@ function M.open(opts)
             t:leaf("Debug:", "Comment")
             for di, lang in ipairs(debug_langs) do
                 local captured_di = di
-                local debug_mod = require("loomworks.debug")
+                local debug_config = require("loomworks.debug_config")
                 local adapter = opts.workspace
-                    and debug_mod.resolve_adapter(opts.workspace, lang)
-                    or debug_mod.default_adapter(lang) or "?"
+                    and debug_config.resolve_adapter(opts.workspace, lang)
+                    or debug_config.default_adapter(lang) or "?"
                 local prefix = di == 1 and " (primary) " or " (attach)  "
                 t:item("  " .. lang .. prefix .. "→ " .. adapter, {
                     hl = "LoomworksActionable",
@@ -515,7 +515,7 @@ function M.open(opts)
             on_enter = function()
                 local available = {}
                 local seen = {}
-                for _, lang in ipairs(require("loomworks.debug").known_languages()) do
+                for _, lang in ipairs(require("loomworks.debug_config").known_languages()) do
                     if not seen[lang] then
                         seen[lang] = true
                         available[#available + 1] = lang

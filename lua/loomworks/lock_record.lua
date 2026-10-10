@@ -93,9 +93,35 @@ function M.operation_of(info)
     return type(op) == "string" and op or nil
 end
 
+--- How long `read` waits for the record of a fresh, empty lockfile (ms).
+M.EMPTY_SETTLE_MS = 250
+--- An empty lockfile at most this old (seconds, by its mtime) is waited for.
+M.EMPTY_FRESH_S = 2
+--- The wait between two reads of an empty lockfile (tests replace it).
+--- @param ms integer
+function M._settle_sleep(ms) uv().sleep(ms) end
+
+local function read_body(u, path)
+    local fd = u.fs_open(path, "r", 256)
+    if not fd then return nil end
+    local fst = u.fs_fstat(fd)
+    local data = u.fs_read(fd, (fst and fst.size and fst.size > 0 and fst.size) or 4096, 0)
+    u.fs_close(fd)
+    return data
+end
+
 --- Read a lockfile: its decoded record (an undecodable or legacy non-JSON body
 --- reads as `{}`) plus `age` (seconds since the heartbeat) and `stale`.
 --- nil when there is no lockfile.
+---
+--- A lockfile is created with its record in place (`create`: a hard link of
+--- a written temp) and rewritten by a rename (`replace`), so it is normally
+--- never empty. Where hard links are not supported it is created empty (the
+--- exclusive create) and its record written right after, and a lock written
+--- by an older version may be too: a reader between the two sees an empty
+--- body, which names no host and would be judged another host's live lock. A
+--- fresh empty body (EMPTY_FRESH_S) is read again for up to EMPTY_SETTLE_MS;
+--- one still empty then (its writer died in between) reads as `{}`.
 --- @param path string
 --- @param stale_seconds number heartbeat window
 --- @return table|nil
@@ -103,14 +129,19 @@ function M.read(path, stale_seconds)
     local u = uv()
     local st = u.fs_stat(path)
     if not st then return nil end
-    local info = {}
-    local fd = u.fs_open(path, "r", 256)
-    if fd then
-        local data = u.fs_read(fd, (st.size and st.size > 0 and st.size) or 4096, 0)
-        u.fs_close(fd)
-        local ok, decoded = pcall(vim.json.decode, data or "")
-        if ok and type(decoded) == "table" then info = decoded end
+    local data = read_body(u, path)
+    if data == "" and os.time() - ((st.mtime and st.mtime.sec) or 0) <= M.EMPTY_FRESH_S then
+        local deadline = u.hrtime() + M.EMPTY_SETTLE_MS * 1e6
+        while data == "" and u.hrtime() < deadline do
+            M._settle_sleep(5)
+            st = u.fs_stat(path)
+            if not st then return nil end -- released meanwhile
+            data = read_body(u, path)
+        end
     end
+    local info = {}
+    local ok, decoded = pcall(vim.json.decode, data or "")
+    if ok and type(decoded) == "table" then info = decoded end
     local mtime = (st.mtime and st.mtime.sec) or 0
     info.age = os.time() - mtime
     info.stale = info.age > stale_seconds
@@ -182,6 +213,129 @@ function M.reclaim(path, observed)
     end
     pcall(u.fs_unlink, tmp)
     return false
+end
+
+-- ---------------------------------------------------------------------------
+-- Writing a lock file
+-- ---------------------------------------------------------------------------
+
+--- Hard-link error codes that mean "no hard links on this file system" (FAT,
+--- some network shares, a sandbox that forbids them): EPERM (Linux vfat,
+--- SMB), EACCES, ENOTSUP/ENOSYS, EISDIR (Windows ERROR_INVALID_FUNCTION on
+--- FAT), EXDEV, EMLINK, EINVAL. `create` falls back to the plain exclusive
+--- create only when a probe link to a fresh name fails too (EPERM is also
+--- Windows' answer for a "delete pending" lock file name). EEXIST is never
+--- among them: it means the lock is held.
+M.LINK_UNSUPPORTED = {
+    EPERM = true, EACCES = true, ENOTSUP = true, ENOSYS = true,
+    EISDIR = true, EXDEV = true, EMLINK = true, EINVAL = true,
+}
+
+--- Rename retries of `replace` (Windows: a reader holding the lock file open
+--- can make a rename over it fail with EACCES/EPERM for a moment).
+M.REPLACE_RETRIES = 40
+M.REPLACE_RETRY_MS = 5
+
+--- File-system seams (tests inject failures).
+function M._link(from, to) return uv().fs_link(from, to) end
+function M._rename(from, to) return uv().fs_rename(from, to) end
+
+--- The temporary name a record is written under before it gets the lock
+--- file's name: `<lockfile>.new.<nonce>` beside it (the nonce carries the pid
+--- and a random part). It never ends in a lock file's suffix (`.lock`,
+--- `.loomworks-lock`), so no reader, scan or `lw unlock` takes it for a lock.
+--- @param path string
+--- @return string
+function M.temp_name(path) return path .. ".new." .. M.new_nonce() end
+
+--- Write `body` to a fresh temp beside `path` (exclusive create). Returns its
+--- name, or nil + error + code; a failed write removes the temp.
+local function write_temp(path, body)
+    local u = uv()
+    local tmp = M.temp_name(path)
+    local fd, err, code = u.fs_open(tmp, "wx", 420) -- 0644
+    if not fd then return nil, err, code end
+    local _, werr, wcode = u.fs_write(fd, body, 0)
+    u.fs_close(fd)
+    if werr then
+        pcall(u.fs_unlink, tmp)
+        return nil, werr, wcode
+    end
+    return tmp
+end
+
+--- Create the lock file at `path` holding `rec`, exclusively: never through
+--- an existing one. The record is written to a temp first and given the lock
+--- file's name by a hard link — an atomic create-if-absent — so the lock
+--- file never exists without its record (spec §19.5). Where hard links are
+--- not supported (LINK_UNSUPPORTED) it is the exclusive create
+--- (O_CREAT|O_EXCL) followed by the write. Returns true, or nil + error +
+--- code ("EEXIST": the lock is held).
+--- @param path string
+--- @param rec table
+--- @return boolean|nil ok, string|nil err, string|nil code
+function M.create(path, rec)
+    local u = uv()
+    local body = vim.json.encode(rec)
+    local tmp = write_temp(path, body)
+    if tmp then
+        local ok, lerr, lcode = M._link(tmp, path)
+        if ok then
+            pcall(u.fs_unlink, tmp)
+            return true
+        end
+        -- One of these codes can also be about the lock file's NAME (Windows:
+        -- a lock file just released but still open elsewhere is "delete
+        -- pending" — EPERM — until its last handle closes): a second link to
+        -- a fresh name tells "no hard links here" from that.
+        local unsupported = M.LINK_UNSUPPORTED[lcode] == true
+        if unsupported then
+            local probe = M.temp_name(path)
+            if M._link(tmp, probe) then
+                pcall(u.fs_unlink, probe)
+                unsupported = false
+            end
+        end
+        pcall(u.fs_unlink, tmp)
+        if not unsupported then return nil, lerr, lcode end
+    end
+    local fd, err, code = u.fs_open(path, "wx", 420)
+    if not fd then return nil, err, code end
+    u.fs_write(fd, body, 0)
+    u.fs_close(fd)
+    return true
+end
+
+--- Replace the record of a lock file this process holds by `rec` (same
+--- nonce): written to a temp and renamed over the lock file, so a reader
+--- sees the old record or the new one, never an empty file. That the lock
+--- file still carries `rec`'s nonce is checked right before each rename, so
+--- a lock file forced off or reclaimed is normally left alone; a narrow
+--- window remains between that check and the rename (no wider than with the
+--- previous in-place rewrite). Returns true; false + "lost"
+--- when the lock is no longer ours; false + the error when no rename
+--- succeeded (the temp is removed on every failure).
+--- @param path string
+--- @param rec table
+--- @return boolean ok, string|nil err
+function M.replace(path, rec)
+    local u = uv()
+    local tmp, terr = write_temp(path, vim.json.encode(rec))
+    if not tmp then return false, tostring(terr) end
+    local err = "rename failed"
+    for i = 1, M.REPLACE_RETRIES do
+        if not M.still_ours(path, rec) then
+            pcall(u.fs_unlink, tmp)
+            return false, "lost"
+        end
+        local ok, rerr, code = M._rename(tmp, path)
+        if ok then return true end
+        err = tostring(rerr)
+        if code ~= "EACCES" and code ~= "EPERM" then break end
+        if i < M.REPLACE_RETRIES then u.sleep(M.REPLACE_RETRY_MS) end
+    end
+    pcall(u.fs_unlink, tmp)
+    return false, err
 end
 
 --- "45s", "2m", "3h".
