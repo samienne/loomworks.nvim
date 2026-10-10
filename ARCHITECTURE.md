@@ -312,6 +312,7 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
+| `lsp_db_cleanup.lua` | Pure path checks for module-owned LSP database removal (spec §4.6): `valid_segment`, `check_mirror(root, seg, mirror, normalize)` (rules 3–5: nil→nothing, strictly inside `.nvim/cache/<seg>/` separator-bounded, no `.`/`..`, lstat every level from `.nvim` down — no symlink/junction — realpath strictly under the area's realpath, and on Windows no segment ending in `.`/space), `check_area` (nuke: exact direct child of `.nvim/cache`, no links). Returns `"ok"` / `"absent"` / `nil, reason` | Delete anything; know module names |
 | `io.lua` | Atomic file read/write (sync and async), JSON encode/decode (`write_json` pretty-prints with keys sorted at every depth via `encode_sorted` — stable diffs for user.json / loomworks.json / cache), rm_rf (sync) / rm_rf_async (libuv async fs ops — no subprocess, no shell; `lstat`-based so links/junctions are removed, never followed; read-only files chmod'ed and retried), directory creation, read_file_async/read_files_async (libuv callbacks) | Validate domain semantics; know about loomworks data model |
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction. `_extract_device` lifts a project's `device` block (§18.9) out of the module section (legacy top-level location still read) | Write files (config is read-only) |
 | `user.lua` | `loomworks.user.json` parse/save/defaults; `save` signs (`io.write_json_signed`), stamps `_meta.written_by` and returns the bytes written; `load` returns nil + status for a file not signed by this machine (`"newer"` + message for a newer schema) | Validate beyond structural correctness |
@@ -445,7 +446,7 @@ Materialization calls (`_materialize_from_data`, `materialize_configuration`,
 `materialize_pinned`) that arrive during `scanning` are queued in
 `_tool_waiters` and replayed when detection completes.
 
-**Deferred LSP start.** loomworks installs its language servers (`vim.lsp.config` + `vim.lsp.enable`) during `setup()`, but their `root_dir` functions hold the start of any buffer under the workspace root until the active profile's owned compile_commands databases are generated (queued via the async `on_dir` callback), then release them so each server starts once with the resolved binary and a populated `compile_commands_dir`. The workspace root is recorded before servers are installed so the gate holds a buffer already open at startup. Buffers outside the workspace root, init failure, and a safety timeout release immediately with fallback resolution. See spec §9.7.
+**Deferred LSP start.** loomworks installs its language servers (`vim.lsp.config` + `vim.lsp.enable`) during `setup()`, but their `root_dir` functions hold the start of any buffer under the workspace root until the active profile's owned compile_commands databases are generated (queued via the async `on_dir` callback), then release them so each server starts once with the resolved binary and a populated `compile_commands_dir`. The workspace root is recorded before servers are installed so the gate holds a buffer already open at startup. Buffers outside the workspace root resolve immediately with the integration's fallback (stock server). For integrations that implement `withhold_reason` (clangd), the root_dir function is `lsp.managed_root_dir(server, …)`: after the hold, core decides per buffer (`decide`) — project buffer → its entry; buffer under the root outside every project → the first usable entry in project-key order; outside the root → fallback — and starts the server only when `withhold_reason(entry)` is nil. Otherwise the buffer joins a withheld set and gets no client (`withheld_unconfigured` / `withheld_no_db`); init failure withholds buffers under the failed root (`withheld_error`) and the safety timeout never starts a database-less server (a buffer under the root of a workspace still being loaded stays `held`; a buffer whose workspace is merely detected on disk but not loaded or pending falls back to the stock server). `lsp.reevaluate()` (coalesced, on `active_set_changed`, `task_stopped`, `lsp_ready`, `workspace_changed`, `workspace_closed` from `Core:shutdown`, owned-DB written) re-runs the decision: newly usable withheld buffers get that one server's attach re-run the way `vim.lsp.enable` does it (`start_enabled_server`: filetype check, `root_dir`, `vim.lsp.start` with the config's `reuse_client`; only for servers enabled via `vim.lsp.enable`, never re-running the whole `FileType` autocmd), clients whose buffers became withheld are stopped through the managed-stop path. Core derives `entry.db_state` from the active unit's `configured_here()` when a module omits it (memo key includes every unit's configured-here flag). The per-buffer status (`lsp.buf_state`, `loomworks.lsp_buf_state`, `buf_status().lsp`) feeds the `loomworks_lsp` lualine component. See spec §9.7, §9.8.
 
 ### File Change (hot-reload)
 
@@ -591,7 +592,21 @@ User presses D → actions.delete_profile/config/orphaned (closure)
     → check queued actions on ConfigUnits
     → unmark ConfigUnits → flush deletion waiters → remerge
     → events.emit("deletion_completed" or "deletion_failed")
+    → Workspace:_remove_owned_lsp_dbs for every dir CONFIRMED deleted
+      (also from delete_orphaned_build_dir; spec §4.6 "Owned LSP database
+      cleanup"): mirror = owning module's lsp_database_dir(ctx) for the
+      validated dir just removed; kept when a remaining build dir maps to
+      it; lsp_db_cleanup.check_mirror (area-bounded, no ./.., lstat no
+      links, realpath under the area's realpath, no Windows trailing
+      dot/space segment) → io.rm_rf_async → prune empty
+      ancestors up to the area. Failure = warning; cache untouched.
 ```
+
+Nuke (`Core:_nuke_files`) adds `Core:_nuke_lsp_db_areas`: every registered
+module's `<root>/.nvim/cache/<lsp_database_root>` present on disk, each passing
+`lsp_db_cleanup.check_area` — a failed area check aborts the whole nuke before
+anything is deleted. The `<C-n>` dialog and `lw nuke` list the same areas;
+`lw reset` lists the mirrors of the dirs it removes and warns if one survives.
 
 ---
 
@@ -1078,7 +1093,8 @@ replaces it, which would drop `PATH`).
   `_describe_block`. All are `M.` fields (the main chunk is at the 200-local
   limit), and helpers defined above `term_width` call `M._term_width`.
 - `lw nuke [-y]` (spec §17.4) — reset the build state (`.nvim/build/`, the cache,
-  the health cache) through `Core:_nuke_files`, the same deletion half as the
+  the health cache, each module's owned LSP database area `.nvim/cache/<lsp_database_root>/`)
+  through `Core:_nuke_files`, the same deletion half as the
   editor's `<C-n>`; the remedy for a cache signed on another machine. Keeps the
   configuration; takes no build-dir locks.
 - `lw test [profile] --target <exe>… [--junit <file>] [-- args…]` — named test

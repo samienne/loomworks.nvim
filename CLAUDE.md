@@ -158,7 +158,9 @@ execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
 `lw nuke`, `lw trust --discard`, `remote/run.prune_runs` (`.device-runs`
 pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
 `clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
-pruning by `lw bootstrap install` / `upgrade`)) **must** be reviewed for
+pruning by `lw bootstrap install` / `upgrade`), owned LSP database cleanup
+(`Workspace:_remove_owned_lsp_dbs`, `Core:_nuke_lsp_db_areas`,
+`lsp_db_cleanup.lua`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -190,6 +192,20 @@ directory safety before merging:
    `.nvim/cache` must be real directories (lstat, not links/junctions) whose
    realpath lies under the pin root's (separator-bounded). No recursion, no
    rm_rf; a failed unlink is skipped.
+9. **Owned LSP databases** (spec §4.6 "Owned LSP database cleanup"): a
+   module's mirror (`lsp_database_dir(ctx)`, under
+   `<root>/.nvim/cache/<lsp_database_root>/`) is removed by
+   `Workspace:_remove_owned_lsp_dbs` only for a build dir whose deletion was
+   CONFIRMED (skipped/refused/failed dirs keep it), only when no remaining
+   build dir maps to it, and only after `lsp_db_cleanup.check_mirror`
+   approves it (strictly inside the area, separator-bounded, no `.`/`..`,
+   lstat every level from `.nvim` down — no link/junction — realpath
+   strictly under the area's realpath, and on Windows no segment ending in
+   `.` or a space). Nuke removes the whole area via `Core:_nuke_lsp_db_areas`
+   / `check_area` (exact direct child of `.nvim/cache`); a failed area check
+   aborts the entire nuke. The mirror path is recomputed from the validated
+   build dir, never read from the cache; failure is a
+   warning only.
 
 ## Implementation Notes
 

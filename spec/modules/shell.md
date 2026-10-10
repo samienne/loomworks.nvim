@@ -128,6 +128,14 @@ Emits a single clangd entry when `shell.compile_commands` is set:
   wins, then `tool_data.clangd_path` from the active profile's tool
   (typically supplied by the `cpp_compiler` SDK), then PATH.
 - `root_dir` → project source directory.
+- `db_state` → `"ready"` only when the active ConfigUnit is configured on
+  this machine (core §9.1); otherwise `"unconfigured"`, and
+  `compile_commands_dir` is omitted, so clangd is withheld for the
+  project's buffers (core §9.8) until the unit is configured. The rule
+  applies regardless of where the declared path points: the module cannot
+  tell whether the file is produced by the project's configure command (and
+  so may be stale or foreign before it has run here), so it treats every
+  declared database as build output.
 
 When `compile_commands` is not declared, the module emits no
 `lsp_configs` entry — clangd falls back to whatever it would do

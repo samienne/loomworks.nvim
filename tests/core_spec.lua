@@ -627,6 +627,19 @@ describe("Core", function()
             local core = make_core()
             core:shutdown() -- should not error
         end)
+
+        it("emits workspace_closed and clears the pending root (§9.7 gate)", function()
+            local core = make_core()
+            core:setup({ root = "/root" })
+            core:shutdown()
+            assert.is_nil(core:workspace_root())
+            assert.is_true(core:lsp_ready())
+            local closed = 0
+            for _, e in ipairs(core._deps._events_log) do
+                if e.event == "workspace_closed" then closed = closed + 1 end
+            end
+            assert.equals(1, closed)
+        end)
     end)
 
     describe("_on_file_changed", function()

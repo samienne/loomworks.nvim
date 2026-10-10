@@ -1395,9 +1395,16 @@ function M.cmd_reset(ws, args)
   local function add_lock(bd)
     if bd and not lock_seen[bd] then lock_seen[bd] = true; lock_dirs[#lock_dirs + 1] = bd end
   end
-  local function add_removal(bd)
+  -- Owned LSP database mirrors of the removed dirs, present on disk: listed,
+  -- removed with them by the deletion (spec §4.6), checked afterwards (warning).
+  local mirrors, mirror_seen = {}, {}
+  local function add_removal(bd, unit, bd_obj)
     if bd and not removal_seen[bd] and uv.fs_stat(bd) ~= nil then
       removal_seen[bd] = true; removal_dirs[#removal_dirs + 1] = bd
+    end
+    local m = bd and ws:_lsp_db_mirror(ws:_lsp_db_module_for(unit, bd_obj), bd)
+    if m and not mirror_seen[m] and uv.fs_stat(m) ~= nil then
+      mirror_seen[m] = true; mirrors[#mirrors + 1] = m
     end
   end
   local scope_label, run
@@ -1407,12 +1414,12 @@ function M.cmd_reset(ws, args)
     for _, unit in pairs(ws._config_units or {}) do
       local bd = unit:build_dir()
       add_lock(bd)
-      add_removal(bd) -- reset_all batches every unit; none are "keep"
+      add_removal(bd, unit, unit._build_dir) -- reset_all batches every unit; none are "keep"
       if unit.state_value ~= nil then state_to_clear = true end
     end
     for _, o in ipairs(ws:get_orphaned_configs()) do
       add_lock(o.build_dir_obj and o.build_dir_obj.path or nil)
-      add_removal(o.build_dir_obj and o.build_dir_obj.path or nil)
+      add_removal(o.build_dir_obj and o.build_dir_obj.path or nil, nil, o.build_dir_obj)
       state_to_clear = true -- get_orphaned_configs only returns dirs WITH state
     end
     run = function(on_done) ws:reset_all(on_done) end
@@ -1425,7 +1432,7 @@ function M.cmd_reset(ws, args)
     for _, item in ipairs(profile:plan_reset().items) do
       add_lock(item.build_dir)
       if item.disposition ~= "keep" then
-        add_removal(item.build_dir)
+        add_removal(item.build_dir, item.unit, item.unit and item.unit._build_dir)
         if item.unit and item.unit.state_value ~= nil then state_to_clear = true end
       end
     end
@@ -1441,6 +1448,10 @@ function M.cmd_reset(ws, args)
     out(string.format("Will remove %d build director%s and reset %s to unconfigured:",
       #removal_dirs, (#removal_dirs == 1) and "y" or "ies", scope_label))
     for _, d in ipairs(removal_dirs) do out("  " .. d) end
+    if #mirrors > 0 then
+      out("and the owned LSP database" .. (#mirrors == 1 and "" or "s") .. " generated from them:")
+      for _, m in ipairs(mirrors) do out("  " .. m) end
+    end
   else
     out("Will reset " .. scope_label .. " to unconfigured "
       .. "(no build directories on disk; clearing cached state).")
@@ -1496,6 +1507,13 @@ function M.cmd_reset(ws, args)
       table.concat(still_present, "\n  ")))
   end
 
+  -- A mirror left behind is a warning, not a reset failure (spec §16.30):
+  -- it was kept as shared, refused by a safety check, or failed to delete.
+  for _, m in ipairs(mirrors) do
+    if uv.fs_stat(m) ~= nil then
+      out("warning: owned LSP database not removed: " .. m)
+    end
+  end
   out("RESET OK: " .. scope_label)
   return 0
 end
@@ -1631,6 +1649,12 @@ function M.cmd_nuke(root, args)
     require("loomworks.cache").filepath(root),
     root .. "/.nvim/loomworks.health.json",
   }
+  local core = require("loomworks")._core()
+  -- Module-owned LSP database areas present on disk (spec §4.6, ui §1.11).
+  -- A failed area check aborts before anything is deleted.
+  local areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root))
+  if not areas then die("nuke refused: " .. tostring(area_err)) end
+  for _, a in ipairs(areas) do targets[#targets + 1] = a .. "/" end
   out("Will delete (build state only; your configuration is kept):")
   for _, p in ipairs(targets) do out("  " .. p) end
   if not yes then
@@ -1640,7 +1664,6 @@ function M.cmd_nuke(root, args)
     local answer = (prompt_line("Reset the build cache? [y/N]") or ""):lower()
     if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
   end
-  local core = require("loomworks")._core()
   local errors = {}
   local saved_notify = core._deps.notify
   core._deps.notify = function(msg, level)

@@ -343,19 +343,62 @@ describe("meson module", function()
     end)
 
     describe("lsp_configs", function()
-        it("emits a clangd entry with compile_commands_dir from cached build_dir", function()
+        --- Workspace whose active profile maps App to a unit with `build_dir`,
+        --- configured on this machine iff `configured`.
+        local function ws_with(build_dir, configured)
+            return {
+                root = "/root",
+                get_active_profile = function()
+                    return {
+                        project = function()
+                            return {
+                                build_dir = function() return build_dir end,
+                                configured_here = function() return configured end,
+                            }
+                        end,
+                    }
+                end,
+            }
+        end
+
+        it("emits a clangd entry with compile_commands_dir from the active configured unit", function()
             local project = {
                 key = "App",
                 path = "app",
-                _workspace = { root = "/root" },
-                cached = { build_dir = "/root/.nvim/build/App/Debug" },
+                _workspace = ws_with("/root/.nvim/build/App/Debug", true),
                 type_config = {},
             }
             local entries = meson.lsp_configs(project)
             assert.equals(1, #entries)
             assert.equals("clangd", entries[1].server)
             assert.equals("/root/.nvim/build/App/Debug", entries[1].compile_commands_dir)
+            assert.equals("ready", entries[1].db_state)
             assert.equals("/root/app", entries[1].root_dir)
+        end)
+
+        it("offers no database from a unit not configured here (spec §9.1)", function()
+            local project = {
+                key = "App", path = "app",
+                _workspace = ws_with("/root/.nvim/build/App/Debug", false),
+                cached = { build_dir = "/root/.nvim/build/App/Debug" },
+                type_config = {},
+            }
+            local entries = meson.lsp_configs(project)
+            assert.equals(1, #entries)
+            assert.is_nil(entries[1].compile_commands_dir)
+            assert.equals("unconfigured", entries[1].db_state)
+        end)
+
+        it("reports unconfigured with no active profile (cached build_dir ignored)", function()
+            local project = {
+                key = "App", path = "app",
+                _workspace = { root = "/root" },
+                cached = { build_dir = "/root/.nvim/build/App/Debug" },
+                type_config = {},
+            }
+            local entries = meson.lsp_configs(project)
+            assert.is_nil(entries[1].compile_commands_dir)
+            assert.equals("unconfigured", entries[1].db_state)
         end)
 
         it("applies user clangd override from type_config", function()
