@@ -530,6 +530,18 @@ local function scope_args_ok(a)
     return true
 end
 
+--- Does `a` (a protocol-10 request's args) carry none of `Build/1`'s
+--- editor-scope fields (`units`, `jobs`, `{ project, target }` items)?
+--- @param a table
+--- @return boolean
+local function v0_args_ok(a)
+    if a.units ~= nil or a.jobs ~= nil then return false end
+    for _, v in ipairs(type(a.targets) == "table" and a.targets or {}) do
+        if type(v) ~= "string" then return false end
+    end
+    return true
+end
+
 --- Is `a` (a `prepare_run` request's args) well-formed?
 --- @param a table
 --- @return boolean
@@ -580,9 +592,11 @@ function Service:_on_operation(op, conn, msg, deliver, call)
     for _, v in ipairs(a.extra or {}) do
         if type(v) ~= "string" then return ctx.reply({ outcome = "declined", reason = "malformed request" }) end
     end
-    -- (`units` only on build, configure and clean; `jobs` only on build.)
+    -- (`units` only on build, configure and clean; `jobs` only on build;
+    -- both, and `{ project, target }` items, only through Build/1 — the
+    -- CLI's protocol-10 requests are unchanged, §19.15.)
     if not scope_args_ok(a) or (a.units ~= nil and op ~= "build" and op ~= "configure" and op ~= "clean")
-        or (a.jobs ~= nil and op ~= "build") then
+        or (a.jobs ~= nil and op ~= "build") or (not deliver and not v0_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
     if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string")

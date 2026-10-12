@@ -2128,7 +2128,9 @@ daemon side — `daemon/core_interfaces.lua`, `daemon/service.lua`
 `overseer.plan_units_build`; the editor calls them from part C1.)* `Build/1` grows
 additively for the editor's actions (§19.16 "Editor operations"); its
 interfaces are still drafts, so this is no new version (§19.20 "Schemas and
-conformance"). The CLI's requests are unchanged.
+conformance"). The CLI's requests are unchanged: a protocol-10 (v0) request
+carrying `units`, `jobs` or a `{ project, target }` item is `declined`
+(`malformed request`).
 
 - **`configure { profile | units, reconfigure, interactive, env, command }`**
   — task-streamed, the outcomes of `build`, `meta.kind = configure`. It runs
@@ -2150,7 +2152,7 @@ conformance"). The CLI's requests are unchanged.
   item `{ id }` (a configuration unit's id, e.g. a `view.ProjectsIndex/1`
   record's `active.unit_id`) or `{ project, configuration }` (the project key
   and configuration-unit key, as in `meta.units`); exclusive with `profile`
-  (both → `invalid_args`; a unit that does not resolve → `refused` with the
+  by key or by id (both → `invalid_args`; a unit that does not resolve → `refused` with the
   in-process message). The scope is then those configuration units, each with
   the tool its unit records, as the editor's unit actions run in-process —
   the same steps, locks, gates and lines as for a profile, restricted to
@@ -2163,13 +2165,21 @@ conformance"). The CLI's requests are unchanged.
   (unknown project or configuration)`, or for an id the stale-reference
   refusal of a profile id. A scope with no configure step to run (a module
   without one) prints `nothing to configure for <scope>` and ends 0, as the
-  editor's configure action does nothing for it.
+  editor's configure action does nothing for it. A unit with no tasks at all
+  — no module available, or its tool not detected on this machine — is not
+  that: the build or configure ends 1 before any step with
+  `cannot build: <project>/<configuration>: no tasks (unavailable module or
+  undetected tool)`, as the in-process unit configure refuses; a `clean` with
+  such a unit's tool undetected is refused as a profile's is, never skipping
+  the unit.
 - **`jobs`** on `build` — an integer ≥ 1: the build tool's parallelism for
   this build only (the editor's serial `-j1` build), passed to the module as
-  the in-process build passes its parallel-jobs option.
+  the in-process build passes its parallel-jobs option (`-- -j<jobs>`, or
+  `-j<jobs>` right after a `--` the step's arguments already carry).
 - **`targets`** items may be `{ project, target }` besides a string: that
   target of that project only. A string keeps its meaning (`--target`,
-  §16.4). A project the scope does not build ends the task before any step
+  §16.4); a bare name in the known target lists of several units of one
+  project is that project's, not ambiguous. A project the scope does not build ends the task before any step
   with `target '<t>' names project '<p>', which <scope> does not build`
   (exit 1), as an ambiguous `--target` does.
 
@@ -3824,7 +3834,7 @@ schema of a subscription's `args` (`subscribe_args`; without one a
 subscription takes no `args`). Documents use only a
 restricted keyword set (`type`, `properties`, `required`,
 `additionalProperties`, `items`, `enum`, `const`, `oneOf`, `$ref`, `$defs`,
-`minimum`, `maximum`, `pattern`, `description`) that every validator
+`minimum`, `maximum`, `minItems`, `pattern`, `description`) that every validator
 implements identically. Core's documents live in this repository's protocol
 schema directory, together with the transport document, golden transcripts
 and the frozen snapshot of every interface version a stable release

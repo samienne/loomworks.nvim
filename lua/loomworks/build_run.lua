@@ -355,19 +355,26 @@ function M.ensure_unit_targets(ws, unit, opts)
     if ok and targets then unit:set_targets(targets) end
 end
 
---- Split a target operand into the profile project it is qualified with and
---- the bare name. `<project>:<name>` (the form `lw target` lists) is qualified
---- only when `<project>` names one of the profile's projects — a module's own
+--- Split a target operand into the project it is qualified with and the
+--- bare name. `<project>:<name>` (the form `lw target` lists) is qualified
+--- only when `<project>` names one of the scope's projects — a module's own
 --- target syntax may contain ':' (e.g. meson `name:type`); otherwise the whole
---- operand is the bare name.
---- @param profile loomworks.Profile
+--- operand is the bare name. The scope is a profile (its projects) or a list
+--- of projects (a `units` scope, spec §19.15).
+--- @param scope loomworks.Profile|loomworks.Project[]
 --- @param name string
 --- @return loomworks.Project|nil project, string bare
-function M.split_target_ref(profile, name)
+function M.split_target_ref(scope, name)
     local pfx, rest = name:match("^([^:]+):(.+)$")
     if pfx then
-        for _, pp in ipairs(profile:projects()) do
-            if pp._project and pp._project.key == pfx then return pp._project, rest end
+        if type(scope.projects) == "function" then
+            for _, pp in ipairs(scope:projects()) do
+                if pp._project and pp._project.key == pfx then return pp._project, rest end
+            end
+        else
+            for _, project in ipairs(scope) do
+                if project.key == pfx then return project, rest end
+            end
         end
     end
     return nil, name
@@ -414,6 +421,14 @@ function M.resolve_build_targets(profile, names, opts)
         end
         entries[#entries + 1] = { project = e.project, known = known }
     end
+    -- The scope's distinct projects, in order (several units can be of one).
+    local projects, seen_project = {}, {}
+    for _, e in ipairs(entries) do
+        if not seen_project[e.project] then
+            seen_project[e.project] = true
+            projects[#projects + 1] = e.project
+        end
+    end
     local picks = {}
     local function add(project, t)
         local list = picks[project]
@@ -434,22 +449,23 @@ function M.resolve_build_targets(profile, names, opts)
             end
             bare = name.target
         else
-            -- `<project>:<name>` is qualified only when `<project>` is built
-            -- here (split_target_ref).
-            local pfx, rest = name:match("^([^:]+):(.+)$")
-            for _, e in ipairs(entries) do
-                if pfx and e.project.key == pfx then qproj, bare = e.project, rest end
-            end
-            bare = bare or name
+            -- `<project>:<name>` is qualified only when `<project>` is one of
+            -- the scope's projects (split_target_ref, the one rule).
+            qproj, bare = M.split_target_ref(projects, name)
         end
         if qproj then
             -- Scoped to that project even when its list lacks the name (a
             -- target lw does not list); the build tool decides.
             add(qproj, bare)
         else
-            local hits = {}
+            -- The distinct projects whose known list has it (units of one
+            -- project are that project once).
+            local hits, hit = {}, {}
             for _, e in ipairs(entries) do
-                if e.known and e.known[bare] then hits[#hits + 1] = e end
+                if e.known and e.known[bare] and not hit[e.project] then
+                    hit[e.project] = true
+                    hits[#hits + 1] = e
+                end
             end
             if #hits > 1 then
                 local labels = {}

@@ -24,6 +24,7 @@
     "Units": {
       "description": "The configuration units the operation runs on instead of a profile (non-empty; not with profile), each with the tool its unit records.",
       "type": "array",
+      "minItems": 1,
       "items": { "$ref": "#/$defs/UnitRef" }
     }
   },

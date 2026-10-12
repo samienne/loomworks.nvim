@@ -273,6 +273,11 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         assert.is_true(r.wait_reply())
         assert.equals("invalid_args", r.err and r.err.code, vim.inspect(r))
         r.conn:close()
+        -- A profile by id is a profile too: one scope.
+        r = call(srv, "build", { profile = { id = "1" }, units = { { project = "app", configuration = "Debug" } } })
+        assert.is_true(r.wait_reply())
+        assert.equals("invalid_args", r.err and r.err.code, vim.inspect(r))
+        r.conn:close()
         r = call(srv, "configure", { units = {} })
         assert.is_true(r.wait_reply())
         assert.equals("invalid_args", r.err and r.err.code, vim.inspect(r))
@@ -298,5 +303,23 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         assert.equals("refused", r.reply.outcome, vim.inspect(r.reply))
         assert.equals("nothing to clean for app/Debug — no configured build directories.", r.reply.message)
         r.conn:close()
+    end)
+
+    it("the CLI's protocol-10 build takes none of Build/1's new fields (units, jobs, { project, target })", function()
+        start()
+        for _, args in ipairs({
+            { units = { { project = "app", configuration = "Debug" } } },
+            { profile = "dev", jobs = 2 },
+            { profile = "dev", targets = { { project = "app", target = "x" } } },
+        }) do
+            local reply
+            local conn = client.session(srv.address, {})
+            conn:request({ kind = "build", args = args, interactive = false, env = envscope.capture(),
+                command = "lw build" }, function(r, e) reply = r or { error = e } end)
+            assert.is_true(vim.wait(60000, function() return reply ~= nil end, 10))
+            assert.equals("declined", reply.outcome, vim.inspect({ args, reply }))
+            assert.equals("malformed request", reply.reason)
+            conn:close()
+        end
     end)
 end)

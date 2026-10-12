@@ -184,11 +184,20 @@ end
 
 --- A build command with the parallel-jobs option (the editor's serial `-j1`
 --- build; `Build/1.build` `jobs`, spec §19.15) appended: `-- -j<jobs>`, the
---- build tool's own option after the driver's. Appends to `cmd` in place.
+--- build tool's own option after the driver's — or, when `cmd` already has a
+--- `--`, `-j<jobs>` right after it. Changes `cmd` in place.
 --- @param cmd string[]
 --- @param jobs integer|string
 --- @return string[] cmd
 function M.append_parallel_jobs(cmd, jobs)
+    -- A command already passing the build tool's options (`--`, e.g. from
+    -- forwarded args): `-j<jobs>` goes right after that `--`, not a second one.
+    for i, v in ipairs(cmd) do
+        if v == "--" then
+            table.insert(cmd, i + 1, "-j" .. tostring(jobs))
+            return cmd
+        end
+    end
     cmd[#cmd + 1] = "--"
     cmd[#cmd + 1] = "-j" .. tostring(jobs)
     return cmd
@@ -526,7 +535,7 @@ end
 
 --- Collect clean task definitions for a single configuration.
 --- @param unit loomworks.ConfigUnit
---- @return table[]|nil clean_tasks
+--- @return table[]|nil clean_tasks, string|nil undetected the refusal of an undetected tool
 local function collect_configuration_clean_tasks(unit)
     local modules = require("loomworks.modules")
 
@@ -541,7 +550,7 @@ local function collect_configuration_clean_tasks(unit)
 
     local variant = unit:variant()
     local tool_data, terr = exec_tool_data(unit)
-    if terr then return refuse_undetected(terr) end
+    if terr then return refuse_undetected(terr), terr end
 
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
@@ -1303,7 +1312,13 @@ function M.plan_units_build(units, opts)
                 build_args = opts.build_args,
                 build_targets = opts.build_targets_for and opts.build_targets_for[project] or nil,
             })
-            if not by_action then return nil end
+            -- No module, no tasks or an undetected tool: refused, never an
+            -- empty plan ("nothing to configure" is only a module with no
+            -- configure step), as the editor's unit configure refuses.
+            if not by_action then
+                return nil, (project and project.key or "?") .. "/" .. tostring(unit:config_key())
+                    .. ": no tasks (unavailable module or undetected tool)"
+            end
             vim.list_extend(all_tasks.configure, by_action.configure or {})
             vim.list_extend(all_tasks.build, by_action.build or {})
         end
@@ -1332,12 +1347,16 @@ end
 --- a profile (`Build/1.clean` `units`, spec §19.15): each unit's clean tasks
 --- collected as the editor's unit clean collects them
 --- (run_configuration_clean: the tool its unit records), in the order given.
+--- A unit whose tool is not detected refuses the whole clean (nil), as
+--- plan_profile_clean does; a unit whose module has no clean is skipped.
 --- @param units loomworks.ConfigUnit[]
 --- @return table[]|nil steps as plan_profile_clean's
 function M.plan_units_clean(units)
     local tasks = {}
     for _, unit in ipairs(units) do
-        for _, task_def in ipairs(collect_configuration_clean_tasks(unit) or {}) do
+        local clean, undetected = collect_configuration_clean_tasks(unit)
+        if undetected then return nil end
+        for _, task_def in ipairs(clean or {}) do
             -- The unit the task cleans, as for a profile (collect_profile_clean_tasks):
             -- the headless runner records a module clean against it.
             task_def.loomworks = task_def.loomworks or {}
