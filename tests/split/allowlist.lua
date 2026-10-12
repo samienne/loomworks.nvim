@@ -145,6 +145,10 @@ return {
     reach_ins = {
         ["lua/loomtest/runner.lua"] = 1,
         ["lua/loomworks/auto_load.lua"] = 1,
+        -- 0 -> 1: step 5k C1a review fix — an operation is carried only by
+        -- the observer of its own scope's workspace (editor_ops.scope_workspace),
+        -- never the editor's current one after a workspace swap.
+        ["lua/loomworks/daemon/editor_ops.lua"] = 1,
         ["lua/loomworks/device_log.lua"] = 1,
         ["lua/loomworks/init.lua"] = 59,
         ["lua/loomworks/integrations/lsp/clangd.lua"] = 1,

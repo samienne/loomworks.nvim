@@ -89,7 +89,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
 
     it("in-process mode: nothing is routed, the entry points run in-process as before", function()
         assert.is_nil(observer.current())
-        assert.is_nil(editor_ops.carrier("build"))
+        assert.is_nil(editor_ops.carrier("build", ws))
         assert.is_false(editor_ops.daemon_mode())
         local f = require("loomworks.overseer").run_profile_action(profile, "build")
         assert.is_nil(f.routed)
@@ -229,7 +229,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
 
     it("not carried (no Tasks/1, so no cancel): in-process, nothing sent", function()
         obs = fake_observer({ operations = "available" })
-        assert.is_nil(editor_ops.carrier("build"))
+        assert.is_nil(editor_ops.carrier("build", ws))
         assert.is_nil(require("loomworks.overseer").run_profile_action(profile, "build").routed)
         assert.same({}, sent)
         assert.is_true(vim.wait(5000, function() return #created > 0 end, 10))
@@ -289,6 +289,99 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         done_frame("c1", 0)
         assert.is_true(vim.wait(2000, function() return st.ok ~= nil end, 10))
         assert.equals(0, #created)
+    end)
+
+    it("a routed clean cancels the editor's conflicting in-process operations first (D5)", function()
+        obs = fake_observer()
+        local ov = require("loomworks.overseer")
+        local orig = ov.plan_profile_clean
+        ov.plan_profile_clean = function() return { { kind = "clean" } } end
+        local cancelled
+        local orig_cco = ws.cancel_conflicting_operations
+        ws.cancel_conflicting_operations = function(self, units)
+            cancelled = { units = units, sent = #sent }
+            return orig_cco(self, units)
+        end
+        local ok, err = pcall(function() return profile:clean() end)
+        ov.plan_profile_clean = orig
+        ws.cancel_conflicting_operations = orig_cco
+        assert.is_true(ok, tostring(err))
+        assert.is_not_nil(cancelled, "cancel_conflicting_operations was not called")
+        assert.same({ unit }, cancelled.units)
+        assert.equals(0, cancelled.sent)
+        assert.equals(1, #sent)
+        assert.equals("clean", sent[1].method)
+    end)
+
+    it("routing follows the scope's workspace, never another workspace's observer", function()
+        obs = fake_observer()
+        -- Another workspace's observer is the editor's current one.
+        local other_sent = {}
+        local oconn = { transport = 11, closed = false }
+        function oconn.call(_, _, _, _, method) other_sent[#other_sent + 1] = method end
+        local other = setmetatable({
+            ws = {}, root = "/elsewhere", state = "connected", conn = oconn, mode = "interfaces",
+            _feat = { operations = "available", tasks = "subscribed" }, _why = {},
+            _tasks = {}, _order = {}, _owned = {}, seq = 0, opts = {},
+        }, observer.Observer)
+        observer._current = other
+        local f = require("loomworks.overseer").run_profile_action(profile, "build")
+        assert.is_true(f.routed)
+        assert.equals(1, #sent)
+        assert.same({}, other_sent)
+        -- No observer of the scope's own workspace: not carried.
+        ws._daemon_observer = nil
+        assert.is_nil(editor_ops.carrier("build", ws))
+        assert.is_nil(require("loomworks.overseer").run_profile_action(profile, "build").routed)
+        assert.same({}, other_sent)
+        assert.equals(1, #sent)
+    end)
+
+    it("Tasks/1.cancel carries no environment; Build/1 calls do", function()
+        obs = fake_observer()
+        require("loomworks.overseer").run_profile_action(profile, "build")
+        assert.same({ PATH = "x" }, sent[1].env)
+        sent[1].cb({ outcome = "accepted", task_id = "e1" }, nil)
+        assert.is_true(vim.wait(2000, function() return obs._owned["e1"] ~= nil end, 10))
+        start_frame("e1", { name = "build", kind = "build", profile = profile.key })
+        obs:cancel_owned(obs._tasks["e1"])
+        assert.equals("cancel", sent[2].method)
+        assert.is_nil(sent[2].env)
+    end)
+
+    it("`accepted` arriving after the connection changed ends the operation as disconnected", function()
+        obs = fake_observer()
+        local done
+        obs:start_owned("build", { profile = { key = profile.key } }, {
+            on_reply = function() end,
+            on_done = function(task, reason) done = { task = task, reason = reason } end,
+        })
+        obs.conn = { transport = 11, closed = false, call = function() end }
+        sent[1].cb({ outcome = "accepted", task_id = "m1" }, nil)
+        assert.is_true(vim.wait(2000, function() return done ~= nil end, 10), "on_done never ran")
+        assert.equals("the workspace daemon disconnected", done.reason)
+        assert.is_nil(obs._owned["m1"])
+    end)
+
+    it("a clean also cancels the editor's accepted build whose task has not started yet", function()
+        obs = fake_observer()
+        require("loomworks.overseer").run_profile_action(profile, "build")
+        sent[1].cb({ outcome = "accepted", task_id = "p1" }, nil)
+        assert.is_true(vim.wait(2000, function() return obs._owned["p1"] ~= nil end, 10))
+        -- No `start` frame yet.
+        local ov = require("loomworks.overseer")
+        local orig = ov.plan_profile_clean
+        ov.plan_profile_clean = function() return { { kind = "clean" } } end
+        local ok, err = pcall(function() return profile:clean() end)
+        ov.plan_profile_clean = orig
+        assert.is_true(ok, tostring(err))
+        assert.equals(2, #sent)
+        assert.equals("cancel", sent[2].method)
+        assert.same({ task_id = "p1" }, sent[2].args)
+        -- Its end (even without a `start`) lets the clean go on.
+        done_frame("p1", 130, "build stopped")
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        assert.equals("clean", sent[3].method)
     end)
 
     it("a clean with nothing to clean resolves at once, as in-process", function()

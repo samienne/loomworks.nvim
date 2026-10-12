@@ -69,6 +69,10 @@ local views = require("loomworks.views")
 
 local M = {}
 
+--- The observer last attached, until it stops (`M.current`).
+--- @type loomworks.daemon.Observer|nil
+M._current = nil
+
 local function env_ms(name)
     local v = tonumber(os.getenv(name) or "")
     return (v and v > 0) and v or nil
@@ -253,6 +257,7 @@ end
 ---   notify      fun(msg, level) (vim.notify: the one notice of a retirement)
 ---   keepalive_ms, retire_check_ms
 ---   channel_tick_ms  replaces CHANNEL_TICK_MS
+---   environ     fun() → table<string, string> (vim.fn.environ: the environment a Build/1 call carries)
 --- @param ws loomworks.Workspace
 --- @param opts? table
 --- @return loomworks.daemon.Observer|nil
@@ -289,7 +294,8 @@ end
 function M.of(ws) return ws and ws._daemon_observer or nil end
 
 --- The observer of the workspace the editor has loaded (the last attached,
---- until it stops), if any: what the editor's operation routing asks
+--- until it stops), if any. The editor's operation routing asks the
+--- observer of the operation's own workspace (`M.of`) instead
 --- (loomworks.daemon.editor_ops, step 5k).
 --- @return loomworks.daemon.Observer|nil
 function M.current()
@@ -1143,6 +1149,11 @@ function Observer:_check_retire()
                 end
                 return self:_after_retire(R.note(wait.ch, wait.inc, binary, "it is retiring"))
             end
+            -- `busy_clients` leaves out the asking connection (server
+            -- busy_connections(except)), so on the observed connection the
+            -- editor's own tasks reach R.busy only through the daemon-wide
+            -- `busy` flag; owns_tasks keeps §19.16's "the editor's own
+            -- connection included" explicit (D10), whatever the status says.
             if R.busy(st) or self:owns_tasks() then
                 local tail = "incompatible daemon is busy; retiring when idle"
                 if wait.observed then return self:_note_incompatible(wait, tail) end
@@ -1671,7 +1682,14 @@ function Observer:_on_task(msg)
         end
         return self:_add(task)
     end
-    if not task then return end -- started before we connected: not shown
+    if not task then
+        -- An owned task that ended before its `start` arrived still ends its
+        -- operation; any other one started before we connected: not shown.
+        if msg.phase == "done" and self._owned[id] then
+            self:_owned_ended(id, nil, nil, { exit_code = tonumber(msg.exit_code), error = msg.error })
+        end
+        return
+    end
     if msg.phase == "line" or msg.phase == "output" then
         task:append(tostring(msg.text or ""))
     elseif msg.phase == "progress" then
@@ -1748,8 +1766,9 @@ local CALLS = {
     end,
 }
 
---- An interface call of CALLS on the observed connection, with the editor
---- process's whole environment at call time (§19.16 "Editor operations").
+--- An interface call of CALLS on the observed connection; a Build/1
+--- operation call carries the editor process's whole environment at call
+--- time (§19.16 "Editor operations"), a Tasks/1.cancel none.
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
 --- @param name "build"|"configure"|"clean"|"cancel"
@@ -1762,7 +1781,9 @@ function Observer:_icall(name, args, cb)
     if not conn or conn.closed or type(conn.call) ~= "function" then
         return cb(nil, { code = "closed", message = "not connected" })
     end
-    send(conn, args, cb, (self.opts.environ or vim.fn.environ)())
+    local env = nil
+    if name ~= "cancel" then env = (self.opts.environ or vim.fn.environ)() end
+    send(conn, args, cb, env)
 end
 
 --- Can the editor carry `method` of loomworks.Build/1 now (§19.16
@@ -1799,6 +1820,7 @@ end
 
 --- @class loomworks.daemon.OwnedCall
 --- @field method string the Build/1 method
+--- @field units loomworks.ConfigUnit[]|nil the call's units, before its `start` names them
 --- @field task loomworks.RemoteTask|nil once its `start` arrived
 --- @field on_done fun(task: loomworks.RemoteTask|nil, reason: string|nil)
 --- @field waiters fun()[] called once it ended (a cancel waiting for it)
@@ -1819,15 +1841,19 @@ end
 ---                                      the reply): never re-run.
 --- @param method "build"|"configure"|"clean"
 --- @param args table the call's arguments (§19.15)
---- @param h { on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil) }
+--- `h.units`: the call's configuration units (a clean pre-empts the task by
+--- them before its `start` arrives).
+--- @param h { units?: loomworks.ConfigUnit[], on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil) }
 function Observer:start_owned(method, args, h)
     local conn = self.conn
     self:_icall(method, args, function(result, err)
         -- Registered here, in the reply's own callback, so the task's
         -- `start` frame (scheduled after this reply) finds it owned.
         local id = not err and type(result) == "table" and result.outcome == "accepted" and result.task_id or nil
+        local registered = false
         if id ~= nil and self.conn == conn then
-            self._owned[id] = { method = method, on_done = h.on_done, waiters = {} }
+            self._owned[id] = { method = method, units = h.units, on_done = h.on_done, waiters = {} }
+            registered = true
         end
         vim.schedule(function()
             if err then
@@ -1847,6 +1873,11 @@ function Observer:start_owned(method, args, h)
             local r = type(result) == "table" and result or {}
             if r.outcome == "accepted" and id ~= nil then
                 h.on_reply({ outcome = "accepted", task_id = id })
+                if not registered then
+                    -- Accepted on a connection already replaced: its task
+                    -- ended with that connection, never seen here.
+                    return h.on_done(nil, "the workspace daemon disconnected")
+                end
                 -- The connection dropped before this ran: it ended with it.
                 if self.conn ~= conn and self._owned[id] then
                     self:_owned_ended(id, nil, "the workspace daemon disconnected")
@@ -1868,11 +1899,12 @@ end
 --- @param id any the task id
 --- @param task loomworks.RemoteTask|nil
 --- @param reason string|nil why it ended without `done`
-function Observer:_owned_ended(id, task, reason)
+--- @param result? { exit_code: integer|nil, error: string|nil } its `done`, when no task was ever shown
+function Observer:_owned_ended(id, task, reason, result)
     local o = self._owned[id]
     if not o then return end
     self._owned[id] = nil
-    if o.on_done then pcall(o.on_done, task or o.task, reason) end
+    if o.on_done then pcall(o.on_done, task or o.task or result, reason) end
     for _, w in ipairs(o.waiters) do pcall(w) end
 end
 
@@ -1901,20 +1933,42 @@ end
 --- @param on_ended? fun(ok: boolean, why: string|nil)
 function Observer:cancel_owned(task, on_ended)
     on_ended = on_ended or function() end
-    local o = task and self._owned[task.id]
-    if not o then
+    if not (task and self._owned[task.id]) then
         local who = task and task.origin_label and task:origin_label()
         return on_ended(false, who and ("started by " .. who .. " — cancel it there") or "not running")
     end
+    self:cancel_owned_id(task.id, on_ended)
+end
+
+--- The calls the editor owns that have not ended — accepted, their task
+--- started (`task`) or not yet (`units`, the call's) — in no set order.
+--- @return { id: any, task: loomworks.RemoteTask|nil, units: loomworks.ConfigUnit[]|nil }[]
+function Observer:owned_calls()
+    local out = {}
+    for id, o in pairs(self._owned) do
+        out[#out + 1] = { id = id, task = o.task, units = o.units }
+    end
+    return out
+end
+
+--- Cancel the editor's owned call `id` (accepted; its task started or not
+--- yet), as `cancel_owned`. Not owned: `on_ended(false, "not running")`.
+--- @param id any the daemon task id
+--- @param on_ended? fun(ok: boolean, why: string|nil)
+function Observer:cancel_owned_id(id, on_ended)
+    on_ended = on_ended or function() end
+    local o = self._owned[id]
+    if not o then return on_ended(false, "not running") end
+    local name = o.task and o.task.name or tostring(id)
     o.waiters[#o.waiters + 1] = function() on_ended(true) end
-    self:_icall("cancel", { task_id = task.id }, function(_, err)
+    self:_icall("cancel", { task_id = id }, function(_, err)
         if not err then return end
         vim.schedule(function()
             -- Ended meanwhile (`not_found`), or the connection is gone: its
             -- end (or the disconnect) completes the wait.
             local code = type(err) == "table" and err.code or err
             if code == "not_found" or code == "closed" then return end
-            vim.notify("loomworks: could not cancel " .. tostring(task.name) .. ": "
+            vim.notify("loomworks: could not cancel " .. tostring(name) .. ": "
                 .. tostring(type(err) == "table" and (err.message or err.code) or err), vim.log.levels.WARN)
         end)
     end)

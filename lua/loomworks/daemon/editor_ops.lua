@@ -39,12 +39,16 @@ local VERB = { build = "build", configure = "configure", clean = "clean" }
 
 --- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any), fallback: fun() }
 
---- The observer that carries `method` now, or nil.
+--- The observer of `ws` when it carries `method` now, or nil. Only the
+--- workspace's own observer carries its operations: a step chained from a
+--- workspace the editor has since swapped away from is never sent to another
+--- workspace's daemon.
 --- @param method "build"|"configure"|"clean"
+--- @param ws loomworks.Workspace|nil
 --- @return loomworks.daemon.Observer|nil
-function M.carrier(method)
-    local obs = require("loomworks.daemon.observer").current()
-    if obs and obs:can_call(method) then return obs end
+function M.carrier(method, ws)
+    local obs = require("loomworks.daemon.observer").of(ws)
+    if obs and obs.state ~= "stopped" and obs:can_call(method) then return obs end
     return nil
 end
 
@@ -62,6 +66,14 @@ end
 function M.unit_ref(unit)
     local p = unit._project
     return { project = p and p.key or unit._init_project_key, configuration = unit:config_key() }
+end
+
+--- The workspace a scope belongs to.
+--- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
+--- @return loomworks.Workspace|nil
+function M.scope_workspace(scope)
+    local owner = scope.profile or (scope.units and scope.units[1])
+    return owner and owner._workspace or nil
 end
 
 --- The configuration units of a scope.
@@ -131,7 +143,7 @@ end
 --- @param k loomworks.daemon.OpContinuation
 --- @return boolean routed
 function M.run(method, scope, opts, k)
-    local obs = M.carrier(method)
+    local obs = M.carrier(method, M.scope_workspace(scope))
     if not obs then return false end
     opts = opts or {}
     local verb = VERB[method] or method
@@ -142,6 +154,7 @@ function M.run(method, scope, opts, k)
         if not obs:can_call(method) then return k.fallback() end
         local args = M.args(scope, { jobs = opts.jobs, force = opts.force or force, targets = opts.targets })
         obs:start_owned(method, args, {
+            units = scope_units(scope),
             on_reply = function(r)
                 if r.outcome == "accepted" then return end
                 if r.outcome == "declined" then
@@ -192,15 +205,17 @@ end
 --- the workspace's `_operation_router` and overseer.route_clean). False when
 --- not routed; otherwise it ends through `k` as `M.run`. Before the call, the
 --- editor's own tasks on the same units are cancelled (`Tasks/1.cancel`,
---- waiting for their end, §19.15 "The editor as owner") and its local tasks
---- on them stopped, as the in-process clean pre-empts them; another
+--- waiting for their end, §19.15 "The editor as owner") — accepted ones whose
+--- task has not started yet included — and, as the in-process clean
+--- pre-empts them, its in-process operations on them cancelled
+--- (`cancel_conflicting_operations`) and its local tasks on them stopped; another
 --- client's task is never cancelled — the clean meets its build-directory
 --- locks. Nothing to clean resolves at once, as in-process.
 --- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
 --- @param k loomworks.daemon.OpContinuation
 --- @return boolean routed
 function M.clean(scope, k)
-    local obs = M.carrier("clean")
+    local obs = M.carrier("clean", M.scope_workspace(scope))
     if not obs then return false end
     local overseer = require("loomworks.overseer")
     local units = scope_units(scope)
@@ -215,11 +230,14 @@ function M.clean(scope, k)
     local mine = {}
     for _, u in ipairs(units) do mine[u] = true end
     local pending = {}
-    for _, task in ipairs(obs:owned_tasks()) do
-        for _, u in ipairs(task:config_units()) do
-            if mine[u] then pending[#pending + 1] = task; break end
+    for _, call in ipairs(obs:owned_calls()) do
+        for _, u in ipairs(call.task and call.task:config_units() or call.units or {}) do
+            if mine[u] then pending[#pending + 1] = call.id; break end
         end
     end
+    -- An in-process operation chain on these units (a fallback build after a
+    -- declined call or a disconnect) stops here, not after the clean (D5).
+    if ws and ws.cancel_conflicting_operations then ws:cancel_conflicting_operations(units) end
     local items = {}
     for _, u in ipairs(units) do items[#items + 1] = { unit = u } end
     local local_ids = {}
@@ -237,8 +255,8 @@ function M.clean(scope, k)
     if left == 0 then
         start()
     else
-        for _, task in ipairs(pending) do
-            obs:cancel_owned(task, function()
+        for _, id in ipairs(pending) do
+            obs:cancel_owned_id(id, function()
                 left = left - 1
                 if left == 0 then start() end
             end)
@@ -264,7 +282,7 @@ end
 --- @param profile loomworks.Profile
 --- @return integer
 function M.cancel_for_profile(profile)
-    local obs = require("loomworks.daemon.observer").current()
+    local obs = require("loomworks.daemon.observer").of(profile and M.scope_workspace({ profile = profile }))
     if not obs then return 0 end
     local n = 0
     for _, task in ipairs(obs:owned_tasks()) do

@@ -267,7 +267,8 @@ end
 --- @return table|nil handle
 function M.start_op_action(title, method)
     local ops = require("loomworks.daemon.editor_ops")
-    if ops.carrier(method) then return nil end
+    local obs = require("loomworks.daemon.observer").current()
+    if obs and ops.carrier(method, obs.ws) then return nil end
     return M.start_action(title .. in_process_suffix())
 end
 
