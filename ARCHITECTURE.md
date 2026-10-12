@@ -1634,6 +1634,20 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   operations, deletions, active set, workspace), which redraws the statusline
   (coalesced per event-loop turn), so a running state starts the lualine
   spinner at once; lualine itself subscribes to no event.
+- *(Step 5l, plan; spec §19.16 "LSP configuration", §19.20 `LspConfig/1`.)*
+  `lsp_config.lua` (shared side, host-neutral) — the one builder of the LSP
+  configuration state: the entries memo and `db_state` derivation moved out
+  of `lsp.lua`, entries per project in key order with `build_dir` and a
+  per-entry `db_rev` (a Workspace counter bumped where `_nudge_lsp` runs),
+  the LSP options and the readiness flag; the daemon serves it on `/lsp`
+  (`core_interfaces.lua`, beside `DebugConfig/1`) and the editor calls it
+  in-process. `lsp_source.lua` (plugin side) — what `lsp.lua` and the
+  integrations read instead of the model: the daemon's state while the
+  observer carries `LspConfig/1` (cached per connection like the debug
+  adapters, re-read on its `changed` and on `Workspace/1` `changed`,
+  emitting `daemon_lsp_config`), else the in-process builder's; buffer →
+  project by `init.buf_project`. While it is carried the editor's Workspace
+  skips `refresh_lsp_database` (the daemon is the one generator).
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
   request kind as its interface method (entities as `{ key }`) and maps the

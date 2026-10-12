@@ -152,17 +152,17 @@ diagnostics stays undecided for local and daemon tasks alike.
 
 ---
 
-## Withheld clangd (§9.8) when LSP moves into the daemon (step 5l)
+## Per-file compile command over the daemon
 
-Merged from master (#192) into staging/daemon: the per-buffer withheld states
-(`lsp_buf_state`, `lsp_buf_state_changed`, `workspace_closed`) and the
-`db_state` of `lsp_configs` entries are decided by the editor's LSP layer from
-its in-process model, in every mode, as all LSP wiring is until step 5l
-(spec/core/daemon.md §19.13). `buf_status().lsp` is added by the editor on top
-of the two views. When step 5l moves LSP to the daemon, `loomworks.LspConfig/1`
-(`/lsp`) must carry each entry's `db_state` (and the editor must re-evaluate
-withheld buffers on its `changed` updates) so a configure run in the daemon
-starts or withholds clangd exactly as in-process. Not designed yet.
+Step 5l dropped `compile_command` from `loomworks.LspConfig/1` (spec
+§19.20): no client asks the daemon for one file's command today, and the
+editor's `lw.compile_command_for_file` keeps answering from its in-process
+model (§8.4 `compile_command_for`) in every mode, so in `daemon` mode it can
+lag a configure the daemon ran until the editor's model has remerged.
+If a client needs it (a CLI `lw compile-command <file>`, an editor action),
+add it at the interface's next version: `{ file }` → the owned
+database's entry for the file, with its `origin`, or "not owned" for a
+module without an owned database.
 
 ---
 
