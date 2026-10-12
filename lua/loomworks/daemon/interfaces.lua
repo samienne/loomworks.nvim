@@ -67,6 +67,7 @@ end
 --- @class loomworks.daemon.InterfaceImpl
 --- @field methods table<string, fun(ctx: loomworks.daemon.CallContext, args: table): any, loomworks.proto.ErrorObject|nil>
 --- @field initial? fun(ctx: loomworks.daemon.CallContext, args: table, signals: string[], sub: loomworks.daemon.Subscription): any the full state on subscribe
+--- @field subscribed? fun(sub: loomworks.daemon.Subscription) called once a subscription is registered (a signal without `initial` records its baseline there)
 --- @field doc? table an inline schema document (tests; else loaded from the protocol directory)
 --- @field same_build? boolean callable only by a client of the daemon's own lw_version
 --- @field internal? boolean not a stable contract
@@ -598,6 +599,10 @@ function M.root_impl()
                 return nil, envelope.err(ERR.internal, "internal error")
             end
             result.initial = initial
+        end
+        if e.impl.subscribed then
+            local ok, err = pcall(e.impl.subscribed, sub)
+            if not ok then reg:_log("subscription hook of %s/%d failed: %s", args.iface, args.v, tostring(err)) end
         end
         return result
     end

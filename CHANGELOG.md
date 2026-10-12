@@ -613,6 +613,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what needs it. (#196, #198)
 
 ### Fixed
+- Changing an LSP option whose save is refused (a stale or untrusted working
+  copy) no longer keeps the unsaved option or restarts clangd; an unknown
+  option or a value of the wrong type is refused without writing anything
+  (#204)
 - A lock file read in the instant between its creation and its record being
   written is read again briefly instead of being judged another host's lock.
   Before, e.g. an editor following the workspace daemon through a

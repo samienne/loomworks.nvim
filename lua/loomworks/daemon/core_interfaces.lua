@@ -8,6 +8,7 @@
 ---   /tests       loomworks.Tests/1        run T
 ---   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
+---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list
 ---   /profiles    loomworks.Profiles/1     compiler_cache
 ---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1
@@ -37,6 +38,9 @@
 --- or error changed (checked after every model segment and every write, and
 --- before the acknowledgement of a request answered inside its segment);
 --- the views' `update` at the same point (loomworks.daemon.views.check);
+--- `LspConfig.changed` at the same point when the LSP state (computed with
+--- the daemon's own environment) differs from the one at its last
+--- `changed`, and whenever an owned LSP database was written (`lsp_check`);
 --- `Tasks.started` / `Tasks.ended` as a task starts and ends, to the
 --- subscribers of `/tasks` (filtered by the subscription's `task_id`). The
 --- task frames themselves reach a connection of transport 11 only for a task
@@ -58,6 +62,7 @@ M.LAUNCH = { path = "/launch", iface = "loomworks.Launch", v = 1 }
 M.TOOLCHAINS = { path = "/toolchains", iface = "loomworks.Toolchains", v = 1 }
 M.PROFILES = { path = "/profiles", iface = "loomworks.Profiles", v = 1 }
 M.DEBUG = { path = "/debug", iface = "loomworks.DebugConfig", v = 1 }
+M.LSP = { path = "/lsp", iface = "loomworks.LspConfig", v = 1 }
 
 --- The header of `Workspace/1` (the welcome header's fields, §19.13), never
 --- loading.
@@ -93,6 +98,56 @@ function M.header_check(service)
     end
     local ok, err = pcall(require("loomworks.daemon.views").check, service)
     if not ok and reg then reg:_log("view update failed: %s", tostring(err)) end
+    ok, err = pcall(M.lsp_check, service)
+    if not ok and reg then reg:_log("LspConfig changed check failed: %s", tostring(err)) end
+end
+
+--- `LspConfig/1.get`'s state (§19.20): `env_key` names the environment it is
+--- computed in (the caller's, or nil for the daemon's own). Never loads: in
+--- any state but `loaded` it is that state with nothing else.
+--- @param service loomworks.daemon.BuildService
+--- @param env_key? string
+--- @return loomworks.LspConfigState
+function M.lsp_state(service, env_key)
+    local lsp_config = require("loomworks.lsp_config")
+    local ws, err = service:header_model()
+    if not ws then
+        return lsp_config.state(nil, { state = require("loomworks.view_state").base_header(nil, err).state })
+    end
+    return lsp_config.state(ws, { env_key = env_key,
+        id_of = function(project) return service.ids:id(project) end })
+end
+
+--- Send `LspConfig.changed { seq }` when the LSP state the daemon computes
+--- with its own environment differs from the one at the last `changed`, or
+--- always with `force` (an owned database was written: a raised `db_rev`).
+--- Built only while someone subscribes; without subscribers the baseline is
+--- dropped, and the first subscription records it (`lsp_impl`'s
+--- `subscribed`) without sending anything (a client reads `get` after
+--- subscribing, §19.20).
+--- @param service loomworks.daemon.BuildService
+--- @param force? boolean
+function M.lsp_check(service, force)
+    local reg = service.server and service.server.interfaces
+    if not reg or not reg:has_subscribers(M.LSP.path, M.LSP.iface, M.LSP.v, "changed") then
+        service._lsp_sig = nil
+        return
+    end
+    -- Inside a model segment the process has the client's environment: the
+    -- check after the segment (in the daemon's own) decides, `force` kept.
+    if service.current ~= nil then
+        if force then service._lsp_force = true end
+        return
+    end
+    force = force or service._lsp_force
+    service._lsp_force = nil
+    local sig = require("loomworks.lsp_config").signature(M.lsp_state(service, nil))
+    local last = service._lsp_sig
+    service._lsp_sig = sig
+    if force or (last ~= nil and last ~= sig) then
+        service._lsp_seq = (service._lsp_seq or 0) + 1
+        reg:emit(M.LSP.path, M.LSP.iface, M.LSP.v, "changed", { seq = service._lsp_seq })
+    end
 end
 
 --- The `loomworks.Workspace/1` handlers.
@@ -360,6 +415,80 @@ function M.debug_impl(service)
     return { methods = methods }
 end
 
+--- The `loomworks.LspConfig/1` handlers (§19.20 `LspConfig/1`). `get` is
+--- answered in a model segment of the caller's environment (an entry's server
+--- binary resolves in it, §19.15 "Environment") against the loaded model,
+--- never loading one: in any other state it answers that state at once.
+--- `set_option` is a command like DebugConfig/1.set_adapter: in its model
+--- segment (loaded as for a query when none is), after the tracker took in
+--- any pending file change, the working copy is written as the in-process
+--- Workspace:set_lsp_option writes it; the committed write's `model_change`
+--- (and `Workspace.changed`, then this interface's `changed`) precedes the
+--- reply. A refused or failed write (a stale or untrusted working copy, a
+--- refused load) changes neither user.json nor the model: the refused result.
+--- An unknown server or key or a mistyped value is `invalid_args`, before
+--- anything runs.
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.daemon.InterfaceImpl
+function M.lsp_impl(service)
+    local interfaces = require("loomworks.daemon.interfaces")
+    local envscope = require("loomworks.daemon.envscope")
+    local methods = {}
+    function methods.get(ctx)
+        if not service:header_model() then return M.lsp_state(service) end
+        if service.stopping or service.server.stopped then
+            return { outcome = "declined", reason = "the workspace runtime is stopping" }
+        end
+        local env_key = envscope.signature(ctx.env)
+        local seg = { op = "lsp_config", conn = ctx.conn, env = ctx.env, args = {} }
+        function seg.reply(fields)
+            seg.replied = true
+            service:_before_ack(seg)
+            ctx.reply(fields)
+        end
+        service:with_model(seg, function()
+            if ctx.conn.closed then return end
+            seg.reply(M.lsp_state(service, env_key))
+        end)
+        return interfaces.ASYNC
+    end
+    function methods.set_option(ctx, args)
+        local value = args.value
+        if value == vim.NIL then value = nil end
+        -- An unknown server or key, or a mistyped value, is an invalid call
+        -- (§19.20): refused before any segment, nothing loaded or written.
+        local problem = require("loomworks.workspace").lsp_option_problem(args.server, args.key, value)
+        if problem then
+            return nil, envelope.err(envelope.ERR.invalid_args, "set_option: " .. problem)
+        end
+        service:_on_model_request(ctx.conn, { kind = "lsp_config", env = ctx.env }, function(ws)
+            -- A change another process wrote is taken in first: the write
+            -- then never refuses as stale for it (§2.7).
+            local tr = ws._tracker
+            if tr and tr.sync then tr:sync() end
+            if service.host.current() ~= ws then
+                return { outcome = "refused", exit_code = 1,
+                    message = "the workspace was reloaded (refused or changed .nvim files); try again" }
+            end
+            local ok, err = ws:set_lsp_option(args.server, args.key, value)
+            if not ok then
+                return { outcome = "refused", message = tostring(err or "user.json was not written"), exit_code = 1 }
+            end
+            -- (As the editor's handler of `lsp_options_changed`: every memoized
+            -- entry is recomputed.)
+            require("loomworks.lsp_config").bump_generation()
+            return { outcome = "ok" }
+        end, nil, function(fields) ctx.reply(fields) end)
+        return interfaces.ASYNC
+    end
+    -- The first subscriber records the baseline `changed` compares with, so
+    -- a change right after subscribing (a load, a write) is signalled.
+    local function subscribed()
+        if service._lsp_sig == nil then M.lsp_check(service) end
+    end
+    return { methods = methods, subscribed = subscribed }
+end
+
 --- Mount the core interfaces of `service` on `registry`. A refused mount (a
 --- missing or invalid document) is logged; the others still mount.
 --- @param registry loomworks.daemon.Registry
@@ -375,6 +504,7 @@ function M.mount(registry, service)
         { M.TOOLCHAINS, M.toolchains_impl },
         { M.PROFILES, M.profiles_impl },
         { M.DEBUG, M.debug_impl },
+        { M.LSP, M.lsp_impl },
         require("loomworks.daemon.views").MOUNTS[1],
         require("loomworks.daemon.views").MOUNTS[2],
     }) do

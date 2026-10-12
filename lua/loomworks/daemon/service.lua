@@ -110,6 +110,13 @@ M.LOAD_WAIT_MS = 45000
 --- @field env_sig string|nil the environment signature `ws` was loaded in
 --- @field stopping boolean|nil the server is stopping (`on_stopping`): no new request starts
 --- @field ids loomworks.daemon.IdRegistry the session's opaque-id registry (§19.12)
+--- @field _lsp_sig string|nil LspConfig/1 (§19.20): the state (the daemon's own environment) at the last
+---   `changed`, the baseline the next check compares with; nil while /lsp has no subscriber
+--- @field _lsp_seq integer|nil the `seq` of the last `changed` sent
+--- @field _lsp_force boolean|nil an owned database was written during a model segment: the deferred check
+---   sends `changed` even when the state is unchanged (a raised `db_rev`)
+--- @field _lsp_listeners table<string, function> the `lsp_database_written` / `lsp_ready` event handlers
+---   (removed again when the service stops)
 local Service = {}
 Service.__index = Service
 
@@ -137,6 +144,19 @@ function M.attach(server, host)
     server.service = self
     -- The core interfaces it serves (step 5g.2), once the registry exists.
     if server.interfaces then core_ifaces.mount(server.interfaces, self) end
+    -- LspConfig/1's `changed` (§19.20): an owned LSP database written by
+    -- this daemon's model (a raised `db_rev`), and the active profile's
+    -- databases settled (`ready`) — both outside any model segment.
+    local events = require("loomworks.events")
+    self._lsp_listeners = {
+        lsp_database_written = function(d)
+            if type(d) == "table" and d.workspace ~= nil and d.workspace == (self:header_model()) then
+                pcall(core_ifaces.lsp_check, self, true)
+            end
+        end,
+        lsp_ready = function() pcall(core_ifaces.lsp_check, self) end,
+    }
+    for ev, fn in pairs(self._lsp_listeners) do events.on(ev, fn) end
     -- The header `header_changed` compares with (unloaded: never loads).
     core_ifaces.header_check(self)
     return self
@@ -907,6 +927,9 @@ end
 --- @param reason string
 function Service:on_stopping(reason)
     self.stopping = true
+    local events = require("loomworks.events")
+    for ev, fn in pairs(self._lsp_listeners or {}) do events.off(ev, fn) end
+    self._lsp_listeners = nil
     for run in pairs(self.runs) do
         if not run.finished then
             run.cancel("the workspace daemon stopped (" .. tostring(reason) .. ")", 1)
