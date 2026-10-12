@@ -65,7 +65,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   of skipping them; one in an unknown state still has to be cleaned or
   deleted first. Its progress finishes only when those configures have run,
   even if they had to wait for a build in progress. Building still configures
-  only what needs it. (#196)
+  only what needs it. (#196, #199)
 
 ## 0.1.43 - 2026-10-07
 

@@ -858,7 +858,9 @@ end
 
 --- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.
 --- Configure tasks: only launch if unconfigured or configure_failed — or, for
---- an explicit (user-requested) configure, in any state but unknown.
+--- an explicit (user-requested) configure, in any state but unknown. That
+--- includes a unit already configuring/building: its configure is launched
+--- and queues behind the build-dir lock.
 --- Build tasks: skip if already building, defer if currently configuring,
 --- block if in unknown state.
 --- @param task_def table task definition with .loomworks
@@ -896,7 +898,8 @@ end
 --- @param opts? { force?: boolean, explicit_configure?: boolean, on_task_settled?: fun(task_def: table, ok: boolean) }
 ---   force=true bypasses readiness checks; explicit_configure=true lifts only
 ---   the configured-skip (unknown still blocks); on_task_settled is called once
----   per launched/deferred task when it finishes
+---   per launched/deferred task when it finishes, and with ok=false for a
+---   blocked task
 --- @return loomworks.Future, number launched
 local function launch_tasks(overseer, task_defs, on_all_done, opts)
     local future_mod = require("loomworks.future")
@@ -921,6 +924,10 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
                         .. " is in unknown state — clean or delete first",
                     vim.log.levels.WARN
                 )
+                -- The caller may already count this task (it filtered
+                -- readiness before create_operation emitted events): settle
+                -- it as failed so a tracking Operation cannot hang on it.
+                if on_task_settled then on_task_settled(task_def, false) end
             end
         end
         ::next::
