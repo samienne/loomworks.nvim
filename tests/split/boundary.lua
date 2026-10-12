@@ -26,6 +26,7 @@ M.plugin = {
     "^loomworks%.debug$",
     "^loomworks%.session_tracker$",
     "^loomworks%.lsp$",
+    "^loomworks%.lsp_source$",       -- where the LSP layer reads its state (spec §19.16 "LSP configuration")
     "^loomworks%.fidget$",
     "^loomworks%.reload$",
     "^loomworks%.auto_load$",
@@ -55,6 +56,10 @@ M.shared = {
     -- The debug-adapter tables (defaults, known adapters, user.json override):
     -- the editor's debug path reads them, the daemon serves them (step 5k).
     "^loomworks%.debug_config$",
+    -- The LSP configuration state (entries, db_state, db_rev, options,
+    -- readiness): the editor's LSP layer reads it in-process, the daemon
+    -- serves the same shape (`LspConfig/1`, step 5l).
+    "^loomworks%.lsp_config$",
 }
 
 local binary_toplevel = {

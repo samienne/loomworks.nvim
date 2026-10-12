@@ -66,7 +66,8 @@ means adding an integration file — no changes to `lsp.lua`.
 **Where the entries come from.** The dispatch layer and the integrations
 never call `lsp_configs` or read the model themselves: they read one **LSP
 configuration state** — per project (ascending key order) its entries with
-their `db_state` and a database revision, the per-server options (§2,
+their `db_state`, the directory whose owned database each reads (`db_dir`,
+§8.4) and that database's revision, the per-server options (§2,
 `user.json` `lsp`), and whether the active profile's owned databases are
 ready (§9.7). In-process it is built from the editor's own model; in
 `daemon` mode, while the daemon carries it, it is the daemon's

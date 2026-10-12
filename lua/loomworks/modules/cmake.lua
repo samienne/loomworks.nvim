@@ -4538,6 +4538,10 @@ function M.lsp_configs(project)
             binary = binary,
             binary_required = binary_required,
             compile_commands_dir = clangd_cc_dir,
+            -- The build dir whose owned database clangd reads (core §8.4):
+            -- the redirect target under `compile_commands_from`, else the
+            -- active unit's. Core matches database writes against it.
+            db_dir = build_dir,
             db_state = configured and "ready" or "unconfigured",
             root_dir = root_dir,
         },

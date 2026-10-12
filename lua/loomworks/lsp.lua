@@ -190,193 +190,34 @@ end
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
--- lsp_configs() memoization (profile-switch hot path)
+-- The LSP configuration state (spec §9.2 "Where the entries come from")
 -- ---------------------------------------------------------------------------
 --
--- On `active_set_changed`, every registered integration's
--- `on_active_set_changed` iterates every project and calls `entry_for_project`
--- → `entries_for` → `module.lsp_configs`. With N projects and K integrations
--- that recomputes `lsp_configs` N×K times per switch — and `lsp_configs` walks
--- the active profile, config units and tools each time. A no-op switch pays
--- the full cost for nothing; clangd and qmlls each pay it for the same project
--- on the same tick.
---
--- We memoize `entries_for` on a CONTENT key that captures everything that
--- determines the output: workspace + project identity, the active profile's
--- resolved config unit (build_dir, config_key, build state), the active tool
--- identity, the project's lsp-affecting `type_config`, and a generation counter
--- bumped when workspace-level lsp options change. A cache HIT returns the prior
--- entries WITHOUT calling `module.lsp_configs` again — so the second
--- integration on a tick is free, and a no-op switch is free. The key changes
--- the moment any determinant does, so a REAL switch recomputes exactly the
--- projects that actually moved.
---
--- Correctness note: the early return-on-hit is structured so that, were
--- `lsp_configs` to later carry an idempotent, mtime-guarded side effect (e.g.
--- generating compile_commands.json — as it does on another branch), a hit skips
--- the whole function, side effect included. Build state is part of the key, so
--- a configure/build that would change what the side effect emits also changes
--- the key and forces a recompute.
+-- Projects, entries (with `db_state`, `db_dir`, `db_rev`), options and
+-- readiness come from loomworks/lsp_source.lua, which serves the state built
+-- by the host-neutral loomworks/lsp_config.lua (content-memoized
+-- `lsp_configs`). This layer never reads the workspace model itself.
 
---- @type table<string, { key: string, entries: table[] }> project.key → memo
-local _configs_memo = {}
---- Bumped on `lsp_options_changed` so every content key changes.
-local _configs_generation = 0
-
---- Compute the content key for a project's `lsp_configs` output. Returns nil
---- when the project has no workspace (uncacheable — recompute every time).
---- Every component is an identity/value read; none touch the filesystem.
---- @param project loomworks.Project
---- @return string|nil
-local function configs_memo_key(project)
-    local ws = project._workspace
-    if not ws then return nil end
-
-    local parts = {
-        "g", tostring(_configs_generation),
-        "w", ws.root or "",
-        "p", project.key or "",
-    }
-
-    local active = ws.get_active_profile and ws:get_active_profile() or nil
-    parts[#parts + 1] = "prof"
-    parts[#parts + 1] = active and active.key or ""
-    if active and active.project then
-        local pp = active:project(project.key)
-        if pp then
-            parts[#parts + 1] = "bd"
-            parts[#parts + 1] = pp:build_dir() or ""
-            parts[#parts + 1] = "ck"
-            parts[#parts + 1] = pp:config_key() or ""
-            parts[#parts + 1] = "st"
-            parts[#parts + 1] = pp:status() or ""
-            local tool = pp.tool_object and pp:tool_object() or nil
-            parts[#parts + 1] = "tk"
-            parts[#parts + 1] = tool and (tool.key or tostring(tool)) or ""
-        end
-    end
-
-    -- Fallback determinants used by module.lsp_configs when there is no active
-    -- profile (legacy active-config summary + the project's own tool_data
-    -- clangd path). Cheap value reads; keep them in the key so the no-active
-    -- path invalidates correctly too.
-    parts[#parts + 1] = "cbd"
-    parts[#parts + 1] = (project.cached and project.cached.build_dir) or ""
-    parts[#parts + 1] = "tdc"
-    parts[#parts + 1] = (project.tool_data and project.tool_data.clangd_path) or ""
-
-    -- "Configured on this machine" of every unit of the project (spec §9.1):
-    -- a module may redirect its database to a unit other than the active one,
-    -- so any unit's configure/reset/delete must invalidate the memo.
-    parts[#parts + 1] = "ch"
-    if project.config_units and ws._config_units then
-        for _, unit in ipairs(project:config_units()) do
-            if unit.configured_here then
-                parts[#parts + 1] = (unit.id or "?") .. "=" .. (unit:configured_here() and "1" or "0")
-            end
-        end
-    end
-
-    -- Per-project lsp overrides (clangd/qmlls binaries, qml_import_paths,
-    -- compile_commands_from, *_required). vim.inspect sorts keys, so the
-    -- serialization is stable across calls.
-    parts[#parts + 1] = "tc"
-    parts[#parts + 1] = project.type_config and vim.inspect(project.type_config) or ""
-
-    return table.concat(parts, "\30")
-end
-
---- Drop the whole memo (workspace swap — old projects are gone).
-local function clear_configs_memo()
-    _configs_memo = {}
-end
-
---- Invalidate every key by advancing the generation. Cheaper than clearing and
---- lets each project recompute lazily on its next `entries_for`.
-local function bump_configs_generation()
-    _configs_generation = _configs_generation + 1
-end
-
---- Fill in `db_state` (spec §8.4) on entries whose module omitted it, derived
---- from the project's active ConfigUnit: "ready" when it is configured on this
---- machine, "unconfigured" otherwise (no active profile / no unit included).
---- A project without a workspace (never the case at runtime) is left alone.
---- @param project loomworks.Project
---- @param entries table[]
-local function derive_db_state(project, entries)
-    local ws = project._workspace
-    if not ws then return end
-    local ready = nil
-    for _, e in ipairs(entries) do
-        if type(e) == "table" and e.db_state == nil then
-            if ready == nil then
-                local profile = ws.get_active_profile and ws:get_active_profile() or nil
-                local pp = profile and profile.project and profile:project(project.key) or nil
-                ready = pp ~= nil and pp.configured_here ~= nil and pp:configured_here() == true
-            end
-            e.db_state = ready and "ready" or "unconfigured"
-        end
-    end
-end
-
---- Return all lsp_configs() entries emitted by a project's module.
---- Content-memoized: a cache hit skips `module.lsp_configs` entirely.
---- Entries always carry `db_state` when the project has a workspace.
---- @param project loomworks.Project
---- @return table[]
-local function entries_for(project)
-    local mod = project._module and project._module.impl or nil
-    if not mod or not mod.lsp_configs then return {} end
-
-    local key = configs_memo_key(project)
-    if key then
-        local cached = _configs_memo[project.key]
-        if cached and cached.key == key then
-            return cached.entries
-        end
-    end
-
-    local ok, entries = pcall(mod.lsp_configs, project)
-    if not ok or type(entries) ~= "table" then return {} end
-    derive_db_state(project, entries)
-
-    if key then
-        _configs_memo[project.key] = { key = key, entries = entries }
-    end
-    return entries
-end
+local lsp_config = require("loomworks.lsp_config")
+local source = require("loomworks.lsp_source")
 
 --- Return the first lsp_configs entry a project's module emits for a
---- given server, or nil.
+--- given server, or nil. Kept as public API; the LSP layer itself reads
+--- entries from the state's project records.
 --- @param project loomworks.Project
 --- @param server string
---- @return table|nil
+--- @return loomworks.LspStateEntry|nil
 function M.entry_for_project(project, server)
     if not project then return nil end
-    for _, e in ipairs(entries_for(project)) do
-        if e.server == server then return e end
-    end
-    return nil
+    return lsp_config.entry(lsp_config.entries(nil, project), server)
 end
 
---- Locate the loomworks project for a (server, root_dir) pair.
+--- Locate the project record and entry for a (server, root_dir) pair.
 --- @param server string
 --- @param root_dir string|nil
---- @return loomworks.Project|nil, table|nil entry
+--- @return loomworks.LspConfigProject|nil record, loomworks.LspStateEntry|nil entry
 function M.find_project_by_root(server, root_dir)
-    if not root_dir then return nil, nil end
-    local ok, lw = pcall(require, "loomworks")
-    if not ok then return nil, nil end
-    if not lw.get_workspace() then return nil, nil end
-
-    local target = normalize(root_dir)
-    for _, project in pairs(lw.get_projects()) do
-        local entry = M.entry_for_project(project, server)
-        if entry and entry.root_dir and normalize(entry.root_dir) == target then
-            return project, entry
-        end
-    end
-    return nil, nil
+    return source.find_by_root(server, root_dir)
 end
 
 -- ---------------------------------------------------------------------------
@@ -683,10 +524,7 @@ end
 --- still be HELD — so readiness here requires a live workspace object.
 --- @return boolean
 local function workspace_loaded_and_ready()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok or type(lw.get_workspace) ~= "function" then return true end
-    if not lw.get_workspace() then return false end
-    return type(lw.lsp_ready) == "function" and lw.lsp_ready() == true
+    return source.loaded_and_ready()
 end
 
 --- Whether a workspace load is pending: a root is configured but no live
@@ -694,9 +532,7 @@ end
 --- ready-to-resolve when nothing is pending, §9.7).
 --- @return boolean
 local function workspace_pending()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok or type(lw.lsp_ready) ~= "function" then return false end
-    return lw.lsp_ready() ~= true
+    return source.pending()
 end
 
 --- Detect the loomworks workspace root a buffer belongs to by walking up from
@@ -915,18 +751,13 @@ end
 --- (spec §9.8 *Decision*): the first usable entry over the projects in key
 --- order. Returns (entry) when one is usable, (nil, reason) when entries exist
 --- but none is usable, (nil, nil) when no project emits an entry.
---- @param lw table loomworks facade
 --- @param server string
 --- @return table|nil entry, string|nil reason
-local function workspace_entry(lw, server)
+local function workspace_entry(server)
     local integration = _integrations[server]
-    local projects = {}
-    local all = type(lw.get_projects) == "function" and lw.get_projects() or {}
-    for _, p in pairs(all) do projects[#projects + 1] = p end
-    table.sort(projects, function(a, b) return (a.key or "") < (b.key or "") end)
     local any, any_unconfigured = false, false
-    for _, project in ipairs(projects) do
-        local entry = M.entry_for_project(project, server)
+    for _, rec in ipairs(source.projects()) do
+        local entry = lsp_config.entry(rec, server)
         if entry and entry.root_dir then
             any = true
             local reason = withhold_reason(integration, entry)
@@ -946,11 +777,9 @@ end
 --- @param bufnr integer
 --- @return loomworks.LspBufState status, table|nil entry
 local function decide(server, bufnr)
-    local ok, lw = pcall(require, "loomworks")
-    if not ok then return "none", nil end
-    local ws = type(lw.get_workspace) == "function" and lw.get_workspace() or nil
+    if not source.available() then return "none", nil end
 
-    if not ws then
+    if not source.loaded() then
         if _ws_failed_root and buf_under_root(bufnr, _ws_failed_root) then
             return "withheld_error", nil
         end
@@ -968,9 +797,9 @@ local function decide(server, bufnr)
     end
 
     local integration = _integrations[server]
-    local project = type(lw.project_for_buf) == "function" and lw.project_for_buf(bufnr) or nil
-    if project then
-        local entry = M.entry_for_project(project, server)
+    local rec = source.project_for_buf(bufnr)
+    if rec then
+        local entry = lsp_config.entry(rec, server)
         if not entry or not entry.root_dir then return "none", nil end
         local reason = withhold_reason(integration, entry)
         if reason then return "withheld_" .. reason, nil end
@@ -978,10 +807,10 @@ local function decide(server, bufnr)
     end
 
     -- Not in any project: only buffers under the workspace root are routed.
-    local root = ws.root or workspace_root()
+    local root = source.root() or workspace_root()
     if not root or not buf_under_root(bufnr, root) then return "none", nil end
 
-    local entry, reason = workspace_entry(lw, server)
+    local entry, reason = workspace_entry(server)
     if entry then return "ok", entry end
     if reason then return "withheld_" .. reason, nil end
     return "none", nil
@@ -1210,7 +1039,8 @@ end
 
 --- A module reported that its owned LSP compilation database for `build_dir`
 --- was newly (re)written (module §8.4 `refresh_lsp_database`'s `done`). Find the
---- live clients whose active project maps to that build dir and ask each server
+--- projects with an entry whose `db_dir` (the directory whose owned database it
+--- reads, §19.20) is that build dir and ask each server
 --- integration to reconcile if needed — so a client that started before the
 --- database existed (absent→present) picks up the now-resolvable directory
 --- without the user reopening the buffer. Generic: no module-type checks. The
@@ -1221,23 +1051,24 @@ function M.on_owned_database_changed(build_dir)
     if type(build_dir) ~= "string" or build_dir == "" then return end
     -- A database appearing can make withheld buffers startable (§9.8).
     M.reevaluate()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok then return end
-    local ws = lw.get_workspace and lw.get_workspace()
-    if not ws then return end
-    local profile = ws.get_active_profile and ws:get_active_profile()
-    if not profile then return end
 
+    -- The projects with an entry that reads this dir's owned database: its
+    -- `db_dir` (the module's, e.g. a `compile_commands_from` redirect target,
+    -- else the project's active build dir). A module's own `build_dir` field
+    -- is opaque and never matched.
     local target = norm_cmp(build_dir)
-    for _, project in pairs(lw.get_projects()) do
-        -- Active build dir for this project, via the generic Profile API
-        -- (ProfileProject:build_dir) — the same dir clangd was pointed at.
-        local pp = profile.project and profile:project(project.key)
-        local bd = pp and pp.build_dir and pp:build_dir()
-        if bd and norm_cmp(bd) == target then
+    for _, rec in ipairs(source.projects()) do
+        local hit = false
+        for _, e in ipairs(rec.entries) do
+            if type(e) == "table" and type(e.db_dir) == "string" and norm_cmp(e.db_dir) == target then
+                hit = true
+                break
+            end
+        end
+        if hit then
             for server, integration in pairs(_integrations) do
                 if integration.on_owned_database_changed then
-                    local entry = M.entry_for_project(project, server)
+                    local entry = lsp_config.entry(rec, server)
                     if entry and entry.root_dir then
                         pcall(integration.on_owned_database_changed, entry.root_dir)
                     end
@@ -1278,25 +1109,18 @@ function M.get_resolved_cmd(root_dir) return M.resolved_cmd("clangd", root_dir) 
 --- Returns info per project: matched clients with their cmd args per server.
 --- @return table[] list of { project_key, project_type, root_dir, clients, extra }
 function M.get_status()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok then return {} end
-
-    local ws = lw.get_workspace()
-    if not ws then return {} end
-
-    local sorted = {}
-    for _, p in pairs(lw.get_projects()) do sorted[#sorted + 1] = p end
-    table.sort(sorted, function(a, b) return a.key < b.key end)
+    local root = source.root()
+    if not root then return {} end
 
     local results = {}
-    for _, project in ipairs(sorted) do
-        if not project.path then goto continue end
+    for _, rec in ipairs(source.projects()) do
+        if not rec.path then goto continue end
 
-        local entries = entries_for(project)
+        local entries = rec.entries
         if #entries == 0 then goto continue end
 
         -- Primary display root_dir: project source path (matches most flows)
-        local project_abs = normalize(ws.root .. "/" .. project.path)
+        local project_abs = normalize(root .. "/" .. rec.path)
 
         local matched_clients = {}
         local extra = {}
@@ -1328,8 +1152,8 @@ function M.get_status()
         end
 
         results[#results + 1] = {
-            project_key = project.key,
-            project_type = project.type,
+            project_key = rec.project,
+            project_type = source.project_type(rec.project),
             root_dir = project_abs,
             clients = matched_clients,
             resolved_cmd = resolved_cmd,
@@ -1516,7 +1340,7 @@ local function wire_listeners()
         -- Blow the lsp_configs memo first — the old workspace's projects (and
         -- any project.key reuse) must not survive into the new one. Runs before
         -- the integration callbacks below, which are deferred via vim.schedule.
-        clear_configs_memo()
+        lsp_config.clear_memo()
         for _, int in pairs(_integrations) do
             if int.on_workspace_changed then
                 vim.schedule(int.on_workspace_changed)
@@ -1532,11 +1356,11 @@ local function wire_listeners()
         M._set_failed_root(nil)
         gate_release()
         M.reevaluate()
-        clear_configs_memo()
+        lsp_config.clear_memo()
     end)
     lw.on("lsp_options_changed", function(payload)
         -- lsp options can feed lsp_configs output; invalidate every memo key.
-        bump_configs_generation()
+        lsp_config.bump_generation()
         for _, int in pairs(_integrations) do
             if int.on_lsp_options_changed then
                 vim.schedule(function() int.on_lsp_options_changed(payload) end)

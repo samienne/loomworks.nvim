@@ -3655,15 +3655,16 @@ runtime is deferred until that module is actively developed.
        configuration"; §19.20 `LspConfig/1`; §9.2, §9.7, §9.8), in parts:
        0 — spec *(done once merged)*; A — preparation with no behaviour
        change, in-process only: one host-neutral builder of the state
-       (entries with `db_state` and `db_rev`, options, readiness), an LSP
-       source the LSP layer and the integrations read instead of the model,
-       buffer → project by `lw.buf_project`, and the reach-in counts lowered;
+       (entries with `db_state`, `db_dir` and `db_rev`, options, readiness),
+       an LSP source the LSP layer and the integrations read instead of the
+       model, and the reach-in counts lowered;
        B — daemon side: `LspConfig/1` on `/lsp` (`get`, `set_option`,
        `changed`) with schema and transcripts on the `shell` fixture, the
        `changed` emission where `header_check` runs and on a database
        written; C — editor side: the cached state and its reads, the
-       fallback rules, the hold released on the daemon's `ready`, the
-       options written through `set_option`, the editor's own database
+       fallback rules, buffer → project by `lw.buf_project`, the hold
+       released on the daemon's `ready`, the options written through
+       `set_option`, the editor's own database
        generation stopped while carried, and a real-daemon end-to-end check
        (needs A and B; may land as C1, the read path, and C2, the writes and
        the generation owner).
@@ -3957,11 +3958,14 @@ configuration"), on `/lsp`:
   the workspace: in any state but `loaded` it answers with that `state`,
   `ready = false`, no projects and no options.
 - An **entry** carries the core fields `server`, `root_dir`, `db_state`
-  (`ready` or `unconfigured`, §9.1), `build_dir` (the project's active build
-  directory; absent when it has none) and `db_rev`, and passes every other
-  field of the module's entry through unread: the schema requires the core
-  fields and allows any others, which core never types. `db_rev` is an
-  integer raised each time the daemon (re)writes that entry's owned database
+  (`ready` or `unconfigured`, §9.1), `db_dir` and `db_rev`, and passes every
+  other field of the module's entry through unread (a module's own
+  `build_dir` among them): the schema requires the core fields and allows any
+  others, which core never types. `db_dir` is the directory whose owned
+  database the entry reads: the module's when it sets one (a redirect to
+  another unit's database, §8.4), else the project's active build directory;
+  absent when there is neither. `db_rev` is an integer, kept per `db_dir`,
+  raised each time the daemon (re)writes that directory's owned database
   (§8.4 `refresh_lsp_database`'s `done(true)`), so a database that went from
   absent to present shows although no other field changed. Withhold reasons
   (§9.8) are not in the state: deciding them from `db_state` and the entry

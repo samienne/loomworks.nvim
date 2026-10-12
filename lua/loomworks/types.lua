@@ -204,6 +204,7 @@
 --- @field server string                server name (e.g. "clangd")
 --- @field root_dir? string             absolute project-root path for client scoping
 --- @field db_state? "ready"|"unconfigured" whether the unit supplying build-dir-derived inputs (the compile DB) is configured on this machine (spec §8.4, §9.1). Derived by core from the active ConfigUnit when a module omits it
+--- @field db_dir? string               the build directory whose owned database (§8.4 `refresh_lsp_database`) the entry reads; set by a module that redirects its database to another unit, else filled by core with the project's active build dir (spec §8.4, daemon.md §19.20)
 --- @field binary? string               override server executable (env expansion supported)
 --- @field binary_required? boolean     refuse to start when `binary` is missing — use when stock PATH server would be actively wrong
 --- @field compile_commands_dir? string (clangd) directory containing compile_commands.json
