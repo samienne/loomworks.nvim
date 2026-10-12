@@ -51,7 +51,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   configures every project, also configured ones. When the daemon cannot
   carry an operation (not connected, an older daemon) it runs in Neovim as
   before, its progress title saying "(in-process)". In-process mode is
-  unchanged. (#PR)
+  unchanged. (#195)
 - Experimental daemon: the workspace daemon can prepare a debug launch
   (`Launch/1.prepare_debug`: build, deploy and resolve the program exactly as
   `lw run` would, plus the debug languages and their adapters) and serves
