@@ -436,9 +436,10 @@ end
 --- @param action string
 --- @param units loomworks.ConfigUnit[]
 --- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
+--- @param opts? { track_tasks?: boolean } see `Operation.new`
 --- @return loomworks.Operation
-function M.create_operation(profile, action, units, target_states)
-    return core:create_operation(profile, action, units, target_states)
+function M.create_operation(profile, action, units, target_states, opts)
+    return core:create_operation(profile, action, units, target_states, opts)
 end
 
 --- Find running task IDs that match a list of project+config items.

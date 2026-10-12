@@ -750,9 +750,9 @@ function Core:get_orphaned_configs()
 end
 
 --- @see loomworks.Workspace.create_operation
-function Core:create_operation(profile, action, units, target_states)
+function Core:create_operation(profile, action, units, target_states, opts)
     if not self._workspace then return nil end
-    return self._workspace:create_operation(profile, action, units, target_states)
+    return self._workspace:create_operation(profile, action, units, target_states, opts)
 end
 
 --- @see loomworks.Workspace.get_operations
