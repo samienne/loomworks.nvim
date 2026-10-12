@@ -80,7 +80,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   and changes the adapters through the daemon. When the daemon cannot carry
   a launch (not connected, an older daemon) it runs in Neovim as before, its
   progress title saying "(in-process)"; device targets always do.
-  In-process mode is unchanged. (#C2PR)
+  In-process mode is unchanged. (#201)
 - `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
   `label`, `type`, `path`, `abs_path` and the active configuration, tool key
   and state). It matches on a separator boundary, so a project at `/a/foo`
@@ -366,7 +366,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   environment. A target-backed launch configuration is debugged with its
   arguments, environment and working directory, as it runs, also for a
   single debug language; a launch configuration's debug session is named as
-  its run. (#C2PR)
+  its run. (#201)
 - Experimental daemon mode: the statusline component and the status page
   header show the workspace daemon's view while the editor is connected to
   it, including `Workspace: not loaded in the workspace daemon` until the
