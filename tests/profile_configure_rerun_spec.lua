@@ -58,12 +58,14 @@ describe("profile configure", function()
     local orig_lookup = cpp.lookup_path
     local loomworks = require("loomworks")
     local orig_get_ws = loomworks.get_workspace
+    local orig_create_op = loomworks.create_operation
     local root
 
     before_each(function() cpp.lookup_path = function() return nil end end)
     after_each(function()
         cpp.lookup_path = orig_lookup
         loomworks.get_workspace = orig_get_ws
+        loomworks.create_operation = orig_create_op
         cmake._cmake_version_cache = {}
         package.loaded["overseer"] = nil
         if root then vim.fn.delete(root, "rf"); root = nil end
@@ -114,5 +116,111 @@ describe("profile configure", function()
         local joined = table.concat(names, " | ")
         assert.truthy(joined:find("App", 1, true), joined)
         assert.truthy(joined:find("Lib", 1, true), joined)
+    end)
+    it("still blocks a unit in unknown state", function()
+        local ws, profile, r = make_core()
+        root = r
+        loomworks.get_workspace = function() return ws end
+        loomworks.create_operation = function(...) return ws:create_operation(...) end
+        local created = mock_overseer()
+        local warnings = {}
+        local orig_notify = vim.notify
+        vim.notify = function(msg, level)
+            if level == vim.log.levels.WARN then warnings[#warnings + 1] = msg end
+        end
+
+        local app = unit_of(profile, "App")
+        app.state_value = "unknown"
+        assert.equals("unknown", app:state())
+
+        local ok, err = pcall(function()
+            profile:configure()
+            vim.wait(3000, function() return #created >= 1 end)
+            vim.wait(100)
+        end)
+        vim.notify = orig_notify
+        assert(ok, err)
+
+        assert.equals(1, #created, "only the Lib configure is launched")
+        assert.truthy((created[1].name or ""):find("Lib", 1, true), created[1].name)
+        assert.truthy(table.concat(warnings, " | "):find("unknown state", 1, true),
+            "user is told to clean or delete the unknown unit")
+        for _, op in ipairs(profile:active_operations()) do
+            assert.is_false(op:has_unit(app), "the blocked unit is not tracked")
+        end
+    end)
+
+    it("completes only when its own configure tasks have completed", function()
+        local ws, profile, r = make_core()
+        root = r
+        loomworks.get_workspace = function() return ws end
+        loomworks.create_operation = function(...) return ws:create_operation(...) end
+
+        -- Overseer mock whose tasks fire on_start when started and complete
+        -- only when the test says so.
+        local tasks = {}
+        package.loaded["overseer"] = {
+            new_task = function(spec)
+                local subs = {}
+                local t = { id = #tasks + 1, spec = spec, subs = subs }
+                t.subscribe = function(_, ev, cb) subs[ev] = subs[ev] or {}; table.insert(subs[ev], cb) end
+                t.start = function(self)
+                    for _, cb in ipairs(subs.on_start or {}) do cb(self) end
+                end
+                t.is_complete = function() return false end
+                t.finish = function(self, status)
+                    for _, cb in ipairs(subs.on_complete or {}) do cb(self, status) end
+                end
+                tasks[#tasks + 1] = t
+                return t
+            end,
+        }
+        local function task_for(key)
+            for _, t in ipairs(tasks) do
+                if (t.spec.name or ""):find(key, 1, true) then return t end
+            end
+        end
+
+        local app = unit_of(profile, "App")
+        local lib = unit_of(profile, "Lib")
+        app.state_value = "configured"
+        lib.state_value = "configured"
+
+        -- App's build dir is held by a running build: its configure waits
+        -- for the lock (the queued callback is kept here).
+        local app_waiting
+        local orig_acquire = ws.acquire_build_dir_lock
+        ws.acquire_build_dir_lock = function(self, dir, lock_type, fn)
+            local rel = tostring(dir):lower():sub(#r + 1)
+            if not app_waiting and rel:find("app", 1, true) then
+                app_waiting = fn
+                return
+            end
+            return orig_acquire(self, dir, lock_type, fn)
+        end
+
+        profile:configure()
+        vim.wait(3000, function() return app_waiting ~= nil and task_for("Lib") ~= nil end)
+        assert.is_not_nil(app_waiting, "App configure waits for the build-dir lock")
+        local ops = profile:active_operations()
+        assert.equals(1, #ops)
+        local op = ops[1]
+
+        -- The running build finishes: App reaches `built` before its
+        -- configure has even started.
+        app.state_value = "built"
+        app:_notify()
+        task_for("Lib"):finish("SUCCESS")
+        vim.wait(100)
+        assert.is_false(op.completed, "configure op must wait for App's own configure")
+
+        -- Lock released: App's configure runs and completes.
+        app_waiting()
+        vim.wait(3000, function() return task_for("App") ~= nil end)
+        assert.is_false(op.completed)
+        task_for("App"):finish("SUCCESS")
+        vim.wait(3000, function() return op.completed end)
+        assert.is_true(op.completed)
+        assert.is_true(op.success)
     end)
 end)
