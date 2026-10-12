@@ -560,7 +560,8 @@ inherits it:
 ```
 User action (b/c key or API call)
   → overseer.lua: collect tasks from module
-  → check ConfigUnit readiness (skip/defer/launch)
+  → check ConfigUnit readiness (skip/defer/launch); an explicit configure
+    (single unit or whole profile) is forced past it and configures every unit
   → wait for pending deletions if any
   → acquire build dir lock (exclusive for configure/clean, shared for build)
     → if locked: queue task, start when lock available

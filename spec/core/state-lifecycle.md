@@ -498,6 +498,11 @@ Before launching a task, the system checks the ConfigUnit state:
 | build     | unknown            | block    |
 | build     | any other          | launch   |
 
+**Explicit configure**: The configure rows apply to the configure a build
+runs automatically (§5.2). A user-requested configure bypasses them: configuring
+a single configuration runs its configure, and configuring a profile runs
+configure for every unit of the profile, including ones already configured.
+
 **Blocked tasks**: When a task is blocked due to `unknown` state, the user is
 notified that the config must be cleaned or deleted first.
 

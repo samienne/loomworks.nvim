@@ -60,6 +60,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - The lualine/winbar status markers now take only the colour of their
   highlight group and keep the lualine section's background; the text after
   a marker no longer falls back to the plain statusline/winbar colours. (#191)
+- Configuring a profile in the editor now runs configure for every
+  configuration of the profile, including ones already configured, instead
+  of skipping them. Building still configures only what needs it. (#196)
 
 ## 0.1.43 - 2026-10-07
 

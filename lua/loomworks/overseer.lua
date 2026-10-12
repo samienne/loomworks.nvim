@@ -1906,12 +1906,15 @@ function M.run_profile_action(profile, action, opts)
         end
 
         if action == "configure" then
-            local launchable = filter_launchable_tasks(all_tasks.configure)
-            local units, target_states = collect_units_from_tasks(launchable, "configured")
+            -- Explicit profile configure (spec §5.1): runs configure for every
+            -- unit of the profile, including ones already configured — like
+            -- the single-unit configure, it bypasses the readiness skip. Only
+            -- the build's automatic configure (§5.2) skips configured units.
+            local units, target_states = collect_units_from_tasks(all_tasks.configure, "configured")
             if #units > 0 then
                 loomworks.create_operation(profile, "configure", units, target_states)
             end
-            launch_tasks(overseer, all_tasks.configure):next(
+            launch_tasks(overseer, all_tasks.configure, nil, { force = true }):next(
                 function() f:_resolve(true) end,
                 function(err) f:_reject(err) end
             )
