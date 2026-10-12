@@ -754,7 +754,10 @@ Operations have three completion modes:
   target). Completes when units reach or exceed the target state.
 - **Task mode** (explicit profile configure): a unit is done when the
   Operation's own configure task(s) for it finish; success if they all
-  succeeded. Unit state changes are not observed.
+  succeeded. Unit state changes are not observed. A unit that is blocked at
+  launch (it entered `unknown` after the Operation was created) counts as
+  finished and failed, so the Operation never waits for a task that will not
+  run.
 - **Deletion mode** (clean/delete): completes when the `_deleting` flag
   clears on all affected units. Success if units return to "unconfigured",
   failure if they end up in "unknown" state (partial deletion).

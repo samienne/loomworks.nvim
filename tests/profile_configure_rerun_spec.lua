@@ -223,4 +223,60 @@ describe("profile configure", function()
         assert.is_true(op.completed)
         assert.is_true(op.success)
     end)
+
+    it("completes when a counted unit turns unknown before its task launches", function()
+        local ws, profile, r = make_core()
+        root = r
+        loomworks.get_workspace = function() return ws end
+        local created_op
+        local app
+        -- Creating the operation emits events; a subscriber may move a unit
+        -- to unknown before launch_tasks re-checks readiness. That unit was
+        -- counted as pending but is never launched.
+        loomworks.create_operation = function(...)
+            created_op = ws:create_operation(...)
+            app.state_value = "unknown"
+            return created_op
+        end
+        local tasks = {}
+        package.loaded["overseer"] = {
+            new_task = function(spec)
+                local subs = {}
+                local t = { id = #tasks + 1, spec = spec }
+                t.subscribe = function(_, ev, cb) subs[ev] = subs[ev] or {}; table.insert(subs[ev], cb) end
+                t.start = function(self)
+                    for _, cb in ipairs(subs.on_start or {}) do cb(self) end
+                end
+                t.is_complete = function() return false end
+                t.finish = function(self, status)
+                    for _, cb in ipairs(subs.on_complete or {}) do cb(self, status) end
+                end
+                tasks[#tasks + 1] = t
+                return t
+            end,
+        }
+        local orig_notify = vim.notify
+        vim.notify = function() end
+
+        app = unit_of(profile, "App")
+        local lib = unit_of(profile, "Lib")
+        app.state_value = "configured"
+        lib.state_value = "configured"
+
+        local ok, err = pcall(function()
+            profile:configure()
+            vim.wait(3000, function() return #tasks >= 1 end)
+            vim.wait(100)
+        end)
+        vim.notify = orig_notify
+        assert(ok, err)
+
+        assert.is_not_nil(created_op)
+        assert.equals(1, #tasks, "only Lib is launched")
+        assert.truthy((tasks[1].spec.name or ""):find("Lib", 1, true), tasks[1].spec.name)
+        tasks[1]:finish("SUCCESS")
+        vim.wait(3000, function() return created_op.completed end)
+        assert.is_true(created_op.completed, "the op must not hang on the never-launched unit")
+        assert.is_false(created_op.success)
+    end)
 end)
