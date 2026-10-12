@@ -1,0 +1,202 @@
+{
+  "interface": "loomworks.LspConfig",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /lsp (spec 19.20 LspConfig/1, 19.16 LSP configuration, 9.2, 9.7, 9.8): what the workspace's language servers are configured with - each project's lsp_configs entries with db_state, db_dir and db_rev, the working copy's per-server options and whether the active profile's owned databases are ready. Starting and stopping servers and the withhold reasons stay the client's.",
+  "methods": {
+    "get": {
+      "description": "The whole state, computed with the caller's environment (an entry's server binary resolves in it). Never loads the workspace: in any state but loaded it answers that state with ready false, no projects and no options.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/State"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    },
+    "set_option": {
+      "description": "Set the server's option in the working copy (user.json lsp, never loomworks.json); with no value, remove it so the default applies. Written as the in-process Workspace:set_lsp_option writes it, in a model segment, the write's model_change (Workspace/1 changed) before the reply. A refused or failed write (a stale or untrusted working copy, a refused load) changes neither the file nor the model: the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "server",
+          "key"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "description": "The option's value (any JSON value); absent: back to the default."
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Ok"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    }
+  },
+  "signals": {
+    "changed": {
+      "description": "The state changed: sent when the state the daemon computes with its own environment differs from the one at its last changed (checked after each model segment and committed write, and when the active profile's databases settle), and whenever an owned database was written (a raised db_rev). Carries no state and has no initial: a client reads get after subscribing and again, with its own environment, on each changed and on Workspace/1 changed.",
+      "args": {
+        "type": "object",
+        "required": [
+          "seq"
+        ],
+        "properties": {
+          "seq": {
+            "description": "Increases with each changed this daemon session sends.",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Ok": {
+      "type": "object",
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Entry": {
+      "description": "A module's lsp_configs entry (spec 8.4) with the core fields; every other field is the module's, passed through unread (binary, compile_commands_dir, a module's own build_dir, ...).",
+      "type": "object",
+      "required": [
+        "server",
+        "root_dir",
+        "db_state",
+        "db_rev"
+      ],
+      "properties": {
+        "server": {
+          "type": "string"
+        },
+        "root_dir": {
+          "type": "string"
+        },
+        "db_state": {
+          "description": "ready: the unit whose database the entry reads is configured on this machine (spec 9.1); unconfigured otherwise. Clients show an unknown value as unconfigured.",
+          "enum": [
+            "ready",
+            "unconfigured"
+          ]
+        },
+        "db_dir": {
+          "description": "The directory whose owned database the entry reads: the module's when it sets one, else the project's active build directory; absent when there is neither.",
+          "type": "string"
+        },
+        "db_rev": {
+          "description": "Raised each time the daemon (re)writes db_dir's owned database; 0 when it has not this session.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "Project": {
+      "type": "object",
+      "required": [
+        "project",
+        "path",
+        "entries"
+      ],
+      "properties": {
+        "project": {
+          "description": "The project's key.",
+          "type": "string"
+        },
+        "id": {
+          "description": "The project's opaque id (spec 19.12), only from the daemon.",
+          "$ref": "loomworks.Common/1#/$defs/Id"
+        },
+        "path": {
+          "description": "The project's path relative to the root.",
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Entry"
+          }
+        }
+      }
+    },
+    "State": {
+      "type": "object",
+      "required": [
+        "state",
+        "ready",
+        "projects",
+        "options"
+      ],
+      "properties": {
+        "state": {
+          "description": "The workspace's, as view.Header/1's state. Clients show an unknown state as not loaded.",
+          "enum": [
+            "loaded",
+            "unloaded",
+            "error",
+            "refused"
+          ]
+        },
+        "ready": {
+          "description": "The active profile's owned databases have settled (spec 9.7); also true with no active profile or nothing to generate. false in any state but loaded.",
+          "type": "boolean"
+        },
+        "projects": {
+          "description": "In ascending key order (spec 9.8's workspace-entry rule depends on it).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Project"
+          }
+        },
+        "options": {
+          "description": "The working copy's per-server options with the defaults applied: { [server]: { [key]: value } }.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

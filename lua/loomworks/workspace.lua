@@ -3690,6 +3690,9 @@ function Workspace:_refresh_lsp_database_for(unit, on_settled)
         -- Raise the entry's `db_rev` (§19.20) before the nudge re-reads it.
         require("loomworks.lsp_config").bump_db_rev(self, build_dir)
         Workspace._nudge_lsp(build_dir)
+        -- The workspace daemon's `LspConfig/1.changed` (§19.20); nothing
+        -- listens in the editor.
+        self._core._deps.events.emit("lsp_database_written", { workspace = self, db_dir = build_dir })
     end
     -- The primary refresh drives both the nudge and (when the caller asked) the
     -- readiness gate. `on_settled` fires once regardless of `changed`, since a
@@ -4983,6 +4986,55 @@ function Workspace:_scan_tools_async()
     )
 end
 
+--- The startup pass of `_scan_targets_async` without the target scan (a
+--- host with `deps.scan_targets = false` and `deps.lsp_databases`, the
+--- workspace daemon): regenerate the owned LSP database of every unit
+--- configured on this machine that has a build dir and a module owning one
+--- (§8.4 `refresh_lsp_database`, mtime-gated), one after another, the active
+--- profile's first. `mark_ready` is called once the active profile's settled
+--- (at once when it has none) — the §9.7 readiness `LspConfig/1.get`
+--- reports as `ready`.
+--- @param mark_ready fun()
+function Workspace:_refresh_lsp_databases_async(mark_ready)
+    local ws = self
+    local active_units = {}
+    local profile = self._active_profile
+    if profile and not profile._removed then
+        for _, pp in ipairs(profile:projects()) do
+            if pp._config_unit then active_units[pp._config_unit] = true end
+        end
+    end
+    local active, other = {}, {}
+    for _, unit in pairs(self._config_units or {}) do
+        local project = unit._project
+        local mod = project and project._module and project._module.impl or nil
+        if mod and mod.refresh_lsp_database and unit:build_dir() and unit:configured_here() then
+            if active_units[unit] then active[#active + 1] = unit else other[#other + 1] = unit end
+        end
+    end
+    local pending = #active
+    if pending == 0 then mark_ready() end
+    local units = {}
+    for _, u in ipairs(active) do units[#units + 1] = { unit = u, gating = true } end
+    for _, u in ipairs(other) do units[#units + 1] = { unit = u } end
+    local idx = 0
+    local function next_unit()
+        idx = idx + 1
+        local e = units[idx]
+        if not e or ws._torn_down then return end
+        ws:_refresh_lsp_database_for(e.unit, function()
+            ws._core._deps.schedule(function()
+                if e.gating then
+                    pending = pending - 1
+                    if pending <= 0 then mark_ready() end
+                end
+                next_unit()
+            end)
+        end)
+    end
+    next_unit()
+end
+
 --- Scan targets for all ConfigUnits that have a build directory.
 --- Runs asynchronously, processing units sequentially to avoid blocking.
 --- Results stored on ConfigUnit.targets (runtime only, not cached).
@@ -5006,6 +5058,13 @@ function Workspace:_scan_targets_async()
     end
 
     if self._core._deps.scan_targets == false then
+        -- The workspace daemon scans no targets but generates the owned LSP
+        -- databases its `LspConfig/1` clients read (daemon.md §19.16 "LSP
+        -- configuration": while carried, only the daemon generates them).
+        if self._core._deps.lsp_databases then
+            self:_refresh_lsp_databases_async(mark_lsp_ready)
+            return
+        end
         -- The standalone CLI never surfaces targets and never installs LSP
         -- servers; nothing to generate or gate on.
         mark_lsp_ready()
@@ -7139,28 +7198,38 @@ end
 --- Set a single LSP option for a server and persist to user.json.
 --- Stores only when the value differs from the integration default,
 --- so loading + saving an untouched workspace doesn't bloat user.json.
+--- A nil `value` removes the key (the default applies again). A write that
+--- is refused (a stale or untrusted working copy, §2.7) or fails changes
+--- neither user.json nor the model (also `LspConfig/1.set_option`, §19.20).
 --- @param server string
 --- @param key string
 --- @param value any
+--- @return boolean ok
+--- @return string|nil err why user.json was not written
 function Workspace:set_lsp_option(server, key, value)
     local defaults = LSP_OPTION_DEFAULTS[server] or {}
-    if not self._lsp_options then self._lsp_options = {} end
-    if not self._lsp_options[server] then self._lsp_options[server] = {} end
-    if defaults[key] ~= nil and vim.deep_equal(defaults[key], value) then
+    local before = self._lsp_options
+    local options = vim.deepcopy(before or {})
+    options[server] = options[server] or {}
+    if value == nil or (defaults[key] ~= nil and vim.deep_equal(defaults[key], value)) then
         -- Storing the default would be redundant; drop the entry.
-        self._lsp_options[server][key] = nil
-        if next(self._lsp_options[server]) == nil then
-            self._lsp_options[server] = nil
-        end
-        if next(self._lsp_options) == nil then
-            self._lsp_options = nil
-        end
+        options[server][key] = nil
     else
-        self._lsp_options[server][key] = value
+        options[server][key] = value
     end
-    self:_save_user()
+    if next(options[server]) == nil then options[server] = nil end
+    if next(options) == nil then options = nil end
+    self._lsp_options = options
+    local base = self._disk_baseline.user
+    local ok, err = self:_save_user()
+    if not ok then
+        -- (A stale refusal re-read the working copy: a new baseline.)
+        if self._disk_baseline.user == base then self._lsp_options = before end
+        return false, err
+    end
     self._core._deps.events.emit("lsp_options_changed",
         { server = server, key = key, value = value })
+    return true
 end
 
 -- ---------------------------------------------------------------------------

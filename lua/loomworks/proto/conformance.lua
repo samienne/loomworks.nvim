@@ -104,7 +104,8 @@ M.FORMAT = 1
 ---          configuration set `dev` (`app` = `Debug`) and a trusted working
 ---          copy with the profile `dev` and, on `app`, the launch
 ---          configuration `hello` (an existing program, run with one
----          argument)
+---          argument) and the compile database
+---          `${build_dir}/compile_commands.json` (one clangd entry)
 M.FIXTURES = { empty = true, shell = true }
 
 --- Default per-step timeout.

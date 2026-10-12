@@ -1,0 +1,650 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.LspConfig",
+  "version": 1,
+  "description": "Object /lsp (spec 19.20 LspConfig/1): the LSP state read in each workspace state, an entry made ready by a configure, options set and reset in the working copy, and changed after each change.",
+  "cases": [
+    {
+      "name": "get answers an unloaded workspace's state without loading it; malformed arguments are errors",
+      "fixture": "shell",
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "$exact": {
+                "state": "unloaded",
+                "ready": false,
+                "projects": [],
+                "options": {
+                  "$exact": {}
+                }
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/views",
+            "iface": "loomworks.view.Header",
+            "v": 1,
+            "method": "get",
+            "args": {}
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "state": "unloaded"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {
+              "x": 1
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 3,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 4,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {}
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 4,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a loaded workspace with no active profile: the clangd entry is unconfigured with no db_dir; options carry the defaults",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "model_change"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/toolchains",
+            "iface": "loomworks.Toolchains",
+            "v": 1,
+            "method": "list",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "state": "loaded",
+              "ready": {
+                "$type": "boolean"
+              },
+              "projects": [
+                {
+                  "project": "app",
+                  "id": {
+                    "$type": "string"
+                  },
+                  "path": "app",
+                  "entries": [
+                    {
+                      "server": "clangd",
+                      "root_dir": {
+                        "$pattern": "app$"
+                      },
+                      "db_state": "unconfigured",
+                      "db_rev": 0,
+                      "db_dir": {
+                        "$absent": true
+                      },
+                      "compile_commands_dir": {
+                        "$absent": true
+                      }
+                    }
+                  ]
+                }
+              ],
+              "options": {
+                "clangd": {
+                  "clang_tidy": true,
+                  "background_index": true
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a subscriber receives changed when a configure loads the workspace; get then reports the loaded state",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "task"
+        },
+        {
+          "kind": "model_change"
+        },
+        {
+          "kind": "signal",
+          "object": "/lsp",
+          "name": "changed"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/",
+            "iface": "loomworks.Root",
+            "v": 1,
+            "method": "subscribe",
+            "args": {
+              "object": "/lsp",
+              "iface": "loomworks.LspConfig",
+              "v": 1,
+              "signals": [
+                "changed"
+              ]
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "sub_id": {
+                "$bind": "sub"
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "state": "unloaded",
+              "ready": false
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/build",
+            "iface": "loomworks.Build",
+            "v": 1,
+            "method": "configure",
+            "args": {
+              "profile": {
+                "key": "dev"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "accepted",
+              "task_id": {
+                "$bind": "task3"
+              }
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "task",
+            "task_id": {
+              "$var": "task3"
+            },
+            "phase": "done",
+            "exit_code": 0
+          },
+          "timeout_ms": 120000
+        },
+        {
+          "expect": {
+            "kind": "signal",
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "name": "changed",
+            "sub_id": {
+              "$var": "sub"
+            },
+            "args": {
+              "seq": {
+                "$type": "integer"
+              }
+            }
+          },
+          "timeout_ms": 60000
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 4,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 4,
+            "result": {
+              "state": "loaded",
+              "ready": true,
+              "projects": [
+                {
+                  "project": "app",
+                  "path": "app",
+                  "entries": [
+                    {
+                      "server": "clangd",
+                      "db_state": "unconfigured",
+                      "db_rev": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_option writes the working copy with changed after it; without a value the default applies again; malformed arguments are errors",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "model_change"
+        },
+        {
+          "kind": "task"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 10,
+            "object": "/build",
+            "iface": "loomworks.Build",
+            "v": 1,
+            "method": "configure",
+            "args": {
+              "profile": {
+                "key": "dev"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 10,
+            "result": {
+              "outcome": "accepted",
+              "task_id": {
+                "$bind": "task"
+              }
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "task",
+            "task_id": {
+              "$var": "task"
+            },
+            "phase": "done",
+            "exit_code": 0
+          },
+          "timeout_ms": 120000
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/",
+            "iface": "loomworks.Root",
+            "v": 1,
+            "method": "subscribe",
+            "args": {
+              "object": "/lsp",
+              "iface": "loomworks.LspConfig",
+              "v": 1,
+              "signals": [
+                "changed"
+              ]
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "sub_id": {
+                "$bind": "sub"
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "state": "loaded",
+              "options": {
+                "clangd": {
+                  "clang_tidy": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "set_option",
+            "args": {
+              "server": "clangd",
+              "key": "clang_tidy",
+              "value": false
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "signal",
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "name": "changed",
+            "sub_id": {
+              "$var": "sub"
+            },
+            "args": {
+              "seq": {
+                "$type": "integer"
+              }
+            }
+          },
+          "timeout_ms": 60000
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 4,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 4,
+            "result": {
+              "state": "loaded",
+              "options": {
+                "clangd": {
+                  "clang_tidy": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 5,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "set_option",
+            "args": {
+              "server": "clangd",
+              "key": "clang_tidy"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 5,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "signal",
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "name": "changed",
+            "sub_id": {
+              "$var": "sub"
+            },
+            "args": {
+              "seq": {
+                "$type": "integer"
+              }
+            }
+          },
+          "timeout_ms": 60000
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 6,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 6,
+            "result": {
+              "state": "loaded",
+              "options": {
+                "clangd": {
+                  "clang_tidy": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 7,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "set_option",
+            "args": {
+              "server": "clangd"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 7,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

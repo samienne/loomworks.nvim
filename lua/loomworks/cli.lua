@@ -724,6 +724,10 @@ function M._load_workspace_soft(root, wait_tools, opts)
   -- just the resolved profile via ensure_unit_targets, which is independent of
   -- this flag and only reads an already-configured build tree.
   core._deps.scan_targets = false
+  -- The workspace daemon (`handlers`) still generates the owned LSP databases
+  -- its LspConfig/1 clients read, and reports their readiness (§19.16 "LSP
+  -- configuration", §9.7).
+  core._deps.lsp_databases = handlers and true or nil
   -- Serve tools from the machine-level cache. A load that won't wait for tools
   -- never probes — serve cache only (never spend seconds for a command that
   -- doesn't need live tools). Install the wrapper before setup triggers a scan.

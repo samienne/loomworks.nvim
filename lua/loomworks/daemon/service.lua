@@ -137,6 +137,19 @@ function M.attach(server, host)
     server.service = self
     -- The core interfaces it serves (step 5g.2), once the registry exists.
     if server.interfaces then core_ifaces.mount(server.interfaces, self) end
+    -- LspConfig/1's `changed` (§19.20): an owned LSP database written by
+    -- this daemon's model (a raised `db_rev`), and the active profile's
+    -- databases settled (`ready`) — both outside any model segment.
+    local events = require("loomworks.events")
+    self._lsp_listeners = {
+        lsp_database_written = function(d)
+            if type(d) == "table" and d.workspace ~= nil and d.workspace == (self:header_model()) then
+                pcall(core_ifaces.lsp_check, self, true)
+            end
+        end,
+        lsp_ready = function() pcall(core_ifaces.lsp_check, self) end,
+    }
+    for ev, fn in pairs(self._lsp_listeners) do events.on(ev, fn) end
     -- The header `header_changed` compares with (unloaded: never loads).
     core_ifaces.header_check(self)
     return self
@@ -907,6 +920,9 @@ end
 --- @param reason string
 function Service:on_stopping(reason)
     self.stopping = true
+    local events = require("loomworks.events")
+    for ev, fn in pairs(self._lsp_listeners or {}) do events.off(ev, fn) end
+    self._lsp_listeners = nil
     for run in pairs(self.runs) do
         if not run.finished then
             run.cancel("the workspace daemon stopped (" .. tostring(reason) .. ")", 1)

@@ -103,7 +103,7 @@ end
 -- state is part of the key, so a configure/build that would change what the
 -- side effect emits also changes the key and forces a recompute.
 
---- @type table<string, { key: string, entries: table[] }> project.key → memo
+--- @type table<string, { key: string, entries: table[] }> project.key (+ env key) → memo
 local _memo = {}
 --- Bumped when the lsp options change, so every content key changes.
 local _generation = 0
@@ -133,9 +133,13 @@ end
 --- The content key of a project's `lsp_configs` output. nil when the project
 --- has no workspace (uncacheable — recomputed every time). Every component is
 --- an identity/value read; none touch the filesystem.
+--- `env_key` names the environment the entries are computed in (the
+--- daemon's callers each bring theirs, §19.15 "Environment": a server binary
+--- found through PATH differs between them); nil in the editor, which has one.
 --- @param project loomworks.Project
+--- @param env_key? string
 --- @return string|nil
-function M._memo_key(project)
+function M._memo_key(project, env_key)
     local ws = project._workspace
     if not ws then return nil end
 
@@ -143,6 +147,7 @@ function M._memo_key(project)
         "g", tostring(_generation),
         "w", ws.root or "",
         "p", project.key or "",
+        "env", env_key or "",
     }
 
     local active = ws.get_active_profile and ws:get_active_profile() or nil
@@ -253,16 +258,18 @@ end
 --- identity-stable across hits.
 --- @param ws table|nil the workspace to read the active build dir and revisions from (default: the project's)
 --- @param project loomworks.Project
+--- @param env_key? string the environment the entries are computed in (see `_memo_key`)
 --- @return loomworks.LspStateEntry[]
-function M.entries(ws, project)
+function M.entries(ws, project, env_key)
     if type(project) ~= "table" then return {} end
     ws = ws or project._workspace
     local mod = project._module and project._module.impl or nil
     if not mod or not mod.lsp_configs then return {} end
 
     local entries
-    local key = M._memo_key(project)
-    local cached = key and _memo[project.key] or nil
+    local key = M._memo_key(project, env_key)
+    local slot = env_key and (project.key .. "" .. env_key) or project.key
+    local cached = key and _memo[slot] or nil
     if cached and cached.key == key then
         entries = cached.entries
     else
@@ -274,7 +281,7 @@ function M.entries(ws, project)
         for _, e in ipairs(entries) do
             if type(e) == "table" and e.db_dir == nil then e.db_dir = bd end
         end
-        if key then _memo[project.key] = { key = key, entries = entries } end
+        if key then _memo[slot] = { key = key, entries = entries } end
     end
 
     for _, e in ipairs(entries) do
@@ -304,13 +311,14 @@ end
 --- @param ws table|nil
 --- @param project loomworks.Project
 --- @param id_of? fun(project: loomworks.Project): string|nil the daemon's opaque ids
+--- @param env_key? string the environment the entries are computed in (see `_memo_key`)
 --- @return loomworks.LspConfigProject
-function M.project_record(ws, project, id_of)
+function M.project_record(ws, project, id_of, env_key)
     return {
         project = project.key,
         id = id_of and id_of(project) or nil,
-        path = project.path,
-        entries = M.entries(ws, project),
+        path = project.path or project.key,
+        entries = M.entries(ws, project, env_key),
     }
 end
 
@@ -318,8 +326,9 @@ end
 --- @param ws table|nil
 --- @param projects table<any, loomworks.Project>|nil the projects (default: `ws._projects`)
 --- @param id_of? fun(project: loomworks.Project): string|nil
+--- @param env_key? string
 --- @return loomworks.LspConfigProject[]
-function M.project_records(ws, projects, id_of)
+function M.project_records(ws, projects, id_of, env_key)
     projects = projects or (type(ws) == "table" and ws._projects) or {}
     local sorted = {}
     for _, p in pairs(projects) do
@@ -327,7 +336,7 @@ function M.project_records(ws, projects, id_of)
     end
     table.sort(sorted, function(a, b) return a.key < b.key end)
     local out = {}
-    for i, p in ipairs(sorted) do out[i] = M.project_record(ws, p, id_of) end
+    for i, p in ipairs(sorted) do out[i] = M.project_record(ws, p, id_of, env_key) end
     return out
 end
 
@@ -347,7 +356,7 @@ end
 --- `opts.state` (default "unloaded"), not ready, with no projects and no
 --- options — the state never loads a workspace.
 --- @param ws loomworks.Workspace|nil
---- @param opts? { state?: string, projects?: table<any, loomworks.Project>, id_of?: fun(project: loomworks.Project): string|nil }
+--- @param opts? { state?: string, projects?: table<any, loomworks.Project>, id_of?: fun(project: loomworks.Project): string|nil, env_key?: string }
 --- @return loomworks.LspConfigState
 function M.state(ws, opts)
     opts = opts or {}
@@ -357,9 +366,18 @@ function M.state(ws, opts)
     return {
         state = "loaded",
         ready = ws._lsp_ready == true,
-        projects = M.project_records(ws, opts.projects, opts.id_of),
+        projects = M.project_records(ws, opts.projects, opts.id_of, opts.env_key),
         options = M.options(ws),
     }
+end
+
+--- A stable signature of a state (sorted keys): equal states, equal
+--- signatures. The daemon sends `LspConfig/1.changed` when it differs from
+--- the one at its last `changed` (§19.20).
+--- @param state loomworks.LspConfigState
+--- @return string
+function M.signature(state)
+    return repr(state)
 end
 
 return M

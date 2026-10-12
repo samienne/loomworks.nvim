@@ -132,6 +132,9 @@ function M.fixture(name, key_path)
     -- spec 17.10): the program Launch/1.prepare_run resolves; `multi`, one
     -- debugged by two languages (Launch/1.prepare_debug's adapters).
     local user_app = app()
+    -- A clangd entry (spec 9.2) for LspConfig/1: a program-bearing field
+    -- (17.6), honored only from the working copy.
+    user_app.shell.compile_commands = "${build_dir}/compile_commands.json"
     user_app.launch = { hello = { command = nv, args = { "--version" } },
         multi = { command = nv, args = { "--version" }, debug = { "typescript", "c++" } } }
     local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
@@ -207,7 +210,7 @@ end
 
 --- The client environment frames carry (`env`): the entries a request can
 --- carry (loomworks.daemon.envscope.validate).
-local function wire_env(vars)
+function M.wire_env(vars)
     local envscope = require("loomworks.daemon.envscope")
     local out = {}
     for k, v in pairs(vars) do
@@ -308,7 +311,7 @@ function M.run_case(case, opts)
             d = M.loopback_driver(root)
         end
         local vars = { lw_version = opts.lw_version or version.identity(), root = root,
-            env = wire_env(ctx_env.vars) }
+            env = M.wire_env(ctx_env.vars) }
         return engine.run_case(case, d, { vars = vars, timeout_ms = opts.timeout_ms })
     end)
     local closed, exit_code = false, nil
