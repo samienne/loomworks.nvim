@@ -60,7 +60,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   build started by `lw` or another editor is listed read-only as
   `[lw] build <profile>`: stop and restart say where to cancel it. The status
   page's `Open overseer` works on these rows. When overseer cannot list them
-  they stay on the status page only, with a note on the Runtime line. (#196)
+  they stay on the status page only, with a note on the Runtime line. (#197)
 - Experimental daemon: the workspace daemon can prepare a debug launch
   (`Launch/1.prepare_debug`: build, deploy and resolve the program exactly as
   `lw run` would, plus the debug languages and their adapters) and serves
