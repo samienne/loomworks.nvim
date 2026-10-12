@@ -1,10 +1,14 @@
 --- loomworks/ui/sections/debug.lua — Debug adapter section renderer.
 ---
---- Shows current debug adapter selection per module type.
---- Allows picking from known adapters via Enter action.
+--- Shows current debug adapter selection per language of the workspace's
+--- modules. Allows picking from known adapters via Enter action.
+---
+--- The mapping comes from loomworks.daemon.editor_ops: `DebugConfig/1` while
+--- the workspace daemon carries it (step 5k C2, spec §19.16 "Editor
+--- operations"), else the in-process working copy. Whether an adapter is
+--- installed is always nvim-dap's answer, here.
 
 local debug_mod = require("loomworks.debug")
-local debug_config = require("loomworks.debug_config")
 
 --- Render the Debug Adapters section.
 --- @param tree loomworks.Tree
@@ -30,13 +34,20 @@ return function(tree, ctx)
     if #languages == 0 then return end
     table.sort(languages)
 
+    local ops = require("loomworks.daemon.editor_ops")
+    local by_lang = {}
+    for _, r in ipairs(ops.debug_adapters(ws)) do
+        if type(r) == "table" and r.language then by_lang[r.language] = r end
+    end
+
     tree:blank()
     tree:leaf("Debug Adapters", "Title")
     tree:blank()
 
     for _, lang in ipairs(languages) do
-        local current = debug_config.resolve_adapter(ws, lang)
-        local default = debug_config.default_adapter(lang)
+        local rec = by_lang[lang] or {}
+        local current = rec.adapter
+        local default = rec.default
 
         if not current and not default then goto next_lang end
 
@@ -46,17 +57,12 @@ return function(tree, ctx)
             label = label .. "  (default)"
         end
 
-        local installed = false
-        local ok, dap = pcall(require, "dap")
-        if ok and dap.adapters[current] then
-            installed = true
-        end
-        local hl = installed and "Comment" or "DiagnosticWarn"
+        local hl = debug_mod.adapter_installed(current) and "Comment" or "DiagnosticWarn"
 
         tree:item(label, {
             hl = hl,
             on_enter = function()
-                local known = debug_config.known_adapters(lang)
+                local known = type(rec.known) == "table" and rec.known or {}
                 if #known == 0 then return end
 
                 vim.ui.select(known, {
@@ -69,8 +75,7 @@ return function(tree, ctx)
                         if adapter == default then
                             marks[#marks + 1] = "default"
                         end
-                        local ok2, dap2 = pcall(require, "dap")
-                        if ok2 and dap2.adapters[adapter] then
+                        if debug_mod.adapter_installed(adapter) then
                             marks[#marks + 1] = "installed"
                         else
                             marks[#marks + 1] = "not installed"
@@ -82,24 +87,12 @@ return function(tree, ctx)
                     end,
                 }, function(choice)
                     if not choice then return end
-                    if choice == default then
-                        -- Reset to default: remove override from user.json
-                        if ws._debug_settings
-                            and ws._debug_settings.adapters
-                            and ws._debug_settings.adapters[lang] then
-                            ws._debug_settings.adapters[lang] = nil
-                            if not next(ws._debug_settings.adapters) then
-                                ws._debug_settings.adapters = nil
-                            end
-                            if not next(ws._debug_settings) then
-                                ws._debug_settings = nil
-                            end
-                            ws:_save_user()
-                        end
-                    else
-                        ws:set_debug_adapter(lang, choice)
-                    end
-                    require("loomworks.ui.status").refresh()
+                    -- The default removes the override from user.json.
+                    local adapter = choice ~= default and choice or nil
+                    if adapter == nil and not rec.overridden then return end
+                    ops.set_debug_adapter(ws, lang, adapter, function()
+                        require("loomworks.ui.status").refresh()
+                    end)
                 end)
             end,
         })

@@ -216,30 +216,31 @@ end
 
 --- @class loomworks.DebugSpec
 --- @field name string session name
---- @field program string|nil the executable (a command launch's expanded `command`; from
----   `prepare_debug`, M.debug_spec, the run's resolved `cmd`)
+--- @field program string|nil the executable: the run's resolved `cmd` (M.debug_spec)
 --- @field args string[]|nil
 --- @field cwd string|nil
---- @field env table<string, string>|nil a command launch's declared env, `env_policy`-filtered (from
----   `prepare_debug`: the launch's own contribution over the client's environment, as the run's)
---- @field language string the project module's primary language (from `prepare_debug`: the
----   first debug language, which is that unless a launch configuration's `debug` names another)
+--- @field env table<string, string>|nil the launch's own contribution over the host's (or, from
+---   `prepare_debug`, the client's) environment, as the run's (M.env_overrides)
+--- @field language string the first debug language: a launch configuration's first `debug`
+---   entry, else the module's primary language
 --- @field adapters loomworks.DebugSpecAdapter[] ordered; the first launches, the rest attach to its pid
 
 --- The `adapters` of a launch configuration: its `debug` languages in order,
---- else the module's primary language `lang`.
-local function config_adapters(ws, cfg, lang)
+--- else the module's primary language `lang`. `resolve(language)`: the
+--- mapping to resolve each from (default: the workspace's, debug_config).
+local function config_adapters(ws, cfg, lang, resolve)
     local debug_config = require("loomworks.debug_config")
+    resolve = resolve or function(language) return debug_config.resolve_adapter(ws, language) end
     local adapters = {}
     if type(cfg.debug) == "table" then
         for _, entry in ipairs(cfg.debug) do
             local language = type(entry) == "string" and entry or entry.language
             adapters[#adapters + 1] = {
-                language = language, adapter = debug_config.resolve_adapter(ws, language) }
+                language = language, adapter = resolve(language) }
         end
     end
     if #adapters == 0 then
-        adapters[1] = { language = lang, adapter = debug_config.resolve_adapter(ws, lang) }
+        adapters[1] = { language = lang, adapter = resolve(lang) }
     end
     return adapters
 end
@@ -283,6 +284,29 @@ function M.debug_spec(ws, lt, launch)
     }
 end
 
+--- The adapter that launches a launch target's debug session and its
+--- language: the first of M.debug_spec's `adapters` (a launch
+--- configuration's first `debug` language, else the module's primary one).
+--- `resolve(language)`: the language → adapter mapping to resolve it from
+--- (default: the workspace's, debug_config; in daemon mode the daemon's,
+--- editor_ops.debug_adapter_resolver).
+--- @param lt loomworks.LaunchTarget
+--- @param resolve? fun(language: string): string|nil
+--- @return string|nil adapter, string language
+function M.primary_adapter(lt, resolve)
+    local lang = module_language(lt)
+    resolve = resolve or function(language)
+        return require("loomworks.debug_config").resolve_adapter(lt._workspace, language)
+    end
+    local first
+    if lt._launch_config then
+        first = config_adapters(lt._workspace, lt._launch_config, lang, resolve)[1]
+    else
+        first = { language = lang, adapter = resolve(lang) }
+    end
+    return first.adapter, first.language
+end
+
 --- Why a launch target cannot be debugged on this host (spec §19.15 "Debug",
 --- §18.1 / §18.11: there is no device debug), or nil: a device target, or a
 --- build-target artifact found foreign — by its kit's platform token, or (not
@@ -305,123 +329,46 @@ function M.debug_refusal(lt, by_kit_only)
     return nil
 end
 
---- The debug spec of a launch configuration read as a command launch: its
---- expanded `command` (nil for a target-backed configuration, which has none),
---- args, working directory (default: the project directory), declared env and
---- `debug` adapters. What the editor's multi-adapter path
---- (LaunchTarget:multi_adapter_specs) consumes for every launch configuration
---- — so a target-backed one still reaches nvim-dap with `program = nil`, as
---- before step 5k; resolve_debug resolves that case honestly.
---- @param lt loomworks.LaunchTarget  with a `_launch_config`
---- @return loomworks.DebugSpec
-function M.resolve_command_debug(lt)
-    local ws = lt._workspace
-    local cfg = lt._launch_config
-    local expand = require("loomworks.expand")
-    local project = lt._project
-    local ctx = expand.launch_context(ws, lt._profile, project)
-
-    local cmd = expand.expand_string(cfg.command, ctx)
-    local args = expand.expand_array(cfg.args, ctx) or {}
-
-    local cwd
-    if cfg.working_dir then
-        local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
-        if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
-            cwd = expanded_cwd
-        else
-            cwd = ws.root .. "/" .. expanded_cwd
-        end
-    else
-        cwd = ws.root .. "/" .. (project.path or project.key)
-    end
-
-    -- Denylisted loader/interpreter variables are refused (spec §17.9).
-    local env = require("loomworks.env_policy").filter(
-        expand.expand_dict(cfg.env, ctx), { label = "launch " .. tostring(lt._launch_name or "?") })
-    local lang = project._module and project._module:primary_language() or "c++"
-
-    return {
-        name = project.key .. ": debug " .. (lt._launch_name or "launch"),
-        program = cmd,
-        args = args,
-        cwd = cwd,
-        env = env,
-        language = lang,
-        adapters = config_adapters(ws, cfg, lang),
-    }
-end
-
 --- Resolve the debug spec of a launch target — the seam the editor's debug
---- paths (LaunchTarget:_debug_command / _debug_target) consume, and that
---- `Launch/1.prepare_debug` reuses. Adapter-agnostic: availability and the
---- adapter-specific transform are the host's (loomworks/debug.lua).
---- Host-neutral: no output of its own, but a launch configuration's env goes
---- through `env_policy.filter`, which schedules a `vim.notify` warning (once
---- per variable) when it refuses a denylisted variable.
+--- paths (LaunchTarget:debug / multi_adapter_specs) consume. One spec for run
+--- and debug (spec §8.9.6 "One spec for run and debug", step 5k C2): the
+--- program, arguments, working directory and environment are the run's of the
+--- same target (LaunchTarget:resolve_launch_spec — a module target's
+--- working-directory precedence and run environment, a launch
+--- configuration's args / env / working_dir, the §17.9 denylist), `env`
+--- reduced to the launch's own contribution (M.env_overrides), shaped by
+--- M.debug_spec exactly as `Launch/1.prepare_debug` returns it.
+--- Adapter-agnostic: availability and the adapter-specific transform are the
+--- host's (loomworks/debug.lua). Host-neutral: no output of its own, but a
+--- launch configuration's env goes through `env_policy.filter`, which
+--- schedules a `vim.notify` warning (once per variable) when it refuses a
+--- denylisted variable.
 ---
---- A command launch configuration: see resolve_command_debug. A target-backed
---- launch configuration (`target`, no `command`) resolves like a run of it
---- (LaunchTarget:resolve_command_spec): the referenced target's artifact, its
---- run environment with the declared env over it, the configuration's args and
---- working directory (default: the project directory); refused ("error") when
---- that does not resolve, as the run is. A module target debugs its artifact
---- with `cwd` = the build directory, no args/env. `adapters` are a launch
---- configuration's `debug` languages in order, else the module's primary
---- language. nil when there is nothing to debug; with a reason and its
---- severity ("warn" | "error") when the target cannot be debugged.
+--- nil when there is nothing to debug (neither a launch configuration nor an
+--- executable target with an artifact); with a reason and its severity when
+--- the target cannot be debugged: "error" for a launch configuration or a
+--- foreign artifact (§18.11), "warn" for a module target that does not
+--- resolve otherwise (no build directory, ...).
 --- @param lt loomworks.LaunchTarget
 --- @return loomworks.DebugSpec|nil spec
 --- @return string|nil err
 --- @return "warn"|"error"|nil severity
 function M.resolve_debug(lt)
-    local debug_config = require("loomworks.debug_config")
     local ws = lt._workspace
-    local cfg = lt._launch_config
-    if cfg and cfg.target and not cfg.command then
-        local rspec, rerr = lt:resolve_command_spec()
-        if not rspec then return nil, "cannot debug: " .. tostring(rerr), "error" end
-        local project = lt._project
-        local lang = project._module and project._module:primary_language() or "c++"
-        return {
-            name = project.key .. ": debug " .. (lt._launch_name or "launch"),
-            program = rspec.cmd,
-            args = rspec.args,
-            cwd = rspec.cwd,
-            env = rspec.env,
-            language = lang,
-            adapters = config_adapters(ws, cfg, lang),
-        }
+    if not lt._launch_config then
+        local target = lt._target
+        if not (target and target:is_executable() and target.artifact) then return nil end
     end
-    if cfg then return M.resolve_command_debug(lt) end
-
-    local target = lt._target
-    if not (target and target:is_executable() and target.artifact) then return nil end
-    local unit = target._config_unit
-    if not unit then return nil end
-
-    local build_dir = unit:build_dir()
-    if not build_dir then
-        return nil, "no build directory for " .. target.id, "warn"
+    local spec, err = lt:resolve_launch_spec()
+    if not spec then
+        local severity = "error"
+        if not lt._launch_config and not M.foreign_of(lt) then severity = "warn" end
+        return nil, "cannot debug: " .. tostring(err), severity
     end
-
-    local artifact_path = require("loomworks.paths").artifact_path(build_dir, target.artifact)
-    -- Debugging a foreign target is refused in this version (spec §18.11); it
-    -- must never start on the host (§18.1).
-    local host_ok, foreign_err = require("loomworks.remote.foreign").check_local(unit, artifact_path)
-    if not host_ok then
-        return nil, foreign_err, "error"
-    end
-    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
-    local lang = unit._project and unit._project._module and unit._project._module:primary_language() or "c++"
-
-    return {
-        name = project_name .. ": debug " .. target.id,
-        program = artifact_path,
-        cwd = build_dir,
-        language = lang,
-        adapters = { { language = lang, adapter = debug_config.resolve_adapter(ws, lang) } },
-    }
+    return M.debug_spec(ws, lt, {
+        name = spec.name, cmd = spec.cmd, args = spec.args or {}, cwd = spec.cwd or ws.root,
+        env = M.env_overrides(spec.env),
+    })
 end
 
 --- The launch-contributed environment OVERRIDES: entries of the resolved run

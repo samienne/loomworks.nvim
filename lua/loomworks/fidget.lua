@@ -272,6 +272,15 @@ function M.start_op_action(title, method)
     return M.start_action(title .. in_process_suffix())
 end
 
+--- The progress entry of an operation the editor runs in-process although it
+--- could be routed (a launch whose preparation the daemon does not carry
+--- now, step 5k C2): in `daemon` mode its title says `(in-process)`.
+--- @param title string
+--- @return table|nil handle
+function M.start_in_process_action(title)
+    return M.start_action(title .. in_process_suffix())
+end
+
 --- Report progress on a handle (nil-safe).
 --- @param handle table|nil fidget handle
 --- @param message string

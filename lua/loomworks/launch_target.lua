@@ -5,7 +5,6 @@
 
 local expand = require("loomworks.expand")
 local debug_mod = require("loomworks.debug")
-local debug_config = require("loomworks.debug_config")
 
 --- @class loomworks.LaunchTarget
 --- @field _workspace loomworks.Workspace
@@ -681,9 +680,18 @@ end
 function LaunchTarget:_launch_command()
     local spec = self:resolve_command_spec()
     if not spec then return end
+    spec.name = self._project.key .. ": " .. (self._launch_name or "launch")
+    self:launch_resolved(spec)
+end
 
-    local cmd, args, cwd, env = spec.cmd, spec.args, spec.cwd, spec.env
-
+--- Start a resolved launch in the editor's task runner (overseer) as this
+--- target's launch task — a command configuration's in-process launch, and
+--- every launch whose preparation the workspace daemon returned (step 5k C2,
+--- §19.16 "Editor operations": the program is the editor's, its `env` the
+--- launch's own contribution, which the task inherits the editor's
+--- environment under). A previous completed launch task is disposed.
+--- @param spec { name: string, cmd: string, args?: string[], cwd?: string, env?: table<string, string> }
+function LaunchTarget:launch_resolved(spec)
     -- Dispose previous completed launch task
     if self._launch_task_id then
         local ok_os, overseer_mod = pcall(require, "overseer")
@@ -696,30 +704,55 @@ function LaunchTarget:_launch_command()
         end
     end
 
-    local task_name = self._project.key .. ": " .. (self._launch_name or "launch")
-
     local overseer = require("loomworks.overseer")
     self._launch_task_id = overseer.launch_run_task({
-        name = task_name,
-        cmd = cmd,
-        args = args,
-        cwd = cwd,
-        env = env,
+        name = spec.name,
+        cmd = spec.cmd,
+        args = spec.args,
+        cwd = spec.cwd,
+        env = spec.env,
     })
 end
 
 --- Debug this target via nvim-dap.
---- Falls back to launch() if nvim-dap is not available.
+--- Falls back to launch() if nvim-dap is not available. The program is
+--- resolved exactly as its run (spec §8.9.6 "One spec for run and debug",
+--- run_prep.resolve_debug); single-adapter: the first debug language's
+--- adapter. Multi-adapter launches are started by the session tracker
+--- (multi_adapter_specs).
 function LaunchTarget:debug()
     if not debug_mod.available() then
         self:launch()
         return
     end
-    if self._launch_config then
-        self:_debug_command()
-    elseif self._target and self._target:is_executable() then
-        self:_debug_target()
+    local spec, err, severity = require("loomworks.run_prep").resolve_debug(self)
+    if not spec then
+        if err then
+            vim.notify("loomworks: " .. err,
+                severity == "error" and vim.log.levels.ERROR or vim.log.levels.WARN)
+        end
+        return
     end
+    debug_mod.run({
+        name = spec.name,
+        adapter = spec.adapters[1].adapter,
+        program = spec.program,
+        args = spec.args,
+        cwd = spec.cwd,
+        env = spec.env,
+    })
+end
+
+--- The adapter that launches this target's debug session, and its language
+--- (spec §8.9.6: a launch configuration's first `debug` language, else the
+--- module's primary language). The editor checks it is installed before it
+--- asks the workspace daemon to prepare the debug launch (§19.16), with
+--- `resolve` the daemon's language → adapter mapping
+--- (editor_ops.debug_adapter_resolver; default: the workspace's).
+--- @param resolve? fun(language: string): string|nil
+--- @return string|nil adapter, string language
+function LaunchTarget:primary_debug_adapter(resolve)
+    return require("loomworks.run_prep").primary_adapter(self, resolve)
 end
 
 --- Check if this launch target has a multi-adapter debug config.
@@ -729,65 +762,18 @@ function LaunchTarget:is_multi_adapter()
     return cfg and cfg.debug and type(cfg.debug) == "table" and #cfg.debug > 1
 end
 
---- Get the resolved multi-adapter specs for this launch target.
---- Returns adapter entries and the base spec data for the primary adapter.
---- @return { adapter: string }[] adapters, table spec_data
+--- Get the resolved multi-adapter specs for this launch target: the adapter
+--- entries in order and the program spec (run_prep.resolve_debug, the same
+--- spec as the run's). nil and the reason when it does not resolve.
+--- @return { adapter: string }[]|nil adapters, table|string spec_data_or_err
 function LaunchTarget:multi_adapter_specs()
-    -- The command-launch reading for every launch configuration, as before
-    -- step 5k: a target-backed one has no `command`, so `program` stays nil
-    -- here (unchanged; run_prep.resolve_debug resolves that case).
-    local spec = require("loomworks.run_prep").resolve_command_debug(self)
+    local spec, err = require("loomworks.run_prep").resolve_debug(self)
+    if not spec then return nil, err or "nothing to debug" end
     local parsed = {}
     for _, a in ipairs(spec.adapters) do
         parsed[#parsed + 1] = { adapter = a.adapter }
     end
     return parsed, { program = spec.program, args = spec.args, cwd = spec.cwd, env = spec.env }
-end
-
---- Debug from a command-type config (loomworks.json launch section).
---- Only handles single-adapter. Multi-adapter is handled by session_tracker.
-function LaunchTarget:_debug_command()
-    local cfg = self._launch_config
-    if not cfg or not cfg.command then return end
-
-    local spec = require("loomworks.run_prep").resolve_debug(self)
-
-    -- Single adapter: the debug[] entry if there is exactly one, else the
-    -- module's primary language.
-    local adapter
-    if #spec.adapters == 1 then
-        adapter = spec.adapters[1].adapter
-    else
-        adapter = debug_config.resolve_adapter(self._workspace, spec.language)
-    end
-
-    debug_mod.run({
-        name = spec.name,
-        adapter = adapter,
-        program = spec.program,
-        args = spec.args,
-        cwd = spec.cwd,
-        env = spec.env,
-    })
-end
-
---- Debug a module target (executable produced by a module, e.g. cmake).
-function LaunchTarget:_debug_target()
-    local spec, err, severity = require("loomworks.run_prep").resolve_debug(self)
-    if not spec then
-        if err then
-            vim.notify("loomworks: " .. err,
-                severity == "error" and vim.log.levels.ERROR or vim.log.levels.WARN)
-        end
-        return
-    end
-
-    debug_mod.run({
-        name = spec.name,
-        program = spec.program,
-        cwd = spec.cwd,
-        adapter = spec.adapters[1].adapter,
-    })
 end
 
 --- Check if this target has a build step.
@@ -841,6 +827,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Device target operations
 -- ---------------------------------------------------------------------------
+
+--- Discover the devices of this target's workspace (Workspace:scan_devices):
+--- the device picker of a device launch.
+--- @param cb fun(devices: loomworks.Device[])
+function LaunchTarget:scan_devices(cb)
+    return self._workspace:scan_devices(cb)
+end
 
 --- Install the built artifact onto a device. Returns a Future.
 --- Resolves the artifact path via the module, then runs the install command.

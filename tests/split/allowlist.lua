@@ -160,7 +160,6 @@ return {
         ["lua/loomworks/neotest/init.lua"] = 5,
         ["lua/loomworks/overseer.lua"] = 22,
         ["lua/loomworks/reload.lua"] = 1,
-        ["lua/loomworks/session_tracker.lua"] = 1,
         ["lua/loomworks/ui/actions.lua"] = 10,
         ["lua/loomworks/ui/project_browser.lua"] = 4,
         ["lua/loomworks/ui/sections/config_sets.lua"] = 4,
@@ -184,7 +183,9 @@ return {
         ["lua/loomtest/runner.lua"] = 1,
         ["lua/loomworks/config_unit.lua"] = 3,
         ["lua/loomworks/init.lua"] = 4,
-        ["lua/loomworks/launch_target.lua"] = 5,
+        -- 5 -> 4: step 5k C2 — LaunchTarget:debug resolves one spec for
+        -- run and debug (§8.9.6): one nvim-dap start, not one per kind.
+        ["lua/loomworks/launch_target.lua"] = 4,
         ["lua/loomworks/profile.lua"] = 3,
         ["lua/loomworks/session_tracker.lua"] = 5,
         ["lua/loomworks/target.lua"] = 3,
@@ -198,8 +199,13 @@ return {
     -- cancel), conn:call(M.BUILD.object, M.BUILD.iface, ...) x3 and
     -- conn:call(M.TASKS.object, M.TASKS.iface, ...): all resolve to its
     -- versioned tables.
+    -- 8 -> 12: step 5k C2 adds four CALLS, each naming its method literally
+    -- (the method guard needs a literal): conn:call(M.LAUNCH.object,
+    -- M.LAUNCH.iface, ...) for prepare_run / prepare_debug and
+    -- conn:call(M.DEBUG.object, M.DEBUG.iface, ...) for adapters /
+    -- set_adapter — both versioned tables (Launch/1, DebugConfig/1).
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 8,
+        ["lua/loomworks/daemon/observer.lua"] = 12,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

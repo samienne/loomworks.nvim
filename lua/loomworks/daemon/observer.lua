@@ -107,8 +107,11 @@ M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
 --- @field _owned table<any, loomworks.daemon.OwnedCall> the editor's own tasks by daemon task id, from the call's `accepted` until they end (step 5k)
---- @field _degraded table<string, boolean>|nil Build/1 methods this connection's daemon lacks (or a parameter of): their operations run in-process
+--- @field _degraded table<string, boolean>|nil Build/1, Launch/1 and DebugConfig/1 methods this connection's daemon lacks (or a parameter of): their operations run in-process
 --- @field _method_notes string[]|nil the Runtime-line notes of those methods
+--- @field _debug_adapters { languages: table[]|nil }|nil `DebugConfig/1.adapters` as last read on this connection (step 5k C2; `languages` nil: that read failed or was declined)
+--- @field _debug_fetch fun(records: table[]|nil)[]|nil an `adapters` read in flight: its waiters (with_debug_adapters)
+--- @field _debug_again boolean|nil a model change arrived during that read: read again after it
 --- @field _relay loomworks.daemon.RelayProc|nil the relay in flight, until its `welcome` or its exit (single flight); after `welcome` the relay is the connection's (`conn.relay`)
 --- @field _relay_token table|nil identifies that relay's callback: `{ form, answer, conn }` (one after a stop or a replacement is ignored)
 --- @field _want table|nil the relay to spawn once a probe or download in flight ends: `{ form, instance?, answer?, prefix? }`
@@ -181,10 +184,23 @@ M.VIEW_PROJECTS = {
 -- `available` when the daemon offers it at this version.
 M.BUILD = {
     object = "/build", iface = "loomworks.Build", v = 1, feature = "operations",
-    methods = { "build", "configure", "clean" }, signals = {}, call_only = true,
+    methods = { "build", "configure", "clean" }, signals = {}, call_only = true, tasks = true,
+}
+-- The preparation of the editor's run and debug launches (step 5k C2,
+-- §19.16 "Editor operations"): task-streamed like M.BUILD; the editor then
+-- starts the returned program itself.
+M.LAUNCH = {
+    object = "/launch", iface = "loomworks.Launch", v = 1, feature = "launch",
+    methods = { "prepare_run", "prepare_debug" }, signals = {}, call_only = true, tasks = true,
+}
+-- The debug adapters section (step 5k C2, §19.20 `DebugConfig/1`): plain
+-- calls, no task; re-read on `Workspace/1` `changed` (it has no signal).
+M.DEBUG = {
+    object = "/debug", iface = "loomworks.DebugConfig", v = 1, feature = "debug adapters",
+    methods = { "adapters", "set_adapter" }, signals = {}, call_only = true,
 }
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS }
-M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.BUILD }
+M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.BUILD, M.LAUNCH, M.DEBUG }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -1362,6 +1378,7 @@ end
 function Observer:_subscribe(conn, done)
     self._feat, self._why, self._sub_only = {}, {}, nil
     self._degraded, self._method_notes = nil, nil
+    self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._view_seq = nil
     self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
@@ -1591,6 +1608,7 @@ function Observer:_on_closed(c)
     self.incompat_note = nil
     self._feat, self._why, self._sub_only = nil, nil, nil
     self._degraded, self._method_notes = nil, nil
+    self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._view_seq = nil
     self:_clear_views()
     self:_stop_timer("_keepalive")
@@ -1670,6 +1688,9 @@ function Observer:_model_change(seq, generation)
     else
         self.seq = tonumber(seq) or self.seq
     end
+    -- The debug adapters section re-reads DebugConfig/1 (no signal of its
+    -- own, §19.20) once it has read it on this connection.
+    if self._debug_adapters or self._debug_fetch then self:_refetch_debug_adapters() end
     return self:_reload()
 end
 
@@ -1695,7 +1716,8 @@ function Observer:_on_task(msg)
         -- An owned task that ended before its `start` arrived still ends its
         -- operation; any other one started before we connected: not shown.
         if msg.phase == "done" and self._owned[id] then
-            self:_owned_ended(id, nil, nil, { exit_code = tonumber(msg.exit_code), error = msg.error })
+            self:_owned_ended(id, nil, nil, { exit_code = tonumber(msg.exit_code), error = msg.error },
+                M.done_result(msg))
         end
         return
     end
@@ -1710,7 +1732,7 @@ function Observer:_on_task(msg)
         task:finish(tonumber(msg.exit_code), msg.error, nil, self:_clock())
         self:_forget(id)
         self:_emit("daemon_task_stopped", { task = task })
-        self:_owned_ended(id, task)
+        self:_owned_ended(id, task, nil, nil, M.done_result(msg))
     end
 end
 
@@ -1757,9 +1779,19 @@ M.DEGRADED_CODES = { unknown_object = true, unknown_interface = true, unknown_me
 --- (§19.20 "The CLI's calls"): in-process, the reason as one notification.
 M.DECLINED_CODES = { same_build_required = true, stopping = true, retiring = true }
 
+--- The interface table of each method the editor calls (step 5k): the
+--- feature that carries it, and whether it runs as a task (`tasks`: it needs
+--- Tasks/1, to be cancelled).
+local METHOD_IFACE = {
+    build = M.BUILD, configure = M.BUILD, clean = M.BUILD,
+    prepare_run = M.LAUNCH, prepare_debug = M.LAUNCH,
+    adapters = M.DEBUG, set_adapter = M.DEBUG,
+    cancel = M.TASKS,
+}
+
 --- The calls the editor makes (step 5k), each naming its method literally
---- (the guard checks them against M.BUILD's and M.TASKS's `methods`):
---- `fn(conn, args, cb, env)`.
+--- (the guard checks them against the `methods` of M.BUILD, M.LAUNCH,
+--- M.DEBUG and M.TASKS): `fn(conn, args, cb, env)`.
 local CALLS = {
     build = function(conn, args, cb, env)
         conn:call(M.BUILD.object, M.BUILD.iface, M.BUILD.v, "build", args, cb, env)
@@ -1770,17 +1802,29 @@ local CALLS = {
     clean = function(conn, args, cb, env)
         conn:call(M.BUILD.object, M.BUILD.iface, M.BUILD.v, "clean", args, cb, env)
     end,
+    prepare_run = function(conn, args, cb, env)
+        conn:call(M.LAUNCH.object, M.LAUNCH.iface, M.LAUNCH.v, "prepare_run", args, cb, env)
+    end,
+    prepare_debug = function(conn, args, cb, env)
+        conn:call(M.LAUNCH.object, M.LAUNCH.iface, M.LAUNCH.v, "prepare_debug", args, cb, env)
+    end,
+    adapters = function(conn, args, cb, env)
+        conn:call(M.DEBUG.object, M.DEBUG.iface, M.DEBUG.v, "adapters", args, cb, env)
+    end,
+    set_adapter = function(conn, args, cb, env)
+        conn:call(M.DEBUG.object, M.DEBUG.iface, M.DEBUG.v, "set_adapter", args, cb, env)
+    end,
     cancel = function(conn, args, cb, env)
         conn:call(M.TASKS.object, M.TASKS.iface, M.TASKS.v, "cancel", args, cb, env)
     end,
 }
 
---- An interface call of CALLS on the observed connection; a Build/1
---- operation call carries the editor process's whole environment at call
---- time (§19.16 "Editor operations"), a Tasks/1.cancel none.
+--- An interface call of CALLS on the observed connection; every call but
+--- Tasks/1.cancel carries the editor process's whole environment at call
+--- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"cancel"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"cancel"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -1795,20 +1839,21 @@ function Observer:_icall(name, args, cb)
     send(conn, args, cb, env)
 end
 
---- Can the editor carry `method` of loomworks.Build/1 now (§19.16
---- "Availability")? Connected through interfaces to a compatible daemon
---- (never one it weighs for a retirement: older schemas are only
---- observed), offering Build/1 and Tasks/1 (cancel) at our versions, and
---- the method not found missing on this connection.
+--- Can the editor carry `method` now (§19.16 "Availability")? Connected
+--- through interfaces to a compatible daemon (never one it weighs for a
+--- retirement: older schemas are only observed), offering the method's
+--- interface (Build/1, Launch/1, DebugConfig/1) at our version — and, for a
+--- method that runs as a task, Tasks/1 (cancel) — and the method not found
+--- missing on this connection.
 --- @param method string
 --- @return boolean
 function Observer:can_call(method)
     if self.state ~= "connected" or not self.conn or self.conn.closed then return false end
     if self.mode ~= "interfaces" or not self._feat then return false end
     if self.incompat_note or self._retire then return false end
-    if self._feat[M.BUILD.feature] ~= "available" or self._feat[M.TASKS.feature] ~= "subscribed" then
-        return false
-    end
+    local want = METHOD_IFACE[method]
+    if not want or not want.call_only or self._feat[want.feature] ~= "available" then return false end
+    if want.tasks and self._feat[M.TASKS.feature] ~= "subscribed" then return false end
     return not (self._degraded and self._degraded[method])
 end
 
@@ -1821,9 +1866,10 @@ function Observer:_degrade(method, err)
     if self._degraded[method] then return end
     self._degraded[method] = true
     self._method_notes = self._method_notes or {}
+    local want = METHOD_IFACE[method] or M.BUILD
     self._method_notes[#self._method_notes + 1] = string.format(
-        "%s: daemon offers no %s/%d.%s (%s) — running them in-process", M.BUILD.feature, M.BUILD.iface,
-        M.BUILD.v, method, tostring(err and (err.message or err.code) or "?"))
+        "%s: daemon offers no %s/%d.%s (%s) — running them in-process", want.feature, want.iface,
+        want.v, method, tostring(err and (err.message or err.code) or "?"))
     self:_connected_note()
 end
 
@@ -1834,13 +1880,14 @@ end
 --- @field cancelling boolean|nil the editor asked to cancel it
 --- @field units loomworks.ConfigUnit[]|nil the call's units, before its `start` names them
 --- @field task loomworks.RemoteTask|nil once its `start` arrived
---- @field on_done fun(task: loomworks.RemoteTask|nil, reason: string|nil)
+--- @field on_done fun(task: loomworks.RemoteTask|nil, reason: string|nil, done: table|nil)
 --- @field waiters fun()[] called once it ended (a cancel waiting for it)
 
 --- Start an operation as a call the editor owns (§19.15 "The editor as
 --- owner"). `h.on_reply(r)` runs once on the main loop with one of
 ---   { outcome = "accepted", task_id }  its task runs; `h.on_done(task,
----                                      reason)` follows when it ends (its
+---                                      reason, done)` follows when it ends
+---                                      (its `done`, whose task result is
 ---                                      `done`, or the connection lost:
 ---                                      `reason`);
 ---   { outcome = "refused", message }   fails as in-process would;
@@ -1851,13 +1898,13 @@ end
 ---   { outcome = "failed", reason }     it may have started (an internal
 ---                                      error, the connection lost before
 ---                                      the reply): never re-run.
---- @param method "build"|"configure"|"clean"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"
 --- @param args table the call's arguments (§19.15)
 --- `h.units`: the call's configuration units (a clean pre-empts the task by
 --- them before its `start` arrives).
 --- `h.runner`: the task-runner task an overseer restart continues (step 5k
 --- C1b): the task's `start` binds to it instead of a new one.
---- @param h { units?: loomworks.ConfigUnit[], runner?: loomworks.daemon.RunnerStrategy, on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil) }
+--- @param h { units?: loomworks.ConfigUnit[], runner?: loomworks.daemon.RunnerStrategy, on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil, done: table|nil) }
 function Observer:start_owned(method, args, h)
     local conn = self.conn
     self:_icall(method, args, function(result, err)
@@ -1909,17 +1956,141 @@ function Observer:start_owned(method, args, h)
     end)
 end
 
+--- The task result of a `done` frame (§19.15 "Tasks of interface methods":
+--- an interface method's task carries it as `result`, a protocol-10 task
+--- the same fields on the frame itself): e.g. a preparation's `launch`,
+--- `device` or `debug` (Launch/1).
+--- @param msg table the `done` frame
+--- @return table
+function M.done_result(msg)
+    return type(msg.result) == "table" and msg.result or msg
+end
+
+-- ---------------------------------------------------------------------------
+-- The debug adapters section on DebugConfig/1 (step 5k C2, §19.16 "Editor
+-- operations", §19.20 `DebugConfig/1`)
+-- ---------------------------------------------------------------------------
+
+--- A plain interface call (no task) of a method `can_call` carries:
+--- `cb(r)` once, on the main loop, with
+---   { outcome = "ok", result }        the reply (a `refused` / `declined`
+---                                     result as the daemon sent it)
+---   { outcome = "degraded", reason }  the daemon lacks the method (noted)
+---   { outcome = "failed", reason }    any other error
+--- @param method "adapters"|"set_adapter"
+--- @param args table
+--- @param cb fun(r: table)
+function Observer:request(method, args, cb)
+    self:_icall(method, args, function(result, err)
+        vim.schedule(function()
+            if err then
+                local code = type(err) == "table" and err.code or err
+                local text = type(err) == "table" and (err.message or tostring(err.code)) or tostring(err)
+                if M.DEGRADED_CODES[code] then
+                    self:_degrade(method, type(err) == "table" and err or { code = code })
+                    return cb({ outcome = "degraded", reason = text })
+                end
+                if code == "closed" or code == "connect" or code == "timeout" then
+                    text = "the workspace daemon disconnected"
+                end
+                return cb({ outcome = "failed", reason = text })
+            end
+            cb({ outcome = "ok", result = result })
+        end)
+    end)
+end
+
+--- The workspace's debug-adapter records as `DebugConfig/1.adapters` last
+--- returned them (`{ language, adapter?, default?, known, overridden }[]`),
+--- or nil: not carried, not read yet on this connection — a first read is
+--- started then, and its records re-render the status page
+--- (`daemon_debug_adapters`) — or the last read failed or was declined
+--- (remembered until the next `Workspace/1` `changed` or a reconnect, so a
+--- render does not send it again).
+--- @return table[]|nil
+function Observer:debug_adapters()
+    if not self:can_call("adapters") then return nil end
+    if self._debug_adapters then return self._debug_adapters.languages end
+    self:_fetch_debug_adapters()
+    return nil
+end
+
+--- `cb(records)` on the main loop with the records `debug_adapters` returns
+--- once read: the cached read at once, else after the read in flight (or one
+--- started now); nil when not carried, or the read failed, was declined or
+--- outlived its connection.
+--- @param cb fun(records: table[]|nil)
+function Observer:with_debug_adapters(cb)
+    if not self:can_call("adapters") then return cb(nil) end
+    if self._debug_adapters then return cb(self._debug_adapters.languages) end
+    self:_fetch_debug_adapters()
+    if type(self._debug_fetch) ~= "table" then return cb(nil) end
+    table.insert(self._debug_fetch, cb)
+end
+
+--- Read `DebugConfig/1.adapters` again (single flight; on connect through
+--- `debug_adapters`, and on every `Workspace/1` `changed`, §19.20: it has no
+--- signal of its own). `_debug_fetch` is the read in flight's waiters
+--- (`with_debug_adapters`); a failed or declined read caches its absence
+--- (`languages` nil).
+function Observer:_fetch_debug_adapters()
+    if self._debug_fetch or not self:can_call("adapters") then return end
+    local conn = self.conn
+    local waiters = {}
+    self._debug_fetch = waiters
+    local function flush(records)
+        for _, w in ipairs(waiters) do
+            local ok, e = pcall(w, records)
+            if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
+        end
+    end
+    self:request("adapters", {}, function(r)
+        if self.conn ~= conn then return flush(nil) end
+        self._debug_fetch = nil
+        local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
+        local records = res and type(res.languages) == "table" and res.languages or nil
+        self._debug_adapters = { languages = records }
+        -- A change while this read was in flight: read again; its waiters
+        -- wait for that read (this one may predate the change).
+        if self._debug_again then
+            self._debug_again = nil
+            self:_fetch_debug_adapters()
+            if type(self._debug_fetch) == "table" then
+                for _, w in ipairs(waiters) do table.insert(self._debug_fetch, w) end
+                waiters = {}
+            end
+        end
+        if records then self:_emit("daemon_debug_adapters", {}) end
+        flush(records)
+    end)
+end
+
+--- A model change: read the adapters again, after a read in flight.
+function Observer:_refetch_debug_adapters()
+    if self._debug_fetch then
+        self._debug_again = true
+        return
+    end
+    self:_fetch_debug_adapters()
+end
+
 --- An owned task ended (its `done`, or the connection lost): its operation
 --- learns how, and a cancel waiting for it goes on.
 --- @param id any the task id
 --- @param task loomworks.RemoteTask|nil
 --- @param reason string|nil why it ended without `done`
 --- @param result? { exit_code: integer|nil, error: string|nil } its `done`, when no task was ever shown
-function Observer:_owned_ended(id, task, reason, result)
+--- @param done? table its `done`'s task result (M.done_result); nil when it ended without `done`
+function Observer:_owned_ended(id, task, reason, result, done)
     local o = self._owned[id]
     if not o then return end
     self._owned[id] = nil
-    if o.on_done then pcall(o.on_done, task or o.task or result, reason) end
+    -- An error in the operation's continuation (e.g. starting the program a
+    -- preparation returned) is the user's to see, never dropped.
+    if o.on_done then
+        local ok, e = pcall(o.on_done, task or o.task or result, reason, done)
+        if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
+    end
     for _, w in ipairs(o.waiters) do pcall(w) end
 end
 

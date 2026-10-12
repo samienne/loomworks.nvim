@@ -2772,8 +2772,14 @@ owner"):
   "target"`): the editor then runs the returned `launch` in its task runner,
   or hands the returned `debug` to its debugger (its adapter-specific shape
   and the installed-adapter check, made before the call, stay in the editor,
-  §8.9.6). The program is the editor's, never the daemon's; stopping a run or
-  debug session stops it as in-process;
+  §8.9.6; the adapter checked is the one the daemon's mapping names,
+  `DebugConfig/1.adapters`, while it is carried). A run that ends with
+  `device = true` continues in the editor as its in-process launch does from
+  the post-build deploy, without building again ("Build scope of a launch"
+  above). The program is the editor's, never the daemon's; stopping a run or
+  debug session stops it as in-process. While the preparation runs, a stop
+  cancels its task (`Tasks/1.cancel`) and no program is started, and a
+  second launch asks, as for a running session, before it replaces it;
 - the debug adapters section reads and writes `DebugConfig/1` (`adapters`,
   `known_languages`, `set_adapter`) and re-reads it on `Workspace/1`
   `changed`.
@@ -2837,7 +2843,12 @@ the units' states come from `meta.units` (Running state below).
   be carried fails the task-runner task with the reason and never runs
   in-process (the overseer task follows exactly one daemon task); the
   editor's own command still takes the in-process path. A degraded restart
-  still sets the Runtime-line note, as any degraded call does. A stop, or
+  still sets the Runtime-line note, as any degraded call does. The task of
+  a launch's preparation (`prepare_run`, `prepare_debug`) is not sent
+  again: its program is started by the editor's launch after the call,
+  which a restart of the task alone would not start, so its restart fails
+  the task-runner task with the reason (start the launch again from the
+  editor). A stop, or
   another restart, before a restart's call is accepted cancels the task that
   call starts; it is never shown as a task of its own. A task that ends with
   exit 0 after a cancel is a success.
@@ -3564,8 +3575,9 @@ runtime is deferred until that module is actively developed.
        debug through `prepare_run` / `prepare_debug` for non-device targets,
        the module-target debug unified with run (§8.9.6), the debug adapters
        section on `DebugConfig/1`, the reach-in counts lowered (needs B2 and
-       C1); D *(optional)* — a real-daemon end-to-end suite for the editor
-       client, unless folded into C1 and C2. B1 and B2 are independent.
+       C1) *(C2 done once merged)*; D *(optional)* — a real-daemon
+       end-to-end suite for the editor client, unless folded into C1 and C2.
+       B1 and B2 are independent.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved

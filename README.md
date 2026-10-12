@@ -150,8 +150,13 @@ defaults apply. The adapter selection can also be changed from the
 status page (Debug Adapters section).
 
 When a debug adapter is not installed, loomworks shows a notification
-with a Mason install hint and falls back to launching without the
-debugger.
+with a Mason install hint and the debug launch stops there: the program
+is not started. Only without nvim-dap at all does a debug launch run the
+program without the debugger.
+
+A debug session starts the program exactly as a launch runs it: the same
+executable, arguments, working directory (a module target's `working_dir`,
+else its project directory) and environment.
 
 ## Configuration
 
