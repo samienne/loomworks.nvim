@@ -601,6 +601,7 @@ end
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
 --- @field _tool_waiters function[]
 --- @field _lsp_ready boolean active profile's owned LSP databases are generated/settled (§9.7)
+--- @field _lsp_db_revs table<string, integer>|nil normalized build dir -> times its owned LSP database was (re)written (`db_rev`, lsp_config.lua)
 --- @field _no_write string|nil set (the reason) when the runtime holding this workspace lost its lock (§19.2): the cache and the working copy are never saved again
 --- @field _projection boolean|nil a read-only projection of the workspace daemon's model (spec §19.13, daemon/snapshot.lua `project`); `_no_write` is set
 --- @field _index table|nil a projection's current-key → opaque-id index from its snapshot (§19.12)
@@ -3686,6 +3687,8 @@ function Workspace:_refresh_lsp_database_for(unit, on_settled)
     -- the generic LSP entry point — no module-type branching here.
     local function on_db_changed(changed)
         if not changed then return end
+        -- Raise the entry's `db_rev` (§19.20) before the nudge re-reads it.
+        require("loomworks.lsp_config").bump_db_rev(self, build_dir)
         Workspace._nudge_lsp(build_dir)
     end
     -- The primary refresh drives both the nudge and (when the caller asked) the
@@ -7118,6 +7121,18 @@ function Workspace:get_lsp_options(server)
             out[key] = value
         end
     end
+    return out
+end
+
+--- The servers that have options: those with defaults and those with a
+--- stored override, sorted.
+--- @return string[]
+function Workspace:lsp_option_servers()
+    local seen, out = {}, {}
+    for server in pairs(LSP_OPTION_DEFAULTS) do seen[server] = true end
+    for server in pairs(self._lsp_options or {}) do seen[server] = true end
+    for server in pairs(seen) do out[#out + 1] = server end
+    table.sort(out)
     return out
 end
 

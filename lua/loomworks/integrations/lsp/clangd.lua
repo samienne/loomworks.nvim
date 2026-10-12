@@ -87,12 +87,11 @@ local function resolve_compile_commands_dir(entry)
     return dir
 end
 
---- Get the clangd entry for a project by asking the core for this server.
---- @param project loomworks.Project
---- @return table|nil
-local function entry_for(project)
-    local lsp = require("loomworks.lsp")
-    return lsp.entry_for_project(project, "clangd")
+--- The clangd entry of a project record of the LSP configuration state.
+--- @param rec loomworks.LspConfigProject
+--- @return loomworks.LspConfigEntry|nil
+local function entry_for(rec)
+    return require("loomworks.lsp_config").entry(rec, "clangd")
 end
 
 -- ---------------------------------------------------------------------------
@@ -193,7 +192,7 @@ end
 
 --- Find the clangd entry for a given root_dir by asking the core.
 --- @param root_dir string|nil
---- @return loomworks.Project|nil project, table|nil entry
+--- @return loomworks.LspConfigProject|nil record, loomworks.LspConfigEntry|nil entry
 local function find_by_root(root_dir)
     if not root_dir then return nil, nil end
     local lsp = require("loomworks.lsp")
@@ -240,9 +239,7 @@ function M.cmd_factory(base_cmd)
         -- in `base_cmd` via LLVM cl::opt last-wins, leaving the
         -- resolved cmd self-describing. Defaults applied in
         -- Workspace:get_lsp_options when keys are missing.
-        local ok_lw, lw = pcall(require, "loomworks")
-        local opts = ok_lw and lw.get_lsp_options
-            and lw.get_lsp_options("clangd") or {
+        local opts = require("loomworks.lsp_source").options("clangd") or {
                 clang_tidy = true,
                 background_index = true,
                 background_index_priority = "low",
@@ -467,12 +464,12 @@ end
 
 --- Detect clangd state changes after a profile/active set change.
 function M.on_active_set_changed()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok or not lw.get_workspace() then return end
+    local source = require("loomworks.lsp_source")
+    if not source.loaded() then return end
 
     local new_state = {}
-    for _, project in pairs(lw.get_projects()) do
-        local entry = entry_for(project)
+    for _, rec in ipairs(source.projects()) do
+        local entry = entry_for(rec)
         if entry and entry.root_dir then
             local key = normalize(entry.root_dir)
             local new = {
@@ -496,7 +493,7 @@ function M.on_active_set_changed()
                     if new.binary ~= prev.binary then
                         parts[#parts + 1] = "binary: " .. (new.binary or "default")
                     end
-                    vim.notify("loomworks: restarting clangd for " .. project.key
+                    vim.notify("loomworks: restarting clangd for " .. rec.project
                         .. (#parts > 0 and " (" .. table.concat(parts, ", ") .. ")" or ""))
                     restart_clients(clients)
                 end
@@ -550,12 +547,12 @@ end
 --- @param client vim.lsp.Client
 function M.reconcile_on_attach(client)
     if not client or not client.root_dir then return end
-    local project, entry = find_by_root(client.root_dir)
+    local rec, entry = find_by_root(client.root_dir)
     if not entry then return end
     local desired = resolve_compile_commands_dir(entry)
     local resolved = _resolved_cmd[normalize(client.root_dir)]
     if not M._needs_restart_for_dir(resolved, desired) then return end
-    vim.notify("loomworks: restarting clangd for " .. (project and project.key or "?")
+    vim.notify("loomworks: restarting clangd for " .. (rec and rec.project or "?")
         .. " — applying compile-commands-dir (was started before the workspace loaded)")
     restart_clients({ client })
 end
@@ -570,14 +567,14 @@ end
 --- @param root_dir string the project's clangd root_dir
 function M.on_owned_database_changed(root_dir)
     if not root_dir then return end
-    local project, entry = find_by_root(root_dir)
+    local rec, entry = find_by_root(root_dir)
     if not entry then return end
     local desired = resolve_compile_commands_dir(entry)
     local resolved = _resolved_cmd[normalize(root_dir)]
     if not M._needs_restart_for_dir(resolved, desired) then return end
     local clients = find_clients(root_dir)
     if #clients == 0 then return end
-    vim.notify("loomworks: restarting clangd for " .. (project and project.key or "?")
+    vim.notify("loomworks: restarting clangd for " .. (rec and rec.project or "?")
         .. " — owned compile_commands.json now available")
     restart_clients(clients)
 end
