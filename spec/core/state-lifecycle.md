@@ -504,6 +504,17 @@ Before launching a task, the system checks the ConfigUnit state:
 | build     | unknown            | block    |
 | build     | any other          | launch   |
 
+**Explicit configure**: The configure `skip` row applies to the configure a
+build runs automatically (§5.2). A user-requested configure is not skipped:
+configuring a single configuration runs its configure, and configuring a
+profile reruns configure for every unit of the profile, including ones already
+configured. Units in `unknown` state are still blocked by a profile configure
+(see Blocked tasks below) and are not part of its Operation. The profile
+configure Operation (§5.4) completes only when its own configure tasks have
+finished, never because a unit reached `configured` or higher through another
+task (a running build, an earlier configure) while its configure was still
+queued behind the build directory lock (§5.3).
+
 **Blocked tasks**: When a task is blocked due to `unknown` state, the user is
 notified that the config must be cleaned or deleted first.
 
@@ -737,10 +748,16 @@ is a first-class object that:
 3. Completes when ALL units reach their target state (or fail)
 4. Produces a single result message (e.g., "built in 1m23s", "cleaned in 3s")
 
-Operations have two completion modes:
-- **Rank mode** (build/configure): uses a state hierarchy where higher
+Operations have three completion modes:
+- **Rank mode** (build, configure+build): uses a state hierarchy where higher
   states imply lower ones (e.g., "building" satisfies a "configured"
   target). Completes when units reach or exceed the target state.
+- **Task mode** (explicit profile configure): a unit is done when the
+  Operation's own configure task(s) for it finish; success if they all
+  succeeded. Unit state changes are not observed. A unit that is blocked at
+  launch (it entered `unknown` after the Operation was created) counts as
+  finished and failed, so the Operation never waits for a task that will not
+  run.
 - **Deletion mode** (clean/delete): completes when the `_deleting` flag
   clears on all affected units. Success if units return to "unconfigured",
   failure if they end up in "unknown" state (partial deletion).
