@@ -1,0 +1,52 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.DebugConfig",
+  "version": 1,
+  "description": "Object /debug (spec 19.20 DebugConfig/1): the debug-adapter mapping read, set and reset in the working copy, the write's Workspace/1 changed before the reply.",
+  "cases": [
+    {
+      "name": "adapters and known_languages report the mapping with its defaults",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "known_languages", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "languages": { "$contains": ["c++", "typescript"] } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "adapters", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok", "languages": { "$contains": [
+            { "language": "c++", "adapter": "codelldb", "default": "codelldb", "known": ["codelldb", "cppdbg"], "overridden": false },
+            { "language": "typescript", "adapter": "pwa-node", "default": "pwa-node", "known": ["pwa-node", "pwa-chrome"], "overridden": false }
+        ] } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "adapters", "args": { "x": 1 }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "set_adapter writes the override with changed before its reply; without an adapter the default applies again",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "model_change" },
+        { "kind": "signal", "object": "/workspace", "name": "header_changed" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["changed"] } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "set_adapter", "args": { "language": "c++", "adapter": "cppdbg" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "changed", "sub_id": { "$var": "sub" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "adapters", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok", "languages": { "$contains": [
+            { "language": "c++", "adapter": "cppdbg", "default": "codelldb", "overridden": true }
+        ] } } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "set_adapter", "args": { "language": "c++" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "changed", "sub_id": { "$var": "sub" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "adapters", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "ok", "languages": { "$contains": [
+            { "language": "c++", "adapter": "codelldb", "overridden": false }
+        ] } } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "set_adapter", "args": { "adapter": "cppdbg" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 6, "error": { "code": "invalid_args" } } }
+      ]
+    }
+  ]
+}

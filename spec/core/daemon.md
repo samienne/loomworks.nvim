@@ -1970,7 +1970,8 @@ standard error, so standard output carries only the report. Hence:
   the client's real terminal (colour, size, redraws), unlike the build's
   tools above.
 
-**Debug.** *(Step 5k, plan; part B2.)* A debug launch takes the same split:
+**Debug.** *(Step 5k, part B2: implemented, daemon side; the editor calls it
+from part C2.)* A debug launch takes the same split:
 the daemon prepares it, the client hands the result to its debugger, which
 starts the program — the program is never the daemon's. `prepare_debug {
 args, interactive, env, command }` takes the arguments of `prepare_run`
@@ -2002,10 +2003,12 @@ target, or a target found foreign by its kit or by probing its artifact
 (§18.1, §18.11), ends the task nonzero — before the build when the kit
 tells, otherwise once the build probed it, and before any deploy — with the
 in-process refusal of debugging a foreign target (§18.11) as its failure
-line; `prepare_debug` is never `declined` for it (the editor keeps device
+line (a device target, which has no artifact to name: `'<target>' is a
+device target; this host cannot debug it. …`); `prepare_debug` is never `declined` for it (the editor keeps device
 targets in-process and never sends one, §19.16 "Editor operations").
 
-**Build scope of a launch.** *(Step 5k, plan; part B2.)* `prepare_run` and
+**Build scope of a launch.** *(Step 5k, part B2: implemented, daemon side.)*
+`prepare_run` and
 `prepare_debug` take an optional `build_scope`: `profile` (the default:
 steps 1 and 3 above, as `lw run` builds) or `target` — in place of steps 1
 and 3, the launch flow the editor runs before a launch in-process (§8.8.4
@@ -3519,7 +3522,7 @@ runtime is deferred until that module is actively developed.
        schemas and transcripts on the `shell` fixture *(done once merged)*; B2 — daemon side:
        `Launch/1.prepare_debug` with `Common/1` `DebugSpec`, `build_scope` on
        both preparations, and `DebugConfig/1` on `/debug`, with schemas and
-       transcripts; C1 — editor side: the call API with owned tasks, routing
+       transcripts *(done once merged)*; C1 — editor side: the call API with owned tasks, routing
        of builds, configures and module cleans with the availability rule,
        the task-runner bridge (editor-owned and read-only observed tasks),
        cancellation, one progress entry per owned task, and retirement
@@ -3776,7 +3779,7 @@ adopts what `list` returns, and receives output from then on (§19.15 "Tasks
 of interface methods"); replaying a task's earlier output is BACKLOG
 ("Daemon task output replay").
 
-**`DebugConfig/1`.** *(Step 5k, plan; part B2.)* The workspace's debug-adapter
+**`DebugConfig/1`.** *(Step 5k, part B2: implemented, daemon side.)* The workspace's debug-adapter
 mapping (§8.9.6 "Adapter configuration"), on `/debug`:
 
 - `adapters {}` → `{ languages: [{ language, adapter, default, known,
@@ -3789,7 +3792,10 @@ mapping (§8.9.6 "Adapter configuration"), on `/debug`:
   with no `adapter`, removes the override so the default applies; written
   as the in-process `Workspace:set_debug_adapter` writes it, under the model
   lock, with a `model_change` (§19.12). The adapter name is stored as given,
-  as in-process (a client's picker offers `known`);
+  as in-process (a client's picker offers `known`). A write that is refused
+  (a stale working copy, §2.7, or one that is not trusted) or fails changes
+  neither `user.json` nor the model, and is the `refused` result with its
+  message;
 - `known_languages {}` → `{ languages: [..] }` — every language a module or
   integration declares (§8.9.6 "Language-based adapter resolution").
 

@@ -42,6 +42,14 @@
 --- deploys and resolves the launch; its `done` carries the resolved `launch`
 --- (or `device = true`) and the client executes the program.
 ---
+--- **`Launch/1.prepare_debug`** (§19.15 "Debug"; an interface method only,
+--- no protocol-10 alias) — the args of `prepare_run` minus `quiet` /
+--- `prefix`, the same outcomes, never "declined" for a foreign kit: a device
+--- or foreign target ends its task nonzero instead. Its `done.result` carries
+--- the debug spec. Both preparations take `build_scope` ("profile", the
+--- default, or "target": the launch flow's units instead of the profile,
+--- §19.15 "Build scope of a launch").
+---
 --- **Request** `{ kind = "clean", args = { profile? }, … }` (§19.15 "Clean")
 --- — the same outcomes; also "refused" with the in-process `nothing to clean
 --- …` line when the profile has no configured build directory to clean,
@@ -542,10 +550,12 @@ local function v0_args_ok(a)
     return true
 end
 
---- Is `a` (a `prepare_run` request's args) well-formed?
+--- Is `a` (a `prepare_run` or, `debug`, a `prepare_debug` request's args)
+--- well-formed?
 --- @param a table
+--- @param debug? boolean
 --- @return boolean
-local function run_args_ok(a)
+local function run_args_ok(a, debug)
     for _, k in ipairs({ "target", "project", "cwd" }) do
         if a[k] ~= nil and type(a[k]) ~= "string" then return false end
     end
@@ -553,6 +563,9 @@ local function run_args_ok(a)
     for _, k in ipairs({ "no_build", "quiet", "prefix" }) do
         if a[k] ~= nil and type(a[k]) ~= "boolean" then return false end
     end
+    -- (No report and no wrapper for a debug launch.)
+    if debug and (a.quiet ~= nil or a.prefix ~= nil) then return false end
+    if a.build_scope ~= nil and a.build_scope ~= "profile" and a.build_scope ~= "target" then return false end
     return true
 end
 
@@ -560,8 +573,9 @@ end
 --- segment. The protocol-10 request and the task-streamed interface method
 --- (Build/1, Tests/1.run, Launch/1.prepare_run; daemon/core_interfaces.lua)
 --- are this one implementation: the method passes `deliver` (its reply) and
---- `call` (the task's interface identity and result, `Task.call`).
---- @param op "build"|"test"|"run"|"clean"|"reset"|"configure"
+--- `call` (the task's interface identity and result, `Task.call`). `debug`
+--- (Launch/1.prepare_debug) has no protocol-10 request.
+--- @param op "build"|"test"|"run"|"debug"|"clean"|"reset"|"configure"
 --- @param conn table
 --- @param msg table
 --- @param deliver? fun(fields: table) answer an interface call instead of a v0 reply
@@ -602,7 +616,8 @@ function Service:_on_operation(op, conn, msg, deliver, call)
     if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string")
         or (a.profile_id ~= nil and (type(a.profile_id) ~= "string" or a.profile ~= nil))
         or (a.project_id ~= nil and (type(a.project_id) ~= "string" or a.project ~= nil))
-        or (op == "run" and not run_args_ok(a)) or (op == "reset" and not reset_args_ok(a)) then
+        or ((op == "run" or op == "debug") and not run_args_ok(a, op == "debug"))
+        or (op == "reset" and not reset_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
     self:with_model(ctx, function() self:_accept(ctx) end)
@@ -677,6 +692,7 @@ function Service:_accept(ctx)
     if stale then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1, notes = ctx.notes }) end
     if ctx.op == "reset" then return self:_accept_reset(ctx, ws) end
     local a = ctx.args
+    local launching = ctx.op == "run" or ctx.op == "debug"
     local profile, units
     if a.units then
         local uerr
@@ -686,7 +702,7 @@ function Service:_accept(ctx)
         local err, action
         profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
             -- (No `lw configure`: a configure's refusal names `lw build`.)
-            usage = ctx.op == "run" and "lw run <profile> <target>"
+            usage = launching and "lw run <profile> <target>"
                 or ("lw " .. (ctx.op == "configure" and "build" or ctx.op) .. " <profile>") })
         if action == "onboard" then
             return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
@@ -701,7 +717,9 @@ function Service:_accept(ctx)
         return ctx.reply({ outcome = "refused", message = foreign, exit_code = 1, notes = ctx.notes })
     end
     -- A run of a profile built by a foreign kit is a device run: its device
-    -- locks, staging and program liveness stay with the client (§19.15).
+    -- locks, staging and program liveness stay with the client (§19.15). (A
+    -- debug launch is never declined for it: there is no device debug, so
+    -- its task refuses a device or foreign target, runner.lua.)
     local platform = ctx.op == "run" and profile and require("loomworks.run_prep").kit_platform(profile) or nil
     if platform then
         return ctx.reply({ outcome = "declined", reason = "profile '" .. profile.key .. "' builds for "
@@ -730,10 +748,11 @@ function Service:_accept(ctx)
         args = {}
     elseif ctx.op == "configure" then
         args = { reconfigure = a.reconfigure == true }
-    elseif ctx.op == "run" then
+    elseif launching then
         -- (The program's arguments: an empty list is still a list.)
         args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
-            no_build = a.no_build == true, quiet = a.quiet == true, prefix = a.prefix == true }
+            no_build = a.no_build == true, build_scope = a.build_scope }
+        if ctx.op == "run" then args.quiet, args.prefix = a.quiet == true, a.prefix == true end
     else
         args = { extra = extra, targets = (a.targets and #a.targets > 0) and a.targets or nil,
             force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true,

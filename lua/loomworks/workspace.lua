@@ -6976,18 +6976,29 @@ end
 --- Write the current user data to loomworks.user.json.
 --- Updates the file tracker's cached content to suppress self-write detection.
 --- @return boolean ok, string|nil err
---- Set the debug adapter for a module type and persist to user.json.
---- @param module_type string
---- @param adapter_name string
-function Workspace:set_debug_adapter(module_type, adapter_name)
-    if not self._debug_settings then
-        self._debug_settings = {}
-    end
-    if not self._debug_settings.adapters then
-        self._debug_settings.adapters = {}
-    end
-    self._debug_settings.adapters[module_type] = adapter_name
-    self:_save_user()
+--- Set the debug adapter for a language (spec §8.9.6 "Adapter
+--- configuration") and persist it to user.json (`debug.adapters`, the
+--- working copy only). A nil `adapter_name` removes the override, so the
+--- integration's default applies; emptied tables are dropped. The name is
+--- stored as given. A save that is refused or fails leaves the model as it
+--- was (the file is never written then): the previous settings are put back,
+--- unless the refusal reloaded the working copy, whose settings stand.
+--- @param language string
+--- @param adapter_name string|nil
+--- @return boolean ok, string|nil err
+function Workspace:set_debug_adapter(language, adapter_name)
+    local before = self._debug_settings
+    local settings = vim.deepcopy(before or {})
+    settings.adapters = settings.adapters or {}
+    settings.adapters[language] = adapter_name
+    if not next(settings.adapters) then settings.adapters = nil end
+    if not next(settings) then settings = nil end
+    self._debug_settings = settings
+    local base = self._disk_baseline.user
+    local ok, err = self:_save_user()
+    -- (A stale refusal re-read the working copy: a new baseline.)
+    if not ok and self._disk_baseline.user == base then self._debug_settings = before end
+    return ok == true, err
 end
 
 -- ---------------------------------------------------------------------------

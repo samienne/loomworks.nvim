@@ -203,24 +203,11 @@ function LaunchTarget:build(on_complete)
         return future_mod.rejected(err)
     end
 
-    -- Guard: if the selected ConfigUnit points at an abstract
-    -- Configuration (no `variant` set on module_config — the state
-    -- we end up in when a module's default_configurations couldn't
-    -- parse its source manifest and the profile references a stub
-    -- user config), bail out with a specific error rather than
-    -- handing a no-op variant to the module and watching the chain
-    -- hang on a phantom task. A clear message beats a silent spinner.
-    if self._config_unit and self._config_unit._configuration
-        and self._config_unit._configuration.is_abstract
-        and self._config_unit._configuration:is_abstract() then
-        local cfg_name = self._config_unit._configuration.name or "?"
-        local proj_name = self._project and self._project.key or "?"
-        local abs_err = string.format(
-            "configuration '%s' on project '%s' is abstract "
-            .. "(no variant resolved) — can't build. "
-            .. "Check module auto-detection (e.g. `:messages` for "
-            .. "module parse warnings).",
-            cfg_name, proj_name)
+    -- Guard: an abstract Configuration (no variant resolved) is refused
+    -- with a specific error rather than handing a no-op variant to the
+    -- module and watching the chain hang on a phantom task.
+    local abs_err = self:abstract_error()
+    if abs_err then
         if on_complete then on_complete(false) end
         return future_mod.rejected(abs_err)
     end
@@ -235,11 +222,46 @@ function LaunchTarget:build(on_complete)
         end
     end
 
-    -- Collect ALL dependencies: explicit + deploy source projects.
-    -- Explicit `depends_on` entries use the active profile's mapping
-    -- (no config hint); deploy source entries may pin
-    -- `configuration:` in the descriptor so they can be built even
-    -- when the source project isn't part of the active profile.
+    local f = self:_build_deps(self:build_dependencies())
+        :next(function() return self:_deploy_phase("pre_build") end)
+        :next(function() return build_self() end)
+
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
+    end
+    return f
+end
+
+--- The guard of a launch target whose ConfigUnit maps an abstract
+--- Configuration (no `variant` on module_config — what a stub user
+--- configuration is when a module's default_configurations could not parse
+--- its source manifest): the refusal, or nil. Shared by build() and the
+--- daemon's target-scoped launch build (spec §19.15 "Build scope of a
+--- launch").
+--- @return string|nil
+function LaunchTarget:abstract_error()
+    local unit = self._config_unit
+    if not (unit and unit._configuration and unit._configuration.is_abstract
+        and unit._configuration:is_abstract()) then
+        return nil
+    end
+    return string.format(
+        "configuration '%s' on project '%s' is abstract "
+        .. "(no variant resolved) — can't build. "
+        .. "Check module auto-detection (e.g. `:messages` for "
+        .. "module parse warnings).",
+        unit._configuration.name or "?", self._project and self._project.key or "?")
+end
+
+--- The dependencies a launch builds before itself (spec §8.8.4 step 3), in
+--- order: the project's explicit `depends_on` (the active profile's mapping,
+--- no configuration hint), then the deploy source projects (a source may pin
+--- `configuration:` in its descriptor, so it builds even when its project is
+--- not part of the profile). De-duplicated by (project, hint). Shared by
+--- build() and the daemon's target-scoped launch build (§19.15).
+--- @return { project: loomworks.Project, config_hint: string|nil }[]
+function LaunchTarget:build_dependencies()
     local all_deps = {}
     local seen = {}
     if self._project then
@@ -252,8 +274,7 @@ function LaunchTarget:build(on_complete)
                 end
             end
         end
-        local deploy_deps = self:_deploy_source_projects()
-        for _, entry in ipairs(deploy_deps) do
+        for _, entry in ipairs(self:_deploy_source_projects()) do
             local key = entry.project.key .. "\0" .. (entry.config_hint or "")
             if not seen[key] then
                 seen[key] = true
@@ -261,16 +282,19 @@ function LaunchTarget:build(on_complete)
             end
         end
     end
+    return all_deps
+end
 
-    local f = self:_build_deps(all_deps)
-        :next(function() return self:_deploy_phase("pre_build") end)
-        :next(function() return build_self() end)
-
-    if on_complete then
-        f:next(function() on_complete(true) end)
-         :catch(function() on_complete(false) end)
-    end
-    return f
+--- The refusal of a dependency no configuration resolves for (§8.8.4).
+--- @param project loomworks.Project
+--- @return string
+function LaunchTarget.unresolved_dependency_message(project)
+    return string.format(
+        "cannot resolve a configuration to build for "
+        .. "dependency '%s' — either add it to the active "
+        .. "profile's configuration_set, or pin "
+        .. "`configuration:` in the deploy source descriptor",
+        project.key)
 end
 
 --- Build dependency projects sequentially. Returns a Future.
@@ -312,12 +336,8 @@ function LaunchTarget:_build_deps(deps)
         chain = chain:next(function()
             local unit = self:_resolve_dep_config_unit(captured_dep, captured_hint)
             if not unit then
-                return future_mod.rejected(string.format(
-                    "cannot resolve a configuration to build for "
-                    .. "dependency '%s' — either add it to the active "
-                    .. "profile's configuration_set, or pin "
-                    .. "`configuration:` in the deploy source descriptor",
-                    captured_dep.key))
+                return future_mod.rejected(
+                    LaunchTarget.unresolved_dependency_message(captured_dep))
             end
             vim.notify("loomworks: building dependency " .. captured_dep.key,
                 vim.log.levels.INFO)

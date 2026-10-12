@@ -1251,7 +1251,7 @@ end
 --- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
 --- requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
---- @param opts? table { for_test?: boolean, configure_only?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
+--- @param opts? table { tasks?: table, for_test?: boolean, configure_only?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
 ---   for_test drops the build step of any unit whose native test runner
 ---   self-rebuilds — configuration is still planned for every unit;
 ---   configure_only plans the configure step of every unit and no build
@@ -1260,11 +1260,13 @@ end
 ---   build_args / build_targets go to each module's build task context (§8.1),
 ---   and each build step reports whether its module applied them
 ---   (`applied_build_args` / `applied_build_targets`).
+---   tasks (the task definitions of a unit-scoped plan, plan_unit_build) skips
+---   collect_profile_tasks and plans those directly, shaped the same way.
 --- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, applied_build_args, applied_build_targets, cmd, cwd, env }
 --- @return string|nil err a task builder that raised (the plan is refused, not partial)
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
-    local all_tasks = collect_profile_tasks(profile, {
+    local all_tasks = opts.tasks or collect_profile_tasks(profile, {
         force_full_reconfigure = opts.reconfigure or nil,
         build_args = opts.build_args,
         build_targets = opts.build_targets,
@@ -1327,6 +1329,57 @@ function M.plan_units_build(units, opts)
     local steps, plan_err = plan_steps(needs_configure, opts.configure_only and {} or all_tasks.build)
     if plan_err then return nil, plan_err end
     return steps
+end
+
+--- Plan the build of ONE configuration unit as a launch builds it in-process
+--- (spec §8.8.4 steps 3 and 5, LaunchTarget:build; §19.15 "Build scope of a
+--- launch"), overseer-free, its steps shaped as plan_profile_build's: with
+--- `opts.target_id` and a module that builds a single target
+--- (`build_target_task`), that target's one build step, as Target:build runs
+--- it; otherwise the unit's configure when it needs one, then its build, as
+--- run_configuration_action("build") runs them. The tool/configuration
+--- compatibility gate refuses first, as in-process.
+--- @param ws loomworks.Workspace the unit's workspace
+--- @param unit loomworks.ConfigUnit
+--- @param opts? { target_id?: string }
+--- @return table[]|nil steps, string|nil err
+function M.plan_unit_build(ws, unit, opts)
+    opts = opts or {}
+    local compat_err = unit.tool_compat_error and unit:tool_compat_error() or nil
+    if compat_err then
+        return nil, compat_err .. " — change the profile's tool to match the configuration"
+    end
+    local project = unit._project
+    if not project then return nil, "no project for this configuration" end
+    local mod = project._module and project._module.impl or nil
+    local tool_data, terr = exec_tool_data(unit)
+    if terr then return nil, terr end
+    local all_tasks
+    if opts.target_id and mod and mod.build_target_task then
+        local project_ctx = project:to_module_context(ws.root)
+        project_ctx.configuration = unit:variant()
+        project_ctx.configuration_key = unit:config_key()
+        project_ctx.tool_data = tool_data
+        project_ctx.env, project_ctx.configuration_env = resolve_task_env(project,
+            unit._configuration, tool_data, ws._active_profile, ws.root)
+        local ok, td = pcall(mod.build_target_task, project_ctx, opts.target_id)
+        if not ok then return nil, tostring(td) end
+        if td then
+            td.loomworks = td.loomworks or {}
+            td.loomworks.unit = unit
+            td.loomworks.profile = td.loomworks.profile or ws._active_profile
+            all_tasks = { configure = {}, build = { td } }
+        end
+    end
+    if not all_tasks then
+        all_tasks = collect_configuration_tasks(unit)
+        if not all_tasks then
+            return nil, "module '" .. tostring(project.type) .. "' returned no build tasks for " .. project.key
+        end
+    end
+    local steps, err = M.plan_profile_build(nil, { tasks = all_tasks })
+    if err then return nil, err end
+    return steps or {}
 end
 
 --- Build an overseer-free "clean" plan for a profile: one step per project's

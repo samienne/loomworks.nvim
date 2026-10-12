@@ -41,6 +41,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon: the workspace daemon can prepare a debug launch
+  (`Launch/1.prepare_debug`: build, deploy and resolve the program exactly as
+  `lw run` would, plus the debug languages and their adapters) and serves
+  the debug-adapter mapping (`DebugConfig/1`: read it, set or reset a
+  language's adapter in the working copy). Both preparations can also build
+  only what an editor launch builds (the launch's dependencies and its own
+  unit) instead of the whole profile. The editor starts using them in a
+  later step. (#194)
 - `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
   `label`, `type`, `path`, `abs_path` and the active configuration, tool key
   and state). It matches on a separator boundary, so a project at `/a/foo`
