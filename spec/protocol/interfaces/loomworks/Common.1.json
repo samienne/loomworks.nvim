@@ -105,8 +105,33 @@
       }
     },
     "DebugSpec": {
-      "description": "A resolved debug launch; its fields are defined with Launch/1.prepare_debug (step 5k).",
-      "type": "object"
+      "description": "A resolved debug launch (spec 19.15 Debug): the program the client's debugger starts, resolved exactly as the run's launch of the same target and arguments, with the debug languages and their adapters.",
+      "type": "object",
+      "required": ["program", "args", "cwd", "language", "adapters"],
+      "properties": {
+        "name": { "type": "string" },
+        "program": { "description": "The run's cmd.", "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env": {
+          "description": "The launch's own contribution over the client's environment (the 17.9 denylist applied), never a whole environment.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "language": { "description": "The primary language: a launch configuration's first debug entry, otherwise the primary language of the target's module.", "type": "string" },
+        "adapters": {
+          "description": "One per debug language, in order: the first launches the program, the others attach to its process. adapter is absent when the language has neither an override nor a default.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["language"],
+            "properties": {
+              "language": { "type": "string" },
+              "adapter": { "type": "string" }
+            }
+          }
+        }
+      }
     },
     "TaskEnd": {
       "description": "The task result every task-streamed method's result extends (spec 19.15): the exit code the client ends with and the failure it prints as lw: <error>.",

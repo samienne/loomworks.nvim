@@ -6,7 +6,8 @@
 ---   /internal    lw.internal.Snapshot/1   get (same_build)
 ---   /build       loomworks.Build/1        build T, configure T, clean T, reset T
 ---   /tests       loomworks.Tests/1        run T
----   /launch      loomworks.Launch/1       prepare_run T
+---   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T
+---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /toolchains  loomworks.Toolchains/1   list
 ---   /profiles    loomworks.Profiles/1     compiler_cache
 ---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1
@@ -56,6 +57,7 @@ M.TESTS = { path = "/tests", iface = "loomworks.Tests", v = 1 }
 M.LAUNCH = { path = "/launch", iface = "loomworks.Launch", v = 1 }
 M.TOOLCHAINS = { path = "/toolchains", iface = "loomworks.Toolchains", v = 1 }
 M.PROFILES = { path = "/profiles", iface = "loomworks.Profiles", v = 1 }
+M.DEBUG = { path = "/debug", iface = "loomworks.DebugConfig", v = 1 }
 
 --- The header of `Workspace/1` (the welcome header's fields, §19.13), never
 --- loading.
@@ -219,7 +221,7 @@ end
 --- `units` (Build/1 build, configure, clean; spec §19.15 "Editor scopes and
 --- configure") is a non-empty list, exclusive with `profile`: otherwise
 --- `invalid_args`, before anything is resolved.
---- @param op "build"|"test"|"run"|"clean"|"reset"|"configure"
+--- @param op "build"|"test"|"run"|"debug"|"clean"|"reset"|"configure"
 --- @param where table
 --- @param method string
 --- @return function
@@ -264,7 +266,10 @@ end
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.launch_impl(service)
-    return { methods = { prepare_run = operation(service, "run", M.LAUNCH, "prepare_run") } }
+    return { methods = {
+        prepare_run = operation(service, "run", M.LAUNCH, "prepare_run"),
+        prepare_debug = operation(service, "debug", M.LAUNCH, "prepare_debug"),
+    } }
 end
 
 --- A query method: registered query `name` (snapshot.QUERIES) in a model
@@ -309,6 +314,52 @@ function M.profiles_impl(service)
     } }
 end
 
+--- The `loomworks.DebugConfig/1` handlers (§19.20 `DebugConfig/1`): the
+--- workspace's debug-adapter mapping, read in a model segment of the
+--- requesting client's environment as a query is (loaded as for `snapshot`
+--- when none is). `set_adapter` is a command: in its model segment, after
+--- the tracker took in any pending file change, the working copy is written
+--- as the in-process Workspace:set_debug_adapter writes it; the committed
+--- write's `model_change` (and `Workspace.changed`) precedes the reply. A
+--- write that is refused or fails changes neither user.json nor the model:
+--- the refused result.
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.daemon.InterfaceImpl
+function M.debug_impl(service)
+    local interfaces = require("loomworks.daemon.interfaces")
+    local debug_config = require("loomworks.debug_config")
+    local function segment(ctx, answer)
+        service:_on_model_request(ctx.conn, { kind = "debug_config", env = ctx.env }, answer, nil,
+            function(fields) ctx.reply(fields) end)
+        return interfaces.ASYNC
+    end
+    local methods = {}
+    function methods.adapters(ctx)
+        return segment(ctx, function(ws) return { languages = debug_config.adapter_records(ws) } end)
+    end
+    function methods.known_languages(ctx)
+        return segment(ctx, function(ws) return { languages = debug_config.workspace_languages(ws) } end)
+    end
+    function methods.set_adapter(ctx, args)
+        return segment(ctx, function(ws)
+            -- A change another process wrote is taken in first: the write
+            -- then never refuses as stale for it (§2.7).
+            local tr = ws._tracker
+            if tr and tr.sync then tr:sync() end
+            if service.host.current() ~= ws then
+                return { outcome = "refused", exit_code = 1,
+                    message = "the workspace was reloaded (refused or changed .nvim files); try again" }
+            end
+            local ok, err = ws:set_debug_adapter(args.language, args.adapter)
+            if not ok then
+                return { outcome = "refused", message = tostring(err or "user.json was not written"), exit_code = 1 }
+            end
+            return { outcome = "ok" }
+        end)
+    end
+    return { methods = methods }
+end
+
 --- Mount the core interfaces of `service` on `registry`. A refused mount (a
 --- missing or invalid document) is logged; the others still mount.
 --- @param registry loomworks.daemon.Registry
@@ -323,6 +374,7 @@ function M.mount(registry, service)
         { M.LAUNCH, M.launch_impl },
         { M.TOOLCHAINS, M.toolchains_impl },
         { M.PROFILES, M.profiles_impl },
+        { M.DEBUG, M.debug_impl },
         require("loomworks.daemon.views").MOUNTS[1],
         require("loomworks.daemon.views").MOUNTS[2],
     }) do

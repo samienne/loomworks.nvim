@@ -4,7 +4,12 @@
 --- or the preparation of `lw run` (§19.15 "Run"): the same locks and build
 --- (unless `no_build`), the locks released, then the launch target selected,
 --- deployed and its launch spec resolved (loomworks.run_prep), returned in
---- the task's `done` for the client to execute — or a clean (`lw clean`,
+--- the task's `done` for the client to execute — or the preparation of a
+--- debug launch (`Launch/1.prepare_debug`, §19.15 "Debug"): the same steps,
+--- ending with the debug spec for the client's debugger instead — either
+--- preparation with `build_scope = "target"` building the launch flow's
+--- units instead of the profile (§19.15 "Build scope of a launch") — or a
+--- clean (`lw clean`,
 --- §19.15 "Clean"): the same locks, then each project's clean step — a module
 --- clean spawned like a build step, or a core-performed wipe
 --- (loomworks.build_run.wipe_step: the in-process build-directory deletion,
@@ -213,7 +218,7 @@ end
 
 --- @class loomworks.daemon.BuildRun
 --- @field task loomworks.daemon.Task
---- @field op "build"|"test"|"run"|"clean"|"configure" the operation
+--- @field op "build"|"test"|"run"|"debug"|"clean"|"configure" the operation
 --- @field cancelled boolean
 --- @field cancel_reason string|nil
 --- @field cancel_code integer|nil
@@ -234,12 +239,17 @@ end
 --- still held — each native test runner, every one even after one failed; or
 --- the preparation of a run (`ctx.op == "run"`, §19.15 "Run"): the build (not
 --- under `args.no_build`), the locks released, then `prepare` (target, gate,
---- deploy, launch spec), ending the task with `launch` or `device`; or a clean
---- (`ctx.op == "clean"`, §19.15 "Clean"): the locks, then `ctx.clean_steps`
---- (planned by the service before any lock, build_run.plan_clean); or a
---- configure (`ctx.op == "configure"`, §19.15 "Editor scopes and configure"):
---- the locks taken exclusive, then the configure step of every unit, also one
---- already configured, and no build.
+--- deploy, launch spec), ending the task with `launch` or `device`; or the
+--- preparation of a debug launch (`ctx.op == "debug"`, §19.15 "Debug"): the
+--- same, a device or foreign target refused (before the build when its kit
+--- tells, else before any deploy), ending the task with `result.debug`; for
+--- either, `args.build_scope == "target"` replaces the profile's build and
+--- deploy with the launch flow (`target_scope`); or a clean (`ctx.op ==
+--- "clean"`, §19.15 "Clean"): the locks, then `ctx.clean_steps` (planned by
+--- the service before any lock, build_run.plan_clean); or a configure
+--- (`ctx.op == "configure"`, §19.15 "Editor scopes and configure"): the locks
+--- taken exclusive, then the configure step of every unit, also one already
+--- configured, and no build.
 ---
 --- With `ctx.units` (a build, a configure or a clean) the scope is those
 --- configuration units instead of `ctx.profile` (nil then): the same steps,
@@ -251,13 +261,15 @@ end
 function M.run(svc, ctx)
     local task, ws, profile, args = ctx.task, ctx.ws, ctx.profile, ctx.args or {}
     local units_scope = ctx.units
-    local op = (ctx.op == "test" or ctx.op == "run" or ctx.op == "clean" or ctx.op == "configure")
-        and ctx.op or "build"
+    local op = (ctx.op == "test" or ctx.op == "run" or ctx.op == "debug" or ctx.op == "clean"
+        or ctx.op == "configure") and ctx.op or "build"
     -- What the lines name: the profile's key, or the units' names.
     local label = units_scope and build_run.units_label(units_scope) or profile.key
     local scope_line = units_scope and label or ("profile: " .. label)
     local testing = op == "test"
-    local running = op == "run"
+    -- A debug launch is prepared as a run is (§19.15 "Debug").
+    local debugging = op == "debug"
+    local running = op == "run" or debugging
     -- `lw run --print` / `--dry-run` keep the build's lines off stdout (§16.17).
     local out_stream = (running and args.quiet) and "note" or "out"
     local build_lock = require("loomworks.build_lock")
@@ -370,7 +382,15 @@ function M.run(svc, ctx)
     end
 
     -- Progress: a test run spends the first half building.
-    local function progress(f) task:progress(testing and f / 2 or f) end
+    -- A target-scoped launch build's current phase band `{ lo, span }`: a
+    -- unit's step fractions are scaled into it, so the task's progress never
+    -- moves backwards across phases (nor by a rounding at a band's edge).
+    local band, peak = nil, 0
+    local function progress(f)
+        if band then f = band[1] + f * band[2] end
+        peak = math.max(peak, f)
+        task:progress(testing and peak / 2 or peak)
+    end
 
     -- ---- the test phase (op == "test"), after the build steps -------------
     local tsteps, ti, failed, wrote, ran = nil, 0, {}, {}, {}
@@ -426,6 +446,7 @@ function M.run(svc, ctx)
     -- Exactly what the in-process `lw run` does before its `running …` line
     -- (cli.cmd_run, `_run_launch_target_impl`), over loomworks.run_prep; the
     -- locks are already released (deploy runs without them, as in-process).
+    local target_scoped = running and args.build_scope == "target" and not args.no_build
     local function prepare()
         if run.cancelled then return finish(run.cancel_code, stopped()) end
         local okc, why = current()
@@ -436,6 +457,11 @@ function M.run(svc, ctx)
         if not lt then return finish(1, serr) end
         local verr = rp.validity_error(lt)
         if verr then return finish(1, verr) end
+        -- No device debug (§18.11): refused before any deploy, never declined.
+        -- (A target-scoped build already probed the artifact, before its
+        -- post-build deploy: these checks then pass.)
+        local drefusal = debugging and rp.debug_refusal(lt) or nil
+        if drefusal then return finish(1, drefusal) end
         -- A wrapper (`--prefix`, kept by the client) wraps LOCAL execution:
         -- a device target is refused before any deploy, as in-process.
         if args.prefix and lt:requires_device() then
@@ -445,7 +471,8 @@ function M.run(svc, ctx)
         -- A foreign artifact runs on a device, in the client (§19.15): before
         -- any deploy, which the client then does itself.
         if rp.foreign_of(lt) then return finish(0, nil, { device = true }) end
-        if not args.no_build then
+        -- (A target-scoped build deployed in its own phases.)
+        if not args.no_build and not target_scoped then
             local dok, derr = lt:deploy_sync()
             if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
             if ctx.refused then return finish(1, ctx.refused) end
@@ -454,10 +481,16 @@ function M.run(svc, ctx)
         if not spec then return finish(1, rerr) end
         -- The environment is the client's here (envscope): `env` is the
         -- launch's own contribution over it, never a whole environment.
-        finish(0, nil, { launch = {
+        -- (An empty contribution is still a JSON object, Common/1 `env`.)
+        local env = rp.env_overrides(spec.env)
+        local launch = {
             name = spec.name, cmd = spec.cmd, args = spec.args or {}, cwd = spec.cwd or ws.root,
-            env = rp.env_overrides(spec.env),
-        } })
+            env = next(env) and env or vim.empty_dict(),
+        }
+        -- A debug launch: the same resolution, handed to the client's
+        -- debugger with its adapters (Common/1 DebugSpec).
+        if debugging then return finish(0, nil, { result = { debug = rp.debug_spec(ws, lt, launch) } }) end
+        finish(0, nil, { launch = launch })
     end
 
     -- ---- a clean (op == "clean"), after the locks ---------------------------
@@ -515,6 +548,8 @@ function M.run(svc, ctx)
     -- ---- the build steps ---------------------------------------------------
     local steps, i = nil, 0
     local next_step
+    -- (Set by a target-scoped launch build: what follows a unit's steps.)
+    local after_steps
 
     local function step_done(step, code, signal)
         if ended_by_cancel() then return end
@@ -541,6 +576,8 @@ function M.run(svc, ctx)
         if i > #steps then
             if testing then return test_phase() end
             release_all()
+            -- A unit of a target-scoped launch build: on to the next phase.
+            if after_steps then return after_steps() end
             -- A run's build ends without a line of its own (as in-process).
             if running then return prepare() end
             task:line("out", (op == "configure" and "CONFIGURE OK: " or "BUILD OK: ") .. label)
@@ -559,6 +596,88 @@ function M.run(svc, ctx)
             function(f) if i == base + 1 then progress((base + f) / #steps) end end)
     end
 
+    -- ---- a target-scoped launch build (§19.15 "Build scope of a launch") --
+    -- The launch flow the editor runs in-process before a launch (§8.8.4
+    -- steps 3-6, LaunchTarget:build + deploy): each dependency's unit, the
+    -- pre-build deploy steps, the launch target's own unit (its one target
+    -- where the module builds single targets), the post-build deploy steps.
+    -- Each unit's build takes that unit's build-directory lock for that
+    -- build only; the first failure ends the task, the later phases not run.
+    local function target_scope()
+        local rp = require("loomworks.run_prep")
+        local lt, serr = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
+        if not lt then return finish(1, serr) end
+        local verr = rp.validity_error(lt)
+        if verr then return finish(1, verr) end
+        local drefusal = debugging and rp.debug_refusal(lt, true) or nil
+        if drefusal then return finish(1, drefusal) end
+        local aerr = lt:abstract_error()
+        if aerr then return finish(1, aerr) end
+        local phases = {}
+        for _, dep in ipairs(lt:build_dependencies()) do phases[#phases + 1] = { dep = dep } end
+        phases[#phases + 1] = { deploy = "pre_build" }
+        if lt._target then
+            phases[#phases + 1] = { unit = lt._target._config_unit, target_id = lt._target.id }
+        elseif lt._config_unit then
+            phases[#phases + 1] = { unit = lt._config_unit }
+        end
+        -- The artifact is probed once the target's own unit built, before the
+        -- post-build deploy (§19.15 "Debug"; "Run": a foreign artifact runs
+        -- on a device, in the client, which then deploys itself).
+        phases[#phases + 1] = { probe = true }
+        phases[#phases + 1] = { deploy = "post_build" }
+        local LaunchTarget = require("loomworks.launch_target")
+        local overseer = require("loomworks.overseer")
+        local pi = 0
+        local function next_phase()
+            if run.cancelled then return finish(run.cancel_code, stopped()) end
+            local okc, why = current()
+            if not okc then return finish(1, stopped(why)) end
+            pi = pi + 1
+            local ph = phases[pi]
+            band = nil
+            if not ph then return prepare() end
+            progress((pi - 1) / #phases)
+            if ph.probe then
+                -- (Refreshed: the unit's targets may predate its build.)
+                local plt, perr = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
+                if not plt then return finish(1, perr) end
+                local prefusal = debugging and rp.debug_refusal(plt) or nil
+                if prefusal then return finish(1, prefusal) end
+                if not debugging and rp.foreign_of(plt) then return finish(0, nil, { device = true }) end
+                return next_phase()
+            end
+            if ph.deploy then
+                local dok, derr = true, nil
+                lt:_deploy_phase(ph.deploy, function(o, e) if not o then dok, derr = false, e end end)
+                if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
+                if ctx.refused then return finish(1, ctx.refused) end
+                return next_phase()
+            end
+            local unit = ph.unit
+            if ph.dep then
+                unit = lt:_resolve_dep_config_unit(ph.dep.project, ph.dep.config_hint)
+                if not unit then return finish(1, LaunchTarget.unresolved_dependency_message(ph.dep.project)) end
+                task:line(out_stream, "building dependency: " .. ph.dep.project.key)
+            end
+            if not unit then return next_phase() end
+            local bd = unit.build_dir and unit:build_dir() or nil
+            local lok, lmsg = take_locks(run, ws, task, bd and { bd } or {}, "build",
+                ctx.command or ("lw " .. op))
+            if not lok then return finish(1, lmsg) end
+            -- (Planned against the requested profile, not the active one.)
+            local planned, perr = overseer.plan_unit_build(ws, unit,
+                { target_id = ph.target_id, profile = profile })
+            if not planned then return finish(1, "cannot build: " .. tostring(perr)) end
+            if #planned == 0 then release_all(); return next_phase() end
+            steps, i, after_steps = planned, 0, next_phase
+            band = { (pi - 1) / #phases, 1 / #phases }
+            next_step()
+        end
+        task:line(out_stream, "building launch target: " .. lt:display_name())
+        next_phase()
+    end
+
     -- The profile and its units as semantic keys: an observer resolves them
     -- to its own domain objects (spec §19.15, §19.16).
     local units = {}
@@ -574,6 +693,16 @@ function M.run(svc, ctx)
     task:start({ name = label, kind = op, profile = profile and profile.key or nil, units = units })
     -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
     if running and args.no_build then prepare(); return run end
+    if target_scoped then target_scope(); return run end
+    -- A debug of a target its kit already tells is foreign (or a device
+    -- target) is refused before the build (§19.15 "Debug"); one found by
+    -- probing its artifact, once the build probed it (prepare).
+    if debugging then
+        local rp = require("loomworks.run_prep")
+        local lt = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
+        local drefusal = lt and rp.debug_refusal(lt, true) or nil
+        if drefusal then finish(1, drefusal); return run end
+    end
     -- A clean that wipes performs a deletion: the workspace operation lock
     -- first (spec §19.3 lock order, as in-process cli.cmd_clean).
     if op == "clean" and build_run.has_wipe(csteps) then

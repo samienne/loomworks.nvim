@@ -129,9 +129,11 @@ function M.fixture(name, key_path)
     local trust = require("loomworks.trust")
     trust._set_key_path(key_path)
     -- A launch configuration `hello` (honored only from the working copy,
-    -- spec 17.10): the program Launch/1.prepare_run resolves.
+    -- spec 17.10): the program Launch/1.prepare_run resolves; `multi`, one
+    -- debugged by two languages (Launch/1.prepare_debug's adapters).
     local user_app = app()
-    user_app.launch = { hello = { command = nv, args = { "--version" } } }
+    user_app.launch = { hello = { command = nv, args = { "--version" } },
+        multi = { command = nv, args = { "--version" }, debug = { "typescript", "c++" } } }
     local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
         projects = { app = user_app } }
     local signed, serr = trust.sign("user", trust.encode(user))

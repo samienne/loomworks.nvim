@@ -1970,7 +1970,8 @@ standard error, so standard output carries only the report. Hence:
   the client's real terminal (colour, size, redraws), unlike the build's
   tools above.
 
-**Debug.** *(Step 5k, plan; part B2.)* A debug launch takes the same split:
+**Debug.** *(Step 5k, part B2: implemented, daemon side; the editor calls it
+from part C2.)* A debug launch takes the same split:
 the daemon prepares it, the client hands the result to its debugger, which
 starts the program — the program is never the daemon's. `prepare_debug {
 args, interactive, env, command }` takes the arguments of `prepare_run`
@@ -2000,12 +2001,19 @@ stay with the client, which checks the first before it sends the call.
 There is no device debug (§18; spec/core/integrations.md §11): a device
 target, or a target found foreign by its kit or by probing its artifact
 (§18.1, §18.11), ends the task nonzero — before the build when the kit
-tells, otherwise once the build probed it, and before any deploy — with the
+tells, otherwise once the build probed it — with the
 in-process refusal of debugging a foreign target (§18.11) as its failure
-line; `prepare_debug` is never `declined` for it (the editor keeps device
-targets in-process and never sends one, §19.16 "Editor operations").
+line (a device target, which has no artifact to name: `'<target>' is a
+device target; this host cannot debug it. …`); `prepare_debug` is never `declined` for it (the editor keeps device
+targets in-process and never sends one, §19.16 "Editor operations"). The
+kit-token check precedes everything (build and deploy alike). The artifact
+probe precedes every deploy of the profile scope; of the `target` scope
+(below) it follows the launch target's own unit and precedes the post-build
+deploy — the pre-build deploy steps necessarily run before it, since the
+artifact they precede does not exist yet.
 
-**Build scope of a launch.** *(Step 5k, plan; part B2.)* `prepare_run` and
+**Build scope of a launch.** *(Step 5k, part B2: implemented, daemon side.)*
+`prepare_run` and
 `prepare_debug` take an optional `build_scope`: `profile` (the default:
 steps 1 and 3 above, as `lw run` builds) or `target` — in place of steps 1
 and 3, the launch flow the editor runs before a launch in-process (§8.8.4
@@ -2013,7 +2021,13 @@ steps 3–6): the launch's dependencies (explicit `depends_on` and deploy-source
 projects, a deploy source in the configuration it names), the pre-build
 deploy steps, the launch target's own unit, the post-build deploy steps. Each
 build in it takes the build-directory locks of the units it builds, for that
-build only, as in-process; a failing step ends the task with the in-process
+build only, as in-process, and resolves against the requested profile (its
+environment, variables and build gate), whether or not it is the active one;
+a single-target build builds the unit's own build directory, the one it
+locked. Once the launch target's own unit built, the artifact is probed
+before the post-build deploy steps: a foreign one ends a debug as refused
+("Debug" above) and a run with `device = true` ("Run" above), the post-build
+deploy left to the client. A failing step ends the task with the in-process
 failure line, the later steps not run. With `no_build` neither scope builds
 or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
 editor launch builds what it built in-process, not the whole profile.
@@ -2421,7 +2435,9 @@ remote program's liveness stay with the client process:
   it`;
 - a target found foreign only by probing its built artifact (§18.1, no kit
   platform) is known only after the daemon built it: the task ends with
-  `exit_code` 0, no `launch`, and `device = true`, before any deploy; the
+  `exit_code` 0, no `launch`, and `device = true`, before any deploy (of the
+  `target` build scope: before its post-build deploy, "Build scope of a
+  launch" below); the
   client prints `lw: the workspace daemon could not take the run (<name> runs
   on a device in this process); continuing without it` and continues
   in-process from the deploy (deploy → stage → execute, §18.4–§18.5) without
@@ -3519,7 +3535,7 @@ runtime is deferred until that module is actively developed.
        schemas and transcripts on the `shell` fixture *(done once merged)*; B2 — daemon side:
        `Launch/1.prepare_debug` with `Common/1` `DebugSpec`, `build_scope` on
        both preparations, and `DebugConfig/1` on `/debug`, with schemas and
-       transcripts; C1 — editor side: the call API with owned tasks, routing
+       transcripts *(done once merged)*; C1 — editor side: the call API with owned tasks, routing
        of builds, configures and module cleans with the availability rule,
        the task-runner bridge (editor-owned and read-only observed tasks),
        cancellation, one progress entry per owned task, and retirement
@@ -3776,7 +3792,7 @@ adopts what `list` returns, and receives output from then on (§19.15 "Tasks
 of interface methods"); replaying a task's earlier output is BACKLOG
 ("Daemon task output replay").
 
-**`DebugConfig/1`.** *(Step 5k, plan; part B2.)* The workspace's debug-adapter
+**`DebugConfig/1`.** *(Step 5k, part B2: implemented, daemon side.)* The workspace's debug-adapter
 mapping (§8.9.6 "Adapter configuration"), on `/debug`:
 
 - `adapters {}` → `{ languages: [{ language, adapter, default, known,
@@ -3789,7 +3805,10 @@ mapping (§8.9.6 "Adapter configuration"), on `/debug`:
   with no `adapter`, removes the override so the default applies; written
   as the in-process `Workspace:set_debug_adapter` writes it, under the model
   lock, with a `model_change` (§19.12). The adapter name is stored as given,
-  as in-process (a client's picker offers `known`);
+  as in-process (a client's picker offers `known`). A write that is refused
+  (a stale working copy, §2.7, or one that is not trusted) or fails changes
+  neither `user.json` nor the model, and is the `refused` result with its
+  message;
 - `known_languages {}` → `{ languages: [..] }` — every language a module or
   integration declares (§8.9.6 "Language-based adapter resolution").
 

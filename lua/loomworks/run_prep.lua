@@ -216,11 +216,14 @@ end
 
 --- @class loomworks.DebugSpec
 --- @field name string session name
---- @field program string|nil the executable (a command launch's expanded `command`)
+--- @field program string|nil the executable (a command launch's expanded `command`; from
+---   `prepare_debug`, M.debug_spec, the run's resolved `cmd`)
 --- @field args string[]|nil
 --- @field cwd string|nil
---- @field env table<string, string>|nil a command launch's declared env, `env_policy`-filtered
---- @field language string the project module's primary language
+--- @field env table<string, string>|nil a command launch's declared env, `env_policy`-filtered (from
+---   `prepare_debug`: the launch's own contribution over the client's environment, as the run's)
+--- @field language string the project module's primary language (from `prepare_debug`: the
+---   first debug language, which is that unless a launch configuration's `debug` names another)
 --- @field adapters loomworks.DebugSpecAdapter[] ordered; the first launches, the rest attach to its pid
 
 --- The `adapters` of a launch configuration: its `debug` languages in order,
@@ -239,6 +242,67 @@ local function config_adapters(ws, cfg, lang)
         adapters[1] = { language = lang, adapter = debug_config.resolve_adapter(ws, lang) }
     end
     return adapters
+end
+
+--- The primary language of a launch target's module (else "c++", as the
+--- editor's debug paths default).
+--- @param lt loomworks.LaunchTarget
+--- @return string
+local function module_language(lt)
+    local project = lt._project
+    if not project and lt._target and lt._target._config_unit then project = lt._target._config_unit._project end
+    return project and project._module and project._module:primary_language() or "c++"
+end
+
+--- The debug spec `Launch/1.prepare_debug` ends with (spec §19.15 "Debug";
+--- `loomworks.Common/1` `DebugSpec`): the run's resolved launch of the same
+--- target and arguments — `launch` as `prepare_run` returns it (`env` already
+--- reduced to the launch's own contribution) — with `program` the run's
+--- `cmd`, then the launch's debug languages: `language` a launch
+--- configuration's first `debug` entry, otherwise the primary language of the
+--- target's module; `adapters` one `{ language, adapter }` per debug language
+--- in order (a configuration's `debug` array, else `language` alone), each
+--- resolved from the workspace's mapping with its default (debug_config).
+--- @param ws loomworks.Workspace
+--- @param lt loomworks.LaunchTarget
+--- @param launch { name?: string, cmd: string, args: string[], cwd: string, env: table<string,string> }
+--- @return loomworks.DebugSpec
+function M.debug_spec(ws, lt, launch)
+    local lang = module_language(lt)
+    local adapters
+    if lt._launch_config then
+        adapters = config_adapters(ws, lt._launch_config, lang)
+    else
+        adapters = { { language = lang, adapter = require("loomworks.debug_config").resolve_adapter(ws, lang) } }
+    end
+    return {
+        name = launch.name, program = launch.cmd, args = launch.args or {}, cwd = launch.cwd,
+        -- (An empty env is still a JSON object, Common/1 `env: object`.)
+        env = (launch.env and next(launch.env)) and launch.env or vim.empty_dict(),
+        language = adapters[1].language, adapters = adapters,
+    }
+end
+
+--- Why a launch target cannot be debugged on this host (spec §19.15 "Debug",
+--- §18.1 / §18.11: there is no device debug), or nil: a device target, or a
+--- build-target artifact found foreign — by its kit's platform token, or (not
+--- `by_kit_only`) by probing the artifact. The refusal is the in-process one
+--- of debugging a foreign target (remote.foreign.refusal). `by_kit_only`:
+--- before the build, when only the kit can tell (an artifact not yet rebuilt
+--- is not probed).
+--- @param lt loomworks.LaunchTarget
+--- @param by_kit_only? boolean
+--- @return string|nil
+function M.debug_refusal(lt, by_kit_only)
+    if lt:requires_device() then
+        return "'" .. lt:display_name() .. "' is a device target; this host cannot debug it. "
+            .. "Debugging on a device is not supported."
+    end
+    local f = M.foreign_of(lt)
+    if f and (not by_kit_only or f.reason == "token") then
+        return require("loomworks.remote.foreign").refusal(f)
+    end
+    return nil
 end
 
 --- The debug spec of a launch configuration read as a command launch: its
