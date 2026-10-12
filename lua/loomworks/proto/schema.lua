@@ -3,8 +3,8 @@
 ---
 --- Implements exactly the restricted keyword set every interface document may
 --- use — `type`, `properties`, `required`, `additionalProperties`, `items`,
---- `enum`, `const`, `oneOf`, `$ref`, `$defs`, `minimum`, `maximum`, `pattern`,
---- `description` — with JSON Schema 2020-12 semantics for those keywords. Pure
+--- `enum`, `const`, `oneOf`, `$ref`, `$defs`, `minimum`, `maximum`, `minItems`,
+--- `pattern`, `description` — with JSON Schema 2020-12 semantics for those keywords. Pure
 --- Lua (shared by the daemon and the plugin, runs under `nvim -l` and the luvi
 --- host); the only `vim.*` it touches are the JSON null sentinel and the
 --- empty-dict marker.
@@ -28,7 +28,7 @@ local M = {}
 M.KEYWORDS = {
     type = true, properties = true, required = true, additionalProperties = true,
     items = true, enum = true, const = true, oneOf = true, ["$ref"] = true,
-    ["$defs"] = true, minimum = true, maximum = true, pattern = true, description = true,
+    ["$defs"] = true, minimum = true, maximum = true, minItems = true, pattern = true, description = true,
 }
 
 local NIL = rawget(_G, "vim") and vim.NIL or nil
@@ -336,6 +336,9 @@ local function check(node, v, path, ctx, depth)
                     if not ok then return false, err end
                 end
             end
+        end
+        if M.is_array(v) and node.minItems ~= nil and #v < node.minItems then
+            return false, at(path) .. ": fewer than " .. node.minItems .. " items"
         end
         if M.is_array(v) and node.items ~= nil then
             for i = 1, #v do

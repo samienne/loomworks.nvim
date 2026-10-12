@@ -164,6 +164,30 @@ function M.lock_order(dirs)
     return out
 end
 
+--- The projects a build scope builds, each with its configuration unit and the
+--- profile its context resolves against: a profile's projects, or the given
+--- configuration units (`Build/1` `units`, spec §19.15) in the active
+--- profile's context, as the editor's unit actions resolve them.
+--- @param profile loomworks.Profile|nil
+--- @param units? loomworks.ConfigUnit[]
+--- @return { project: loomworks.Project, unit: loomworks.ConfigUnit|nil, profile: loomworks.Profile|nil }[]
+local function scope_entries(profile, units)
+    local out = {}
+    if units then
+        for _, unit in ipairs(units) do
+            if unit._project then
+                local ws = unit._workspace
+                out[#out + 1] = { project = unit._project, unit = unit, profile = ws and ws._active_profile }
+            end
+        end
+        return out
+    end
+    for _, pp in ipairs(profile and profile.projects and profile:projects() or {}) do
+        if pp._project then out[#out + 1] = { project = pp._project, unit = pp._config_unit, profile = profile } end
+    end
+    return out
+end
+
 --- The distinct build directories a profile's projects map to — the set the
 --- per-build-directory advisory lock (§16.6) covers for one build.
 --- @param profile loomworks.Profile
@@ -177,6 +201,19 @@ function M.profile_build_dirs(profile)
     return dirs
 end
 
+--- The distinct build directories of configuration units (a `units`
+--- operation's lock set, spec §19.15; as `profile_build_dirs`).
+--- @param units loomworks.ConfigUnit[]
+--- @return string[]
+function M.unit_build_dirs(units)
+    local dirs, seen = {}, {}
+    for _, u in ipairs(units or {}) do
+        local bd = u.build_dir and u:build_dir()
+        if bd and not seen[bd] then seen[bd] = true; dirs[#dirs + 1] = bd end
+    end
+    return dirs
+end
+
 --- The one notice a build prints when loomworks.json program settings of the
 --- profile's projects are ignored (spec §17.6, §17.10), or nil when none are.
 --- Both hosts print it (in-process and through the daemon, §19.15), so a
@@ -184,14 +221,13 @@ end
 --- file names. Counts workspace-level entries and those of the profile's
 --- projects.
 --- @param ws table workspace
---- @param profile table
+--- @param profile table|nil
+--- @param units? table[] configuration units: their projects instead of the profile's
 --- @return string|nil line
-function M.trust_notice(ws, profile)
+function M.trust_notice(ws, profile, units)
     if not (ws and ws.ignored_program_settings) then return nil end
     local keys = {}
-    for _, pp in ipairs(profile and profile:projects() or {}) do
-        if pp._project then keys[pp._project.key] = true end
-    end
+    for _, e in ipairs(scope_entries(profile, units)) do keys[e.project.key] = true end
     local n = 0
     for _, e in ipairs(ws:ignored_program_settings()) do
         if e.project == nil or keys[e.project] then n = n + 1 end
@@ -235,12 +271,14 @@ function M.conflict_message(block)
         block.profile, block.path or "?", block.profile)
 end
 
---- The refusal for a profile with no buildable step.
---- @param profile loomworks.Profile
+--- The refusal for a profile (or configuration units, `label` their
+--- units_label) with no buildable step.
+--- @param profile loomworks.Profile|nil
+--- @param label? string the units' names instead of the profile
 --- @return string
-function M.nothing_to_build_message(profile)
-    return "nothing to build for profile '" .. profile.key ..
-        "' — no buildable projects (unavailable module or unresolved tool?)"
+function M.nothing_to_build_message(profile, label)
+    return "nothing to build for " .. (label or ("profile '" .. profile.key .. "'")) ..
+        " — no buildable projects (unavailable module or unresolved tool?)"
 end
 
 -- ---------------------------------------------------------------------------
@@ -317,22 +355,41 @@ function M.ensure_unit_targets(ws, unit, opts)
     if ok and targets then unit:set_targets(targets) end
 end
 
---- Split a target operand into the profile project it is qualified with and
---- the bare name. `<project>:<name>` (the form `lw target` lists) is qualified
---- only when `<project>` names one of the profile's projects — a module's own
+--- Split a target operand into the project it is qualified with and the
+--- bare name. `<project>:<name>` (the form `lw target` lists) is qualified
+--- only when `<project>` names one of the scope's projects — a module's own
 --- target syntax may contain ':' (e.g. meson `name:type`); otherwise the whole
---- operand is the bare name.
---- @param profile loomworks.Profile
+--- operand is the bare name. The scope is a profile (its projects) or a list
+--- of projects (a `units` scope, spec §19.15).
+--- @param scope loomworks.Profile|loomworks.Project[]
 --- @param name string
 --- @return loomworks.Project|nil project, string bare
-function M.split_target_ref(profile, name)
+function M.split_target_ref(scope, name)
     local pfx, rest = name:match("^([^:]+):(.+)$")
     if pfx then
-        for _, pp in ipairs(profile:projects()) do
-            if pp._project and pp._project.key == pfx then return pp._project, rest end
+        if type(scope.projects) == "function" then
+            for _, pp in ipairs(scope:projects()) do
+                if pp._project and pp._project.key == pfx then return pp._project, rest end
+            end
+        else
+            for _, project in ipairs(scope) do
+                if project.key == pfx then return project, rest end
+            end
         end
     end
     return nil, name
+end
+
+--- The `<project>/<configuration>` names of configuration units (the scope
+--- of a `units` operation, spec §19.15), comma-separated.
+--- @param units loomworks.ConfigUnit[]
+--- @return string
+function M.units_label(units)
+    local names = {}
+    for _, u in ipairs(units or {}) do
+        names[#names + 1] = (u._project and u._project.key or "?") .. "/" .. tostring(u:config_key() or "?")
+    end
+    return table.concat(names, ", ")
 end
 
 --- Resolve `--target` operands to the projects that build them (§16.4), against
@@ -340,27 +397,36 @@ end
 --- configure now (a configure can change its targets) and whose module
 --- introspects targets. A qualified operand goes to its project; a bare name
 --- to the one project whose list has it (several → refused as ambiguous), or,
---- in no known list, to every project (the build tool decides). Returns a map
+--- in no known list, to every project (the build tool decides). An operand
+--- `{ project, target }` (`Build/1`, spec §19.15) is that target of that
+--- project only; a project the scope does not build is refused. Returns a map
 --- Project → bare target names (projects absent from it are not built), or
 --- nil + lw's refusal. Never runs anything.
---- @param profile loomworks.Profile
---- @param names string[]
---- @param opts? { reconfigure?: boolean }
+--- @param profile loomworks.Profile|nil (nil with `opts.units`)
+--- @param names (string|{ project: string, target: string })[]
+--- @param opts? { reconfigure?: boolean, units?: loomworks.ConfigUnit[] }
+---   units: the scope is these configuration units instead of the profile
 --- @return table<loomworks.Project, string[]>|nil picks, string|nil err
 function M.resolve_build_targets(profile, names, opts)
     opts = opts or {}
-    local ws = profile._workspace
     local entries = {}
-    for _, pp in ipairs(profile:projects()) do
-        local unit, project = pp._config_unit, pp._project
-        if project then
-            local known
-            if unit and not opts.reconfigure and unit.configure_reason
-                    and not unit:configure_reason(false, profile, false) then
-                if ws then pcall(M.ensure_unit_targets, ws, unit, { refresh = true }) end
-                if type(unit.targets) == "table" and next(unit.targets) then known = unit.targets end
-            end
-            entries[#entries + 1] = { project = project, known = known }
+    for _, e in ipairs(scope_entries(profile, opts.units)) do
+        local unit = e.unit
+        local ws = (profile and profile._workspace) or (unit and unit._workspace)
+        local known
+        if unit and not opts.reconfigure and unit.configure_reason
+                and not unit:configure_reason(false, e.profile, false) then
+            if ws then pcall(M.ensure_unit_targets, ws, unit, { refresh = true }) end
+            if type(unit.targets) == "table" and next(unit.targets) then known = unit.targets end
+        end
+        entries[#entries + 1] = { project = e.project, known = known }
+    end
+    -- The scope's distinct projects, in order (several units can be of one).
+    local projects, seen_project = {}, {}
+    for _, e in ipairs(entries) do
+        if not seen_project[e.project] then
+            seen_project[e.project] = true
+            projects[#projects + 1] = e.project
         end
     end
     local picks = {}
@@ -371,15 +437,35 @@ function M.resolve_build_targets(profile, names, opts)
         list[#list + 1] = t
     end
     for _, name in ipairs(names) do
-        local qproj, bare = M.split_target_ref(profile, name)
+        local qproj, bare
+        if type(name) == "table" then
+            for _, e in ipairs(entries) do
+                if e.project.key == name.project then qproj = e.project end
+            end
+            if not qproj then
+                return nil, string.format("target '%s' names project '%s', which %s does not build",
+                    tostring(name.target), tostring(name.project),
+                    opts.units and M.units_label(opts.units) or ("profile '" .. tostring(profile and profile.key) .. "'"))
+            end
+            bare = name.target
+        else
+            -- `<project>:<name>` is qualified only when `<project>` is one of
+            -- the scope's projects (split_target_ref, the one rule).
+            qproj, bare = M.split_target_ref(projects, name)
+        end
         if qproj then
             -- Scoped to that project even when its list lacks the name (a
             -- target lw does not list); the build tool decides.
             add(qproj, bare)
         else
-            local hits = {}
+            -- The distinct projects whose known list has it (units of one
+            -- project are that project once).
+            local hits, hit = {}, {}
             for _, e in ipairs(entries) do
-                if e.known and e.known[bare] then hits[#hits + 1] = e end
+                if e.known and e.known[bare] and not hit[e.project] then
+                    hit[e.project] = true
+                    hits[#hits + 1] = e
+                end
             end
             if #hits > 1 then
                 local labels = {}
@@ -463,18 +549,34 @@ end
 --- select a target) and forwarded args are appended to the step's command —
 --- unless that command runs a batch file, where they would be silently
 --- ignored, so it is refused instead.
---- @param profile loomworks.Profile
---- @param opts? { for_test?: boolean, reconfigure?: boolean, extra_args?: string[], build_targets?: string[] }
+--- With `opts.units` the scope is those configuration units instead of the
+--- profile (`Build/1` `units`, spec §19.15): each unit's tool/configuration
+--- compatibility gate instead of the profile's buildability gate, as the
+--- editor's unit actions gate (overseer.run_configuration_action), and the
+--- units' own tasks (overseer.plan_units_build).
+--- @param profile loomworks.Profile|nil (nil with `opts.units`)
+--- @param opts? { for_test?: boolean, configure_only?: boolean, reconfigure?: boolean, extra_args?: string[], build_targets?: (string|{ project: string, target: string })[], jobs?: integer, units?: loomworks.ConfigUnit[] }
 ---   build_targets are the caller's `--target` operands, resolved per
 ---   project by `resolve_build_targets`; each build step carries the bare
----   names it builds as `step.build_targets`.
+---   names it builds as `step.build_targets`. configure_only: the configure
+---   step of every unit and no build (`Build/1.configure`). jobs: the build
+---   tool's parallelism, appended to each build step as the editor's
+---   parallel-jobs option (overseer.append_parallel_jobs).
 --- @return table[]|nil steps (possibly empty), string|nil err
 function M.plan(profile, opts)
     opts = opts or {}
-    -- Same gate the editor applies in `Profile:build` / `Profile:configure`:
-    -- without it an unbuildable profile — e.g. one mapping an abstract
-    -- configuration — would build anyway, on whatever default the module picked.
-    if profile.assert_buildable then
+    local overseer = require("loomworks.overseer")
+    if opts.units then
+        for _, unit in ipairs(opts.units) do
+            local compat = unit.tool_compat_error and unit:tool_compat_error() or nil
+            if compat then
+                return nil, compat .. " — change the profile's tool to match the configuration"
+            end
+        end
+    elseif profile.assert_buildable then
+        -- Same gate the editor applies in `Profile:build` / `Profile:configure`:
+        -- without it an unbuildable profile — e.g. one mapping an abstract
+        -- configuration — would build anyway, on whatever default the module picked.
         local buildable, why = profile:assert_buildable()
         if not buildable then return nil, tostring(why) end
     end
@@ -482,18 +584,30 @@ function M.plan(profile, opts)
     -- runs (§16.4): a refusal is lw's, never the build tool's; a project no
     -- operand selects is neither configured nor built.
     local picks
-    if opts.build_targets and profile.projects then
+    if opts.build_targets and (opts.units or profile.projects) then
         local perr
-        picks, perr = M.resolve_build_targets(profile, opts.build_targets, { reconfigure = opts.reconfigure })
+        picks, perr = M.resolve_build_targets(profile, opts.build_targets,
+            { reconfigure = opts.reconfigure, units = opts.units })
         if not picks then return nil, perr end
     end
-    local steps, plan_err = require("loomworks.overseer").plan_profile_build(profile, {
-        for_test = opts.for_test,
-        reconfigure = opts.reconfigure,
-        build_args = opts.extra_args,
-        build_targets = opts.build_targets,
-        build_targets_for = picks,
-    })
+    local steps, plan_err
+    if opts.units then
+        steps, plan_err = overseer.plan_units_build(opts.units, {
+            configure_only = opts.configure_only,
+            reconfigure = opts.reconfigure,
+            build_args = opts.extra_args,
+            build_targets_for = picks,
+        })
+    else
+        steps, plan_err = overseer.plan_profile_build(profile, {
+            for_test = opts.for_test,
+            configure_only = opts.configure_only,
+            reconfigure = opts.reconfigure,
+            build_args = opts.extra_args,
+            build_targets = opts.build_targets,
+            build_targets_for = picks,
+        })
+    end
     if plan_err then return nil, "cannot build: " .. tostring(plan_err) end
     steps = steps or {}
     for _, step in ipairs(steps) do
@@ -511,6 +625,9 @@ function M.plan(profile, opts)
                         .. "its build through a batch file and does not accept build args", step.name or "?")
                 end
                 step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
+            end
+            if opts.jobs then
+                step.cmd = overseer.append_parallel_jobs(vim.list_extend({}, step.cmd), opts.jobs)
             end
         end
     end
@@ -716,19 +833,26 @@ end
 --- The clean steps of a profile (overseer.plan_profile_clean: one step per
 --- project, a configured build directory that exists on disk), or nil when
 --- there is nothing to clean (`nothing_to_clean_message`).
---- @param profile table
+--- With `units` the scope is those configuration units (`Build/1.clean`
+--- `units`, spec §19.15; overseer.plan_units_clean).
+--- @param profile table|nil (nil with `units`)
+--- @param units? loomworks.ConfigUnit[]
 --- @return table[]|nil
-function M.plan_clean(profile)
-    local steps = require("loomworks.overseer").plan_profile_clean(profile)
+function M.plan_clean(profile, units)
+    local overseer = require("loomworks.overseer")
+    local steps
+    if units then steps = overseer.plan_units_clean(units) else steps = overseer.plan_profile_clean(profile) end
     if not steps or #steps == 0 then return nil end
     return steps
 end
 
 --- The refusal of a clean with nothing to clean (exit 1).
---- @param profile table
+--- @param profile table|nil
+--- @param label? string the units' names (units_label) instead of the profile
 --- @return string
-function M.nothing_to_clean_message(profile)
-    return "nothing to clean for profile '" .. profile.key .. "' — no configured build directories."
+function M.nothing_to_clean_message(profile, label)
+    return "nothing to clean for " .. (label or ("profile '" .. profile.key .. "'"))
+        .. " — no configured build directories."
 end
 
 --- The line announcing a clean step.

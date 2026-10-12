@@ -86,6 +86,7 @@
         "$defs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Schema" } },
         "minimum": { "type": "number" },
         "maximum": { "type": "number" },
+        "minItems": { "type": "integer", "minimum": 0 },
         "pattern": { "type": "string" },
         "description": { "type": "string" }
       }

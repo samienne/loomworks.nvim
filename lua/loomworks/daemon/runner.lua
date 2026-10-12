@@ -213,7 +213,7 @@ end
 
 --- @class loomworks.daemon.BuildRun
 --- @field task loomworks.daemon.Task
---- @field op "build"|"test"|"run"|"clean" the operation
+--- @field op "build"|"test"|"run"|"clean"|"configure" the operation
 --- @field cancelled boolean
 --- @field cancel_reason string|nil
 --- @field cancel_code integer|nil
@@ -236,13 +236,26 @@ end
 --- under `args.no_build`), the locks released, then `prepare` (target, gate,
 --- deploy, launch spec), ending the task with `launch` or `device`; or a clean
 --- (`ctx.op == "clean"`, §19.15 "Clean"): the locks, then `ctx.clean_steps`
---- (planned by the service before any lock, build_run.plan_clean).
+--- (planned by the service before any lock, build_run.plan_clean); or a
+--- configure (`ctx.op == "configure"`, §19.15 "Editor scopes and configure"):
+--- the locks taken exclusive, then the configure step of every unit, also one
+--- already configured, and no build.
+---
+--- With `ctx.units` (a build, a configure or a clean) the scope is those
+--- configuration units instead of `ctx.profile` (nil then): the same steps,
+--- locks, gates and lines restricted to them, the lines naming the units
+--- (`<project>/<configuration>`), `meta.profile` absent.
 --- @param svc table the build service (with_model, host)
---- @param ctx table the request: { op?, env, args, command, task, ws, profile, clean_steps? }
+--- @param ctx table the request: { op?, env, args, command, task, ws, profile?, units?, clean_steps? }
 --- @return loomworks.daemon.BuildRun
 function M.run(svc, ctx)
     local task, ws, profile, args = ctx.task, ctx.ws, ctx.profile, ctx.args or {}
-    local op = (ctx.op == "test" or ctx.op == "run" or ctx.op == "clean") and ctx.op or "build"
+    local units_scope = ctx.units
+    local op = (ctx.op == "test" or ctx.op == "run" or ctx.op == "clean" or ctx.op == "configure")
+        and ctx.op or "build"
+    -- What the lines name: the profile's key, or the units' names.
+    local label = units_scope and build_run.units_label(units_scope) or profile.key
+    local scope_line = units_scope and label or ("profile: " .. label)
     local testing = op == "test"
     local running = op == "run"
     -- `lw run --print` / `--dry-run` keep the build's lines off stdout (§16.17).
@@ -294,7 +307,10 @@ function M.run(svc, ctx)
     -- The current workspace/profile still the ones this run runs in?
     local function current()
         if svc.ws ~= ws then return false, "the workspace was unloaded (refused or reloaded .nvim files)" end
-        if profile._removed then return false, "profile '" .. profile.key .. "' was removed" end
+        if profile and profile._removed then return false, "profile '" .. profile.key .. "' was removed" end
+        for _, u in ipairs(units_scope or {}) do
+            if u._removed then return false, "configuration unit " .. build_run.units_label({ u }) .. " was removed" end
+        end
         return true
     end
 
@@ -467,7 +483,7 @@ function M.run(svc, ctx)
         ci = ci + 1
         if ci > #csteps then
             release_all()
-            task:line("out", "CLEAN OK: " .. profile.key)
+            task:line("out", "CLEAN OK: " .. label)
             return finish(0)
         end
         local step = csteps[ci]
@@ -527,7 +543,7 @@ function M.run(svc, ctx)
             release_all()
             -- A run's build ends without a line of its own (as in-process).
             if running then return prepare() end
-            task:line("out", "BUILD OK: " .. profile.key)
+            task:line("out", (op == "configure" and "CONFIGURE OK: " or "BUILD OK: ") .. label)
             return finish(0)
         end
         local step = steps[i]
@@ -546,10 +562,16 @@ function M.run(svc, ctx)
     -- The profile and its units as semantic keys: an observer resolves them
     -- to its own domain objects (spec §19.15, §19.16).
     local units = {}
-    for _, pp in ipairs(profile:projects()) do
-        units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
+    if units_scope then
+        for _, u in ipairs(units_scope) do
+            units[#units + 1] = { project = u._project and u._project.key or nil, configuration = u:config_key() }
+        end
+    else
+        for _, pp in ipairs(profile:projects()) do
+            units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
+        end
     end
-    task:start({ name = profile.key, kind = op, profile = profile.key, units = units })
+    task:start({ name = label, kind = op, profile = profile and profile.key or nil, units = units })
     -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
     if running and args.no_build then prepare(); return run end
     -- A clean that wipes performs a deletion: the workspace operation lock
@@ -562,12 +584,14 @@ function M.run(svc, ctx)
     -- Locks first, exactly like the in-process with_build_dir_locks: every
     -- build directory, canonical order, fail-fast. A test run holds them
     -- across the build AND the test runs (a native runner may rebuild).
-    local lok, lmsg = take_locks(run, ws, task, build_run.profile_build_dirs(profile),
-        op == "clean" and "clean" or "build", ctx.command or ("lw " .. op))
+    -- (A configure's locks are exclusive, as a clean's: operation `configure`.)
+    local lok, lmsg = take_locks(run, ws, task,
+        units_scope and build_run.unit_build_dirs(units_scope) or build_run.profile_build_dirs(profile),
+        (op == "clean" or op == "configure") and op or "build", ctx.command or ("lw " .. op))
     if not lok then finish(1, lmsg); return run end
 
     if op == "clean" then
-        task:line("out", "cleaning profile: " .. profile.key)
+        task:line("out", "cleaning " .. scope_line)
         next_clean()
         return run
     end
@@ -583,6 +607,9 @@ function M.run(svc, ctx)
             extra_args = not running and args.extra or nil,
             build_targets = args.targets,
             reconfigure = args.reconfigure,
+            configure_only = op == "configure" or nil,
+            jobs = args.jobs,
+            units = units_scope,
         })
     end
     if not steps then finish(1, plan_err); return run end
@@ -590,11 +617,18 @@ function M.run(svc, ctx)
         if testing then test_phase(); return run end
         -- Nothing to build: a run goes on with what is there (as in-process).
         if running then release_all(); prepare(); return run end
-        finish(1, build_run.nothing_to_build_message(profile)); return run
+        -- No configure step (a module without one): nothing to do, as the
+        -- editor's configure action does nothing for it.
+        if op == "configure" then
+            release_all()
+            task:line("out", "nothing to configure for " .. (units_scope and label or ("profile '" .. label .. "'")))
+            finish(0); return run
+        end
+        finish(1, build_run.nothing_to_build_message(profile, units_scope and label or nil)); return run
     end
-    task:line(out_stream, "building profile: " .. profile.key)
+    task:line(out_stream, (op == "configure" and "configuring " or "building ") .. scope_line)
     -- The same trust notice as the in-process build (spec §17.10, §19.15).
-    local tn = build_run.trust_notice(ws, profile)
+    local tn = build_run.trust_notice(ws, profile, units_scope)
     if tn then task:line("note", tn) end
     next_step()
     return run

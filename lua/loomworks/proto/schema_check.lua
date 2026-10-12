@@ -235,7 +235,7 @@ local function compare(st, old, new, oc, nc, dir, path)
     if old.const ~= nil or new.const ~= nil then
         if not schema.equal(old.const, new.const) then st.bad(path, "constant changed") end
     end
-    for _, k in ipairs({ "minimum", "maximum", "pattern" }) do
+    for _, k in ipairs({ "minimum", "maximum", "minItems", "pattern" }) do
         if old[k] ~= new[k] then st.bad(path, k .. " changed") end
     end
     if old.enum ~= nil or new.enum ~= nil then

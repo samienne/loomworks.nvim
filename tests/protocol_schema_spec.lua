@@ -77,6 +77,10 @@ describe("schema validator (restricted keyword set)", function()
         assert.is_false(ok({ const = 2 }, 3))
         assert.is_false(ok({ minimum = 1 }, 0))
         assert.is_false(ok({ maximum = 1 }, 2))
+        -- minItems: an array's length (not an object's).
+        assert.is_false(ok({ type = "array", minItems = 1 }, {}))
+        assert.is_true(ok({ type = "array", minItems = 1 }, { "x" }))
+        assert.is_true(ok({ minItems = 1 }, vim.empty_dict()))
         local one = { oneOf = { { type = "string" }, { type = "integer" }, { type = "number" } } }
         assert.is_true(ok(one, "x"))
         assert.is_false(ok(one, 3)) -- integer and number both match
