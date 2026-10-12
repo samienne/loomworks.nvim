@@ -4,6 +4,14 @@
 --- Handles build → deploy → execute chains, fidget progress, confirmation
 --- dialogs when replacing a running session, and unified stop logic.
 --- Single and multi-adapter debug use the same code path.
+---
+--- In `daemon` runtime mode (step 5k C2, spec §19.16 "Editor operations")
+--- the build and deploy of a non-device target's launch are the workspace
+--- daemon's preparation (`Launch/1.prepare_run` / `prepare_debug` through
+--- loomworks.daemon.editor_ops) while it carries them; the program is still
+--- started here, from the returned spec. Otherwise — in-process mode, a
+--- device target, a preparation the daemon does not carry or declines —
+--- the in-process chain below runs as before.
 
 local Future = require("loomworks.future")
 
@@ -276,15 +284,73 @@ local function register_debug_listeners(handle, multi)
     dap.listeners.before.event_exited[term_key] = on_end
 end
 
---- Execute the build → deploy → launch/debug chain.
+--- Start a debug session from a resolved spec: the first adapter launches
+--- the program, the others attach to its pid (§8.9.6 "Multi-adapter
+--- debugging"). The in-process multi-adapter path and every debug launch the
+--- workspace daemon prepared start here. Fails the progress entry when
+--- nvim-dap cannot start it.
+--- @param handle table|nil fidget handle
+--- @param target loomworks.LaunchTarget
+--- @param adapters { adapter: string }[] ordered
+--- @param data { name?: string, program: string|nil, args?: string[], cwd?: string, env?: table }
+local function start_dap(handle, target, adapters, data)
+    local fidget = require("loomworks.fidget")
+    local debug_mod = require("loomworks.debug")
+    local multi = #adapters > 1
+    local primary = adapters[1]
+    local primary_spec = vim.tbl_extend("force", data, {
+        adapter = primary.adapter,
+        name = multi and (target:display_name() .. " (" .. tostring(primary.adapter) .. ")")
+            or data.name or target:display_name(),
+    })
+    local callbacks = nil
+    if multi then
+        callbacks = {
+            on_pid = function(pid)
+                for i = 2, #adapters do
+                    local a = adapters[i]
+                    fidget.report(handle, "attaching " .. a.adapter .. "...")
+                    debug_mod.run({
+                        adapter = a.adapter,
+                        request = "attach",
+                        attach_pid = pid,
+                        program = data.program,
+                        cwd = data.cwd,
+                        name = target:display_name() .. " (" .. a.adapter .. ")",
+                    })
+                end
+            end,
+        }
+    end
+    -- `debug.run` returns false when dap is unavailable or the adapter isn't
+    -- configured. The listeners are registered only for a session that
+    -- starts: otherwise they would never fire and the fidget popup would
+    -- spin forever.
+    local started = debug_mod.run(primary_spec, callbacks)
+    if not started then
+        fidget.fail(handle, "debug adapter not available")
+        _active_run = nil
+        return
+    end
+    register_debug_listeners(handle, multi)
+end
+
+--- Execute the build → deploy → launch/debug chain in-process.
 --- Handles both single and multi-adapter debug uniformly.
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
-local function start_run(target, mode)
+local function start_run_in_process(target, mode)
     local fidget = require("loomworks.fidget")
     local multi = mode == "debug" and target:is_multi_adapter()
     local label = mode == "debug" and "Debugging " or "Launching "
-    local handle = fidget.start_action(label .. target:display_name())
+    -- A launch the daemon could have prepared says `(in-process)` in daemon
+    -- mode (§19.16 "Availability"); a device target's never routes.
+    local handle
+    if target:requires_device() then
+        handle = fidget.start_action(label .. target:display_name())
+    else
+        handle = fidget.start_in_process_action(label .. target:display_name())
+    end
 
     local chain
     if target:is_buildable() then
@@ -306,7 +372,7 @@ local function start_run(target, mode)
                 if not serial then
                     -- Prompt for device selection
                     return Future.create(function(resolve, reject)
-                        target._workspace:scan_devices(function(devices)
+                        target:scan_devices(function(devices)
                             local items = {}
                             for _, d in ipairs(devices) do
                                 if d:is_online() then
@@ -414,41 +480,12 @@ local function start_run(target, mode)
 
                 if multi then
                     -- Multi-adapter: launch primary, attach rest via PID
-                    local debug_mod = require("loomworks.debug")
                     local adapters, spec_data = target:multi_adapter_specs()
-                    local primary = adapters[1]
-                    local primary_spec = vim.tbl_extend("force", spec_data, {
-                        adapter = primary.adapter,
-                        name = target:display_name() .. " (" .. primary.adapter .. ")",
-                    })
-
-                    register_debug_listeners(handle, true)
-
-                    -- `debug.run` returns false when dap is unavailable
-                    -- or the adapter isn't configured. Without this
-                    -- check the listeners we just registered would
-                    -- never fire (no session ever starts) and the
-                    -- fidget popup would spin forever.
-                    local started = debug_mod.run(primary_spec, {
-                        on_pid = function(pid)
-                            for i = 2, #adapters do
-                                local a = adapters[i]
-                                fidget.report(handle, "attaching " .. a.adapter .. "...")
-                                debug_mod.run({
-                                    adapter = a.adapter,
-                                    request = "attach",
-                                    attach_pid = pid,
-                                    program = spec_data.program,
-                                    cwd = spec_data.cwd,
-                                    name = target:display_name() .. " (" .. a.adapter .. ")",
-                                })
-                            end
-                        end,
-                    })
-                    if not started then
-                        fidget.fail(handle, "debug adapter not available")
+                    if not adapters then
                         _active_run = nil
+                        error(spec_data)
                     end
+                    start_dap(handle, target, adapters, spec_data)
                 else
                     -- Single adapter: delegate to LaunchTarget:debug()
                     target:debug()
@@ -473,6 +510,98 @@ local function start_run(target, mode)
             fidget.fail(handle, err)
             vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
         end)
+end
+
+--- Start the program of a launch the workspace daemon prepared (step 5k C2):
+--- a run's `launch` in the task runner (LaunchTarget:launch_resolved), a
+--- debug's `debug` handed to nvim-dap (start_dap). A `device` result (a
+--- foreign artifact, §18.1) never runs on this host: refused as the
+--- in-process launch refuses it. The progress entry covers only this final
+--- phase (the preparation's own task was its build phase, D13).
+--- @param target loomworks.LaunchTarget
+--- @param mode "launch"|"debug"
+--- @param done table the preparation's task result
+local function start_prepared(target, mode, done)
+    local fidget = require("loomworks.fidget")
+    local name = target:display_name()
+    if mode == "debug" then
+        local d = done.debug
+        if type(d) ~= "table" or type(d.program) ~= "string" or type(d.adapters) ~= "table" or not d.adapters[1] then
+            vim.notify("loomworks: the workspace daemon returned no debug launch for '" .. name
+                .. "' — it was not started", vim.log.levels.ERROR)
+            return
+        end
+        local adapters = {}
+        for i, a in ipairs(d.adapters) do adapters[i] = { adapter = a.adapter } end
+        local handle = fidget.start_action("Debugging " .. name)
+        fidget.report(handle, "starting debugger...")
+        _active_run = {
+            target = target, mode = "debug", multi_adapter = #adapters > 1,
+            fidget_handle = handle, started_at = os.clock(),
+        }
+        local env = type(d.env) == "table" and next(d.env) and d.env or nil
+        start_dap(handle, target, adapters, {
+            name = d.name, program = d.program, args = d.args or {}, cwd = d.cwd, env = env })
+        return
+    end
+    if done.device then
+        local _, err = target:resolve_launch_spec()
+        vim.notify("loomworks: " .. tostring(err or ("'" .. name .. "' does not run on this host")),
+            vim.log.levels.WARN)
+        return
+    end
+    local l = done.launch
+    if type(l) ~= "table" or type(l.cmd) ~= "string" then
+        vim.notify("loomworks: the workspace daemon returned no launch for '" .. name
+            .. "' — it was not run", vim.log.levels.ERROR)
+        return
+    end
+    local spec = { name = tostring(l.name or l.cmd), cmd = l.cmd, cwd = type(l.cwd) == "string" and l.cwd or nil,
+        args = {}, env = nil }
+    for _, a in ipairs(type(l.args) == "table" and l.args or {}) do spec.args[#spec.args + 1] = tostring(a) end
+    if type(l.env) == "table" and next(l.env) then
+        spec.env = {}
+        for k, v in pairs(l.env) do spec.env[tostring(k)] = tostring(v) end
+    end
+    local handle = fidget.start_action("Launching " .. name)
+    fidget.report(handle, "launching...")
+    target:launch_resolved(spec)
+    fidget.finish(handle, "launched")
+    _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock() }
+end
+
+--- The build → deploy → launch/debug chain: prepared by the workspace daemon
+--- when it carries it (spec §19.16 "Editor operations"), else in-process.
+--- A debug without nvim-dap launches (as LaunchTarget:debug does); a debug
+--- whose launching adapter is not installed stops here with the install
+--- hint, before any call (§8.9.6: the client's check).
+--- @param target loomworks.LaunchTarget
+--- @param mode "launch"|"debug"
+local function start_run(target, mode)
+    if target:requires_device() then return start_run_in_process(target, mode) end
+    local ops = require("loomworks.daemon.editor_ops")
+    local debug_mod = require("loomworks.debug")
+    local prep = (mode == "debug" and debug_mod.available()) and "debug" or "launch"
+    if not ops.can_prepare(prep, target) then return start_run_in_process(target, mode) end
+    if prep == "debug" then
+        local adapter, language = target:primary_debug_adapter()
+        if not debug_mod.adapter_installed(adapter) then
+            debug_mod.adapter_hint(adapter, language)
+            return
+        end
+    end
+    ops.prepare(prep, target, {
+        resolve = function(done) start_prepared(target, prep, done) end,
+        -- Refused, failed, or the connection lost after `accepted`: no
+        -- program is started (never re-run in-process). A refusal or a
+        -- failed call was already notified.
+        reject = function(err, notified)
+            if not notified then
+                vim.notify("loomworks: " .. tostring(err or "the launch failed"), vim.log.levels.ERROR)
+            end
+        end,
+        fallback = function() start_run_in_process(target, mode) end,
+    })
 end
 
 --- Start a launch or debug run.

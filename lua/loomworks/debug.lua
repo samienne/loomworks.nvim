@@ -19,6 +19,30 @@ function M.available()
     return ok
 end
 
+--- Is `adapter` registered in nvim-dap (§8.9.6: the client's question,
+--- never the daemon's)? False without nvim-dap or without an adapter.
+--- @param adapter string|nil
+--- @return boolean
+function M.adapter_installed(adapter)
+    local ok, dap = pcall(require, "dap")
+    return ok and adapter ~= nil and dap.adapters[adapter] ~= nil
+end
+
+--- The install hint for an adapter nvim-dap lacks (one notification).
+--- @param adapter string|nil
+--- @param language? string the debug language (named when it has no adapter)
+function M.adapter_hint(adapter, language)
+    if not adapter then
+        vim.notify("loomworks: no debug adapter for " .. tostring(language or "this language")
+            .. " — set one in the Debug Adapters section.", vim.log.levels.WARN)
+        return
+    end
+    vim.notify(
+        "loomworks: debug adapter '" .. adapter
+            .. "' not configured. Install via :Mason and restart.",
+        vim.log.levels.WARN)
+end
+
 --- Launch or attach a debug session via nvim-dap.
 --- @param spec { program: string, args?: string[], cwd?: string, env?: table<string, string>, adapter: string, name?: string, extra?: table, request?: string, attach_pid?: number }
 --- @param callbacks? { on_terminated?: fun(), on_pid?: fun(pid: number) }
@@ -26,11 +50,8 @@ function M.run(spec, callbacks)
     local ok, dap = pcall(require, "dap")
     if not ok then return false end
 
-    if not dap.adapters[spec.adapter] then
-        vim.notify(
-            "loomworks: debug adapter '" .. spec.adapter
-                .. "' not configured. Install via :Mason and restart.",
-            vim.log.levels.WARN)
+    if not M.adapter_installed(spec.adapter) then
+        M.adapter_hint(spec.adapter)
         return false
     end
 

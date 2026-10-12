@@ -2837,7 +2837,12 @@ the units' states come from `meta.units` (Running state below).
   be carried fails the task-runner task with the reason and never runs
   in-process (the overseer task follows exactly one daemon task); the
   editor's own command still takes the in-process path. A degraded restart
-  still sets the Runtime-line note, as any degraded call does. A stop, or
+  still sets the Runtime-line note, as any degraded call does. The task of
+  a launch's preparation (`prepare_run`, `prepare_debug`) is not sent
+  again: its program is started by the editor's launch after the call,
+  which a restart of the task alone would not start, so its restart fails
+  the task-runner task with the reason (start the launch again from the
+  editor). A stop, or
   another restart, before a restart's call is accepted cancels the task that
   call starts; it is never shown as a task of its own. A task that ends with
   exit 0 after a cancel is a success.
@@ -3564,7 +3569,7 @@ runtime is deferred until that module is actively developed.
        debug through `prepare_run` / `prepare_debug` for non-device targets,
        the module-target debug unified with run (§8.9.6), the debug adapters
        section on `DebugConfig/1`, the reach-in counts lowered (needs B2 and
-       C1); D *(optional)* — a real-daemon end-to-end suite for the editor
+       C1) *(done once merged)*; D *(optional)* — a real-daemon end-to-end suite for the editor
        client, unless folded into C1 and C2. B1 and B2 are independent.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading

@@ -280,7 +280,7 @@ may import from its own layer or any layer below it, never above.
 | `launch_target.lua` | LaunchTarget class: resolves profile's default target descriptor into object references (Project, ConfigUnit, Target). Three target types: module targets, command launches, device targets. `build()` builds deps → pre-build deploy → build self. `deploy()` executes post-build deploy steps. Both phases merge project-level + launch-level deploy. `launch()`/`debug()` for local targets. `device_install()`/`device_launch()` for device targets. `requires_device()` returns true for device targets | Own state beyond resolution; do I/O directly |
 | `debug.lua` | DAP integration gateway (nvim-dap glue only). `run(spec, callbacks)` constructs DAP launch config with adapter-specific `extra` fields and calls `dap.run()`. Checks adapter availability before launch (Mason install hint). Per-session callbacks via unique listener keys | Own state; depend on workspace internals; hold the adapter tables |
 | `debug_config.lua` | **The debug-adapter tables** (host-neutral, *shared* side of the split): `resolve_adapter(workspace, language)` reads `user.json` debug settings (`_debug_settings.adapters`) with defaults (c++→codelldb, typescript→pwa-node), `default_adapter(language)`, `known_adapters(language)` (picker options), `known_languages()`, `workspace_languages(ws)` (those plus the workspace modules' `languages`) and `adapter_records(ws)` (`{language, adapter?, default?, known, overridden}` per language). Read by the editor's debug section / launch editor / debug paths and by `languages.lua`; the daemon serves them (`DebugConfig/1`, step 5k part B2; the write is `Workspace:set_debug_adapter(language, adapter|nil)`, which puts the model back when the save is refused or fails) | `vim.*`, start sessions |
-| `session_tracker.lua` | Unified launch/debug lifecycle manager. Tracks active run (overseer task or dap session). `start(target, mode)` handles confirmation dialog, build→deploy→execute chain with device extension (device-install→device-launch for device targets), fidget progress. `stop()` terminates overseer task or dap session (with `hierarchy=true` to kill debuggee). Auto-cleans tracked run on dap session end via listeners | Own state beyond what init.lua provides |
+| `session_tracker.lua` | Unified launch/debug lifecycle manager. Tracks active run (overseer task or dap session). `start(target, mode)` handles confirmation dialog, build→deploy→execute chain with device extension (device-install→device-launch for device targets), fidget progress; in daemon mode a non-device target's build+deploy is the daemon's preparation (`Launch/1`, via `daemon/editor_ops.lua`) and only the program start stays here. `stop()` terminates overseer task or dap session (with `hierarchy=true` to kill debuggee). Auto-cleans tracked run on dap session end via listeners | Own state beyond what init.lua provides |
 | `target.lua` | Target class: wraps module-detected build target (type, dependencies, artifact). `build()` delegates to module. `launch()` runs executable via overseer. Runtime-only, recreated on parse | Persist anything |
 | `deploy.lua` | Deploy step validation, resolution, freshness checking, execution, cleanup. Pure functions — no state. Resolves source config units within profile context, compares mtime + source identity for freshness, copies files. `partition_by_phase()` splits a deploy dict by `pre_build` flag. `merge_deploy_sources()` merges project-level and launch-level deploy (directory destinations union, file destinations override) | Own state; do I/O beyond file copy |
 | `variables.lua` | Project variable validation and resolution. `resolve(project, configuration, active_family, profile)` walks the inheritance chain via object references, returns values with provenance (source Configuration object + `from_override` / `from_profile` flags); at each level a matching compiler-family `overrides[active_family]` entry wins over the plain `variables` value, chain position dominating compiler-specificity (core §1.3.1). `default` is OPTIONAL: a declaration with no default/override/profile value resolves *blank* (value `nil`). The **profile-fill layer** is the final fallback — when still blank after the config chain, `profile:variable_value(project.key, name)` supplies the machine-local value (blanks only; never shadows a set value). `blank_variables(project, configuration, active_family, profile)` reports the still-blank names (build-gate + diagnostic input). Reserved name checking; `validate_compiler_overrides` (undeclared-name reject) + `unknown_families` (diagnostic input). Compiler family comes from the active tool via `cpp_compilers.family_from_tool_data` (clang-cl → clang). **Pre-declared policy variables** live in `PREDECLARED_NAMES` (v1: `cache`) — NOT expansion built-ins (those stay in `RESERVED_NAMES`): a pre-declared name is rejected as a *declaration* yet allowed as an *override* target (plain / compiler-family / profile-fill, incl. boolean `false`). `resolve_cache_policy(project, configuration, family, profile)` reads the effective `cache` policy through the same override machinery (config chain → family override → profile fill → built-in `auto` terminal). `env` is a reserved namespace name (`NAMESPACE_NAMES`): it cannot be declared, and inside a compiler-family `overrides` block it is the environment sub-block (`overrides.<family>.env`, validated as a name → string map, exempt from the declared-name rule) | Own state; mutate anything |
@@ -932,6 +932,39 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `_check_retire`. `fidget.start_op_action(title, method)` shows no wrapper
   for a routed operation and suffixes `(in-process)` in daemon mode, as do
   the in-process operation / task entries.
+  Launches (step 5k C2): `session_tracker.start_run` asks
+  `editor_ops.can_prepare(mode, target)` for a non-device target (a debug
+  without nvim-dap prepares a launch, as `LaunchTarget:debug` falls back);
+  a debug first checks `LaunchTarget:primary_debug_adapter()` against
+  nvim-dap (`debug.adapter_installed` / `adapter_hint`, before any call).
+  `editor_ops.prepare` sends `Launch/1.prepare_run` / `prepare_debug` with
+  `launch_args(target)` (profile, project, name + kind, a module target's
+  descriptor `working_dir` as `cwd`, `build_scope = "target"`) under the
+  same outcomes as `run` (shared `on_reply` / `failure`); the owned task's
+  `done` task result (`observer.done_result`, passed as `on_done`'s third
+  argument) resolves `k.resolve(done)`. The tracker then starts the
+  program: `launch` → `LaunchTarget:launch_resolved(spec)` (the overseer
+  launch task, also behind `_launch_command`); `debug` → `start_dap` (the
+  shared nvim-dap start of the in-process multi-adapter path: first
+  adapter launches, the rest attach on `on_pid`); `device = true` → the
+  in-process refusal (`resolve_launch_spec`'s error). `fallback` runs the
+  in-process chain (`start_run_in_process`, title via
+  `fidget.start_in_process_action`). `editor_ops.NO_RESTART` makes the
+  task-runner restart of a preparation fail (`rerun`). Observer side:
+  `M.LAUNCH` (feature `launch`) and `M.DEBUG` (feature `debug adapters`,
+  no task: `can_call` needs Tasks/1 only for `tasks` tables), their
+  literal `CALLS`, `METHOD_IFACE` (method → table, for `can_call` and the
+  `_degrade` note). Debug adapters: `editor_ops.debug_adapters(ws)` returns
+  `Observer:debug_adapters()` (the cached `DebugConfig/1.adapters`; the
+  first read starts on demand, single flight, re-read on every
+  `Workspace/1` `changed` in `_model_change`, emitting
+  `daemon_debug_adapters` for the status page) or, not carried / not read
+  yet, `debug_config.adapter_records(ws)`; `editor_ops.set_debug_adapter`
+  sends `set_adapter` (`Observer:request`, a plain call) or runs
+  `Workspace:set_debug_adapter` in-process (also on `declined` /
+  degraded). In-process debug resolves one spec for run and debug
+  (`run_prep.resolve_debug` → `debug_spec` over `resolve_launch_spec`,
+  §8.9.6).
 - `daemon/task_runner.lua` — the task-runner bridge (spec §19.16 "Tasks in
   the task runner", step 5k part C1b; plugin side). `Observer:_add(task,
   runner)` hands every RemoteTask (started, or joined late) to `M.add`,

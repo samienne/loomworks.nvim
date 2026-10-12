@@ -69,6 +69,18 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what an editor launch builds (the launch's dependencies and its own
   unit) instead of the whole profile. The editor starts using them in a
   later step. (#194)
+- Experimental daemon: in daemon mode the editor's launches and debug
+  launches of non-device targets are prepared in the workspace daemon (it
+  builds the launch's dependencies and its own unit and runs the deploy
+  steps, as one task the editor owns); the program itself still starts in
+  Neovim, in overseer or nvim-dap, as before. A debug launch whose adapter is
+  not installed stops with the install hint before anything is built.
+  Restarting a launch's preparation task in overseer does not start the
+  program: start the launch again instead. The Debug Adapters section reads
+  and changes the adapters through the daemon. When the daemon cannot carry
+  a launch (not connected, an older daemon) it runs in Neovim as before, its
+  progress title saying "(in-process)"; device targets always do.
+  In-process mode is unchanged. (#C2PR)
 - `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
   `label`, `type`, `path`, `abs_path` and the active configuration, tool key
   and state). It matches on a separator boundary, so a project at `/a/foo`
@@ -347,6 +359,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `loomworks.lsp_buf_state(bufnr)` returns the same per-buffer status. (#191)
 
 ### Changed
+- Debugging a module target (an executable a build produces) now starts it
+  where and how it runs: in its working directory (the launch target's
+  `working_dir`, else the project directory) with its run environment (the
+  build tree's library paths), instead of in its build directory with no
+  environment. A target-backed launch configuration is debugged with its
+  arguments, environment and working directory, as it runs, also for a
+  single debug language; a launch configuration's debug session is named as
+  its run. (#C2PR)
 - Experimental daemon mode: the statusline component and the status page
   header show the workspace daemon's view while the editor is connected to
   it, including `Workspace: not loaded in the workspace daemon` until the

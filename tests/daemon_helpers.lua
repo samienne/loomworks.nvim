@@ -186,8 +186,10 @@ end
 --- A workspace with one `shell` project `app` (configure + build both run
 --- the STEP script through this nvim) and a configuration set `dev`
 --- (app=Debug). `opts.profile`: also write a signed working copy with the
---- profile `dev` (the trust key must already be set, in-process tests).
---- @param opts? { profile?: boolean }
+--- profile `dev` (the trust key must already be set, in-process tests);
+--- `opts.launch`: with it, the project's launch configurations in that
+--- working copy.
+--- @param opts? { profile?: boolean, launch?: table }
 --- @return string root
 function M.shell_workspace(opts)
     local root = tmp()
@@ -209,6 +211,12 @@ function M.shell_workspace(opts)
     if opts and opts.profile then
         local trust = require("loomworks.trust")
         local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
+        -- Launch programs are honored only from the working copy (§17.10).
+        if opts.launch then
+            local app = vim.deepcopy(cfg.projects.app)
+            app.launch = opts.launch
+            user.projects = { app = app }
+        end
         -- (No `assert(x)` as a value: under busted it is luassert's, which
         -- returns nothing.)
         local signed, serr = trust.sign("user", trust.encode(user))

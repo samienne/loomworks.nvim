@@ -122,6 +122,43 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         cli:close()
     end)
 
+    -- Step 5k C2: a launch of a non-device target is prepared by the daemon
+    -- (`Launch/1.prepare_run`, `build_scope = "target"`): its unit is built
+    -- there, by a task the editor owns, and the returned launch is started
+    -- here, in the editor's task runner.
+    it("prepares an editor launch in the daemon and starts its program here", function()
+        core:shutdown()
+        root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
+        core = require("loomworks")._core()
+        core:setup({ root = root })
+        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
+        local ws = core:get_workspace()
+        obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+            relay = real_relays(), keepalive_ms = 500 })
+        assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
+        H.track_root(root)
+        assert.is_true(vim.wait(10000, function() return obs:can_call("prepare_run") end, 20), obs:runtime_line())
+        local profile = ws:get_profiles()[1]
+        local unit = profile:projects()[1]._config_unit
+        local ov = require("loomworks.overseer")
+        local orig = ov.launch_run_task
+        local launched = {}
+        ov.launch_run_task = function(spec) launched[#launched + 1] = spec; return nil end
+        local target = require("loomworks.launch_target").new(ws, profile, { project = "app", launch = "run" })
+        require("loomworks.session_tracker").start(target, "launch")
+        local ok = vim.wait(120000, function() return #launched > 0 end, 20)
+        ov.launch_run_task = orig
+        assert.is_true(ok, obs:runtime_line())
+        assert.equals("tool", launched[1].cmd)
+        assert.same({ "-v" }, launched[1].args)
+        local task = seen.started[1]
+        assert.equals("run", task.kind)
+        assert.is_true(task.owned)
+        assert.equals(0, task.exit_code)
+        assert.is_true(vim.wait(30000, function() return unit:state() == "built" end, 20), unit:state())
+        assert.is_false(obs:owns_tasks())
+    end)
+
     -- Step 5k C1b (§19.16 "Tasks in the task runner"), with the specs' fake
     -- overseer (tests/fake_overseer.lua): the editor's own build is one
     -- overseer task whose stop is `Tasks/1.cancel`; a CLI `lw build` is

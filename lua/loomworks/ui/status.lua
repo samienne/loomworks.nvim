@@ -224,6 +224,7 @@ local view = View.new({
         "profile_renamed",
         "daemon_runtime_changed",
         "daemon_view_changed",
+        "daemon_debug_adapters",
         "daemon_task_started",
         "daemon_task_progress",
         "daemon_task_stopped",

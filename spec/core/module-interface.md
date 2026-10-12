@@ -1444,8 +1444,8 @@ target paths are supported. The DAP adapter is resolved per language
 from `user.json` `debug.adapters` mapping, with per-language fallback
 defaults provided by the integrations.
 
-**One spec for run and debug.** *(Step 5k, plan; part C2. Behaviour
-change.)* The program a debug session starts is resolved exactly as the
+**One spec for run and debug.** *(Step 5k, part C2: implemented.
+Behaviour change.)* The program a debug session starts is resolved exactly as the
 run of the same target: the same program, arguments, working directory
 and environment (§8.7 — for a module target the working-directory
 precedence per-invocation override → descriptor `working_dir` → project
