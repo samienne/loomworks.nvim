@@ -81,6 +81,8 @@ function Target:build(on_complete)
         local project_ctx = unit._project:to_module_context(ws.root)
         project_ctx.configuration = unit:variant()
         project_ctx.configuration_key = unit:config_key()
+        -- The unit's own build directory (the one its lock names).
+        project_ctx.cached_build_dir = unit:build_dir()
         -- Detected tool data only (spec §17.7).
         project_ctx.tool_data = require("loomworks.overseer")._exec_tool_data(unit)
         -- Tool env with the configuration environment layered on top (spec

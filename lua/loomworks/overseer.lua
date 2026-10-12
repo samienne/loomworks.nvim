@@ -205,9 +205,10 @@ end
 
 --- Collect task definitions for a single project configuration, grouped by action.
 --- @param unit loomworks.ConfigUnit
---- @param opts? { force_full_reconfigure?: boolean, build_args?: string[], build_targets?: string[] }
----   the caller's request forwarded to the module context (§8.1), as for a
----   profile (collect_profile_tasks); the editor's unit actions pass none
+--- @param opts? { profile?: loomworks.Profile, force_full_reconfigure?: boolean, build_args?: string[], build_targets?: string[] }
+---   profile is the profile to resolve against (default: the active one); the
+---   rest is the caller's request forwarded to the module context (§8.1), as
+---   for a profile (collect_profile_tasks); the editor's unit actions pass none
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_configuration_tasks(unit, opts)
     opts = opts or {}
@@ -218,6 +219,7 @@ local function collect_configuration_tasks(unit, opts)
 
     local ws = unit._workspace
     if not ws then return nil end
+    local profile = opts.profile or ws._active_profile
 
     local mod = project._module and project._module.impl or nil
     if not mod or not mod.tasks then return nil end
@@ -239,7 +241,7 @@ local function collect_configuration_tasks(unit, opts)
     end
 
     local task_env, configuration_env = resolve_task_env(
-        project, unit._configuration, tool_data, ws._active_profile, ws.root)
+        project, unit._configuration, tool_data, profile, ws.root)
     local project_ctx = {
         name = project.key,
         path = project.path or project.key,
@@ -253,8 +255,8 @@ local function collect_configuration_tasks(unit, opts)
         env = task_env,
         configuration_env = configuration_env,
         cached_build_dir = unit:build_dir(),
-        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
-        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
+        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, profile),
+        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, profile),
         recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
         recorded_module_info = unit.module_info,
         recorded_options = unit._cached_options,
@@ -284,10 +286,11 @@ local function collect_configuration_tasks(unit, opts)
         if lw_meta then
             lw_meta.unit = unit
             -- The profile this context resolved against (its blank-variable
-            -- and `cache` fills): the active one for a unit-scoped action.
+            -- and `cache` fills): the active one for a unit-scoped action,
+            -- the requested one for a daemon launch's unit build.
             -- The build gate and the post-configure record use the same one
             -- (core §5.1).
-            lw_meta.profile = ws._active_profile
+            lw_meta.profile = profile
             lw_meta.progress_tool = pt
             lw_meta.variant = variant
             lw_meta.tool = tool_ref
@@ -1338,10 +1341,13 @@ end
 --- (`build_target_task`), that target's one build step, as Target:build runs
 --- it; otherwise the unit's configure when it needs one, then its build, as
 --- run_configuration_action("build") runs them. The tool/configuration
---- compatibility gate refuses first, as in-process.
+--- compatibility gate refuses first, as in-process. The steps resolve against
+--- `opts.profile` (the launch's requested profile; default the active one) —
+--- its environment, variables and build gate — and a single-target build
+--- builds the unit's own build directory (the one the caller locked).
 --- @param ws loomworks.Workspace the unit's workspace
 --- @param unit loomworks.ConfigUnit
---- @param opts? { target_id?: string }
+--- @param opts? { target_id?: string, profile?: loomworks.Profile }
 --- @return table[]|nil steps, string|nil err
 function M.plan_unit_build(ws, unit, opts)
     opts = opts or {}
@@ -1354,25 +1360,27 @@ function M.plan_unit_build(ws, unit, opts)
     local mod = project._module and project._module.impl or nil
     local tool_data, terr = exec_tool_data(unit)
     if terr then return nil, terr end
+    local profile = opts.profile or ws._active_profile
     local all_tasks
     if opts.target_id and mod and mod.build_target_task then
         local project_ctx = project:to_module_context(ws.root)
         project_ctx.configuration = unit:variant()
         project_ctx.configuration_key = unit:config_key()
         project_ctx.tool_data = tool_data
+        project_ctx.cached_build_dir = unit:build_dir()
         project_ctx.env, project_ctx.configuration_env = resolve_task_env(project,
-            unit._configuration, tool_data, ws._active_profile, ws.root)
+            unit._configuration, tool_data, profile, ws.root)
         local ok, td = pcall(mod.build_target_task, project_ctx, opts.target_id)
         if not ok then return nil, tostring(td) end
         if td then
             td.loomworks = td.loomworks or {}
             td.loomworks.unit = unit
-            td.loomworks.profile = td.loomworks.profile or ws._active_profile
+            td.loomworks.profile = td.loomworks.profile or profile
             all_tasks = { configure = {}, build = { td } }
         end
     end
     if not all_tasks then
-        all_tasks = collect_configuration_tasks(unit)
+        all_tasks = collect_configuration_tasks(unit, { profile = profile })
         if not all_tasks then
             return nil, "module '" .. tostring(project.type) .. "' returned no build tasks for " .. project.key
         end

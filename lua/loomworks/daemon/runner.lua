@@ -382,7 +382,15 @@ function M.run(svc, ctx)
     end
 
     -- Progress: a test run spends the first half building.
-    local function progress(f) task:progress(testing and f / 2 or f) end
+    -- A target-scoped launch build's current phase band `{ lo, span }`: a
+    -- unit's step fractions are scaled into it, so the task's progress never
+    -- moves backwards across phases (nor by a rounding at a band's edge).
+    local band, peak = nil, 0
+    local function progress(f)
+        if band then f = band[1] + f * band[2] end
+        peak = math.max(peak, f)
+        task:progress(testing and peak / 2 or peak)
+    end
 
     -- ---- the test phase (op == "test"), after the build steps -------------
     local tsteps, ti, failed, wrote, ran = nil, 0, {}, {}, {}
@@ -450,6 +458,8 @@ function M.run(svc, ctx)
         local verr = rp.validity_error(lt)
         if verr then return finish(1, verr) end
         -- No device debug (§18.11): refused before any deploy, never declined.
+        -- (A target-scoped build already probed the artifact, before its
+        -- post-build deploy: these checks then pass.)
         local drefusal = debugging and rp.debug_refusal(lt) or nil
         if drefusal then return finish(1, drefusal) end
         -- A wrapper (`--prefix`, kept by the client) wraps LOCAL execution:
@@ -471,9 +481,11 @@ function M.run(svc, ctx)
         if not spec then return finish(1, rerr) end
         -- The environment is the client's here (envscope): `env` is the
         -- launch's own contribution over it, never a whole environment.
+        -- (An empty contribution is still a JSON object, Common/1 `env`.)
+        local env = rp.env_overrides(spec.env)
         local launch = {
             name = spec.name, cmd = spec.cmd, args = spec.args or {}, cwd = spec.cwd or ws.root,
-            env = rp.env_overrides(spec.env),
+            env = next(env) and env or vim.empty_dict(),
         }
         -- A debug launch: the same resolution, handed to the client's
         -- debugger with its adapters (Common/1 DebugSpec).
@@ -609,6 +621,10 @@ function M.run(svc, ctx)
         elseif lt._config_unit then
             phases[#phases + 1] = { unit = lt._config_unit }
         end
+        -- The artifact is probed once the target's own unit built, before the
+        -- post-build deploy (§19.15 "Debug"; "Run": a foreign artifact runs
+        -- on a device, in the client, which then deploys itself).
+        phases[#phases + 1] = { probe = true }
         phases[#phases + 1] = { deploy = "post_build" }
         local LaunchTarget = require("loomworks.launch_target")
         local overseer = require("loomworks.overseer")
@@ -619,8 +635,18 @@ function M.run(svc, ctx)
             if not okc then return finish(1, stopped(why)) end
             pi = pi + 1
             local ph = phases[pi]
+            band = nil
             if not ph then return prepare() end
             progress((pi - 1) / #phases)
+            if ph.probe then
+                -- (Refreshed: the unit's targets may predate its build.)
+                local plt, perr = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
+                if not plt then return finish(1, perr) end
+                local prefusal = debugging and rp.debug_refusal(plt) or nil
+                if prefusal then return finish(1, prefusal) end
+                if not debugging and rp.foreign_of(plt) then return finish(0, nil, { device = true }) end
+                return next_phase()
+            end
             if ph.deploy then
                 local dok, derr = true, nil
                 lt:_deploy_phase(ph.deploy, function(o, e) if not o then dok, derr = false, e end end)
@@ -639,10 +665,13 @@ function M.run(svc, ctx)
             local lok, lmsg = take_locks(run, ws, task, bd and { bd } or {}, "build",
                 ctx.command or ("lw " .. op))
             if not lok then return finish(1, lmsg) end
-            local planned, perr = overseer.plan_unit_build(ws, unit, { target_id = ph.target_id })
+            -- (Planned against the requested profile, not the active one.)
+            local planned, perr = overseer.plan_unit_build(ws, unit,
+                { target_id = ph.target_id, profile = profile })
             if not planned then return finish(1, "cannot build: " .. tostring(perr)) end
             if #planned == 0 then release_all(); return next_phase() end
             steps, i, after_steps = planned, 0, next_phase
+            band = { (pi - 1) / #phases, 1 / #phases }
             next_step()
         end
         task:line(out_stream, "building launch target: " .. lt:display_name())

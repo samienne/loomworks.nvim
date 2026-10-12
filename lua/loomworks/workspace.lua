@@ -6973,9 +6973,6 @@ function Workspace:_serialize_user()
     return data
 end
 
---- Write the current user data to loomworks.user.json.
---- Updates the file tracker's cached content to suppress self-write detection.
---- @return boolean ok, string|nil err
 --- Set the debug adapter for a language (spec §8.9.6 "Adapter
 --- configuration") and persist it to user.json (`debug.adapters`, the
 --- working copy only). A nil `adapter_name` removes the override, so the

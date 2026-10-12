@@ -277,7 +277,9 @@ function M.debug_spec(ws, lt, launch)
     end
     return {
         name = launch.name, program = launch.cmd, args = launch.args or {}, cwd = launch.cwd,
-        env = launch.env or {}, language = adapters[1].language, adapters = adapters,
+        -- (An empty env is still a JSON object, Common/1 `env: object`.)
+        env = (launch.env and next(launch.env)) and launch.env or vim.empty_dict(),
+        language = adapters[1].language, adapters = adapters,
     }
 end
 

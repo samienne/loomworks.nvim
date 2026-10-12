@@ -1440,10 +1440,12 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `target_scope` in `runner.lua` — the phases dependency units
   (`LaunchTarget:build_dependencies` / `_resolve_dep_config_unit`),
   `pre_build` deploy, the launch's own unit (`overseer.plan_unit_build(ws,
-  unit, {target_id})`: one `build_target_task` step where the module has
-  one, else configure-if-needed + build; the same step machinery), the
+  unit, {target_id, profile})`: one `build_target_task` step in the unit's
+  locked build dir where the module has one, else configure-if-needed +
+  build, resolved against the requested profile; the same step machinery),
+  the artifact probe (`run_prep.debug_refusal` / `foreign_of`), the
   `post_build` deploy — each unit under its own build-directory lock for
-  that build only. `/debug` `loomworks.DebugConfig/1` (`debug_impl`):
+  that build only, its step progress scaled into the phase's band. `/debug` `loomworks.DebugConfig/1` (`debug_impl`):
   `adapters` / `known_languages` in a model segment, `set_adapter` a
   command (tracker sync, then `Workspace:set_debug_adapter`; the write's
   `model_change` before the reply, a refused write the refused result).

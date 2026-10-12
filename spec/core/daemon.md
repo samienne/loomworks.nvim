@@ -2001,11 +2001,16 @@ stay with the client, which checks the first before it sends the call.
 There is no device debug (§18; spec/core/integrations.md §11): a device
 target, or a target found foreign by its kit or by probing its artifact
 (§18.1, §18.11), ends the task nonzero — before the build when the kit
-tells, otherwise once the build probed it, and before any deploy — with the
+tells, otherwise once the build probed it — with the
 in-process refusal of debugging a foreign target (§18.11) as its failure
 line (a device target, which has no artifact to name: `'<target>' is a
 device target; this host cannot debug it. …`); `prepare_debug` is never `declined` for it (the editor keeps device
-targets in-process and never sends one, §19.16 "Editor operations").
+targets in-process and never sends one, §19.16 "Editor operations"). The
+kit-token check precedes everything (build and deploy alike). The artifact
+probe precedes every deploy of the profile scope; of the `target` scope
+(below) it follows the launch target's own unit and precedes the post-build
+deploy — the pre-build deploy steps necessarily run before it, since the
+artifact they precede does not exist yet.
 
 **Build scope of a launch.** *(Step 5k, part B2: implemented, daemon side.)*
 `prepare_run` and
@@ -2016,7 +2021,13 @@ steps 3–6): the launch's dependencies (explicit `depends_on` and deploy-source
 projects, a deploy source in the configuration it names), the pre-build
 deploy steps, the launch target's own unit, the post-build deploy steps. Each
 build in it takes the build-directory locks of the units it builds, for that
-build only, as in-process; a failing step ends the task with the in-process
+build only, as in-process, and resolves against the requested profile (its
+environment, variables and build gate), whether or not it is the active one;
+a single-target build builds the unit's own build directory, the one it
+locked. Once the launch target's own unit built, the artifact is probed
+before the post-build deploy steps: a foreign one ends a debug as refused
+("Debug" above) and a run with `device = true` ("Run" above), the post-build
+deploy left to the client. A failing step ends the task with the in-process
 failure line, the later steps not run. With `no_build` neither scope builds
 or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
 editor launch builds what it built in-process, not the whole profile.
@@ -2424,7 +2435,9 @@ remote program's liveness stay with the client process:
   it`;
 - a target found foreign only by probing its built artifact (§18.1, no kit
   platform) is known only after the daemon built it: the task ends with
-  `exit_code` 0, no `launch`, and `device = true`, before any deploy; the
+  `exit_code` 0, no `launch`, and `device = true`, before any deploy (of the
+  `target` build scope: before its post-build deploy, "Build scope of a
+  launch" below); the
   client prints `lw: the workspace daemon could not take the run (<name> runs
   on a device in this process); continuing without it` and continues
   in-process from the deploy (deploy → stage → execute, §18.4–§18.5) without
