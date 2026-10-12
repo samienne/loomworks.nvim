@@ -38,6 +38,8 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field origin string|nil who started it: "cli" or "editor" (`meta.origin`, protocol 7)
 --- @field owned boolean|nil the editor itself started it through a call (step 5k, §19.15 "The editor as
 ---   owner"): no origin marker, cancelled from the editor
+--- @field cancelling boolean|nil the editor asked to cancel it (an owned task; its task-runner task ends CANCELED)
+--- @field _runner loomworks.daemon.RunnerStrategy|nil its task in the editor's task runner (step 5k C1b)
 --- @field profile loomworks.Profile|nil the resolved profile
 --- @field profiles loomworks.Profile[] the profiles that count it as their active operation (the resolved
 ---   profile; for a workspace-wide task, every profile with one of its resolved units)
@@ -204,7 +206,8 @@ function RemoteTask:append(text)
         self._bytes = self._bytes + #text
     end
     self._chunks[#self._chunks + 1] = text
-    for _, fn in ipairs(self._listeners) do pcall(fn, self, text) end
+    -- Over a copy: a listener may unsubscribe while it is called.
+    for _, fn in ipairs({ unpack(self._listeners) }) do pcall(fn, self, text) end
 end
 
 --- The kept output.
@@ -237,7 +240,8 @@ function RemoteTask:finish(exit_code, err, reason, clock)
     self.exit_code, self.error, self.end_reason = exit_code, err, reason
     if clock then self.duration = self:elapsed(clock) end
     self:detach_units()
-    for _, fn in ipairs(self._listeners) do pcall(fn, self, nil) end
+    -- Over a copy: a listener (the task runner's) unsubscribes on the end.
+    for _, fn in ipairs({ unpack(self._listeners) }) do pcall(fn, self, nil) end
 end
 
 --- Verbs of the end message by kind: success, failure (as a local

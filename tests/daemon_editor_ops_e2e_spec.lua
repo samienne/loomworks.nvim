@@ -121,4 +121,68 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         end, 100))
         cli:close()
     end)
+
+    -- Step 5k C1b (§19.16 "Tasks in the task runner"), with the specs' fake
+    -- overseer (tests/fake_overseer.lua): the editor's own build is one
+    -- overseer task whose stop is `Tasks/1.cancel`; a CLI `lw build` is
+    -- listed read-only as `[lw] …`, its stop refused.
+    it("lists daemon tasks in overseer: the editor's own stops by cancel, a CLI one is read-only", function()
+        local saved = { package.loaded["overseer"], package.loaded["overseer.strategy"],
+            package.loaded["overseer.util"] }
+        local created = {}
+        local ov, strat = require("tests.fake_overseer")(created)
+        package.loaded["overseer"], package.loaded["overseer.strategy"] = ov, strat
+        package.loaded["overseer.util"] = nil
+        local ok, err = pcall(function()
+            local ws = core:get_workspace()
+            obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+                relay = real_relays(), keepalive_ms = 500 })
+            assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
+            H.track_root(root)
+            assert.is_true(vim.wait(10000, function() return obs:can_call("build") end, 20), obs:runtime_line())
+            local profile = ws:get_profiles()[1]
+
+            vim.env.LW_TEST_SLEEP = "20000"
+            local f = require("loomworks.overseer").run_profile_action(profile, "build")
+            local st = {}
+            f:next(function(v) st.ok = v end, function(e) st.err = e end)
+            assert.is_true(vim.wait(60000, function() return #created >= 1 end, 20))
+            local t = created[1]
+            assert.equals(seen.started[1].name, t.name)
+            assert.equals("RUNNING", t.status)
+            local id = seen.started[1].id
+            t:stop()
+            assert.equals("CANCELED", t.status)
+            assert.is_true(vim.wait(15000, function() return st.err ~= nil end, 20))
+            assert.equals("CANCELED", t.status)
+            local cli = assert(client.session(inspect.state(root).handle.endpoint))
+            assert.is_true(vim.wait(15000, function()
+                local s = client.request(cli, { kind = "status" })
+                for _, x in ipairs(s and s.tasks or {}) do
+                    if x.task_id == id then return false end
+                end
+                return s ~= nil
+            end, 100))
+            cli:close()
+            vim.env.LW_TEST_SLEEP = nil
+
+            -- Another client's build: read-only, its origin marker in its name.
+            local vars = vim.deepcopy(env.vars)
+            vars.LW_TEST_SLEEP, vars.LW_TEST_SLEEP_STEP = "3000", "build"
+            local p = H.lw_start({ "--no-input", "build", profile.key }, { env = { vars = vars }, cwd = root })
+            H.track(p.pid, p.start)
+            assert.is_true(vim.wait(60000, function() return #created >= 2 end, 20), p.stderr())
+            local c = created[2]
+            assert.equals("[lw] " .. seen.started[#seen.started].name, c.name)
+            assert.is_false(c:stop())
+            assert.equals("RUNNING", c.status)
+            assert.is_true(vim.wait(60000, function() return c.status ~= "RUNNING" end, 20))
+            assert.equals("SUCCESS", c.status)
+            assert.is_true(vim.wait(60000, function() return p.code ~= nil end, 20))
+            assert.equals(0, p.code, p.stderr())
+        end)
+        package.loaded["overseer"], package.loaded["overseer.strategy"], package.loaded["overseer.util"] =
+            saved[1], saved[2], saved[3]
+        assert(ok, err)
+    end)
 end)

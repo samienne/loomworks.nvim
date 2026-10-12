@@ -696,18 +696,17 @@ reader sees workspace state first.
      objects, unresolved ones by the names the daemon sent); a task with no
      units shows one row `▸ {profile} — {action}  {origin}`.
    - **Enter** offers `Show output` (the same output view as a local task's,
-     following the stream while the task runs; capped, core §19.16); no
-     `Open overseer` (a remote task is not in the task runner's list) and no
-     `Cancel task`: the task belongs to its client (core §19.15).
-     *(Step 5k, plan:)* a remote task is listed read-only in overseer
-     (`[lw] build dev`), so Enter also offers `Open overseer`; still no
-     `Cancel task`.
-   - *(Step 5k, plan:)* a task the editor started in the daemon is a row of
+     following the stream while the task runs; capped, core §19.16) and
+     `Open overseer` — the task is listed read-only there as `[lw] build dev`
+     (step 5k C1b; offered only while overseer can list it, core §19.16
+     "Tasks in the task runner"); no `Cancel task`: the task belongs to its
+     client (core §19.15).
+   - *(Step 5k:)* a task the editor started in the daemon is a row of
      item 3, not of item 4: no origin marker, `{pct}%` in place of `[N/M]`,
      one row per unit of the task, `Cancel task` sending `Tasks/1.cancel`
      and `Open overseer` opening its single overseer task (core §19.16
      "Tasks in the task runner"). *(Step 5k C1a: the row, `Show output` and
-     `Cancel task`; `Open overseer` with the task-runner bridge, C1b.)* The reset action above leaves remote tasks alone.
+     `Cancel task`; C1b: `Open overseer`.)* The reset action above leaves remote tasks alone.
 5. Sub-section `Build directory locks` (only when at least one lock
    is held or has a non-empty queue):
    ```

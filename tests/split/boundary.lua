@@ -37,6 +37,7 @@ M.plugin = {
     "^loomworks%.daemon%.editor_retire$", -- the observer's retirement decisions (spec §19.16)
     "^loomworks%.daemon%.remote_task$",
     "^loomworks%.daemon%.editor_ops$", -- the editor's operations as daemon calls (spec §19.16, step 5k)
+    "^loomworks%.daemon%.task_runner$", -- daemon tasks in overseer (spec §19.16 "Tasks in the task runner")
     "^loomworks%.provision%.",       -- the host binary the editor launches (spec §19.16)
     "^loomworks%.health$",           -- :checkhealth loomworks
     "^loomtest$",

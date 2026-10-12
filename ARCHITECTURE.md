@@ -894,8 +894,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `outcome()`). `running_action()` / `is_running()` / `Profile:is_running()`
   stay local-only: they gate cancel and blocking, which a remote task never
   does. `origin_label()` is the `lw` / `editor` marker of the Tasks rows,
-  the profile row and the fidget entry (none for an `owned` task); remote
-  tasks never enter overseer (the task-runner bridge is step 5k part C1b).
+  the profile row and the fidget entry (none for an `owned` task). Each
+  remote task is one overseer task through `daemon/task_runner.lua` (below;
+  `_runner` is its strategy).
   A task with `units` and no profile (`Build/1` `units`, step 5k) resolves
   them as `reset --all` does.
 - `daemon/editor_ops.lua` — the editor's operations as daemon calls (spec
@@ -931,6 +932,41 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `_check_retire`. `fidget.start_op_action(title, method)` shows no wrapper
   for a routed operation and suffixes `(in-process)` in daemon mode, as do
   the in-process operation / task entries.
+- `daemon/task_runner.lua` — the task-runner bridge (spec §19.16 "Tasks in
+  the task runner", step 5k part C1b; plugin side). `Observer:_add(task,
+  runner)` hands every RemoteTask (started, or joined late) to `M.add`,
+  which creates ONE overseer task (`components = { "default" }`,
+  `metadata.loomworks_daemon_task`) run by the strategy `loomworks_daemon`
+  — `Strategy`, registered on first use as
+  `package.preload["overseer.strategy.loomworks_daemon"]`, its
+  `RunnerBinding` passed in the strategy definition. `start` attaches to the
+  RemoteTask (`follow`: kept output, then the stream; `_runner` back
+  reference); output only queues text and a `vim.defer_fn` (`FLUSH_MS`)
+  writes it to an `nvim_open_term` terminal (opened in normal mode only, via
+  overseer's `run_in_fullscreen_win` when present). The end calls
+  `task:on_exit(exit_code)` (SUCCESS / FAILURE), or overseer's own stop
+  (CANCELED) when the editor cancelled it (`RemoteTask.cancelling`, set by
+  `Observer:cancel_owned_id`) and it did not exit 0, or teardown cleared it.
+  While the terminal cannot open, the flush retries every `BLOCKED_MS` and
+  the queue is coalesced and capped at `QUEUE_CAP_BYTES` (oldest dropped,
+  with a marker). `RemoteTask` calls its listeners over a copy, so the
+  strategy's unfollow on the end never skips another follower. Owned: `stop` →
+  `Observer:cancel_owned` (overseer finalizes CANCELED first); restart →
+  `start` with no RemoteTask → `editor_ops.rerun(obs, call, h)` with the
+  call's stored `method` / `args` / `units` (`OwnedCall.args`), the strategy
+  passed as `start_owned`'s `h.runner` so the new task's `start` continues
+  the same overseer task (bound only while `_call_id` matches); a restart
+  that cannot run (declined, degraded — `_degrade` still sets the Runtime
+  note — or not carried) fails the overseer task, never in-process. A stop
+  while the call awaits its reply (`_awaiting`), a second restart, a reset
+  or a dispose bumps `_gen`: the stale reply's task id goes to
+  `_superseded` and is cancelled (`cancel_owned_id`), and `add` lists no
+  task for it. Observed: the instance's `stop` / `restart` are replaced by a
+  WARN notify (`started by lw (cli) — cancel it there`); the strategy keeps
+  the original stop for its own end handling, and the instance's `dispose`
+  wrapper uses it quietly for a forced dispose of a running task. Overseer missing or without `overseer.strategy.load`: no
+  task, `Observer.runner_note` (once) in the Runtime line. `overseer_task` /
+  `open` back the status page's `Open overseer` on remote rows.
 - `provision/select.lua` — the host binary (spec §19.16): `LOOMWORKS_LW` >
   setup `binary.path` (absolutized against the editor cwd once, at
   resolution; one naming no file, or no `.exe` on Windows, stops the search) >
