@@ -1735,10 +1735,12 @@ header's `pid`, `lw_version` and `session_generation`, and every opaque id
 `active.unit_id`). A view the daemon does not offer (or offers only at another
 version) is built in-process too, with the one Runtime-line note of §19.16
 "Interface client". The plugin keeps `lw.project_for_buf(bufnr)` (it returns
-the `loomworks.Project` and clangd and qmlls use it until step 5l moves LSP)
+the `loomworks.Project`; from step 5l it is public API only and the LSP layer
+no longer uses it, §19.16 "LSP configuration")
 and adds `lw.buf_project(bufnr)`, returning the buffer's ProjectsIndex record
 by the separator-bounded longest-prefix rule above (or `nil` when no record
-matches); `lw.buf_status(bufnr)` keeps its return shape and reads the two
+matches) — from step 5l also the LSP layer's buffer → project rule, in both
+modes; `lw.buf_status(bufnr)` keeps its return shape and reads the two
 views, plus its `lsp` field (§9.8), which the editor adds from its own LSP
 layer in every mode (`lw.lsp_buf_state`).
 
@@ -2736,7 +2738,9 @@ adds `operations` (`loomworks.Build/1` with `configure`, `units`, `jobs` and
 qualified targets), `launch` (`loomworks.Launch/1` with `prepare_debug` and
 `build_scope`), `debug adapters` (`loomworks.DebugConfig/1`) and, in `tasks`,
 `Tasks/1.cancel` and `list`; a degraded one runs in-process ("Editor
-operations" below). The describe is bounded
+operations" below). Step 5l adds `lsp configuration`
+(`loomworks.LspConfig/1`); when it is degraded the language servers are
+configured from the in-process model ("LSP configuration" below). The describe is bounded
 (about 3 s) and never blocks the editor; when it fails or times out the editor
 uses `welcome.objects`. An interface that appears later (the root's
 `objects_changed`) is subscribed to then, and a refused subscription is
@@ -2827,6 +2831,68 @@ missing on this connection:
 There is no separate opt-out: `runtime.mode = "in-process"` (§19.1) keeps
 every operation in-process. An in-process fallback may run beside a daemon
 task; the cross-process build-directory locks (§16.6) serialize them.
+
+**LSP configuration.** *(Step 5l, plan: part 0 this spec; A the
+host-neutral builder of the state, in-process only; B the daemon side,
+§19.20 `LspConfig/1`; C the editor side.)* In `daemon` mode the editor takes
+what its language servers are configured with — each project's
+`lsp_configs` entries with their `db_state` (§9.1), the working copy's
+per-server options (§2, `user.json` `lsp`), and whether the active profile's
+owned databases are ready (§9.7) — from `LspConfig/1.get` while it is
+**carried**: connected through interfaces to a compatible daemon that offers
+`loomworks.LspConfig/1`. The servers stay the editor's: starting and
+stopping them, the integrations (found on the editor's runtime path, §9.2)
+with their `cmd` and `root_dir` factories and `withhold_reason` (with its
+absent-database check), the expansion of variables in a server binary, the
+§9.7 hold, the per-buffer status (§9.8) and the restart throttle (§9.6).
+`get` carries the editor process's whole environment at call time (§19.15
+"Environment"), so an entry's server binary resolves as it would
+in-process. Both sources give one shape (as §19.13 "Two sources, one
+shape"): the in-process state comes from the builder the daemon uses,
+without the opaque ids.
+
+- **Reads.** The state is cached per connection and read again on
+  `LspConfig/1` `changed`, on `Workspace/1` `changed` and on reconnect; the
+  first read is made once the interface is discovered.
+- **Readiness.** While carried, the §9.7 hold is released on the state's
+  `ready`, not on the editor model's own readiness. While the editor is
+  connecting (the describe or the first `get` not answered yet), and while
+  the state is `loaded` but not `ready`, buffers under the root stay held,
+  bounded by the §9.7 safety timeout; at the timeout a held buffer is
+  resolved as §9.7 says, against the daemon's state when one has been read
+  and against the in-process state otherwise.
+- **Owned databases.** While carried, only the daemon generates the owned
+  LSP databases (§8.4 `refresh_lsp_database`); the editor's model does not,
+  neither at its startup scan nor after a task. A database the daemon
+  (re)writes reaches the editor as a raised `db_rev` on its entry (§19.20),
+  on which the editor runs the owned-database completion handling of §9.8
+  for that entry.
+- **Re-evaluation.** When a read gives entries or options that differ from
+  the ones in use, the editor re-evaluates as for an active-set change (§9.8
+  "Re-evaluation"): a withheld buffer whose entry became usable is started,
+  a client whose entry became withheld is stopped through the managed-stop
+  path, and a changed but still usable entry restarts through its
+  integration. Changed options are applied as an in-process option change.
+- **Fallback.** Not carried (no connection, the interface missing or at
+  another version — with the one Runtime-line note of "Interface client"):
+  the in-process state, as before 5l. A `get` that is declined or fails, or
+  a state other than `loaded` (the daemon has not loaded the workspace, or
+  its load failed or was refused): the in-process state, with a debug-log
+  line only, until the next `changed`, `Workspace/1` `changed` or
+  reconnect. The connection lost after the state was carried: the
+  in-process state at once, re-evaluated, a client restarted only when its
+  resolved binary or database directory differs; a reconnect switches back
+  to the daemon's state under the same rule.
+- **Options.** A per-server option the editor sets (the status page's LSP
+  section) is written by `LspConfig/1.set_option` while carried, otherwise
+  (also on `declined`) in-process; the editor applies it from the state it
+  reads back, not from its own write. A `refused` write is shown with its
+  message, as in-process.
+- **Buffer → project.** The LSP layer maps a buffer to its project by
+  `lw.buf_project` (§19.13, separator-bounded) in both modes;
+  `lw.project_for_buf` stays public API.
+
+In `in-process` mode only the last rule applies.
 
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, §12) — one per daemon
@@ -3578,6 +3644,22 @@ runtime is deferred until that module is actively developed.
        C1) *(C2 done once merged)*; D *(optional)* — a real-daemon
        end-to-end suite for the editor client, unless folded into C1 and C2.
        B1 and B2 are independent.
+     - **5l — LSP configuration through the daemon** (§19.16 "LSP
+       configuration"; §19.20 `LspConfig/1`; §9.2, §9.7, §9.8), in parts:
+       0 — spec *(done once merged)*; A — preparation with no behaviour
+       change, in-process only: one host-neutral builder of the state
+       (entries with `db_state` and `db_rev`, options, readiness), an LSP
+       source the LSP layer and the integrations read instead of the model,
+       buffer → project by `lw.buf_project`, and the reach-in counts lowered;
+       B — daemon side: `LspConfig/1` on `/lsp` (`get`, `set_option`,
+       `changed`) with schema and transcripts on the `shell` fixture, the
+       `changed` emission where `header_check` runs and on a database
+       written; C — editor side: the cached state and its reads, the
+       fallback rules, the hold released on the daemon's `ready`, the
+       options written through `set_option`, the editor's own database
+       generation stopped while carried, and a real-daemon end-to-end check
+       (needs A and B; may land as C1, the read path, and C2, the writes and
+       the generation owner).
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
@@ -3806,7 +3888,7 @@ the steps of §19.19. Their schemas, not this table, are the full contract.
 | `/tests` | `loomworks.Tests/1` | discover T, run T |
 | `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, device_log |
 | `/debug` | `loomworks.DebugConfig/1` | adapters, set_adapter, known_languages |
-| `/lsp` | `loomworks.LspConfig/1` | get, compile_command, set_option (changed) |
+| `/lsp` | `loomworks.LspConfig/1` | get, set_option (changed) |
 | `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended; task frames) |
 | `/toolchains` | `loomworks.Toolchains/1` | list, rescan |
 | `/toolchains` | `loomworks.Sdks/1` | list, add, remove, detect |
@@ -3849,6 +3931,53 @@ It has no signal of its own: a change reaches subscribers as `Workspace/1`
 `changed`, on which a client reads `adapters` again. Whether an adapter is
 installed is the client's question (its debugger's adapter table, the
 install hint), never the daemon's.
+
+**`LspConfig/1`.** *(Step 5l, plan: part B.)* What the workspace's language
+servers are configured with (§9; the editor's use: §19.16 "LSP
+configuration"), on `/lsp`:
+
+- `get {}` → `{ state, ready, projects: [{ project, id?, path, entries }],
+  options }`, computed with the caller's environment (§19.15
+  "Environment"). `state` is the workspace's, as in `view.Header/1`
+  (`loaded`, `unloaded`, `error`, `refused`); `ready` is whether the active
+  profile's owned databases have settled (§9.7; also true when there is no
+  active profile or nothing to generate). `projects` are in ascending key
+  order (the workspace-entry rule of §9.8 depends on it), each with its key,
+  its opaque `id` (only from the daemon, as in the views, §19.13), its path
+  relative to the root and the entries its module's `lsp_configs` gives
+  (§8.4). `options` are the working copy's per-server options (§2,
+  `user.json` `lsp`) as `{ [server]: { [key]: value } }`. `get` never loads
+  the workspace: in any state but `loaded` it answers with that `state`,
+  `ready = false`, no projects and no options.
+- An **entry** carries the core fields `server`, `root_dir`, `db_state`
+  (`ready` or `unconfigured`, §9.1), `build_dir` (the project's active build
+  directory; absent when it has none) and `db_rev`, and passes every other
+  field of the module's entry through unread: the schema requires the core
+  fields and allows any others, which core never types. `db_rev` is an
+  integer raised each time the daemon (re)writes that entry's owned database
+  (§8.4 `refresh_lsp_database`'s `done(true)`), so a database that went from
+  absent to present shows although no other field changed. Withhold reasons
+  (§9.8) are not in the state: deciding them from `db_state` and the entry
+  is the client's integrations' job.
+- `set_option { server, key, value? }` → `{}` — sets the server's option in
+  the working copy (`user.json` `lsp`, never `loomworks.json`), or, with no
+  `value`, removes it; written as the in-process `Workspace:set_lsp_option`
+  writes it, under the model lock, with a `model_change` (§19.12). A write
+  that is refused (a stale working copy, §2.7, or one that is not trusted) or
+  fails changes neither `user.json` nor the model, and is the `refused`
+  result with its message.
+- Signal `changed { seq }` — carries no state. It is sent when the state the
+  daemon computes with its own environment differs from the one at its last
+  `changed` (checked where the views' `update` is, §19.13: after each model
+  segment and committed write), and when an owned database is written (a
+  raised `db_rev`). It has no `initial`: a client reads `get` after
+  subscribing, and again, with its own environment, on each `changed` and on
+  `Workspace/1` `changed` (a difference visible only under the client's
+  environment is not signalled). The state is whole, so a missed `changed`
+  is recovered by the next read.
+
+A per-file compile-command query (§8.4 `compile_command_for`) is not part of
+`LspConfig/1` (BACKLOG "Per-file compile command over the daemon").
 
 **Module interfaces.** A module provides an interface only for a feature core
 has no abstraction for (a device log stream, signing setup); a feature core

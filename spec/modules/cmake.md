@@ -951,6 +951,8 @@ Regeneration is triggered from three idempotent paths, so the owned database ref
 
 All three funnel through the same mtime-gated, single-flight, side-effect-idempotent regeneration; the workspace drives them through the generic module hooks in core §8.4 (`refresh_lsp_database` / `lsp_database_watch_path`).
 
+In `daemon` mode, while the daemon carries the LSP configuration (core §9.7, daemon.md §19.16 "LSP configuration"), all three run in the daemon only; the editor's model does not generate, so one build directory never has two writers.
+
 **Completion signal.** Because generation is asynchronous, the owned `compile_commands.json` may first appear *after* a clangd client is already wired for a build directory. When a regeneration actually writes the database, the module reports completion to core (§8.4 `refresh_lsp_database`'s `done` callback) and core forwards a targeted LSP re-resolution for the affected ConfigUnit's projects. In the common case the database already existed on disk (atomic-rename replacement, §12.2), so the client already started with `--compile-commands-dir` and clangd merely auto-reloads the new content — no re-resolution needed. The signal matters only when the database went from **absent to present** (e.g. a project's first-ever configure), letting clangd pick up the directory it previously had no file for without the user reopening the buffer.
 
 ### 12.5 Scope

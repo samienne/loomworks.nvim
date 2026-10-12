@@ -55,13 +55,29 @@ Responsibilities:
   to `active_set_changed` and `workspace_changed` and fans out to every
   integration's `on_active_set_changed` / `on_workspace_changed` hook.
   Integrations don't register listeners themselves.
-- **Provide `get_status()`** iterating all projects, calling each
-  module's `lsp_configs()`, matching LSP clients by root_dir per server,
+- **Provide `get_status()`** iterating the projects and entries of the
+  LSP configuration state (below), matching LSP clients by root_dir per server,
   and delegating per-server status fields to each integration's
   `status_extras(entry)` callback.
 
 Core never references specific LSP server names. Adding a new server
 means adding an integration file — no changes to `lsp.lua`.
+
+**Where the entries come from.** The dispatch layer and the integrations
+never call `lsp_configs` or read the model themselves: they read one **LSP
+configuration state** — per project (ascending key order) its entries with
+their `db_state` and a database revision, the per-server options (§2,
+`user.json` `lsp`), and whether the active profile's owned databases are
+ready (§9.7). In-process it is built from the editor's own model; in
+`daemon` mode, while the daemon carries it, it is the daemon's
+(`loomworks.LspConfig/1`, daemon.md §19.16 "LSP configuration", §19.20),
+fetched with the editor's environment, with the in-process state as the
+fallback. Both have one shape, so the decisions below are the same in either
+mode. A buffer is mapped to its project by the separator-bounded
+longest-prefix rule of `lw.buf_project` (daemon.md §19.13), so a project at
+`/a/foo` never claims a buffer under `/a/foobar`. Discovery, the factories,
+starting and stopping servers and the per-buffer status stay in the editor in
+every mode.
 
 ### 9.3 Integration contract
 
@@ -196,6 +212,8 @@ Three terminal conditions end the hold so a buffer never stays in it indefinitel
 - **Initialization failure** (`workspace_changed` with no workspace) — there is no project to route to. Buffers under the failed workspace's root are withheld with reason `"workspace_error"` rather than started on the fallback (a fallback server would discover databases on its own and could pick up exactly the stale database this rule exists to avoid). They are re-evaluated when a later initialization succeeds.
 - **Safety timeout** — if no readiness signal arrives within the bound, held buffers are resolved against whatever is known at that moment: a buffer whose entry is usable starts; one whose entry is withheld moves to the withheld set; a buffer under the root of a workspace that is still being loaded (setup pending, no live workspace object yet) is not started and keeps status `held` (§9.8) until that workspace arrives or fails, and is resolved then; a buffer for which no workspace is loaded or being loaded takes the fallback (stock server, status `none`). The timeout bounds the *gate*, never forces a database-less start inside a loaded workspace.
 
+**In `daemon` mode** (daemon.md §19.16 "LSP configuration"), while the daemon carries the LSP configuration, readiness is the daemon's: the hold is released on its state's `ready`, and only the daemon generates the owned databases — the editor's model generates none, neither at its startup scan nor after a task. While the editor is still connecting (its first read of the state not answered) buffers under the root stay held, under the same safety timeout; at the timeout they are resolved against the daemon's state if one was read, else against the in-process one. When the daemon does not carry it, the hold works in-process as above.
+
 The hold spans the workspace's initialization **and** the generation of the active profile's owned database, so §9.4 cmd resolution finds `compile_commands.json` already present and appends `--compile-commands-dir` on the first start. Generation runs asynchronously and yielding (cmake §12.2), so this is a responsive wait, not a frozen UI; the completion-nudge (§8.4) remains only as a safety net for a database that appears after a start (e.g. a manual reconfigure), not the normal path.
 
 **Scope.** The hold applies only to servers loomworks installs. In the `lsp = false` opt-out path (§9.4) the user's own config starts the server; loomworks does not own `root_dir` there and cannot hold the start, so a client that attaches before the workspace is ready is repaired by the integration's attach-time reconciliation instead (per-integration; see the clangd spec). Excluded buffers (§9.4) are never held — they take the fall-through path regardless of workspace state.
@@ -217,7 +235,9 @@ Buffers outside the loaded workspace's root are never withheld; they take the fa
 - a configure completing for a unit (its state changes to configured here) and the owned-database completion signal (§8.4 `refresh_lsp_database`'s `done`);
 - any change that makes a unit no longer configured here — deletion, reset (§4.6, §16.30), out-of-band build-directory removal self-healed on remerge (§4.6), a failed configure;
 - a workspace swap or a successful initialization following a failure (`workspace_changed`);
-- the workspace being shut down with no successor (`workspace_closed` — cwd swap teardown, reload): nothing is loaded, failed or pending any more, so held and withheld buffers under the old root take the fallback (stock server, status `none`); none stays withheld.
+- the workspace being shut down with no successor (`workspace_closed` — cwd swap teardown, reload): nothing is loaded, failed or pending any more, so held and withheld buffers under the old root take the fallback (stock server, status `none`); none stays withheld;
+- in `daemon` mode (daemon.md §19.16 "LSP configuration"), a read of the daemon's state whose entries or options differ from the ones in use (after its `changed` signal, a model change or a reconnect) — a configure, reset or profile switch run in the daemon reaches the editor this way — and a raised database revision on an entry, which counts as that entry's owned-database completion signal;
+- a switch between the daemon's state and the in-process one (the connection lost, or regained): the in-process state applies at once and is re-evaluated like any other change; a running client is restarted only when its resolved binary or database directory differs.
 
 When a withheld buffer's entry becomes usable, the server is started for it exactly as a released buffer would be (its `on_dir` is invoked, or — when the earlier attach attempt has already completed without a client — the server's attach is re-run for that buffer), with no reopening by the user. The re-run attaches **only that server** (Neovim's own enable attach, for that one config: filetype check, `root_dir`, start with the config's client reuse) — it never re-resolves other servers enabled for the buffer. It requires the server to be enabled through `vim.lsp.config` + `vim.lsp.enable` (Neovim 0.11+; the §9.4 default path, or the user's own config built on it); a server started any other way gets its client on the buffer's next attach. When a running client's entry becomes withheld — typically a switch to a profile whose unit for that project is not configured here — the client is stopped through the managed-stop path (§9.6, so it is neither suppressed nor counted against the restart throttle) and its buffers join the withheld set. A changed-but-still-usable entry (different database directory or binary) is handled by the integration's own `on_active_set_changed` restart, unchanged.
 
