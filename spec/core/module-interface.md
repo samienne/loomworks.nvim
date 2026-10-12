@@ -471,6 +471,7 @@ Entry shape (core-defined fields):
 | `server` | Server name — selects the integration |
 | `root_dir` | Absolute path used for root_dir matching and client scoping |
 | `db_state` | *(optional)* `"ready"` or `"unconfigured"`. `"unconfigured"` when the unit that would supply this entry's build-directory-derived inputs (its compilation database in particular) is **not configured on this machine** (§17.8), or there is no active profile / no active unit for the project; the entry then carries **no** database location (§9.1). `"ready"` when that unit is configured here. Whether a configured unit's database actually exists yet is not part of this field — the integration checks that itself (§9.3 `withhold_reason`) |
+| `db_dir` | *(optional)* The build directory whose owned database (`refresh_lsp_database` below) this entry reads — another unit's build directory when the module redirects its database there (a cross-configuration reference). When omitted, core sets it to the project's active build directory (absent when there is none). Core matches database writes against it (the completion nudge, `done` below) and keys the entry's database revision by it (daemon.md §19.20); it does not locate the database for the server (that remains the integration's fields, §9.1) |
 | _…per-server_ | Each integration documents its own additional fields. See [`spec/integrations/lsp/`](spec/integrations/lsp/). |
 
 Modules with no LSP needs return `{}` (or omit the method). The module
@@ -489,11 +490,14 @@ on the entry before any integration sees it, so an `"unconfigured"`
 result is withheld (and its database location ignored, see the clangd
 spec) exactly as if the module had reported it. A module that redirects its database to another unit (a
 cross-configuration reference) must set the field itself, since only it
-knows which unit supplies the database. Adding the field is additive and
-optional, with a safe derived default: no `api_versions.module` bump
+knows which unit supplies the database; for the same reason it sets
+`db_dir` to that unit's build directory. Adding either field is additive
+and optional, with a safe derived default: no `api_versions.module` bump
 (§8.0).
 
-Core reads entry contents only for `server`, `root_dir` and `db_state` —
+Core reads entry contents only for `server`, `root_dir`, `db_state` and
+`db_dir` — a module field of any other name (a `build_dir` of its own, for
+instance) passes through unread —
 all other interpretation is delegated to the per-server integration.
 
 **`parse_targets(ctx) → targets?`** *(optional)*
@@ -547,7 +551,7 @@ does not model. See the per-module specs for which modules implement it.
 
 Regenerate any loomworks-owned LSP compilation database for a build directory, if stale. Best-effort, **idempotent**, and **non-blocking** — the module must gate the work on its own freshness check (e.g. an mtime guard) so repeated calls are cheap no-ops, and it must run any actual (re)generation asynchronously so a large database never blocks the UI thread. Core calls this after a successful configure or build task for the affected ConfigUnit, and again whenever a watched path (see below) changes. `ctx` carries `build_dir`, `workspace_root`, `variant`, and `compiler` (the module uses only what it needs).
 
-`done` is an optional completion callback the module invokes once when the refresh settles: `done(changed)` with `changed = true` iff it actually (re)wrote the database. Core uses it to re-resolve LSP wiring for the affected ConfigUnit's projects when the database changed, so a client picks up a database that first appeared after it started. A module with nothing to report may omit calling `done`; core treats a never-called `done` as "no observable change". Modules with no owned database (the common case) omit this method entirely. See [`spec/modules/cmake.md`](spec/modules/cmake.md) §12 for cmake's use.
+`done` is an optional completion callback the module invokes once when the refresh settles: `done(changed)` with `changed = true` iff it actually (re)wrote the database. Core uses it to re-resolve LSP wiring, when the database changed, for the projects with an entry whose `db_dir` is that build directory, so a client picks up a database that first appeared after it started. A module with nothing to report may omit calling `done`; core treats a never-called `done` as "no observable change". Modules with no owned database (the common case) omit this method entirely. See [`spec/modules/cmake.md`](spec/modules/cmake.md) §12 for cmake's use.
 
 **`lsp_database_watch_path(ctx) → string?`** *(optional)*
 

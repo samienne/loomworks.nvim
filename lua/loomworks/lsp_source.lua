@@ -112,7 +112,7 @@ end
 --- The record and entry of `server` whose `root_dir` is `root_dir`.
 --- @param server string
 --- @param root_dir string|nil
---- @return loomworks.LspConfigProject|nil record, loomworks.LspConfigEntry|nil entry
+--- @return loomworks.LspConfigProject|nil record, loomworks.LspStateEntry|nil entry
 function M.find_by_root(server, root_dir)
     if not root_dir then return nil, nil end
     local normalize = vim.fs.normalize

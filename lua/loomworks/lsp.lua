@@ -193,7 +193,7 @@ end
 -- The LSP configuration state (spec §9.2 "Where the entries come from")
 -- ---------------------------------------------------------------------------
 --
--- Projects, entries (with `db_state`, `build_dir`, `db_rev`), options and
+-- Projects, entries (with `db_state`, `db_dir`, `db_rev`), options and
 -- readiness come from loomworks/lsp_source.lua, which serves the state built
 -- by the host-neutral loomworks/lsp_config.lua (content-memoized
 -- `lsp_configs`). This layer never reads the workspace model itself.
@@ -206,7 +206,7 @@ local source = require("loomworks.lsp_source")
 --- entries from the state's project records.
 --- @param project loomworks.Project
 --- @param server string
---- @return loomworks.LspConfigEntry|nil
+--- @return loomworks.LspStateEntry|nil
 function M.entry_for_project(project, server)
     if not project then return nil end
     return lsp_config.entry(lsp_config.entries(nil, project), server)
@@ -215,7 +215,7 @@ end
 --- Locate the project record and entry for a (server, root_dir) pair.
 --- @param server string
 --- @param root_dir string|nil
---- @return loomworks.LspConfigProject|nil record, loomworks.LspConfigEntry|nil entry
+--- @return loomworks.LspConfigProject|nil record, loomworks.LspStateEntry|nil entry
 function M.find_project_by_root(server, root_dir)
     return source.find_by_root(server, root_dir)
 end
@@ -1039,7 +1039,8 @@ end
 
 --- A module reported that its owned LSP compilation database for `build_dir`
 --- was newly (re)written (module §8.4 `refresh_lsp_database`'s `done`). Find the
---- live clients whose active project maps to that build dir and ask each server
+--- projects with an entry whose `db_dir` (the directory whose owned database it
+--- reads, §19.20) is that build dir and ask each server
 --- integration to reconcile if needed — so a client that started before the
 --- database existed (absent→present) picks up the now-resolvable directory
 --- without the user reopening the buffer. Generic: no module-type checks. The
@@ -1051,14 +1052,15 @@ function M.on_owned_database_changed(build_dir)
     -- A database appearing can make withheld buffers startable (§9.8).
     M.reevaluate()
 
-    -- The projects whose entries carry this build dir: the project's active
-    -- build dir (the same dir clangd was pointed at), or a module's own
-    -- `build_dir` field. A record with no active profile has no active dir.
+    -- The projects with an entry that reads this dir's owned database: its
+    -- `db_dir` (the module's, e.g. a `compile_commands_from` redirect target,
+    -- else the project's active build dir). A module's own `build_dir` field
+    -- is opaque and never matched.
     local target = norm_cmp(build_dir)
     for _, rec in ipairs(source.projects()) do
         local hit = false
         for _, e in ipairs(rec.entries) do
-            if type(e) == "table" and type(e.build_dir) == "string" and norm_cmp(e.build_dir) == target then
+            if type(e) == "table" and type(e.db_dir) == "string" and norm_cmp(e.db_dir) == target then
                 hit = true
                 break
             end

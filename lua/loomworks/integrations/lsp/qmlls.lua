@@ -69,14 +69,14 @@ end
 
 --- The qmlls entry of a project record of the LSP configuration state.
 --- @param rec loomworks.LspConfigProject
---- @return loomworks.LspConfigEntry|nil
+--- @return loomworks.LspStateEntry|nil
 local function entry_for(rec)
     return require("loomworks.lsp_config").entry(rec, "qmlls")
 end
 
 --- Find the qmlls entry for a given root_dir by asking the core.
 --- @param root_dir string|nil
---- @return loomworks.LspConfigProject|nil record, loomworks.LspConfigEntry|nil entry
+--- @return loomworks.LspConfigProject|nil record, loomworks.LspStateEntry|nil entry
 local function find_by_root(root_dir)
     if not root_dir then return nil, nil end
     local lsp = require("loomworks.lsp")

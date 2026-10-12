@@ -273,6 +273,46 @@ describe("loomworks.lsp owned-database completion nudge (§9.7)", function()
         assert.same({}, recorded)
     end)
 
+    --- Fake project whose module emits `entry` (with server/root_dir added).
+    local function project_with(key, root_dir, entry)
+        return {
+            key = key,
+            _module = { impl = {
+                lsp_configs = function()
+                    local e = vim.deepcopy(entry)
+                    e.server, e.root_dir = "dbtest", root_dir
+                    return { e }
+                end,
+            } },
+        }
+    end
+
+    it("nudges the project whose entry reads a redirect target's database (db_dir)", function()
+        lw.get_workspace = function() return fake_ws("App", "/bd/App/Debug") end
+        lw.get_projects = function()
+            return { App = project_with("App", "/root/App", { db_dir = "/bd/App/Release" }) }
+        end
+
+        lsp.on_owned_database_changed("/bd/App/Release")
+        assert.same({ "/root/App" }, recorded)
+        -- The active dir's database is not the one this entry reads.
+        recorded = {}
+        lsp.on_owned_database_changed("/bd/App/Debug")
+        assert.same({}, recorded)
+    end)
+
+    it("never matches a module's own build_dir field", function()
+        lw.get_workspace = function() return fake_ws("App", "/bd/App/Debug") end
+        lw.get_projects = function()
+            return { App = project_with("App", "/root/App", { build_dir = "/bd/qml/tree" }) }
+        end
+
+        lsp.on_owned_database_changed("/bd/qml/tree")
+        assert.same({}, recorded)
+        lsp.on_owned_database_changed("/bd/App/Debug/")
+        assert.same({ "/root/App" }, recorded, "db_dir defaults to the active dir")
+    end)
+
     it("is a no-op with no active profile / no workspace", function()
         lw.get_workspace = function() return nil end
         lsp.on_owned_database_changed("/bd/App/Debug") -- must not raise

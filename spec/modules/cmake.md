@@ -713,7 +713,13 @@ and both keyed to the active ConfigUnit's build directory:
 
 1. **clangd** — integration-specific fields (`binary`,
    `binary_required`, `compile_commands_dir`) documented in
-   [`spec/integrations/lsp/clangd.md`](../integrations/lsp/clangd.md).
+   [`spec/integrations/lsp/clangd.md`](../integrations/lsp/clangd.md),
+   and the core field `db_dir` (core §8.4): the build directory whose
+   database clangd reads — the `compile_commands_from` target unit's
+   (the one configured here first, else the first with a build directory),
+   else the active ConfigUnit's. The qmlls entry sets no `db_dir` (core
+   fills in the active build directory); its own `build_dir` is a qmlls
+   field core never reads.
 2. **qmlls** — emitted unconditionally (no QML detection); inert on
    non-QML projects since no `.qml` buffers exist to attach to.
    Integration-specific fields (`binary`, `binary_required`,

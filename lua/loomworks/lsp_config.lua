@@ -1,7 +1,7 @@
 --- loomworks/lsp_config.lua — the LSP configuration state (spec §9.2 "Where
 --- the entries come from", daemon.md §19.16 "LSP configuration", §19.20
 --- `LspConfig/1`): per project its module's `lsp_configs` entries with
---- `db_state`, `build_dir` and `db_rev`, the working copy's per-server
+--- `db_state`, `db_dir` and `db_rev`, the working copy's per-server
 --- options, and whether the active profile's owned databases are ready.
 ---
 --- Host-neutral (pure Lua, no `vim.*`): the editor's LSP layer reads it
@@ -12,20 +12,21 @@
 
 local M = {}
 
---- @class loomworks.LspConfigEntry
---- @field server string
---- @field root_dir string
---- @field db_state "ready"|"unconfigured" the module's, else derived (§9.1)
---- @field build_dir? string the module's own field when it sets one, else the project's active build dir (absent when none)
---- @field db_rev integer raised each time the owned database of `build_dir` is (re)written
+--- An entry of the state: the module's `lsp_configs` entry
+--- (`loomworks.LspConfigEntry`, types.lua) with the core fields filled in.
 --- Every other field is the module's, passed through unread (binary,
---- binary_required, compile_commands_dir, import_paths, ...).
+--- binary_required, compile_commands_dir, a module's own build_dir,
+--- import_paths, ...).
+--- @class loomworks.LspStateEntry : loomworks.LspConfigEntry
+--- @field db_state "ready"|"unconfigured" the module's, else derived (§9.1)
+--- @field db_dir? string the directory whose owned database the entry reads: the module's when it sets one, else the project's active build dir (absent when none)
+--- @field db_rev integer raised each time the owned database of `db_dir` is (re)written
 
 --- @class loomworks.LspConfigProject
 --- @field project string the project key
 --- @field id? string opaque id, only from the daemon (§19.13)
 --- @field path? string the project's path relative to the root
---- @field entries loomworks.LspConfigEntry[]
+--- @field entries loomworks.LspStateEntry[]
 
 --- @class loomworks.LspConfigState
 --- @field state "loaded"|"unloaded"|"error"|"refused" the workspace's, as `view.Header/1`
@@ -53,29 +54,29 @@ end
 -- Database revisions (db_rev)
 -- ---------------------------------------------------------------------------
 
---- Raise the revision of `build_dir`'s owned database: called when a module
+--- Raise the revision of `db_dir`'s owned database: called when a module
 --- reports it (re)wrote it (§8.4 `refresh_lsp_database`'s `done(true)`).
 --- @param ws loomworks.Workspace
---- @param build_dir string
-function M.bump_db_rev(ws, build_dir)
-    if type(ws) ~= "table" or type(build_dir) ~= "string" or build_dir == "" then return end
+--- @param db_dir string
+function M.bump_db_rev(ws, db_dir)
+    if type(ws) ~= "table" or type(db_dir) ~= "string" or db_dir == "" then return end
     local revs = ws._lsp_db_revs
     if type(revs) ~= "table" then
         revs = {}
         ws._lsp_db_revs = revs
     end
-    local k = M.norm(build_dir)
+    local k = M.norm(db_dir)
     revs[k] = (revs[k] or 0) + 1
 end
 
---- The revision of `build_dir`'s owned database (0 when never written).
+--- The revision of `db_dir`'s owned database (0 when never written).
 --- @param ws loomworks.Workspace|nil
---- @param build_dir string|nil
+--- @param db_dir string|nil
 --- @return integer
-function M.db_rev(ws, build_dir)
+function M.db_rev(ws, db_dir)
     local revs = type(ws) == "table" and ws._lsp_db_revs or nil
-    if type(revs) ~= "table" or type(build_dir) ~= "string" or build_dir == "" then return 0 end
-    return revs[M.norm(build_dir)] or 0
+    if type(revs) ~= "table" or type(db_dir) ~= "string" or db_dir == "" then return 0 end
+    return revs[M.norm(db_dir)] or 0
 end
 
 -- ---------------------------------------------------------------------------
@@ -244,13 +245,15 @@ end
 --- A project's entries: its module's `lsp_configs` output (content-memoized:
 --- a hit skips `lsp_configs` entirely) with the core fields filled in —
 --- `db_state` when the module omitted it (needs the project's workspace),
---- `build_dir` when the module set none (the project's active build dir in
---- `ws`), and `db_rev` (re-read every call: a written database changes no
---- memo determinant). The entry tables are the memo's, identity-stable
---- across hits.
+--- `db_dir` when the module set none (the project's active build dir in
+--- `ws`; a module that redirects its database to another unit sets it, §8.4),
+--- and `db_rev` of `db_dir` (re-read every call: a written database changes
+--- no memo determinant). Every other field, a module's own `build_dir`
+--- included, is left as the module set it. The entry tables are the memo's,
+--- identity-stable across hits.
 --- @param ws table|nil the workspace to read the active build dir and revisions from (default: the project's)
 --- @param project loomworks.Project
---- @return loomworks.LspConfigEntry[]
+--- @return loomworks.LspStateEntry[]
 function M.entries(ws, project)
     if type(project) ~= "table" then return {} end
     ws = ws or project._workspace
@@ -269,13 +272,13 @@ function M.entries(ws, project)
         M.derive_db_state(project, entries)
         local bd = active_build_dir(ws, project)
         for _, e in ipairs(entries) do
-            if type(e) == "table" and e.build_dir == nil then e.build_dir = bd end
+            if type(e) == "table" and e.db_dir == nil then e.db_dir = bd end
         end
         if key then _memo[project.key] = { key = key, entries = entries } end
     end
 
     for _, e in ipairs(entries) do
-        if type(e) == "table" then e.db_rev = M.db_rev(ws, e.build_dir) end
+        if type(e) == "table" then e.db_rev = M.db_rev(ws, e.db_dir) end
     end
     return entries
 end
@@ -283,7 +286,7 @@ end
 --- The first entry for `server` in a list of entries (or a project record).
 --- @param entries table[]|loomworks.LspConfigProject|nil
 --- @param server string
---- @return loomworks.LspConfigEntry|nil
+--- @return loomworks.LspStateEntry|nil
 function M.entry(entries, server)
     if type(entries) ~= "table" then return nil end
     if entries.entries then entries = entries.entries end

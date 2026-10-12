@@ -1,7 +1,7 @@
 --- loomworks.lsp_config: the host-neutral LSP configuration state (spec §9.2
 --- "Where the entries come from", daemon.md §19.20 `LspConfig/1`): the
 --- state's shape and project order, db_state derivation, the core
---- `build_dir`, `db_rev` and the content memo.
+--- `db_dir`, `db_rev` and the content memo.
 
 local lsp_config = require("loomworks.lsp_config")
 
@@ -72,11 +72,11 @@ describe("lsp_config", function()
         assert.equals("A", a.path)
         assert.same({
             server = "clangd", root_dir = "/ws/A", compile_commands_dir = "/ws/A/db",
-            db_state = "ready", build_dir = "/ws/b/A", db_rev = 0,
+            db_state = "ready", db_dir = "/ws/b/A", db_rev = 0,
         }, a.entries[1])
         assert.same({}, st.projects[2].entries)
-        -- No active build dir: build_dir absent, db_state unconfigured.
-        assert.is_nil(st.projects[3].entries[1].build_dir)
+        -- No active build dir: db_dir absent, db_state unconfigured.
+        assert.is_nil(st.projects[3].entries[1].db_dir)
         assert.equals("unconfigured", st.projects[3].entries[1].db_state)
     end)
 
@@ -104,15 +104,31 @@ describe("lsp_config", function()
         assert.is_nil(lsp_config.entries(nil, p)[1].db_state)
     end)
 
-    it("keeps a module's own build_dir field", function()
+    it("passes a module's own build_dir through and defaults db_dir to the active dir", function()
         local ws = fake_ws({ P = { build_dir = "/ws/b/P", configured = true } })
         local p = fake_project(ws, "P", function()
             return { { server = "qmlls", root_dir = "/ws/P", build_dir = "/ws/b/Other" } }
         end)
-        assert.equals("/ws/b/Other", lsp_config.entries(ws, p)[1].build_dir)
+        local e = lsp_config.entries(ws, p)[1]
+        assert.equals("/ws/b/Other", e.build_dir, "the module's field is never overwritten")
+        assert.equals("/ws/b/P", e.db_dir)
     end)
 
-    it("raises db_rev per written build dir, visible on a memo hit", function()
+    it("keeps a module's db_dir and keys db_rev by it (a redirect)", function()
+        local ws = fake_ws({ P = { build_dir = "/ws/b/P", configured = true } })
+        local p = fake_project(ws, "P", function()
+            return { { server = "clangd", root_dir = "/ws/P", db_dir = "/ws/b/Target" } }
+        end)
+        local first = lsp_config.entries(ws, p)
+        assert.equals("/ws/b/Target", first[1].db_dir)
+        assert.is_nil(first[1].build_dir, "core sets no build_dir")
+        lsp_config.bump_db_rev(ws, "/ws/b/P")
+        assert.equals(0, lsp_config.entries(ws, p)[1].db_rev, "the active dir's write is not this entry's")
+        lsp_config.bump_db_rev(ws, "/ws/b/Target")
+        assert.equals(1, lsp_config.entries(ws, p)[1].db_rev, "the redirect target's write is")
+    end)
+
+    it("raises db_rev per written db_dir, visible on a memo hit", function()
         local ws = fake_ws({ P = { build_dir = "/ws/b/P", configured = true } })
         local p = fake_project(ws, "P", function() return clangd_entry("/ws/P") end)
         local first = lsp_config.entries(ws, p)
