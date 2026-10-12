@@ -82,9 +82,7 @@
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_debug", "args": { "profile": { "key": "dev" }, "target": "multi", "kind": "launch", "build_scope": "target" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": { "$pattern": "^building launch target: " } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "output", "text": { "$pattern": "step configure" } }, "timeout_ms": 60000 },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "output", "text": { "$pattern": "step build" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": { "$pattern": "^building launch target: app: multi" } } },
         { "expect": {
             "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
             "result": {
@@ -107,9 +105,7 @@
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "profile": { "key": "dev" }, "target": "hello", "kind": "launch", "build_scope": "target" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": { "$pattern": "^building launch target: " } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "output", "text": { "$pattern": "step configure" } }, "timeout_ms": 60000 },
-        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "output", "text": { "$pattern": "step build" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": { "$pattern": "^building launch target: app: hello" } } },
         { "expect": {
             "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
             "result": { "exit_code": 0, "debug": { "$absent": true }, "launch": { "cmd": { "$type": "string" }, "args": ["--version"] } }

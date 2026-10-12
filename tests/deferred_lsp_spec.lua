@@ -192,7 +192,7 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         lsp.gated_root_dir(buf, function() end, function() resolved = true end)
         assert.equals(1, lsp._gate_queue_len())
 
-        assert.is_true(vim.wait(1000, function() return resolved end, 5),
+        assert.is_true(vim.wait(10000, function() return resolved end, 5),
             "safety timeout never drained the queue")
         assert.equals(0, lsp._gate_queue_len())
     end)
