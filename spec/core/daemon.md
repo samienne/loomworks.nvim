@@ -2833,6 +2833,14 @@ the units' states come from `meta.units` (Running state below).
   restart sends the call again, and whose output is the task's frames written
   to a terminal buffer, so colours and the task runner's own output actions
   (opening the output in the quickfix list) work as for a local task.
+  Unlike Editor operations, a restart that is declined, degraded or cannot
+  be carried fails the task-runner task with the reason and never runs
+  in-process (the overseer task follows exactly one daemon task); the
+  editor's own command still takes the in-process path. A degraded restart
+  still sets the Runtime-line note, as any degraded call does. A stop, or
+  another restart, before a restart's call is accepted cancels the task that
+  call starts; it is never shown as a task of its own. A task that ends with
+  exit 0 after a cancel is a success.
 - An **observed** task (another client's, `meta.origin`) is listed
   read-only, its origin marker in its name (e.g. `[lw] build dev`); stop and
   restart only say `started by lw (cli) — cancel it there`. Its output

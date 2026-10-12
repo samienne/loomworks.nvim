@@ -946,16 +946,25 @@ re-cut onto master step by step; this section is expanded as each step lands.
   overseer's `run_in_fullscreen_win` when present). The end calls
   `task:on_exit(exit_code)` (SUCCESS / FAILURE), or overseer's own stop
   (CANCELED) when the editor cancelled it (`RemoteTask.cancelling`, set by
-  `Observer:cancel_owned_id`) or teardown cleared it. Owned: `stop` →
+  `Observer:cancel_owned_id`) and it did not exit 0, or teardown cleared it.
+  While the terminal cannot open, the flush retries every `BLOCKED_MS` and
+  the queue is coalesced and capped at `QUEUE_CAP_BYTES` (oldest dropped,
+  with a marker). `RemoteTask` calls its listeners over a copy, so the
+  strategy's unfollow on the end never skips another follower. Owned: `stop` →
   `Observer:cancel_owned` (overseer finalizes CANCELED first); restart →
   `start` with no RemoteTask → `editor_ops.rerun(obs, call, h)` with the
   call's stored `method` / `args` / `units` (`OwnedCall.args`), the strategy
   passed as `start_owned`'s `h.runner` so the new task's `start` continues
   the same overseer task (bound only while `_call_id` matches); a restart
-  that cannot run fails the overseer task, never in-process. Observed: the
-  instance's `stop` / `restart` are replaced by a WARN notify (`started by
-  lw — cancel it there`); the strategy keeps the original stop for its own
-  end handling. Overseer missing or without `overseer.strategy.load`: no
+  that cannot run (declined, degraded — `_degrade` still sets the Runtime
+  note — or not carried) fails the overseer task, never in-process. A stop
+  while the call awaits its reply (`_awaiting`), a second restart, a reset
+  or a dispose bumps `_gen`: the stale reply's task id goes to
+  `_superseded` and is cancelled (`cancel_owned_id`), and `add` lists no
+  task for it. Observed: the instance's `stop` / `restart` are replaced by a
+  WARN notify (`started by lw (cli) — cancel it there`); the strategy keeps
+  the original stop for its own end handling, and the instance's `dispose`
+  wrapper uses it quietly for a forced dispose of a running task. Overseer missing or without `overseer.strategy.load`: no
   task, `Observer.runner_note` (once) in the Runtime line. `overseer_task` /
   `open` back the status page's `Open overseer` on remote rows.
 - `provision/select.lua` — the host binary (spec §19.16): `LOOMWORKS_LW` >
