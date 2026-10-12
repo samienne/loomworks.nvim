@@ -857,12 +857,14 @@ local function start_one_task(overseer, task_def, on_complete)
 end
 
 --- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.
---- Configure tasks: only launch if unconfigured or configure_failed.
+--- Configure tasks: only launch if unconfigured or configure_failed — or, for
+--- an explicit (user-requested) configure, in any state but unknown.
 --- Build tasks: skip if already building, defer if currently configuring,
 --- block if in unknown state.
 --- @param task_def table task definition with .loomworks
+--- @param opts? { explicit_configure?: boolean } lift only the configured-skip
 --- @return "launch"|"skip"|"defer"|"block"
-local function check_task_readiness(task_def)
+local function check_task_readiness(task_def, opts)
     local lw_meta = task_def.loomworks
     local unit = lw_meta.unit
     local state = unit:state()
@@ -871,6 +873,7 @@ local function check_task_readiness(task_def)
     if state == "unknown" then return "block" end
 
     if lw_meta.action == "configure" then
+        if opts and opts.explicit_configure then return "launch" end
         if state == "unconfigured" or state == "configure_failed" then
             return "launch"
         end
@@ -890,11 +893,15 @@ end
 --- @param overseer table overseer module
 --- @param task_defs table[] task definitions with .builder and .loomworks
 --- @param on_all_done? function legacy callback (deprecated, use Future)
---- @param opts? { force?: boolean } force=true bypasses readiness checks
+--- @param opts? { force?: boolean, explicit_configure?: boolean, on_task_settled?: fun(task_def: table, ok: boolean) }
+---   force=true bypasses readiness checks; explicit_configure=true lifts only
+---   the configured-skip (unknown still blocks); on_task_settled is called once
+---   per launched/deferred task when it finishes
 --- @return loomworks.Future, number launched
 local function launch_tasks(overseer, task_defs, on_all_done, opts)
     local future_mod = require("loomworks.future")
     local force = opts and opts.force or false
+    local on_task_settled = opts and opts.on_task_settled
 
     local to_launch, to_defer = {}, {}
     for _, task_def in ipairs(task_defs) do
@@ -902,7 +909,7 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
         if force then
             to_launch[#to_launch + 1] = task_def
         else
-            local readiness = check_task_readiness(task_def)
+            local readiness = check_task_readiness(task_def, opts)
             if readiness == "launch" then
                 to_launch[#to_launch + 1] = task_def
             elseif readiness == "defer" then
@@ -928,14 +935,21 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
     end
 
     local task_futures = {}
+    local function track(task_def, tf)
+        task_futures[#task_futures + 1] = tf
+        if on_task_settled then
+            tf:next(function() on_task_settled(task_def, true) end,
+                function() on_task_settled(task_def, false) end)
+        end
+    end
 
     for _, task_def in ipairs(to_launch) do
-        task_futures[#task_futures + 1] = start_one_task(overseer, task_def)
+        track(task_def, start_one_task(overseer, task_def))
     end
 
     for _, task_def in ipairs(to_defer) do
         local deferred_f = future_mod.Future.new()
-        task_futures[#task_futures + 1] = deferred_f
+        track(task_def, deferred_f)
 
         local unit = task_def.loomworks.unit
         local unsub
@@ -974,12 +988,13 @@ end
 --- Filter task definitions to only those that will actually launch or defer.
 --- Excludes "skip" (already done) and "block" (unknown state) tasks.
 --- @param task_defs table[]
+--- @param opts? { explicit_configure?: boolean } see check_task_readiness
 --- @return table[]
-local function filter_launchable_tasks(task_defs)
+local function filter_launchable_tasks(task_defs, opts)
     local result = {}
     for _, task_def in ipairs(task_defs) do
         if task_def.loomworks then
-            local readiness = check_task_readiness(task_def)
+            local readiness = check_task_readiness(task_def, opts)
             if readiness == "launch" or readiness == "defer" then
                 result[#result + 1] = task_def
             end
@@ -1906,12 +1921,40 @@ function M.run_profile_action(profile, action, opts)
         end
 
         if action == "configure" then
-            local launchable = filter_launchable_tasks(all_tasks.configure)
+            -- Explicit profile configure (spec §5.1): runs configure for every
+            -- unit of the profile, including ones already configured. Only the
+            -- configured-skip is lifted — a unit in unknown state is still
+            -- blocked (clean/delete first). Only the build's automatic
+            -- configure (§5.2) skips configured units.
+            local readiness_opts = { explicit_configure = true }
+            local launchable = filter_launchable_tasks(all_tasks.configure, readiness_opts)
             local units, target_states = collect_units_from_tasks(launchable, "configured")
+            -- The operation tracks this run's own configure tasks, not unit
+            -- state: a configure queued behind a build-dir lock (a running
+            -- build, an earlier configure) must not count as done when the
+            -- unit reaches `built`/`configured` through that other task.
+            local op
             if #units > 0 then
-                loomworks.create_operation(profile, "configure", units, target_states)
+                op = loomworks.create_operation(profile, "configure", units, target_states,
+                    { track_tasks = true })
             end
-            launch_tasks(overseer, all_tasks.configure):next(
+            local pending, unit_ok = {}, {}
+            for _, task_def in ipairs(launchable) do
+                local u = task_def.loomworks.unit
+                pending[u] = (pending[u] or 0) + 1
+                if unit_ok[u] == nil then unit_ok[u] = true end
+            end
+            readiness_opts.on_task_settled = function(task_def, task_ok)
+                local u = task_def.loomworks.unit
+                if not pending[u] then return end
+                if not task_ok then unit_ok[u] = false end
+                pending[u] = pending[u] - 1
+                if pending[u] == 0 then
+                    pending[u] = nil
+                    if op then op:unit_finished(u, unit_ok[u]) end
+                end
+            end
+            launch_tasks(overseer, all_tasks.configure, nil, readiness_opts):next(
                 function() f:_resolve(true) end,
                 function(err) f:_reject(err) end
             )
