@@ -47,6 +47,15 @@
 --- …` line when the profile has no configured build directory to clean,
 --- decided after resolution and before any lock (as in-process).
 ---
+--- **`Build/1.configure`** (§19.15 "Editor scopes and configure"; an
+--- interface method only, no protocol-10 kind) — the outcomes of `build`: the
+--- configure step of every unit of the scope, also one already configured.
+--- **`units`** on build, configure and clean: the scope is those configuration
+--- units (each `{ id }` or `{ project, configuration }`, resolved with the
+--- ids; one that does not resolve is "refused") instead of a profile —
+--- `profile_key` and `meta.profile` absent. **`jobs`** on build: the build
+--- tool's parallelism. **`targets`** items may be `{ project, target }`.
+---
 --- **Request** `{ kind = "reset", args = { profile?, all?, yes?, plan? }, … }`
 --- (§19.15 "Reset") — the outcomes of `build`, plus "confirm" (`lines`,
 --- `plan`, `profile_key`): the reset is planned (loomworks.reset_plan, as
@@ -487,6 +496,40 @@ local function reset_args_ok(a)
     return true
 end
 
+--- Is `a` (a build, configure or clean's `units` / `jobs` / `targets`)
+--- well-formed? `targets` items are names or `{ project, target }`; `units`
+--- a non-empty list of `{ id }` or `{ project, configuration }`.
+--- @param a table
+--- @return boolean
+local function scope_args_ok(a)
+    if a.targets ~= nil then
+        if type(a.targets) ~= "table" then return false end
+        for _, v in ipairs(a.targets) do
+            if type(v) == "table" then
+                if type(v.project) ~= "string" or type(v.target) ~= "string" then return false end
+            elseif type(v) ~= "string" then
+                return false
+            end
+        end
+    end
+    if a.jobs ~= nil and not (type(a.jobs) == "number" and a.jobs >= 1 and math.floor(a.jobs) == a.jobs) then
+        return false
+    end
+    if a.units ~= nil then
+        if type(a.units) ~= "table" or #a.units == 0 then return false end
+        if a.profile ~= nil or a.profile_id ~= nil then return false end
+        for _, r in ipairs(a.units) do
+            if type(r) ~= "table" then return false end
+            if r.id ~= nil then
+                if type(r.id) ~= "string" then return false end
+            elseif type(r.project) ~= "string" or type(r.configuration) ~= "string" then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 --- Is `a` (a `prepare_run` request's args) well-formed?
 --- @param a table
 --- @return boolean
@@ -506,7 +549,7 @@ end
 --- (Build/1, Tests/1.run, Launch/1.prepare_run; daemon/core_interfaces.lua)
 --- are this one implementation: the method passes `deliver` (its reply) and
 --- `call` (the task's interface identity and result, `Task.call`).
---- @param op "build"|"test"|"run"|"clean"|"reset"
+--- @param op "build"|"test"|"run"|"clean"|"reset"|"configure"
 --- @param conn table
 --- @param msg table
 --- @param deliver? fun(fields: table) answer an interface call instead of a v0 reply
@@ -531,13 +574,16 @@ function Service:_on_operation(op, conn, msg, deliver, call)
     end
     if srv.retiring then return ctx.reply({ outcome = "declined", reason = "the daemon is retiring" }) end
     local a = ctx.args
-    for _, list in ipairs({ "targets", "extra" }) do
-        if a[list] ~= nil and type(a[list]) ~= "table" then
-            return ctx.reply({ outcome = "declined", reason = "malformed request" })
-        end
-        for _, v in ipairs(a[list] or {}) do
-            if type(v) ~= "string" then return ctx.reply({ outcome = "declined", reason = "malformed request" }) end
-        end
+    if a.extra ~= nil and type(a.extra) ~= "table" then
+        return ctx.reply({ outcome = "declined", reason = "malformed request" })
+    end
+    for _, v in ipairs(a.extra or {}) do
+        if type(v) ~= "string" then return ctx.reply({ outcome = "declined", reason = "malformed request" }) end
+    end
+    -- (`units` only on build, configure and clean; `jobs` only on build.)
+    if not scope_args_ok(a) or (a.units ~= nil and op ~= "build" and op ~= "configure" and op ~= "clean")
+        or (a.jobs ~= nil and op ~= "build") then
+        return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
     if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string")
         or (a.profile_id ~= nil and (type(a.profile_id) ~= "string" or a.profile ~= nil))
@@ -568,8 +614,41 @@ function Service:_resolve_ids(ws, a)
     return nil
 end
 
+--- An operation's `units` (§19.15 "Editor scopes and configure") resolved
+--- to the live configuration units, in order, duplicates dropped: `{ id }`
+--- with the session's ids (a stale id refused as for a profile), `{ project,
+--- configuration }` by the project key and configuration-unit key.
+--- @param ws table the live workspace
+--- @param refs table[]
+--- @return table[]|nil units, string|nil refusal
+function Service:_resolve_units(ws, refs)
+    local out, seen = {}, {}
+    for _, r in ipairs(refs) do
+        local unit
+        if r.id ~= nil then
+            unit = self.ids:find(r.id, ws._config_units)
+            if not unit then return nil, "no configuration unit with id " .. tostring(r.id) .. " (a stale reference)" end
+        else
+            for _, u in pairs(ws._config_units or {}) do
+                local p = u._project
+                if not u._removed and p and not p._removed and p.key == r.project
+                        and u:config_key() == r.configuration then
+                    unit = u
+                end
+            end
+            if not unit then
+                return nil, "no configuration unit " .. r.project .. "/" .. r.configuration
+                    .. " (unknown project or configuration)"
+            end
+        end
+        if not seen[unit] then seen[unit] = true; out[#out + 1] = unit end
+    end
+    return out
+end
+
 --- The model segment that accepts (or refuses / declines) a build, a test
---- run, a run's preparation or a clean.
+--- run, a run's preparation, a clean or a configure (of a profile, or of
+--- configuration units).
 function Service:_accept(ctx)
     if ctx.conn.closed then return end
     local ws, refusal, decline = self:live(ctx)
@@ -584,22 +663,32 @@ function Service:_accept(ctx)
     if stale then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1, notes = ctx.notes }) end
     if ctx.op == "reset" then return self:_accept_reset(ctx, ws) end
     local a = ctx.args
-    local profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
-        usage = ctx.op == "run" and "lw run <profile> <target>" or ("lw " .. ctx.op .. " <profile>") })
-    if action == "onboard" then
-        return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
-    end
-    if not profile then
-        return ctx.reply({ outcome = "refused", message = err, exit_code = 1, notes = ctx.notes })
+    local profile, units
+    if a.units then
+        local uerr
+        units, uerr = self:_resolve_units(ws, a.units)
+        if not units then return ctx.reply({ outcome = "refused", message = uerr, exit_code = 1, notes = ctx.notes }) end
+    else
+        local err, action
+        profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
+            -- (No `lw configure`: a configure's refusal names `lw build`.)
+            usage = ctx.op == "run" and "lw run <profile> <target>"
+                or ("lw " .. (ctx.op == "configure" and "build" or ctx.op) .. " <profile>") })
+        if action == "onboard" then
+            return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
+        end
+        if not profile then
+            return ctx.reply({ outcome = "refused", message = err, exit_code = 1, notes = ctx.notes })
+        end
     end
     -- A foreign kit's registered tests cannot run on this host (§18.6).
-    local foreign = ctx.op == "test" and build_run.foreign_batch_refusal(profile) or nil
+    local foreign = ctx.op == "test" and profile and build_run.foreign_batch_refusal(profile) or nil
     if foreign then
         return ctx.reply({ outcome = "refused", message = foreign, exit_code = 1, notes = ctx.notes })
     end
     -- A run of a profile built by a foreign kit is a device run: its device
     -- locks, staging and program liveness stay with the client (§19.15).
-    local platform = ctx.op == "run" and require("loomworks.run_prep").kit_platform(profile) or nil
+    local platform = ctx.op == "run" and profile and require("loomworks.run_prep").kit_platform(profile) or nil
     if platform then
         return ctx.reply({ outcome = "declined", reason = "profile '" .. profile.key .. "' builds for "
             .. platform .. "; device runs stay in this process" })
@@ -607,17 +696,17 @@ function Service:_accept(ctx)
     -- Nothing to clean: refused with the in-process line, before any lock.
     local clean_steps
     if ctx.op == "clean" then
-        clean_steps = build_run.plan_clean(profile)
+        clean_steps = build_run.plan_clean(profile, units)
         if not clean_steps then
-            return ctx.reply({ outcome = "refused", message = build_run.nothing_to_clean_message(profile),
-                exit_code = 1, notes = ctx.notes })
+            return ctx.reply({ outcome = "refused", message = build_run.nothing_to_clean_message(profile,
+                units and build_run.units_label(units) or nil), exit_code = 1, notes = ctx.notes })
         end
     end
     local task = self.tasks:create(ctx.conn)
     task.call = ctx.call
-    ctx.task, ctx.ws, ctx.profile = task, ws, profile
-    ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile.key,
-        pid = self.server.pid, notes = ctx.notes })
+    ctx.task, ctx.ws, ctx.profile, ctx.units = task, ws, profile, units
+    ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn),
+        profile_key = profile and profile.key or nil, pid = self.server.pid, notes = ctx.notes })
     local runner = require("loomworks.daemon.runner")
     local extra = (a.extra and #a.extra > 0) and a.extra or nil
     local args
@@ -625,19 +714,23 @@ function Service:_accept(ctx)
         args = { extra = extra, junit = a.junit }
     elseif ctx.op == "clean" then
         args = {}
+    elseif ctx.op == "configure" then
+        args = { reconfigure = a.reconfigure == true }
     elseif ctx.op == "run" then
         -- (The program's arguments: an empty list is still a list.)
         args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
             no_build = a.no_build == true, quiet = a.quiet == true, prefix = a.prefix == true }
     else
         args = { extra = extra, targets = (a.targets and #a.targets > 0) and a.targets or nil,
-            force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true }
+            force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true,
+            jobs = a.jobs }
     end
     local run = runner.run(self, {
-        op = ctx.op, task = task, ws = ws, profile = profile, env = ctx.env, command = ctx.command, args = args,
-        clean_steps = clean_steps,
+        op = ctx.op, task = task, ws = ws, profile = profile, units = units, env = ctx.env, command = ctx.command,
+        args = args, clean_steps = clean_steps,
     })
-    self.server:log("%s %s (task %s) accepted", ctx.op, profile.key, task.id)
+    self.server:log("%s %s (task %s) accepted", ctx.op, units and build_run.units_label(units) or profile.key,
+        task.id)
     if run and not run.finished then
         run.ctx = ctx
         self.runs[run] = true

@@ -163,6 +163,114 @@ describe("build_run", function()
             end)
         end)
 
+        -- `Build/1` additions (spec §19.15 "Editor scopes and configure").
+        describe("editor scopes (configure_only, jobs, units, { project, target })", function()
+            local App, Lib = { key = "App" }, { key = "Lib" }
+            local function unit(project, key, targets, compat)
+                return { _project = project, targets = targets, configure_reason = function() return nil end,
+                    config_key = function() return key end, build_dir = function() return "/b/" .. project.key end,
+                    tool_compat_error = function() return compat end }
+            end
+            local function profile()
+                local pps = {
+                    { _project = App, _config_unit = unit(App, "Debug", { AppRunner = {} }) },
+                    { _project = Lib, _config_unit = unit(Lib, "Debug", { docs = {} }) },
+                }
+                return { key = "dev", projects = function() return pps end }
+            end
+
+            it("forwards configure_only to the profile plan", function()
+                plan_returns({ { kind = "configure", cmd = { "cmake" } } })
+                local steps = build_run.plan({}, { configure_only = true })
+                assert.is_true(seen_opts.configure_only)
+                assert.same({ "cmake" }, steps[1].cmd)
+            end)
+
+            it("appends jobs to a copy of every build step's command, as the editor's -j option", function()
+                local cmd = { "cmake", "--build", "b" }
+                plan_returns({ { kind = "configure", cmd = { "cmake" } }, { kind = "build", name = "b", cmd = cmd } })
+                local steps = build_run.plan({}, { jobs = 1 })
+                assert.same({ "cmake" }, steps[1].cmd)
+                assert.same({ "cmake", "--build", "b", "--", "-j1" }, steps[2].cmd)
+                assert.same({ "cmake", "--build", "b" }, cmd)
+            end)
+
+            it("plans configuration units with their own tasks, never the profile plan", function()
+                local profile_planned = false
+                stub(overseer, "plan_profile_build", function() profile_planned = true; return {} end)
+                local seen_units, seen_o
+                stub(overseer, "plan_units_build", function(u, o)
+                    seen_units, seen_o = u, o
+                    return { { kind = "build", name = "b", cmd = { "x" } } }
+                end)
+                local u = unit(App, "Debug")
+                local steps = build_run.plan(nil, { units = { u }, configure_only = true, reconfigure = true })
+                assert.same({ u }, seen_units)
+                assert.is_true(seen_o.configure_only)
+                assert.is_true(seen_o.reconfigure)
+                assert.equals(1, #steps)
+                assert.is_false(profile_planned)
+            end)
+
+            it("refuses a unit whose tool cannot honor its configuration, before planning", function()
+                local planned = false
+                stub(overseer, "plan_units_build", function() planned = true; return {} end)
+                local steps, err = build_run.plan(nil, { units = { unit(App, "Debug", nil, "tool is x86") } })
+                assert.is_nil(steps)
+                assert.equals("tool is x86 — change the profile's tool to match the configuration", err)
+                assert.is_false(planned)
+            end)
+
+            it("resolves a { project, target } operand to that project only", function()
+                plan_returns({}, nil)
+                build_run.plan(profile(), { build_targets = { { project = "Lib", target = "AppRunner" } } })
+                assert.same({ [Lib] = { "AppRunner" } }, seen_opts.build_targets_for)
+            end)
+
+            it("refuses a { project, target } operand whose project the scope does not build", function()
+                local planned = false
+                stub(overseer, "plan_profile_build", function() planned = true; return {} end)
+                local steps, err = build_run.plan(profile(), { build_targets = { { project = "Nope", target = "x" } } })
+                assert.is_nil(steps)
+                assert.equals("target 'x' names project 'Nope', which profile 'dev' does not build", err)
+                assert.is_false(planned)
+            end)
+
+            it("resolves target operands against the units of a units scope", function()
+                local seen_o
+                stub(overseer, "plan_units_build", function(_, o) seen_o = o; return {} end)
+                local u = unit(Lib, "Debug", { docs = {} })
+                build_run.plan(nil, { units = { u }, build_targets = { "docs", { project = "Lib", target = "x" } } })
+                assert.same({ [Lib] = { "docs", "x" } }, seen_o.build_targets_for)
+                local steps, err = build_run.plan(nil, { units = { u },
+                    build_targets = { { project = "App", target = "AppRunner" } } })
+                assert.is_nil(steps)
+                assert.equals("target 'AppRunner' names project 'App', which Lib/Debug does not build", err)
+            end)
+
+            it("names units, their build dirs, and their nothing-to-do refusals", function()
+                local a, l = unit(App, "Debug"), unit(Lib, "Release")
+                assert.equals("App/Debug, Lib/Release", build_run.units_label({ a, l }))
+                assert.same({ "/b/App", "/b/Lib" }, build_run.unit_build_dirs({ a, l, a }))
+                assert.equals("nothing to build for App/Debug — no buildable projects (unavailable module or "
+                    .. "unresolved tool?)", build_run.nothing_to_build_message(nil, "App/Debug"))
+                assert.equals("nothing to clean for profile 'dev' — no configured build directories.",
+                    build_run.nothing_to_clean_message({ key = "dev" }))
+                assert.equals("nothing to clean for App/Debug — no configured build directories.",
+                    build_run.nothing_to_clean_message(nil, "App/Debug"))
+            end)
+
+            it("plans a units clean with the units' clean tasks", function()
+                local seen
+                stub(overseer, "plan_units_clean", function(u) seen = u; return { { kind = "clean" } } end)
+                local a = unit(App, "Debug")
+                assert.same({ { kind = "clean" } }, build_run.plan_clean(nil, { a }))
+                assert.same({ a }, seen)
+                stub(overseer, "plan_units_clean", function() return {} end)
+                assert.is_nil(build_run.plan_clean(nil, { a }))
+            end)
+        end)
+
         it("refuses forwarded args for a batch-file build", function()
             plan_returns({ { kind = "build", name = "b", cmd = { "cmd", "/c", "!LOOMWORKS_VCVARS_BAT!" } } })
             local steps, err = build_run.plan({}, { extra_args = { "-k", "0" } })

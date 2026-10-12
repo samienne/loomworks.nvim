@@ -1812,8 +1812,9 @@ methods ("Tasks of interface methods" below: `Build/1`, `Tests/1.run`,
 them over transport 11; `loomworks.Tasks/1` observation signals, `list` and
 `cancel` are implemented, step 5g.2 part A. The editor's operations as calls
 ("Editor scopes and configure", "Debug", the editor in "Task ownership" and
-"Not routed" below; §19.16 "Editor operations"): step 5k, specified (part 0),
-plan.*
+"Not routed" below; §19.16 "Editor operations"): step 5k, specified (part 0);
+the daemon side of "Editor scopes and configure" is implemented (part B1),
+the rest plan.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -2121,7 +2122,10 @@ stops meanwhile asks it to stop between entries.
 The reset writes the cache exactly when the in-process reset does, and its
 write-back's `model_change` precedes `done` (§19.16, End).
 
-**Editor scopes and configure.** *(Step 5k, plan; part B1.)* `Build/1` grows
+**Editor scopes and configure.** *(Step 5k part B1: implemented on the
+daemon side — `daemon/core_interfaces.lua`, `daemon/service.lua`
+`_resolve_units`, `daemon/runner.lua`, `build_run.plan` /
+`overseer.plan_units_build`; the editor calls them from part C1.)* `Build/1` grows
 additively for the editor's actions (§19.16 "Editor operations"); its
 interfaces are still drafts, so this is no new version (§19.20 "Schemas and
 conformance"). The CLI's requests are unchanged.
@@ -2152,14 +2156,22 @@ conformance"). The CLI's requests are unchanged.
   the same steps, locks, gates and lines as for a profile, restricted to
   them. Such a task's `meta.profile` is absent and `meta.units` lists the
   units; an observer resolves them as for `reset --all` (§19.16 "Running
-  state"). `<scope>` in the lines above is the profile's name or the units'
-  `<project>/<configuration>` names.
+  state"). `<scope>` in the lines above is `profile: <name>` (as in `building
+  profile: <name>`) or the units' `<project>/<configuration>` names,
+  comma-separated, and in the OK lines the profile's name or those names; a
+  unit's refusal reads `no configuration unit <project>/<configuration>
+  (unknown project or configuration)`, or for an id the stale-reference
+  refusal of a profile id. A scope with no configure step to run (a module
+  without one) prints `nothing to configure for <scope>` and ends 0, as the
+  editor's configure action does nothing for it.
 - **`jobs`** on `build` — an integer ≥ 1: the build tool's parallelism for
   this build only (the editor's serial `-j1` build), passed to the module as
   the in-process build passes its parallel-jobs option.
 - **`targets`** items may be `{ project, target }` besides a string: that
   target of that project only. A string keeps its meaning (`--target`,
-  §16.4).
+  §16.4). A project the scope does not build ends the task before any step
+  with `target '<t>' names project '<p>', which <scope> does not build`
+  (exit 1), as an ambiguous `--target` does.
 
 **Confirmation.** A daemon never prompts. An operation whose in-process form
 asks the user before acting (a confirmation, a picker) either is `declined`
@@ -3494,7 +3506,7 @@ runtime is deferred until that module is actively developed.
        host-neutral module, and a guard ratchet on the editor's operation
        call sites; 0 — spec *(done once merged)*; B1 — daemon side: `Build/1`
        `configure`, `units`, `jobs` and project-qualified targets, with
-       schemas and transcripts on the `shell` fixture; B2 — daemon side:
+       schemas and transcripts on the `shell` fixture *(done once merged)*; B2 — daemon side:
        `Launch/1.prepare_debug` with `Common/1` `DebugSpec`, `build_scope` on
        both preparations, and `DebugConfig/1` on `/debug`, with schemas and
        transcripts; C1 — editor side: the call API with owned tasks, routing

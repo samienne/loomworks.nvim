@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Build",
   "version": 1,
-  "description": "Object /build (spec 19.15, 19.20): build, clean and reset as task-streamed methods; references by key and by id; the outcomes as domain results.",
+  "description": "Object /build (spec 19.15, 19.20): build, configure, clean and reset as task-streamed methods; a profile or configuration units as the scope, jobs, project-qualified targets; references by key and by id; the outcomes as domain results.",
   "cases": [
     {
       "name": "build is accepted; its start meta names the method and its done carries the task result",
@@ -106,6 +106,86 @@
         { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } },
         { "send": { "kind": "call", "req_id": 6, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "reset", "args": { "all": true, "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "declined", "reason": { "$type": "string" } } } }
+      ]
+    },
+    {
+      "name": "configure is accepted; its start meta names the method and kind configure; it ends with the task result",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "configure", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task", "$type": "string" }, "profile_key": "dev", "pid": { "$var": "welcome.header.pid" } } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "configure", "kind": "configure", "profile": "dev",
+              "units": [ { "project": "app", "configuration": "Debug" } ], "origin": "cli" }
+        } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0, "result": { "$exact": { "exit_code": 0 } } }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "configuration units by id and by key: build (with jobs) and configure them; meta.profile and profile_key absent",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "index": { "config_units": [ { "project": "app", "configuration": "Debug", "id": { "$bind": "unit_id", "$type": "string" } } ] } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "units": [ { "id": { "$var": "unit_id" } } ], "jobs": 1 }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "build" }, "profile_key": { "$absent": true } } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "build" }, "phase": "start",
+            "meta": { "method": "build", "kind": "build", "name": "app/Debug", "profile": { "$absent": true },
+              "units": [ { "project": "app", "configuration": "Debug" } ] }
+        } },
+        { "expect": { "kind": "task", "task_id": { "$var": "build" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0 } }, "timeout_ms": 120000 },
+        { "send": { "kind": "call", "req_id": 3, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "configure", "args": { "units": [ { "project": "app", "configuration": "Debug" } ], "reconfigure": true }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "configure" }, "profile_key": { "$absent": true } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "configure" }, "phase": "start", "meta": { "method": "configure", "kind": "configure", "profile": { "$absent": true } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "configure" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0 } }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "a { project, target } operand selects that project's target; a project the scope does not build ends the task",
+      "description": "The shell module takes no build targets, so the qualified operand reaching app's build step ends the task with the in-process refusal; an operand naming a project outside the scope fails before any step.",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "targets": [ { "project": "app", "target": "x" } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "one" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "one" }, "phase": "done", "exit_code": 1, "result": { "exit_code": 1, "error": { "$pattern": "^app.*does not support \\-\\-target" } } }, "timeout_ms": 120000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "targets": [ "app", { "project": "nope", "target": "x" } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "two" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "two" }, "phase": "done", "exit_code": 1, "result": { "exit_code": 1, "error": "target 'x' names project 'nope', which profile 'dev' does not build" } }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "units with a profile, an empty units list and jobs below 1 are invalid_args; an unknown unit and nothing to clean are refused",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "units": [ { "project": "app", "configuration": "Debug" } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 1, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "configure", "args": { "units": [] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "jobs": 0 }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "clean", "args": { "units": [ { "project": "app" } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "configure", "args": { "units": [ { "project": "app", "configuration": "Release" } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "refused", "message": "no configuration unit app/Release (unknown project or configuration)", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "units": [ { "id": "1.1" } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 7, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "clean", "args": { "units": [ { "project": "app", "configuration": "Debug" } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 7, "result": { "outcome": "refused", "message": "nothing to clean for app/Debug — no configured build directories.", "exit_code": 1 } } }
       ]
     }
   ]

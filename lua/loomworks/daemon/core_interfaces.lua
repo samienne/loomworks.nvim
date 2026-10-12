@@ -4,7 +4,7 @@
 ---   /workspace   loomworks.Workspace/1    header (changed, header_changed)
 ---   /tasks       loomworks.Tasks/1        list, cancel (started, ended)
 ---   /internal    lw.internal.Snapshot/1   get (same_build)
----   /build       loomworks.Build/1        build T, clean T, reset T
+---   /build       loomworks.Build/1        build T, configure T, clean T, reset T
 ---   /tests       loomworks.Tests/1        run T
 ---   /launch      loomworks.Launch/1       prepare_run T
 ---   /toolchains  loomworks.Toolchains/1   list
@@ -216,13 +216,24 @@ end
 
 --- The handler of a task-streamed operation method.
 --- @param service loomworks.daemon.BuildService
---- @param op "build"|"test"|"run"|"clean"|"reset"
+--- `units` (Build/1 build, configure, clean; spec §19.15 "Editor scopes and
+--- configure") is a non-empty list, exclusive with `profile`: otherwise
+--- `invalid_args`, before anything is resolved.
+--- @param op "build"|"test"|"run"|"clean"|"reset"|"configure"
 --- @param where table
 --- @param method string
 --- @return function
 local function operation(service, op, where, method)
     local interfaces = require("loomworks.daemon.interfaces")
     return function(ctx, args)
+        if args.units ~= nil then
+            if #args.units == 0 then
+                return nil, envelope.err(envelope.ERR.invalid_args, "/units: an empty list (name a unit or omit units)")
+            end
+            if args.profile ~= nil then
+                return nil, envelope.err(envelope.ERR.invalid_args, "/units: not with profile (one scope)")
+            end
+        end
         service:_on_operation(op, ctx.conn, { args = M.operation_args(args), interactive = args.interactive == true,
             command = args.command, env = ctx.env }, function(fields) ctx.reply(fields) end,
             M.task_call(ctx.registry, where, method))
@@ -236,6 +247,7 @@ end
 function M.build_impl(service)
     return { methods = {
         build = operation(service, "build", M.BUILD, "build"),
+        configure = operation(service, "configure", M.BUILD, "configure"),
         clean = operation(service, "clean", M.BUILD, "clean"),
         reset = operation(service, "reset", M.BUILD, "reset"),
     } }

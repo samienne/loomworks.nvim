@@ -182,10 +182,26 @@ local function refuse_undetected(err)
     return nil
 end
 
+--- A build command with the parallel-jobs option (the editor's serial `-j1`
+--- build; `Build/1.build` `jobs`, spec §19.15) appended: `-- -j<jobs>`, the
+--- build tool's own option after the driver's. Appends to `cmd` in place.
+--- @param cmd string[]
+--- @param jobs integer|string
+--- @return string[] cmd
+function M.append_parallel_jobs(cmd, jobs)
+    cmd[#cmd + 1] = "--"
+    cmd[#cmd + 1] = "-j" .. tostring(jobs)
+    return cmd
+end
+
 --- Collect task definitions for a single project configuration, grouped by action.
 --- @param unit loomworks.ConfigUnit
+--- @param opts? { force_full_reconfigure?: boolean, build_args?: string[], build_targets?: string[] }
+---   the caller's request forwarded to the module context (§8.1), as for a
+---   profile (collect_profile_tasks); the editor's unit actions pass none
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
-local function collect_configuration_tasks(unit)
+local function collect_configuration_tasks(unit, opts)
+    opts = opts or {}
     local modules = require("loomworks.modules")
 
     local project = unit._project
@@ -233,6 +249,9 @@ local function collect_configuration_tasks(unit)
         recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
         recorded_module_info = unit.module_info,
         recorded_options = unit._cached_options,
+        force_full_reconfigure = opts.force_full_reconfigure or nil,
+        build_args = opts.build_args,
+        build_targets = opts.build_targets,
     }
 
     local pt = mod.progress_parser
@@ -1133,43 +1152,13 @@ function M._unit_tests_self_rebuild(unit)
     return any_runner
 end
 
---- Build an ordered, overseer-free execution plan for a profile "build".
---- Mirrors run_profile_action("build") sequencing: configure the units that
---- need it (unconfigured / failed / stale), then build. Each step carries a
---- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
---- requires no overseer.nvim and launches nothing.
---- @param profile loomworks.Profile
---- @param opts? table { for_test?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
----   for_test drops the build step of any unit whose native test runner
----   self-rebuilds — configuration is still planned for every unit; reconfigure
----   forces a FULL reconfigure of every unit (`lw build --reconfigure`, §16.4);
----   build_args / build_targets go to each module's build task context (§8.1),
----   and each build step reports whether its module applied them
----   (`applied_build_args` / `applied_build_targets`).
---- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, applied_build_args, applied_build_targets, cmd, cwd, env }
---- @return string|nil err a task builder that raised (the plan is refused, not partial)
-function M.plan_profile_build(profile, opts)
-    opts = opts or {}
-    local all_tasks = collect_profile_tasks(profile, {
-        force_full_reconfigure = opts.reconfigure or nil,
-        build_args = opts.build_args,
-        build_targets = opts.build_targets,
-        build_targets_for = opts.build_targets_for,
-    })
-    if not all_tasks then return nil end
-    local needs_configure = filter_unconfigured_tasks(all_tasks, opts.reconfigure)
-
-    local build_tasks = all_tasks.build
-    if opts.for_test then
-        build_tasks = {}
-        for _, td in ipairs(all_tasks.build or {}) do
-            local unit = td.loomworks and td.loomworks.unit
-            if not (unit and M._unit_tests_self_rebuild(unit)) then
-                build_tasks[#build_tasks + 1] = td
-            end
-        end
-    end
-
+--- The ordered steps of collected configure and build task definitions: each
+--- task's builder run now (a builder that raises refuses the plan), every step
+--- a ready-to-spawn `{cmd, cwd, env}` with its loomworks metadata.
+--- @param configure_tasks table[]
+--- @param build_tasks table[]
+--- @return table[] steps, string|nil err
+local function plan_steps(configure_tasks, build_tasks)
     local steps = {}
     -- A builder that raises (e.g. a refused unsafe vcvarsall / npm argument)
     -- must fail the plan, not silently drop the step (the build would then
@@ -1223,8 +1212,104 @@ function M.plan_profile_build(profile, opts)
             end
         end
     end
-    add(needs_configure, "configure")
+    add(configure_tasks, "configure")
     add(build_tasks, "build")
+    return steps, plan_err
+end
+
+--- The configure tasks a plan runs: with `configure_only` (an explicit
+--- configure, `Build/1.configure`, spec §19.15) every one — also a unit
+--- already configured, its `configure_reason` set when it has one — else the
+--- units that need it (filter_unconfigured_tasks).
+--- @param all_tasks table { configure: table[], build: table[] }
+--- @param opts table { configure_only?: boolean, reconfigure?: boolean }
+--- @return table[]
+local function planned_configures(all_tasks, opts)
+    if not opts.configure_only then return filter_unconfigured_tasks(all_tasks, opts.reconfigure) end
+    for _, td in ipairs(all_tasks.configure or {}) do
+        local lw_meta = td.loomworks
+        if lw_meta and lw_meta.unit then
+            lw_meta.configure_reason = lw_meta.unit:configure_reason(opts.reconfigure, lw_meta.profile,
+                lw_meta.configure_state_orphan)
+        end
+    end
+    return all_tasks.configure or {}
+end
+
+--- Build an ordered, overseer-free execution plan for a profile "build".
+--- Mirrors run_profile_action("build") sequencing: configure the units that
+--- need it (unconfigured / failed / stale), then build. Each step carries a
+--- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
+--- requires no overseer.nvim and launches nothing.
+--- @param profile loomworks.Profile
+--- @param opts? table { for_test?: boolean, configure_only?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
+---   for_test drops the build step of any unit whose native test runner
+---   self-rebuilds — configuration is still planned for every unit;
+---   configure_only plans the configure step of every unit and no build
+---   (`Build/1.configure`, §19.15); reconfigure forces a FULL reconfigure of
+---   every unit (`lw build --reconfigure`, §16.4);
+---   build_args / build_targets go to each module's build task context (§8.1),
+---   and each build step reports whether its module applied them
+---   (`applied_build_args` / `applied_build_targets`).
+--- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, applied_build_args, applied_build_targets, cmd, cwd, env }
+--- @return string|nil err a task builder that raised (the plan is refused, not partial)
+function M.plan_profile_build(profile, opts)
+    opts = opts or {}
+    local all_tasks = collect_profile_tasks(profile, {
+        force_full_reconfigure = opts.reconfigure or nil,
+        build_args = opts.build_args,
+        build_targets = opts.build_targets,
+        build_targets_for = opts.build_targets_for,
+    })
+    if not all_tasks then return nil end
+    local needs_configure = planned_configures(all_tasks, opts)
+
+    local build_tasks = all_tasks.build
+    if opts.configure_only then
+        build_tasks = {}
+    elseif opts.for_test then
+        build_tasks = {}
+        for _, td in ipairs(all_tasks.build or {}) do
+            local unit = td.loomworks and td.loomworks.unit
+            if not (unit and M._unit_tests_self_rebuild(unit)) then
+                build_tasks[#build_tasks + 1] = td
+            end
+        end
+    end
+
+    local steps, plan_err = plan_steps(needs_configure, build_tasks)
+    if plan_err then return nil, plan_err end
+    return steps
+end
+
+--- The plan of `plan_profile_build` for configuration units instead of a
+--- profile (`Build/1` `units`, spec §19.15): each unit's tasks collected as
+--- the editor's unit actions collect them (run_configuration_action: the
+--- tool its unit records, the active profile's context), then the configures
+--- of every unit before the builds, in the order given.
+--- @param units loomworks.ConfigUnit[]
+--- @param opts? table { configure_only?: boolean, reconfigure?: boolean, build_args?: string[], build_targets_for?: table<loomworks.Project, string[]> }
+---   as for plan_profile_build; build_targets_for (the resolved targets)
+---   skips every unit whose project it does not name
+--- @return table[]|nil steps, string|nil err
+function M.plan_units_build(units, opts)
+    opts = opts or {}
+    local all_tasks = { configure = {}, build = {} }
+    for _, unit in ipairs(units) do
+        local project = unit._project
+        if not (opts.build_targets_for and not (project and opts.build_targets_for[project])) then
+            local by_action = collect_configuration_tasks(unit, {
+                force_full_reconfigure = opts.reconfigure or nil,
+                build_args = opts.build_args,
+                build_targets = opts.build_targets_for and opts.build_targets_for[project] or nil,
+            })
+            if not by_action then return nil end
+            vim.list_extend(all_tasks.configure, by_action.configure or {})
+            vim.list_extend(all_tasks.build, by_action.build or {})
+        end
+    end
+    local needs_configure = planned_configures(all_tasks, opts)
+    local steps, plan_err = plan_steps(needs_configure, opts.configure_only and {} or all_tasks.build)
     if plan_err then return nil, plan_err end
     return steps
 end
@@ -1240,7 +1325,33 @@ end
 ---   wipe (run it with `Workspace:clean_wipe_build_dir(units, build_dir)`,
 ---   passing every wipe step's unit for the same build_dir as one batch)
 function M.plan_profile_clean(profile)
-    local tasks = collect_profile_clean_tasks(profile)
+    return M._clean_steps(collect_profile_clean_tasks(profile))
+end
+
+--- The clean plan of `plan_profile_clean` for configuration units instead of
+--- a profile (`Build/1.clean` `units`, spec §19.15): each unit's clean tasks
+--- collected as the editor's unit clean collects them
+--- (run_configuration_clean: the tool its unit records), in the order given.
+--- @param units loomworks.ConfigUnit[]
+--- @return table[]|nil steps as plan_profile_clean's
+function M.plan_units_clean(units)
+    local tasks = {}
+    for _, unit in ipairs(units) do
+        for _, task_def in ipairs(collect_configuration_clean_tasks(unit) or {}) do
+            -- The unit the task cleans, as for a profile (collect_profile_clean_tasks):
+            -- the headless runner records a module clean against it.
+            task_def.loomworks = task_def.loomworks or {}
+            if task_def.loomworks.unit == nil then task_def.loomworks.unit = unit end
+            tasks[#tasks + 1] = task_def
+        end
+    end
+    return M._clean_steps(#tasks > 0 and tasks or nil)
+end
+
+--- The steps of collected clean task definitions (plan_profile_clean).
+--- @param tasks table[]|nil
+--- @return table[]|nil steps
+function M._clean_steps(tasks)
     if not tasks then return nil end
     local uv = vim.uv or vim.loop
     local steps = {}
@@ -1487,9 +1598,7 @@ function M.run_configuration_action(unit, action, on_complete, opts)
                     local orig_builder = task_def.builder
                     task_def.builder = function()
                         local result = orig_builder()
-                        result.cmd = result.cmd or {}
-                        result.cmd[#result.cmd + 1] = "--"
-                        result.cmd[#result.cmd + 1] = "-j" .. jobs
+                        result.cmd = M.append_parallel_jobs(result.cmd or {}, jobs)
                         return result
                     end
                 end
@@ -1998,9 +2107,7 @@ function M.run_profile_action(profile, action, opts)
                 local orig_builder = task_def.builder
                 task_def.builder = function()
                     local result = orig_builder()
-                    result.cmd = result.cmd or {}
-                    result.cmd[#result.cmd + 1] = "--"
-                    result.cmd[#result.cmd + 1] = "-j" .. jobs
+                    result.cmd = M.append_parallel_jobs(result.cmd or {}, jobs)
                     return result
                 end
             end
