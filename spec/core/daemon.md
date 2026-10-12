@@ -3264,11 +3264,11 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
     status page's Profiles and Tasks sections (spec/ui.md §1.5, §1.9), and
     in the status line. It is neither cancelled nor restarted from the editor
     (§19.15). Its only difference is an **origin marker** naming who started
-    it, from `meta.origin` (§19.15). *(Until step 5k:)* it is not added to the
-    task runner's task list. *(From step 5k, plan:)* it is listed there
-    read-only, and a task the editor itself started through a call is shown
-    the same way without an origin marker, cancelled and restarted from the
-    editor ("Tasks in the task runner" above).
+    it, from `meta.origin` (§19.15). *(From step 5k:)* it is also listed
+    read-only in the task runner's task list, and a task the editor itself
+    started through a call is shown the same way without an origin marker,
+    cancelled and restarted from the editor ("Tasks in the task runner"
+    above).
 - **Teardown.** Unloading or swapping the workspace stops its observer: the
   timers stop, the connection closes, remote tasks are cleared. The daemon
   keeps running (§19.11); from step 5k the close cancels the tasks the
@@ -3550,7 +3550,8 @@ runtime is deferred until that module is actively developed.
        counting the editor's own tasks (needs B1) — delivered as C1a (the
        call API, routing, availability, cancellation, the one progress
        entry, retirement) and C1b (the task-runner bridge: owned and
-       read-only observed tasks in overseer, `Open overseer` on their rows);
+       read-only observed tasks in overseer, `Open overseer` on their rows)
+       *(C1a and C1b done once merged)*;
        C2 — editor side: run and
        debug through `prepare_run` / `prepare_debug` for non-device targets,
        the module-target debug unified with run (§8.9.6), the debug adapters

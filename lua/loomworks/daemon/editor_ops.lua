@@ -265,6 +265,35 @@ function M.clean(scope, k)
     return true
 end
 
+--- Send an owned task's call again (its task-runner restart, §19.16 "Tasks in
+--- the task runner"; loomworks.daemon.task_runner): the same method and
+--- arguments — a build's `force` as answered the first time — after pending
+--- deletions, as `M.run`. `h.accepted(task_id)` once the daemon accepted it
+--- (its `start` then binds to `h.runner`); `h.failed(why)` when it does not
+--- run: not carried now, declined, refused, or failed. A restart never falls
+--- back to in-process: the task-runner task fails with the reason.
+--- @param obs loomworks.daemon.Observer
+--- @param call { method: string, args: table, units: loomworks.ConfigUnit[]|nil }
+--- @param h { runner: loomworks.daemon.RunnerStrategy, accepted: fun(id: any), failed: fun(why: string) }
+function M.rerun(obs, call, h)
+    local function go()
+        if not (obs and obs.state ~= "stopped" and obs:can_call(call.method)) then
+            return h.failed("the workspace daemon cannot run it now")
+        end
+        obs:start_owned(call.method, call.args, {
+            units = call.units,
+            runner = h.runner,
+            on_reply = function(r)
+                if r.outcome == "accepted" then return h.accepted(r.task_id) end
+                h.failed(tostring(r.message or r.reason or r.outcome))
+            end,
+            on_done = function() end,
+        })
+    end
+    local lw = require("loomworks")
+    if lw.has_pending_deletions() then lw.after_deletions(go) else go() end
+end
+
 --- Cancel a running task the editor owns (the status page's Cancel):
 --- `Tasks/1.cancel`. False when it is not the editor's (another client's
 --- task is cancelled there, §19.15).

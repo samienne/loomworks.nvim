@@ -97,6 +97,7 @@ M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 --- @field daemon { pid: integer, start_time: string|nil, lw_version: string|nil, exe: string|nil }|nil the observed daemon (`exe`: the binary its handle names)
 --- @field seq integer last model_change seq
 --- @field mode "v0"|"interfaces"|nil how the connected daemon is observed: protocol-10 broadcasts, or subscriptions (step 5g.3)
+--- @field runner_note string|nil the task runner cannot host daemon tasks (step 5k C1b, §19.16 "Tasks in the task runner")
 --- @field feature_note string|nil the per-feature note of a missing or refused interface (§19.16 "Interface client")
 --- @field _feat table<string, string>|nil per feature, on this connection: "pending", "subscribed", "refused" (retried once), "gave_up" or "missing" (offered at other versions only)
 --- @field _why table<string, string>|nil per feature: why it is not subscribed (its note)
@@ -1306,6 +1307,8 @@ function Observer:_connected_note()
     end
     -- A method an older daemon lacks (step 5k): its operations run in-process.
     for _, n in ipairs(self._method_notes or {}) do notes[#notes + 1] = n end
+    -- The task runner cannot list daemon tasks (step 5k C1b, §19.16).
+    if self.runner_note then notes[#notes + 1] = self.runner_note end
     self.feature_note = #notes > 0 and table.concat(notes, "; ") or nil
     local note = "observing the workspace daemon (pid " .. tostring(d.pid) .. ")"
     if self.feature_note then note = note .. " — " .. self.feature_note end
@@ -1536,9 +1539,12 @@ function Observer:_join_late(conn)
 end
 
 --- Track a running remote task and put its running state on the editor's
---- objects.
+--- objects; it becomes one task in the editor's task runner (§19.16 "Tasks
+--- in the task runner", loomworks.daemon.task_runner). `runner`: the
+--- task-runner task of an owned task's restart, which this task continues.
 --- @param task loomworks.RemoteTask
-function Observer:_add(task)
+--- @param runner? loomworks.daemon.RunnerStrategy
+function Observer:_add(task, runner)
     self._tasks[task.id] = task
     self._order[#self._order + 1] = task.id
     table.sort(self._order, function(a, b)
@@ -1548,6 +1554,8 @@ function Observer:_add(task)
     end)
     task:attach_units()
     self:_emit("daemon_task_started", { task = task })
+    local ok, err = pcall(require("loomworks.daemon.task_runner").add, self, task, runner)
+    if not ok then vim.notify("loomworks: daemon task in the task runner: " .. tostring(err), vim.log.levels.WARN) end
 end
 
 function Observer:_start_keepalive()
@@ -1678,9 +1686,10 @@ function Observer:_on_task(msg)
         local owned = self._owned[id]
         if owned then
             task.owned = true
+            task.cancelling = owned.cancelling
             owned.task = task
         end
-        return self:_add(task)
+        return self:_add(task, owned and owned.runner)
     end
     if not task then
         -- An owned task that ended before its `start` arrived still ends its
@@ -1820,6 +1829,9 @@ end
 
 --- @class loomworks.daemon.OwnedCall
 --- @field method string the Build/1 method
+--- @field args table the call's arguments (an overseer restart sends them again, step 5k C1b)
+--- @field runner loomworks.daemon.RunnerStrategy|nil the task-runner task of a restart, which its task continues
+--- @field cancelling boolean|nil the editor asked to cancel it
 --- @field units loomworks.ConfigUnit[]|nil the call's units, before its `start` names them
 --- @field task loomworks.RemoteTask|nil once its `start` arrived
 --- @field on_done fun(task: loomworks.RemoteTask|nil, reason: string|nil)
@@ -1843,7 +1855,9 @@ end
 --- @param args table the call's arguments (§19.15)
 --- `h.units`: the call's configuration units (a clean pre-empts the task by
 --- them before its `start` arrives).
---- @param h { units?: loomworks.ConfigUnit[], on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil) }
+--- `h.runner`: the task-runner task an overseer restart continues (step 5k
+--- C1b): the task's `start` binds to it instead of a new one.
+--- @param h { units?: loomworks.ConfigUnit[], runner?: loomworks.daemon.RunnerStrategy, on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil) }
 function Observer:start_owned(method, args, h)
     local conn = self.conn
     self:_icall(method, args, function(result, err)
@@ -1852,7 +1866,8 @@ function Observer:start_owned(method, args, h)
         local id = not err and type(result) == "table" and result.outcome == "accepted" and result.task_id or nil
         local registered = false
         if id ~= nil and self.conn == conn then
-            self._owned[id] = { method = method, units = h.units, on_done = h.on_done, waiters = {} }
+            self._owned[id] = { method = method, args = args, units = h.units, runner = h.runner,
+                on_done = h.on_done, waiters = {} }
             registered = true
         end
         vim.schedule(function()
@@ -1960,6 +1975,10 @@ function Observer:cancel_owned_id(id, on_ended)
     local o = self._owned[id]
     if not o then return on_ended(false, "not running") end
     local name = o.task and o.task.name or tostring(id)
+    -- Its end is a cancellation the editor asked for (its task-runner task
+    -- ends CANCELED, loomworks.daemon.task_runner).
+    o.cancelling = true
+    if o.task then o.task.cancelling = true end
     o.waiters[#o.waiters + 1] = function() on_ended(true) end
     self:_icall("cancel", { task_id = id }, function(_, err)
         if not err then return end

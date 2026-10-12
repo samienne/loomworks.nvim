@@ -52,6 +52,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   carry an operation (not connected, an older daemon) it runs in Neovim as
   before, its progress title saying "(in-process)". In-process mode is
   unchanged. (#195)
+- Experimental daemon: in daemon mode the workspace daemon's tasks are listed
+  in overseer. A build the editor started there is one overseer task (a
+  profile build is one entry whose output has a `==> [build] <project>`
+  section per project; in-process it is one entry per project); stopping it
+  in overseer cancels it in the daemon, restarting it runs it there again. A
+  build started by `lw` or another editor is listed read-only as
+  `[lw] build <profile>`: stop and restart say where to cancel it. The status
+  page's `Open overseer` works on these rows. When overseer cannot list them
+  they stay on the status page only, with a note on the Runtime line. (#196)
 - Experimental daemon: the workspace daemon can prepare a debug launch
   (`Launch/1.prepare_debug`: build, deploy and resolve the program exactly as
   `lw run` would, plus the debug languages and their adapters) and serves

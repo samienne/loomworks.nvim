@@ -38,6 +38,8 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field origin string|nil who started it: "cli" or "editor" (`meta.origin`, protocol 7)
 --- @field owned boolean|nil the editor itself started it through a call (step 5k, §19.15 "The editor as
 ---   owner"): no origin marker, cancelled from the editor
+--- @field cancelling boolean|nil the editor asked to cancel it (an owned task; its task-runner task ends CANCELED)
+--- @field _runner loomworks.daemon.RunnerStrategy|nil its task in the editor's task runner (step 5k C1b)
 --- @field profile loomworks.Profile|nil the resolved profile
 --- @field profiles loomworks.Profile[] the profiles that count it as their active operation (the resolved
 ---   profile; for a workspace-wide task, every profile with one of its resolved units)
