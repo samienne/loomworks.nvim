@@ -278,23 +278,52 @@ end
 --- (`launch`, or `device = true` for a foreign artifact; `debug`) once the
 --- preparation ended with exit 0 — the caller then starts the program — or
 --- `k.reject(message)` (no program is started), or `k.fallback()`.
+--- The second return value cancels the preparation (a stop, or a second
+--- launch replacing it, while it runs): nothing more reaches `k`, so no
+--- program is started — a call not yet sent is never sent, one not yet
+--- answered is cancelled once accepted, an accepted one at once
+--- (`Tasks/1.cancel` of the owned task, Observer:cancel_owned_id).
 --- @param mode "launch"|"debug"
 --- @param target loomworks.LaunchTarget
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil), fallback: fun() }
 --- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil preparation (routed only)
 function M.prepare(mode, target, k)
     local method = mode == "debug" and "prepare_debug" or "prepare_run"
     local obs = M.carrier(method, M.scope_workspace({ profile = target._profile }))
     if not obs then return false end
     local verb = VERB[method]
+    --- @class loomworks.daemon.Preparation
+    --- @field cancelled boolean|nil cancelled: nothing more reaches its continuation
+    --- @field task_id any|nil its owned task, once accepted
+    --- @field cancel fun(self: loomworks.daemon.Preparation)
+    local p = {}
+    function p.cancel(self)
+        if self.cancelled then return end
+        self.cancelled = true
+        if self.task_id ~= nil then obs:cancel_owned_id(self.task_id) end
+    end
+    -- Every outcome is dropped once cancelled (a refusal or failure is not
+    -- notified either: the user stopped it).
+    local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
+    local kk = { resolve = live(k.resolve), reject = live(k.reject), fallback = live(k.fallback) }
+    local reply = on_reply(verb, kk)
     local function send()
-        if not obs:can_call(method) then return k.fallback() end
+        if p.cancelled then return end
+        if not obs:can_call(method) then return kk.fallback() end
         obs:start_owned(method, M.launch_args(target), {
-            on_reply = on_reply(verb, k),
+            on_reply = function(r)
+                if r.outcome == "accepted" then
+                    p.task_id = r.task_id
+                    if p.cancelled then obs:cancel_owned_id(r.task_id) end
+                end
+                if p.cancelled then return end
+                reply(r)
+            end,
             on_done = function(task, reason, done)
                 local err = failure(verb, task, reason)
-                if err then return k.reject(err) end
-                k.resolve(type(done) == "table" and done or {})
+                if err then return kk.reject(err) end
+                kk.resolve(type(done) == "table" and done or {})
             end,
         })
     end
@@ -305,7 +334,7 @@ function M.prepare(mode, target, k)
     else
         send()
     end
-    return true
+    return true, p
 end
 
 --- A module clean through the daemon (Profile:clean / ConfigUnit:clean, via
@@ -448,6 +477,35 @@ function M.debug_adapters(ws)
     local records = obs and obs.state ~= "stopped" and obs:debug_adapters() or nil
     if records then return records end
     return require("loomworks.debug_config").adapter_records(ws)
+end
+
+--- The language → adapter mapping a debug launch the daemon prepares is
+--- checked against before the call (§8.9.6, §19.16 "Editor operations"):
+--- the daemon's own (`DebugConfig/1.adapters`, the cached read, else a read
+--- now) while it is carried — the in-process copy lags a `set_adapter` made
+--- through the daemon until its file change arrives. `cb(resolve)` on the
+--- main loop, `resolve(language)` → adapter|nil; `cb(nil)` — the in-process
+--- mapping — when DebugConfig/1 is not carried, or its read failed or was
+--- declined. A language the daemon's records do not name resolves
+--- in-process.
+--- @param target loomworks.LaunchTarget the launch (its profile's workspace)
+--- @param cb fun(resolve: (fun(language: string): string|nil)|nil)
+function M.debug_adapter_resolver(target, cb)
+    local ws = M.scope_workspace({ profile = target._profile })
+    local obs = ws and require("loomworks.daemon.observer").of(ws)
+    if not (obs and obs.state ~= "stopped" and obs:can_call("adapters")) then return cb(nil) end
+    obs:with_debug_adapters(function(records)
+        if not records then return cb(nil) end
+        local by = {}
+        for _, r in ipairs(records) do
+            if type(r) == "table" and type(r.language) == "string" then by[r.language] = r end
+        end
+        cb(function(language)
+            local r = by[language]
+            if r then return type(r.adapter) == "string" and r.adapter or nil end
+            return require("loomworks.debug_config").resolve_adapter(ws, language)
+        end)
+    end)
 end
 
 --- Set a language's debug adapter (`adapter` nil: back to the default) in

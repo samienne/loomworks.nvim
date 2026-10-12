@@ -31,6 +31,25 @@ local M = {}
 --- @type loomworks.TrackedRun|nil
 local _active_run = nil
 
+--- A launch the workspace daemon is preparing (step 5k C2): no program yet,
+--- but a stop cancels it and a second launch asks before replacing it, as
+--- for a running session.
+--- @class loomworks.PreparingRun
+--- @field target loomworks.LaunchTarget
+--- @field mode "launch"|"debug"
+--- @field preparation loomworks.daemon.Preparation|nil the routed call (editor_ops.prepare), once sent
+
+--- @type loomworks.PreparingRun|nil
+local _preparing = nil
+
+--- Cancel the launch being prepared, if any: its call is cancelled and no
+--- program is started (editor_ops.prepare's preparation).
+local function cancel_preparing()
+    local p = _preparing
+    _preparing = nil
+    if p and p.preparation then p.preparation:cancel() end
+end
+
 --- Check if the active run is still actually running.
 --- @return boolean
 local function is_active_running()
@@ -337,23 +356,28 @@ end
 
 --- Execute the build → deploy → launch/debug chain in-process.
 --- Handles both single and multi-adapter debug uniformly.
+--- `from_deploy`: the workspace daemon already built it (a preparation that
+--- ended with `device = true`, §19.15 "Run", "Build scope of a launch"): the
+--- chain continues from the post-build deploy, never building again.
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
-local function start_run_in_process(target, mode)
+--- @param from_deploy? boolean
+local function start_run_in_process(target, mode, from_deploy)
     local fidget = require("loomworks.fidget")
     local multi = mode == "debug" and target:is_multi_adapter()
     local label = mode == "debug" and "Debugging " or "Launching "
     -- A launch the daemon could have prepared says `(in-process)` in daemon
-    -- mode (§19.16 "Availability"); a device target's never routes.
+    -- mode (§19.16 "Availability"); a device target's never routes, and one
+    -- continued after the daemon's preparation was built there.
     local handle
-    if target:requires_device() then
+    if target:requires_device() or from_deploy then
         handle = fidget.start_action(label .. target:display_name())
     else
         handle = fidget.start_in_process_action(label .. target:display_name())
     end
 
     local chain
-    if target:is_buildable() then
+    if not from_deploy and target:is_buildable() then
         fidget.report(handle, "building...")
         chain = target:build()
     else
@@ -515,66 +539,79 @@ end
 --- Start the program of a launch the workspace daemon prepared (step 5k C2):
 --- a run's `launch` in the task runner (LaunchTarget:launch_resolved), a
 --- debug's `debug` handed to nvim-dap (start_dap). A `device` result (a
---- foreign artifact, §18.1) never runs on this host: refused as the
---- in-process launch refuses it. The progress entry covers only this final
---- phase (the preparation's own task was its build phase, D13).
+--- foreign artifact, §18.1, found once the daemon built it) continues as the
+--- in-process chain from the post-build deploy, never building again
+--- (§19.15 "Run", "Build scope of a launch"): its launch is refused there as
+--- in-process. The progress entry covers only this final phase (the
+--- preparation's own task was its build phase, D13). A program still
+--- running is stopped first, never left untracked. An error starting it is
+--- notified and fails the progress entry, as the in-process chain's.
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
 --- @param done table the preparation's task result
 local function start_prepared(target, mode, done)
     local fidget = require("loomworks.fidget")
     local name = target:display_name()
-    if mode == "debug" then
-        local d = done.debug
-        if type(d) ~= "table" or type(d.program) ~= "string" or type(d.adapters) ~= "table" or not d.adapters[1] then
-            vim.notify("loomworks: the workspace daemon returned no debug launch for '" .. name
-                .. "' — it was not started", vim.log.levels.ERROR)
+    if is_active_running() then stop_run() end
+    _active_run = nil
+    if mode ~= "debug" and done.device then return start_run_in_process(target, mode, true) end
+    local handle
+    local ok, err = pcall(function()
+        if mode == "debug" then
+            local d = done.debug
+            if type(d) ~= "table" or type(d.program) ~= "string" or type(d.adapters) ~= "table"
+                or not d.adapters[1] then
+                vim.notify("loomworks: the workspace daemon returned no debug launch for '" .. name
+                    .. "' — it was not started", vim.log.levels.ERROR)
+                return
+            end
+            local adapters = {}
+            for i, a in ipairs(d.adapters) do adapters[i] = { adapter = a.adapter } end
+            handle = fidget.start_action("Debugging " .. name)
+            fidget.report(handle, "starting debugger...")
+            _active_run = {
+                target = target, mode = "debug", multi_adapter = #adapters > 1,
+                fidget_handle = handle, started_at = os.clock(),
+            }
+            local env = type(d.env) == "table" and next(d.env) and d.env or nil
+            start_dap(handle, target, adapters, {
+                name = d.name, program = d.program, args = d.args or {}, cwd = d.cwd, env = env })
             return
         end
-        local adapters = {}
-        for i, a in ipairs(d.adapters) do adapters[i] = { adapter = a.adapter } end
-        local handle = fidget.start_action("Debugging " .. name)
-        fidget.report(handle, "starting debugger...")
-        _active_run = {
-            target = target, mode = "debug", multi_adapter = #adapters > 1,
-            fidget_handle = handle, started_at = os.clock(),
-        }
-        local env = type(d.env) == "table" and next(d.env) and d.env or nil
-        start_dap(handle, target, adapters, {
-            name = d.name, program = d.program, args = d.args or {}, cwd = d.cwd, env = env })
-        return
+        local l = done.launch
+        if type(l) ~= "table" or type(l.cmd) ~= "string" then
+            vim.notify("loomworks: the workspace daemon returned no launch for '" .. name
+                .. "' — it was not run", vim.log.levels.ERROR)
+            return
+        end
+        local spec = { name = tostring(l.name or l.cmd), cmd = l.cmd,
+            cwd = type(l.cwd) == "string" and l.cwd or nil, args = {}, env = nil }
+        for _, a in ipairs(type(l.args) == "table" and l.args or {}) do spec.args[#spec.args + 1] = tostring(a) end
+        if type(l.env) == "table" and next(l.env) then
+            spec.env = {}
+            for k, v in pairs(l.env) do spec.env[tostring(k)] = tostring(v) end
+        end
+        handle = fidget.start_action("Launching " .. name)
+        fidget.report(handle, "launching...")
+        target:launch_resolved(spec)
+        fidget.finish(handle, "launched")
+        _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock() }
+    end)
+    if not ok then
+        _active_run = nil
+        fidget.fail(handle, tostring(err))
+        vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
     end
-    if done.device then
-        local _, err = target:resolve_launch_spec()
-        vim.notify("loomworks: " .. tostring(err or ("'" .. name .. "' does not run on this host")),
-            vim.log.levels.WARN)
-        return
-    end
-    local l = done.launch
-    if type(l) ~= "table" or type(l.cmd) ~= "string" then
-        vim.notify("loomworks: the workspace daemon returned no launch for '" .. name
-            .. "' — it was not run", vim.log.levels.ERROR)
-        return
-    end
-    local spec = { name = tostring(l.name or l.cmd), cmd = l.cmd, cwd = type(l.cwd) == "string" and l.cwd or nil,
-        args = {}, env = nil }
-    for _, a in ipairs(type(l.args) == "table" and l.args or {}) do spec.args[#spec.args + 1] = tostring(a) end
-    if type(l.env) == "table" and next(l.env) then
-        spec.env = {}
-        for k, v in pairs(l.env) do spec.env[tostring(k)] = tostring(v) end
-    end
-    local handle = fidget.start_action("Launching " .. name)
-    fidget.report(handle, "launching...")
-    target:launch_resolved(spec)
-    fidget.finish(handle, "launched")
-    _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock() }
 end
 
 --- The build → deploy → launch/debug chain: prepared by the workspace daemon
 --- when it carries it (spec §19.16 "Editor operations"), else in-process.
 --- A debug without nvim-dap launches (as LaunchTarget:debug does); a debug
 --- whose launching adapter is not installed stops here with the install
---- hint, before any call (§8.9.6: the client's check).
+--- hint, before the preparation (§8.9.6: the client's check) - the adapter
+--- the daemon's `DebugConfig/1` mapping names while it is carried
+--- (editor_ops.debug_adapter_resolver). While the daemon prepares, the
+--- launch is `_preparing`: a stop cancels it, a second launch asks first.
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
 local function start_run(target, mode)
@@ -583,25 +620,51 @@ local function start_run(target, mode)
     local debug_mod = require("loomworks.debug")
     local prep = (mode == "debug" and debug_mod.available()) and "debug" or "launch"
     if not ops.can_prepare(prep, target) then return start_run_in_process(target, mode) end
-    if prep == "debug" then
-        local adapter, language = target:primary_debug_adapter()
+
+    --- @type loomworks.PreparingRun
+    local token = { target = target, mode = mode }
+    _preparing = token
+    -- This launch's outcome, unless it was cancelled or replaced meanwhile.
+    local function settle()
+        if _preparing ~= token then return false end
+        _preparing = nil
+        return true
+    end
+    local function send()
+        if _preparing ~= token then return end
+        local routed, preparation = ops.prepare(prep, target, {
+            resolve = function(done) if settle() then start_prepared(target, prep, done) end end,
+            -- Refused, failed, or the connection lost after `accepted`: no
+            -- program is started (never re-run in-process). A refusal or a
+            -- failed call was already notified.
+            reject = function(err, notified)
+                if not settle() then return end
+                if not notified then
+                    vim.notify("loomworks: " .. tostring(err or "the launch failed"), vim.log.levels.ERROR)
+                end
+            end,
+            fallback = function() if settle() then start_run_in_process(target, mode) end end,
+        })
+        if not routed then
+            if settle() then start_run_in_process(target, mode) end
+            return
+        end
+        token.preparation = preparation
+        -- Settled or cancelled before `prepare` returned (a fallback at
+        -- once): nothing more of it may run.
+        if _preparing ~= token and preparation then preparation:cancel() end
+    end
+    if prep ~= "debug" then return send() end
+    ops.debug_adapter_resolver(target, function(resolve)
+        if _preparing ~= token then return end
+        local adapter, language = target:primary_debug_adapter(resolve)
         if not debug_mod.adapter_installed(adapter) then
+            settle()
             debug_mod.adapter_hint(adapter, language)
             return
         end
-    end
-    ops.prepare(prep, target, {
-        resolve = function(done) start_prepared(target, prep, done) end,
-        -- Refused, failed, or the connection lost after `accepted`: no
-        -- program is started (never re-run in-process). A refusal or a
-        -- failed call was already notified.
-        reject = function(err, notified)
-            if not notified then
-                vim.notify("loomworks: " .. tostring(err or "the launch failed"), vim.log.levels.ERROR)
-            end
-        end,
-        fallback = function() start_run_in_process(target, mode) end,
-    })
+        send()
+    end)
 end
 
 --- Start a launch or debug run.
@@ -623,13 +686,18 @@ function M.start(target, mode)
         end
     end
 
-    if is_active_running() then
-        local name = _active_run.target:display_name()
-        local running_mode = _active_run.mode == "debug" and "Debugging" or "Running"
+    -- A running session, or a launch the workspace daemon is preparing:
+    -- ask, then stop (cancel) it before starting the new one.
+    local current = (is_active_running() and _active_run) or _preparing
+    if current then
+        local name = current.target:display_name()
+        local running_mode = current == _preparing and "Preparing"
+            or (current.mode == "debug" and "Debugging" or "Running")
         vim.ui.select({ "Yes", "No" }, {
             prompt = running_mode .. " '" .. name .. "'. Terminate and start new?",
         }, function(choice)
             if choice ~= "Yes" then return end
+            cancel_preparing()
             stop_run()
             start_run(target, mode)
         end)
@@ -641,8 +709,13 @@ function M.start(target, mode)
     start_run(target, mode)
 end
 
---- Stop the active run.
+--- Stop the active run, or cancel the launch the workspace daemon is
+--- preparing (its task cancelled; no program is started).
 function M.stop()
+    if _preparing then
+        cancel_preparing()
+        return
+    end
     if is_active_running() then
         stop_run()
         return

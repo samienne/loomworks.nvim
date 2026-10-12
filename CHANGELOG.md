@@ -80,6 +80,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   and changes the adapters through the daemon. When the daemon cannot carry
   a launch (not connected, an older daemon) it runs in Neovim as before, its
   progress title saying "(in-process)"; device targets always do.
+  Stopping while the daemon prepares a launch cancels it and no program
+  starts; a second launch meanwhile asks before replacing it. The adapter
+  check uses the daemon's adapter mapping, so a change made in the Debug
+  Adapters section applies to the next debug launch at once. A target found
+  to run only on a device after the daemon built it continues with the
+  deploy in Neovim, as an in-process launch does. An error starting the
+  prepared program is reported instead of leaving its progress spinning.
   In-process mode is unchanged. (#201)
 - `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
   `label`, `type`, `path`, `abs_path` and the active configuration, tool key

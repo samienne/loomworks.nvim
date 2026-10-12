@@ -109,8 +109,8 @@ M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 --- @field _owned table<any, loomworks.daemon.OwnedCall> the editor's own tasks by daemon task id, from the call's `accepted` until they end (step 5k)
 --- @field _degraded table<string, boolean>|nil Build/1, Launch/1 and DebugConfig/1 methods this connection's daemon lacks (or a parameter of): their operations run in-process
 --- @field _method_notes string[]|nil the Runtime-line notes of those methods
---- @field _debug_adapters { languages: table[] }|nil `DebugConfig/1.adapters` as last read on this connection (step 5k C2)
---- @field _debug_fetch boolean|nil an `adapters` read is in flight
+--- @field _debug_adapters { languages: table[]|nil }|nil `DebugConfig/1.adapters` as last read on this connection (step 5k C2; `languages` nil: that read failed or was declined)
+--- @field _debug_fetch fun(records: table[]|nil)[]|nil an `adapters` read in flight: its waiters (with_debug_adapters)
 --- @field _debug_again boolean|nil a model change arrived during that read: read again after it
 --- @field _relay loomworks.daemon.RelayProc|nil the relay in flight, until its `welcome` or its exit (single flight); after `welcome` the relay is the connection's (`conn.relay`)
 --- @field _relay_token table|nil identifies that relay's callback: `{ form, answer, conn }` (one after a stop or a replacement is ignored)
@@ -2002,9 +2002,11 @@ end
 
 --- The workspace's debug-adapter records as `DebugConfig/1.adapters` last
 --- returned them (`{ language, adapter?, default?, known, overridden }[]`),
---- or nil: not carried, or not read yet on this connection — a first read
---- is started then, and its records re-render the status page
---- (`daemon_debug_adapters`).
+--- or nil: not carried, not read yet on this connection — a first read is
+--- started then, and its records re-render the status page
+--- (`daemon_debug_adapters`) — or the last read failed or was declined
+--- (remembered until the next `Workspace/1` `changed` or a reconnect, so a
+--- render does not send it again).
 --- @return table[]|nil
 function Observer:debug_adapters()
     if not self:can_call("adapters") then return nil end
@@ -2013,26 +2015,53 @@ function Observer:debug_adapters()
     return nil
 end
 
+--- `cb(records)` on the main loop with the records `debug_adapters` returns
+--- once read: the cached read at once, else after the read in flight (or one
+--- started now); nil when not carried, or the read failed, was declined or
+--- outlived its connection.
+--- @param cb fun(records: table[]|nil)
+function Observer:with_debug_adapters(cb)
+    if not self:can_call("adapters") then return cb(nil) end
+    if self._debug_adapters then return cb(self._debug_adapters.languages) end
+    self:_fetch_debug_adapters()
+    if type(self._debug_fetch) ~= "table" then return cb(nil) end
+    table.insert(self._debug_fetch, cb)
+end
+
 --- Read `DebugConfig/1.adapters` again (single flight; on connect through
 --- `debug_adapters`, and on every `Workspace/1` `changed`, §19.20: it has no
---- signal of its own).
+--- signal of its own). `_debug_fetch` is the read in flight's waiters
+--- (`with_debug_adapters`); a failed or declined read caches its absence
+--- (`languages` nil).
 function Observer:_fetch_debug_adapters()
     if self._debug_fetch or not self:can_call("adapters") then return end
     local conn = self.conn
-    self._debug_fetch = true
+    local waiters = {}
+    self._debug_fetch = waiters
+    local function flush(records)
+        for _, w in ipairs(waiters) do
+            local ok, e = pcall(w, records)
+            if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
+        end
+    end
     self:request("adapters", {}, function(r)
-        if self.conn ~= conn then return end
+        if self.conn ~= conn then return flush(nil) end
         self._debug_fetch = nil
-        -- A change while this read was in flight: read again.
+        local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
+        local records = res and type(res.languages) == "table" and res.languages or nil
+        self._debug_adapters = { languages = records }
+        -- A change while this read was in flight: read again; its waiters
+        -- wait for that read (this one may predate the change).
         if self._debug_again then
             self._debug_again = nil
             self:_fetch_debug_adapters()
+            if type(self._debug_fetch) == "table" then
+                for _, w in ipairs(waiters) do table.insert(self._debug_fetch, w) end
+                waiters = {}
+            end
         end
-        local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
-        if res and type(res.languages) == "table" then
-            self._debug_adapters = { languages = res.languages }
-            self:_emit("daemon_debug_adapters", {})
-        end
+        if records then self:_emit("daemon_debug_adapters", {}) end
+        flush(records)
     end)
 end
 
@@ -2056,7 +2085,12 @@ function Observer:_owned_ended(id, task, reason, result, done)
     local o = self._owned[id]
     if not o then return end
     self._owned[id] = nil
-    if o.on_done then pcall(o.on_done, task or o.task or result, reason, done) end
+    -- An error in the operation's continuation (e.g. starting the program a
+    -- preparation returned) is the user's to see, never dropped.
+    if o.on_done then
+        local ok, e = pcall(o.on_done, task or o.task or result, reason, done)
+        if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
+    end
     for _, w in ipairs(o.waiters) do pcall(w) end
 end
 

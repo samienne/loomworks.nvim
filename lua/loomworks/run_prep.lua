@@ -226,19 +226,21 @@ end
 --- @field adapters loomworks.DebugSpecAdapter[] ordered; the first launches, the rest attach to its pid
 
 --- The `adapters` of a launch configuration: its `debug` languages in order,
---- else the module's primary language `lang`.
-local function config_adapters(ws, cfg, lang)
+--- else the module's primary language `lang`. `resolve(language)`: the
+--- mapping to resolve each from (default: the workspace's, debug_config).
+local function config_adapters(ws, cfg, lang, resolve)
     local debug_config = require("loomworks.debug_config")
+    resolve = resolve or function(language) return debug_config.resolve_adapter(ws, language) end
     local adapters = {}
     if type(cfg.debug) == "table" then
         for _, entry in ipairs(cfg.debug) do
             local language = type(entry) == "string" and entry or entry.language
             adapters[#adapters + 1] = {
-                language = language, adapter = debug_config.resolve_adapter(ws, language) }
+                language = language, adapter = resolve(language) }
         end
     end
     if #adapters == 0 then
-        adapters[1] = { language = lang, adapter = debug_config.resolve_adapter(ws, lang) }
+        adapters[1] = { language = lang, adapter = resolve(lang) }
     end
     return adapters
 end
@@ -285,15 +287,22 @@ end
 --- The adapter that launches a launch target's debug session and its
 --- language: the first of M.debug_spec's `adapters` (a launch
 --- configuration's first `debug` language, else the module's primary one).
+--- `resolve(language)`: the language → adapter mapping to resolve it from
+--- (default: the workspace's, debug_config; in daemon mode the daemon's,
+--- editor_ops.debug_adapter_resolver).
 --- @param lt loomworks.LaunchTarget
+--- @param resolve? fun(language: string): string|nil
 --- @return string|nil adapter, string language
-function M.primary_adapter(lt)
+function M.primary_adapter(lt, resolve)
     local lang = module_language(lt)
+    resolve = resolve or function(language)
+        return require("loomworks.debug_config").resolve_adapter(lt._workspace, language)
+    end
     local first
     if lt._launch_config then
-        first = config_adapters(lt._workspace, lt._launch_config, lang)[1]
+        first = config_adapters(lt._workspace, lt._launch_config, lang, resolve)[1]
     else
-        first = { language = lang, adapter = require("loomworks.debug_config").resolve_adapter(lt._workspace, lang) }
+        first = { language = lang, adapter = resolve(lang) }
     end
     return first.adapter, first.language
 end

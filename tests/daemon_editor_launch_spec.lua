@@ -181,6 +181,8 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     it("a debug is a Launch/1.prepare_debug; its `debug` goes to nvim-dap", function()
         obs = fake_observer()
+        obs._debug_adapters = { languages = {
+            { language = "c++", adapter = "codelldb" }, { language = "typescript", adapter = "pwa-node" } } }
         require("loomworks.session_tracker").start(lt("run"), "debug")
         assert.equals(1, #sent)
         assert.same({ "/launch", "prepare_debug" }, { sent[1].object, sent[1].method })
@@ -201,6 +203,8 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     it("a multi-adapter debug launches the first adapter and attaches the rest to its pid", function()
         obs = fake_observer()
+        obs._debug_adapters = { languages = {
+            { language = "c++", adapter = "codelldb" }, { language = "typescript", adapter = "pwa-node" } } }
         require("loomworks.session_tracker").start(lt("multi"), "debug")
         accept(1, "d2")
         done_frame("d2", 0, { exit_code = 0, debug = { name = "app: multi", program = "node", args = { "x.js" },
@@ -217,6 +221,8 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     it("a debug whose adapter is not installed stops with the hint before any call", function()
         obs = fake_observer()
+        obs._debug_adapters = { languages = {
+            { language = "c++", adapter = "codelldb" }, { language = "typescript", adapter = "pwa-node" } } }
         require("loomworks.debug").adapter_installed = function() return false end
         require("loomworks.session_tracker").start(lt("run"), "debug")
         assert.same({}, sent)
@@ -291,14 +297,196 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.equals(0, #created)
     end)
 
-    it("a `device` result (foreign artifact) never runs here", function()
+    it("a `device` result (foreign artifact): the post-build deploy, then the in-process refusal, no rebuild", function()
         obs = fake_observer()
-        require("loomworks.session_tracker").start(lt("run"), "launch")
+        local t = lt("run")
+        local calls = {}
+        local Future = require("loomworks.future")
+        t.deploy = function()
+            calls[#calls + 1] = "deploy"
+            return Future.resolved(true)
+        end
+        t.launch = function()
+            calls[#calls + 1] = "launch"
+            vim.notify("loomworks: 'app' is built for ohos - run it on a device", vim.log.levels.WARN)
+        end
+        require("loomworks.session_tracker").start(t, "launch")
         accept(1, "r3")
         done_frame("r3", 0, { exit_code = 0, device = true })
+        assert.is_true(vim.wait(2000, function() return #calls == 2 end, 10))
+        assert.same({ "deploy", "launch" }, calls)
+        assert.is_true(noted("run it on a device"))
+        -- Not built again: no in-process build task, no further call.
+        assert.same({}, launched)
+        assert.equals(0, #created)
+        assert.equals(1, #sent)
+    end)
+
+    it("a `device` result whose deploy fails: its error, the launch not reached", function()
+        obs = fake_observer()
+        local t = lt("run")
+        local reached = false
+        t.deploy = function() return require("loomworks.future").rejected("deploy step 1 failed") end
+        t.launch = function() reached = true end
+        require("loomworks.session_tracker").start(t, "launch")
+        accept(1, "r4")
+        done_frame("r4", 0, { exit_code = 0, device = true })
+        assert.is_true(vim.wait(2000, function() return noted("deploy step 1 failed") end, 10))
+        assert.is_false(reached)
+    end)
+
+    --- The `Tasks/1.cancel` calls sent for task `id`.
+    local function cancels(id)
+        local n = 0
+        for _, c in ipairs(sent) do
+            if c.method == "cancel" and c.args and c.args.task_id == id then n = n + 1 end
+        end
+        return n
+    end
+
+    it("a stop while the daemon prepares cancels its task; no program starts", function()
+        obs = fake_observer()
+        local st = require("loomworks.session_tracker")
+        st.start(lt("run"), "launch")
+        accept(1, "r5")
+        start_frame("r5", "run")
+        st.stop()
+        assert.is_true(vim.wait(2000, function() return cancels("r5") == 1 end, 10))
+        assert.is_false(noted("no running session"))
+        -- The daemon finished it anyway: still no program.
+        done_frame("r5", 0, { exit_code = 0, launch = { name = "app: run", cmd = "/bin/tool", args = {} } })
         vim.wait(200)
         assert.same({}, launched)
         assert.equals(0, #created)
+        -- Nothing is preparing any more.
+        st.stop()
+        assert.is_true(noted("no running session"))
+    end)
+
+    it("a stop before the preparation is accepted cancels it once accepted", function()
+        obs = fake_observer()
+        local st = require("loomworks.session_tracker")
+        st.start(lt("run"), "launch")
+        st.stop()
+        assert.equals(0, cancels("r6"))
+        accept(1, "r6")
+        assert.is_true(vim.wait(2000, function() return cancels("r6") == 1 end, 10))
+        done_frame("r6", 0, { exit_code = 0, launch = { name = "app: run", cmd = "/bin/tool", args = {} } })
+        vim.wait(200)
+        assert.same({}, launched)
+    end)
+
+    it("a second launch while the daemon prepares asks, then replaces the first", function()
+        obs = fake_observer()
+        local prompts = {}
+        stub(vim.ui, "select", function(_, opts, on_choice)
+            prompts[#prompts + 1] = opts.prompt
+            on_choice("Yes")
+        end)
+        local st = require("loomworks.session_tracker")
+        st.start(lt("run"), "launch")
+        accept(1, "r7")
+        st.start(lt("run"), "launch")
+        assert.equals(1, #prompts)
+        assert.truthy(prompts[1]:find("Preparing 'app: run'", 1, true))
+        assert.is_true(vim.wait(2000, function() return cancels("r7") == 1 end, 10))
+        local second
+        for i, c in ipairs(sent) do if c.method == "prepare_run" and i > 1 then second = i end end
+        assert.is_not_nil(second)
+        -- The first one's result never starts a program.
+        done_frame("r7", 0, { exit_code = 0, launch = { name = "first", cmd = "/bin/first", args = {} } })
+        accept(second, "r8")
+        done_frame("r8", 0, { exit_code = 0, launch = { name = "second", cmd = "/bin/second", args = {} } })
+        assert.is_true(vim.wait(2000, function() return #launched == 1 end, 10))
+        vim.wait(100)
+        assert.equals(1, #launched)
+        assert.equals("/bin/second", launched[1].cmd)
+    end)
+
+    it("a second launch while the daemon prepares, answered No: the first goes on", function()
+        obs = fake_observer()
+        stub(vim.ui, "select", function(_, _, on_choice) on_choice("No") end)
+        local st = require("loomworks.session_tracker")
+        st.start(lt("run"), "launch")
+        accept(1, "r9a")
+        st.start(lt("run"), "launch")
+        assert.equals(0, cancels("r9a"))
+        assert.equals(1, #sent)
+        done_frame("r9a", 0, { exit_code = 0, launch = { name = "first", cmd = "/bin/first", args = {} } })
+        assert.is_true(vim.wait(2000, function() return #launched == 1 end, 10))
+    end)
+
+    it("a failure before `accepted`: noted, no program, nothing left preparing", function()
+        obs = fake_observer()
+        local st = require("loomworks.session_tracker")
+        st.start(lt("run"), "launch")
+        sent[1].cb(nil, { code = "closed", message = "closed" })
+        assert.is_true(vim.wait(2000, function() return noted("the workspace daemon disconnected") end, 10))
+        vim.wait(100)
+        assert.same({}, launched)
+        assert.equals(0, #created)
+        st.stop()
+        assert.is_true(noted("no running session"))
+    end)
+
+    it("an error starting the prepared program is notified and fails its progress entry", function()
+        obs = fake_observer()
+        local cancelled = {}
+        stub(require("loomworks.fidget"), "start_action", function(title)
+            titles[#titles + 1] = title
+            return { report = function() end, finish = function() end,
+                cancel = function() cancelled[#cancelled + 1] = title end }
+        end)
+        stub(require("loomworks.overseer"), "launch_run_task", function() error("task runner exploded") end)
+        local st = require("loomworks.session_tracker")
+        st.start(lt("run"), "launch")
+        accept(1, "r10")
+        done_frame("r10", 0, { exit_code = 0, launch = { name = "app: run", cmd = "/bin/tool", args = {} } })
+        assert.is_true(vim.wait(2000, function() return noted("task runner exploded") end, 10))
+        assert.same({ "Launching app: run" }, cancelled)
+        assert.is_false(st.is_running())
+    end)
+
+    it("a debug checks the adapter the daemon's mapping names, not the in-process copy", function()
+        obs = fake_observer()
+        -- The in-process copy still names an adapter that is not installed
+        -- (a `set_adapter` through the daemon not yet reloaded here).
+        ws._debug_settings = { adapters = { ["c++"] = "gdb" } }
+        require("loomworks.session_tracker").start(lt("run"), "debug")
+        -- Nothing cached yet: the mapping is read first.
+        assert.equals(1, #sent)
+        assert.equals("adapters", sent[1].method)
+        sent[1].cb({ languages = { { language = "c++", adapter = "codelldb" } } }, nil)
+        assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
+        assert.equals("prepare_debug", sent[2].method)
+        assert.is_false(noted("not configured"))
+    end)
+
+    it("a debug whose daemon-mapped adapter is not installed stops with the hint", function()
+        obs = fake_observer()
+        obs._debug_adapters = { languages = { { language = "c++", adapter = "gdb" } } }
+        require("loomworks.session_tracker").start(lt("run"), "debug")
+        assert.same({}, sent)
+        assert.is_true(noted("not configured. Install via :Mason"))
+    end)
+
+    it("a failed `adapters` read is remembered: not sent again until `changed`", function()
+        obs = fake_observer()
+        assert.is_nil(obs:debug_adapters())
+        assert.equals(1, #sent)
+        sent[1].cb(nil, { code = "internal", message = "boom" })
+        assert.is_true(vim.wait(2000, function() return obs._debug_fetch == nil end, 10))
+        assert.is_nil(obs:debug_adapters())
+        assert.is_nil(obs:debug_adapters())
+        assert.equals(1, #sent)
+        -- A debug then resolves in-process (the c++ default).
+        require("loomworks.session_tracker").start(lt("run"), "debug")
+        assert.equals(2, #sent)
+        assert.equals("prepare_debug", sent[2].method)
+        -- A model change reads it again.
+        obs:_refetch_debug_adapters()
+        assert.equals(3, #sent)
+        assert.equals("adapters", sent[3].method)
     end)
 
     it("a preparation's task-runner restart is not sent again (it would start no program)", function()

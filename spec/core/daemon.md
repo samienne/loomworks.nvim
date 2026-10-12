@@ -2772,8 +2772,14 @@ owner"):
   "target"`): the editor then runs the returned `launch` in its task runner,
   or hands the returned `debug` to its debugger (its adapter-specific shape
   and the installed-adapter check, made before the call, stay in the editor,
-  §8.9.6). The program is the editor's, never the daemon's; stopping a run or
-  debug session stops it as in-process;
+  §8.9.6; the adapter checked is the one the daemon's mapping names,
+  `DebugConfig/1.adapters`, while it is carried). A run that ends with
+  `device = true` continues in the editor as its in-process launch does from
+  the post-build deploy, without building again ("Build scope of a launch"
+  above). The program is the editor's, never the daemon's; stopping a run or
+  debug session stops it as in-process. While the preparation runs, a stop
+  cancels its task (`Tasks/1.cancel`) and no program is started, and a
+  second launch asks, as for a running session, before it replaces it;
 - the debug adapters section reads and writes `DebugConfig/1` (`adapters`,
   `known_languages`, `set_adapter`) and re-reads it on `Workspace/1`
   `changed`.
@@ -3569,8 +3575,9 @@ runtime is deferred until that module is actively developed.
        debug through `prepare_run` / `prepare_debug` for non-device targets,
        the module-target debug unified with run (§8.9.6), the debug adapters
        section on `DebugConfig/1`, the reach-in counts lowered (needs B2 and
-       C1) *(done once merged)*; D *(optional)* — a real-daemon end-to-end suite for the editor
-       client, unless folded into C1 and C2. B1 and B2 are independent.
+       C1) *(C2 done once merged)*; D *(optional)* — a real-daemon
+       end-to-end suite for the editor client, unless folded into C1 and C2.
+       B1 and B2 are independent.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved

@@ -935,8 +935,16 @@ re-cut onto master step by step; this section is expanded as each step lands.
   Launches (step 5k C2): `session_tracker.start_run` asks
   `editor_ops.can_prepare(mode, target)` for a non-device target (a debug
   without nvim-dap prepares a launch, as `LaunchTarget:debug` falls back);
-  a debug first checks `LaunchTarget:primary_debug_adapter()` against
-  nvim-dap (`debug.adapter_installed` / `adapter_hint`, before any call).
+  a debug first checks `LaunchTarget:primary_debug_adapter(resolve)` against
+  nvim-dap (`debug.adapter_installed` / `adapter_hint`, before the
+  preparation), `resolve` the daemon's mapping from
+  `editor_ops.debug_adapter_resolver` (`Observer:with_debug_adapters`: the
+  cached `DebugConfig/1.adapters`, else after a read; in-process
+  `debug_config.resolve_adapter` only when it is not carried or the read
+  failed). While the call runs the tracker holds `_preparing` (a
+  `PreparingRun` with the `editor_ops.prepare` handle): `stop()` cancels it
+  (`Preparation:cancel`: drops every later outcome, `cancel_owned_id` once
+  accepted), and a second `start` asks before replacing it.
   `editor_ops.prepare` sends `Launch/1.prepare_run` / `prepare_debug` with
   `launch_args(target)` (profile, project, name + kind, a module target's
   descriptor `working_dir` as `cwd`, `build_scope = "target"`) under the
@@ -946,8 +954,12 @@ re-cut onto master step by step; this section is expanded as each step lands.
   program: `launch` → `LaunchTarget:launch_resolved(spec)` (the overseer
   launch task, also behind `_launch_command`); `debug` → `start_dap` (the
   shared nvim-dap start of the in-process multi-adapter path: first
-  adapter launches, the rest attach on `on_pid`); `device = true` → the
-  in-process refusal (`resolve_launch_spec`'s error). `fallback` runs the
+  adapter launches, the rest attach on `on_pid`); `device = true` →
+  `start_run_in_process(target, mode, true)`, the in-process chain from the
+  post-build deploy (no build), so its launch is refused as in-process.
+  `start_prepared` stops a program still running first, and an error
+  starting the program fails its progress entry and is notified (the
+  observer's `_owned_ended` also notifies any `on_done` error). `fallback` runs the
   in-process chain (`start_run_in_process`, title via
   `fidget.start_in_process_action`). `editor_ops.NO_RESTART` makes the
   task-runner restart of a preparation fail (`rerun`). Observer side:
@@ -958,8 +970,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `Observer:debug_adapters()` (the cached `DebugConfig/1.adapters`; the
   first read starts on demand, single flight, re-read on every
   `Workspace/1` `changed` in `_model_change`, emitting
-  `daemon_debug_adapters` for the status page) or, not carried / not read
-  yet, `debug_config.adapter_records(ws)`; `editor_ops.set_debug_adapter`
+  `daemon_debug_adapters` for the status page; a failed or declined read
+  is cached as `languages = nil` until the next `changed` or reconnect, so
+  renders do not resend it) or, not carried / not read yet / that read
+  failed, `debug_config.adapter_records(ws)`; `editor_ops.set_debug_adapter`
   sends `set_adapter` (`Observer:request`, a plain call) or runs
   `Workspace:set_debug_adapter` in-process (also on `declined` /
   degraded). In-process debug resolves one spec for run and debug

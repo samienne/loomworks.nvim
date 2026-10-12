@@ -746,10 +746,13 @@ end
 --- The adapter that launches this target's debug session, and its language
 --- (spec §8.9.6: a launch configuration's first `debug` language, else the
 --- module's primary language). The editor checks it is installed before it
---- asks the workspace daemon to prepare the debug launch (§19.16).
+--- asks the workspace daemon to prepare the debug launch (§19.16), with
+--- `resolve` the daemon's language → adapter mapping
+--- (editor_ops.debug_adapter_resolver; default: the workspace's).
+--- @param resolve? fun(language: string): string|nil
 --- @return string|nil adapter, string language
-function LaunchTarget:primary_debug_adapter()
-    return require("loomworks.run_prep").primary_adapter(self)
+function LaunchTarget:primary_debug_adapter(resolve)
+    return require("loomworks.run_prep").primary_adapter(self, resolve)
 end
 
 --- Check if this launch target has a multi-adapter debug config.
