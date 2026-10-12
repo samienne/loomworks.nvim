@@ -14,14 +14,17 @@
 ---   SUCCESS / FAILURE by exit code, CANCELED when the editor cancelled it.
 ---   observed (another client's, `meta.origin`): listed read-only, its
 ---   origin marker in its name (`[lw] build dev`); stop and restart only say
----   `started by lw — cancel it there`. Its output starts when the editor
+---   `started by lw (cli) — cancel it there`. Its output starts when the editor
 ---   joined.
 ---
 --- Output is the task's frames written to a terminal buffer
 --- (`nvim_open_term` + `nvim_chan_send`), so colours and overseer's own
 --- output actions (open output in quickfix) work as for a local task. It is
 --- batched: frames only queue text, a timer writes it at most every FLUSH_MS
---- (flow control, §19.15: the editor's loop never writes per frame).
+--- (flow control, §19.15: the editor's loop never writes per frame). While
+--- the terminal cannot be opened (not in normal mode, or a floating window
+--- has focus) it is retried every BLOCKED_MS and the queue is coalesced and
+--- capped at QUEUE_CAP_BYTES (the oldest output dropped, with a marker).
 ---
 --- When overseer cannot host such tasks (not installed, or its strategy
 --- extension point missing) the tasks stay out of its list — remote tasks
@@ -34,6 +37,12 @@ M.STRATEGY = "loomworks_daemon"
 
 --- Output is written to the terminal at most this often (ms).
 M.FLUSH_MS = 30
+
+--- While the terminal cannot be opened, the flush is retried this often (ms).
+M.BLOCKED_MS = 250
+
+--- At most this much output is queued while the terminal cannot be opened.
+M.QUEUE_CAP_BYTES = 1024 * 1024
 
 M.NOTE = "task runner: overseer cannot host daemon tasks — they are shown on the status page only"
 
@@ -51,10 +60,14 @@ M.NOTE = "task runner: overseer cannot host daemon tasks — they are shown on t
 --- @field bufnr integer|nil
 --- @field chan integer|nil the terminal channel
 --- @field _queue string[] output not written yet
+--- @field _qbytes integer bytes in `_queue`
+--- @field _dropped_out boolean output was dropped from the queue (cap)
 --- @field _timer boolean a flush is scheduled
 --- @field _unfollow fun()|nil
 --- @field _call_id any an owned restart's accepted task id, before its `start`
---- @field _gen integer bumped by reset/dispose: a stale call's reply is ignored
+--- @field _gen integer bumped by reset/dispose, and by a stop while a restart's call awaits its reply: that reply's task is cancelled
+--- @field _awaiting boolean a restart's call awaits its reply
+--- @field _superseded table<any, true> task ids of restarts superseded before their reply (cancelled, never listed)
 --- @field _stop fun(task: table)|nil the overseer Task's own stop (observed tasks override it)
 local Strategy = {}
 Strategy.__index = Strategy
@@ -64,7 +77,8 @@ Strategy.__index = Strategy
 --- @return loomworks.daemon.RunnerStrategy
 function Strategy.new(opts)
     opts = opts or {}
-    return setmetatable({ binding = opts.binding or {}, _queue = {}, _timer = false, _gen = 0 }, Strategy)
+    return setmetatable({ binding = opts.binding or {}, _queue = {}, _qbytes = 0, _timer = false, _gen = 0,
+        _awaiting = false, _superseded = {} }, Strategy)
 end
 
 function Strategy:get_bufnr() return self.bufnr end
@@ -93,9 +107,10 @@ end
 
 function Strategy:reset()
     self._gen = self._gen + 1
+    self._awaiting = false
     self:_detach()
     delete_buf(self.bufnr)
-    self.bufnr, self.chan, self._queue = nil, nil, {}
+    self.bufnr, self.chan, self._queue, self._qbytes, self._dropped_out = nil, nil, {}, 0, false
 end
 
 function Strategy:dispose()
@@ -107,16 +122,30 @@ end
 function Strategy:_write(text)
     if text == "" then return end
     self._queue[#self._queue + 1] = text
+    self._qbytes = self._qbytes + #text
+    if self.chan == nil and (#self._queue > 64 or self._qbytes > M.QUEUE_CAP_BYTES) then self:_coalesce() end
     self:_schedule()
 end
 
-function Strategy:_schedule()
+--- Output not written yet (no terminal): one piece of at most
+--- QUEUE_CAP_BYTES, the newest output kept.
+function Strategy:_coalesce()
+    local text = table.concat(self._queue)
+    if #text > M.QUEUE_CAP_BYTES then
+        text = text:sub(#text - M.QUEUE_CAP_BYTES + 1)
+        self._dropped_out = true
+    end
+    self._queue, self._qbytes = { text }, #text
+end
+
+--- @param ms? integer
+function Strategy:_schedule(ms)
     if self._timer then return end
     self._timer = true
     vim.defer_fn(function()
         self._timer = false
         self:_flush()
-    end, M.FLUSH_MS)
+    end, ms or M.FLUSH_MS)
 end
 
 --- Open the terminal (in a full-editor window, as overseer's own strategy,
@@ -138,9 +167,14 @@ end
 function Strategy:_flush()
     if #self._queue == 0 or not (self.bufnr and vim.api.nvim_buf_is_valid(self.bufnr)) then return end
     self:_open_term()
-    if not self.chan then return self:_schedule() end
-    local text = table.concat(self._queue):gsub("\r?\n", "\r\n")
-    self._queue = {}
+    if not self.chan then return self:_schedule(M.BLOCKED_MS) end
+    local text = table.concat(self._queue)
+    if self._dropped_out then
+        text = "[loomworks: earlier output dropped while the terminal could not be opened]\n" .. text
+        self._dropped_out = false
+    end
+    text = text:gsub("\r?\n", "\r\n")
+    self._queue, self._qbytes = {}, 0
     pcall(vim.api.nvim_chan_send, self.chan, text)
     local util = ov_util()
     if util and util.terminal_tail_hack then pcall(util.terminal_tail_hack, self.bufnr) end
@@ -170,9 +204,10 @@ function Strategy:_ended(remote)
     if self._unfollow then self._unfollow() end
     self._unfollow = nil
     if not (task and task.is_running and task:is_running()) then return end
-    if remote.cleared or remote.cancelling then
+    if remote.cleared or (remote.cancelling and remote.exit_code ~= 0) then
         -- Cleared by teardown, or cancelled from the editor: CANCELED, as a
         -- local task the editor stops (never a cancel sent: it has ended).
+        -- One that completed anyway (exit 0) despite the cancel is SUCCESS.
         self.remote = nil
         return (self._stop or task.stop)(task)
     end
@@ -211,13 +246,23 @@ function Strategy:_rerun()
         end)
     end
     if not (b.owned and b.call) then return fail("a task of another client is restarted there") end
+    self._awaiting = true
     require("loomworks.daemon.editor_ops").rerun(b.obs, b.call, {
         runner = self,
         accepted = function(id)
-            if gen ~= self._gen then return end
+            if gen ~= self._gen then
+                -- Stopped, restarted again, reset or disposed before the
+                -- reply: its task is cancelled, and never listed (M.add).
+                self._superseded[id] = true
+                return b.obs:cancel_owned_id(id)
+            end
+            self._awaiting = false
             self._call_id = id
         end,
-        failed = fail,
+        failed = function(why)
+            if gen == self._gen then self._awaiting = false end
+            fail(why)
+        end,
     })
 end
 
@@ -230,6 +275,11 @@ function Strategy:stop()
         b.obs:cancel_owned(remote)
     elseif self._call_id ~= nil then
         b.obs:cancel_owned_id(self._call_id)
+    elseif self._awaiting then
+        -- The restart's call awaits its reply: the task it starts is
+        -- cancelled when the reply arrives (`_rerun`).
+        self._awaiting = false
+        self._gen = self._gen + 1
     end
 end
 
@@ -251,7 +301,8 @@ end
 --- @param remote loomworks.RemoteTask
 --- @return string
 function M.read_only_message(remote)
-    return "loomworks: started by " .. (remote:origin_label() or "another client") .. " — cancel it there"
+    local who = remote.origin == "cli" and "lw (cli)" or remote:origin_label() or "another client"
+    return "loomworks: started by " .. who .. " — cancel it there"
 end
 
 --- The overseer task name of a daemon task: its name, an observed task's
@@ -274,6 +325,12 @@ function M.add(obs, remote, runner)
     -- the task continues that overseer task, stopped meanwhile or not.
     if runner and runner._call_id ~= nil and runner._call_id == remote.id then
         return runner:_attach(remote)
+    end
+    -- A restart superseded before its reply (stopped, restarted again,
+    -- reset or disposed): being cancelled, it is never a task of its own.
+    if runner and runner._superseded and runner._superseded[remote.id] then
+        runner._superseded[remote.id] = nil
+        return
     end
     local ov = host()
     if not ov then
@@ -299,14 +356,30 @@ function M.add(obs, remote, runner)
     if not ok or type(task) ~= "table" then return end
     if not binding.owned then
         -- Read-only: another client's task is stopped and restarted there
-        -- (§19.15). The strategy keeps overseer's own stop for teardown.
+        -- (§19.15). The strategy keeps overseer's own stop for teardown; a
+        -- forced dispose uses it too, quietly (no cancel is sent).
         local strategy = task.strategy
-        if type(strategy) == "table" then strategy._stop = task.stop end
-        task.stop = function()
+        local own_stop, own_dispose = task.stop, task.dispose
+        if type(strategy) == "table" then strategy._stop = own_stop end
+        local disposing = false
+        local function refuse()
             vim.notify(M.read_only_message(remote), vim.log.levels.WARN)
             return false
         end
-        task.restart = task.stop
+        task.stop = function(self)
+            if disposing then return own_stop(self) end
+            return refuse()
+        end
+        task.restart = refuse
+        if type(own_dispose) == "function" then
+            task.dispose = function(self, ...)
+                disposing = true
+                local okd, r = pcall(own_dispose, self, ...)
+                disposing = false
+                if not okd then error(r, 0) end
+                return r
+            end
+        end
     end
     pcall(task.start, task)
 end

@@ -46,7 +46,12 @@ return function(created)
         if not self:is_running() then return end
         self:finalize(code == 0 and "SUCCESS" or "FAILURE")
     end
-    function Task:dispose()
+    function Task:dispose(force)
+        -- As overseer: a forced dispose of a running task stops it first.
+        if self:is_running() then
+            if not force then error("Cannot call dispose on running task") end
+            self:stop()
+        end
         self.status = "DISPOSED"
         self.strategy:dispose()
     end

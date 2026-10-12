@@ -218,7 +218,7 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
         assert.is_false(t:restart(true))
         assert.equals("RUNNING", t.status)
         assert.equals(n, #sent)
-        assert.equals("loomworks: started by lw — cancel it there", notes[#notes].msg)
+        assert.equals("loomworks: started by lw (cli) — cancel it there", notes[#notes].msg)
         frame("c1", "output", { stream = "stdout", text = "from the cli\n" })
         assert.is_true(vim.wait(2000, function() return buf_text(t):find("from the cli", 1, true) ~= nil end, 10))
         frame("c1", "done", { exit_code = 1 })
@@ -266,6 +266,134 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
         -- The operation itself is unaffected.
         frame("t1", "done", { exit_code = 0 })
         assert.is_nil(obs._owned["t1"])
+    end)
+
+    it("a show-output window following the task still sees its end once overseer lists it", function()
+        obs = fake_observer()
+        owned_build("t1")
+        local task = obs._tasks["t1"]
+        local ended = false
+        task:follow(function(_, text) if text == nil then ended = true end end)
+        frame("t1", "done", { exit_code = 0 })
+        assert.equals("SUCCESS", created[1].status)
+        assert.is_true(ended)
+    end)
+
+    it("a follower unsubscribing during a frame does not skip the next follower", function()
+        local rt = require("loomworks.daemon.remote_task")
+        local t = setmetatable({ _listeners = {}, _chunks = {}, _bytes = 0, finished = false,
+            detach_units = function() end, elapsed = function() return 0 end }, { __index = rt.RemoteTask })
+        local got = {}
+        local un1
+        un1 = t:follow(function(_, text) got[#got + 1] = "a:" .. tostring(text); un1() end)
+        t:follow(function(_, text) got[#got + 1] = "b:" .. tostring(text) end)
+        t:append("x")
+        local un3
+        un3 = t:follow(function(_, text) got[#got + 1] = "c:" .. tostring(text); un3() end)
+        t:follow(function(_, text) got[#got + 1] = "d:" .. tostring(text) end)
+        t:finish(0)
+        assert.same({ "a:x", "b:x", "b:nil", "c:nil", "d:nil" }, got)
+    end)
+
+    it("a stop before the restart is accepted cancels the new run; it never continues the CANCELED task", function()
+        obs = fake_observer()
+        owned_build("t1")
+        local t = created[1]
+        frame("t1", "done", { exit_code = 2, error = "build failed" })
+        local first = sent[#sent]
+        t:restart(true)
+        assert.is_true(vim.wait(2000, function() return sent[#sent] ~= first end, 10))
+        local again = sent[#sent]
+        t:stop()
+        assert.equals("CANCELED", t.status)
+        again.cb({ outcome = "accepted", task_id = "t2" }, nil)
+        assert.is_true(vim.wait(2000, function()
+            return sent[#sent].method == "cancel" and sent[#sent].args.task_id == "t2"
+        end, 10))
+        assert.is_nil(t.strategy._call_id)
+        frame("t2", "start", { meta = meta() })
+        assert.equals(1, #created)
+        assert.is_nil(runner.overseer_task(obs._tasks["t2"]))
+        frame("t2", "done", { exit_code = 130, error = "build stopped: cancelled" })
+        assert.equals("CANCELED", t.status)
+    end)
+
+    it("two quick restarts: the superseded run is cancelled and never listed as another task", function()
+        obs = fake_observer()
+        owned_build("t1")
+        local t = created[1]
+        frame("t1", "done", { exit_code = 2, error = "build failed" })
+        local n = #sent
+        t:restart(true)
+        assert.is_true(vim.wait(2000, function() return #sent == n + 1 end, 10))
+        local a = sent[#sent]
+        t:restart(true)
+        assert.is_true(vim.wait(2000, function() return #sent == n + 2 end, 10))
+        local b = sent[#sent]
+        a.cb({ outcome = "accepted", task_id = "t2" }, nil)
+        assert.is_true(vim.wait(2000, function()
+            return sent[#sent].method == "cancel" and sent[#sent].args.task_id == "t2"
+        end, 10))
+        b.cb({ outcome = "accepted", task_id = "t3" }, nil)
+        assert.is_true(vim.wait(2000, function() return t.strategy._call_id == "t3" end, 10))
+        frame("t2", "start", { meta = meta() })
+        frame("t3", "start", { meta = meta() })
+        assert.equals(1, #created)
+        assert.equals(t, runner.overseer_task(obs._tasks["t3"]))
+        assert.is_nil(runner.overseer_task(obs._tasks["t2"]))
+        frame("t2", "done", { exit_code = 130, error = "build stopped: cancelled" })
+        assert.equals("RUNNING", t.status)
+        frame("t3", "done", { exit_code = 0 })
+        assert.equals("SUCCESS", t.status)
+    end)
+
+    it("force-disposing a running observed task is quiet", function()
+        obs = fake_observer()
+        frame("c1", "start", { meta = meta("cli") })
+        local t = created[1]
+        local n, sends = #notes, #sent
+        t:dispose(true)
+        assert.equals("DISPOSED", t.status)
+        assert.equals(n, #notes)
+        assert.equals(sends, #sent)
+    end)
+
+    it("a task that ends exit 0 after the status page's Cancel is SUCCESS", function()
+        obs = fake_observer()
+        owned_build("t1")
+        assert.is_true(editor_ops.cancel(obs._tasks["t1"]))
+        frame("t1", "done", { exit_code = 0 })
+        assert.equals("SUCCESS", created[1].status)
+    end)
+
+    it("output while the terminal cannot open is bounded and retried slowly", function()
+        obs = fake_observer()
+        owned_build("t1")
+        local t = created[1]
+        local s = t.strategy
+        local real_mode = vim.api.nvim_get_mode
+        local cap = runner.QUEUE_CAP_BYTES
+        runner.QUEUE_CAP_BYTES = 4096
+        vim.api.nvim_get_mode = function() return { mode = "i", blocking = false } end
+        local flushes = 0
+        s._flush = function(self) flushes = flushes + 1; return runner.Strategy._flush(self) end
+        local ok, err = pcall(function()
+            for i = 1, 2000 do frame("t1", "output", { stream = "stdout", text = ("line %04d\n"):format(i) }) end
+            vim.wait(400, function() return false end, 10)
+            assert.is_nil(s.chan)
+            assert.is_true(#s._queue <= 2, "queued pieces: " .. #s._queue)
+            local bytes = 0
+            for _, q in ipairs(s._queue) do bytes = bytes + #q end
+            assert.is_true(bytes <= 4096 + 200, "queued bytes: " .. bytes)
+            assert.is_true(flushes <= 4, "flush attempts: " .. flushes)
+        end)
+        vim.api.nvim_get_mode = real_mode
+        runner.QUEUE_CAP_BYTES = cap
+        assert(ok, err)
+        assert.is_true(vim.wait(3000, function() return buf_text(t):find("line 2000", 1, true) ~= nil end, 10),
+            buf_text(t))
+        assert.truthy(buf_text(t):find("dropped", 1, true))
+        assert.is_nil(buf_text(t):find("line 0001", 1, true))
     end)
 
     describe("against the installed overseer", function()
@@ -317,6 +445,11 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
             assert.equals("RUNNING", c.status)
             frame("c1", "done", { exit_code = 0 })
             assert.equals("SUCCESS", c.status)
+            frame("c2", "start", { meta = meta("cli") })
+            local c2 = runner.overseer_task(obs._tasks["c2"])
+            local n = #notes
+            c2:dispose(true)
+            assert.equals(n, #notes)
             for _, x in ipairs(ov.list_tasks({ include_ephemeral = true })) do pcall(x.dispose, x, true) end
         end)
     end)
