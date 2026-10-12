@@ -7098,6 +7098,58 @@ local LSP_OPTION_SCHEMAS = {
     },
 }
 
+--- Whether `value` is one of a string-enum's allowed values.
+--- @param allowed string[]
+--- @param value any
+--- @return boolean
+local function lsp_enum_allows(allowed, value)
+    for _, v in ipairs(allowed) do
+        if value == v then return true end
+    end
+    return false
+end
+
+--- What is wrong with setting `server`'s option `key` to `value`, checked
+--- against LSP_OPTION_SCHEMAS (nil `value`: only the server and key, a
+--- removal), or nil when nothing is. Shared by Workspace:set_lsp_option and
+--- `LspConfig/1.set_option` (§19.20), which refuse such a write before
+--- anything is written. Stricter than reading user.json
+--- (Workspace:_validate_lsp_options), which keeps an unknown server verbatim
+--- and drops non-string `extra_args` elements: a write is refused instead.
+--- @param server any
+--- @param key any
+--- @param value any
+--- @return string|nil problem
+function M.lsp_option_problem(server, key, value)
+    if type(server) ~= "string" or type(key) ~= "string" then
+        return "an LSP option needs a server and a key (strings)"
+    end
+    local schema = LSP_OPTION_SCHEMAS[server]
+    if not schema then
+        return string.format("lsp server %q has no options", server)
+    end
+    local expect = schema.keys[key]
+    if not expect then
+        return string.format("lsp.%s.%s is not an option", server, key)
+    end
+    if value == nil then return nil end
+    if type(value) ~= expect then
+        return string.format("lsp.%s.%s expects %s, got %s", server, key, expect, type(value))
+    end
+    if schema.enums[key] and not lsp_enum_allows(schema.enums[key], value) then
+        return string.format("lsp.%s.%s = %q is not one of %s",
+            server, key, value, table.concat(schema.enums[key], "|"))
+    end
+    if expect == "table" then
+        for k, v in pairs(value) do
+            if type(k) ~= "number" or type(v) ~= "string" then
+                return string.format("lsp.%s.%s expects a list of strings", server, key)
+            end
+        end
+    end
+    return nil
+end
+
 --- Validate a raw `lsp` block parsed from user.json. Unknown server
 --- names pass through (the integration may not have been registered
 --- yet); unknown / mistyped fields within a server table are stripped
@@ -7134,11 +7186,7 @@ function Workspace:_validate_lsp_options(raw)
                                 server, key, expect, type(value)),
                             vim.log.levels.WARN)
                     elseif schema.enums[key] then
-                        local allowed = false
-                        for _, v in ipairs(schema.enums[key]) do
-                            if value == v then allowed = true; break end
-                        end
-                        if not allowed then
+                        if not lsp_enum_allows(schema.enums[key], value) then
                             self._core._deps.notify(
                                 string.format(
                                     "loomworks: user.json lsp.%s.%s = %q is not one of %s; using default",
@@ -7201,12 +7249,16 @@ end
 --- A nil `value` removes the key (the default applies again). A write that
 --- is refused (a stale or untrusted working copy, §2.7) or fails changes
 --- neither user.json nor the model (also `LspConfig/1.set_option`, §19.20).
+--- An unknown server or key, or a value of the wrong type
+--- (`M.lsp_option_problem`), is refused before anything is written.
 --- @param server string
 --- @param key string
 --- @param value any
 --- @return boolean ok
 --- @return string|nil err why user.json was not written
 function Workspace:set_lsp_option(server, key, value)
+    local problem = M.lsp_option_problem(server, key, value)
+    if problem then return false, problem end
     local defaults = LSP_OPTION_DEFAULTS[server] or {}
     local before = self._lsp_options
     local options = vim.deepcopy(before or {})

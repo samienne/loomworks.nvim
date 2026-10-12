@@ -167,6 +167,54 @@ describe("lsp_config", function()
         assert.equals(5, p.calls)
     end)
 
+    it("keeps at most ENV_SLOTS environments per project, least recently used dropped first", function()
+        local ws = fake_ws({ P = { build_dir = "/ws/b/P", configured = true } })
+        local p = fake_project(ws, "P", function() return clangd_entry("/ws/P") end)
+        local function env(i) return "PATH=/bin" .. i .. "\n" .. string.rep("X=y\n", 500) end
+        for i = 1, lsp_config.ENV_SLOTS do lsp_config.entries(ws, p, env(i)) end
+        assert.equals(lsp_config.ENV_SLOTS, p.calls)
+        -- Each environment is a hit while it is kept.
+        for i = 1, lsp_config.ENV_SLOTS do lsp_config.entries(ws, p, env(i)) end
+        assert.equals(lsp_config.ENV_SLOTS, p.calls)
+        -- Touch env(1) (now the most recent): a new environment then evicts
+        -- the least recently used one, env(2).
+        lsp_config.entries(ws, p, env(1))
+        lsp_config.entries(ws, p, env(99))
+        assert.equals(lsp_config.ENV_SLOTS + 1, p.calls)
+        assert.equals(lsp_config.ENV_SLOTS, lsp_config._memo_slot_count("P"))
+        lsp_config.entries(ws, p, env(1))
+        assert.equals(lsp_config.ENV_SLOTS + 1, p.calls, "env(1) kept (recently used)")
+        lsp_config.entries(ws, p, env(2))
+        assert.equals(lsp_config.ENV_SLOTS + 2, p.calls, "env(2) evicted (least recently used)")
+        -- Many environments never grow the memo past the bound.
+        for i = 100, 140 do lsp_config.entries(ws, p, env(i)) end
+        assert.equals(lsp_config.ENV_SLOTS, lsp_config._memo_slot_count("P"))
+        -- The editor's own (no env_key) is just another slot; invalidation
+        -- still reaches every kept environment.
+        lsp_config.entries(ws, p)
+        local before = p.calls
+        lsp_config.entries(ws, p)
+        lsp_config.entries(ws, p, env(140))
+        assert.equals(before, p.calls)
+        lsp_config.bump_generation()
+        lsp_config.entries(ws, p)
+        lsp_config.entries(ws, p, env(140))
+        assert.equals(before + 2, p.calls)
+    end)
+
+    it("names an environment by a short stable digest, never the signature itself", function()
+        local sig = "PATH=/usr/bin\n" .. string.rep("LONG=value\n", 1000)
+        local d = lsp_config._env_digest(sig)
+        assert.equals(64, #d)
+        assert.equals(d, lsp_config._env_digest(sig))
+        assert.are_not.equal(d, lsp_config._env_digest(sig .. "Z=1\n"))
+        assert.equals("", lsp_config._env_digest(nil))
+        local p = fake_project(fake_ws({}), "P", function() return {} end)
+        local key = lsp_config._memo_key(p, sig)
+        assert.is_nil(key:find("LONG=value", 1, true))
+        assert.is_truthy(key:find(d, 1, true))
+    end)
+
     it("returns no entries when lsp_configs fails or is absent", function()
         local ws = fake_ws({})
         local bad = fake_project(ws, "B", function() error("boom") end)

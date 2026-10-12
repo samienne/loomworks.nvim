@@ -1307,10 +1307,18 @@ function Core:get_lsp_options(server)
     return self._workspace:get_lsp_options(server)
 end
 
+--- A refused write (an invalid option, a stale or untrusted working copy) is
+--- notified as an error and returned.
 --- @see loomworks.Workspace.set_lsp_option
+--- @return boolean ok
+--- @return string|nil err
 function Core:set_lsp_option(server, key, value)
-    if not self._workspace then return end
-    self._workspace:set_lsp_option(server, key, value)
+    if not self._workspace then return false, "no workspace" end
+    local ok, err = self._workspace:set_lsp_option(server, key, value)
+    if not ok then
+        self._deps.notify("loomworks: LSP option not saved: " .. tostring(err), vim.log.levels.ERROR)
+    end
+    return ok, err
 end
 
 --- @see loomworks.Workspace.stop_tasks_then

@@ -426,6 +426,8 @@ end
 --- (and `Workspace.changed`, then this interface's `changed`) precedes the
 --- reply. A refused or failed write (a stale or untrusted working copy, a
 --- refused load) changes neither user.json nor the model: the refused result.
+--- An unknown server or key or a mistyped value is `invalid_args`, before
+--- anything runs.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.lsp_impl(service)
@@ -453,6 +455,12 @@ function M.lsp_impl(service)
     function methods.set_option(ctx, args)
         local value = args.value
         if value == vim.NIL then value = nil end
+        -- An unknown server or key, or a mistyped value, is an invalid call
+        -- (§19.20): refused before any segment, nothing loaded or written.
+        local problem = require("loomworks.workspace").lsp_option_problem(args.server, args.key, value)
+        if problem then
+            return nil, envelope.err(envelope.ERR.invalid_args, "set_option: " .. problem)
+        end
         service:_on_model_request(ctx.conn, { kind = "lsp_config", env = ctx.env }, function(ws)
             -- A change another process wrote is taken in first: the write
             -- then never refuses as stale for it (§2.7).

@@ -521,8 +521,10 @@ end
 --- @param server string
 --- @param key string
 --- @param value any
+--- @return boolean ok false when not saved (notified)
+--- @return string|nil err
 function M.set_lsp_option(server, key, value)
-    core:set_lsp_option(server, key, value)
+    return core:set_lsp_option(server, key, value)
 end
 
 -- ---------------------------------------------------------------------------

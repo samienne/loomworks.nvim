@@ -110,6 +110,13 @@ M.LOAD_WAIT_MS = 45000
 --- @field env_sig string|nil the environment signature `ws` was loaded in
 --- @field stopping boolean|nil the server is stopping (`on_stopping`): no new request starts
 --- @field ids loomworks.daemon.IdRegistry the session's opaque-id registry (§19.12)
+--- @field _lsp_sig string|nil LspConfig/1 (§19.20): the state (the daemon's own environment) at the last
+---   `changed`, the baseline the next check compares with; nil while /lsp has no subscriber
+--- @field _lsp_seq integer|nil the `seq` of the last `changed` sent
+--- @field _lsp_force boolean|nil an owned database was written during a model segment: the deferred check
+---   sends `changed` even when the state is unchanged (a raised `db_rev`)
+--- @field _lsp_listeners table<string, function> the `lsp_database_written` / `lsp_ready` event handlers
+---   (removed again when the service stops)
 local Service = {}
 Service.__index = Service
 

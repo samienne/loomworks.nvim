@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.LspConfig",
   "version": 1,
-  "description": "Object /lsp (spec 19.20 LspConfig/1): the LSP state read in each workspace state, an entry made ready by a configure, options set and reset in the working copy, and changed after each change.",
+  "description": "Object /lsp (spec 19.20 LspConfig/1): the LSP state read in each workspace state, a configure that loads the workspace (its entry unconfigured: no profile is active), options set and reset in the working copy, and changed after each change.",
   "cases": [
     {
       "name": "get answers an unloaded workspace's state without loading it; malformed arguments are errors",
@@ -365,7 +365,7 @@
       ]
     },
     {
-      "name": "set_option writes the working copy with changed after it; without a value the default applies again; malformed arguments are errors",
+      "name": "set_option writes the working copy with changed after it; without a value the default applies again; malformed arguments, an unknown server or key and a mistyped value are errors and write nothing",
       "fixture": "shell",
       "allow": [
         {
@@ -641,6 +641,143 @@
             "req_id": 7,
             "error": {
               "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 8,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "set_option",
+            "args": {
+              "server": "pyright",
+              "key": "clang_tidy",
+              "value": false
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 8,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 9,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "set_option",
+            "args": {
+              "server": "clangd",
+              "key": "no_such_option",
+              "value": true
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 9,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 10,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "set_option",
+            "args": {
+              "server": "clangd",
+              "key": "clang_tidy",
+              "value": "yes"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 10,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 11,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "set_option",
+            "args": {
+              "server": "clangd",
+              "key": "background_index_priority",
+              "value": "urgent"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 11,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 12,
+            "object": "/lsp",
+            "iface": "loomworks.LspConfig",
+            "v": 1,
+            "method": "get",
+            "args": {},
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 12,
+            "result": {
+              "state": "loaded",
+              "options": {
+                "clangd": {
+                  "clang_tidy": true,
+                  "background_index_priority": "low"
+                }
+              }
             }
           }
         }

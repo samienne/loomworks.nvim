@@ -3052,11 +3052,25 @@ end
 --- @field started boolean whether the opening `[` has been emitted
 --- @field ok boolean cleared on any write/encode failure
 
+--- The temp file of a write: `<out_file>.<pid>.tmp`, unique per process and in
+--- the same directory as `out_file` (so the final rename stays atomic on one
+--- filesystem). The single-flight guard of `refresh_generated_cc` is per
+--- process, so the daemon (D6 startup regeneration) and a daemon-mode editor
+--- may write the same database at once; with a shared fixed name one would
+--- truncate the other's temp file and rename a half-written database into
+--- place. Each process only ever writes, renames or removes its own name.
+--- @param out_file string
+--- @return string
+local function cc_writer_tmp_path(out_file)
+    return out_file .. "." .. tostring(uv.os_getpid()) .. ".tmp"
+end
+M._cc_writer_tmp_path = cc_writer_tmp_path
+
 --- Open the temp file and return a writer, or nil + err.
 --- @param out_file string absolute target path
 --- @return loomworks.cmake.CcWriter|nil writer, string|nil err
 local function cc_writer_open(out_file)
-    local tmp = out_file .. ".tmp"
+    local tmp = cc_writer_tmp_path(out_file)
     local fd, err = uv.fs_open(tmp, "w", 438)
     if not fd then return nil, "open tmp: " .. (err or "unknown") end
     return {
@@ -3128,7 +3142,12 @@ local function cc_writer_finish(w, cb)
     uv.fs_fsync(w.fd)
     uv.fs_close(w.fd)
     if not w.ok then pcall(uv.fs_unlink, w.tmp); cb(false, "write failed"); return end
-    async_rename(w.tmp, w.out_file, cb)
+    async_rename(w.tmp, w.out_file, function(ok, err)
+        -- A failed rename leaves this process's own temp file behind; remove
+        -- it (only ours: the name carries our pid).
+        if not ok then pcall(uv.fs_unlink, w.tmp) end
+        cb(ok, err)
+    end)
 end
 
 --- Select the codemodel configuration matching `variant` (multi-config

@@ -3976,7 +3976,13 @@ configuration"), on `/lsp`:
   writes it, under the model lock, with a `model_change` (§19.12). A write
   that is refused (a stale working copy, §2.7, or one that is not trusted) or
   fails changes neither `user.json` nor the model, and is the `refused`
-  result with its message.
+  result with its message. An unknown server or key, or a value whose type
+  (or enum value, or list element type) the server's option schema does not
+  accept, is `invalid_args`, before anything is loaded or written; the
+  in-process `Workspace:set_lsp_option` refuses the same calls the same way,
+  writing nothing. (Unlike `DebugConfig/1.set_adapter`, whose adapter name is
+  stored as given: an option's schema is core's, so a client cannot know
+  better.)
 - Signal `changed { seq }` — carries no state. It is sent when the state the
   daemon computes with its own environment differs from the one at its last
   `changed` (checked where the views' `update` is, §19.13: after each model

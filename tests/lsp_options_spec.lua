@@ -207,5 +207,105 @@ describe("Workspace LSP options", function()
                 or payload.lsp.clangd == nil
                 or next(payload.lsp.clangd) == nil)
         end)
+
+        it("refuses an unknown server or key or a mistyped value, writing and emitting nothing", function()
+            local ws, env = make_ws({ lsp = { clangd = { clang_tidy = false } } })
+            local cases = {
+                { "pyright", "clang_tidy", false },
+                { "clangd", "no_such_option", true },
+                { "clangd", "no_such_option", nil },
+                { "clangd", "clang_tidy", "yes" },
+                { "clangd", "background_index_priority", "urgent" },
+                { "clangd", "extra_args", "--flag" },
+                { "clangd", "extra_args", { "--ok", 42 } },
+                { nil, "clang_tidy", true },
+            }
+            for i, c in ipairs(cases) do
+                local ok, err = ws:set_lsp_option(c[1], c[2], c[3])
+                assert.is_false(ok, "case " .. i)
+                assert.is_string(err, "case " .. i)
+            end
+            assert.is_nil(env.get_saved(), "nothing was written")
+            for _, e in ipairs(env.events) do
+                assert.are_not.equal("lsp_options_changed", e.event)
+            end
+            assert.same({ clangd = { clang_tidy = false } }, ws._lsp_options)
+            assert.is_nil(workspace.lsp_option_problem("clangd", "extra_args", { "--a", "--b" }))
+            assert.is_nil(workspace.lsp_option_problem("clangd", "background_index_priority", "normal"))
+        end)
+
+        it("a refused save puts the options back and emits nothing (clangd is not restarted)", function()
+            local ws, env = make_ws({ lsp = { clangd = { clang_tidy = false } } })
+            ws._core._deps.user.save = function() return false, "disk full" end
+            local ok, err = ws:set_lsp_option("clangd", "background_index", false)
+            assert.is_false(ok)
+            assert.equals("disk full", err)
+            assert.same({ clangd = { clang_tidy = false } }, ws._lsp_options)
+            for _, e in ipairs(env.events) do
+                assert.are_not.equal("lsp_options_changed", e.event)
+            end
+        end)
+    end)
+end)
+
+-- A stale working copy (§2.7), on disk: another process wrote user.json
+-- behind this workspace's back, so set_lsp_option is refused, the other
+-- process's file stands and the option is not applied.
+describe("Workspace:set_lsp_option on a stale working copy", function()
+    _G.LOOMWORKS_CLI_NO_AUTORUN = true
+    local cli = require("loomworks.cli")
+    local Core = require("loomworks.core")
+    local FileTracker = require("loomworks.file_tracker")
+    local io_mod = require("loomworks.io")
+    local user_mod = require("loomworks.user")
+
+    local function capture(fn)
+        local rw, rs, rex = io.write, io.stderr, os.exit
+        io.write = function() end
+        io.stderr = { write = function() end }
+        os.exit = function() error({ __exit = true }, 0) end
+        local ok, err = pcall(fn)
+        io.write, io.stderr, os.exit = rw, rs, rex
+        if not ok and not (type(err) == "table" and err.__exit) then error(err, 0) end
+    end
+    local function stop_cli_tracking()
+        local lc = require("loomworks")._core()
+        if lc._workspace then lc._workspace:_stop_tracking() end
+    end
+
+    it("is refused, never overwrites the other process's file, and leaves the option unset", function()
+        local root = vim.fn.tempname():gsub("\\", "/")
+        vim.fn.mkdir(root .. "/App", "p")
+        local f = assert(io.open(root .. "/loomworks.json", "w"))
+        f:write(vim.json.encode({ projects = { App = { typescript = vim.empty_dict() } } })); f:close()
+        capture(function() cli.cmd_configuration("add", root, "App", "Debug", "variant:default") end)
+        stop_cli_tracking()
+        local core = Core.new({
+            notify = function() end,
+            on_save_refused = false,
+            FileTracker = { new = function(o) o.interval = 3600 * 1000; return FileTracker.new(o) end },
+        })
+        core:setup({ root = root })
+        assert(vim.wait(15000, function() return core._state ~= "initializing" end, 10))
+        local ws = core._workspace
+        -- Another process changes the working copy behind this one's back.
+        capture(function() cli.cmd_configuration("add", root, "App", "Release", "variant:default") end)
+        stop_cli_tracking()
+        local theirs = io_mod.read_file(user_mod.filepath(root))
+        local events = {}
+        local emit = ws._core._deps.events.emit
+        ws._core._deps.events.emit = function(ev, ...)
+            events[#events + 1] = ev
+            return emit(ev, ...)
+        end
+        local ok, err = ws:set_lsp_option("clangd", "clang_tidy", false)
+        ws._core._deps.events.emit = emit
+        assert.is_false(ok)
+        assert.is_string(err)
+        assert.equals(theirs, io_mod.read_file(user_mod.filepath(root)))
+        assert.is_true(ws:get_lsp_options("clangd").clang_tidy)
+        assert.is_nil(vim.tbl_contains(events, "lsp_options_changed") or nil)
+        core:shutdown()
+        vim.fn.delete(root, "rf")
     end)
 end)

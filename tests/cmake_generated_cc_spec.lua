@@ -704,6 +704,34 @@ describe("cmake streaming writer", function()
             assert.equals("table", type(e.arguments))
         end
     end)
+
+    it("writes through a per-process temp file, never another process's", function()
+        -- Another process (the daemon's D6 regeneration, or a daemon-mode
+        -- editor) is mid-write of the same database under the old fixed name
+        -- and under its own pid-named temp file: neither may be truncated,
+        -- renamed into place or removed by this process.
+        local out_dir = tmp .. "/cache/cc"
+        vim.fn.mkdir(out_dir, "p")
+        local out = out_dir .. "/compile_commands.json"
+        local foreign = { out .. ".tmp", out .. ".999999999.tmp" }
+        for _, p in ipairs(foreign) do
+            local f = assert(io.open(p, "w")); f:write("FOREIGN"); f:close()
+        end
+
+        local own = cmake._cc_writer_tmp_path(out)
+        assert.equals(out .. "." .. tostring((vim.uv or vim.loop).os_getpid()) .. ".tmp", own)
+
+        local n = cmake.generate_compile_commands(tmp .. "/build", out_dir, { variant = "Debug" })
+        assert.is_truthy(n and n >= 2)
+
+        for _, p in ipairs(foreign) do
+            local f = assert(io.open(p, "r"), "foreign temp file was removed: " .. p)
+            assert.equals("FOREIGN", f:read("*a")); f:close()
+        end
+        assert.is_nil((vim.uv or vim.loop).fs_stat(own), "own temp file left behind")
+        local f = assert(io.open(out, "r"))
+        assert.equals(n, #vim.json.decode(f:read("*a"))); f:close()
+    end)
 end)
 
 -- ---------------------------------------------------------------------------

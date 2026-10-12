@@ -25,7 +25,7 @@
       "mutates": false
     },
     "set_option": {
-      "description": "Set the server's option in the working copy (user.json lsp, never loomworks.json); with no value, remove it so the default applies. Written as the in-process Workspace:set_lsp_option writes it, in a model segment, the write's model_change (Workspace/1 changed) before the reply. A refused or failed write (a stale or untrusted working copy, a refused load) changes neither the file nor the model: the refused result.",
+      "description": "Set the server's option in the working copy (user.json lsp, never loomworks.json); with no value, remove it so the default applies. Written as the in-process Workspace:set_lsp_option writes it, in a model segment, the write's model_change (Workspace/1 changed) before the reply. A refused or failed write (a stale or untrusted working copy, a refused load) changes neither the file nor the model: the refused result. An unknown server or key, or a value of the wrong type for the key, is invalid_args, before anything runs or is written.",
       "params": {
         "type": "object",
         "required": [

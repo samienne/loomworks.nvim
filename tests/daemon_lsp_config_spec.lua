@@ -66,10 +66,14 @@ local function fixture(key)
 end
 
 --- Run `case` against a loopback daemon on `root`, its working copy verified
---- with `key`.
-local function run(case, root, key)
+--- with `key`; `before_send(frame)` runs before each frame is sent.
+local function run(case, root, key, before_send)
     trust._set_key_path(key)
     local d = runner.loopback_driver(root)
+    if before_send then
+        local send = d.send
+        function d.send(frame) before_send(frame); return send(frame) end
+    end
     local vars = { lw_version = require("loomworks.daemon.version").identity(), root = root,
         env = runner.wire_env((vim.uv or vim.loop).os_environ()) }
     local okc, a, b = pcall(engine.run_case, case, d, { vars = vars })
@@ -144,5 +148,65 @@ describe("LspConfig/1 in the daemon (§19.20)", function()
         }, root, H.tmp() .. "/other.key")
         assert.is_true(a, b)
         assert.equals(before, table.concat(vim.fn.readfile(user_path, "b"), "\n"))
+    end)
+
+    it("a load that fails (a structurally invalid working copy): get reports state error with nothing else", function()
+        local key = H.tmp() .. "/trust.key"
+        local root = fixture(key)
+        -- Signed here (trusted), but a project that is not a table: the load
+        -- is not refused, it fails (§19.13 header state `error`).
+        trust._set_key_path(key)
+        local user = { _meta = { version = 2 }, projects = { app = 42 } }
+        local w = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb"))
+        local signed = trust.sign("user", trust.encode(user))
+        assert.is_string(signed)
+        w:write(signed)
+        w:close()
+        local a, b = run({
+            name = "error",
+            steps = {
+                -- (Requests the daemon's load, which fails: refused.)
+                call(1, "/debug", "loomworks.DebugConfig", "adapters", vim.empty_dict()),
+                ok(1, { outcome = "refused", message = { ["$pattern"] = "user.json is invalid" } }),
+                lsp(2, "get"),
+                ok(2, { ["$exact"] = { state = "error", ready = false, projects = {},
+                    options = { ["$exact"] = vim.empty_dict() } } }),
+                -- A load that fails refuses the write, as a refused load does.
+                lsp(3, "set_option", { server = "clangd", key = "clang_tidy", value = false }),
+                ok(3, { outcome = "refused", message = { ["$pattern"] = "user.json is invalid" } }),
+            },
+        }, root, key)
+        assert.is_true(a, b)
+    end)
+
+    it("a working copy gone stale under another machine's key: set_option is refused, never overwrites it", function()
+        -- The daemon takes in a change another process wrote before the write
+        -- (§2.7); one it cannot trust leaves the write refused.
+        local key = H.tmp() .. "/trust.key"
+        local root = fixture(key)
+        local user_path = root .. "/.nvim/loomworks.user.json"
+        local theirs
+        local a, b = run({
+            name = "stale",
+            allow = { { kind = "model_change" }, { kind = "task" } },
+            steps = steps(op(1, "configure"), {
+                lsp(2, "set_option", { server = "clangd", key = "clang_tidy", value = false }),
+                ok(2, { outcome = "refused", message = { ["$type"] = "string" } }),
+            }),
+        }, root, key, function(frame)
+            if frame.req_id ~= 2 then return end
+            -- Another process rewrites the working copy, signed elsewhere.
+            local _, body = trust.split(table.concat(vim.fn.readfile(user_path, "b"), "\n"))
+            assert.is_string(body)
+            local doc = vim.json.decode(body)
+            doc.lsp = { clangd = { background_index = false } }
+            trust._set_key_path(H.tmp() .. "/other.key")
+            theirs = trust.sign("user", trust.encode(doc))
+            assert.is_string(theirs)
+            trust._set_key_path(key)
+            local w = assert(io.open(user_path, "wb")); w:write(theirs); w:close()
+        end)
+        assert.is_true(a, b)
+        assert.equals(theirs, table.concat(vim.fn.readfile(user_path, "b"), "\n"))
     end)
 end)

@@ -103,10 +103,58 @@ end
 -- state is part of the key, so a configure/build that would change what the
 -- side effect emits also changes the key and forces a recompute.
 
---- @type table<string, { key: string, entries: table[] }> project.key (+ env key) → memo
+-- Per environment (the daemon's callers each bring theirs, §19.15): a
+-- project keeps the entries of at most ENV_SLOTS environments, the least
+-- recently used dropped first, so a long-running daemon serving many clients
+-- (each `lw` invocation has its own environment) never grows the memo without
+-- bound. Not one slot: the daemon's own `changed` check (its environment) and
+-- a client's `get` (the client's) alternate on every change, and a single
+-- slot would make each of them recompute every time. An environment is named
+-- by the SHA-256 of its signature (kilobytes), never the signature itself.
+
+--- How many environments' entries a project keeps (LRU).
+M.ENV_SLOTS = 4
+
+--- @class loomworks.LspConfigMemoSlot
+--- @field env string the environment's digest ("" in the editor)
+--- @field key string the content key the entries were computed for
+--- @field entries table[]
+
+--- @type table<string, loomworks.LspConfigMemoSlot[]> project.key → slots, most recently used first
 local _memo = {}
 --- Bumped when the lsp options change, so every content key changes.
 local _generation = 0
+
+--- The last few environment signatures hashed (signature → digest): each
+--- read hashes its environment once, not once per project.
+--- @type { sig: string, digest: string }[]
+local _env_digests = {}
+
+--- The digest naming an environment in the memo: "" for none (the editor's
+--- one environment), else the SHA-256 (hex) of its signature. Pure Lua
+--- (Lua BitOp, which both hosts provide): this module never touches `vim.*`.
+--- @param env_key string|nil
+--- @return string
+function M._env_digest(env_key)
+    if env_key == nil or env_key == "" then return "" end
+    for i, d in ipairs(_env_digests) do
+        if d.sig == env_key then
+            if i > 1 then table.remove(_env_digests, i); table.insert(_env_digests, 1, d) end
+            return d.digest
+        end
+    end
+    local digest = require("loomworks.provision.sha256").lua(env_key)
+    table.insert(_env_digests, 1, { sig = env_key, digest = digest })
+    _env_digests[M.ENV_SLOTS + 1] = nil
+    return digest
+end
+
+--- The memo's slots of `project_key` (tests: the bound).
+--- @param project_key string
+--- @return integer
+function M._memo_slot_count(project_key)
+    return #(_memo[project_key] or {})
+end
 
 --- A stable serialization of a plain value (sorted keys), for the memo key.
 --- @param v any
@@ -147,7 +195,7 @@ function M._memo_key(project, env_key)
         "g", tostring(_generation),
         "w", ws.root or "",
         "p", project.key or "",
-        "env", env_key or "",
+        "env", M._env_digest(env_key),
     }
 
     local active = ws.get_active_profile and ws:get_active_profile() or nil
@@ -200,6 +248,7 @@ end
 --- Drop the whole memo (workspace swap — old projects are gone).
 function M.clear_memo()
     _memo = {}
+    _env_digests = {}
 end
 
 --- Invalidate every key by advancing the generation (the lsp options
@@ -268,9 +317,22 @@ function M.entries(ws, project, env_key)
 
     local entries
     local key = M._memo_key(project, env_key)
-    local slot = env_key and (project.key .. "" .. env_key) or project.key
-    local cached = key and _memo[slot] or nil
-    if cached and cached.key == key then
+    local env = M._env_digest(env_key)
+    local pk = project.key or ""
+    local slots = _memo[pk]
+    local cached
+    if key and slots then
+        for i, sl in ipairs(slots) do
+            if sl.env == env then
+                if sl.key == key then
+                    cached = sl
+                    if i > 1 then table.remove(slots, i); table.insert(slots, 1, sl) end
+                end
+                break
+            end
+        end
+    end
+    if cached then
         entries = cached.entries
     else
         local ok, out = pcall(mod.lsp_configs, project)
@@ -281,7 +343,17 @@ function M.entries(ws, project, env_key)
         for _, e in ipairs(entries) do
             if type(e) == "table" and e.db_dir == nil then e.db_dir = bd end
         end
-        if key then _memo[slot] = { key = key, entries = entries } end
+        if key then
+            -- (Replaces this environment's slot; the least recently used
+            -- environment beyond ENV_SLOTS is dropped.)
+            slots = slots or {}
+            for i = #slots, 1, -1 do
+                if slots[i].env == env then table.remove(slots, i) end
+            end
+            table.insert(slots, 1, { env = env, key = key, entries = entries })
+            for i = #slots, M.ENV_SLOTS + 1, -1 do slots[i] = nil end
+            _memo[pk] = slots
+        end
     end
 
     for _, e in ipairs(entries) do

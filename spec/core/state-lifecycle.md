@@ -977,6 +977,7 @@ Events are the primary mechanism for cross-component communication.
 | `deletion_failed`      | `{ items, errors }` | One or more build dir deletions failed |
 | `tools_detected`       | `tools_by_type` | Tool detection completed |
 | `lsp_ready`            | (none) | Active profile's owned LSP databases generated/settled — releases the deferred-LSP gate (§9.7) |
+| `lsp_database_written` | `{ workspace, db_dir }` | An owned LSP database was (re)written (§8.4 `refresh_lsp_database`'s `done(true)`), after its `db_rev` was raised — the daemon's `LspConfig/1` `changed` (§19.20) |
 | `lsp_buf_state_changed` | `{ bufnr, server, state }` | A buffer's per-server LSP status (§9.8: `none` / `held` / `ok` / `withheld_*`) changed; emitted scheduled, followed by a statusline redraw. `state` is the status for that one `server`, not the aggregated per-buffer status (`loomworks.lsp_buf_state(bufnr)`) |
 | `devices_changed`      | `Device[]` | Device scan completed |
 
