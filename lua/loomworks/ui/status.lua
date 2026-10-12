@@ -225,6 +225,7 @@ local view = View.new({
         "daemon_runtime_changed",
         "daemon_view_changed",
         "daemon_debug_adapters",
+        "daemon_lsp_config",
         "daemon_task_started",
         "daemon_task_progress",
         "daemon_task_stopped",

@@ -88,6 +88,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   deploy in Neovim, as an in-process launch does. An error starting the
   prepared program is reported instead of leaving its progress spinning.
   In-process mode is unchanged. (#201)
+- In daemon runtime mode the language servers are configured from the
+  workspace daemon: a configure, reset or profile switch run in the daemon
+  (from the CLI too) starts, withholds or restarts clangd in Neovim without
+  reopening the buffer, only the daemon writes the compile database
+  loomworks owns, and the status page's LSP options are written through the
+  daemon. While Neovim is still connecting, or the daemon has not loaded the
+  workspace, buffers wait for it at most about 5 s as on startup; when the
+  daemon is unavailable Neovim configures the servers itself as before.
+  In-process mode is unchanged. (#205)
 - `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
   `label`, `type`, `path`, `abs_path` and the active configuration, tool key
   and state). It matches on a separator boundary, so a project at `/a/foo`
@@ -613,6 +622,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what needs it. (#196, #198)
 
 ### Fixed
+- A language server is no longer routed to a project whose directory merely
+  shares a name prefix with the buffer's (a project at `/a/foo` no longer
+  claims a file in `/a/foobar`): the LSP layer maps a buffer to its project
+  as `lw.buf_project` does. (#205)
 - Changing an LSP option whose save is refused (a stale or untrusted working
   copy) no longer keeps the unsaved option or restarts clangd; an unknown
   option or a value of the wrong type is refused without writing anything

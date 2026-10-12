@@ -1660,9 +1660,8 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   (`on_active_set_changed`, clangd's options, qmlls's root resolution) read
   instead of the model: `state`, `projects`, `project_for_buf`,
   `find_by_root`, `options`, `loaded`, `loaded_and_ready`, `pending`,
-  `root`. Today it serves only the in-process state, built from the
-  `loomworks` facade's model (its one model read); buffer → project is still
-  `lw.project_for_buf`. *(5l B:)* the daemon serves the same builder on
+  `root`, built from the `loomworks` facade's model (its one model read)
+  when it serves the in-process state. *(5l B:)* the daemon serves the same builder on
   `/lsp` (`core_interfaces.lsp_impl`, beside `DebugConfig/1`): `get` answers
   a state other than `loaded` at once, never loading; a loaded model is read
   in a model segment of the caller's environment, the memo keyed by that
@@ -3299,7 +3298,7 @@ loomworks.nvim/
 │   │   ├── root_finder.lua            Upward workspace-root search (spec §1.1), shared by `lw` and editor auto-load: stops at a repo root / linked worktree, walks through submodules (pure `.git` file reads)
 │   │   ├── lsp.lua                    LSP registry + dispatcher (runtime-path discovery, setup_servers, get_status)
 │   │   ├── lsp_config.lua             LSP configuration state builder (memo, db_state, db_rev, options, readiness)
-│   │   ├── lsp_source.lua             Where the LSP layer reads that state (in-process source today)
+│   │   ├── lsp_source.lua             Where the LSP layer reads that state (the daemon's or in-process)
 │   │   ├── integrations/
 │   │   │   ├── lsp/
 │   │   │   │   ├── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)

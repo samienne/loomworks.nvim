@@ -266,6 +266,7 @@ describe("qmlls root_dir_factory", function()
         -- lsp_configs; give the project a module whose impl emits a qmlls
         -- entry rooted at /work/myapp.
         local fake_project = {
+            key = "App",
             _module = {
                 impl = {
                     lsp_configs = function()
@@ -274,7 +275,10 @@ describe("qmlls root_dir_factory", function()
                 },
             },
         }
+        local orig_bp, orig_gp = lw.buf_project, lw.get_projects
         lw.project_for_buf = function() return fake_project end
+        lw.buf_project = function() return { key = "App" } end
+        lw.get_projects = function() return { App = fake_project } end
         lw.get_workspace = function() return {} end
 
         local result = nil
@@ -285,6 +289,7 @@ describe("qmlls root_dir_factory", function()
         assert.equals("/work/myapp", result)
 
         lw.project_for_buf = orig_pfb
+        lw.buf_project, lw.get_projects = orig_bp, orig_gp
         lw.get_workspace = orig_gw
     end)
 

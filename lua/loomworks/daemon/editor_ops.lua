@@ -546,6 +546,48 @@ function M.set_debug_adapter(ws, language, adapter, cb)
     end)
 end
 
+--- Set a language server's option (`value` nil: removes the key) in the
+--- working copy (§19.16 "LSP configuration" Options):
+--- `LspConfig/1.set_option` while carried — the editor applies it from the
+--- state it reads back, not from its own write; a `refused` result or an
+--- `invalid_args` (an unknown server or key, a value its schema rejects) is
+--- notified as the in-process refusal; `declined` or degraded → in-process —
+--- otherwise `Workspace:set_lsp_option` in-process. `cb(ok, err)` on the main
+--- loop.
+--- @param ws loomworks.Workspace
+--- @param server string
+--- @param key string
+--- @param value any
+--- @param cb? fun(ok: boolean, err: string|nil)
+function M.set_lsp_option(ws, server, key, value, cb)
+    cb = cb or function() end
+    local function refused(err)
+        vim.notify("loomworks: LSP option not saved: " .. tostring(err), vim.log.levels.ERROR)
+        cb(false, err)
+    end
+    local function in_process()
+        local ok, err = ws:set_lsp_option(server, key, value)
+        if not ok then return refused(err) end
+        cb(true)
+    end
+    local obs = require("loomworks.daemon.observer").of(ws)
+    if not (obs and obs.state ~= "stopped" and obs:can_call("set_option")) then return in_process() end
+    obs:request("set_option", { server = server, key = key, value = value }, function(r)
+        if r.outcome == "degraded" then return in_process() end
+        local res = type(r.result) == "table" and r.result or {}
+        if r.outcome == "ok" and res.outcome == "declined" then
+            vim.notify("loomworks: the workspace daemon declined the LSP option change ("
+                .. tostring(res.reason) .. ") — saving it in-process", vim.log.levels.WARN)
+            return in_process()
+        end
+        if r.outcome ~= "ok" then return refused(r.reason) end
+        if res.outcome ~= nil and res.outcome ~= "ok" then return refused(res.message or res.outcome) end
+        -- Applied from the read back (its `model_change` reads it too).
+        obs:_fetch_lsp()
+        cb(true)
+    end)
+end
+
 --- The router a daemon-mode workspace carries (`ws._operation_router`): the
 --- domain objects' cleans ask it, with no dependency on the editor.
 M.router = {

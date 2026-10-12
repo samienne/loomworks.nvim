@@ -194,9 +194,11 @@ end
 -- ---------------------------------------------------------------------------
 --
 -- Projects, entries (with `db_state`, `db_dir`, `db_rev`), options and
--- readiness come from loomworks/lsp_source.lua, which serves the state built
--- by the host-neutral loomworks/lsp_config.lua (content-memoized
--- `lsp_configs`). This layer never reads the workspace model itself.
+-- readiness come from loomworks/lsp_source.lua, which serves the workspace
+-- daemon's `LspConfig/1` state while it is in use (daemon.md §19.16 "LSP
+-- configuration"), else the state built by the host-neutral
+-- loomworks/lsp_config.lua (content-memoized `lsp_configs`). This layer never
+-- reads the workspace model itself.
 
 local lsp_config = require("loomworks.lsp_config")
 local source = require("loomworks.lsp_source")
@@ -583,13 +585,19 @@ end
 --- Arm the safety timeout (once). If no readiness/failure signal arrives, the
 --- queue drains through each buffer's resolver so a buffer never stays in the
 --- hold (§9.7). A managed resolver never starts a database-less server for a
---- buffer under the workspace root — it withholds instead (§9.8).
+--- buffer under the workspace root — it withholds instead (§9.8). A hold
+--- still waiting for the workspace daemon (connecting, or its workspace not
+--- loaded) resolves against the in-process state, which stays in use until
+--- the daemon reports `loaded` (daemon.md §19.16 "LSP configuration").
 local function gate_arm_timer()
     if _gate_timer then return end
     _gate_timer = vim.uv.new_timer()
     local ms = M._gate_timeout_ms or GATE_TIMEOUT_MS
     _gate_timer:start(ms, 0, function()
-        vim.schedule(gate_release)
+        vim.schedule(function()
+            pcall(source.hold_timed_out)
+            gate_release()
+        end)
     end)
 end
 
@@ -1053,9 +1061,9 @@ function M.on_owned_database_changed(build_dir)
     M.reevaluate()
 
     -- The projects with an entry that reads this dir's owned database: its
-    -- `db_dir` (the module's, e.g. a `compile_commands_from` redirect target,
-    -- else the project's active build dir). A module's own `build_dir` field
-    -- is opaque and never matched.
+    -- `db_dir` (§8.4: the module's when it redirects the entry to another
+    -- unit's database, else the project's active build dir). A module's own
+    -- `build_dir` field is opaque and never matched.
     local target = norm_cmp(build_dir)
     for _, rec in ipairs(source.projects()) do
         local hit = false
@@ -1290,6 +1298,42 @@ local function discover()
     end
 end
 
+--- Apply one option change to the integrations, as the in-process
+--- `lsp_options_changed` does.
+--- @param payload { server: string, key: string, value: any }
+local function apply_option_change(payload)
+    -- lsp options can feed lsp_configs output; invalidate every memo key.
+    lsp_config.bump_generation()
+    for _, int in pairs(_integrations) do
+        if int.on_lsp_options_changed then
+            vim.schedule(function() int.on_lsp_options_changed(payload) end)
+        end
+    end
+end
+
+--- The LSP state in use may have changed (the observer's `daemon_lsp_config`,
+--- daemon.md §19.16 "LSP configuration"): a new read of the daemon's state,
+--- or a switch between it, the hold and the in-process state. Changed
+--- options apply as an in-process option change; a switch or changed entries
+--- re-evaluate as an active-set change (§9.8 — a client restarts only when
+--- its resolved binary or database directory differs); a raised `db_rev` is
+--- that entry's owned-database completion signal; the hold is released once
+--- nothing waits for the daemon and the source in use is ready (§9.7).
+function M._on_source_changed()
+    local ch = source.changes()
+    for _, payload in ipairs(ch.options) do apply_option_change(payload) end
+    if ch.switched or ch.entries then
+        for _, int in pairs(_integrations) do
+            if int.on_active_set_changed then
+                vim.schedule(int.on_active_set_changed)
+            end
+        end
+    end
+    for _, dir in ipairs(ch.written) do M.on_owned_database_changed(dir) end
+    if not source.holding() and workspace_loaded_and_ready() then gate_release() end
+    M.reevaluate()
+end
+
 --- Wire integration listeners to the loomworks event bus. Idempotent.
 local _listeners_wired = false
 local function wire_listeners()
@@ -1307,9 +1351,14 @@ local function wire_listeners()
     -- compile_commands_dir (with compile_commands.json already on disk for
     -- configured units) are in place, so held buffers resolve now and each
     -- server starts once, correct, with no follow-up restart.
+    -- (Not while the hold waits for the workspace daemon: its own `ready`
+    -- releases it then, daemon.md §19.16 "LSP configuration".)
     lw.on("lsp_ready", function()
-        gate_release()
+        if not source.holding() then gate_release() end
         M.reevaluate()
+    end)
+    lw.on("daemon_lsp_config", function()
+        M._on_source_changed()
     end)
     lw.on("active_set_changed", function()
         for _, int in pairs(_integrations) do
@@ -1359,13 +1408,7 @@ local function wire_listeners()
         lsp_config.clear_memo()
     end)
     lw.on("lsp_options_changed", function(payload)
-        -- lsp options can feed lsp_configs output; invalidate every memo key.
-        lsp_config.bump_generation()
-        for _, int in pairs(_integrations) do
-            if int.on_lsp_options_changed then
-                vim.schedule(function() int.on_lsp_options_changed(payload) end)
-            end
-        end
+        apply_option_change(payload)
     end)
 end
 

@@ -517,14 +517,21 @@ function M.get_lsp_options(server)
     return core:get_lsp_options(server)
 end
 
---- Set a single LSP option and persist to user.json.
+--- Set a single LSP option and persist to user.json. While the workspace
+--- daemon carries the LSP configuration (spec §19.16 "LSP configuration")
+--- it is written by `LspConfig/1.set_option`: this returns true at once and
+--- `cb` learns the outcome (a refusal is notified).
 --- @param server string
 --- @param key string
---- @param value any
+--- @param value any nil removes the key
+--- @param cb? fun(ok: boolean, err: string|nil) called with the outcome
 --- @return boolean ok false when not saved (notified)
 --- @return string|nil err
-function M.set_lsp_option(server, key, value)
-    return core:set_lsp_option(server, key, value)
+function M.set_lsp_option(server, key, value, cb)
+    if require("loomworks.lsp_source").set_option_routed(server, key, value, cb) then return true end
+    local ok, err = core:set_lsp_option(server, key, value)
+    if cb then cb(ok, err) end
+    return ok, err
 end
 
 -- ---------------------------------------------------------------------------

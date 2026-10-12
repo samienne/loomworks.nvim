@@ -180,6 +180,36 @@ qmlls integration).
 
 ---
 
+## Owned compile database briefly missing during the swap
+
+cmake's `async_rename` (modules/cmake.lua) first moves the previous
+`compile_commands.json` aside to `.bak`, then renames the new temp file into
+place, retrying a locked rename (Windows EACCES/EPERM) a few times on a
+timer. Between the two renames, and for good if every retry fails, there is
+no `compile_commands.json`: a clangd reading it then (or a §9.8 `no_db`
+check) sees no database, and a failed swap leaves only the `.bak`. Fix: on
+POSIX rename over the old file directly (atomic replace); on Windows, put
+the `.bak` back when the final rename fails, or use a replace call
+(`MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`) instead of the two steps.
+
+---
+
+## Leaked owned-database temp files; sparse `extra_args`
+
+- A process that crashes (or is killed) mid-generation leaves its
+  `compile_commands.json.<pid>.tmp` beside the database (cmake.md §12.4: each
+  process removes only its own). Nothing removes it later. Have the writer
+  (or housekeeping) remove such a temp file whose pid is no longer running
+  and that is older than a generation could take — never another live
+  process's.
+- user.json `lsp.clangd.extra_args` is read with `ipairs`
+  (`Workspace:_validate_lsp_options`): a list with a hole (a JSON `null`
+  element, or sparse integer keys) silently loses every element after it.
+  Read it by its integer keys in order instead (dropping non-strings, as
+  now), or refuse it like `lsp_option_problem` refuses a mistyped write.
+
+---
+
 ## `_validate_build_dir`: trailing dot/space segments on Windows
 
 `_validate_build_dir` accepts segments with trailing dot/space on Windows

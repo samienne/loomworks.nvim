@@ -203,8 +203,11 @@ return {
     -- M.LAUNCH.iface, ...) for prepare_run / prepare_debug and
     -- conn:call(M.DEBUG.object, M.DEBUG.iface, ...) for adapters /
     -- set_adapter — both versioned tables (Launch/1, DebugConfig/1).
+    -- 12 -> 14: step 5l part C adds two CALLS, each naming its method
+    -- literally: conn:call(M.LSP.object, M.LSP.iface, ...) for get /
+    -- set_option — the versioned table LspConfig/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 12,
+        ["lua/loomworks/daemon/observer.lua"] = 14,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

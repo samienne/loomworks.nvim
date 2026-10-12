@@ -23,13 +23,17 @@ end
 
 --- Render the clangd-options block. Each row toggles or cycles on
 --- Enter and writes through `lw.set_lsp_option`, which persists
---- user.json synchronously and emits `lsp_options_changed` so the
---- integration restarts the client.
+--- user.json and emits `lsp_options_changed` so the integration restarts
+--- the client — in-process at once; while the workspace daemon carries the
+--- LSP configuration through `LspConfig/1.set_option`, applied (and the page
+--- re-rendered, `daemon_lsp_config`) from the state read back.
 --- @param tree loomworks.Tree
 --- @param lw table loomworks public API
 local function render_clangd_defaults(tree, lw)
     if not lw.get_lsp_options then return end
-    local opts = lw.get_lsp_options("clangd")
+    -- The options in use: the workspace daemon's while its LSP state is
+    -- (spec §19.16 "LSP configuration"), else the model's.
+    local opts = require("loomworks.lsp_source").options("clangd") or lw.get_lsp_options("clangd")
     tree:node("Server defaults (clangd)", {
         fold_key = "lsp:defaults:clangd",
     }, function()
