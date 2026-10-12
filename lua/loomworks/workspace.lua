@@ -2969,8 +2969,9 @@ end
 --- @param action string "build"|"configure"|"configure+build"|"clean"|"delete"
 --- @param units loomworks.ConfigUnit[]
 --- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
+--- @param opts? { track_tasks?: boolean } see `Operation.new`
 --- @return loomworks.Operation
-function Workspace:create_operation(profile, action, units, target_states)
+function Workspace:create_operation(profile, action, units, target_states, opts)
     local OperationClass = require("loomworks.operation")
     local ws = self
     local op = OperationClass.new(ws, profile, action, units, target_states, function(completed_op)
@@ -2990,7 +2991,7 @@ function Workspace:create_operation(profile, action, units, target_states)
             ws._delete_waiters = {}
             for _, fn in ipairs(waiters) do fn() end
         end
-    end)
+    end, opts)
 
     ws._operations[#ws._operations + 1] = op
     if profile then

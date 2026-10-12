@@ -1,8 +1,10 @@
 --- loomworks/operation.lua — Operation: a user-initiated action.
 --- An Operation tracks ConfigUnit state changes to determine when all
 --- affected units have reached their target state (or failed).
---- Supports two modes: "rank" for build/configure (state hierarchy)
---- and "deletion" for clean/delete (waits for deleting flag to clear).
+--- Supports three modes: "rank" for build/configure (state hierarchy),
+--- "deletion" for clean/delete (waits for deleting flag to clear), and
+--- "tasks" (opt-in) where a unit is done only when the launcher reports that
+--- this operation's own task for it finished (`Operation:unit_finished`).
 
 --- @class loomworks.Operation
 --- @field id number unique ID
@@ -14,7 +16,7 @@
 --- @field completed boolean
 --- @field success boolean|nil nil while running, true/false when completed
 --- @field message string|nil result message (set on completion)
---- @field _mode "rank"|"deletion" completion check mode
+--- @field _mode "rank"|"deletion"|"tasks" completion check mode
 --- @field _unit_done table<loomworks.ConfigUnit, boolean> tracks which units are done
 --- @field _unit_ok table<loomworks.ConfigUnit, boolean> tracks which units succeeded
 --- @field _unsubscribers function[] listener cleanup functions
@@ -52,8 +54,10 @@ local DELETION_ACTIONS = { clean = true, delete = true }
 --- @param units loomworks.ConfigUnit[]
 --- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
 --- @param on_complete? fun(op: loomworks.Operation) called when operation completes
+--- @param opts? { track_tasks?: boolean } track_tasks: complete per unit only via
+---   `unit_finished` (the operation's own tasks), never from observed state
 --- @return loomworks.Operation
-function Operation.new(workspace, profile, action, units, target_states, on_complete)
+function Operation.new(workspace, profile, action, units, target_states, on_complete, opts)
     local self = setmetatable({}, Operation)
     self.id = next_id
     next_id = next_id + 1
@@ -66,7 +70,11 @@ function Operation.new(workspace, profile, action, units, target_states, on_comp
     self.completed = false
     self.success = nil
     self.message = nil
-    self._mode = DELETION_ACTIONS[action] and "deletion" or "rank"
+    if opts and opts.track_tasks then
+        self._mode = "tasks"
+    else
+        self._mode = DELETION_ACTIONS[action] and "deletion" or "rank"
+    end
     self._unit_done = {}
     self._unit_ok = {}
     self._unsubscribers = {}
@@ -76,6 +84,11 @@ function Operation.new(workspace, profile, action, units, target_states, on_comp
     -- Operations complete only when they observe a state transition after
     -- creation. This prevents premature completion when units happen to be
     -- in the target state from a previous action.
+    -- In "tasks" mode state is not observed at all: a unit can pass its
+    -- target state through someone else's task (a running build reaching
+    -- `built`, an earlier configure finishing) before this operation's own
+    -- task has even started, so only `unit_finished` marks it done.
+    if self._mode == "tasks" then return self end
     for _, unit in ipairs(units) do
         local unsub = unit:on_state_change(function(u)
             self:_on_unit_change(u)
@@ -134,6 +147,18 @@ function Operation:_check_unit(unit)
     end
     -- "configuring" and "building" are in-progress — do nothing, wait for
     -- the next state transition.
+end
+
+--- Report that this operation's own task(s) for `unit` finished ("tasks"
+--- mode). Ignored for units not in the operation or already done.
+--- @param unit loomworks.ConfigUnit
+--- @param ok boolean whether the task(s) succeeded
+function Operation:unit_finished(unit, ok)
+    if self.completed or self.target_states[unit] == nil then return end
+    if self._unit_done[unit] then return end
+    self._unit_done[unit] = true
+    self._unit_ok[unit] = ok and true or false
+    self:_check_completion()
 end
 
 --- Handle a ConfigUnit state change.
