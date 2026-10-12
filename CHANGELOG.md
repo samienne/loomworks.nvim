@@ -41,6 +41,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon: in daemon mode the editor's builds, configures and
+  module cleans (of a profile, of one configuration, a target's build and
+  the clean of a rebuild) run in the workspace daemon as tasks the editor
+  owns, instead of in Neovim. Each shows one progress entry (a profile build
+  is one entry, not one per project), Cancel stops it through the daemon, a
+  clean first stops the editor's own build on the same units, and closing
+  Neovim cancels what it started. An explicit profile configure there
+  configures every project, also configured ones. When the daemon cannot
+  carry an operation (not connected, an older daemon) it runs in Neovim as
+  before, its progress title saying "(in-process)". In-process mode is
+  unchanged. (#PR)
 - Experimental daemon: the workspace daemon can prepare a debug launch
   (`Launch/1.prepare_debug`: build, deploy and resolve the program exactly as
   `lw run` would, plus the debug languages and their adapters) and serves

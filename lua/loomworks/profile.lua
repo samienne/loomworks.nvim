@@ -1751,6 +1751,25 @@ function Profile:clean(on_done)
         return future_mod.resolved(true)
     end
 
+    -- In `daemon` mode the clean may be a daemon call whose task the editor
+    -- owns (spec §19.16 "Editor operations"): the workspace's router (set by
+    -- the editor, loomworks.daemon.editor_ops) pre-empts and sends it, or
+    -- returns nil — then in-process below, as always without a router.
+    local router = self._workspace._operation_router
+    local routed = router and router.clean({ profile = self }, function() return self:_clean_in_process() end)
+    local f = routed or self:_clean_in_process()
+
+    if on_done then
+        f:next(function() on_done() end)
+         :catch(function() on_done() end)
+    end
+    return f
+end
+
+--- The in-process module clean of this profile (Profile:clean).
+--- @return loomworks.Future
+function Profile:_clean_in_process()
+    local pps = self:projects()
     local items = {}
     local units = {}
     local target_states = {}
@@ -1775,7 +1794,7 @@ function Profile:clean(on_done)
         task_ids[#task_ids + 1] = task_id
     end
 
-    local f = self._workspace:stop_tasks_then(task_ids):next(function()
+    return self._workspace:stop_tasks_then(task_ids):next(function()
         return require("loomworks.overseer").run_profile_clean(self)
     end):next(function()
         for _, unit in ipairs(units) do
@@ -1783,12 +1802,6 @@ function Profile:clean(on_done)
         end
         return true
     end)
-
-    if on_done then
-        f:next(function() on_done() end)
-         :catch(function() on_done() end)
-    end
-    return f
 end
 
 --- Rebuild: clean then build. Returns a Future.

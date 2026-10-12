@@ -698,7 +698,7 @@ function M.build_target()
 
     local function do_build(target)
         local fidget = require("loomworks.fidget")
-        local handle = fidget.start_action("Building " .. target:display_name())
+        local handle = fidget.start_op_action("Building " .. target:display_name(), "build")
         fidget.report(handle, "building...")
         target:build()
             :next(function() fidget.finish(handle, "built") end)

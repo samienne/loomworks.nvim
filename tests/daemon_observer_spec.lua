@@ -29,17 +29,25 @@ end
 --- and emits `update` itself. Reset per mount.
 local VIEW_STATE = {}
 
---- `/tasks` (loomworks.Tasks/1), `/workspace` (loomworks.Workspace/1) and
+--- `/tasks` (loomworks.Tasks/1), `/build` (loomworks.Build/1), `/workspace` (loomworks.Workspace/1) and
 --- `/views` (loomworks.view.Header/1, loomworks.view.ProjectsIndex/1) with
 --- stub handlers: what a daemon with a build service offers, so the
 --- observer subscribes (step 5g.3, 5j) and a transport-11 connection is sent
 --- only what it subscribed to.
-local function mount_views(srv)
+local function mount_views(srv, o)
     local reg = srv:registry()
     assert(reg:mount("/tasks", "core", "loomworks.Tasks", 1, { methods = {
         list = function() return { tasks = {} } end,
         cancel = function() return { outcome = "ok" } end,
     } }))
+    -- The editor's operations (step 5k): called, never subscribed to.
+    -- (`o.build == false`: a daemon without them — the editor runs in-process.)
+    if not (o and o.build == false) then assert(reg:mount("/build", "core", "loomworks.Build", 1, { methods = {
+        build = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
+        configure = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
+        clean = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
+        reset = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
+    } })) end
     assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = {
         header = function() return { root = srv.root, pid = srv.pid, lw_version = srv.identity,
             session_generation = srv.generation, state = "unloaded" } end,
@@ -58,11 +66,11 @@ local function mount_views(srv)
 end
 
 --- An in-process server; `views == false`: without `/tasks` and `/workspace`.
-local function new_server(root, views)
+local function new_server(root, views, o)
     local s = { exited = nil }
     s.srv = server_mod.new(root, { exit = function(c) s.exited = c end, tick_ms = 100, auth_timeout_ms = 30000 })
     assert(s.srv:start())
-    if views ~= false then mount_views(s.srv) end
+    if views ~= false then mount_views(s.srv, o) end
     return s
 end
 
@@ -325,7 +333,9 @@ describe("the observer (§19.16)", function()
         assert.equals("tasks: daemon offers no loomworks.Tasks, editor needs /1; "
             .. "model changes: daemon offers no loomworks.Workspace, editor needs /1; "
             .. "statusline: daemon offers no loomworks.view.Header, editor needs /1; "
-            .. "project index: daemon offers no loomworks.view.ProjectsIndex, editor needs /1", obs.feature_note)
+            .. "project index: daemon offers no loomworks.view.ProjectsIndex, editor needs /1; "
+            .. "operations: daemon offers no loomworks.Build, editor needs /1 — running them in-process",
+            obs.feature_note)
         assert.truthy(obs:runtime_line():find("observing the workspace daemon", 1, true))
         assert.truthy(obs:runtime_line():find("editor needs /1", 1, true))
         assert.equals("tasks: daemon offers loomworks.Tasks/2,/3, editor needs /1",
@@ -738,7 +748,8 @@ describe("the observer (§19.16)", function()
         assert.is_true(ok, tostring(err))
         assert.equals("built", unit:state())
         assert.is_nil(unit:configure_reason(false, profile))
-        s = new_server(root)
+        -- (No /build: the editor's build stays in-process, step 5k.)
+        s = new_server(root, nil, { build = false })
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         local owner_client = assert(client.session(s.srv.address))

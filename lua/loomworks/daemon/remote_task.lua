@@ -36,6 +36,8 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field name string
 --- @field kind string the operation: "build", "test", "run", …
 --- @field origin string|nil who started it: "cli" or "editor" (`meta.origin`, protocol 7)
+--- @field owned boolean|nil the editor itself started it through a call (step 5k, §19.15 "The editor as
+---   owner"): no origin marker, cancelled from the editor
 --- @field profile loomworks.Profile|nil the resolved profile
 --- @field profiles loomworks.Profile[] the profiles that count it as their active operation (the resolved
 ---   profile; for a workspace-wide task, every profile with one of its resolved units)
@@ -84,6 +86,9 @@ function M.new(ws, id, meta, clock)
     end
     self.profile = profile
     self.scope = (meta.scope == "all" and not self.profile_name) and "all" or nil
+    -- A task of configuration units (`Build/1` `units`, step 5k) has no
+    -- profile: its units resolve as for `reset --all` (§19.15).
+    local by_units = not self.profile_name and type(meta.units) == "table" and #meta.units > 0
     if profile then self.profiles[1] = profile end
     for _, u in ipairs(type(meta.units) == "table" and meta.units or {}) do
         if type(u) == "table" and type(u.project) == "string" then
@@ -96,7 +101,7 @@ function M.new(ws, id, meta, clock)
                         break
                     end
                 end
-            elseif self.scope == "all" and ws and cfg ~= nil then
+            elseif (self.scope == "all" or by_units) and ws and cfg ~= nil then
                 -- No profile: among the workspace's configuration units.
                 for _, cu in pairs(ws._config_units or {}) do
                     local pk = cu._project and cu._project.key or cu._init_project_key
@@ -106,7 +111,7 @@ function M.new(ws, id, meta, clock)
             self.units[#self.units + 1] = { unit = unit, project = u.project, configuration = cfg }
         end
     end
-    if self.scope == "all" and ws then
+    if (self.scope == "all" or by_units) and ws then
         -- Every profile with one of its resolved units has it running.
         local mine = {}
         for _, unit in ipairs(self:config_units()) do mine[unit] = true end
@@ -147,6 +152,7 @@ end
 --- another editor; nil when the daemon did not say.
 --- @return string|nil
 function RemoteTask:origin_label()
+    if self.owned then return nil end
     if self.origin == "cli" then return "lw" end
     if self.origin == "editor" then return "editor" end
     return nil

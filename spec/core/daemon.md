@@ -2784,13 +2784,21 @@ deletion path, §4.6), test runs and discovery (step 5m), device-target
 launches (build → deploy → install → launch, §11), and model commands such as
 materializing a profile from a configuration set (step 5o; the build that
 follows it is routed). A confirmation the editor shows before an operation
-(a clean's) is asked before the call (§19.15 "Confirmation"). Each call
+(a clean's) is asked before the call (§19.15 "Confirmation"); so is the
+artifact-conflict question of a build (§5.9) for the units whose artifacts
+are known then (configured ones), its Yes sent as `force` — a conflict found
+only after the routed build's own configure ends the task as the CLI's
+routed build does (the refusal naming `--force`). Each call
 carries the editor process's whole environment **at call time**, under the
 rules of §19.15 "Environment" — what an in-process task of the editor
 inherits.
 
 **Availability.** The editor routes an operation only when it can be
-carried; otherwise it runs it in-process, as before 5k:
+carried; otherwise it runs it in-process, as before 5k. It is carried
+while connected through interfaces to a compatible daemon that offers
+`loomworks.Build/1` and `loomworks.Tasks/1` (its `cancel`: an operation the
+editor could not cancel is not routed) and has not shown the method
+missing on this connection:
 
 - no connection (no host binary, a relay still starting, the daemon stopped,
   a daemon found incompatible — the editor never routes to one, including
@@ -3539,7 +3547,11 @@ runtime is deferred until that module is actively developed.
        of builds, configures and module cleans with the availability rule,
        the task-runner bridge (editor-owned and read-only observed tasks),
        cancellation, one progress entry per owned task, and retirement
-       counting the editor's own tasks (needs B1); C2 — editor side: run and
+       counting the editor's own tasks (needs B1) — delivered as C1a (the
+       call API, routing, availability, cancellation, the one progress
+       entry, retirement) and C1b (the task-runner bridge: owned and
+       read-only observed tasks in overseer, `Open overseer` on their rows);
+       C2 — editor side: run and
        debug through `prepare_run` / `prepare_debug` for non-device targets,
        the module-target debug unified with run (§8.9.6), the debug adapters
        section on `DebugConfig/1`, the reach-in counts lowered (needs B2 and

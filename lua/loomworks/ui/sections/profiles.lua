@@ -566,7 +566,10 @@ return function(tree, ctx)
             -- something to cancel. Tasks chained behind a cancelled
             -- one auto-abort via the Future token in start_one_task.
             on_cancel = profile_running and function()
+                -- Its local tasks, and the tasks the editor started in the
+                -- workspace daemon (step 5k: `Tasks/1.cancel`).
                 local n = lw.cancel_tasks_for_profile(profile)
+                    + require("loomworks.daemon.editor_ops").cancel_for_profile(profile)
                 vim.notify(string.format(
                     "loomworks: cancelled %d task(s) for profile '%s'",
                     n, profile.key))

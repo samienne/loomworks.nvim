@@ -190,9 +190,12 @@ return {
     -- and subscribe, the subscribe args `iface = want.iface` (want is one of
     -- M.FEATURES), and the views' `get` after a seq gap,
     -- conn:call(want.object, want.iface, ...) (want is one of M.VIEWS, step
-    -- 5j): all resolve to its versioned tables.
+    -- 5j), and the four CALLS of step 5k (the editor's operations and their
+    -- cancel), conn:call(M.BUILD.object, M.BUILD.iface, ...) x3 and
+    -- conn:call(M.TASKS.object, M.TASKS.iface, ...): all resolve to its
+    -- versioned tables.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 4,
+        ["lua/loomworks/daemon/observer.lua"] = 8,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

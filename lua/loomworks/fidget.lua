@@ -99,6 +99,14 @@ local function find_handle_for_task(data)
     return nil
 end
 
+--- In `daemon` runtime mode an operation the editor runs in-process says so
+--- in its progress title (spec §19.16 "Availability", step 5k); "" otherwise.
+--- @return string
+local function in_process_suffix()
+    if require("loomworks.daemon.editor_ops").daemon_mode() then return " (in-process)" end
+    return ""
+end
+
 --- Initialize fidget integration. Call from setup().
 --- No-op if fidget.nvim is not available.
 --- @param opts? { progress_max_width?: integer }
@@ -141,7 +149,7 @@ function M.setup(opts)
     end)
 
     lw.on("operation_started", function(data)
-        local title = ACTION_TITLE[data.action] or data.action
+        local title = (ACTION_TITLE[data.action] or data.action) .. in_process_suffix()
         local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
         local message = data.profile_key or "workspace"
         create_handle(key, title, message)
@@ -171,7 +179,7 @@ function M.setup(opts)
             end
         else
             -- Standalone task (from Projects section)
-            local title = ACTION_TITLE[data.action] or data.action
+            local title = (ACTION_TITLE[data.action] or data.action) .. in_process_suffix()
             local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
             local ckey = data.unit:config_key() or data.unit.id
             local message = pkey .. "/" .. ckey
@@ -247,6 +255,20 @@ function M.start_action(title)
     if not fidget_progress then return nil end
     local key = "action:" .. title .. ":" .. tostring(os.clock())
     return create_handle(key, "", title)
+end
+
+--- The progress entry of a user action that runs an operation the editor
+--- may route to the workspace daemon (spec §19.16 "Editor operations"):
+--- none when the daemon carries `method` now — the routed task's own entry
+--- is its one progress entry — and in `daemon` mode otherwise the title says
+--- `(in-process)`. In `in-process` mode exactly `start_action(title)`.
+--- @param title string
+--- @param method "build"|"configure"|"clean"
+--- @return table|nil handle
+function M.start_op_action(title, method)
+    local ops = require("loomworks.daemon.editor_ops")
+    if ops.carrier(method) then return nil end
+    return M.start_action(title .. in_process_suffix())
 end
 
 --- Report progress on a handle (nil-safe).
