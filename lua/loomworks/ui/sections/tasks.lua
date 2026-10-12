@@ -203,9 +203,10 @@ local function render_local(tree, lw, task, now)
     })
 end
 
---- A remote task's rows (core §19.16): Enter offers only `Show output` — it
---- is not in overseer's list, and it belongs to its client (never cancelled
---- from here, §19.15).
+--- A remote task's rows (core §19.16): Enter offers `Show output` — it is
+--- not in overseer's list — and, for a task the editor itself started through
+--- a call (step 5k, `task.owned`), `Cancel task` (`Tasks/1.cancel`); another
+--- client's task belongs to it (never cancelled from here, §19.15).
 --- @param tree loomworks.Tree
 --- @param task loomworks.RemoteTask
 --- @param now number
@@ -216,11 +217,14 @@ local function render_remote(tree, task, now)
             spinning = true,
             direct = true,
             on_enter = function()
-                vim.ui.select({ "Show output" }, {
+                local choices = { "Show output" }
+                if task.owned then choices[#choices + 1] = "Cancel task" end
+                vim.ui.select(choices, {
                     prompt = "Task " .. task.name .. ":",
                     format_item = function(s) return s end,
                 }, function(choice)
                     if choice == "Show output" then show_remote_output(task) end
+                    if choice == "Cancel task" then require("loomworks.daemon.editor_ops").cancel(task) end
                 end)
             end,
         })

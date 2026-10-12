@@ -93,6 +93,10 @@ function Target:build(on_complete)
 
         local task_def = mod.build_target_task(project_ctx, self.id)
         if task_def then
+            -- The target it builds: what a routed build names (spec §19.16
+            -- "Editor operations", overseer.launch_single_task).
+            task_def.loomworks = task_def.loomworks or {}
+            task_def.loomworks.target_id = self.id
             f = require("loomworks.overseer").launch_single_task(task_def, unit)
         end
     end

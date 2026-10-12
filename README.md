@@ -952,8 +952,14 @@ timer and its units `building` on the status page and in the statusline, and
 normal rows in the status page's Tasks section ending in a dim `lw` (or
 `editor`) marker, whose Enter shows the output (it cannot cancel them: they
 belong to the terminal that started them). Builds already running when the
-editor connects are picked up too. Its own builds still run in the
-editor. It connects through `lw daemon run --stdio` from the `lw` it finds
+editor connects are picked up too. The editor's own builds, configures and
+module cleans (of a profile, of one configuration, a target's build, the
+clean of a rebuild) run in the daemon too, as tasks the editor owns: they
+show the same way without a marker, with one progress entry each, Cancel
+stops them there, and quitting Neovim cancels them. When the daemon cannot
+carry one (not connected, an older daemon) it runs in the editor as before,
+its progress title saying "(in-process)"; tests, launches, debug sessions
+and deletions still run in the editor. It connects through `lw daemon run --stdio` from the `lw` it finds
 (the same shared daemon the `lw` commands use), which starts the daemon when
 you open the workspace or run `:LoomworksDaemon connect` and none is running;
 it never restarts one you stopped with `lw daemon stop`, but picks up one a

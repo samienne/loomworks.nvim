@@ -145,6 +145,10 @@ return {
     reach_ins = {
         ["lua/loomtest/runner.lua"] = 1,
         ["lua/loomworks/auto_load.lua"] = 1,
+        -- 0 -> 1: step 5k C1a review fix — an operation is carried only by
+        -- the observer of its own scope's workspace (editor_ops.scope_workspace),
+        -- never the editor's current one after a workspace swap.
+        ["lua/loomworks/daemon/editor_ops.lua"] = 1,
         ["lua/loomworks/device_log.lua"] = 1,
         ["lua/loomworks/init.lua"] = 59,
         ["lua/loomworks/integrations/lsp/clangd.lua"] = 1,
@@ -190,9 +194,12 @@ return {
     -- and subscribe, the subscribe args `iface = want.iface` (want is one of
     -- M.FEATURES), and the views' `get` after a seq gap,
     -- conn:call(want.object, want.iface, ...) (want is one of M.VIEWS, step
-    -- 5j): all resolve to its versioned tables.
+    -- 5j), and the four CALLS of step 5k (the editor's operations and their
+    -- cancel), conn:call(M.BUILD.object, M.BUILD.iface, ...) x3 and
+    -- conn:call(M.TASKS.object, M.TASKS.iface, ...): all resolve to its
+    -- versioned tables.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 4,
+        ["lua/loomworks/daemon/observer.lua"] = 8,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

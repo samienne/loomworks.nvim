@@ -894,7 +894,43 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `outcome()`). `running_action()` / `is_running()` / `Profile:is_running()`
   stay local-only: they gate cancel and blocking, which a remote task never
   does. `origin_label()` is the `lw` / `editor` marker of the Tasks rows,
-  the profile row and the fidget entry; remote tasks never enter overseer.
+  the profile row and the fidget entry (none for an `owned` task); remote
+  tasks never enter overseer (the task-runner bridge is step 5k part C1b).
+  A task with `units` and no profile (`Build/1` `units`, step 5k) resolves
+  them as `reset --all` does.
+- `daemon/editor_ops.lua` — the editor's operations as daemon calls (spec
+  §19.16 "Editor operations", step 5k part C1; plugin side). The overseer
+  entry points `run_profile_action`, `run_configuration_action` and
+  `launch_single_task` (a module target's build: `Target:build` puts the
+  target in `task_def.loomworks.target_id`) ask `overseer.route(method,
+  scope, opts, fallback)` first, and `Profile:clean` / `ConfigUnit:clean` ask
+  the workspace's `_operation_router` (set by `observer.attach`, cleared by
+  `stop`; nil in in-process mode, so the domain stays free of the editor),
+  which goes to `overseer.route_clean`. Both wrap `editor_ops.run` /
+  `editor_ops.clean` (callbacks only, `{ resolve, reject, fallback }`) in a
+  Future; not routed → the caller's in-process body, unchanged
+  (`in_process_*` locals, `_clean_in_process`). `run` asks the current
+  observer (`observer.current()`) whether it carries the method
+  (`Observer:can_call`: connected through interfaces, `operations` =
+  Build/1 offered, Tasks/1 subscribed, the method not degraded, no
+  incompatibility), waits for pending deletions, asks the artifact-conflict
+  question for configured units (its Yes → `force`), then
+  `Observer:start_owned`. Outcomes: `declined` → in-process + one WARN
+  notify; `degraded` (unknown_method, invalid_args, …) → in-process, the
+  observer's `_method_notes`; `refused` → reject + ERROR notify; accepted →
+  the owned task's `done` resolves (exit 0) or rejects; a disconnect or an
+  internal error rejects and is never re-run. `clean` returns at once when
+  `overseer.plan_*_clean` has nothing, cancels the editor's owned tasks on
+  the same units (`Observer:cancel_owned`, waiting for their end) and stops
+  its local ones, then calls. `cancel(task)` / `cancel_for_profile` back the
+  status page's Cancel. Observer side: `M.BUILD` (`call_only`, feature
+  `operations`), `M.TASKS.methods = { cancel, list }`, the literal `CALLS`
+  table behind `_icall` (with `vim.fn.environ()` at call time), `_owned`
+  (registered in the reply's own callback, before the `start` frame),
+  `_owned_ended` from `done` / `_end_tasks`, `owns_tasks()` counted busy in
+  `_check_retire`. `fidget.start_op_action(title, method)` shows no wrapper
+  for a routed operation and suffixes `(in-process)` in daemon mode, as do
+  the in-process operation / task entries.
 - `provision/select.lua` — the host binary (spec §19.16): `LOOMWORKS_LW` >
   setup `binary.path` (absolutized against the editor cwd once, at
   resolution; one naming no file, or no `.exe` on Windows, stops the search) >

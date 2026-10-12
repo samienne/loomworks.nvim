@@ -706,7 +706,8 @@ reader sees workspace state first.
      item 3, not of item 4: no origin marker, `{pct}%` in place of `[N/M]`,
      one row per unit of the task, `Cancel task` sending `Tasks/1.cancel`
      and `Open overseer` opening its single overseer task (core §19.16
-     "Tasks in the task runner"). The reset action above leaves remote tasks alone.
+     "Tasks in the task runner"). *(Step 5k C1a: the row, `Show output` and
+     `Cancel task`; `Open overseer` with the task-runner bridge, C1b.)* The reset action above leaves remote tasks alone.
 5. Sub-section `Build directory locks` (only when at least one lock
    is held or has a non-empty queue):
    ```
