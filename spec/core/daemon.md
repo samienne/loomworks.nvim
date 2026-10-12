@@ -2849,22 +2849,30 @@ absent-database check), the expansion of variables in a server binary, the
 "Environment"), so an entry's server binary resolves as it would
 in-process. Both sources give one shape (as §19.13 "Two sources, one
 shape"): the in-process state comes from the builder the daemon uses,
-without the opaque ids.
+without the opaque ids. The daemon's state is **in use** while carried and
+the last read answered with state `loaded`; in each Fallback row below the
+editor uses the in-process state instead.
 
 - **Reads.** The state is cached per connection and read again on
   `LspConfig/1` `changed`, on `Workspace/1` `changed` and on reconnect; the
   first read is made once the interface is discovered.
-- **Readiness.** While carried, the §9.7 hold is released on the state's
-  `ready`, not on the editor model's own readiness. While the editor is
-  connecting (the describe or the first `get` not answered yet), and while
-  the state is `loaded` but not `ready`, buffers under the root stay held,
-  bounded by the §9.7 safety timeout; at the timeout a held buffer is
-  resolved as §9.7 says, against the daemon's state when one has been read
-  and against the in-process state otherwise.
-- **Owned databases.** While carried, only the daemon generates the owned
-  LSP databases (§8.4 `refresh_lsp_database`); the editor's model does not,
-  neither at its startup scan nor after a task. A database the daemon
-  (re)writes reaches the editor as a raised `db_rev` on its entry (§19.20),
+- **Readiness.** While the daemon's state is in use, the §9.7 hold is
+  released on the state's `ready`, not on the editor model's own readiness.
+  While the editor is connecting (the describe or the first `get` not
+  answered yet), while the state is `unloaded` (the daemon has not loaded
+  the workspace yet), and while the state is `loaded` but not `ready`,
+  buffers under the root stay held, bounded by the §9.7 safety timeout; a
+  state that becomes `loaded` puts the daemon's state in use. At the timeout
+  a held buffer is resolved as §9.7 says, against the daemon's state when
+  it is in use and against the in-process state otherwise; in the latter
+  case the editor uses the in-process state from then on, as in a Fallback
+  row, until the daemon reports `loaded`.
+- **Owned databases.** While the daemon's state is in use, only the daemon
+  generates the owned LSP databases (§8.4 `refresh_lsp_database`); the
+  editor's model does not, neither at its startup scan nor after a task.
+  Whenever the editor uses the in-process state (every Fallback row), its
+  model generates and scans exactly as in `in-process` mode. A database the
+  daemon (re)writes reaches the editor as a raised `db_rev` on its entry (§19.20),
   on which the editor runs the owned-database completion handling of §9.8
   for that entry.
 - **Re-evaluation.** When a read gives entries or options that differ from
@@ -2876,17 +2884,16 @@ without the opaque ids.
 - **Fallback.** Not carried (no connection, the interface missing or at
   another version — with the one Runtime-line note of "Interface client"):
   the in-process state, as before 5l. A `get` that is declined or fails, or
-  a state other than `loaded` (the daemon has not loaded the workspace, or
-  its load failed or was refused): the in-process state, with a debug-log
-  line only, until the next `changed`, `Workspace/1` `changed` or
+  a state of `error` or `refused` (the daemon's load failed or was
+  refused): the in-process state at once, with a debug-log line only, until the next `changed`, `Workspace/1` `changed` or
   reconnect. The connection lost after the state was carried: the
   in-process state at once, re-evaluated, a client restarted only when its
   resolved binary or database directory differs; a reconnect switches back
   to the daemon's state under the same rule.
 - **Options.** A per-server option the editor sets (the status page's LSP
   section) is written by `LspConfig/1.set_option` while carried, otherwise
-  (also on `declined`) in-process; the editor applies it from the state it
-  reads back, not from its own write. A `refused` write is shown with its
+  in-process; the editor applies it from the state it reads back, not from
+  its own write. A `refused` write is shown with its
   message, as in-process.
 - **Buffer → project.** The LSP layer maps a buffer to its project by
   `lw.buf_project` (§19.13, separator-bounded) in both modes;
