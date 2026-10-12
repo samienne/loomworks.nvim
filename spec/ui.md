@@ -33,7 +33,11 @@ directly to `Snacks.win`. The page contains these sections in order:
    disconnected — waiting for it`, `Runtime:   in-process (lw setting)`. A
    note that leaves the editor running in-process although `daemon` was
    selected (a version mismatch, no host binary, a failed download) uses the
-   warning highlight.
+   warning highlight. *(Step 5k, plan:)* a degraded operations feature is the
+   same note, e.g. `operations: daemon offers no loomworks.Build/1.configure
+   — running them in-process` (core §19.16 "Editor operations"), and an
+   operation that ran in-process although `daemon` was selected says
+   `(in-process)` in its progress title.
    Absent only when `in-process` was selected by the default.
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
@@ -232,6 +236,9 @@ active Operation of the profile its `start` meta names, with the same
 highlight, spinners and timer, plus its origin marker (§1.9) after the
 timer. The Cancel action below does not cover it (the editor cannot cancel a
 remote task); a profile whose only running tasks are remote offers no Cancel.
+*(Step 5k, plan:)* a task the editor itself started in the daemon (core
+§19.16 "Editor operations") is not remote: it is the profile's own active
+Operation, without an origin marker, and Cancel sends `Tasks/1.cancel`.
 
 **Cancel action** (added to the Enter picker when `profile:is_running()`):
 
@@ -691,7 +698,15 @@ reader sees workspace state first.
    - **Enter** offers `Show output` (the same output view as a local task's,
      following the stream while the task runs; capped, core §19.16); no
      `Open overseer` (a remote task is not in the task runner's list) and no
-     `Cancel task`: the task belongs to its client (core §19.15). The reset action above leaves remote tasks alone.
+     `Cancel task`: the task belongs to its client (core §19.15).
+     *(Step 5k, plan:)* a remote task is listed read-only in overseer
+     (`[lw] build dev`), so Enter also offers `Open overseer`; still no
+     `Cancel task`.
+   - *(Step 5k, plan:)* a task the editor started in the daemon is a row of
+     item 3, not of item 4: no origin marker, `{pct}%` in place of `[N/M]`,
+     one row per unit of the task, `Cancel task` sending `Tasks/1.cancel`
+     and `Open overseer` opening its single overseer task (core §19.16
+     "Tasks in the task runner"). The reset action above leaves remote tasks alone.
 5. Sub-section `Build directory locks` (only when at least one lock
    is held or has a non-empty queue):
    ```
