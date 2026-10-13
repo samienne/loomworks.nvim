@@ -291,6 +291,15 @@ invalidates adapters, re-discovers tests, resets run timestamps.
 Bridges ConfigUnit/TestUnit to the loomtest TestAdapter interface.
 Registers on workspace load, re-registers on profile switch.
 
+A ConfigUnit can have several TestUnits — the module's, plus core's
+saved-targets TestUnit (specification §1.3.4, §8.9.3). The adapter follows
+the owning-unit dispatch rule of specification §8.9.4: run, debug and result
+parsing go through the TestUnit that owns the id; run-all and run-suite cover
+every TestUnit of every ConfigUnit of the profile, never only the first
+unit's first TestUnit. Saved targets appear as top-level `target:` nodes with
+their framework children; a missing saved target appears as an errored,
+non-runnable node.
+
 ## 14. Future Considerations
 
 - Watch mode (auto-run on file save)

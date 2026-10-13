@@ -72,6 +72,7 @@ local to each file and restart at §1.
 | What the CLI's inline output must reveal: the status footer, next-step and empty-state hints, unknown commands, the help index | `specification.md` §16.38 (+ §16.18 for the overview, §16.7 for usage errors) |
 | Several processes (editor, CLI, background process, older versions) writing the same workspace state: stale-save detection, cache merge, working-copy refusal, writer version stamp | `specification.md` §2.7 (+ §16.6 for the headless host) |
 | Exporting the configuration as a published snapshot, or importing one into the working copy (another machine) | `specification.md` §16.39 (+ §2.4 for the serializer and intent, §17.5 for the signed write) |
+| Saved test targets: the `tests` field, `lw test` plan (batch + saved steps, selectors, `--list`), `lw test-target`, the saved-targets TestUnit | `specification.md` §1.3.4 (model), §16.16 (test plan), §16.9 (editing), §8.9.2–§8.9.4 (TestUnit, adapters), §17.6 (args trust); [`spec/ui.md`](spec/ui.md) §1.8 |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
 | The workspace runtime: the daemon, `--no-daemon`, runtime lock, workspace operation lock and lock order, journalled multi-file commits, handle/endpoint/auth/version handshake, daemon lifetime, routing operations to the daemon | `specification.md` §19 (rationale and step plan: [`DAEMON.md`](DAEMON.md); + §2.7, §16.6, §18.7 for the existing locks) |
 

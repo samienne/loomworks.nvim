@@ -393,6 +393,45 @@ targets are those of the project's configured builds, scanned on demand as
 `lw target` does. When none is configured yet, the check cannot be made and a
 note on stderr says so.
 
+A management host MAY also **edit saved test targets** (§1.3.4). The edit is
+**profile-addressed** (defaulting to the active profile, like setting a
+default target, §16.17), because a name is validated against the profile's
+configured build targets:
+
+- **List** shows, per project of the profile, the effective list, each entry's
+  `args`, and its source. A level that declares none names the add form
+  (§16.38).
+- **Add** appends one or more targets, resolved exactly as named targets are
+  (§16.16: `project:target` qualification, the ambiguity errors), and stores
+  each **unqualified** on its own project's list. A name that is not an
+  executable target is refused with the project's executables listed. When the
+  project is not configured here, targets are unknown: the add is refused,
+  naming the build that configures it, unless an explicit unchecked option is
+  given, which stores the name with a warning. Forwarded arguments (after
+  `--`) become the `args` of every target named in that call; re-adding an
+  existing entry replaces its `args` and keeps its position.
+- **Remove** drops named entries; **clear** removes the declaration at a
+  level (so it inherits again). An option sets the level to an explicit empty
+  list instead.
+- **Write level.** By default an edit writes to the configuration the profile
+  maps for the target's project when that is a **user** configuration, and
+  otherwise to the project-wide list. An option names a user configuration of
+  that project instead, and another the project-wide level. The edit always
+  prints where it wrote and which profiles map that configuration (e.g.
+  `saved on App/Tests (used by Release:ninja-clang-19, Debug:ninja-clang-19)`).
+- **Materialise on inherit.** Because the nearest list replaces the whole
+  chain (§1.3.4), an add or remove at a level that currently **inherits** its
+  list first copies the inherited list onto that level, then applies the
+  edit, and says so (`copied 8 inherited targets from Tests`).
+- The no-op and publish-reminder rules of configuration editing (above) apply:
+  adding a present entry with the same `args`, or removing an absent one,
+  writes nothing, says so and exits 0.
+
+The dotted configuration grammar (above) does not edit `tests`: `set` / `unset`
+of a `tests` param is rejected, naming the saved-test-target edit. A
+configuration's and a project's show views display the effective list with its
+source.
+
 A management host MAY also **set, replace or clear the description** (§1.10) of
 a project, a user configuration, a configuration set, a profile or a launch
 configuration (§16.35).
@@ -592,6 +631,87 @@ the batch runner, and a batch-runner invocation never executes a foreign
 artifact on the host (§15 invariant 19): a profile whose kit is foreign and
 names no targets reports that its registered tests cannot run on this host
 (until the module can express them for a device, §18.6) instead of running them.
+
+**Saved test targets.** A unit whose configuration has a non-empty saved list
+(§1.3.4) runs those executables **as well as** its native batch runner. The
+**plan** of a test invocation is an ordered list of steps:
+
+- Units in the profile's project order. Within a unit, its **batch step**
+  (the native runner, when the module has one) first, then one
+  **executable step** per saved entry, in list order. Saved executables run on
+  the named-target route above (built with the profile, run directly with the
+  framework results option, judged per §18.6, on a device when foreign).
+- The build covers the whole profile, as for named targets. A unit with an
+  executable step in the plan is built even when its batch runner rebuilds
+  its own targets (the skip above applies only to units with batch steps
+  alone).
+- Every step runs even when an earlier one failed. The invocation succeeds iff
+  the build succeeded and every step succeeded. Each step announces itself
+  before it runs (`<project>: <runner>` / `<project>: <target>`), and after the
+  last step a summary prints one line per step with its outcome.
+- A saved executable that the batch runner also registers runs in both steps:
+  the batch runner is opaque, so the plan does not de-duplicate it (the
+  `--saved` / `--discovered` selectors below avoid it).
+
+**Plan selectors.** At most one of:
+
+- naming targets (above) — replaces the **whole** plan for that run: no batch
+  steps, no saved steps;
+- a **saved-only** selector — executable steps from saved lists only, no batch
+  steps;
+- a **discovered-only** selector — batch steps only; saved lists are ignored
+  (and not resolved).
+
+Combining two is a usage error. A plan with no steps reports "no tests" and is
+not a failure, as above.
+
+**Missing entries fail before anything runs.** Every saved entry in the plan
+is resolved after the build and **before the first step executes**. An entry
+that names no build target of its project, or a target that is not an
+executable, fails the invocation (exit 1) without running any step; the error
+names the entry, its declaring level (`App/Tests`, or the project for the
+project-wide list), the project's executables, and the edit that removes it.
+Nothing is skipped silently.
+
+**Per-entry and forwarded arguments.** An executable step's command line is
+the program, its framework results option, the entry's own `args` (§1.3.4;
+from the working copy only, §17.6), then caller-forwarded arguments.
+Forwarded arguments are accepted only when every step of the plan is of
+**one kind** — all batch steps, or all executable steps. A mixed plan with
+forwarded arguments is refused before the build (a runner's arguments and a
+test program's differ), naming the saved-only and discovered-only selectors
+and the named-target form. A profile with no saved lists therefore forwards
+arguments to its batch runners exactly as before.
+
+**JUnit with a mixed plan.** A JUnit request writes one file when the plan has
+exactly one step; otherwise one file per step, the label suffix applying
+across all steps (not per kind). A batch step keeps its unit label and an
+executable step its target name; when two steps would get the same label, the
+executable step's label is qualified with its project.
+
+**Foreign profiles.** The batch step of a unit whose kit is foreign is not
+run (invariant 19). When that unit also has saved executables, its batch step
+is dropped from the plan with a note on standard error naming the project and
+platform, and its saved executables run on a device. When the plan would then
+hold no step at all — no saved lists, or the discovered-only selector — the
+invocation is refused as above. Device options are accepted when the plan has
+at least one executable step, and are a usage error otherwise.
+
+**Plan report.** A test invocation MAY instead **report its plan** without
+configuring, building or running anything — a read-only operation (§16.9).
+The selectors above shape the reported plan. Per unit it shows:
+
+- the batch step: the runner, and — when the unit is configured here — the
+  discovered test count, through the runner's read-only listing;
+- each saved entry: its name, its `args` (marked *local only* where the shared
+  layer's would be stripped, §17.6), the list's source ("own", "inherited from
+  `<configuration>`", "project-wide"), and a resolution state — `ok` (artifact
+  path known), `not built`, `missing` (not an executable target of the
+  project), or `unknown` (unit not configured here, so targets are unknown);
+- for a foreign unit, that its batch step will be dropped.
+
+It has a machine-readable form (§16.18 conventions). An empty plan names the
+edit that saves a test target (§16.38).
 
 ### 16.17 Headless launch (run)
 
@@ -3389,7 +3509,9 @@ help. The rules:
   profile (unless it was activated). Where an operand must be chosen from a
   listing (a toolchain, a configuration), the hint names the listing command.
 - **Empty states.** An empty listing or an empty overview section names the
-  command that fills it, as in the previous rule.
+  command that fills it, as in the previous rule. An empty saved-test-target
+  listing and an empty test plan report (§16.16) name the saved-test-target
+  add (§16.9).
 - **No dead ends.** A hint names only a command that acts on its subject as
   printed. A hint about a profile that is not the active one names that
   profile explicitly rather than an operand-less form that would act on the

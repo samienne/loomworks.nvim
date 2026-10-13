@@ -1231,8 +1231,16 @@ ConfigUnit
 
 TestUnit (interface — test_unit.lua)
 ├── per-module TestUnits (see spec/modules/<mod>.md)
+├── the core-owned saved-targets TestUnit (§1.3.4, below)
 └── shared framework helpers (e.g. gtest)
 ```
+
+The **saved-targets TestUnit** is owned by core, not by a module. It serves a
+configuration's saved test targets (§1.3.4) through generic seams only: the
+module's `parse_targets` (executable targets and their artifacts, §8.4),
+`Target:resolve_run_spec` (run environment, §8.7), and the shared framework
+helpers. Any module with `parse_targets` gets it with no module code; a
+module without it gets none.
 
 The `TestUnit` interface is the seam: each module that supports tests
 implements one or more TestUnit subclasses (factory'd via the module's
@@ -1306,6 +1314,16 @@ build/configure completes.
 
 Return cached entries without triggering discovery.
 
+**The saved-targets TestUnit** implements this interface as follows:
+
+| Method | Behaviour |
+|--------|-----------|
+| `discover()` / `discover_async` | One `target:<name>` entry per resolved saved entry, in list order (`executable` = the artifact, runnable). The framework is probed with the shared helper; for a recognised framework, per-test children with source locations. A missing entry (no such target, or not an executable) is a **non-runnable** `target:<name>` entry with `status = "errored"` and a message naming the entry and its declaring level (e.g. `not a target of App/Tests (removed or renamed?)`), shown, never hidden. |
+| `test_command(id, opts)` | Target-, suite- or case-level command: the run spec from `Target:resolve_run_spec`, the framework results option, the entry's `args`, the framework filter. |
+| `test_command_all` | nil — run-all iterates its target entries (§8.9.4). |
+| `run_command_all` | nil — never a batch runner. A headless run executes saved targets on the per-executable route (§16.16). |
+| `parse_results` | The framework helper's result parser. |
+
 #### 8.9.3 ConfigUnit test interface
 
 ConfigUnit delegates all test operations to its TestUnit instances.
@@ -1321,9 +1339,24 @@ binaries from the build directory) and for a unit on a cross kit, whose tests
 cannot run on the host (§18.1). Once the unit is configured here, the next
 call creates the TestUnits.
 
+The array is the module's TestUnits **plus** the core saved-targets TestUnit
+(§8.9.1–§8.9.2) when the configuration's saved list (§1.3.4) resolves
+non-empty, after them. The same configured-here and cross-kit rules apply to
+both.
+
+**`config_unit:saved_test_targets() → { entries, source }|nil`**
+
+The configuration's effective saved list (§1.3.4) and its source (a
+Configuration or the Project), or nil when none is declared along the chain
+(an explicit `[]` returns an empty `entries`). Pure model data: no build
+directory is read, so it is safe before configure and on an unconfigured
+unit. The headless planner (§16.16) and the hosts' read-only views ask this;
+resolving entries to targets happens only after the unit is configured.
+
 **`config_unit:batch_runner_test_units() → TestUnit[]`**
 
-For static questions about the native batch runner only: whether
+Module TestUnits only — never the saved-targets TestUnit. For static
+questions about the native batch runner only: whether
 `run_command_all` exists and what `run_command_all_rebuilds()` returns
 (§8.9.2). A configured unit returns `test_units()`. For a unit not configured
 on this machine, it creates TestUnits through `create_test_unit` without
@@ -1337,7 +1370,12 @@ dropped.
 **`config_unit:discover_tests() → TestTree|nil`**
 
 Returns merged test entries from all TestUnits. Cached on `_test_tree`;
-invalidated after successful build or configure.
+invalidated after successful build or configure, and when the saved list
+changes (§1.3.4). When a module TestUnit and the saved-targets TestUnit
+expose the **same executable** (a saved target the module's runner also
+registers), the merge keeps one entry: the module's, which carries the
+runner's working directory, environment and timeout; the saved entry
+contributes only its `args`.
 
 **`config_unit:discover_tests_async(callback)`**
 
@@ -1414,6 +1452,17 @@ in nio context).
 **Execution** (`build_spec`): Finds the owning TestUnit via ConfigUnit
 and asks it for the run command. Checks ConfigUnit state and warns if
 the project needs configuring.
+
+**Owning-unit dispatch (every adapter).** An adapter — this one and the
+loomtest adapter (LOOMTEST.md) — never assumes one TestUnit per ConfigUnit,
+nor that the first ConfigUnit with tests owns everything:
+
+- a single test, suite or target runs through the TestUnit that **owns its
+  id** (the lookup `config_unit:run_test` already does);
+- run-all iterates **every** ConfigUnit of the profile and every TestUnit of
+  each: a TestUnit with `test_command_all` runs once, and one without it (the
+  saved-targets TestUnit) runs each of its runnable top-level entries;
+- results are parsed by the TestUnit that produced the run.
 
 **Results** (`results`): Parses JUnit XML via TestUnit, maps results to
 neotest positions by matching test IDs. Assigns overall pass/fail to

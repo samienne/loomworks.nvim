@@ -32,6 +32,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   shows `(unconfigured)`, `(no db)` or `(ws error)` in red when loomworks
   withholds clangd for the buffer. `buf_status()` gains an `lsp` field and
   `loomworks.lsp_buf_state(bufnr)` returns the same per-buffer status. (#191)
+- Saved test targets: a configuration (or a whole project) can list test
+  executables in `tests.targets`, and plain `lw test` runs them after the
+  project's ctest / `meson test` run, on a device for a cross-compiling
+  profile. `--saved` / `--discovered` run only one kind, `lw test --list`
+  shows the plan without building, and `lw test-target add/remove/clear`
+  edits the lists. The status page shows a read-only `Tests:` line, and the
+  test explorer and neotest pick the saved targets up. (#TBD)
 
 ### Changed
 

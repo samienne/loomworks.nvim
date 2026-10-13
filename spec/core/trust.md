@@ -177,6 +177,16 @@ the generic ones:
   configuration's `device_log` options (§18.13) are not program-bearing either:
   they are opaque data a device runner validates and may never turn into a
   program, a path to execute, or device command text.
+- the per-target `args` of a saved test-target list (`tests.targets[].args`,
+  §1.3.4). Only the args are stripped: the entry itself still applies,
+  without them. A saved target **name** is not program-bearing — it selects
+  one of the project's own build artifacts, exactly like a target-backed
+  launch — so saved lists are honoured from `loomworks.json`. The diagnostic
+  names the entry:
+
+  ```
+  loomworks.json sets projects.App.cmake.configurations.Tests.tests (RenderTests args = --gtest_filter=-*Slow*) — ignored: program settings are used only from your local config (lw help trust)
+  ```
 
 Modules add their own through the optional `trust_fields` declaration (§8.4):
 the top-level `type_config` keys that are program-bearing (a language-server

@@ -918,6 +918,62 @@ lists every command and option.
 device, no test-explorer integration for device tests, and ctest-registered
 tests do not run on a device yet (name the executables with `--target`).
 
+### Saved test targets
+
+Test executables that are not registered with ctest / `meson test` (for
+example gtest runners a project builds behind an option) can be saved, so
+plain `lw test` runs them too:
+
+```jsonc
+"App": { "cmake": {
+    "tests": { "targets": ["CoreTests"] },                  // project-wide
+    "configurations": {
+        "Tests": {
+            "inherits": "variant:Release",
+            "options": { "APP_UNIT_TESTS": "ON" },
+            "tests": { "targets": [
+                "BaseTests",
+                { "target": "RenderTests", "args": ["--gtest_filter=-*Slow*"] }
+            ] }
+        }
+    }
+}}
+```
+
+- A configuration uses its own list, else its base's, else the project-wide
+  one. The nearest list wins **whole** (lists never merge); `"targets": []`
+  means "none here".
+- Plain `lw test` runs, per project, the native runner (ctest / `meson test`)
+  first and then each saved executable in order, and prints a summary. A
+  saved name that is not an executable target fails the run before anything
+  executes. `--saved` runs only the saved executables, `--discovered` only the
+  native runners, and `--target <exe>` replaces both for that run.
+- Arguments after `--` are allowed only when every step is of one kind (add
+  `--saved` or `--discovered` otherwise). With several steps, `--junit
+  out.xml` writes one file per step.
+- On a cross-compiling profile, saved executables run on a device; the
+  project's ctest step is skipped with a note.
+- `lw test --list [--json]` shows what plain `lw test` would run, without
+  building anything.
+- Edit the lists with `lw test-target` (below). A saved target name is
+  honoured from `loomworks.json`; per-target `args` are program settings, so
+  they are used only from your local config (see
+  [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)).
+  `args` are passed as written (no `${...}` expansion).
+
+```sh
+lw test-target                          # what the active profile has saved
+lw test-target add CoreTests BaseTests  # saved on App/Tests (used by ...)
+lw test-target add RenderTests -- --gtest_filter=-*Slow*
+lw test-target remove BaseTests
+lw test --list
+```
+
+`add` writes to the configuration the profile maps when that is one of your
+configurations, otherwise to the project-wide list (`--config <name>` /
+`--project-wide` choose explicitly), and prints where. Editing a level that
+inherits its list copies the inherited list there first, and says so.
+
 ### Progress notifications
 
 When fidget.nvim is installed, build/configure progress shows up
@@ -1613,7 +1669,8 @@ outside a workspace.
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`), with the compile databases loomworks generated from them under `.nvim/cache/`, and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches, the generated compile databases in `.nvim/cache/cc/`); the remedy for a cache not written on this machine |
-| `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
+| `lw test [profile]` | Build, then run tests; real exit code: each project's native runner, then its [saved test targets](#saved-test-targets). `--junit <file>` writes a JUnit report (one per step when several). `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)); `--saved` / `--discovered` run only the saved executables / only the native runners; `--list [--json]` prints the plan without building |
+| `lw test-target [list] [profile]` | Saved test targets: `add [<profile>] <target>… [--config <name> \| --project-wide] [--unchecked] [-- <args>…]`, `remove [<profile>] <target>…`, `clear [<profile>] [<project>] [--empty]` (`--config` / `--project-wide` on each). See [Saved test targets](#saved-test-targets) |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |

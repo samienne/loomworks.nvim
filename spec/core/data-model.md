@@ -134,6 +134,10 @@ Loomworks configuration fields in the workspace config:
 <type>.configurations.<name>.languages      — explicit language list override
                                               (string array; falls through to
                                               module.languages when omitted)
+<type>.tests                                — project-wide saved test targets
+                                              (§1.3.4)
+<type>.configurations.<name>.tests          — per-config saved test targets
+                                              (§1.3.4)
 ```
 
 The `languages` field is the resolution axis that drives which tools
@@ -493,6 +497,85 @@ and `variables`, and uses the same machinery:
   existed compares as having had no configuration environment (none was
   applied then).
 
+### 1.3.4 Saved test targets (`tests`)
+
+A project and a configuration MAY carry a **`tests`** field naming the test
+executables (build targets) a headless test run executes directly, in
+addition to what the module's own test runner discovers (§16.16). It is a
+generic, core-owned field: a module never sees it.
+
+```json
+"App": { "cmake": {
+    "tests": { "targets": ["CoreTests"] },
+    "configurations": {
+        "Tests": {
+            "inherits": "variant:Release",
+            "options": { "APP_UNIT_TESTS": "ON" },
+            "tests": { "targets": [
+                "BaseTests",
+                "CoreTests",
+                { "target": "RenderTests", "args": ["--gtest_filter=-*Slow*"] }
+            ] }
+        }
+    }
+}}
+```
+
+- **Shape.** `tests` is an object; `tests.targets` is an ordered array whose
+  elements are a target name (string) or
+  `{ "target": <name>, "args"?: [<string>…] }`. The object leaves room for
+  later keys; an unknown key inside it is kept verbatim and ignored. A name is
+  a build target of **the project it is declared in** — never
+  project-qualified. Order is run order. A name appears at most once per list:
+  an edit refuses a duplicate, and a duplicate from a hand-edited file is
+  dropped (first occurrence kept) with a one-time warning.
+- **Two levels.** The project-wide list lives in the project's module section
+  (`projects.<p>.<type>.tests`), a core-owned key lifted out before the
+  section reaches the module, like `description` (§1.9). The per-configuration
+  list lives in a **user** configuration's table. A module-generated
+  configuration has no persisted table (§1.3), so it can only inherit.
+- **Inheritance: nearest declaration wins the whole list.** The effective list
+  of a configuration is the first `tests.targets` found walking: the
+  configuration's own, then its bases depth-first left-to-right (the order
+  `options` and `env` use), then the project-wide list. Lists never merge: a
+  list has no per-key identity, and a union would make dropping one target in
+  a derived configuration impossible. An explicit empty list `[]` is a
+  declaration — "no saved targets here" — and stops the walk. The resolution
+  reports its **source** as an object reference (the declaring Configuration,
+  or the Project), so hosts can say "own", "inherited from Tests" or
+  "project-wide".
+- **No per-profile level.** A profile carries no list and no override. A
+  profile gets a different list by mapping a different configuration (through
+  its configuration set); per-profile *values* belong to the variable system
+  (§1.3.1), which this field does not use in v1 — `args` are not expanded, and
+  there is no list-typed variable (a possible string-list variable type is a
+  BACKLOG item).
+- **Args.** `args` are passed verbatim after the target's framework results
+  option and before caller-forwarded arguments (§16.16). They are **not**
+  expanded (no built-in or project variables). Args are program-bearing
+  (§17.6); target names are not.
+- **Not a configure input.** The list never makes a unit stale and never
+  triggers a configure: it selects among artifacts the build already produces.
+  It is not part of the module configuration and not part of any key, and no
+  configure record contains it. A module-configuration snapshot recorded by an
+  older loomworks that read `tests` as a module field is compared **without**
+  that key, so moving between versions does not force a reconfigure. Changing
+  the list invalidates the unit's cached test tree (§8.9.3).
+- **Persistence.** Serialized only where declared: a derived configuration
+  never gets a copy of its base's list (§1.3 "Derived values are not
+  persisted"). It lives in the working copy and publishes with its
+  configuration or project under the intent model (§2.4). Nothing is written
+  to the cache.
+- **Resolution to targets.** Names are data at rest. A host resolves them to
+  the unit's parsed build targets (§8.6) only after the unit is configured;
+  a name that matches no target, or a target that is not an executable, is a
+  **missing entry** (§8.9.3, §16.16). A rename of a configuration or project
+  carries the field with the rest of the table; a build-target rename upstream
+  is not tracked and surfaces as a missing entry.
+- **Applicability.** Only a module with `parse_targets` (§8.4) can resolve a
+  saved list. On a project whose module has none the field is kept and
+  reported as unsupported, never acted on.
+
 ### 1.4 Configuration Set
 
 A configuration set is a cross-project mapping declared in the workspace
@@ -825,7 +908,9 @@ the module section (`projects.<key>.<type>.description`), not a project-level
 key. Core lifts it out before the section reaches the module as `type_config`.
 (An older loomworks reads an unknown project-level key as a second module type
 and refuses the file; it keeps an unknown module-section field. This is the
-same placement rule as the `device` block, §18.9.)
+same placement rule as the `device` block, §18.9.) The project-wide saved test
+targets (`projects.<key>.<type>.tests`, §1.3.4) are another such core-owned
+key in the module section.
 
 **CMake type_config fields**:
 
@@ -840,6 +925,8 @@ Configuration overrides may include:
 - `role`: `"compile_commands"` hides the configuration from UI
 - `description`: the configuration's description (§1.10), valid in every module's
   configuration table; a generic field, not a module field
+- `tests`: the configuration's saved test targets (§1.3.4); a generic field,
+  not a module field
 
 **Explicit profile fields**:
 
