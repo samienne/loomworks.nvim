@@ -586,19 +586,6 @@ function adapter.build_spec(args)
         end
     end
 
-    -- Find the TestUnit for this test
-    local tu = unit:_find_test_unit(original_id or pos.name)
-    if not tu then return nil end
-
-    -- Determine what to run based on position type
-    local test_cmd
-    if pos.type == "test" or pos.type == "namespace" then
-        test_cmd = tu:test_command(original_id or pos.name)
-    else
-        test_cmd = tu:test_command_all()
-    end
-    if not test_cmd then return nil end
-
     -- Check if the project needs to be built first.
     local state = unit:state()
     if state == "unconfigured" or state == "configure_failed" then
@@ -606,6 +593,31 @@ function adapter.build_spec(args)
             vim.notify("loomworks: project needs to be configured before running tests. Use [c] in the status page.", vim.log.levels.WARN)
         end)
         return nil
+    end
+
+    -- Owning-unit dispatch (spec §8.9.4). A test / namespace runs through the
+    -- TestUnit that owns its id; a file / dir runs every TestUnit of the unit
+    -- (one spec per TestUnit with test_command_all, one per runnable target
+    -- of the saved-targets TestUnit), each parsed by its own TestUnit.
+    local test_cmd, tu
+    if pos.type == "test" or pos.type == "namespace" then
+        test_cmd, tu = unit:test_command_for(original_id or pos.name)
+        if not test_cmd then return nil end
+    else
+        local all = unit:test_commands_all()
+        if #all == 0 then return nil end
+        if #all > 1 and args.strategy ~= "dap" then
+            local specs = {}
+            for _, c in ipairs(all) do
+                specs[#specs + 1] = {
+                    command = c.cmd.cmd, cwd = c.cmd.cwd, env = c.cmd.env,
+                    context = { output_path = c.cmd.output_path, config_unit = unit,
+                        test_unit = c.tu, position_id = pos.id },
+                }
+            end
+            return specs
+        end
+        test_cmd, tu = all[1].cmd, all[1].tu
     end
 
     local spec = {

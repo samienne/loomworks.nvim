@@ -128,6 +128,19 @@ local REFRESH_EVERY = 5  -- 5 * 50ms = 250ms
 --- @param opts? table { skip_build?: boolean }
 function M.execute(adapter, spec, test_ids, opts)
     opts = opts or {}
+    -- Several RunSpecs (an adapter's run-all over several test units): run
+    -- them one after another, building once before the first.
+    if type(spec) == "table" and spec.cmd == nil and type(spec[1]) == "table" then
+        local specs = spec
+        local function run_from(i, o)
+            if not specs[i] then return end
+            M.execute(adapter, specs[i], test_ids, vim.tbl_extend("force", o, {
+                on_done = function() run_from(i + 1, vim.tbl_extend("force", o, { skip_build = true })) end,
+            }))
+        end
+        run_from(1, opts)
+        return
+    end
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         vim.notify("loomtest: overseer.nvim not found", vim.log.levels.ERROR)
@@ -167,16 +180,17 @@ function M.execute(adapter, spec, test_ids, opts)
                 fidget_update("build failed", true)
                 return
             end
-            M._execute_task(adapter, spec, test_ids, loomtest, explorer)
+            M._execute_task(adapter, spec, test_ids, loomtest, explorer, opts.on_done)
         end)
         return
     end
 
-    M._execute_task(adapter, spec, test_ids, loomtest, explorer)
+    M._execute_task(adapter, spec, test_ids, loomtest, explorer, opts.on_done)
 end
 
 --- Internal: execute the overseer task (after build if needed).
-function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
+--- `on_done` (optional) runs after the results were applied.
+function M._execute_task(adapter, spec, test_ids, loomtest, explorer, on_done)
     local overseer = require("overseer")
     fidget_update("0% ✔ 0")
 
@@ -322,7 +336,7 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
 
             local results
             if spec.output_path then
-                results = adapter.parse_results(spec.output_path)
+                results = adapter.parse_results(spec.output_path, spec)
             end
 
             if results then
@@ -347,6 +361,7 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer)
             end
 
             fidget_update(format_progress(test_ids, loomtest), true)
+            if on_done then on_done() end
         end)
     end)
 
@@ -360,6 +375,10 @@ end
 --- @param test_ids string[] test IDs being debugged
 --- @param opts? table { skip_build?: boolean }
 function M.debug(adapter, spec, test_ids, opts)
+    -- A debugger session runs one program: the first of several RunSpecs.
+    if type(spec) == "table" and spec.cmd == nil and type(spec[1]) == "table" then
+        spec = spec[1]
+    end
     local debug_mod = require("loomworks.debug")
     if not debug_mod.available() then
         M.execute(adapter, spec, test_ids, opts)
@@ -409,7 +428,7 @@ function M.debug(adapter, spec, test_ids, opts)
             on_terminated = function()
                 vim.schedule(function()
                     if spec.output_path then
-                        local results = adapter.parse_results(spec.output_path)
+                        local results = adapter.parse_results(spec.output_path, spec)
                         if results then
                             loomtest.apply_results(results)
                         end

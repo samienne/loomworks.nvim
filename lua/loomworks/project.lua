@@ -3,6 +3,7 @@
 
 local Configuration = require("loomworks.configuration")
 local description_mod = require("loomworks.description")
+local test_targets_mod = require("loomworks.test_targets")
 
 --- @class loomworks.Project
 --- @field key string project key
@@ -17,6 +18,10 @@ local description_mod = require("loomworks.description")
 ---        module section of the files (`projects.<p>.<type>.description`), never in `type_config`
 --- @field _description_invalid any a non-string `description` value, ignored but
 ---        written back unchanged until the description is set or cleared
+--- @field _tests loomworks.SavedTestDecl|nil the project-wide saved test targets
+---        (spec §1.3.4); stored in the module section of the files
+---        (`projects.<p>.<type>.tests`), never in `type_config`
+--- @field _tests_invalid any a non-table `tests` value, written back unchanged
 --- @field configuration? string active configuration name
 --- @field _module? loomworks.Module direct reference to Module domain object
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
@@ -87,6 +92,8 @@ function Project:_update(data)
     self.deploy = data.deploy
     self.device = data.device
     self.description, self._description_invalid = description_mod.from_file(data.description)
+    self._tests, self._tests_invalid = test_targets_mod.parse(data.tests,
+        tostring(self.key) .. " (project-wide)")
     self.variables = data.variables or nil
     self.configuration = data.configuration
     -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
@@ -355,6 +362,8 @@ function Project:_type_config_for_module()
     else
         tc.configurations = nil
     end
+    -- Saved test targets are core-owned (spec §1.3.4): a module never sees them.
+    tc = test_targets_mod.strip_from_type_config(tc)
     return tc
 end
 
@@ -370,6 +379,7 @@ function Project:_refresh_configurations()
     local mod_info = mod.info(abs_path, tc)
     if mod_info then
         Configuration.adopt_declared_descriptions(mod_info.configurations, tc.configurations)
+        test_targets_mod.adopt_declared(mod_info.configurations, self:_declared_configuration_tests())
         self.configurations = mod_info.configurations or {}
         self.preset_configurations = mod_info.preset_configurations or nil
     end
@@ -432,6 +442,7 @@ local function rollback_snapshot(cfg)
     snap.languages = vim.deepcopy(cfg.languages)
     snap._derived = cfg._derived
     snap.description = cfg:description_for_file()
+    snap.tests = test_targets_mod.serialize(cfg._tests, cfg._tests_invalid)
     if cfg.inherits_names and #cfg.inherits_names > 0 then
         snap.inherits = vim.deepcopy(cfg.inherits_names)
     end
@@ -955,6 +966,55 @@ function Project:set_description(text)
         return nil, save_err
     end
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- The project-wide saved test-target list (spec §1.3.4), or nil when none is
+--- declared (an explicit `[]` returns an empty array).
+--- @return loomworks.SavedTestEntry[]|nil
+function Project:own_test_targets()
+    return self._tests and self._tests.entries or nil
+end
+
+--- The value to write as the module section's `tests` (spec §1.3.4), or nil.
+--- @return any
+function Project:tests_for_file()
+    return test_targets_mod.serialize(self._tests, self._tests_invalid)
+end
+
+--- Every user configuration's declared `tests` (raw, by name), so a module
+--- `info()` echo — which never sees the field — can be given them back.
+--- @return table<string, table>
+function Project:_declared_configuration_tests()
+    local out = {}
+    for _, cfg in ipairs(self._configurations or {}) do
+        if cfg.is_user then
+            out[cfg.name] = { tests = test_targets_mod.serialize(cfg._tests, cfg._tests_invalid) }
+        end
+    end
+    return out
+end
+
+--- Replace (or, with nil, remove) the project-wide saved test-target list and
+--- save the working copy. Editing is use: a `shared` project is materialised.
+--- @param entries loomworks.SavedTestEntry[]|nil
+--- @return boolean|nil ok, string|nil err
+function Project:set_test_targets(entries)
+    local ws = self._workspace
+    if self._removed or self.orphaned then
+        return nil, "project '" .. self.key .. "' not found"
+    end
+    local old, old_invalid = self._tests, self._tests_invalid
+    local old_intent, old_source = self._intent, self._source
+    self:_mark_user_owned()
+    self._tests, self._tests_invalid = test_targets_mod.with_entries(self._tests, entries), nil
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        self._tests, self._tests_invalid = old, old_invalid
+        self._intent, self._source = old_intent, old_source
+        return nil, save_err
+    end
+    ws:_saved_tests_changed(self)
     return true
 end
 

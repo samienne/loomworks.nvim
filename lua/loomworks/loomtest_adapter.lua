@@ -123,16 +123,19 @@ local function create_adapter()
             local profile = lw.get_active_profile()
             if not profile then callback(false); return end
 
+            -- The unit that owns the first id (spec §8.9.4), else the first unit.
+            local owner = test_ids and test_ids[1] and M._owning_test_unit(test_ids[1]) or nil
             for _, pp in ipairs(profile:projects()) do
                 local unit = pp._config_unit
-                if unit then
+                if unit and (not owner or unit == owner) then
                     -- Prefer a per-target build when the test's executable
                     -- matches a known build target on this unit.
                     local target_id = nil
                     if unit.targets and test_ids and #test_ids > 0 then
-                        local tus = unit:test_units()
-                        if #tus > 0 and tus[1]._entries then
-                            for _, e in ipairs(tus[1]._entries) do
+                        -- The merged tree of every TestUnit (module + saved).
+                        local tree = unit._test_tree
+                        if tree then
+                            for _, e in ipairs(tree) do
                                 if e.id == test_ids[1] and e.executable then
                                     local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
                                     local target_obj = unit.targets[exe_name]
@@ -141,7 +144,7 @@ local function create_adapter()
                                 end
                             end
                             if not target_id then
-                                for _, e in ipairs(tus[1]._entries) do
+                                for _, e in ipairs(tree) do
                                     if e.executable and not e.parent then
                                         local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
                                         local target_obj = unit.targets[exe_name]
@@ -179,31 +182,42 @@ local function create_adapter()
             callback(false)
         end,
 
+        -- Owning-unit dispatch (spec §8.9.4): a single test, suite or target
+        -- runs through the TestUnit that owns its id; the spec remembers that
+        -- TestUnit so its results are parsed by it.
         run = function(test_id, opts)
-            local unit, tu = M._find_test_unit(test_id)
-            if not tu then return nil end
-            local spec = tu:test_command(test_id, opts)
+            local unit = M._find_test_unit(test_id)
+            if not unit then return nil end
+            local spec, tu = unit:test_command_for(test_id, opts)
+            if spec then spec._test_unit = tu end
             M._log_spec("run " .. test_id, unit, spec)
             return spec
         end,
 
+        -- Run-all covers EVERY TestUnit of every ConfigUnit of the profile:
+        -- one spec per TestUnit with `test_command_all`, one per runnable
+        -- target of the saved-targets TestUnit. A single spec is returned as
+        -- is; several as a list (loomtest runs them one after another).
         run_all = function(opts)
             local lw = require("loomworks")
             local profile = lw.get_active_profile()
             if not profile then return nil end
 
+            local specs = {}
             for _, pp in ipairs(profile:projects()) do
                 local unit = pp._config_unit
                 if unit then
-                    local tus = unit:test_units()
-                    if #tus > 0 then
-                        local spec = tus[1]:test_command_all(opts)
+                    for _, c in ipairs(unit:test_commands_all(opts)) do
+                        local spec = c.cmd
+                        spec._test_unit = c.tu
                         M._log_spec("run_all", unit, spec)
-                        return spec
+                        specs[#specs + 1] = spec
                     end
                 end
             end
-            return nil
+            if #specs == 0 then return nil end
+            if #specs == 1 then return specs[1] end
+            return specs
         end,
 
         run_suite = function(suite_id, opts)
@@ -211,31 +225,25 @@ local function create_adapter()
             local suite_name = suite_id:match("::(.+)$")
             if not suite_name then return nil end
 
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if not profile then return nil end
-
-            for _, pp in ipairs(profile:projects()) do
-                local unit = pp._config_unit
-                if unit then
-                    local tus = unit:test_units()
-                    if #tus > 0 then
-                        -- Use GTEST_FILTER to run all tests in the suite.
-                        -- This works for both add_test() and gtest_discover_tests()
-                        -- because GTEST_FILTER is passed to the executable via env.
-                        local target_id = suite_id:match("^(.+)::") or ""
-                        local target_name = target_id:match("^target:(.+)$") or target_id
-                        return tus[1]:test_command(
-                            "target:" .. target_name,
-                            { gtest_filter = suite_name .. ".*" }
-                        )
-                    end
-                end
-            end
-            return nil
+            -- The suite's target runs through the TestUnit that owns it, with
+            -- GTEST_FILTER selecting the suite (works for add_test() and
+            -- gtest_discover_tests() alike: the filter reaches the executable
+            -- via env).
+            local target_id = suite_id:match("^(.+)::") or ""
+            local target_name = target_id:match("^target:(.+)$") or target_id
+            local id = "target:" .. target_name
+            local unit = M._find_test_unit(id)
+            if not unit then return nil end
+            local spec, tu = unit:test_command_for(id, { gtest_filter = suite_name .. ".*" })
+            if spec then spec._test_unit = tu end
+            return spec
         end,
 
-        parse_results = function(output_path)
+        -- Results are parsed by the TestUnit that produced the run (§8.9.4).
+        parse_results = function(output_path, spec)
+            if spec and spec._test_unit then
+                return spec._test_unit:parse_results(output_path)
+            end
             local lw = require("loomworks")
             local profile = lw.get_active_profile()
             if not profile then return nil end
@@ -317,10 +325,34 @@ function M._log_spec(label, unit, spec)
         tostring(spec.output_path))
 end
 
---- Find the TestUnit that owns a test ID.
+--- The ConfigUnit whose TestUnit owns `test_id` (an entry with that id), or
+--- nil — never a fallback guess (spec §8.9.4).
+--- @param test_id string
+--- @return loomworks.ConfigUnit|nil
+function M._owning_test_unit(test_id)
+    local lw = require("loomworks")
+    local profile = lw.get_active_profile()
+    if not profile then return nil end
+    for _, pp in ipairs(profile:projects()) do
+        local unit = pp._config_unit
+        if unit then
+            for _, tu in ipairs(unit:test_units()) do
+                for _, e in ipairs(tu:entries() or {}) do
+                    if e.id == test_id then return unit end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+--- Find the ConfigUnit (and its TestUnit) that owns a test ID: the owning
+--- unit, else the first unit with a TestUnit (its first TestUnit).
 --- @param test_id string
 --- @return loomworks.ConfigUnit|nil, loomworks.TestUnit|nil
 function M._find_test_unit(test_id)
+    local owner = M._owning_test_unit(test_id)
+    if owner then return owner, owner:_find_test_unit(test_id) end
     local lw = require("loomworks")
     local profile = lw.get_active_profile()
     if not profile then return nil, nil end

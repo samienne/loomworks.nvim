@@ -480,4 +480,49 @@ function M.with_description(opts, item)
     return opts
 end
 
+--- The read-only saved test-targets line (spec/ui.md "Saved test targets
+--- line", core §1.3.4) as `{text, hl}` chunks, or nil when nothing is
+--- declared along the chain. Names in list order, cut with `+N` to `width`;
+--- the source in parentheses unless it is `item` itself ("own"). With
+--- `targets` (the unit's parsed build targets — known only when configured
+--- here) a missing entry carries a ⚠; unknown targets are not flagged.
+--- @param eff { entries: table[], source: table }|nil effective list
+--- @param item table|nil the configuration / project the line belongs to
+--- @param targets table<string, loomworks.Target>|nil
+--- @param width integer|nil available display width
+--- @return {[1]: string, [2]: string}[]|nil
+function M.test_targets_chunks(eff, item, targets, width)
+    if not eff then return nil end
+    local tt = require("loomworks.test_targets")
+    if #eff.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
+    local src = ""
+    if eff.source ~= item then
+        src = "  (" .. tt.source_text(eff.source, item and item._project and item or nil) .. ")"
+    end
+    local names = {}
+    for _, e in ipairs(eff.entries) do
+        local state = type(targets) == "table" and tt.resolve(targets, e.target) or "unknown"
+        local bad = state == "missing" or state == "not executable"
+        names[#names + 1] = { (bad and "⚠ " or "") .. e.target, bad and "DiagnosticWarn" or "Comment" }
+    end
+    local avail = (width or 100) - vim.fn.strdisplaywidth("Tests: " .. src)
+    local shown, used = 0, 0
+    for i, n in ipairs(names) do
+        local w = vim.fn.strdisplaywidth(n[1]) + (i > 1 and 2 or 0)
+        local rest = #names - i
+        local tail = rest > 0 and (2 + #("+" .. rest)) or 0
+        if i > 1 and used + w + tail > avail then break end
+        used = used + w
+        shown = i
+    end
+    local chunks = { { "Tests: ", "Comment" } }
+    for i = 1, shown do
+        if i > 1 then chunks[#chunks + 1] = { ", ", "Comment" } end
+        chunks[#chunks + 1] = names[i]
+    end
+    if shown < #names then chunks[#chunks + 1] = { ", +" .. (#names - shown), "Comment" } end
+    if src ~= "" then chunks[#chunks + 1] = { src, "Comment" } end
+    return chunks
+end
+
 return M

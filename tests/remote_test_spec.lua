@@ -115,10 +115,11 @@ describe("lw test --target on a device", function()
         assert.equals(0, res.ret)
         assert.truthy(res.stdout:find("Runner: 2 tests passed", 1, true))
         assert.truthy(res.stdout:find("TESTS OK: Debug:kit", 1, true))
-        -- forwarded args first, then the results option pointing into the staging root
-        assert.equals("--gtest_filter=Suite.*", dev.last_argv[2])
+        -- the results option pointing into the staging root, then the
+        -- forwarded args (spec §16.16: program, results option, args)
         assert.equals("--gtest_output=xml:" .. DROOT .. "/.loomworks/results/Runner.xml",
-            dev.last_argv[3])
+            dev.last_argv[2])
+        assert.equals("--gtest_filter=Suite.*", dev.last_argv[3])
         local j = fx.read(junit)
         assert.truthy(j:find('<testcase classname="Suite" name="a"', 1, true))
         assert.truthy(j:find('tests="2" failures="0"', 1, true))
@@ -272,7 +273,8 @@ describe("named test executables on the host", function()
                     build = function() end, resolve_target = function() return lt end,
                     run_spec = function(step)
                         seen = step.cmd
-                        local xml = step.cmd[#step.cmd]:match("^%-%-gtest_output=xml:(.+)$")
+                        local xml
+                        for _, a in ipairs(step.cmd) do xml = xml or a:match("^%-%-gtest_output=xml:(.+)$") end
                         fx.write(xml, gtest_xml({ { name = "a" }, { name = "b", fail = true } }))
                         return 0
                     end,
@@ -282,7 +284,9 @@ describe("named test executables on the host", function()
         require("loomworks.io").rm_rf(root)
         assert.is_false(res.ok)
         assert.is_table(seen, tostring(res.ret))
-        assert.equals("--x", seen[2])
+        -- program, results option, then the forwarded args (spec §16.16)
+        assert.truthy(seen[2]:match("^%-%-gtest_output=xml:"))
+        assert.equals("--x", seen[3])
         assert.truthy(res.stdout:find("Local: FAILED (1 failed test): Suite.b", 1, true))
     end)
 end)

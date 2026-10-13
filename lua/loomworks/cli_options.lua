@@ -85,7 +85,8 @@ M.COMMANDS = {
   }),
   build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v" }, valued = { "--target" },
     eq = { "--target=" } }),
-  test = spec({ flags = DEVICE_FLAGS, valued = concat({ "--junit", "--target" }, DEVICE_VALUED) }),
+  test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json" }, DEVICE_FLAGS),
+    valued = concat({ "--junit", "--target" }, DEVICE_VALUED) }),
   clean = NONE,
   reset = spec({ flags = { "--all", "-y", "--yes" } }),
   unlock = spec({ flags = { "--all" }, valued = { "--device" } }),
@@ -200,6 +201,18 @@ M.COMMANDS = {
     },
     aliases = { create = "add", edit = "set", rm = "remove", mv = "rename" },
     default = NONE,
+  },
+  -- `lw test-target` (spec §16.9): args after `--` (add) are the targets' own.
+  ["test-target"] = {
+    subs = {
+      list = NONE,
+      add = spec({ flags = { "--project-wide", "--unchecked" }, valued = { "--config" } }),
+      remove = spec({ flags = { "--project-wide" }, valued = { "--config" } }),
+      clear = spec({ flags = { "--project-wide", "--empty" }, valued = { "--config" } }),
+    },
+    aliases = { rm = "remove" },
+    default = NONE,
+    operand_default = NONE,
   },
   target = {
     subs = {

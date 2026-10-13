@@ -22,7 +22,8 @@
 --- Core defines the generic fields (configuration `env` and compiler-family
 --- `overrides.<family>.env`, launch configurations naming a program /
 --- arguments / environment / working directory, deploy destinations not
---- statically inside the workspace, a `device` block's `env` / `working_dir`); modules add top-level `type_config` keys
+--- statically inside the workspace, a `device` block's `env` / `working_dir`,
+--- saved test targets' per-target `args`); modules add top-level `type_config` keys
 --- through their optional `trust_fields = { type_config = {...}, review = {...} }`
 --- declaration (spec §8.4). No module names appear here.
 
@@ -102,6 +103,36 @@ local function module_fields(modules, mod_type)
         type(tf.review) == "table" and tf.review or {}
 end
 
+--- Strip the per-target `args` of a saved test-target list (spec §1.3.4,
+--- §17.6), in place. The entry itself stays (a target name is not
+--- program-bearing). Returns one ignored entry per stripped target.
+--- @param tests any the `tests` value (raw shape)
+--- @param path string[] path of `tests` in the parsed config
+--- @param raw_path string[] path of `tests` in the raw file
+--- @param anchor integer raw_path depth of the owning item
+--- @param label string e.g. "projects.App.cmake.configurations.Tests.tests"
+--- @return table[]
+local function strip_test_args(tests, path, raw_path, anchor, label)
+    local out = {}
+    if type(tests) ~= "table" or type(tests.targets) ~= "table" then return out end
+    for i, el in ipairs(tests.targets) do
+        if type(el) == "table" and el.args ~= nil then
+            local name = type(el.target) == "string" and el.target or tostring(i)
+            out[#out + 1] = {
+                kind = "test_args", value = el.args, test_target = name,
+                path = path, raw_path = raw_path, anchor = anchor,
+                label = label,
+                detail = name .. " args = " .. (type(el.args) == "table"
+                    and table.concat(vim.tbl_map(tostring, el.args), " ") or tostring(el.args)),
+            }
+            local copy = {}
+            for k, v in pairs(el) do if k ~= "args" then copy[k] = v end end
+            tests.targets[i] = copy
+        end
+    end
+    return out
+end
+
 --- Remove program-bearing fields from a parsed shared config, in place.
 --- @param config table parsed loomworks.json (`config.parse` shape)
 --- @param modules table|nil module registry
@@ -160,6 +191,13 @@ function M.strip(config, modules)
                     for _, cname in ipairs(sorted_keys(tc.configurations)) do
                         local c = tc.configurations[cname]
                         if type(c) == "table" then
+                            -- (2b) Per-target args of saved test targets (§1.3.4).
+                            for _, e in ipairs(strip_test_args(c.tests,
+                                    { "projects", pkey, "type_config", "configurations", cname, "tests" },
+                                    { "projects", pkey, mtype, "configurations", cname, "tests" }, 5,
+                                    "projects." .. pkey .. "." .. mtype .. ".configurations." .. cname .. ".tests")) do
+                                add(e)
+                            end
                             if c.env ~= nil then
                                 add({
                                     kind = "env", value = c.env,
@@ -271,6 +309,13 @@ function M.strip(config, modules)
                 end
                 if next(proj.device) == nil then proj.device = nil end
             end
+            -- (6) Project-wide saved test targets' per-target args (§1.3.4):
+            -- parsed onto the project, regrafted into the module section.
+            for _, e in ipairs(strip_test_args(proj.tests, { "projects", pkey, "tests" },
+                    { "projects", pkey, proj.type or "?", "tests" }, 2,
+                    "projects." .. pkey .. "." .. (proj.type or "?") .. ".tests")) do
+                add(e)
+            end
             -- (4) Project-level deploy destinations.
             if type(proj.deploy) == "table" then
                 for _, dest in ipairs(sorted_keys(proj.deploy)) do
@@ -313,7 +358,26 @@ end
 function M.regraft(raw, ignored)
     for _, e in ipairs(ignored or {}) do
         local rp = e.raw_path
-        if rp and get_path(raw, rp) == nil then
+        if e.kind == "test_args" then
+            -- Saved test-target args (§1.3.4): restored onto the entry of the
+            -- same target name, when the published list still has it and does
+            -- not set args of its own. Never by index (the list may be reordered).
+            local tests = rp and get_path(raw, rp)
+            local list = type(tests) == "table" and tests.targets or nil
+            if type(list) == "table" then
+                for i, el in ipairs(list) do
+                    local name = type(el) == "string" and el or (type(el) == "table" and el.target)
+                    if name == e.test_target then
+                        if type(el) == "string" then
+                            list[i] = { target = el, args = vim.deepcopy(e.value) }
+                        elseif el.args == nil then
+                            el.args = vim.deepcopy(e.value)
+                        end
+                        break
+                    end
+                end
+            end
+        elseif rp and get_path(raw, rp) == nil then
             local anchor = get_path(raw, rp, e.anchor)
             if type(anchor) == "table" then
                 local cur = anchor
@@ -348,7 +412,20 @@ end
 function M.diagnostics(ignored, merged)
     local out = {}
     for _, e in ipairs(ignored or {}) do
-        if get_path(merged, e.path) == nil then
+        local supplied
+        if e.kind == "test_args" then
+            -- Supplied when the working copy's list gives that target args.
+            local tests = get_path(merged, e.path)
+            for _, el in ipairs(type(tests) == "table" and type(tests.targets) == "table"
+                    and tests.targets or {}) do
+                if type(el) == "table" and el.target == e.test_target and el.args ~= nil then
+                    supplied = true
+                end
+            end
+        else
+            supplied = get_path(merged, e.path) ~= nil
+        end
+        if not supplied then
             out[#out + 1] = {
                 severity = "warn",
                 source = e.project and ("Project/" .. e.project) or "Workspace",
@@ -398,10 +475,22 @@ function M.review(user_data, modules)
                         end
                     end
                 end
+                -- Saved test-target args (§1.3.4) are program arguments.
+                local function test_args(tests, label)
+                    if type(tests) ~= "table" or type(tests.targets) ~= "table" then return end
+                    for _, el in ipairs(tests.targets) do
+                        if type(el) == "table" and type(el.args) == "table" and #el.args > 0 then
+                            p(label .. " " .. tostring(el.target) .. " args = " .. short(el.args, 90))
+                        end
+                    end
+                end
+                test_args(tc.tests, "projects." .. pkey .. "." .. mtype .. ".tests")
                 if type(tc.configurations) == "table" then
                     for _, cname in ipairs(sorted_keys(tc.configurations)) do
                         local c = tc.configurations[cname]
                         if type(c) == "table" then
+                            test_args(c.tests, "projects." .. pkey .. "." .. mtype .. ".configurations."
+                                .. cname .. ".tests")
                             if type(c.env) == "table" and next(c.env) then
                                 p("projects." .. pkey .. "." .. mtype .. ".configurations." .. cname
                                     .. ".env = " .. short(c.env, 90))

@@ -10,9 +10,9 @@
 --- @field discover fun(): loomtest.TestNode[]|nil
 --- @field discover_async fun(callback: fun(nodes: loomtest.TestNode[]|nil))
 --- @field run fun(test_id: string, opts?: table): loomtest.RunSpec|nil
---- @field run_all fun(opts?: table): loomtest.RunSpec|nil
+--- @field run_all fun(opts?: table): loomtest.RunSpec|loomtest.RunSpec[]|nil several specs run one after another
 --- @field run_suite fun(suite_id: string, opts?: table): loomtest.RunSpec|nil
---- @field parse_results fun(output_path: string): loomtest.TestResult[]|nil
+--- @field parse_results fun(output_path: string, spec?: loomtest.RunSpec): loomtest.TestResult[]|nil spec = the RunSpec that produced the file
 --- @field invalidate fun()
 --- @field get_cursor_test fun(bufnr: number, line: number): string|nil
 --- @field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean)) optional: build test targets before running
