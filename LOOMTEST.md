@@ -367,15 +367,21 @@ statuses from `Tests/1` `results`. It implements `start`, `debug_start`,
 - **Discovery**: `discover_async` returns the view's nodes; when the view is
   `stale` and the explorer is open (or on `<C-r>`, forced) it calls
   `Tests/1.discover`, an owned overseer row, and the tree follows the view's
-  `update`. A unit that is `not_configured`, `foreign`, `no_tests` or
-  `error` shows as one non-runnable node with the view's message.
+  `update`. A unit that is `not_configured`, `foreign` or `error` shows as
+  one non-runnable node with the view's `message`; a `no_tests` unit as one
+  non-runnable node with the fixed label `no tests`; a `pending` unit (not
+  discovered yet in this session) as one neutral, non-runnable `not
+  discovered yet` node; an unknown state as a neutral node.
 - **Runs**: `start` is one `Tests/1.run_cases` (`select` the ids, none for
   run-all, `no_build` for `<leader>tA`), an owned overseer row whose stop
   cancels it; the build is in that task (`ensure_built` is not used).
   `results` signals feed the sink; another client's runs show too.
 - **Debug**: `debug_start` is `Tests/1.prepare_debug` → the returned debug
   spec to `debug.run()` → `Tests/1.collect` when the session ends; no
-  language or adapter is assumed.
+  language or adapter is assumed. The installed-adapter check runs after
+  the task's `done` (the adapter is known only from the returned spec) and
+  before `debug.run()`; a missing adapter shows the install hint, starts no
+  session and calls `Tests/1.collect` at once to drop the prepared token.
 - **Output**: `o`, `e`, inline marks and diagnostics of failed nodes read
   `Tests/1.result { id }`.
 - **Status**: unloaded, disconnected, `error`/`refused`, or the interfaces

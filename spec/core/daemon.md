@@ -1755,7 +1755,7 @@ profile_id?, stale, discovering?, units }`:
   the active profile only, and is empty (`units` = `[]`) with none.
   `profile_id` (optional) — its opaque id, from the daemon only.
 - `stale` (boolean) — the tree may no longer match the build: no discovery
-  has run for the active profile in this session yet, or since it ran a
+  has run for the active profile in this session yet, or since then a
   configure, build, clean or reset of one of its units ended (by any client,
   the CLI's included), its saved test target list changed (§1.3.4), or the
   active profile changed. Only `Tests/1.discover` clears it. The daemon never
@@ -2210,7 +2210,8 @@ id) is refused as a stale reference (§19.20).
   `queued` or `running` become unknown (their status removed, the earlier
   last result not restored).
 - **Debug preparation** (`Tests/1.prepare_debug`, task, `meta.kind =
-  debug`). Exactly one runnable node. The locks and build of a `run_cases`
+  debug`). Exactly one runnable node (`select` a single `TestNodeRef`
+  object, not an array). The locks and build of a `run_cases`
   of that node (the locks released when the task ends), then `done` carries
   the `debug` spec (`loomworks.Common/1` `DebugSpec`) of the test step
   `run_cases` would have run — program, arguments with the filter and the
@@ -3187,15 +3188,20 @@ editor's — rendering, navigation, the cursor's test, the output window.
   client's runs too); its end is the view's `update`. Stopping the overseer
   row cancels the task (`Tasks/1.cancel`). Concurrent runs queue behind the
   build-directory locks (§19.15 "Tests").
-- **Debug.** Debugging a test is `Tests/1.prepare_debug { select }` (a task
-  as `Launch/1.prepare_debug` is, building what a run of the node would);
+- **Debug.** Debugging a test is `Tests/1.prepare_debug { select }` (`select` a
+  single `TestNodeRef` object, not an array; a task as
+  `Launch/1.prepare_debug` is, building what a run of the node would);
   the editor hands the returned `debug` to its debugger as for a launch
-  ("Editor operations" above: the installed-adapter check before the call,
-  the adapter-specific shape in the editor), and when the session ends it
+  (the adapter-specific shape in the editor), and when the session ends it
   calls `Tests/1.collect { prepared }` so the daemon reads the results the
   program wrote and updates the view. The program is the editor's, never the
   daemon's. No language or adapter is assumed by the editor: they come with
-  the `debug` spec.
+  the `debug` spec, so the installed-adapter check (§8.9.6) is made after
+  the task's `done` and before `debug.run()`, not before the call as for a
+  launch. When the adapter is not installed the editor shows the install
+  hint, starts no session and calls `Tests/1.collect { prepared }` at once,
+  which drops the token and its results file (the program never ran, so it
+  records nothing); a `done` without `debug` carries no token to drop.
 - **Output.** The output and error locations of a node (the explorer's
   output window, the first-error jump, the inline marks and diagnostics of
   failed nodes) are read with `Tests/1.result { id }` when shown.
@@ -4019,8 +4025,11 @@ runtime is deferred until that module is actively developed.
        the generation owner).
      - **5m — Tests through the daemon** (§19.13 "The tests view"; §19.15
        "Tests"; §19.16 "Tests"; §19.20 `Tests/1`; §8.9; LOOMTEST.md), in
-       parts: 0 — spec (this; the `loomworks.view.Tests/1` schema and the
-       shared result types in `loomworks.Common/1`); A — preparation with no
+       parts: 0 — spec (this; the `loomworks.view.Tests/1` schema, the
+       `loomworks.Tests/1` `results` signal schema and the shared result
+       types in `loomworks.Common/1`; the `Tests/1` method schemas land with
+       their handlers in B1 and B2, since the interface registry does not
+       mount a schema method without a handler); A — preparation with no
        behaviour change, in-process only: one host-neutral builder of the
        view's shape (unit states, explicit suite nodes, unit-scoped ids with
        an id provider), a test source the loomtest and neotest adapters read
@@ -4398,7 +4407,8 @@ message, before acceptance. All of them carry the caller's environment
   `TestCaseResult` (every case the run reported, in report order), `counts`
   `{ passed, failed, skipped, errored }`.
 - `prepare_debug { select, no_build? }` — task-streamed (`meta.kind =
-  debug`), the outcomes of `build`; `select` one `TestNodeRef`.
+  debug`), the outcomes of `build`; `select` a single `TestNodeRef` object
+  (one runnable node; not an array, unlike `run_cases`).
   `done.result` `{ exit_code, error?, debug?, prepared? }`: on success the
   `DebugSpec` and the opaque `prepared` token.
 - `collect { prepared }` → `{ cases }` (an array of `TestCaseResult`, empty
@@ -4411,7 +4421,7 @@ message, before acceptance. All of them carry the caller's environment
   `errors` an array of `{ message, file?, line? }` (absolute,
   `/`-separated paths). A node with no last result answers only `id` and an
   empty `errors`; a stale id is `refused`.
-- Signal `results { seq, task_id, cases }` — the per-case progress of a
+- Signal `results { seq, task_id?, cases }` — the per-case progress of a
   running `run_cases` (any client's) and the cases a `collect` recorded
   (`task_id` then absent): `cases` an array of `TestCaseResult`, each with
   its current `status` (`queued`, `running`, `passed`, `failed`, `skipped`,
