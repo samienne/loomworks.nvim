@@ -651,7 +651,7 @@ that directory instead; it is absolute or workspace-root-relative and
 variable-expanded in each target's launch context, so `${target_dir}` (§8.7)
 names each target's own artifact directory. The override applies only to
 named targets: on an invocation that names none it is a usage error, and on
-a named target that runs on a device it is an error, as for a run (the
+a named target that runs on a device it is a usage error (exit 2), as for a run (the
 device working directory comes from the `device` block, §18.9). A named target that is **foreign**
 (§18.1) runs on a device (§18.5–§18.6; device selection §18.3) and its results
 file is pulled back; a host-runnable one runs locally. Caller-forwarded
