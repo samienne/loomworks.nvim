@@ -237,16 +237,40 @@ describe("lw test --target on a device", function()
 end)
 
 describe("plain lw test on a foreign profile", function()
+    local function batch_unit(o)
+        local unit = fx.fake_unit(o)
+        unit._project = { key = "App" }
+        unit.batch_runner_test_units = function() return { { run_command_all = function() end } } end
+        return unit
+    end
+
     it("refuses (the batch runner would execute foreign binaries on the host)", function()
-        local unit = fx.fake_unit({ token = "fake-arm64", tool_key = "ohos-kit" })
+        local unit = batch_unit({ token = "fake-arm64", tool_key = "ohos-kit" })
         local profile = { key = "Debug:ohos-kit", projects = function() return { { _config_unit = unit } } end }
-        local res = capture(function() cli._refuse_foreign_batch(profile) end)
+        local built = false
+        local res = capture(function()
+            return cli._test_plan({ root = "/" }, profile, { extra = {}, dev = cli._new_device_opts() },
+                { build = function() built = true end })
+        end)
         assert.is_false(res.ok)
         assert.truthy(res.stderr:find("builds with kit ohos-kit for fake-arm64", 1, true))
         assert.truthy(res.stderr:find("lw test Debug:ohos-kit --target <exe>", 1, true))
-        local host = { key = "h", projects = function() return { { _config_unit = fx.fake_unit({}) } } end }
-        res = capture(function() cli._refuse_foreign_batch(host) end)
-        assert.is_true(res.ok)
+        assert.is_false(built)
+    end)
+
+    it("plans the batch step on the host, drops it only for a foreign kit", function()
+        local host = { key = "h", projects = function() return { { _config_unit = batch_unit({}) } } end }
+        local plan, n_batch = cli._test_plan_units(host)
+        assert.equals(1, n_batch)
+        assert.is_true(plan[1].batch)
+        assert.is_nil(plan[1].batch_dropped)
+        local unit = batch_unit({ token = "fake-arm64", tool_key = "ohos-kit" })
+        local foreign = { key = "f", projects = function() return { { _config_unit = unit } } end }
+        plan, n_batch = cli._test_plan_units(foreign)
+        assert.equals(0, n_batch)
+        assert.is_false(plan[1].batch)
+        assert.is_true(plan[1].batch_dropped)
+        assert.equals("fake-arm64", plan[1].platform)
     end)
 end)
 

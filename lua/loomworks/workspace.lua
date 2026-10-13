@@ -6816,17 +6816,22 @@ M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on 
 
 --- A saved test-target list of `project` changed (spec §1.3.4): drop the
 --- cached test trees of its units (the list is not a configure input — no
---- unit becomes stale) and tell the hosts.
+--- unit becomes stale) and tell the hosts. Only `tests_invalidated` is
+--- emitted (test explorer + status page refresh) — not `active_set_changed`,
+--- which would also re-evaluate the LSP integrations for no reason.
 --- @param project loomworks.Project
 function Workspace:_saved_tests_changed(project)
     local events = self._core and self._core._deps and self._core._deps.events
+    local emitted = false
     for _, unit in pairs(self._config_units or {}) do
         if unit._project == project and unit.invalidate_tests then
             unit:invalidate_tests()
             if events then events.emit("tests_invalidated", unit) end
+            emitted = true
         end
     end
-    if events then events.emit("active_set_changed", self._active_set) end
+    -- No unit yet: still refresh the views showing the `Tests:` line.
+    if events and not emitted then events.emit("tests_invalidated", nil) end
 end
 
 --- Save the working copy. Guarded against concurrent writers (spec §2.7): when

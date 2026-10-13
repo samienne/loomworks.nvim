@@ -9,13 +9,15 @@
 ---
 ---   "tests": { "targets": [ "Name", { "target": "Name", "args": ["…"] } ] }
 ---
---- Unknown keys of the `tests` object are kept verbatim and ignored.
+--- Unknown keys of the `tests` object, and of an entry object, are kept
+--- verbatim and ignored.
 
 local M = {}
 
 --- @class loomworks.SavedTestEntry
 --- @field target string build target name of the declaring project (unqualified)
 --- @field args string[]|nil arguments passed verbatim after the results option
+--- @field extra table<string, any>|nil unknown keys of the entry object, kept verbatim
 
 --- @class loomworks.SavedTestDecl
 --- @field entries loomworks.SavedTestEntry[] parsed list, in run order, duplicates dropped
@@ -57,7 +59,7 @@ function M.parse(raw, where)
     end
     local entries, seen = {}, {}
     for _, el in ipairs(list) do
-        local name, args
+        local name, args, el_extra
         if type(el) == "string" then
             name = el
         elseif type(el) == "table" and type(el.target) == "string" then
@@ -65,6 +67,12 @@ function M.parse(raw, where)
             if type(el.args) == "table" then
                 args = {}
                 for _, a in ipairs(el.args) do args[#args + 1] = tostring(a) end
+            end
+            for k, v in pairs(el) do
+                if k ~= "target" and k ~= "args" then
+                    el_extra = el_extra or {}
+                    el_extra[k] = vim.deepcopy(v)
+                end
             end
         end
         if not name or name == "" then
@@ -77,7 +85,7 @@ function M.parse(raw, where)
                 .. "' is listed twice; the first one is kept")
         else
             seen[name] = true
-            entries[#entries + 1] = { target = name, args = args }
+            entries[#entries + 1] = { target = name, args = args, extra = el_extra }
         end
     end
     return { entries = entries, extra = extra }, nil
@@ -90,14 +98,18 @@ function M.declares(decl)
     return decl ~= nil and decl.entries ~= nil
 end
 
---- Serialize one entry: a bare name, or `{ target, args }` when it has args.
+--- Serialize one entry: a bare name, or `{ target, args, … }` when it has
+--- args or unknown keys (kept verbatim).
 --- @param e loomworks.SavedTestEntry
 --- @return string|table
 function M.serialize_entry(e)
-    if e.args and #e.args > 0 then
-        return { target = e.target, args = vim.deepcopy(e.args) }
-    end
-    return e.target
+    local has_args = e.args and #e.args > 0
+    if not has_args and not (e.extra and next(e.extra)) then return e.target end
+    local raw = {}
+    for k, v in pairs(e.extra or {}) do raw[k] = vim.deepcopy(v) end
+    raw.target = e.target
+    if has_args then raw.args = vim.deepcopy(e.args) end
+    return raw
 end
 
 --- Serialize a declaration to its raw `tests` value (nil when nothing to write).

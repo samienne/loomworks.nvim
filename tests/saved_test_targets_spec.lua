@@ -101,6 +101,39 @@ describe("tests field: resolution (§1.3.4)", function()
         assert.same({ mode = "x", targets = { "A", "C" } }, d:serialize_user_override().tests)
     end)
 
+    it("an editor edit emits tests_invalidated only (no active_set_changed / LSP re-evaluation)", function()
+        local ws = load(make_ws(SECTION, "Child"))
+        local events = ws._core._deps.events
+        local seen = {}
+        local on_inv = function() seen.inv = (seen.inv or 0) + 1 end
+        local on_set = function() seen.set = (seen.set or 0) + 1 end
+        events.on("tests_invalidated", on_inv)
+        events.on("active_set_changed", on_set)
+        local ok, err = project(ws, "App"):get_configuration("Child"):set_test_targets({ { target = "Z" } })
+        events.off("tests_invalidated", on_inv)
+        events.off("active_set_changed", on_set)
+        assert.is_true(ok, err)
+        assert.truthy((seen.inv or 0) >= 1)
+        assert.is_nil(seen.set)
+    end)
+
+    it("keeps unknown keys of an entry object through a rewrite", function()
+        local raw = { targets = { "A", { target = "B", args = { "--b" }, timeout = 30, env = { X = "1" } },
+            { target = "C", note = "keep" } } }
+        local decl = tt.parse(raw, "App/Tests")
+        assert.same({ timeout = 30, env = { X = "1" } }, decl.entries[2].extra)
+        assert.same(raw, tt.serialize(decl))
+        -- A rewrite (as `lw test-target add` does: change args, append) keeps them.
+        local entries = vim.deepcopy(decl.entries)
+        entries[2].args = nil
+        entries[#entries + 1] = { target = "D" }
+        local out = tt.serialize(tt.with_entries(decl, entries))
+        assert.same({ "A", { target = "B", timeout = 30, env = { X = "1" } },
+            { target = "C", note = "keep" }, "D" }, out.targets)
+        -- Unknown entry keys do not change the fingerprint (names + args only).
+        assert.equals(tt.fingerprint({ { target = "C" } }), tt.fingerprint({ decl.entries[3] }))
+    end)
+
     it("is persisted only where declared, and a module never sees it", function()
         local root = make_ws(SECTION, "Child")
         local ws = load(root)

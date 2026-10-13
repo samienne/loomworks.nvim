@@ -2660,21 +2660,6 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
   return run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
 end
 
---- The batch runner is a host program that would execute the profile's test
---- binaries here: never for a cross kit (spec §15 invariant 19, §18.6). Dies
---- naming the kit and platform, pointing at `lw test --target`.
---- @param profile loomworks.Profile
-function M._refuse_foreign_batch(profile)
-  for _, pp in ipairs(profile:projects()) do
-    local token, tool = require("loomworks.remote.foreign").unit_platform(pp._config_unit)
-    if token then
-      die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
-        .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]",
-        profile.key, tostring(tool and (tool.key or tool.label) or "?"), token, profile.key))
-    end
-  end
-end
-
 --- Run ONE test executable step (spec §16.16, §18.6) — the shared executor of
 --- named (`--target`) and saved test targets: run the resolved `LaunchTarget`
 --- directly with its framework's results option — on a device when foreign
@@ -2846,9 +2831,9 @@ function M._test_plan_units(profile, sel)
           u.entries = {}
         end
       end
-      local token = foreign.unit_platform(unit)
+      local token, tool = foreign.unit_platform(unit)
       if token and u.batch then
-        u.batch, u.batch_dropped, u.platform = false, true, token
+        u.batch, u.batch_dropped, u.platform, u.tool = false, true, token, tool
       end
       if u.batch then n_batch = n_batch + 1 end
       n_exec = n_exec + #u.entries
@@ -2899,7 +2884,7 @@ function M._test_plan(ws, profile, opts, deps)
   if n_batch + n_exec == 0 then
     for _, u in ipairs(plan) do
       if u.batch_dropped then
-        local tool = u.unit._tool
+        local tool = u.tool
         die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
           .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]"
           .. "\n  or save them: lw test-target add %s <exe>",

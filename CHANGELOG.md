@@ -42,6 +42,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Changed
 
+- `lw test --target` now passes the results option (e.g. `--gtest_output`)
+  first, before the entry's arguments and the arguments forwarded after
+  `--`: program, results option, args. Before, the results option came
+  last. (#208)
 - Inside a workspace, clangd only gets a compile database from the active
   configuration as configured on this machine. A stale
   `compile_commands.json` in a build directory that is not configured here
