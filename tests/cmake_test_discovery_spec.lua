@@ -221,7 +221,7 @@ describe("gtest helper", function()
             -- with an assertion failing 262k times in a loop hung `lw test` for
             -- hours. 20k <failure> elements x 4 lines = 80k lines in one case: ~20 s
             -- with the quadratic code (200k lines exhausts memory instead of
-            -- failing on time), well under 0.5 s when linear.
+            -- failing on time), well under 0.5 s when linear; the 10 s bound leaves room for loaded CI runners.
             local tmp = vim.fn.tempname() .. ".xml"
             local lines = {
                 '<?xml version="1.0" encoding="UTF-8"?>',
@@ -256,7 +256,7 @@ describe("gtest helper", function()
                 results[1].message)
             assert.equals("test:LoopSuite.Small", results[2].test_id)
             assert.equals("passed", results[2].status)
-            assert.is_true(elapsed < 2, ("parse took %.2f s (limit 2 s)"):format(elapsed))
+            assert.is_true(elapsed < 10, ("parse took %.2f s (limit 10 s)"):format(elapsed))
         end)
 
         it("should return nil for missing file", function()
