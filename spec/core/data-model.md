@@ -302,12 +302,14 @@ context*).
 
 **Value expansion**: Variable values can reference built-in variables
 (`${workspace_root}`, `${build_dir}`, `${variant}`, `${config_set}`,
-`${project_path}`) but NOT other user-defined variables. This prevents
+`${project_path}`, and in a launch context `${target_dir}`, §8.7) but NOT
+other user-defined variables. This prevents
 circular references and keeps resolution simple. Cross-variable references
 are deferred to a future version (with loop detection).
 
 **Reserved names**: User variables cannot use built-in variable names
-(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`) or the
+(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`,
+`target_dir`) or the
 pre-declared policy name `cache` (§1.3.2), nor the name `env`, which inside a
 compiler-family `overrides` block denotes the environment sub-block (§1.3.3). The
 system rejects *declarations* with reserved names at parse time. `cache` is a special case among the reserved names:
@@ -518,6 +520,7 @@ field: a module never sees it.
                     "CoreTests",
                     ["RenderTests", "--gtest_filter=-*Slow*"],
                     ["RenderTests", "--gtest_filter=*Slow*", "--scale=${slow_scale}"],
+                    { "name": "AssetTests", "working_dir": "${target_dir}" },
                     "schema-check"
                 ]
             }
@@ -529,14 +532,24 @@ field: a module never sees it.
 }
 ```
 
-- **Shape.** `tests` is an ordered array of **entries**. An entry is a string
-  — the **name** — or a non-empty array of strings whose first element is the
-  name and whose remaining elements are the entry's **args**; `"X"` and
-  `["X"]` are the same entry. Order is run order. (An object form could be
-  added later if an entry needs more keys than a name and args; this version
-  has none.) An element of any other shape (an object, a number, an empty
-  array, a non-string element) is an **invalid entry**: it is kept verbatim in
-  the file, reported on its level, and treated as a missing entry (below). A
+- **Shape.** `tests` is an ordered array of **entries**. An entry takes one
+  of three forms:
+  - a string — the **name**;
+  - a non-empty array of strings whose first element is the name and whose
+    remaining elements are the entry's **args**;
+  - a **table** `{ "name": "X", "args": [...], "working_dir": "..." }`, whose
+    `args` (an array of strings) and `working_dir` (a string, below) are
+    optional. `name` has the same meaning as in the short forms. A key this
+    version does not know is kept verbatim in the file and never acted on.
+
+  `"X"`, `["X"]` and `{ "name": "X" }` are the same entry, and so are
+  `["X", "a"]` and `{ "name": "X", "args": ["a"] }`; the form never changes
+  an entry's meaning or its occurrence index. Order is run order. An element
+  of any other shape (a number, an empty array, an array with a non-string
+  element, a table without a string `name`, a table whose `args` is not an
+  array of strings or whose `working_dir` is not a string) is an **invalid
+  entry**: it is kept verbatim in the file, reported on its level, and
+  treated as a missing entry (below). A
   `tests` value that is not an array is an invalid declaration: kept
   verbatim, reported, and — since it is still a declaration — it stops the
   inheritance walk; a plan that includes it fails like a missing entry.
@@ -580,10 +593,27 @@ field: a module never sees it.
   resolved (§16.16) or a test command is built (§8.9.2), never on the stored
   data, and only on the args that survive the trust filter (§17.6). Args are
   program-bearing (§17.6); names are not.
+- **Working directory.** An entry's step runs in a working directory chosen
+  like a launch's (§8.7):
+  - a `target` entry: the entry's `working_dir`, else the **project
+    directory** — the same default as a launch;
+  - a `launch` entry: the entry's `working_dir`, else the launch
+    configuration's `working_dir`, else the project directory. An entry's
+    `working_dir` overrides the launch's for this entry only.
+
+  A `working_dir` is absolute or workspace-root-relative and is
+  variable-expanded in the launch context exactly like a launch's
+  `working_dir` (§8.7; built-in variables including `${target_dir}`, then
+  project variables), when a plan is resolved or a test command is built,
+  never on the stored data, and only when it survives the trust filter
+  (§17.6). An unresolved reference is handled as in a launch's
+  `working_dir`. `working_dir` is program-bearing (§17.6). It is a host
+  directory: a step that runs on a device (§16.16, §18.5) takes its device
+  working directory from the `device` block (§18.9), not from the entry.
 - **Not a configure input.** The list never makes a unit stale and never
   triggers a configure: it selects among programs the build already produces
   or the workspace already declares. Changing a variable that an entry's args
-  reference never does either. The list is not part of the module
+  or `working_dir` reference never does either. The list is not part of the module
   configuration and not part of any key, and no configure record contains it.
   A module-configuration snapshot recorded by an older loomworks that read
   `tests` as a module field is compared **without** that key, so moving
@@ -591,8 +621,12 @@ field: a module never sees it.
   invalidates the unit's cached test tree (§8.9.3).
 - **Persistence.** Serialized only where declared: a derived configuration
   never gets a copy of its base's list (§1.3 "Derived values are not
-  persisted"). An entry without args is written as a string, an entry with
-  args as an array. The list lives in the working copy and publishes with its
+  persisted"). A host writes each entry in the shortest form that holds it:
+  a string without args, an array with args, and the table form only when
+  the entry has a `working_dir` or keys this version does not know (kept
+  verbatim). The short forms stay canonical: a table that holds only a name
+  and args is written back in its short form. The list lives in the working
+  copy and publishes with its
   configuration or project under the intent model (§2.4). Nothing is written
   to the cache.
 - **Resolution.** Names are data at rest. A host resolves a name to a

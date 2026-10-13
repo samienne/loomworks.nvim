@@ -859,7 +859,8 @@ default as a command-type launch (below), so both launch kinds are consistent.
 The default-target descriptor (§8.6) may carry an optional `working_dir` to
 override this persistently; it is stored in the working copy and published like
 the rest of the descriptor. A headless run (§16.17) may also override the
-working directory for a single invocation. Precedence: per-invocation override
+working directory for a single invocation, and so may a headless test run that
+names targets (§16.16). Precedence: per-invocation override
 → descriptor `working_dir` → project directory. An override may be absolute or
 workspace-root-relative and is variable-expanded in the launch context.
 
@@ -901,8 +902,26 @@ directory is the project directory, like a command-type launch.
 - `${config_set}` — active configuration set name
 - `${variant}` — project's variant in the active config set
 - `${project_path}` — project's relative path
+- `${target_dir}` — absolute directory containing the resolved build-target
+  artifact (the executable) of the thing being run (below)
 - User-defined project variables (section 1.3.1) — resolved per
   configuration with inheritance. Expanded after built-in variables.
+
+**`${target_dir}`** is defined wherever a launch context resolves a build
+target: a target-backed launch configuration (its `target`), a default target
+that is a build target (§8.6), a saved test entry (§1.3.4) that names a build
+target or a target-backed launch, and the named targets of a headless test
+run (§16.16). It is the directory of that target's artifact path as the module
+reports it (§8.4), a host path also when the program then runs on a device
+(§18.5). Where no target is resolved — a command-type launch, a saved entry
+naming a command-type launch, a context outside a launch (configure options,
+§1.3.1) — or while the artifact is not known yet (the unit is not configured
+here), `${target_dir}` is **unavailable**: it is absent from the expansion
+context, exactly like `${build_dir}` for a project with no configuration unit,
+so a reference to it is an unresolved reference — never expanded to an empty
+string — and is reported as one where unresolved references are (§1.3.1; a
+plan report shows the value as not expanded, §16.16). `target_dir` is a
+reserved name (§1.3.1).
 
 **Launch flow** (`launch_target()` API):
 1. Stop any previously running launch target (single target at a time)
@@ -1049,6 +1068,9 @@ launch config expansion, plus `${build_dir}`):
 - `${project_path}` — launch target's project path (relative to root)
 - `${variant}` — launch target's project variant in the active profile
 - `${config_set}` — active configuration set name
+- `${target_dir}` — the launch target's artifact directory, when the launch
+  target is a build target or a target-backed launch (unavailable otherwise,
+  §8.7)
 
 If the destination ends with `/`, it is a directory — the source filename is
 preserved. Otherwise the destination is a full file path (rename). Parent
@@ -1326,8 +1348,8 @@ Return cached entries without triggering discovery.
 
 | Method | Behaviour |
 |--------|-----------|
-| `discover()` / `discover_async` | One entry per saved entry, in list order. Its id is `<kind>:<name>` — `target:<name>` or `launch:<name>` (§1.3.4 "Resolution") — with `#<k>` appended for the k-th occurrence (k ≥ 2) of a name that repeats in the list, so duplicate entries stay distinct. `executable` is the program, runnable. For a build target's artifact (a `target` entry or a target-backed `launch` entry) the framework is probed with the shared helper; for a recognised framework, per-test children with source locations. Any other entry has no children and is judged on its exit status. A missing entry (§1.3.4) is a **non-runnable** entry (`target:<name>` when the kind is unknown) with `status = "errored"` and a message naming the entry and its declaring level (e.g. `not a target or launch of App/Tests (removed or renamed?)`), shown, never hidden. |
-| `test_command(id, opts)` | Entry-, suite- or case-level command. A `target` entry: the run spec from `Target:resolve_run_spec`. A `launch` entry: the launch's resolved run spec (§8.7) with its own launch arguments, and its deploy steps run before the command (§8.8.4). Then the results option and framework filter when the program is a recognised framework executable (§16.16 "Results option"), then the entry's args, expanded (§1.3.4). |
+| `discover()` / `discover_async` | One entry per saved entry, in list order. Its id is `<kind>:<name>` — `target:<name>` or `launch:<name>` (§1.3.4 "Resolution") — with `#<k>` appended for the k-th occurrence (k ≥ 2) of a name that repeats in the list, so duplicate entries stay distinct; its display name is the name, with ` #<k>` (a space before `#`) on **every** occurrence of a name that repeats, the first included. The id never depends on the entry's form (§1.3.4). `executable` is the program, runnable. For a build target's artifact (a `target` entry or a target-backed `launch` entry) the framework is probed with the shared helper; for a recognised framework, per-test children with source locations. A child's id is the framework's case id (e.g. `test:Suite.Case`) as it is for a module's TestUnit when its entry is the first or only occurrence of a `target` entry; under any other entry — a `launch` entry, or a later occurrence of a repeated `target` entry — it carries the suffix `@<entry id>` (e.g. `test:Suite.Case@launch:Foo`, `test:Suite.Case@target:RenderTests#2`), so the same case under two entries never collides. Any other entry has no children and is judged on its exit status. A missing entry (§1.3.4) is a **non-runnable** entry (`target:<name>` when the kind is unknown) with `status = "errored"` and a message naming the entry and its declaring level (e.g. `not a target or launch of App/Tests (removed or renamed?)`), shown, never hidden. |
+| `test_command(id, opts)` | Entry-, suite- or case-level command. A `target` entry: the run spec from `Target:resolve_run_spec`. A `launch` entry: the launch's resolved run spec (§8.7) with its own launch arguments, and its deploy steps run before the command (§8.8.4). Then the results option and framework filter when the program is a recognised framework executable (§16.16 "Results option"), then the entry's args, expanded (§1.3.4). The command's working directory is the entry's `working_dir` (expanded, §1.3.4 "Working directory"), else a `launch` entry's launch `working_dir`, else the project directory. |
 | `test_command_all` | nil — run-all iterates its target entries (§8.9.4). |
 | `run_command_all` | nil — never a batch runner. A headless run executes saved targets on the per-executable route (§16.16). |
 | `parse_results` | The framework helper's result parser. |
@@ -1349,7 +1371,8 @@ call creates the TestUnits.
 
 The array is the module's TestUnits **plus** the core saved-targets TestUnit
 (§8.9.1–§8.9.2) when the configuration's saved list (§1.3.4) resolves
-non-empty, after them. The same configured-here and cross-kit rules apply to
+non-empty or its declaration is invalid (a `tests` that is not an array,
+shown as an errored entry), after them. The same configured-here and cross-kit rules apply to
 both.
 
 **`config_unit:saved_test_targets() → { entries, source }|nil`**
@@ -1357,8 +1380,9 @@ both.
 The configuration's effective saved list (§1.3.4) and its source (a
 Configuration or the Project), or nil when none is declared along the chain
 (an explicit `[]` returns an empty `entries`). Each entry carries its name,
-its args as written (unexpanded) and its occurrence index; duplicates are
-kept. Pure model data: no build
+its args and its `working_dir` as written (unexpanded; nil when absent), any
+keys this version does not know (verbatim, unused) and its occurrence index;
+duplicates are kept. Pure model data: no build
 directory is read, so it is safe before configure and on an unconfigured
 unit. The headless planner (§16.16) and the hosts' read-only views ask this;
 resolving entries to targets happens only after the unit is configured.
@@ -1386,9 +1410,10 @@ expose the **same executable** (a saved target the module's runner also
 registers), the merge keeps one entry: the module's, which carries the
 runner's working directory, environment and timeout; the saved entry
 contributes only its args. This applies only to a `target` entry whose name
-occurs once in its list. A `launch` entry (its own environment and working
-directory) and the entries of a repeated name (each with its own args) are
-never merged; they stay beside the module's entry.
+occurs once in its list and that has no `working_dir` of its own. A `launch`
+entry (its own environment and working directory), a `target` entry with its
+own `working_dir`, and the entries of a repeated name (each with its own args)
+are never merged; they stay beside the module's entry.
 
 **`config_unit:discover_tests_async(callback)`**
 

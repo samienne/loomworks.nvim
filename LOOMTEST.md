@@ -299,8 +299,12 @@ every TestUnit of every ConfigUnit of the profile, never only the first
 unit's first TestUnit. Saved entries appear as top-level `target:` or
 `launch:` nodes (a repeated name's later occurrences suffixed `#2`, `#3`, …,
 specification §8.9.2), with framework children when the program is a
-recognised framework executable; a missing saved entry appears as an
-errored, non-runnable node.
+recognised framework executable; the children of a `launch` entry or of a
+repeated name's later occurrence carry an `@<entry id>` suffix on their ids
+(e.g. `test:Suite.Case@launch:Foo`), so the same case under two entries
+stays two nodes. A missing saved entry appears as an errored, non-runnable
+node. A saved entry runs in its own working directory (specification §1.3.4
+"Working directory").
 
 ## 14. Future Considerations
 

@@ -545,8 +545,9 @@ children (after the path) show its effective saved test-target list (core
   carries a ⚠ (`DiagnosticWarn`); unknown targets (unconfigured) are not
   flagged. An entry that resolves to a launch configuration is not marked
   differently on this line; `lw test --list` shows the kind.
-- Entries whose args come only from the shared layer and are stripped (core
-  §17.6) show the trust diagnostic like other ignored fields.
+- Entries whose args or `working_dir` come only from the shared layer and
+  are stripped (core §17.6) show the trust diagnostic like other ignored
+  fields. Neither args nor a `working_dir` is shown on this line.
 - No editing on the status page in v1 and no new keys: the list is edited
   with `lw test-target` (core §16.9). An inline editor is a later addition.
 

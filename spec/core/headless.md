@@ -400,8 +400,8 @@ configured build targets and its projects' launch configurations:
 
 - **List** shows, per project of the profile, the effective list in order:
   each entry's name, its occurrence index where the name repeats, its args
-  as written, its resolved kind (`launch` / `target`) where known, and the
-  list's source. A level that declares none names the add form (§16.38).
+  and its `working_dir` as written, its resolved kind (`launch` / `target`)
+  where known, and the list's source. A level that declares none names the add form (§16.38).
 - **Add** appends one or more entries, one per name, resolved as named
   targets are (§16.16: `project:name` qualification, the ambiguity errors
   between projects), except that a name may also be a launch configuration
@@ -413,7 +413,11 @@ configured build targets and its projects' launch configurations:
   targets are unknown: the add is refused, naming the build that configures
   it, unless an explicit unchecked option is given, which stores the name
   with a warning. Forwarded arguments (after `--`) become the args of every
-  entry added in that call, stored unexpanded. Adding a name that is already
+  entry added in that call, stored unexpanded. A working-directory option
+  (`--working-dir <dir>`, with `--cwd` as an alias, as on the launch edits)
+  gives every entry added in that call that `working_dir`, stored
+  unexpanded; such an entry is written in the table form, and an entry
+  without one in its short form (§1.3.4 "Persistence"). Adding a name that is already
   in the list **appends another entry** (§1.3.4 "Duplicates"); it never
   replaces or refuses, and the edit reports the new entry's occurrence index.
 - **Remove** drops **every** entry with each named name. An occurrence option
@@ -631,7 +635,17 @@ A headless test invocation MAY instead name one or more **test
 executables** (build targets). Each named target is built, then run directly —
 not through the native batch runner — with its framework's machine-readable
 results option (§8.9), and its outcome is judged per §18.6 (exit status, parsed
-failures, missing results, crash reports). A named target that is **foreign**
+failures, missing results, crash reports). A named target runs in its
+**project directory**, the default working directory of a build target
+(§8.7). A **per-invocation working-directory override** — the same option a
+run takes for its override (§16.17, §8.7: `--cwd <dir>`, with
+`--working-dir` as an alias) — runs every named target of the invocation in
+that directory instead; it is absolute or workspace-root-relative and
+variable-expanded in each target's launch context, so `${target_dir}` (§8.7)
+names each target's own artifact directory. The override applies only to
+named targets: on an invocation that names none it is a usage error, and on
+a named target that runs on a device it is an error, as for a run (the
+device working directory comes from the `device` block, §18.9). A named target that is **foreign**
 (§18.1) runs on a device (§18.5–§18.6; device selection §18.3) and its results
 file is pulled back; a host-runnable one runs locally. Caller-forwarded
 arguments go to each named executable. A JUnit request writes the parsed
@@ -650,16 +664,21 @@ names no targets reports that its registered tests cannot run on this host
   **executable step** per saved entry, in list order — a name listed twice
   gives two steps. A `target` entry runs on the named-target route above
   (built with the profile, run directly, judged per §18.6, on a device when
-  foreign). A `launch` entry runs as below.
+  foreign), in the entry's working directory (§1.3.4 "Working directory":
+  its `working_dir`, else the project directory). A `launch` entry runs as
+  below. When a step runs on a device, an entry's `working_dir` does not
+  apply (§1.3.4) and the step's announcement notes that it was not used.
 - The build covers the whole profile, as for named targets. A unit with an
   executable step in the plan is built even when its batch runner rebuilds
   its own targets (the skip above applies only to units with batch steps
   alone).
 - Every step runs even when an earlier one failed. The invocation succeeds iff
   the build succeeded and every step succeeded. Each step announces itself
-  before it runs (`<project>: <runner>` / `<project>: <name>`, with
-  `#<occurrence index>` when the name repeats in its list), and after the
-  last step a summary prints one line per step with its outcome.
+  before it runs (`<project>: <runner>` / `<project>: <name>`, followed by
+  ` #<occurrence index>` — a space, then `#` — on every occurrence of a name
+  that repeats in its list, the first included, e.g. `App: RenderTests #1`,
+  `App: RenderTests #2`), and after the last step a summary prints one line
+  per step with its outcome, labelled the same way.
 - A saved executable that the batch runner also registers runs in both steps:
   the batch runner is opaque, so the plan does not de-duplicate it (the
   `--saved` / `--discovered` selectors below avoid it).
@@ -669,21 +688,25 @@ the run chain of §16.17, without its terminal attachment: the profile build
 (above) stands in for the run's dependency build, then the launch's
 **deploy** steps run (§8.8.4) — a failed deploy fails the step without
 running the program — then the program runs with the launch's resolved
-environment and working directory (§8.7). A target-backed launch whose
+environment, in the entry's `working_dir` when it has one, else the launch's
+resolved working directory (§1.3.4 "Working directory", §8.7). A target-backed launch whose
 artifact is **foreign** runs on a device exactly as a foreign run does
 (§16.17, §18.5, with the launch's `device` block, §18.9) and is judged per
 §18.6. A command-type launch is never probed (§18.1) and runs on the host,
 also on a foreign profile. A launch whose run would be refused (§16.17,
 §18.1) fails its step with that message.
 
-**Results option.** An executable step adds the framework's machine-readable
-results option (§8.9) only when its program is a **build target's artifact**
-— a `target` entry, or a target-backed `launch` entry — that the module's
-framework helper identifies as a framework test executable. Then the step is
+**Results option.** This rule is about the executable steps of **saved
+entries**. Such a step adds the framework's machine-readable results option
+(§8.9) only when its program is a **build target's artifact** — a `target`
+entry, or a target-backed `launch` entry — that the module's framework helper
+identifies as a framework (e.g. gtest) test executable. Then the step is
 judged on the parsed results as well (§18.6). Otherwise the step is judged on
 its **exit status only**, and its summary line says it has no per-case
 results; a JUnit request writes one test case for such a step, failed iff the
-exit status is non-zero.
+exit status is non-zero. An invocation that names targets (above) is
+unchanged by this rule: each named target gets the results option when its
+framework helper recognises it, as before.
 
 **Missing entries fail before anything runs.** Every saved entry in the plan
 is resolved after the build and **before the first step executes** (§1.3.4
@@ -709,7 +732,8 @@ exactly one step; otherwise one file per step, the label suffix applying
 across all steps (not per kind). A batch step keeps its unit label and an
 executable step its entry name; when two steps would get the same label, the
 executable step's label is qualified with its project, and then, when the
-name repeats in its list, with its occurrence index.
+name repeats in its list, with its occurrence index (`<project>:<name>#<k>`,
+no spaces).
 
 **Foreign profiles.** The batch step of a unit whose kit is foreign is not
 run (invariant 19). When that unit also has saved entries, its batch step
@@ -727,8 +751,9 @@ The selectors above shape the reported plan. Per unit it shows:
 - the batch step: the runner, and — when the unit is configured here — the
   discovered test count, through the runner's read-only listing;
 - each saved entry: its name, its occurrence index where the name repeats,
-  its args as written and — where the variables resolve — expanded (marked
-  *local only* where the shared layer's args would be stripped, §17.6), the
+  its args and its `working_dir` as written and — where the variables
+  resolve — expanded (marked *local only* where the shared layer's values
+  would be stripped, §17.6), the
   list's source ("own", "inherited from `<configuration>`", "project-wide"),
   its **resolved kind** (`launch` or `target`; a name that is both is
   reported as `launch`, noting the same-named build target), and a
@@ -739,7 +764,14 @@ The selectors above shape the reported plan. Per unit it shows:
 
 It has a machine-readable form (§16.18 conventions), in which every entry
 carries its name, occurrence index, kind (or null when unknown), args as
-written, args expanded (or null), source and state. An empty plan names the
+written, args expanded (or null), `working_dir` as written (or null when the
+entry has none) and expanded (or null when it has none or a reference in it
+is unresolved, e.g. `${target_dir}` before the unit is configured, §8.7),
+source and state. A `launch` entry also carries `also_target`: true when an
+executable build target of the same name exists in the unit as well — the
+target the entry does **not** run, since the launch wins (§1.3.4
+"Resolution"); the field is absent otherwise, including while targets are
+unknown. An empty plan names the
 edit that saves a test target (§16.38).
 
 ### 16.17 Headless launch (run)

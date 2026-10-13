@@ -177,11 +177,15 @@ the generic ones:
   configuration's `device_log` options (§18.13) are not program-bearing either:
   they are opaque data a device runner validates and may never turn into a
   program, a path to execute, or device command text.
-- the args of a saved test entry (the elements after the first of an array
-  entry in `tests`, §1.3.4). Only the args are stripped: a loomworks.json
-  entry keeps its name and still applies, without them, and variable
-  expansion (§1.3.4) runs only on the args that survive. A saved entry's
-  **name** is not program-bearing — it selects one of the project's own build
+- the args and the `working_dir` of a saved test entry (§1.3.4: the
+  elements after the first of an array entry, or a table entry's `args` and
+  `working_dir`). Only these are stripped: a loomworks.json entry keeps its
+  name and still applies, without them — in the project directory, or its
+  launch's working directory (§1.3.4 "Working directory") — and variable
+  expansion (§1.3.4) runs only on the args and the `working_dir` that
+  survive. A table entry's keys this version does not know are never acted
+  on, so they are not program-bearing here; they are kept verbatim. A saved
+  entry's **name** is not program-bearing — it selects one of the project's own build
   artifacts, exactly like a target-backed launch, or one of its launch
   configurations, which are themselves subject to this section (a launch
   ignored here is not in the model, so an entry naming it is missing,
@@ -191,18 +195,25 @@ the generic ones:
 
   ```
   loomworks.json sets projects.App.cmake.configurations.Tests.tests (RenderTests #2 args = --gtest_filter=*Slow*) — ignored: program settings are used only from your local config (lw help trust)
+  loomworks.json sets projects.App.cmake.configurations.Tests.tests (AssetTests working_dir = ${target_dir}) — ignored: program settings are used only from your local config (lw help trust)
   ```
 
-  When stripped args are written back on publish (below), an entry's
+  When stripped values are written back on publish (below), an entry's
   "original place" is its **name plus its occurrence index** among the
   entries with that name in the same list, never its absolute position. The
-  args stripped from the k-th shared entry named N are restored onto the k-th
-  entry named N of the list being published, unless that entry carries args
-  of its own in the working copy (the working copy supplies a value there).
+  args and the `working_dir` stripped from the k-th shared entry named N are
+  restored onto the k-th entry named N of the list being published, each
+  unless that entry carries a value of its own for it in the working copy
+  (the working copy supplies a value there); an entry that gets a
+  `working_dir` back is written in the table form (§1.3.4 "Persistence").
   When the published list has fewer entries named N than the shared layer
-  had, the args of the surplus occurrences have no entry to return to: they
-  are dropped, and the publish names each one. Extra entries named N in the
-  published list get no restored args.
+  had, the values of the surplus occurrences have no entry to return to:
+  they are dropped, and the publish names each one. Extra entries named N in
+  the published list get no restored values. Because the place is an
+  occurrence index, removing an earlier entry named N from the working copy
+  shifts the later ones down, and a stripped value may then be restored onto
+  a different occurrence than the one it was written for; only the values
+  left without an entry are reported.
 
 Modules add their own through the optional `trust_fields` declaration (§8.4):
 the top-level `type_config` keys that are program-bearing (a language-server
