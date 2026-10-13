@@ -497,6 +497,87 @@ function M.debug(adapter, spec, test_ids, opts)
     start_debug()
 end
 
+--- @type loomtest.RunHandle|nil the running adapter-executed run's handle
+local _active_handle = nil
+
+--- Run through the adapter's own execution (LOOMTEST.md §3 "Adapter-executed
+--- runs", §5): `adapter.start` builds, runs and parses; loomtest shows the
+--- statuses the adapter reports through the sink and the final state. The
+--- staleness clearing (§5.3) and the progress line (§5.6) still apply;
+--- nothing is streamed or parsed here.
+--- @param adapter loomtest.TestAdapter an adapter with `start`
+--- @param selection string[]|nil the selected node ids; nil runs all
+--- @param test_ids string[] the test nodes the run covers (progress, staleness)
+--- @param opts? table { skip_build?: boolean }
+--- @return loomtest.RunHandle|nil
+function M.start(adapter, selection, test_ids, opts)
+    opts = opts or {}
+    local loomtest = require("loomtest")
+    local explorer = require("loomtest.explorer")
+
+    clear_stale_tests(test_ids, loomtest)
+
+    local function redraw()
+        vim.schedule(function()
+            if explorer.is_open() then explorer.refresh() end
+            require("loomtest.signs").update_all()
+            require("loomtest.inline").update_all()
+        end)
+    end
+
+    local finished = false
+    local handle
+    --- @type loomtest.RunSink
+    local sink = {
+        status = function(updates)
+            for _, u in ipairs(updates or {}) do
+                local node = type(u) == "table" and loomtest.get_node(u.id) or nil
+                if node then
+                    node.status = u.status
+                    node.duration = u.duration
+                    node.message = u.message
+                end
+            end
+            if not finished then fidget_update(format_progress(test_ids, loomtest)) end
+            redraw()
+        end,
+        done = function(ok, err)
+            if finished then return end
+            finished = true
+            if _active_handle == handle then _active_handle = nil end
+            -- A covered node left queued or running had no result.
+            for _, id in ipairs(test_ids) do
+                local node = loomtest.get_node(id)
+                if node and (node.status == "queued" or node.status == "running") then
+                    node.status = nil
+                end
+            end
+            _last_run_time = os.time()
+            if not ok then
+                vim.schedule(function()
+                    vim.notify("loomtest: " .. tostring(err or "test run failed"), vim.log.levels.ERROR)
+                end)
+            end
+            fidget_update(format_progress(test_ids, loomtest), true)
+            redraw()
+        end,
+    }
+
+    fidget_update(opts.skip_build and "starting..." or "building...")
+    handle = adapter.start(selection, { no_build = opts.skip_build == true }, sink)
+    if not finished then _active_handle = handle end
+    return handle
+end
+
+--- Cancel the running adapter-executed run, if any.
+--- @return boolean cancelled
+function M.cancel()
+    local h = _active_handle
+    if not h or type(h.cancel) ~= "function" then return false end
+    h.cancel()
+    return true
+end
+
 --- Get the last task ID.
 --- @return number|nil
 function M.last_task_id()

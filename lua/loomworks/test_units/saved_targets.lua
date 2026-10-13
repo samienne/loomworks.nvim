@@ -126,7 +126,7 @@ function SavedTargetsTestUnit:_resolve_entries()
     if saved.invalid then
         entries[1] = {
             id = "target:<invalid tests>", name = "tests", parent = nil, runnable = false,
-            status = "errored", saved = true,
+            status = "errored", saved = true, source = "saved",
             message = "`tests` of " .. level .. " is not an array of saved test entries",
         }
         return entries, probe
@@ -146,7 +146,7 @@ function SavedTargetsTestUnit:_resolve_entries()
         local id = test_targets.entry_id(se, r.kind)
         local label = test_targets.entry_label(se)
         local base = {
-            id = id, name = label, parent = nil, saved = true,
+            id = id, name = label, parent = nil, saved = true, source = "saved",
             saved_kind = r.kind, saved_index = se.index, saved_repeated = se.repeated,
             saved_working_dir = se.working_dir ~= nil or nil,
         }

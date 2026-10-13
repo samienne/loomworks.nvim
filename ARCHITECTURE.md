@@ -1762,8 +1762,22 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   refuse a run or debug launch, and `lw.launch_target` / `debug_target`
   offer no target picker then. The in-process source remains only for `runtime.mode =
   "in-process"`, removed with the in-process editor (step 6b).
-- *(Step 5m, planned; spec §19.13 "The tests view", §19.15 "Tests", §19.16
-  "Tests", §19.20 `Tests/1`, LOOMTEST.md §3, §13.1.)* `test_state.lua`
+- *(Step 5m, part A implemented, the rest planned; spec §19.13 "The tests
+  view", §19.15 "Tests", §19.16 "Tests", §19.20 `Tests/1`, LOOMTEST.md §3,
+  §13.1.)* *(A, as built:)* `test_state.state(ws, opts)` takes the hooks the
+  daemon fills — `id` (profile / unit ids), `node_id(unit, local_key)` (the
+  id provider; in-process the local key itself), `tree_of(unit)` (entries
+  and an `ok` / `pending` / `error` outcome; default the unit's cached tree
+  via `ConfigUnit:test_tree()`, never discovering), `result_of(unit, key)`,
+  `stale`, `discovering`; the unit states other than `ok` / `pending` /
+  `error` come from `ConfigUnit:test_availability()`. TestUnit entries carry
+  `source` (`ctest`, `meson`, `gtest` for probed cases, `saved`). Both
+  adapters read only through `test_source` (its in-process form wraps the
+  ConfigUnit/TestUnit calls they made before, unchanged); loomtest takes
+  given suites (`explorer` shows a target with a child of type `suite` as
+  given), exact-id results (`apply_results` with given suites) and the
+  optional `start` capability (`runner.start` / `runner.cancel`), unused by
+  the loomworks adapter until C2. `test_state.lua`
   (shared side, host-neutral, no `vim.*`; part A) — the one builder of the
   `view.Tests/1` shape from the active profile's ConfigUnits/TestUnits: unit
   states (`ok`, `pending`, `not_configured`, `foreign`, `no_tests`,
@@ -2322,14 +2336,15 @@ physically split, a guard test keeps the coupling from growing.
 to exactly one side by name pattern (`plugin/*.lua` is always plugin-side):
 
 - **plugin** — editor code: `loomworks` (init), `ui/*`, `lualine.*`,
-  `loomtest.*`, the neotest/loomtest adapters, `debug`, `session_tracker`,
+  `loomtest.*`, the neotest/loomtest adapters + `test_source`, `debug`, `session_tracker`,
   `lsp` + `lsp_source` + `integrations/lsp/*`, `fidget`, `reload`, `auto_load`, `device_log`,
   `overseer`, `workspace_view`, `daemon/observer`, `daemon/remote_task`,
   `provision/*`, `health`.
 - **shared** — host-neutral protocol client code both sides may load (pure
   Lua, no `vim.*` beyond `vim.json`): the future `loomworks.proto.*`,
   today's `daemon/protocol` and `daemon/version`, `debug_config` (the
-  debug-adapter tables) and `lsp_config` (the LSP configuration state).
+  debug-adapter tables), `lsp_config` (the LSP configuration state) and
+  `test_state` (the tests view's state).
 - **binary** — everything `lw` runs: `main`, `boot/*`, `shim/*`, `cli*`,
   `core`, `workspace`, the domain objects, `modules/*`, `sdks/*`, `remote/*`,
   `progress/*`, the rest of `daemon/*`, `integrations/inventory/*`.
@@ -3409,6 +3424,8 @@ loomworks.nvim/
 │   │   ├── lsp.lua                    LSP registry + dispatcher (runtime-path discovery, setup_servers, get_status)
 │   │   ├── lsp_config.lua             LSP configuration state builder (memo, db_state, db_rev, options, readiness)
 │   │   ├── lsp_source.lua             Where the LSP layer reads that state (the daemon's or in-process)
+│   │   ├── test_state.lua             Tests view state builder (`view.Tests/1`: unit states, explicit suites, unit-scoped ids)
+│   │   ├── test_source.lua            Where the loomtest / neotest adapters read tests (in-process today)
 │   │   ├── integrations/
 │   │   │   ├── lsp/
 │   │   │   │   ├── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)

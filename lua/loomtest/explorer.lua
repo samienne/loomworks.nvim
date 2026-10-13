@@ -26,6 +26,7 @@ local STATUS_PRIORITY = {
     passed  = 1,
     skipped = 2,
     pending = 3,
+    queued  = 3,
     running = 4,
     errored = 5,
     failed  = 5,
@@ -56,9 +57,45 @@ local STATUS_ICONS = {
     errored = { icon = "!", hl = "DiagnosticError" },
     running = { icon = "↻", hl = "DiagnosticInfo" },
     pending = { icon = "◌", hl = "DiagnosticHint" },
+    queued  = { icon = "◌", hl = "DiagnosticHint" },
 }
 
---- Infer suite grouping from flat test nodes.
+--- The descendants of a target whose adapter supplied its suites (LOOMTEST.md
+--- §3.1), shown as given: depth-first in the adapter's order, each suite a
+--- copy carrying its children's aggregate status and its test count.
+--- @param target_id string
+--- @param children_of table<string, loomtest.TestNode[]>
+--- @param out loomtest.TestNode[]
+local function append_given(target_id, children_of, out)
+    local function walk(id)
+        local statuses = {}
+        for _, child in ipairs(children_of[id] or {}) do
+            if child.type == "suite" then
+                local copy = {}
+                for k, v in pairs(child) do copy[k] = v end
+                out[#out + 1] = copy
+                local tests, agg = walk(child.id)
+                copy._test_count = tests
+                copy.status = agg
+                statuses[#statuses + 1] = agg
+            else
+                out[#out + 1] = child
+                statuses[#statuses + 1] = child.status
+                if children_of[child.id] then walk(child.id) end
+            end
+        end
+        local tests = 0
+        for _, child in ipairs(children_of[id] or {}) do
+            if child.type == "test" then tests = tests + 1 end
+        end
+        return tests, aggregate_status(statuses)
+    end
+    walk(target_id)
+end
+
+--- Infer suite grouping from flat test nodes. A target whose adapter
+--- supplied suite nodes (any child of type `suite`) is shown as given
+--- instead (LOOMTEST.md §3.1).
 --- @param nodes loomtest.TestNode[]
 --- @return loomtest.TestNode[]
 local function build_grouped_nodes(nodes)
@@ -74,9 +111,20 @@ local function build_grouped_nodes(nodes)
         end
     end
 
+    -- Targets with adapter-supplied suites, and every node's children.
+    local given, children_of = {}, {}
+    for _, node in ipairs(nodes) do
+        if node.parent then
+            children_of[node.parent] = children_of[node.parent] or {}
+            local list = children_of[node.parent]
+            list[#list + 1] = node
+            if node.type == "suite" and targets[node.parent] then given[node.parent] = true end
+        end
+    end
+
     local seen_ids = {}
     for _, node in ipairs(nodes) do
-        if node.parent and targets[node.parent] then
+        if node.parent and targets[node.parent] and not given[node.parent] then
             if seen_ids[node.id] then goto continue end
             seen_ids[node.id] = true
 
@@ -95,6 +143,8 @@ local function build_grouped_nodes(nodes)
     for _, target_id in ipairs(target_order) do
         local target = targets[target_id]
         result[#result + 1] = target
+
+        if given[target_id] then append_given(target_id, children_of, result) end
 
         local suites = suites_by_target[target_id]
         if suites then
@@ -171,6 +221,7 @@ local function build_tree()
             total = total + 1
             local s = node.status or "unknown"
             if s == "errored" then s = "failed" end
+            if s == "queued" then s = "pending" end
             counts[s] = (counts[s] or 0) + 1
         end
     end
@@ -870,5 +921,8 @@ function M._show_output_float(title, output, errors)
         wo = { number = true, relativenumber = false, wrap = true },
     })
 end
+
+--- Test seam: the grouped node list the tree renders.
+M._build_grouped_nodes = build_grouped_nodes
 
 return M

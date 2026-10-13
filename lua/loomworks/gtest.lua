@@ -51,6 +51,7 @@ function M.parse_list_tests(output, executable, target_id)
                     parent = target_id,
                     runnable = true,
                     framework = "gtest",
+                    source = "gtest",
                     executable = executable,
                 }
                 goto continue

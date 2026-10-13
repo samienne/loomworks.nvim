@@ -146,22 +146,59 @@ function M.set_nodes(nodes)
     end
 end
 
+--- Whether the adapter supplied suite nodes itself (LOOMTEST.md §3.1): then
+--- suites are not inferred and results apply by exact id only.
+--- @return boolean
+function M.has_given_suites()
+    for _, node in ipairs(_node_list) do
+        if node.type == "suite" then return true end
+    end
+    return false
+end
+
+--- The ids of the `test` nodes below `id` (children, and theirs).
+--- @param id string
+--- @return string[]
+function M.descendant_tests(id)
+    local out, below = {}, { [id] = true }
+    local changed = true
+    -- Repeat until no new descendant: the list order is not relied on.
+    while changed do
+        changed = false
+        for _, n in ipairs(_node_list) do
+            if n.parent and below[n.parent] and not below[n.id] then
+                below[n.id] = true
+                changed = true
+            end
+        end
+    end
+    for _, n in ipairs(_node_list) do
+        if n.type == "test" and n.id ~= id and below[n.id] then out[#out + 1] = n.id end
+    end
+    return out
+end
+
 --- Apply test results to the current tree.
 --- @param results loomtest.TestResult[]
 function M.apply_results(results)
+    -- Adapter-supplied suites: exact ids only, never name matching (§3.1).
+    local exact = M.has_given_suites()
+
     -- Build a name-based lookup for fuzzy matching
     -- (XML test IDs may differ slightly from tree IDs)
     local by_name = {}
-    for _, node in ipairs(_node_list) do
-        if node.type == "test" then
-            local short = node.id:match("^test:(.+)$") or node.id
-            by_name[short] = by_name[short] or node
+    if not exact then
+        for _, node in ipairs(_node_list) do
+            if node.type == "test" then
+                local short = node.id:match("^test:(.+)$") or node.id
+                by_name[short] = by_name[short] or node
+            end
         end
     end
 
     for _, r in ipairs(results) do
         local node = _nodes[r.test_id]
-        if not node then
+        if not node and not exact then
             local short = r.test_id:match("^test:(.+)$") or r.test_id
             node = by_name[short]
         end
@@ -173,8 +210,13 @@ function M.apply_results(results)
             node._errors = r.errors
         end
     end
-    -- Propagate status to parents: failed if any child failed
-    for _, node in ipairs(_node_list) do
+    -- Propagate status to parents: failed if any child failed. With
+    -- adapter-supplied suites the tree is deeper (target → suite → test):
+    -- children are visited before their parents (the list is parents first).
+    local first, last, step = 1, #_node_list, 1
+    if exact then first, last, step = #_node_list, 1, -1 end
+    for i = first, last, step do
+        local node = _node_list[i]
         if node.parent then
             local parent = _nodes[node.parent]
             if parent and node.status then
@@ -280,25 +322,37 @@ function M.run(test_id, node_type, opts)
     local ids = {}
 
     if ntype == "suite" then
-        local suite_name = test_id:match("::(.+)$")
-        if suite_name then
-            for _, n in ipairs(_node_list) do
-                if n.type == "test" and n.name:match("^" .. vim.pesc(suite_name) .. "%.") then
-                    ids[#ids + 1] = n.id
+        if node then
+            -- An adapter-supplied suite (§3.1): its own children.
+            ids = M.descendant_tests(test_id)
+        else
+            local suite_name = test_id:match("::(.+)$")
+            if suite_name then
+                for _, n in ipairs(_node_list) do
+                    if n.type == "test" and n.name:match("^" .. vim.pesc(suite_name) .. "%.") then
+                        ids[#ids + 1] = n.id
+                    end
                 end
             end
         end
+        if adapter.start then
+            if #ids == 0 then ids[1] = test_id end
+            return require("loomtest.runner").start(adapter, { test_id }, ids, opts)
+        end
         spec = adapter.run_suite(test_id)
     elseif ntype == "target" then
-        for _, n in ipairs(_node_list) do
-            if n.parent == test_id and n.type == "test" then
-                ids[#ids + 1] = n.id
-            end
+        ids = M.descendant_tests(test_id)
+        if adapter.start then
+            if #ids == 0 then ids[1] = test_id end
+            return require("loomtest.runner").start(adapter, { test_id }, ids, opts)
         end
         -- A target runs through the adapter unit that owns it, not run-all.
         spec = adapter.run(test_id)
     else
         ids[#ids + 1] = test_id
+        if adapter.start then
+            return require("loomtest.runner").start(adapter, { test_id }, ids, opts)
+        end
         spec = adapter.run(test_id)
     end
     if not spec then return end
@@ -361,15 +415,20 @@ function M.run_all(opts)
     local adapter = _adapters[1]
     if not adapter then return end
 
-    local spec = adapter.run_all()
-    if not spec then return end
-
     local ids = {}
     for _, node in ipairs(_node_list) do
         if node.type == "test" then
             ids[#ids + 1] = node.id
         end
     end
+
+    -- An adapter-executed run (§3): run-all selects nothing.
+    if adapter.start then
+        return require("loomtest.runner").start(adapter, nil, ids, opts)
+    end
+
+    local spec = adapter.run_all()
+    if not spec then return end
 
     require("loomtest.runner").execute(adapter, spec, ids, opts)
 end
@@ -464,6 +523,11 @@ function M.run_file()
 
     local adapter = _adapters[1]
     if not adapter then return end
+
+    -- An adapter-executed run (§3): the file's tests are the selection.
+    if adapter.start then
+        return require("loomtest.runner").start(adapter, file_ids, file_ids)
+    end
 
     local spec = adapter.run_all({ file = buf_path })
     if not spec then return end

@@ -248,6 +248,7 @@ local function parse_meson_tests(json_str)
                     parent = nil,
                     runnable = true,
                     framework = "gtest",
+                    source = "meson",
                     executable = exe,
                 }
             end
@@ -257,6 +258,7 @@ local function parse_meson_tests(json_str)
                 parent = "target:" .. executables[exe],
                 runnable = true,
                 framework = "gtest",
+                source = "meson",
                 executable = exe,
             }
         else
@@ -266,6 +268,7 @@ local function parse_meson_tests(json_str)
                 parent = nil,
                 runnable = true,
                 framework = nil,
+                source = "meson",
                 executable = exe,
             }
         end

@@ -1,12 +1,34 @@
 --- loomworks/loomtest_adapter.lua — loomtest adapter for loomworks.
 ---
 --- Bridges loomworks ConfigUnit/TestUnit to the loomtest TestAdapter
---- interface. Registers on workspace load, re-registers on profile switch.
+--- interface, reading them only through loomworks/test_source.lua (never the
+--- workspace model). Registers on workspace load, re-registers on profile
+--- switch.
+
+local test_source = require("loomworks.test_source")
 
 local M = {}
 
 --- @type loomtest.TestAdapter|nil
 local _adapter = nil
+
+--- A tree entry as a loomtest node.
+--- @param e table
+--- @return loomtest.TestNode
+local function to_node(e)
+    return {
+        id = e.id,
+        name = e.name,
+        type = e.parent and "test" or "target",
+        parent = e.parent,
+        file = e.file,
+        line = e.line,
+        runnable = e.runnable,
+        status = e.status,
+        message = e.message,
+        duration = e.duration,
+    }
+end
 
 --- Create the adapter from the current active profile.
 --- @return loomtest.TestAdapter
@@ -15,42 +37,21 @@ local function create_adapter()
         name = "loomworks",
 
         description = function()
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if profile then
-                return profile.key
-            end
-            return nil
+            return test_source.profile_key()
         end,
 
         discover = function()
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if not profile then return nil end
+            if not test_source.has_profile() then return nil end
 
             local all_nodes = {}
             local seen = {}
-            for _, pp in ipairs(profile:projects()) do
-                local unit = pp._config_unit
-                if unit then
-                    local entries = unit:discover_tests()
-                    if entries then
-                        for _, e in ipairs(entries) do
-                            if not seen[e.id] then
-                                seen[e.id] = true
-                                all_nodes[#all_nodes + 1] = {
-                                    id = e.id,
-                                    name = e.name,
-                                    type = e.parent and "test" or "target",
-                                    parent = e.parent,
-                                    file = e.file,
-                                    line = e.line,
-                                    runnable = e.runnable,
-                                    status = e.status,
-                                    message = e.message,
-                                    duration = e.duration,
-                                }
-                            end
+            for _, u in ipairs(test_source.units()) do
+                local entries = test_source.discover(u.unit)
+                if entries then
+                    for _, e in ipairs(entries) do
+                        if not seen[e.id] then
+                            seen[e.id] = true
+                            all_nodes[#all_nodes + 1] = to_node(e)
                         end
                     end
                 end
@@ -59,9 +60,7 @@ local function create_adapter()
         end,
 
         discover_async = function(callback)
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if not profile then
+            if not test_source.has_profile() then
                 callback(nil)
                 return
             end
@@ -69,42 +68,28 @@ local function create_adapter()
             local all_nodes = {}
             local seen = {}
             local pending = 0
-            local projects = profile:projects()
-            if #projects == 0 then
+            local units = test_source.units()
+            if #units == 0 then
                 callback(nil)
                 return
             end
 
-            for _, pp in ipairs(projects) do
-                local unit = pp._config_unit
-                if unit then
-                    pending = pending + 1
-                    unit:discover_tests_async(function(entries)
-                        if entries then
-                            for _, e in ipairs(entries) do
-                                if not seen[e.id] then
-                                    seen[e.id] = true
-                                    all_nodes[#all_nodes + 1] = {
-                                        id = e.id,
-                                        name = e.name,
-                                        type = e.parent and "test" or "target",
-                                        parent = e.parent,
-                                        file = e.file,
-                                        line = e.line,
-                                        runnable = e.runnable,
-                                        status = e.status,
-                                        message = e.message,
-                                        duration = e.duration,
-                                    }
-                                end
+            for _, u in ipairs(units) do
+                pending = pending + 1
+                test_source.discover_async(u.unit, function(entries)
+                    if entries then
+                        for _, e in ipairs(entries) do
+                            if not seen[e.id] then
+                                seen[e.id] = true
+                                all_nodes[#all_nodes + 1] = to_node(e)
                             end
                         end
-                        pending = pending - 1
-                        if pending == 0 then
-                            callback(#all_nodes > 0 and all_nodes or nil)
-                        end
-                    end)
-                end
+                    end
+                    pending = pending - 1
+                    if pending == 0 then
+                        callback(#all_nodes > 0 and all_nodes or nil)
+                    end
+                end)
             end
             if pending == 0 then
                 callback(nil)
@@ -112,74 +97,40 @@ local function create_adapter()
         end,
 
         --- Build the test target before running tests.
-        --- Module-agnostic: delegates to each project's module for the
-        --- actual build command via `overseer.build_spec_for(unit, target_id)`.
-        --- Uses a plain overseer task (not the loomworks task tracker)
-        --- to avoid invalidating the test cache.
+        --- Module-agnostic: the unit's module gives the build command
+        --- (`test_source.build_spec`). Uses a plain overseer task (not the
+        --- loomworks task tracker) to avoid invalidating the test cache.
         --- @param test_ids string[] test IDs to build for
         --- @param callback fun(ok: boolean)
         ensure_built = function(test_ids, callback)
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if not profile then callback(false); return end
+            if not test_source.has_profile() then callback(false); return end
 
-            -- The unit that owns the first id (spec §8.9.4), else the first unit.
-            local owner = test_ids and test_ids[1] and M._owning_test_unit(test_ids[1]) or nil
-            for _, pp in ipairs(profile:projects()) do
-                local unit = pp._config_unit
-                if unit and (not owner or unit == owner) then
-                    -- Prefer a per-target build when the test's executable
-                    -- matches a known build target on this unit.
-                    local target_id = nil
-                    if unit.targets and test_ids and #test_ids > 0 then
-                        -- The merged tree of every TestUnit (module + saved).
-                        local tree = unit._test_tree
-                        if tree then
-                            for _, e in ipairs(tree) do
-                                if e.id == test_ids[1] and e.executable then
-                                    local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
-                                    local target_obj = unit.targets[exe_name]
-                                    if target_obj then target_id = target_obj.id end
-                                    break
-                                end
-                            end
-                            if not target_id then
-                                for _, e in ipairs(tree) do
-                                    if e.executable and not e.parent then
-                                        local exe_name = (e.executable:match("[/\\]([^/\\]+)$") or e.executable):gsub("%.exe$", "")
-                                        local target_obj = unit.targets[exe_name]
-                                        if target_obj then target_id = target_obj.id break end
-                                    end
-                                end
-                            end
-                        end
-                    end
+            -- The unit that owns the first id (spec §8.9.4), else the first
+            -- unit; a per-target build when the test's executable matches a
+            -- known build target of it.
+            local unit, target_id = test_source.build_target_for(test_ids)
+            if not unit then callback(false); return end
 
-                    local ok_o, overseer = pcall(require, "overseer")
-                    if not ok_o then callback(false); return end
+            local ok_o, overseer = pcall(require, "overseer")
+            if not ok_o then callback(false); return end
 
-                    local lw_overseer = require("loomworks.overseer")
-                    local spec = lw_overseer.build_spec_for(unit, target_id)
-                    M._log_spec("ensure_built target=" .. tostring(target_id), unit, spec)
-                    if not spec or not spec.cmd then callback(false); return end
+            local spec = test_source.build_spec(unit, target_id)
+            M._log_spec("ensure_built target=" .. tostring(target_id), unit, spec)
+            if not spec or not spec.cmd then callback(false); return end
 
-                    local build_task = overseer.new_task({
-                        name = "loomtest build: " .. (target_id or "all"),
-                        cmd = spec.cmd,
-                        cwd = spec.cwd,
-                        env = spec.env,
-                        components = { "on_exit_set_status" },
-                    })
-                    build_task:subscribe("on_complete", function(_, status)
-                        vim.schedule(function()
-                            callback(status == "SUCCESS")
-                        end)
-                    end)
-                    build_task:start()
-                    return
-                end
-            end
-            callback(false)
+            local build_task = overseer.new_task({
+                name = "loomtest build: " .. (target_id or "all"),
+                cmd = spec.cmd,
+                cwd = spec.cwd,
+                env = spec.env,
+                components = { "on_exit_set_status" },
+            })
+            build_task:subscribe("on_complete", function(_, status)
+                vim.schedule(function()
+                    callback(status == "SUCCESS")
+                end)
+            end)
+            build_task:start()
         end,
 
         -- Owning-unit dispatch (spec §8.9.4): a single test, suite or target
@@ -188,7 +139,7 @@ local function create_adapter()
         run = function(test_id, opts)
             local unit = M._find_test_unit(test_id)
             if not unit then return nil end
-            local spec, tu = unit:test_command_for(test_id, opts)
+            local spec, tu = test_source.command_for(unit, test_id, opts)
             if spec then spec._test_unit = tu end
             M._log_spec("run " .. test_id, unit, spec)
             return spec
@@ -199,20 +150,15 @@ local function create_adapter()
         -- target of the saved-targets TestUnit. A single spec is returned as
         -- is; several as a list (loomtest runs them one after another).
         run_all = function(opts)
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if not profile then return nil end
+            if not test_source.has_profile() then return nil end
 
             local specs = {}
-            for _, pp in ipairs(profile:projects()) do
-                local unit = pp._config_unit
-                if unit then
-                    for _, c in ipairs(unit:test_commands_all(opts)) do
-                        local spec = c.cmd
-                        spec._test_unit = c.tu
-                        M._log_spec("run_all", unit, spec)
-                        specs[#specs + 1] = spec
-                    end
+            for _, u in ipairs(test_source.units()) do
+                for _, c in ipairs(test_source.commands_all(u.unit, opts)) do
+                    local spec = c.cmd
+                    spec._test_unit = c.tu
+                    M._log_spec("run_all", u.unit, spec)
+                    specs[#specs + 1] = spec
                 end
             end
             if #specs == 0 then return nil end
@@ -234,7 +180,7 @@ local function create_adapter()
             local id = target_id:match("^%a+:") and target_id or ("target:" .. target_id)
             local unit = M._find_test_unit(id)
             if not unit then return nil end
-            local spec, tu = unit:test_command_for(id, { gtest_filter = suite_name .. ".*" })
+            local spec, tu = test_source.command_for(unit, id, { gtest_filter = suite_name .. ".*" })
             if spec then spec._test_unit = tu end
             return spec
         end,
@@ -242,36 +188,14 @@ local function create_adapter()
         -- Results are parsed by the TestUnit that produced the run (§8.9.4).
         parse_results = function(output_path, spec)
             if spec and spec._test_unit then
-                return spec._test_unit:parse_results(output_path)
+                return test_source.parse_results(spec._test_unit, output_path)
             end
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if not profile then return nil end
-
-            for _, pp in ipairs(profile:projects()) do
-                local unit = pp._config_unit
-                if unit then
-                    local tus = unit:test_units()
-                    for _, tu in ipairs(tus) do
-                        local results = tu:parse_results(output_path)
-                        if results then return results end
-                    end
-                end
-            end
-            return nil
+            if not test_source.has_profile() then return nil end
+            return test_source.parse_results_any(output_path)
         end,
 
         invalidate = function()
-            local lw = require("loomworks")
-            local profile = lw.get_active_profile()
-            if not profile then return end
-
-            for _, pp in ipairs(profile:projects()) do
-                local unit = pp._config_unit
-                if unit then
-                    unit:invalidate_tests()
-                end
-            end
+            test_source.invalidate()
         end,
 
         get_cursor_test = function(bufnr, line)
@@ -301,12 +225,10 @@ end
 --- diagnostics for test launches and subsequent build calls line up in
 --- a single file. env values are withheld; only keys are recorded.
 --- @param label string caller context (e.g. "run test:Foo.Bar")
---- @param unit loomworks.ConfigUnit|nil
+--- @param unit table|nil the configuration unit (a test source handle)
 --- @param spec table|nil
 function M._log_spec(label, unit, spec)
-    local ws = unit and unit._workspace
-    local core = ws and ws._core
-    local log = core and core._deps and core._deps.log
+    local log = unit and test_source.log() or nil
     if not log then return end
     if not spec then
         log:warn("loomtest spec %s: nil", label)
@@ -325,46 +247,20 @@ function M._log_spec(label, unit, spec)
         tostring(spec.output_path))
 end
 
---- The ConfigUnit whose TestUnit owns `test_id` (an entry with that id), or
---- nil — never a fallback guess (spec §8.9.4).
+--- The unit whose TestUnit owns `test_id`, or nil — never a fallback guess
+--- (spec §8.9.4).
 --- @param test_id string
---- @return loomworks.ConfigUnit|nil
+--- @return table|nil
 function M._owning_test_unit(test_id)
-    local lw = require("loomworks")
-    local profile = lw.get_active_profile()
-    if not profile then return nil end
-    for _, pp in ipairs(profile:projects()) do
-        local unit = pp._config_unit
-        if unit then
-            for _, tu in ipairs(unit:test_units()) do
-                for _, e in ipairs(tu:entries() or {}) do
-                    if e.id == test_id then return unit end
-                end
-            end
-        end
-    end
-    return nil
+    return test_source.owning_unit(test_id)
 end
 
---- Find the ConfigUnit (and its TestUnit) that owns a test ID: the owning
---- unit, else the first unit with a TestUnit (its first TestUnit).
+--- Find the unit (and its TestUnit) that owns a test ID: the owning unit,
+--- else the first unit with a TestUnit (its first TestUnit).
 --- @param test_id string
---- @return loomworks.ConfigUnit|nil, loomworks.TestUnit|nil
+--- @return table|nil, table|nil
 function M._find_test_unit(test_id)
-    local owner = M._owning_test_unit(test_id)
-    if owner then return owner, owner:_find_test_unit(test_id) end
-    local lw = require("loomworks")
-    local profile = lw.get_active_profile()
-    if not profile then return nil, nil end
-
-    for _, pp in ipairs(profile:projects()) do
-        local unit = pp._config_unit
-        if unit then
-            local tu = unit:_find_test_unit(test_id)
-            if tu then return unit, tu end
-        end
-    end
-    return nil, nil
+    return test_source.find_test_unit(test_id)
 end
 
 --- Register the loomworks adapter with loomtest.
@@ -412,7 +308,7 @@ function M.setup()
         end, 100)
     end)
 
-    if lw.get_workspace() and lw.get_active_profile() then
+    if test_source.ready() then
         M.register()
     end
 end
