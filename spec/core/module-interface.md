@@ -947,6 +947,13 @@ place, within its project, by one atomic operation shared by every host
   - **Runtime.** The per-unit launch entries in a configuration unit's target
     list are re-keyed, so pickers and `lw target` show the new name without a
     reload.
+  - **Saved test entries.** In the working copy, every saved test entry
+    (§1.3.4) of the same project — the project-wide list and every
+    configuration's list — whose name is the old name is renamed, keeping
+    its args and position. Such an entry resolved to this launch (a launch
+    configuration wins over a same-named build target), so leaving it would
+    silently switch it to a build target or make it missing. The shared
+    layer's lists follow on the next publish.
 
   Nothing else stores a launch name:
   - deploy steps live inside the launch configuration and move with it;
@@ -1238,8 +1245,9 @@ TestUnit (interface — test_unit.lua)
 The **saved-targets TestUnit** is owned by core, not by a module. It serves a
 configuration's saved test targets (§1.3.4) through generic seams only: the
 module's `parse_targets` (executable targets and their artifacts, §8.4),
-`Target:resolve_run_spec` (run environment, §8.7), and the shared framework
-helpers. Any module with `parse_targets` gets it with no module code; a
+`Target:resolve_run_spec` (run environment, §8.7), the launch configuration's
+resolved run spec and deploy steps (§8.7, §8.8.4) for `launch` entries, and
+the shared framework helpers. Any module with `parse_targets` gets it with no module code; a
 module without it gets none.
 
 The `TestUnit` interface is the seam: each module that supports tests
@@ -1318,8 +1326,8 @@ Return cached entries without triggering discovery.
 
 | Method | Behaviour |
 |--------|-----------|
-| `discover()` / `discover_async` | One `target:<name>` entry per resolved saved entry, in list order (`executable` = the artifact, runnable). The framework is probed with the shared helper; for a recognised framework, per-test children with source locations. A missing entry (no such target, or not an executable) is a **non-runnable** `target:<name>` entry with `status = "errored"` and a message naming the entry and its declaring level (e.g. `not a target of App/Tests (removed or renamed?)`), shown, never hidden. |
-| `test_command(id, opts)` | Target-, suite- or case-level command: the run spec from `Target:resolve_run_spec`, the framework results option, the entry's `args`, the framework filter. |
+| `discover()` / `discover_async` | One entry per saved entry, in list order. Its id is `<kind>:<name>` — `target:<name>` or `launch:<name>` (§1.3.4 "Resolution") — with `#<k>` appended for the k-th occurrence (k ≥ 2) of a name that repeats in the list, so duplicate entries stay distinct. `executable` is the program, runnable. For a build target's artifact (a `target` entry or a target-backed `launch` entry) the framework is probed with the shared helper; for a recognised framework, per-test children with source locations. Any other entry has no children and is judged on its exit status. A missing entry (§1.3.4) is a **non-runnable** entry (`target:<name>` when the kind is unknown) with `status = "errored"` and a message naming the entry and its declaring level (e.g. `not a target or launch of App/Tests (removed or renamed?)`), shown, never hidden. |
+| `test_command(id, opts)` | Entry-, suite- or case-level command. A `target` entry: the run spec from `Target:resolve_run_spec`. A `launch` entry: the launch's resolved run spec (§8.7) with its own launch arguments, and its deploy steps run before the command (§8.8.4). Then the results option and framework filter when the program is a recognised framework executable (§16.16 "Results option"), then the entry's args, expanded (§1.3.4). |
 | `test_command_all` | nil — run-all iterates its target entries (§8.9.4). |
 | `run_command_all` | nil — never a batch runner. A headless run executes saved targets on the per-executable route (§16.16). |
 | `parse_results` | The framework helper's result parser. |
@@ -1348,7 +1356,9 @@ both.
 
 The configuration's effective saved list (§1.3.4) and its source (a
 Configuration or the Project), or nil when none is declared along the chain
-(an explicit `[]` returns an empty `entries`). Pure model data: no build
+(an explicit `[]` returns an empty `entries`). Each entry carries its name,
+its args as written (unexpanded) and its occurrence index; duplicates are
+kept. Pure model data: no build
 directory is read, so it is safe before configure and on an unconfigured
 unit. The headless planner (§16.16) and the hosts' read-only views ask this;
 resolving entries to targets happens only after the unit is configured.
@@ -1375,7 +1385,10 @@ changes (§1.3.4). When a module TestUnit and the saved-targets TestUnit
 expose the **same executable** (a saved target the module's runner also
 registers), the merge keeps one entry: the module's, which carries the
 runner's working directory, environment and timeout; the saved entry
-contributes only its `args`.
+contributes only its args. This applies only to a `target` entry whose name
+occurs once in its list. A `launch` entry (its own environment and working
+directory) and the entries of a repeated name (each with its own args) are
+never merged; they stay beside the module's entry.
 
 **`config_unit:discover_tests_async(callback)`**
 

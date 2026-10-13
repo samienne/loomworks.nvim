@@ -500,78 +500,129 @@ and `variables`, and uses the same machinery:
 ### 1.3.4 Saved test targets (`tests`)
 
 A project and a configuration MAY carry a **`tests`** field naming the test
-executables (build targets) a headless test run executes directly, in
-addition to what the module's own test runner discovers (§16.16). It is a
-generic, core-owned field: a module never sees it.
+programs a headless test run executes directly, in addition to what the
+module's own test runner discovers (§16.16). An entry names a build target or
+a launch configuration (§8.7) of the project. It is a generic, core-owned
+field: a module never sees it.
 
 ```json
-"App": { "cmake": {
-    "tests": { "targets": ["CoreTests"] },
-    "configurations": {
-        "Tests": {
-            "inherits": "variant:Release",
-            "options": { "APP_UNIT_TESTS": "ON" },
-            "tests": { "targets": [
-                "BaseTests",
-                "CoreTests",
-                { "target": "RenderTests", "args": ["--gtest_filter=-*Slow*"] }
-            ] }
+"App": {
+    "cmake": {
+        "tests": ["CoreTests"],
+        "configurations": {
+            "Tests": {
+                "inherits": "variant:Release",
+                "options": { "APP_UNIT_TESTS": "ON" },
+                "tests": [
+                    "BaseTests",
+                    "CoreTests",
+                    ["RenderTests", "--gtest_filter=-*Slow*"],
+                    ["RenderTests", "--gtest_filter=*Slow*", "--scale=${slow_scale}"],
+                    "schema-check"
+                ]
+            }
         }
+    },
+    "launch": {
+        "schema-check": { "target": "editor", "args": ["--check-schema"] }
     }
-}}
+}
 ```
 
-- **Shape.** `tests` is an object; `tests.targets` is an ordered array whose
-  elements are a target name (string) or
-  `{ "target": <name>, "args"?: [<string>…] }`. The object leaves room for
-  later keys; an unknown key inside it is kept verbatim and ignored. A name is
-  a build target of **the project it is declared in** — never
-  project-qualified. Order is run order. A name appears at most once per list:
-  an edit refuses a duplicate, and a duplicate from a hand-edited file is
-  dropped (first occurrence kept) with a one-time warning.
+- **Shape.** `tests` is an ordered array of **entries**. An entry is a string
+  — the **name** — or a non-empty array of strings whose first element is the
+  name and whose remaining elements are the entry's **args**; `"X"` and
+  `["X"]` are the same entry. Order is run order. (An object form could be
+  added later if an entry needs more keys than a name and args; this version
+  has none.) An element of any other shape (an object, a number, an empty
+  array, a non-string element) is an **invalid entry**: it is kept verbatim in
+  the file, reported on its level, and treated as a missing entry (below). A
+  `tests` value that is not an array is an invalid declaration: kept
+  verbatim, reported, and — since it is still a declaration — it stops the
+  inheritance walk; a plan that includes it fails like a missing entry.
+- **Names.** A name is a build target or a launch configuration of **the
+  project it is declared in** — never project-qualified — and is never
+  variable-expanded.
+- **Duplicates.** A name MAY appear several times in one list, for example
+  with different args; each occurrence is its own entry and its own test
+  step. Entries with the same name are told apart by their **occurrence
+  index**: 1 for the first entry with that name in the list, 2 for the second,
+  and so on. The index counts only entries with that name, never absolute
+  position, so inserting or removing an entry with another name does not
+  change it.
 - **Two levels.** The project-wide list lives in the project's module section
   (`projects.<p>.<type>.tests`), a core-owned key lifted out before the
   section reaches the module, like `description` (§1.9). The per-configuration
   list lives in a **user** configuration's table. A module-generated
   configuration has no persisted table (§1.3), so it can only inherit.
 - **Inheritance: nearest declaration wins the whole list.** The effective list
-  of a configuration is the first `tests.targets` found walking: the
-  configuration's own, then its bases depth-first left-to-right (the order
-  `options` and `env` use), then the project-wide list. Lists never merge: a
-  list has no per-key identity, and a union would make dropping one target in
-  a derived configuration impossible. An explicit empty list `[]` is a
-  declaration — "no saved targets here" — and stops the walk. The resolution
-  reports its **source** as an object reference (the declaring Configuration,
-  or the Project), so hosts can say "own", "inherited from Tests" or
-  "project-wide".
+  of a configuration is the first `tests` found walking: the configuration's
+  own, then its bases depth-first left-to-right (the order `options` and `env`
+  use), then the project-wide list. Lists never merge: a list has no
+  per-entry identity, and a union would make dropping one entry in a derived
+  configuration impossible. An explicit empty list `[]` is a declaration —
+  "no saved test targets here" — and stops the walk. The resolution reports
+  its **source** as an object reference (the declaring Configuration, or the
+  Project), so hosts can say "own", "inherited from Tests" or "project-wide".
 - **No per-profile level.** A profile carries no list and no override. A
   profile gets a different list by mapping a different configuration (through
-  its configuration set); per-profile *values* belong to the variable system
-  (§1.3.1), which this field does not use in v1 — `args` are not expanded, and
-  there is no list-typed variable (a possible string-list variable type is a
-  BACKLOG item).
-- **Args.** `args` are passed verbatim after the target's framework results
-  option and before caller-forwarded arguments (§16.16). They are **not**
-  expanded (no built-in or project variables). Args are program-bearing
-  (§17.6); target names are not.
+  its configuration set), and different args through the variable system
+  (§1.3.1, including the profile fill), which args are expanded with (below).
+  There are no list-typed variables in this version; they are planned as a
+  follow-up (BACKLOG), which would let a variable supply a whole list or a
+  run of args.
+- **Args.** An entry's args are expanded exactly like a launch
+  configuration's args (§8.7): built-in variables first, then project
+  variables (§1.3.1) resolved for the unit's configuration in the resolved
+  profile, with the same two-pass rule (a variable's value is itself expanded
+  with built-in variables only). An unresolved or blank reference is handled
+  as it is in a launch configuration's args. Expansion runs when a plan is
+  resolved (§16.16) or a test command is built (§8.9.2), never on the stored
+  data, and only on the args that survive the trust filter (§17.6). Args are
+  program-bearing (§17.6); names are not.
 - **Not a configure input.** The list never makes a unit stale and never
-  triggers a configure: it selects among artifacts the build already produces.
-  It is not part of the module configuration and not part of any key, and no
-  configure record contains it. A module-configuration snapshot recorded by an
-  older loomworks that read `tests` as a module field is compared **without**
-  that key, so moving between versions does not force a reconfigure. Changing
-  the list invalidates the unit's cached test tree (§8.9.3).
+  triggers a configure: it selects among programs the build already produces
+  or the workspace already declares. Changing a variable that an entry's args
+  reference never does either. The list is not part of the module
+  configuration and not part of any key, and no configure record contains it.
+  A module-configuration snapshot recorded by an older loomworks that read
+  `tests` as a module field is compared **without** that key, so moving
+  between versions does not force a reconfigure. Changing the list
+  invalidates the unit's cached test tree (§8.9.3).
 - **Persistence.** Serialized only where declared: a derived configuration
   never gets a copy of its base's list (§1.3 "Derived values are not
-  persisted"). It lives in the working copy and publishes with its
+  persisted"). An entry without args is written as a string, an entry with
+  args as an array. The list lives in the working copy and publishes with its
   configuration or project under the intent model (§2.4). Nothing is written
   to the cache.
-- **Resolution to targets.** Names are data at rest. A host resolves them to
-  the unit's parsed build targets (§8.6) only after the unit is configured;
-  a name that matches no target, or a target that is not an executable, is a
-  **missing entry** (§8.9.3, §16.16). A rename of a configuration or project
-  carries the field with the rest of the table; a build-target rename upstream
-  is not tracked and surfaces as a missing entry.
+- **Resolution.** Names are data at rest. A host resolves a name to a
+  **kind** — `launch` or `target` — in this order:
+  1. a **launch configuration** of the project that is in the model (§8.7;
+     one the trust filter ignored as a whole is not, §17.6);
+  2. otherwise an **executable build target** of the unit (its parsed build
+     targets, §8.6), known only after the unit is configured.
+
+  A name that matches both resolves to the launch configuration, the more
+  specific of the two, and every report of the entry shows the resolved kind
+  (§16.16). (A run's named target refuses this ambiguity until it is
+  qualified, §16.17; a saved entry has no qualifier, so the rule picks one and
+  says which.) A **missing entry** (§8.9.3, §16.16) is:
+  - an invalid entry, or any entry of an invalid declaration (above);
+  - a name that matches no launch configuration and no build target of the
+    configured unit, or that matches only a build target that is not an
+    executable;
+  - a name that matches a launch configuration the shared layer declares but
+    the trust filter ignored as a whole (§17.6). The entry is **not**
+    resolved to a same-named build target instead: it is missing, and the
+    trust diagnostic names the launch;
+  - a name that resolves to a target-backed launch configuration whose
+    target is missing or not an executable.
+
+  A module device target (§11) is not a launch configuration and cannot be
+  named, as for a run (§16.17). A rename of a configuration or project
+  carries the field with the rest of the table; a rename of a launch
+  configuration rewrites the entries that name it (§8.7); a build-target
+  rename upstream is not tracked and surfaces as a missing entry.
 - **Applicability.** Only a module with `parse_targets` (§8.4) can resolve a
   saved list. On a project whose module has none the field is kept and
   reported as unsupported, never acted on.

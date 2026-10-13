@@ -288,8 +288,9 @@ case: a configuration's list comes with the winning configuration table
 project-level field. A list is atomic — never merged entry by entry across
 the two files. A `tests` value is content of its item (it has no intent of
 its own) and counts toward the modified indicator (`+`), auto-sync and revert
-like any other field. Per-target `args` are program-bearing and are stripped
-from the shared layer before this merge (§17.6).
+like any other field. Per-entry args are program-bearing and are stripped
+from the shared layer before this merge; on publish they are restored by
+entry name and occurrence index, never by position (§17.6).
 
 #### Descriptions
 

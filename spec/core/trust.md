@@ -177,16 +177,32 @@ the generic ones:
   configuration's `device_log` options (§18.13) are not program-bearing either:
   they are opaque data a device runner validates and may never turn into a
   program, a path to execute, or device command text.
-- the per-target `args` of a saved test-target list (`tests.targets[].args`,
-  §1.3.4). Only the args are stripped: the entry itself still applies,
-  without them. A saved target **name** is not program-bearing — it selects
-  one of the project's own build artifacts, exactly like a target-backed
-  launch — so saved lists are honoured from `loomworks.json`. The diagnostic
-  names the entry:
+- the args of a saved test entry (the elements after the first of an array
+  entry in `tests`, §1.3.4). Only the args are stripped: a loomworks.json
+  entry keeps its name and still applies, without them, and variable
+  expansion (§1.3.4) runs only on the args that survive. A saved entry's
+  **name** is not program-bearing — it selects one of the project's own build
+  artifacts, exactly like a target-backed launch, or one of its launch
+  configurations, which are themselves subject to this section (a launch
+  ignored here is not in the model, so an entry naming it is missing,
+  §1.3.4) — so saved lists are honoured from `loomworks.json`. The
+  diagnostic names the entry, with its occurrence index when the name
+  repeats in its list:
 
   ```
-  loomworks.json sets projects.App.cmake.configurations.Tests.tests (RenderTests args = --gtest_filter=-*Slow*) — ignored: program settings are used only from your local config (lw help trust)
+  loomworks.json sets projects.App.cmake.configurations.Tests.tests (RenderTests #2 args = --gtest_filter=*Slow*) — ignored: program settings are used only from your local config (lw help trust)
   ```
+
+  When stripped args are written back on publish (below), an entry's
+  "original place" is its **name plus its occurrence index** among the
+  entries with that name in the same list, never its absolute position. The
+  args stripped from the k-th shared entry named N are restored onto the k-th
+  entry named N of the list being published, unless that entry carries args
+  of its own in the working copy (the working copy supplies a value there).
+  When the published list has fewer entries named N than the shared layer
+  had, the args of the surplus occurrences have no entry to return to: they
+  are dropped, and the publish names each one. Extra entries named N in the
+  published list get no restored args.
 
 Modules add their own through the optional `trust_fields` declaration (§8.4):
 the top-level `type_config` keys that are program-bearing (a language-server

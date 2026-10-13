@@ -925,23 +925,37 @@ example gtest runners a project builds behind an option) can be saved, so
 plain `lw test` runs them too:
 
 ```jsonc
-"App": { "cmake": {
-    "tests": { "targets": ["CoreTests"] },                  // project-wide
-    "configurations": {
-        "Tests": {
-            "inherits": "variant:Release",
-            "options": { "APP_UNIT_TESTS": "ON" },
-            "tests": { "targets": [
-                "BaseTests",
-                { "target": "RenderTests", "args": ["--gtest_filter=-*Slow*"] }
-            ] }
+"App": {
+    "cmake": {
+        "tests": ["CoreTests"],                                // project-wide
+        "configurations": {
+            "Tests": {
+                "inherits": "variant:Release",
+                "options": { "APP_UNIT_TESTS": "ON" },
+                "tests": [
+                    "BaseTests",
+                    ["RenderTests", "--gtest_filter=-*Slow*"],
+                    ["RenderTests", "--gtest_filter=*Slow*", "--scale=${slow_scale}"],
+                    "schema-check"                             // a launch configuration
+                ]
+            }
         }
+    },
+    "launch": {
+        "schema-check": { "target": "editor", "args": ["--check-schema"] }
     }
-}}
+}
 ```
 
+- An entry is `"Name"` or `["Name", "arg", …]`. The name is a build target
+  or a launch configuration of the project; when both exist, the launch
+  configuration wins (`lw test --list` shows which). A launch entry runs like
+  `lw run <name>` (deploy steps, environment, working directory, the launch's
+  own args), followed by the entry's args.
+- A name may appear more than once, e.g. with different args; each entry is
+  its own step.
 - A configuration uses its own list, else its base's, else the project-wide
-  one. The nearest list wins **whole** (lists never merge); `"targets": []`
+  one. The nearest list wins **whole** (lists never merge); `"tests": []`
   means "none here".
 - Plain `lw test` runs, per project, the native runner (ctest / `meson test`)
   first and then each saved executable in order, and prints a summary. A
@@ -951,21 +965,29 @@ plain `lw test` runs them too:
 - Arguments after `--` are allowed only when every step is of one kind (add
   `--saved` or `--discovered` otherwise). With several steps, `--junit
   out.xml` writes one file per step.
+- Per-test results (`--gtest_output`) are collected only for gtest
+  executables built by the project; any other entry passes or fails on its
+  exit status alone, and the summary says so.
 - On a cross-compiling profile, saved executables run on a device; the
   project's ctest step is skipped with a note.
 - `lw test --list [--json]` shows what plain `lw test` would run, without
-  building anything.
-- Edit the lists with `lw test-target` (below). A saved target name is
-  honoured from `loomworks.json`; per-target `args` are program settings, so
-  they are used only from your local config (see
+  building anything, including whether each entry resolved to a target or a
+  launch.
+- Edit the lists with `lw test-target` (below). A saved name is honoured
+  from `loomworks.json`; an entry's args are program settings, so they are
+  used only from your local config (see
   [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)).
-  `args` are passed as written (no `${...}` expansion).
+- Args expand `${...}` variables like a launch configuration's args
+  (built-ins and project variables); the name is never expanded. Changing a
+  variable never triggers a reconfigure.
 
 ```sh
 lw test-target                          # what the active profile has saved
 lw test-target add CoreTests BaseTests  # saved on App/Tests (used by ...)
 lw test-target add RenderTests -- --gtest_filter=-*Slow*
-lw test-target remove BaseTests
+lw test-target add RenderTests -- --gtest_filter=*Slow*   # a second RenderTests entry
+lw test-target remove RenderTests --index 2              # only the second one
+lw test-target remove BaseTests                          # every BaseTests entry
 lw test --list
 ```
 
@@ -1670,7 +1692,7 @@ outside a workspace.
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches, the generated compile databases in `.nvim/cache/cc/`); the remedy for a cache not written on this machine |
 | `lw test [profile]` | Build, then run tests; real exit code: each project's native runner, then its [saved test targets](#saved-test-targets). `--junit <file>` writes a JUnit report (one per step when several). `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)); `--saved` / `--discovered` run only the saved executables / only the native runners; `--list [--json]` prints the plan without building |
-| `lw test-target [list] [profile]` | Saved test targets: `add [<profile>] <target>… [--config <name> \| --project-wide] [--unchecked] [-- <args>…]`, `remove [<profile>] <target>…`, `clear [<profile>] [<project>] [--empty]` (`--config` / `--project-wide` on each). See [Saved test targets](#saved-test-targets) |
+| `lw test-target [list] [profile]` | Saved test targets: `add [<profile>] <name>… [--config <name> \| --project-wide] [--unchecked] [-- <args>…]`, `remove [<profile>] <name>… [--index <k>]`, `clear [<profile>] [<project>] [--empty]` (`--config` / `--project-wide` on each). See [Saved test targets](#saved-test-targets) |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |

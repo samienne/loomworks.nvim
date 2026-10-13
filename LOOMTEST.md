@@ -296,9 +296,11 @@ saved-targets TestUnit (specification §1.3.4, §8.9.3). The adapter follows
 the owning-unit dispatch rule of specification §8.9.4: run, debug and result
 parsing go through the TestUnit that owns the id; run-all and run-suite cover
 every TestUnit of every ConfigUnit of the profile, never only the first
-unit's first TestUnit. Saved targets appear as top-level `target:` nodes with
-their framework children; a missing saved target appears as an errored,
-non-runnable node.
+unit's first TestUnit. Saved entries appear as top-level `target:` or
+`launch:` nodes (a repeated name's later occurrences suffixed `#2`, `#3`, …,
+specification §8.9.2), with framework children when the program is a
+recognised framework executable; a missing saved entry appears as an
+errored, non-runnable node.
 
 ## 14. Future Considerations
 

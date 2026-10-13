@@ -642,13 +642,12 @@ pick a default build type (spec §1.4).
 
 Spec §1.3.4 / §16.16 ship v1 without these:
 
-- **String-list variable type.** A project variable of type `string[]`
+- **List variables (planned follow-up).** A project variable of a list type
   (declared, overridden per configuration and filled per profile like the
-  other types) would let a profile choose its own saved list or per-target
-  args without a per-profile `tests` field. v1 has no list-typed variables
-  and does not expand `tests` at all.
-- **Variable expansion in per-target `args`** (`${build_dir}` and friends),
-  with the launch-context expander.
+  other types) would let a profile choose its own saved list, or supply a
+  run of args to an entry, without a per-profile `tests` field. Entry args
+  are already expanded with string/path variables (§1.3.4); entry names are
+  not expanded.
 - **Build only what the plan runs** (the saved targets plus the full builds of
   units with batch steps) instead of the whole profile.
 - **Editor:** an inline saved-targets editor in the configuration editor
