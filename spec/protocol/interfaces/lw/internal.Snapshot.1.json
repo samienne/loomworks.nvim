@@ -56,7 +56,24 @@
         "user": { "description": "The working copy as the daemon would save it.", "type": "object" },
         "cache": { "description": "The cache as the daemon would save it.", "type": "object" },
         "tools": { "description": "Per module type, the detected toolchains.", "type": "object" },
-        "shared_ignored": { "type": "object" },
+        "shared_ignored": {
+          "description": "The program-bearing fields stripped from loomworks.json (spec §17.6), in the order they were found.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "path", "label"],
+            "properties": {
+              "kind": { "type": "string" },
+              "project": { "type": "string" },
+              "path": { "type": "array", "items": { "type": "string" } },
+              "raw_path": { "type": "array", "items": { "type": "string" } },
+              "anchor": { "type": "integer" },
+              "label": { "type": "string" },
+              "detail": { "type": "string" },
+              "value": {}
+            }
+          }
+        },
         "index": { "$ref": "#/$defs/Index" },
         "seq": { "type": "integer" },
         "session_generation": { "type": "integer" },
