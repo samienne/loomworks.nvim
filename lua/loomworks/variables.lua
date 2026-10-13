@@ -8,7 +8,7 @@
 local M = {}
 
 --- Built-in variable names that user declarations cannot use. These are the
---- expandable built-ins (`${workspace_root}` …); they double as the allowed
+--- expandable built-ins (`${workspace_root}` …); minus `LAUNCH_ONLY_NAMES` they double as the allowed
 --- reference set for option/launch expansion validation.
 M.RESERVED_NAMES = {
     workspace_root = true,
@@ -16,6 +16,14 @@ M.RESERVED_NAMES = {
     variant = true,
     config_set = true,
     project_path = true,
+    target_dir = true,
+}
+
+--- Built-ins defined only in a launch context that resolves a build target
+--- (spec §8.7 `${target_dir}`): reserved, but unresolved in configure options
+--- and other contexts outside a launch.
+M.LAUNCH_ONLY_NAMES = {
+    target_dir = true,
 }
 
 --- Pre-declared policy variables (core §1.3.2). Unlike `RESERVED_NAMES`, these

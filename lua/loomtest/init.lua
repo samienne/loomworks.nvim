@@ -295,7 +295,8 @@ function M.run(test_id, node_type, opts)
                 ids[#ids + 1] = n.id
             end
         end
-        spec = adapter.run_all()
+        -- A target runs through the adapter unit that owns it, not run-all.
+        spec = adapter.run(test_id)
     else
         ids[#ids + 1] = test_id
         spec = adapter.run(test_id)
@@ -342,7 +343,8 @@ function M.debug(test_id, node_type, opts)
                 ids[#ids + 1] = n.id
             end
         end
-        spec = adapter.run_all()
+        -- A target runs through the adapter unit that owns it, not run-all.
+        spec = adapter.run(test_id)
     else
         ids[#ids + 1] = test_id
         spec = adapter.run(test_id)

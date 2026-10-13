@@ -188,8 +188,8 @@ end
 --- (app=Debug). `opts.profile`: also write a signed working copy with the
 --- profile `dev` (the trust key must already be set, in-process tests);
 --- `opts.launch`: with it, the project's launch configurations in that
---- working copy.
---- @param opts? { profile?: boolean, launch?: table }
+--- working copy; `opts.tests`: app's saved test-target list there.
+--- @param opts? { profile?: boolean, launch?: table, tests?: table }
 --- @return string root
 function M.shell_workspace(opts)
     local root = tmp()
@@ -212,9 +212,11 @@ function M.shell_workspace(opts)
         local trust = require("loomworks.trust")
         local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
         -- Launch programs are honored only from the working copy (§17.10).
-        if opts.launch then
+        -- `tests`: app's saved test targets (§1.3.4), with the launches.
+        if opts.launch or opts.tests then
             local app = vim.deepcopy(cfg.projects.app)
             app.launch = opts.launch
+            app.shell.tests = opts.tests
             user.projects = { app = app }
         end
         -- (No `assert(x)` as a value: under busted it is luassert's, which

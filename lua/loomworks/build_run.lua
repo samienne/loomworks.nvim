@@ -1007,32 +1007,6 @@ local function norm_cmp(p)
     return p
 end
 
---- The refusal of a batch test run for a profile that builds with a foreign
---- (cross) kit: its registered tests cannot run on this host (spec §15
---- invariant 19, §18.6). nil when every unit builds for the host.
---- @param profile table
---- @return string|nil
-function M.foreign_batch_refusal(profile)
-    for _, pp in ipairs(profile:projects()) do
-        local token, tool = require("loomworks.remote.foreign").unit_platform(pp._config_unit)
-        if token then
-            return string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
-                .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]",
-                profile.key, tostring(tool and (tool.key or tool.label) or "?"), token, profile.key)
-        end
-    end
-    return nil
-end
-
---- The line of a test run whose profile has no native test runner.
---- @param profile table
---- @param units integer|nil the number of units planned
---- @return string
-function M.no_tests_line(profile, units)
-    return "no tests to run for profile '" .. profile.key .. "'" ..
-        ((units and units > 0) and " — its modules expose no test runner" or "")
-end
-
 --- Create the directory of a requested JUnit file up front (ctest's
 --- --output-junit and the copy of a runner's own file both need it).
 --- @param junit string|nil absolute path
@@ -1063,19 +1037,6 @@ function M.junit_result(step)
     end
     if uv.fs_stat(step.junit_dest) then return step.junit_dest end
     return nil, warning
-end
-
---- The outcome of a test run: the success line, or the failure message
---- (`lw: <message>`, exit 1).
---- @param profile table
---- @param failed string[] the names of the runners that failed
---- @param n integer the number of runners run
---- @return string|nil ok_line, string|nil failure
-function M.test_summary(profile, failed, n)
-    if #failed > 0 then
-        return nil, string.format("%d of %d test run(s) failed: %s", #failed, n, table.concat(failed, ", "))
-    end
-    return string.format("TESTS OK: %s (%d run%s)", profile.key, n, n == 1 and "" or "s")
 end
 
 return M

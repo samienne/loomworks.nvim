@@ -688,6 +688,15 @@ return function(tree, ctx)
         }, proj), function()
             tree:description(proj.description)
             tree:leaf("Path: " .. (proj.path or key), "Comment")
+            -- Project-wide saved test targets (ui "Saved test targets line").
+            if proj.own_test_targets and proj._module and proj._module.impl
+                    and proj._module.impl.parse_targets then
+                local pw = proj:own_test_targets()
+                local chunks = helpers.test_targets_chunks(proj:saved_tests_view(pw and { entries = pw,
+                    source = proj, invalid = proj._tests and proj._tests.invalid } or nil, proj, nil),
+                    (tree.width or 100) - 8)
+                if chunks then tree:leaf(chunks) end
+            end
 
             if proj.needs_refresh and proj.refresh_reasons and #proj.refresh_reasons > 0 then
                 for _, reason in ipairs(proj.refresh_reasons) do
@@ -880,6 +889,25 @@ return function(tree, ctx)
                         }, cname_cfg), function()
                             if cname_cfg then
                                 tree:description(cname_cfg.description, cname_cfg._description_from_module)
+                                -- Saved test targets (read-only, ui "Saved test
+                                -- targets line"): flagged only when this machine
+                                -- configured a unit of it (targets known).
+                                local impl = proj._module and proj._module.impl
+                                if impl and impl.parse_targets and cname_cfg.test_targets then
+                                    local known
+                                    if ws then
+                                        for _, u in pairs(ws._config_units or {}) do
+                                            if u._configuration == cname_cfg and u.targets
+                                                    and u:configured_here() then
+                                                known = u.targets
+                                            end
+                                        end
+                                    end
+                                    local chunks = helpers.test_targets_chunks(
+                                        proj:saved_tests_view(cname_cfg:test_targets(), cname_cfg, known),
+                                        (tree.width or 100) - 12)
+                                    if chunks then tree:leaf(chunks) end
+                                end
                             end
                             if is_abstract then
                                 tree:leaf("Abstract mixin — not directly buildable", "Comment")

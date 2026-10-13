@@ -215,6 +215,50 @@ describe("gtest helper", function()
             os.remove(tmp)
         end)
 
+        it("parses a testcase spanning ~80k lines in linear time", function()
+            -- Regression: the multi-line <testcase> body was accumulated with
+            -- repeated string concatenation (O(N^2)); a real 253 MB results file
+            -- with an assertion failing 262k times in a loop hung `lw test` for
+            -- hours. 20k <failure> elements x 4 lines = 80k lines in one case: ~20 s
+            -- with the quadratic code (200k lines exhausts memory instead of
+            -- failing on time), well under 0.5 s when linear; the 10 s bound leaves room for loaded CI runners.
+            local tmp = vim.fn.tempname() .. ".xml"
+            local lines = {
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                "<testsuites>",
+                '  <testsuite name="LoopSuite" tests="2" failures="1">',
+                '    <testcase name="Big" classname="LoopSuite" time="1.5">',
+            }
+            for i = 1, 20000 do
+                lines[#lines + 1] = '      <failure message="src/loop.cpp:42&#x0A;Expected" type=""><![CDATA[src/loop.cpp:42'
+                lines[#lines + 1] = "Expected equality of these values:"
+                lines[#lines + 1] = "  i, which is " .. i
+                lines[#lines + 1] = "]]></failure>"
+            end
+            lines[#lines + 1] = "    </testcase>"
+            lines[#lines + 1] = '    <testcase name="Small" classname="LoopSuite" time="0.001" />'
+            lines[#lines + 1] = "  </testsuite>"
+            lines[#lines + 1] = "</testsuites>"
+            local f = io.open(tmp, "w")
+            f:write(table.concat(lines, "\n"))
+            f:close()
+
+            local t0 = vim.uv.hrtime()
+            local results = gtest.parse_xml_results(tmp)
+            local elapsed = (vim.uv.hrtime() - t0) / 1e9
+            os.remove(tmp)
+
+            assert.is_not_nil(results)
+            assert.equals(2, #results)
+            assert.equals("test:LoopSuite.Big", results[1].test_id)
+            assert.equals("failed", results[1].status)
+            assert.equals("src/loop.cpp:42\nExpected equality of these values:\n  i, which is 1\n",
+                results[1].message)
+            assert.equals("test:LoopSuite.Small", results[2].test_id)
+            assert.equals("passed", results[2].status)
+            assert.is_true(elapsed < 10, ("parse took %.2f s (limit 10 s)"):format(elapsed))
+        end)
+
         it("should return nil for missing file", function()
             local results = gtest.parse_xml_results("/nonexistent/path.xml")
             assert.is_nil(results)

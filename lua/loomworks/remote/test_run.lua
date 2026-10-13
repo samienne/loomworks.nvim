@@ -138,13 +138,20 @@ end
 --- stale results file and point `--gtest_output` at a device-side file in the
 --- staging root. Returns the hook and a state table (`framework`,
 --- `results_name`).
+--- The results option goes right after the program (before a launch's own
+--- args); `tail` (the entry's own args, then caller-forwarded args, spec
+--- §16.16) is appended last.
 --- @param name string executable base name
+--- @param tail? string[] arguments placed after the results option
 --- @return function hook, table state
-function M.device_hook(name)
+function M.device_hook(name, tail)
     local gtest = require("loomworks.gtest")
     local st = {}
     local safe = tostring(name):gsub("[^%w%._%-]", "_")
     local rel = M.RESULTS_REL .. "/" .. safe .. ".xml"
+    local function add_tail(plan)
+        for _, a in ipairs(tail or {}) do plan.argv[#plan.argv + 1] = a end
+    end
     local function hook(plan, dev)
         local status, lines = dev.probe({ "--gtest_list_tests" })
         if status == nil then error("framework probe failed: " .. tostring(lines), 0) end
@@ -152,10 +159,13 @@ function M.device_hook(name)
             st.framework = "gtest"
             dev.mkdir(M.RESULTS_REL)
             dev.remove({ rel })
-            plan.argv[#plan.argv + 1] = "--gtest_output=xml:" .. plan.root .. "/" .. rel
+            -- Right after the program, before a launch's own args (§16.16).
+            table.insert(plan.argv, 2, "--gtest_output=xml:" .. plan.root .. "/" .. rel)
+            add_tail(plan)
             st.results_name = safe .. ".xml"
             return { { name = st.results_name, device_rel = rel } }
         end
+        add_tail(plan)
         return {}
     end
     return hook, st

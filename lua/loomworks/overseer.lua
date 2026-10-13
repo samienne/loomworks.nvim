@@ -1276,9 +1276,11 @@ end
 --- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
 --- requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
---- @param opts? table { tasks?: table, for_test?: boolean, configure_only?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
+--- @param opts? table { tasks?: table, for_test?: boolean|table, configure_only?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
 ---   for_test drops the build step of any unit whose native test runner
----   self-rebuilds — configuration is still planned for every unit;
+---   self-rebuilds — configuration is still planned for every unit; as a
+---   table `{ keep = { [unit] = true } }` it also keeps the build of the
+---   listed units (a unit with saved test executables in the plan, §16.16);
 ---   configure_only plans the configure step of every unit and no build
 ---   (`Build/1.configure`, §19.15); reconfigure forces a FULL reconfigure of
 ---   every unit (`lw build --reconfigure`, §16.4);
@@ -1304,10 +1306,11 @@ function M.plan_profile_build(profile, opts)
     if opts.configure_only then
         build_tasks = {}
     elseif opts.for_test then
+        local keep = type(opts.for_test) == "table" and opts.for_test.keep or {}
         build_tasks = {}
         for _, td in ipairs(all_tasks.build or {}) do
             local unit = td.loomworks and td.loomworks.unit
-            if not (unit and M._unit_tests_self_rebuild(unit)) then
+            if (unit and keep[unit]) or not (unit and M._unit_tests_self_rebuild(unit)) then
                 build_tasks[#build_tasks + 1] = td
             end
         end
@@ -1508,14 +1511,18 @@ end
 M._junit_dest_for = junit_dest_for  -- exported for tests
 
 --- Build a headless "run all tests" plan for a profile: one step per buildable
---- unit's native test runner (TestUnit:run_command_all). Assumes the profile
---- has already been built. Returns the test steps plus the number
---- of buildable units seen, so a caller can tell "all passed" from "no tests".
+--- unit's native test runner (TestUnit:run_command_all — module TestUnits
+--- only, never core's saved-targets TestUnit). Assumes the profile has
+--- already been built. Returns the test steps plus the number of buildable
+--- units seen, so a caller can tell "all passed" from "no tests".
 --- `opts.extra_args` forwards caller args to each runner; `opts.junit` (an
 --- absolute path) requests JUnit output — each step carries `junit_dest` (where
 --- the caller wants it) and `junit_out` (where the runner actually wrote it).
+--- `opts.skip_units` drops the listed units' batch steps (a foreign unit,
+--- §16.16); `opts.junit_dest_for(label)`, when given, assigns the JUnit path
+--- instead of the per-runner rule (the caller's whole-plan labelling).
 --- @param profile loomworks.Profile
---- @param opts? table { extra_args?: string[], junit?: string }
+--- @param opts? table { extra_args?: string[], junit?: string, skip_units?: table<loomworks.ConfigUnit, boolean>, junit_dest_for?: fun(label: string, unit: loomworks.ConfigUnit): string|nil }
 --- @return table[]|nil steps, integer units_seen
 function M.plan_profile_test(profile, opts)
     opts = opts or {}
@@ -1531,11 +1538,15 @@ function M.plan_profile_test(profile, opts)
     -- Pass 1: enumerate every runnable test unit up front, so the JUnit-path
     -- assignment below knows whether to use a single file or per-unit files.
     local runnable = {}
+    local skip = opts.skip_units or {}
     for _, unit in ipairs(units) do
         local label = (unit._project and unit._project.key or "?") .. ":" .. tostring(unit:variant())
-        for _, tu in ipairs(unit:test_units()) do
-            if tu.run_command_all then
-                runnable[#runnable + 1] = { unit = unit, tu = tu, label = label }
+        local list_fn = unit.batch_runner_test_units or unit.test_units
+        if not skip[unit] then
+            for _, tu in ipairs(list_fn(unit)) do
+                if tu.run_command_all and not tu.is_saved_targets then
+                    runnable[#runnable + 1] = { unit = unit, tu = tu, label = label }
+                end
             end
         end
     end
@@ -1544,7 +1555,12 @@ function M.plan_profile_test(profile, opts)
     -- Pass 2: build the steps, threading extra args + the resolved JUnit dest.
     local steps = {}
     for _, r in ipairs(runnable) do
-        local junit_dest = opts.junit and junit_dest_for(opts.junit, r.label, multi) or nil
+        local junit_dest
+        if opts.junit_dest_for then
+            junit_dest = opts.junit_dest_for(r.label, r.unit)
+        else
+            junit_dest = opts.junit and junit_dest_for(opts.junit, r.label, multi) or nil
+        end
         local ok, spec = pcall(function()
             return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest,
                 profile = profile })
@@ -1563,6 +1579,8 @@ function M.plan_profile_test(profile, opts)
                 kind = "test",
                 name = r.label,
                 unit = r.unit,
+                runner = (type(spec.cmd[1]) == "string"
+                    and spec.cmd[1]:gsub("\\", "/"):match("([^/]+)$"):gsub("%.[eE][xX][eE]$", "")) or "runner",
                 cmd = spec.cmd,
                 cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
                 env = spec.env,

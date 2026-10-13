@@ -3,6 +3,7 @@
 
 local Configuration = require("loomworks.configuration")
 local description_mod = require("loomworks.description")
+local test_targets_mod = require("loomworks.test_targets")
 
 --- @class loomworks.Project
 --- @field key string project key
@@ -17,6 +18,10 @@ local description_mod = require("loomworks.description")
 ---        module section of the files (`projects.<p>.<type>.description`), never in `type_config`
 --- @field _description_invalid any a non-string `description` value, ignored but
 ---        written back unchanged until the description is set or cleared
+--- @field _tests loomworks.SavedTestDecl|nil the project-wide saved test targets
+---        (spec §1.3.4); stored in the module section of the files
+---        (`projects.<p>.<type>.tests`), never in `type_config`
+--- @field _tests_invalid any the raw value of an invalid `tests` declaration (not an array), written back unchanged
 --- @field configuration? string active configuration name
 --- @field _module? loomworks.Module direct reference to Module domain object
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
@@ -87,6 +92,8 @@ function Project:_update(data)
     self.deploy = data.deploy
     self.device = data.device
     self.description, self._description_invalid = description_mod.from_file(data.description)
+    self._tests, self._tests_invalid = test_targets_mod.parse(data.tests,
+        tostring(self.key) .. " (project-wide)")
     self.variables = data.variables or nil
     self.configuration = data.configuration
     -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
@@ -357,6 +364,8 @@ function Project:_type_config_for_module()
     else
         tc.configurations = nil
     end
+    -- Saved test targets are core-owned (spec §1.3.4): a module never sees them.
+    tc = test_targets_mod.strip_from_type_config(tc)
     return tc
 end
 
@@ -372,6 +381,7 @@ function Project:_refresh_configurations()
     local mod_info = mod.info(abs_path, tc)
     if mod_info then
         Configuration.adopt_declared_descriptions(mod_info.configurations, tc.configurations)
+        test_targets_mod.adopt_declared(mod_info.configurations, self:_declared_configuration_tests())
         self.configurations = mod_info.configurations or {}
         self.preset_configurations = mod_info.preset_configurations or nil
     end
@@ -434,6 +444,7 @@ local function rollback_snapshot(cfg)
     snap.languages = vim.deepcopy(cfg.languages)
     snap._derived = cfg._derived
     snap.description = cfg:description_for_file()
+    snap.tests = test_targets_mod.serialize(cfg._tests, cfg._tests_invalid)
     if cfg.inherits_names and #cfg.inherits_names > 0 then
         snap.inherits = vim.deepcopy(cfg.inherits_names)
     end
@@ -960,6 +971,100 @@ function Project:set_description(text)
     return true
 end
 
+--- The project-wide saved test-target list (spec §1.3.4), or nil when none is
+--- declared (an explicit `[]` returns an empty array).
+--- @return loomworks.SavedTestEntry[]|nil
+function Project:own_test_targets()
+    return self._tests and self._tests.entries or nil
+end
+
+--- Whether a saved entry naming launch `name` of this project is missing
+--- because the trust filter ignored the shared launch and the working copy
+--- does not supply it (spec §17.6, §1.3.4).
+--- @param name string
+--- @return boolean
+function Project:launch_ignored(name)
+    local ws = self._workspace
+    return test_targets_mod.launch_ignored(ws and ws._shared_ignored, self, name)
+end
+
+--- The read-only saved test-targets line's data (spec/ui.md "Saved test
+--- targets line", core §1.3.4) for an effective list `eff` of `item` (one of
+--- this project's configurations, or the project itself), resolved here so
+--- the status page only formats it. `source` is nil when the list is
+--- `item`'s own. With `targets` (the unit's parsed build targets — known
+--- only when configured here) an entry naming nothing is `missing`; unknown
+--- targets are not flagged. An invalid entry, and one naming a launch the
+--- trust filter ignored, are missing whatever the targets.
+--- @param eff { entries: loomworks.SavedTestEntry[], source: table, invalid: boolean|nil }|nil
+--- @param item table|nil
+--- @param targets table<string, loomworks.Target>|nil
+--- @return { source: string|nil, invalid: boolean|nil, entries: { label: string, missing: boolean }[] }|nil
+function Project:saved_tests_view(eff, item, targets)
+    if not eff then return nil end
+    local view = { entries = {} }
+    if eff.source ~= item then
+        view.source = test_targets_mod.source_text(eff.source, item and item._project and item or nil)
+    end
+    if eff.invalid then view.invalid = true; return view end
+    local project = self
+    local rctx = {
+        launches = self.launch,
+        launch_ignored = function(n) return project:launch_ignored(n) end,
+        targets = targets,
+    }
+    for _, e in ipairs(eff.entries) do
+        local r = test_targets_mod.resolve_entry(e, rctx)
+        view.entries[#view.entries + 1] = {
+            label = e.name or test_targets_mod.entry_label(e),
+            missing = r.state == "missing",
+        }
+    end
+    return view
+end
+
+--- The value to write as the module section's `tests` (spec §1.3.4), or nil.
+--- @return any
+function Project:tests_for_file()
+    return test_targets_mod.serialize(self._tests, self._tests_invalid)
+end
+
+--- Every user configuration's declared `tests` (raw, by name), so a module
+--- `info()` echo — which never sees the field — can be given them back.
+--- @return table<string, table>
+function Project:_declared_configuration_tests()
+    local out = {}
+    for _, cfg in ipairs(self._configurations or {}) do
+        if cfg.is_user then
+            out[cfg.name] = { tests = test_targets_mod.serialize(cfg._tests, cfg._tests_invalid) }
+        end
+    end
+    return out
+end
+
+--- Replace (or, with nil, remove) the project-wide saved test-target list and
+--- save the working copy. Editing is use: a `shared` project is materialised.
+--- @param entries loomworks.SavedTestEntry[]|nil
+--- @return boolean|nil ok, string|nil err
+function Project:set_test_targets(entries)
+    local ws = self._workspace
+    if self._removed or self.orphaned then
+        return nil, "project '" .. self.key .. "' not found"
+    end
+    local old, old_invalid = self._tests, self._tests_invalid
+    local old_intent, old_source = self._intent, self._source
+    self:_mark_user_owned()
+    self._tests, self._tests_invalid = test_targets_mod.with_entries(self._tests, entries), nil
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        self._tests, self._tests_invalid = old, old_invalid
+        self._intent, self._source = old_intent, old_source
+        return nil, save_err
+    end
+    ws:_saved_tests_changed(self)
+    return true
+end
+
 --- Delete a project variable declaration.
 --- Also removes any configuration overrides for this variable.
 --- @param var_name string variable name
@@ -1127,8 +1232,10 @@ end
 --- Rename a launch configuration in place (spec §8.7): the whole table moves
 --- (every field, known or not), every profile's default-target descriptor
 --- `{ project = <this>, launch = old }` follows (other descriptor fields kept),
---- and the per-unit `launch:<name>` target entries are re-keyed. Atomic: on a
---- failed save everything is restored.
+--- the per-unit `launch:<name>` target entries are re-keyed, and every saved
+--- test entry of this project (the project-wide list and each configuration's)
+--- named `old` is renamed, keeping its args and position. Atomic: on a failed
+--- save everything is restored.
 --- @param old_name string
 --- @param new_name string
 --- @return boolean|nil changed true when renamed, false when unchanged, nil on refusal
@@ -1178,10 +1285,37 @@ function Project:rename_launch_config(old_name, new_name)
         end
     end
 
+    -- Saved test entries naming this launch (§8.7): they resolved to it (a
+    -- launch wins over a same-named target), so they follow the rename.
+    local retests = {}
+    local function rename_tests(holder)
+        local decl = holder._tests
+        if not (decl and decl.entries) or decl.invalid then return end
+        local hit = false
+        for _, e in ipairs(decl.entries) do
+            if e.name == old_name then hit = true end
+        end
+        if not hit then return end
+        retests[#retests + 1] = { holder = holder, decl = decl, intent = holder._intent, source = holder._source }
+        local entries = vim.deepcopy(decl.entries)
+        for _, e in ipairs(entries) do
+            if e.name == old_name then e.name = new_name end
+        end
+        if holder ~= self and holder._mark_user_owned then holder:_mark_user_owned() end
+        holder._tests = test_targets_mod.with_entries(decl, entries)
+    end
+    rename_tests(self)
+    for _, c in ipairs(self._configurations or {}) do
+        if c.is_user then rename_tests(c) end
+    end
+
     local ok, err = ws:_save_user()
     if not ok then
         self.launch[old_name] = cfg
         self.launch[new_name] = nil
+        for _, r in ipairs(retests) do
+            r.holder._tests, r.holder._intent, r.holder._source = r.decl, r.intent, r.source
+        end
         for _, profile in ipairs(moved) do profile._default_target_descriptor.launch = old_name end
         for _, r in ipairs(rekeyed) do
             r.unit.targets["launch:" .. new_name] = nil
@@ -1195,6 +1329,7 @@ function Project:rename_launch_config(old_name, new_name)
     local keys = {}
     for _, profile in ipairs(moved) do keys[#keys + 1] = profile.key end
     table.sort(keys)
+    if #retests > 0 then ws:_saved_tests_changed(self) end
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true, nil, keys
 end

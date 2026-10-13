@@ -420,14 +420,20 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
         local mod = modules.get(project.type)
         local abs_path = root .. "/" .. project.path
         local mod_info = { configurations = {} }
+        -- Saved test targets are core-owned (spec §1.3.4): a module never
+        -- sees them; they are grafted back from the declared tables.
+        local test_targets = require("loomworks.test_targets")
+        local module_tc = test_targets.strip_from_type_config(project.type_config)
         if mod and mod.info then
-            local ok, result = pcall(mod.info, abs_path, project.type_config)
+            local ok, result = pcall(mod.info, abs_path, module_tc)
             if ok and result then
                 mod_info = result
                 -- A user configuration's description is core-owned (spec §8.1):
                 -- read from the declared table, never from the module's echo.
                 require("loomworks.configuration").adopt_declared_descriptions(
                     mod_info.configurations,
+                    project.type_config and project.type_config.configurations)
+                test_targets.adopt_declared(mod_info.configurations,
                     project.type_config and project.type_config.configurations)
             else
                 vim.notify("loomworks: module '" .. (project.type or "?")
@@ -494,7 +500,7 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
         local needs_refresh = false
         local refresh_reasons = {}
         if mod and mod.inspect and next(cached_configurations) then
-            local inspect_result = mod.inspect(abs_path, project.type_config, cached_configurations)
+            local inspect_result = mod.inspect(abs_path, module_tc, cached_configurations)
             needs_refresh = inspect_result.needs_refresh
             refresh_reasons = inspect_result.reasons
         end
@@ -507,6 +513,7 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
             deploy = project.deploy,
             device = project.device,
             description = project.description,
+            tests = project.tests,
             configuration = active_configuration,
             configuration_key = cache_config_key,
             tool_key = project_tool_key,

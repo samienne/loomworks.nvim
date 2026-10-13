@@ -382,8 +382,31 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   shows `(unconfigured)`, `(no db)` or `(ws error)` in red when loomworks
   withholds clangd for the buffer. `buf_status()` gains an `lsp` field and
   `loomworks.lsp_buf_state(bufnr)` returns the same per-buffer status. (#191)
+- Saved test targets: a configuration (or a whole project) can list test
+  programs in `tests` - a build target or a launch configuration, as
+  `"Name"`, `["Name", "arg", ...]` or
+  `{ "name": "Name", "args": [...], "working_dir": "..." }` (args and
+  working_dir take `${...}` variables; a name may repeat with different
+  args) - and plain `lw test` runs them after the
+  project's ctest / `meson test` run, on a device for a cross-compiling
+  profile. `--saved` / `--discovered` run only one kind, `lw test --list`
+  shows the plan (and whether each entry is a target or a launch) without
+  building, and `lw test-target add/remove/clear` edits the lists
+  (`add --working-dir <dir>` writes the table form). A build-target entry
+  runs in the project directory unless its working_dir says otherwise, and
+  the new `${target_dir}` variable names the directory holding the
+  executable being run (launches with a target, saved entries,
+  `lw test --target`, which also takes `--cwd <dir>`). The status page shows
+  a read-only `Tests:` line, and the test explorer and neotest pick the saved
+  targets up. (#208) With `runtime-mode daemon`, the workspace daemon runs
+  the whole plan, saved targets included, with the same output; a plan that
+  runs saved targets on a device stays in the `lw` process. (#212)
 
 ### Changed
+- `lw test --target` now passes the results option (e.g. `--gtest_output`)
+  first, before the entry's arguments and the arguments forwarded after
+  `--`: program, results option, args. Before, the results option came
+  last. (#208)
 - Debugging a module target (an executable a build produces) now starts it
   where and how it runs: in its working directory (the launch target's
   `working_dir`, else the project directory) with its run environment (the
@@ -631,6 +654,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what needs it. (#196, #198)
 
 ### Fixed
+- `lw run --cwd` on a target that runs on a device is now a usage error
+  (exit 2) naming the target, like `lw test --target --cwd`, instead of
+  exit 1. (#211)
+- `lw test` no longer hangs for hours parsing a results file with a very
+  large failing test case (for example an assertion failing many thousands
+  of times in a loop). (#209)
 - A language server is no longer routed to a project whose directory merely
   shares a name prefix with the buffer's (a project at `/a/foo` no longer
   claims a file in `/a/foobar`): the LSP layer maps a buffer to its project

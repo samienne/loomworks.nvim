@@ -207,7 +207,11 @@ reported here.
 ## 8. Test integration
 
 Implements the generic test interface (core §8.9) through a single
-`MesonTestUnit` per `ConfigUnit`.
+`MesonTestUnit` per `ConfigUnit`. Saved test targets (core §1.3.4) need no
+meson code: core's saved-targets TestUnit uses `parse_targets` (introspect)
+and `Target:resolve_run_spec`. Because `meson test` rebuilds, a headless run
+normally skips the separate build of a meson unit; a unit with saved
+executables in the plan is built anyway (core §16.16).
 
 ### 8.1 MesonTestUnit
 

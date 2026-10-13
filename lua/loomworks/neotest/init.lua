@@ -555,6 +555,24 @@ function adapter.discover_positions(path)
     return result
 end
 
+--- Run a step's own preparation (a saved launch entry's deploy, spec
+--- §16.16) once, here, just before neotest runs the spec's program: neotest
+--- runs `command` itself and never sees `prepare`, so the RunSpec does not
+--- carry it (no second deploy). build_spec runs in a nio coroutine, where
+--- `vim.fn` (used by deploys) must not run in a fast event: yield to the main
+--- loop first. A failure marks the entry failed (ConfigUnit) and the step is
+--- not run.
+--- @param unit loomworks.ConfigUnit
+--- @param cmd table test command { prepare?, test_id? }
+--- @return boolean ok
+local function prepare_step(unit, cmd)
+    if type(cmd.prepare) ~= "function" then return true end
+    local ok_nio, nio = pcall(require, "nio")
+    if ok_nio and nio.current_task and nio.current_task() then nio.scheduler() end
+    local ok = unit:_prepare_test_step("test: " .. tostring(cmd.test_id or "?"), cmd)
+    return ok
+end
+
 --- Build a run specification for a test.
 --- @param args table neotest.RunArgs { tree, extra_args?, strategy? }
 --- @return table|nil neotest.RunSpec
@@ -586,19 +604,6 @@ function adapter.build_spec(args)
         end
     end
 
-    -- Find the TestUnit for this test
-    local tu = unit:_find_test_unit(original_id or pos.name)
-    if not tu then return nil end
-
-    -- Determine what to run based on position type
-    local test_cmd
-    if pos.type == "test" or pos.type == "namespace" then
-        test_cmd = tu:test_command(original_id or pos.name)
-    else
-        test_cmd = tu:test_command_all()
-    end
-    if not test_cmd then return nil end
-
     -- Check if the project needs to be built first.
     local state = unit:local_state()
     if state == "unconfigured" or state == "configure_failed" then
@@ -607,6 +612,36 @@ function adapter.build_spec(args)
         end)
         return nil
     end
+
+    -- Owning-unit dispatch (spec §8.9.4). A test / namespace runs through the
+    -- TestUnit that owns its id; a file / dir runs every TestUnit of the unit
+    -- (one spec per TestUnit with test_command_all, one per runnable target
+    -- of the saved-targets TestUnit), each parsed by its own TestUnit.
+    local test_cmd, tu
+    if pos.type == "test" or pos.type == "namespace" then
+        test_cmd, tu = unit:test_command_for(original_id or pos.name)
+        if not test_cmd then return nil end
+    else
+        local all = unit:test_commands_all()
+        if #all == 0 then return nil end
+        if #all > 1 and args.strategy ~= "dap" then
+            local specs = {}
+            for _, c in ipairs(all) do
+                -- A step whose preparation failed is reported failed and
+                -- left out; the others still run.
+                if not prepare_step(unit, c.cmd) then goto continue end
+                specs[#specs + 1] = {
+                    command = c.cmd.cmd, cwd = c.cmd.cwd, env = c.cmd.env,
+                    context = { output_path = c.cmd.output_path, config_unit = unit,
+                        test_unit = c.tu, position_id = pos.id },
+                }
+                ::continue::
+            end
+            return #specs > 0 and specs or nil
+        end
+        test_cmd, tu = all[1].cmd, all[1].tu
+    end
+    if not prepare_step(unit, test_cmd) then return nil end
 
     local spec = {
         command = test_cmd.cmd,

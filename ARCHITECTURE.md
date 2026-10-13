@@ -340,6 +340,8 @@ may import from its own layer or any layer below it, never above.
 | `modules/cmake.lua` | CMake module: detect, validate, info (preset + loomworks config separation), default_configurations, resolve_configurations (inheritance model), resolve_options/resolve_options_with_sources (option merge with source tracking), resolve_variant_source, tasks (CMAKE_BUILD_TYPE auto-set, user -D options), inspect, detect_tools/detect_tools_async, parse_targets (target discovery), get_options (cache variables), lsp_configs (clangd + qmlls entries). **Owns the clangd compilation database for EVERY generator** (Ninja/Make included, not just VS/Xcode): reconstructs `compile_commands.json` from the file-api into `.nvim/cache/cc/` and points clangd there, unless a config sets `compile_commands_generated = false` (fall back to the native DB) or `compile_commands_from` redirects. Never decodes the monolithic native DB — decodes only the chunked per-target file-api replies and **stream-encodes** its output entry-by-entry (`write_cc_stream`, never one giant `vim.json.encode`). Augments the DB with **header entries** via Tier-1 nearest-ancestor directory attribution (`_target_attribution_index` + `_build_header_entries`; listed headers direct, unlisted via a bounded dir listing, unattributable omitted). Regen is mtime-gated (`refresh_generated_cc`) and driven from three idempotent triggers via the generic hooks `refresh_lsp_database`/`lsp_database_watch_path`: lsp_configs, configure/build completion, and a reply-dir `fs_poll` watch. Also parse_targets (target discovery), map_variant. **Applies the core-resolved `ctx.compiler_cache`** on the non-preset configure path: injects `CMAKE_C/CXX_COMPILER_LAUNCHER` (feature-owns it over a user-set value, §4f) plus MSVC/clang-cl single-config `/Z7` (`CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded` + `CMAKE_POLICY_DEFAULT_CMP0141=NEW`, cmake ≥3.25, unless the user pinned either key or a `/Zi`-style option), warns on a preset, and records the launcher in `module_info.cache_launcher`. **Faithful reconfigure** (§5d, core §5.1): records every `-D` it passes in `module_info.passed_options` (on the preset path too — the appended user options); on the next configure ANY difference against that record, the recorded generator, or core's recorded `configure_env` vs the current `configuration_env` — or a configured unit with no record, or one whose `record_version` differs from `M.configure_record_version` (an older lw), or `force_full_reconfigure` — is a **full reconfigure**: `--fresh` (cmake ≥3.24, also with `--preset`) or `pre_configure_reset = {CMakeCache.txt, CMakeFiles}` below 3.24. The only in-place change is one confined to `CMAKE_C/CXX_COMPILER_LAUNCHER` (`IN_PLACE_KEYS`): re-passed, or retracted with `-U<key>`. **Launcher applicability**: `cache_launcher_applicable` returns `false, reason, hint` for a preset (`"preset"`) and for a generator outside the Ninja/Makefile families (`"<generator> generator"`, e.g. Visual Studio, Xcode — CMake ignores the launcher there); `M.tasks` then injects no launcher (nor the MSVC debug-info keys), records `"none"` and warns once. `cache_compat_scan` also reports a `/Zi`-style token in the configuration environment's `CL` / `_CL_` (`group = "environment"`). `cache_compat_scan(ctx)` scans every target's file-api `compileCommandFragments` (same reader as the owned compile_commands) for `/Zi`-style flags on an MSVC-style kit; `scanned=false` without a codemodel reply. `cache_compat_stamp(ctx)` = the name of the newest file-api reply `index-*.json` (CMake writes a new one on every (re)configure, including the re-run ninja triggers itself; a constant for a gcc/clang kit). Static `has_keyed_tools = true`, `has_options = true` | Know about profiles, UI, or overseer |
 | `modules/meson.lua` | Meson module: detect (meson.build), validate, info (defaults Debug/Release/RelWithDebInfo mapping to buildtype), resolve_configurations (inheritance on top of defaults), tasks (meson setup + compile; auto-picks --reconfigure on re-setup, or the full `--wipe` reconfigure below (a launcher change included — meson fixes the compiler command at first setup); pins the compiler+launcher via a **generated `--native-file`** `[binaries]` LIST — space-safe, unlike the `CC`/`CXX` env string meson shlex-splits — or the bare compiler when off, suppressing meson's implicit PATH ccache, and records the launcher (or the `"none"` sentinel) in `module_info.cache_launcher`; records its `-D` options in `module_info.passed_options` (plus `buildtype` and `cross_file`) and, on ANY changed configure input vs those records, the recorded launcher, or core's recorded `configure_env` — or a configured unit with no record, or one whose `record_version` differs from `M.configure_record_version` (an older lw), or `force_full_reconfigure` — does the full reconfigure: `pre_configure_reset = {meson-private/cmd_line.txt}` + `setup --wipe` (no in-place set; an unchanged re-setup uses `--reconfigure`); `cache_compat_scan(ctx)` reads `meson-info/intro-targets.json` directly (no spawn) for `/Zi`-style per-source parameters on an MSVC-style tool, `cache_compat_stamp(ctx)` stats it (mtime+size); -D option args; optional --cross-file), clean_tasks (meson compile --clean), parse_targets/parse_targets_async (via `meson introspect --targets`), get_options (via `meson introspect --buildoptions`, grouped by section), lsp_configs (clangd entry with build_dir as compile_commands_dir), inspect (meson.build / meson.options / meson_options.txt staleness), detect_tools/detect_tools_async (meson on PATH, then pip-user Scripts dir via Python sysconfig probe; non-keyed), create_test_unit (MesonTestUnit), map_variant. Static `has_keyed_tools = false`, `has_options = true` | Anything beyond the module interface |
 | `test_units/meson.lua` | MesonTestUnit: wraps `meson introspect --tests` for discovery, gtest framework probing via shared helper, direct-exe gtest XML runs for per-test results. Same runtime surface as CTestUnit | Know about the meson module internals |
+| `test_targets.lua` | Pure helper for the generic `tests` field (spec §1.3.4): parse / serialize the array of entries (`"Name"` / `["Name", args…]` / `{ name, args?, working_dir? }`, unknown table keys kept verbatim, written back in the shortest form; duplicates kept and indexed by occurrence; an invalid entry or a non-array declaration kept verbatim and reported once), strip it from what a module sees (`strip_from_type_config`) and graft it back onto `info()` echoes (`adopt_declared`), resolve an entry (`resolve_entry`: a launch configuration first, else an executable target; a trust-ignored launch is missing), entry labels / ids, source / level labels. The declarations live on `Project` (project-wide, lifted out of the module section like `description`) and `Configuration` (own list; `test_targets()` walks own → bases → project-wide) | Hold workspace state; touch a build directory |
+| `test_units/saved_targets.lua` | Core-owned SavedTargetsTestUnit (spec §1.3.4, §8.9.2): serves a configuration's saved test targets through generic seams only — `parse_targets` executables, `Target:resolve_run_spec`, the gtest helper. Emits `target:<name>` / `launch:<name>` (`#<k>` for a repeated name's k-th occurrence; gtest children for gtest build-target programs, ids suffixed `@<entry id>` under a launch or later-occurrence entry), errored non-runnable entries for missing names; runs each entry in its `working_dir` (else the launch's, else the project directory); `launch` entries run the launch's deploy steps and run spec — the deploy as the command's `prepare`, which the runners (`ConfigUnit:_run_test_task`, loomtest's runner) call when the step executes, a failure failing that step; args and `working_dir` expanded with the launch-context expander (`expand.launch_context(…, { target })`, which defines `${target_dir}`); no `run_command_all`. Appended by `ConfigUnit:test_units()` when `ConfigUnit:saved_test_targets()` resolves non-empty — also for an invalid declaration (a `tests` that is not an array), whose failure then shows as an errored entry | Know any module's internals; act as a batch runner |
 | `modules/shell.lua` | Generic shell-command runner. Wraps user-declared `configure_cmd`/`build_cmd`/`clean_cmd` with variable expansion. `progress_parser` returns the ninja parser unconditionally (try-only: matches `[N/M]` lines, no-ops otherwise so non-ninja shell builds simply emit no progress). `lsp_configs` emits a clangd entry only when `shell.compile_commands` is set. `detect = nil` (manually-declared only). Static `has_keyed_tools = false`, `has_options = false`, `has_devices = false` | Auto-detect; introspect build options; own build-system knowledge |
 | `modules/typescript.lua` | TypeScript shim module (detect + validate + info + default_configurations + detect_tools_async + map_variant). Defaults always present, user configs merged on top. Static `has_keyed_tools = false`, `has_options = false` | Anything beyond the shim interface |
 | `progress/init.lua` | Parser registry mapping tool names to parser functions | Parse output itself |
@@ -1164,17 +1166,34 @@ re-cut onto master step by step; this section is expanded as each step lands.
 
 **Step 5, first operation moved: the batch `lw test` (spec §19.15)** adds:
 
-- `build_run.lua` — the host-neutral test-run pieces both hosts use:
-  `foreign_batch_refusal`, `no_tests_line`, `prepare_junit`, `junit_result`
-  (copy/confirm a runner's JUnit file, or the warning line), `test_summary`.
-  `cli.cmd_test` is rewritten onto them.
+- `test_plan.lua` — the test plan of §16.16 (native runners, then saved test
+  targets), host-neutral and written in continuation-passing style over a
+  host (`out`, `err`, `fail`, `spawn`, `exec`, `foreign?`, `probe?`,
+  `deploy?`, `progress?`):
+  `units` / `precheck` (before the build: notes, refusals, `keep`,
+  `device_platform`), `prepare` (after it: entries resolved, batch steps and
+  JUnit labels), `run` (the steps, the per-step summary, `TESTS OK`) and
+  `exec_step` (one executable: deploy, working dir, gtest results option,
+  device run through `host.foreign`, JUnit). The in-process host
+  (`cli._test_host`: `run_spec`, `die`, `_run_foreign`) calls back
+  synchronously; `cli._test_plan`, `_test_targets` and `_run_test_executable`
+  are thin wrappers over it. `build_run.lua` keeps `prepare_junit` and
+  `junit_result` (copy/confirm a runner's JUnit file, or the warning line).
 - `daemon/runner.lua` — `run(svc, ctx)` takes `ctx.op` (`"build"` | `"test"`).
   A test run takes the same locks, plans the for-test build
-  (`plan{ for_test = true }`; no steps goes straight to the tests), then —
-  locks still held — `ensure_unit_targets`, `overseer.plan_profile_test` and
-  each runner through the same streamed `spawn` as a build step, continuing
-  after a failed runner; the task meta's `kind` is the op, cancellations end
-  `<op> stopped: <reason>`.
+  (`plan{ for_test = { keep } }`; no steps goes straight to the tests), then —
+  locks still held — `ensure_unit_targets` and the shared plan with the task
+  as host: each program through the same streamed `spawn` as a build step,
+  the plan continuing in a model segment after it exited; a build target's
+  framework probe (`probe`: `gtest.probe_argv` as a child of the run, killed
+  on cancel or after `gtest.PROBE_TIMEOUT_MS`) and a launch's deploy
+  (`deploy`: `LaunchTarget:deploy_async`, copies on the loop, stopping
+  between copies on cancel) never block the loop; a step ended by a cancel
+  removes its results file (`spawn` spec `cleanup`); no `foreign` (the
+  service declines a plan whose kit runs saved targets on a device); the
+  task meta's `kind` is the op, cancellations end `<op> stopped: <reason>`.
+  The service runs `test_plan.precheck` before accepting (notes with the
+  reply, refusals with the in-process message and exit code).
 - `daemon/service.lua` — `on_build` / `on_test` → `_on_operation(op, …)`
   (validates `junit`; resolves with usage `lw <op> <profile>`; refuses a
   foreign kit's test run); `server.lua` dispatches `test`; `protocol.KIND.test`;
@@ -2179,6 +2198,13 @@ wraps ctest for cmake projects — discovers targets via
 runs tests via ctest commands. Created lazily by the module's
 `create_test_unit()` factory. ConfigUnit delegates all test operations
 to its TestUnit instances.
+**SavedTargetsTestUnit** (`test_units/saved_targets.lua`) is core-owned:
+`ConfigUnit:test_units()` appends it after the module's TestUnits when the
+configuration's saved list (`Configuration:test_targets()`, own → bases →
+project-wide, nearest wins) is non-empty. `discover_tests()` merges the
+trees and de-duplicates by executable (module entry wins) for a `target`
+entry whose name occurs once; `launch` entries and repeated names stay beside.
+`batch_runner_test_units()` stays module-only.
 
 **GTest** (`gtest.lua`) is a shared helper (not a TestUnit) containing
 gtest-specific functionality: binary probing (`--gtest_list_tests`),
@@ -2458,10 +2484,24 @@ replaces it, which would drop `PATH`).
   through `Core:_nuke_files`, the same deletion half as the
   editor's `<C-n>`; the remedy for a cache signed on another machine. Keeps the
   configuration; takes no build-dir locks.
-- `lw test [profile] --target <exe>… [--junit <file>] [-- args…]` — named test
-  executables run directly with gtest's XML option (`cli._test_targets`); a
-  foreign one runs on a device (`remote/run.lua` + `remote/test_run.lua`).
-  Plain `lw test` refuses on a profile whose kit declares a target platform.
+- `lw test [profile] [--target <exe>… | --saved | --discovered] [--junit <file>] [--list [--json]] [-- args…]`
+  — the test plan (spec §16.16): per unit, the batch runner step then the
+  saved-target steps (`cli._test_plan`; `cli._test_plan_report` for `--list`).
+  Resolution (names or saved entries → `LaunchTarget`s + args, missing
+  entries fail before any step runs) is separate from **execution**
+  (`cli._run_test_executable`: `LaunchTarget` → judged outcome, gtest XML,
+  device route; argv = program, results option, a launch's own args, entry
+  args, forwarded args; a launch entry's deploy steps run first),
+  shared by `--target` (`cli._test_targets`) and saved lists; a foreign one runs on
+  a device (`remote/run.lua` + `remote/test_run.lua`). A foreign unit's batch
+  step is dropped when it has saved targets, else plain `lw test` refuses.
+  `--list` reports the plan read-only.
+- `lw test-target [list] [profile]`, `add|remove|clear [<profile>] …` — edit
+  saved test targets (spec §16.9); validated with the same `match_targets`
+  resolver as `lw test --target`, extended to the project's launch
+  configurations (a launch wins over a same-named target). `add` of a present
+  name appends another entry; `remove <name>` drops every entry of that name,
+  `remove <name> --index <k>` only its k-th occurrence.
 - `lw device list|select|clean`, `lw unlock --device <serial>` — see "Remote
   Execution on Devices".
 - `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →

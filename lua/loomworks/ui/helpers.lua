@@ -480,4 +480,46 @@ function M.with_description(opts, item)
     return opts
 end
 
+--- The read-only saved test-targets line (spec/ui.md "Saved test targets
+--- line", core §1.3.4) as `{text, hl}` chunks, or nil when nothing is
+--- declared along the chain. Formats a resolved view
+--- (`Project:saved_tests_view`): names in list order, cut with `+N` to
+--- `width`; the source in parentheses unless the list is the item's own; a
+--- missing entry carries a ⚠. A name listed several times appears once per
+--- entry; args are not shown.
+--- @param view { source: string|nil, invalid: boolean|nil, entries: { label: string, missing: boolean }[] }|nil
+--- @param width integer|nil available display width
+--- @return {[1]: string, [2]: string}[]|nil
+function M.test_targets_chunks(view, width)
+    if not view then return nil end
+    local src = view.source and ("  (" .. view.source .. ")") or ""
+    if view.invalid then
+        return { { "Tests: ", "Comment" }, { "⚠ invalid (not an array)", "DiagnosticWarn" },
+            src ~= "" and { src, "Comment" } or nil }
+    end
+    if #view.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
+    local names = {}
+    for _, e in ipairs(view.entries) do
+        names[#names + 1] = { (e.missing and "⚠ " or "") .. e.label, e.missing and "DiagnosticWarn" or "Comment" }
+    end
+    local avail = (width or 100) - vim.fn.strdisplaywidth("Tests: " .. src)
+    local shown, used = 0, 0
+    for i, n in ipairs(names) do
+        local w = vim.fn.strdisplaywidth(n[1]) + (i > 1 and 2 or 0)
+        local rest = #names - i
+        local tail = rest > 0 and (2 + #("+" .. rest)) or 0
+        if i > 1 and used + w + tail > avail then break end
+        used = used + w
+        shown = i
+    end
+    local chunks = { { "Tests: ", "Comment" } }
+    for i = 1, shown do
+        if i > 1 then chunks[#chunks + 1] = { ", ", "Comment" } end
+        chunks[#chunks + 1] = names[i]
+    end
+    if shown < #names then chunks[#chunks + 1] = { ", +" .. (#names - shown), "Comment" } end
+    if src ~= "" then chunks[#chunks + 1] = { src, "Comment" } end
+    return chunks
+end
+
 return M
