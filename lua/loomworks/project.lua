@@ -21,7 +21,7 @@ local test_targets_mod = require("loomworks.test_targets")
 --- @field _tests loomworks.SavedTestDecl|nil the project-wide saved test targets
 ---        (spec §1.3.4); stored in the module section of the files
 ---        (`projects.<p>.<type>.tests`), never in `type_config`
---- @field _tests_invalid any a non-table `tests` value, written back unchanged
+--- @field _tests_invalid any the raw value of an invalid `tests` declaration (not an array), written back unchanged
 --- @field configuration? string active configuration name
 --- @field _module? loomworks.Module direct reference to Module domain object
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
@@ -1185,8 +1185,10 @@ end
 --- Rename a launch configuration in place (spec §8.7): the whole table moves
 --- (every field, known or not), every profile's default-target descriptor
 --- `{ project = <this>, launch = old }` follows (other descriptor fields kept),
---- and the per-unit `launch:<name>` target entries are re-keyed. Atomic: on a
---- failed save everything is restored.
+--- the per-unit `launch:<name>` target entries are re-keyed, and every saved
+--- test entry of this project (the project-wide list and each configuration's)
+--- named `old` is renamed, keeping its args and position. Atomic: on a failed
+--- save everything is restored.
 --- @param old_name string
 --- @param new_name string
 --- @return boolean|nil changed true when renamed, false when unchanged, nil on refusal
@@ -1236,10 +1238,37 @@ function Project:rename_launch_config(old_name, new_name)
         end
     end
 
+    -- Saved test entries naming this launch (§8.7): they resolved to it (a
+    -- launch wins over a same-named target), so they follow the rename.
+    local retests = {}
+    local function rename_tests(holder)
+        local decl = holder._tests
+        if not (decl and decl.entries) or decl.invalid then return end
+        local hit = false
+        for _, e in ipairs(decl.entries) do
+            if e.name == old_name then hit = true end
+        end
+        if not hit then return end
+        retests[#retests + 1] = { holder = holder, decl = decl, intent = holder._intent, source = holder._source }
+        local entries = vim.deepcopy(decl.entries)
+        for _, e in ipairs(entries) do
+            if e.name == old_name then e.name = new_name end
+        end
+        if holder ~= self and holder._mark_user_owned then holder:_mark_user_owned() end
+        holder._tests = test_targets_mod.with_entries(decl, entries)
+    end
+    rename_tests(self)
+    for _, c in ipairs(self._configurations or {}) do
+        if c.is_user then rename_tests(c) end
+    end
+
     local ok, err = ws:_save_user()
     if not ok then
         self.launch[old_name] = cfg
         self.launch[new_name] = nil
+        for _, r in ipairs(retests) do
+            r.holder._tests, r.holder._intent, r.holder._source = r.decl, r.intent, r.source
+        end
         for _, profile in ipairs(moved) do profile._default_target_descriptor.launch = old_name end
         for _, r in ipairs(rekeyed) do
             r.unit.targets["launch:" .. new_name] = nil
@@ -1253,6 +1282,7 @@ function Project:rename_launch_config(old_name, new_name)
     local keys = {}
     for _, profile in ipairs(moved) do keys[#keys + 1] = profile.key end
     table.sort(keys)
+    if #retests > 0 then ws:_saved_tests_changed(self) end
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true, nil, keys
 end

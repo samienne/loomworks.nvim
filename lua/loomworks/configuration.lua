@@ -86,7 +86,8 @@ end
 --- @field _tests loomworks.SavedTestDecl|nil this configuration's OWN saved test
 ---        targets (spec §1.3.4) — a generic field, never part of `module_config`
 ---        (so never a configure input). Only a user configuration has one.
---- @field _tests_invalid any a non-table `tests` value, kept to write back unchanged
+--- @field _tests_invalid any the raw value of an invalid `tests` declaration (not an
+---        array), kept to write back unchanged
 --- @field _detected_languages string[]|nil languages actually enabled
 ---        by the last successful configure (filled by
 ---        `module.detect_languages` post-configure). Runtime-only
@@ -705,14 +706,16 @@ end
 --- depth-first left-to-right (the order `options` / `env` use), then the
 --- project-wide list. An explicit `[]` is a declaration and stops the walk.
 --- Pure model data (no build directory is read).
---- @return { entries: loomworks.SavedTestEntry[], source: loomworks.Configuration|loomworks.Project }|nil
+--- `invalid = true` when the winning declaration is not an array (it still
+--- stops the walk; a plan that includes it fails like a missing entry).
+--- @return { entries: loomworks.SavedTestEntry[], source: loomworks.Configuration|loomworks.Project, invalid: boolean|nil }|nil
 function Configuration:test_targets()
     local visited = {}
     local function walk(cfg)
         if visited[cfg] then return nil end
         visited[cfg] = true
         local own = cfg:own_test_targets()
-        if own then return { entries = own, source = cfg } end
+        if own then return { entries = own, source = cfg, invalid = cfg._tests.invalid } end
         for _, base in ipairs(cfg._inherits or {}) do
             local found = walk(base)
             if found then return found end
@@ -723,7 +726,7 @@ function Configuration:test_targets()
     if found then return found end
     local project = self._project
     local pw = project and project.own_test_targets and project:own_test_targets()
-    if pw then return { entries = pw, source = project } end
+    if pw then return { entries = pw, source = project, invalid = project._tests.invalid } end
     return nil
 end
 

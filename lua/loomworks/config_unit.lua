@@ -1360,7 +1360,7 @@ function ConfigUnit:test_units()
     -- when the saved list resolves non-empty and the module can resolve names
     -- to targets (`parse_targets`).
     local saved = self:saved_test_targets()
-    if saved and #saved.entries > 0 and impl and impl.parse_targets then
+    if saved and (#saved.entries > 0 or saved.invalid) and impl and impl.parse_targets then
         units[#units + 1] = require("loomworks.test_units.saved_targets").new(self)
     end
     self._saved_tests_sig = self:_saved_tests_fingerprint()
@@ -1373,7 +1373,7 @@ end
 --- is declared along the chain (an explicit `[]` gives an empty `entries`).
 --- Pure model data — no build directory is read — so it is safe before
 --- configure and on an unconfigured unit.
---- @return { entries: loomworks.SavedTestEntry[], source: loomworks.Configuration|loomworks.Project }|nil
+--- @return { entries: loomworks.SavedTestEntry[], source: loomworks.Configuration|loomworks.Project, invalid: boolean|nil }|nil
 function ConfigUnit:saved_test_targets()
     local cfg = self._configuration
     if not cfg or cfg._removed or not cfg.test_targets then return nil end
@@ -1384,7 +1384,8 @@ end
 --- @return string
 function ConfigUnit:_saved_tests_fingerprint()
     local saved = self:saved_test_targets()
-    return require("loomworks.test_targets").fingerprint(saved and saved.entries)
+    return (saved and saved.invalid and "invalid\1" or "")
+        .. require("loomworks.test_targets").fingerprint(saved and saved.entries)
 end
 
 --- Drop the cached TestUnits / test tree when the saved list changed since
@@ -1454,7 +1455,10 @@ end
 --- TestUnit and the saved-targets TestUnit expose the SAME executable, one
 --- entry is kept — the module's (it carries the runner's cwd / env /
 --- timeout); the saved entry contributes only its `args` (`saved_args`), and
---- the saved entry's children are dropped with it.
+--- the saved entry's children are dropped with it. Only a `target` entry whose
+--- name occurs once in its list merges: a `launch` entry (its own environment
+--- and working directory) and a repeated name's entries (each with its own
+--- args) stay beside the module's entry.
 --- @param units loomworks.TestUnit[]
 --- @param per_unit (table[]|nil)[] discover() results, by unit index
 --- @return table[]
@@ -1466,7 +1470,8 @@ function ConfigUnit._merge_test_entries(units, per_unit)
             if tu.is_saved_targets then
                 local dropped = {}
                 for _, e in ipairs(entries) do
-                    local key = not e.parent and exe_key(e.executable) or nil
+                    local key = not e.parent and e.saved_kind == "target" and not e.saved_repeated
+                        and exe_key(e.executable) or nil
                     local owner = key and by_exe[key]
                     if owner then
                         dropped[e.id] = true

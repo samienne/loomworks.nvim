@@ -5332,10 +5332,19 @@ end
 --- Pure: writes nothing, changes no intent.
 --- @param opts? { all: boolean|nil, no_profiles: boolean|nil }
 --- @return table raw JSON-compatible table
+--- @return string[] dropped saved test-entry args with no entry to return to (spec §17.6)
 function Workspace:shared_snapshot(opts)
     local raw = self:_serialize_config(opts)
-    require("loomworks.program_fields").regraft(raw, self._shared_ignored)
-    return raw
+    local _, dropped = require("loomworks.program_fields").regraft(raw, self._shared_ignored)
+    return raw, dropped or {}
+end
+
+--- Name the shared saved test-entry args a publish dropped (spec §17.6).
+--- @param dropped string[]|nil
+function Workspace:_report_dropped_test_args(dropped)
+    if not dropped or #dropped == 0 then return end
+    self._core._deps.notify("loomworks: publish dropped args from loomworks.json:\n  "
+        .. table.concat(dropped, "\n  "), vim.log.levels.WARN)
 end
 
 --- Normalized build directories the profiles' units use now (import report:
@@ -5622,12 +5631,13 @@ end
 --- Updates the file tracker's cached content to suppress self-write detection.
 --- @return boolean ok, string|nil err
 function Workspace:_save_config()
-    local raw = self:shared_snapshot()
+    local raw, dropped = self:shared_snapshot()
     local path = M.paths(self.root).config
     local ok, err = self._core._deps.io.write_json(path, raw)
     if ok and self._tracker then
         self._tracker:mark_written(path)
     end
+    if ok then self:_report_dropped_test_args(dropped) end
     return ok, err
 end
 
@@ -5742,10 +5752,11 @@ function Workspace:publish_one(item)
     -- Program-bearing values the shared layer carried (ignored at load, spec
     -- §17.6) are written back where the working copy supplies nothing, so
     -- re-publishing an item never drops a teammate's committed value.
-    require("loomworks.program_fields").regraft(existing, self._shared_ignored)
+    local _, dropped = require("loomworks.program_fields").regraft(existing, self._shared_ignored)
 
     local ok, err = self._core._deps.io.write_json(path, existing)
     if not ok then return false, err end
+    self:_report_dropped_test_args(dropped)
     if self._tracker then
         self._tracker:mark_written(path)
     end

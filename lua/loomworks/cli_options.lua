@@ -202,12 +202,12 @@ M.COMMANDS = {
     aliases = { create = "add", edit = "set", rm = "remove", mv = "rename" },
     default = NONE,
   },
-  -- `lw test-target` (spec §16.9): args after `--` (add) are the targets' own.
+  -- `lw test-target` (spec §16.9): args after `--` (add) are the entries' own.
   ["test-target"] = {
     subs = {
       list = NONE,
       add = spec({ flags = { "--project-wide", "--unchecked" }, valued = { "--config" } }),
-      remove = spec({ flags = { "--project-wide" }, valued = { "--config" } }),
+      remove = spec({ flags = { "--project-wide" }, valued = { "--config", "--index" } }),
       clear = spec({ flags = { "--project-wide", "--empty" }, valued = { "--config" } }),
     },
     aliases = { rm = "remove" },

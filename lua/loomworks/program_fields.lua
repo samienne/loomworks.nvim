@@ -23,7 +23,7 @@
 --- `overrides.<family>.env`, launch configurations naming a program /
 --- arguments / environment / working directory, deploy destinations not
 --- statically inside the workspace, a `device` block's `env` / `working_dir`,
---- saved test targets' per-target `args`); modules add top-level `type_config` keys
+--- saved test entries' `args`); modules add top-level `type_config` keys
 --- through their optional `trust_fields = { type_config = {...}, review = {...} }`
 --- declaration (spec §8.4). No module names appear here.
 
@@ -103,9 +103,29 @@ local function module_fields(modules, mod_type)
         type(tf.review) == "table" and tf.review or {}
 end
 
---- Strip the per-target `args` of a saved test-target list (spec §1.3.4,
---- §17.6), in place. The entry itself stays (a target name is not
---- program-bearing). Returns one ignored entry per stripped target.
+--- The k-th (1-based) element of a raw saved test list whose entry name is
+--- `name`, and its position, or nil.
+--- @param list table raw `tests` array
+--- @param name string
+--- @param k integer occurrence index
+--- @return integer|nil pos, loomworks.SavedTestEntry|nil entry
+local function nth_test_entry(list, name, k)
+    local tt = require("loomworks.test_targets")
+    local seen = 0
+    for i, el in ipairs(list) do
+        local te = tt.parse_entry(el)
+        if te.name == name then
+            seen = seen + 1
+            if seen == k then return i, te end
+        end
+    end
+    return nil, nil
+end
+
+--- Strip the args of a saved test list's entries (spec §1.3.4, §17.6), in
+--- place. The entry itself stays, reduced to its name (a name is not
+--- program-bearing). Returns one ignored entry per stripped entry, recording
+--- the entry's name and occurrence index (its place for a regraft).
 --- @param tests any the `tests` value (raw shape)
 --- @param path string[] path of `tests` in the parsed config
 --- @param raw_path string[] path of `tests` in the raw file
@@ -114,20 +134,20 @@ end
 --- @return table[]
 local function strip_test_args(tests, path, raw_path, anchor, label)
     local out = {}
-    if type(tests) ~= "table" or type(tests.targets) ~= "table" then return out end
-    for i, el in ipairs(tests.targets) do
-        if type(el) == "table" and el.args ~= nil then
-            local name = type(el.target) == "string" and el.target or tostring(i)
+    local tt = require("loomworks.test_targets")
+    if not tt.is_list(tests) then return out end
+    local entries = {}
+    for i, el in ipairs(tests) do entries[i] = tt.parse_entry(el) end
+    tt.index_entries(entries)
+    for i, te in ipairs(entries) do
+        if te.name and te.args then
             out[#out + 1] = {
-                kind = "test_args", value = el.args, test_target = name,
+                kind = "test_args", value = te.args, test_target = te.name, test_index = te.index,
                 path = path, raw_path = raw_path, anchor = anchor,
                 label = label,
-                detail = name .. " args = " .. (type(el.args) == "table"
-                    and table.concat(vim.tbl_map(tostring, el.args), " ") or tostring(el.args)),
+                detail = tt.entry_label(te) .. " args = " .. table.concat(te.args, " "),
             }
-            local copy = {}
-            for k, v in pairs(el) do if k ~= "args" then copy[k] = v end end
-            tests.targets[i] = copy
+            tests[i] = te.name
         end
     end
     return out
@@ -191,7 +211,7 @@ function M.strip(config, modules)
                     for _, cname in ipairs(sorted_keys(tc.configurations)) do
                         local c = tc.configurations[cname]
                         if type(c) == "table" then
-                            -- (2b) Per-target args of saved test targets (§1.3.4).
+                            -- (2b) Args of saved test entries (§1.3.4).
                             for _, e in ipairs(strip_test_args(c.tests,
                                     { "projects", pkey, "type_config", "configurations", cname, "tests" },
                                     { "projects", pkey, mtype, "configurations", cname, "tests" }, 5,
@@ -309,7 +329,7 @@ function M.strip(config, modules)
                 end
                 if next(proj.device) == nil then proj.device = nil end
             end
-            -- (6) Project-wide saved test targets' per-target args (§1.3.4):
+            -- (6) Project-wide saved test entries' args (§1.3.4):
             -- parsed onto the project, regrafted into the module section.
             for _, e in ipairs(strip_test_args(proj.tests, { "projects", pkey, "tests" },
                     { "projects", pkey, proj.type or "?", "tests" }, 2,
@@ -352,30 +372,34 @@ end
 --- entry owning it) is present in `raw` and that `raw` does not already set is
 --- restored, creating intermediate tables below the anchor. Entries whose
 --- anchor is absent (the item was removed or not published) are dropped.
+--- Saved test-entry args (§17.6) go back by entry name + occurrence index:
+--- the args stripped from the k-th shared entry named N return to the k-th
+--- entry named N of the published list, unless it carries args of its own.
+--- When the item is published but its list has no k-th entry named N, the
+--- args have no place to return to: they are dropped and named in `dropped`.
 --- @param raw table serialized loomworks.json content
 --- @param ignored table[]|nil
 --- @return table raw
+--- @return string[] dropped one line per dropped saved test-entry args
 function M.regraft(raw, ignored)
+    local dropped = {}
     for _, e in ipairs(ignored or {}) do
         local rp = e.raw_path
         if e.kind == "test_args" then
-            -- Saved test-target args (§1.3.4): restored onto the entry of the
-            -- same target name, when the published list still has it and does
-            -- not set args of its own. Never by index (the list may be reordered).
             local tests = rp and get_path(raw, rp)
-            local list = type(tests) == "table" and tests.targets or nil
-            if type(list) == "table" then
-                for i, el in ipairs(list) do
-                    local name = type(el) == "string" and el or (type(el) == "table" and el.target)
-                    if name == e.test_target then
-                        if type(el) == "string" then
-                            list[i] = { target = el, args = vim.deepcopy(e.value) }
-                        elseif el.args == nil then
-                            el.args = vim.deepcopy(e.value)
-                        end
-                        break
-                    end
+            local pos, te
+            if require("loomworks.test_targets").is_list(tests) then
+                pos, te = nth_test_entry(tests, e.test_target, e.test_index or 1)
+            end
+            if pos then
+                if not te.args then
+                    local el = { te.name }
+                    for _, a in ipairs(e.value) do el[#el + 1] = a end
+                    tests[pos] = el
                 end
+            elseif rp and type(get_path(raw, rp, e.anchor)) == "table" then
+                dropped[#dropped + 1] = e.label .. " (" .. e.detail .. ")"
+                    .. " — dropped: the published list has fewer '" .. e.test_target .. "' entries"
             end
         elseif rp and get_path(raw, rp) == nil then
             local anchor = get_path(raw, rp, e.anchor)
@@ -389,7 +413,7 @@ function M.regraft(raw, ignored)
             end
         end
     end
-    return raw
+    return raw, dropped
 end
 
 --- For an ignored launch, its description's summary (spec §17.6), quoted and
@@ -414,13 +438,12 @@ function M.diagnostics(ignored, merged)
     for _, e in ipairs(ignored or {}) do
         local supplied
         if e.kind == "test_args" then
-            -- Supplied when the working copy's list gives that target args.
+            -- Supplied when the working copy's list gives that entry (same
+            -- name + occurrence index) args of its own.
             local tests = get_path(merged, e.path)
-            for _, el in ipairs(type(tests) == "table" and type(tests.targets) == "table"
-                    and tests.targets or {}) do
-                if type(el) == "table" and el.target == e.test_target and el.args ~= nil then
-                    supplied = true
-                end
+            if require("loomworks.test_targets").is_list(tests) then
+                local _, te = nth_test_entry(tests, e.test_target, e.test_index or 1)
+                supplied = te ~= nil and te.args ~= nil
             end
         else
             supplied = get_path(merged, e.path) ~= nil
@@ -477,10 +500,13 @@ function M.review(user_data, modules)
                 end
                 -- Saved test-target args (§1.3.4) are program arguments.
                 local function test_args(tests, label)
-                    if type(tests) ~= "table" or type(tests.targets) ~= "table" then return end
-                    for _, el in ipairs(tests.targets) do
-                        if type(el) == "table" and type(el.args) == "table" and #el.args > 0 then
-                            p(label .. " " .. tostring(el.target) .. " args = " .. short(el.args, 90))
+                    local tt = require("loomworks.test_targets")
+                    if not tt.is_list(tests) then return end
+                    local entries = {}
+                    for i, el in ipairs(tests) do entries[i] = tt.parse_entry(el) end
+                    for _, te in ipairs(tt.index_entries(entries)) do
+                        if te.name and te.args then
+                            p(label .. " " .. tt.entry_label(te) .. " args = " .. short(te.args, 90))
                         end
                     end
                 end

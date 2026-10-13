@@ -485,25 +485,42 @@ end
 --- declared along the chain. Names in list order, cut with `+N` to `width`;
 --- the source in parentheses unless it is `item` itself ("own"). With
 --- `targets` (the unit's parsed build targets — known only when configured
---- here) a missing entry carries a ⚠; unknown targets are not flagged.
---- @param eff { entries: table[], source: table }|nil effective list
+--- here) a missing entry carries a ⚠; unknown targets are not flagged. An
+--- invalid entry, and one naming a launch the trust filter ignored, are
+--- missing whatever the targets, so they are always flagged. A name listed
+--- several times appears once per entry; args are not shown.
+--- @param eff { entries: loomworks.SavedTestEntry[], source: table, invalid: boolean|nil }|nil effective list
 --- @param item table|nil the configuration / project the line belongs to
 --- @param targets table<string, loomworks.Target>|nil
 --- @param width integer|nil available display width
+--- @param project loomworks.Project|nil the declaring project (its launch configurations resolve names first)
 --- @return {[1]: string, [2]: string}[]|nil
-function M.test_targets_chunks(eff, item, targets, width)
+function M.test_targets_chunks(eff, item, targets, width, project)
     if not eff then return nil end
     local tt = require("loomworks.test_targets")
-    if #eff.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
     local src = ""
     if eff.source ~= item then
         src = "  (" .. tt.source_text(eff.source, item and item._project and item or nil) .. ")"
     end
+    if eff.invalid then
+        return { { "Tests: ", "Comment" }, { "⚠ invalid (not an array)", "DiagnosticWarn" },
+            src ~= "" and { src, "Comment" } or nil }
+    end
+    if #eff.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
+    local ws = project and project._workspace
+    local rctx = {
+        launches = project and project.launch or nil,
+        launch_ignored = project and function(n)
+            return tt.launch_ignored(ws and ws._shared_ignored, project, n)
+        end or nil,
+        targets = targets,
+    }
     local names = {}
     for _, e in ipairs(eff.entries) do
-        local state = type(targets) == "table" and tt.resolve(targets, e.target) or "unknown"
-        local bad = state == "missing" or state == "not executable"
-        names[#names + 1] = { (bad and "⚠ " or "") .. e.target, bad and "DiagnosticWarn" or "Comment" }
+        local r = tt.resolve_entry(e, rctx)
+        local bad = r.state == "missing"
+        local label = e.name or tt.entry_label(e)
+        names[#names + 1] = { (bad and "⚠ " or "") .. label, bad and "DiagnosticWarn" or "Comment" }
     end
     local avail = (width or 100) - vim.fn.strdisplaywidth("Tests: " .. src)
     local shown, used = 0, 0

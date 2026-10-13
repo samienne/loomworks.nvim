@@ -230,8 +230,8 @@ local function create_adapter()
             -- gtest_discover_tests() alike: the filter reaches the executable
             -- via env).
             local target_id = suite_id:match("^(.+)::") or ""
-            local target_name = target_id:match("^target:(.+)$") or target_id
-            local id = "target:" .. target_name
+            -- A saved `launch:` entry keeps its kind; a bare id is a target.
+            local id = target_id:match("^%a+:") and target_id or ("target:" .. target_id)
             local unit = M._find_test_unit(id)
             if not unit then return nil end
             local spec, tu = unit:test_command_for(id, { gtest_filter = suite_name .. ".*" })
