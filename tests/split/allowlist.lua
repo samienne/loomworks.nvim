@@ -151,12 +151,15 @@ return {
         ["lua/loomworks/daemon/editor_ops.lua"] = 1,
         ["lua/loomworks/device_log.lua"] = 1,
         ["lua/loomworks/init.lua"] = 59,
-        ["lua/loomworks/loomtest_adapter.lua"] = 2,
+        -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
+        -- routes the test adapters' reads through test_source.lua; its one
+        -- site is the in-process source's model read (the daemon source
+        -- arrives in 5m C1).
+        ["lua/loomworks/test_source.lua"] = 1,
         -- lsp.lua 7 -> 0, clangd.lua / qmlls.lua 1 -> 0: step 5l part A routes
         -- the LSP layer's reads through lsp_source.lua; its one site is the
         -- in-process source's model read (the daemon source arrives in 5l C).
         ["lua/loomworks/lsp_source.lua"] = 1,
-        ["lua/loomworks/neotest/init.lua"] = 5,
         ["lua/loomworks/overseer.lua"] = 22,
         ["lua/loomworks/reload.lua"] = 1,
         ["lua/loomworks/ui/actions.lua"] = 10,

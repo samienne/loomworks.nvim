@@ -16,6 +16,8 @@ local STATUS_TEXT = {
     errored = { text = "! errored", hl = "DiagnosticError" },
     running = { text = "↻ running", hl = "DiagnosticInfo" },
     pending = { text = "◌ pending", hl = "DiagnosticHint" },
+    -- `queued` (selected by a running adapter-executed run, not started yet) shows as pending.
+    queued  = { text = "◌ pending", hl = "DiagnosticHint" },
 }
 
 --- Update inline annotations for a specific buffer.

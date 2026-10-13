@@ -149,6 +149,7 @@ local function parse_ctest_json(json_str)
                     parent = nil,
                     runnable = true,
                     framework = "gtest",
+                    source = "ctest",
                     executable = exe,
                 }
             end
@@ -158,6 +159,7 @@ local function parse_ctest_json(json_str)
                 parent = "target:" .. executables[exe],
                 runnable = true,
                 framework = "gtest",
+                source = "ctest",
                 executable = exe,
             }
         else
@@ -167,6 +169,7 @@ local function parse_ctest_json(json_str)
                 parent = nil,
                 runnable = true,
                 framework = nil,
+                source = "ctest",
                 executable = exe,
             }
         end

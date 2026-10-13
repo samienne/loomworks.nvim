@@ -2,7 +2,10 @@
 ---
 --- Bridges ConfigUnit's test interface to neotest's adapter protocol.
 --- Registered as a single adapter — delegates to the active profile's
---- ConfigUnits for discovery and execution.
+--- ConfigUnits for discovery and execution, reading them only through
+--- loomworks/test_source.lua (never the workspace model).
+
+local test_source = require("loomworks.test_source")
 
 local adapter = { name = "loomworks" }
 
@@ -34,15 +37,14 @@ local _cached_native_root = nil
 
 function adapter.root(dir)
     local ok, result = pcall(function()
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        if not ws then return nil end
+        local root = test_source.root()
+        if not root then return nil end
 
-        if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(ws.root):lower() then
-            _cached_native_root = to_native(ws.root)
+        if not _cached_native_root or norm(_cached_native_root):lower() ~= norm(root):lower() then
+            _cached_native_root = to_native(root)
         end
 
-        local root_lower = norm(ws.root):lower()
+        local root_lower = norm(root):lower()
         local dir_lower = norm(dir):lower()
         if dir_lower == root_lower or dir_lower:sub(1, #root_lower + 1) == root_lower .. "/" then
             return _cached_native_root
@@ -87,16 +89,15 @@ local _test_file_set = nil
 local _test_file_set_version = 0
 
 function get_test_file_set()
-    local lw = require("loomworks")
-    local profile = lw.get_active_profile()
-    if not profile then return {} end
+    if not test_source.has_profile() then return {} end
+    local units = test_source.units()
 
     -- Simple version check: total test tree entries
     local version = 0
-    for _, pp in ipairs(profile:projects()) do
-        local unit = pp._config_unit
-        if unit and unit._test_tree then
-            version = version + #unit._test_tree
+    for _, u in ipairs(units) do
+        local tree = test_source.cached_tree(u.unit)
+        if tree then
+            version = version + #tree
         end
     end
 
@@ -105,10 +106,10 @@ function get_test_file_set()
     end
 
     _test_file_set = {}
-    for _, pp in ipairs(profile:projects()) do
-        local unit = pp._config_unit
-        if unit and unit._test_tree then
-            for _, e in ipairs(unit._test_tree) do
+    for _, u in ipairs(units) do
+        local tree = test_source.cached_tree(u.unit)
+        if tree then
+            for _, e in ipairs(tree) do
                 if e.file then
                     _test_file_set[norm(e.file):lower()] = true
                 end
@@ -166,40 +167,12 @@ function adapter.is_test_file(file_path)
     return result
 end
 
---- Resolve the file path → project → active profile → ConfigUnit chain.
+--- Resolve the file path → project → active profile → ConfigUnit chain
+--- (the test source's unit handle and the project key).
 --- @param file_path string absolute file path
---- @return loomworks.ConfigUnit|nil, loomworks.Project|nil
+--- @return table|nil unit, string|nil project_key
 local function resolve_config_unit(file_path)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return nil, nil end
-
-    local profile = lw.get_active_profile()
-    if not profile then return nil, nil end
-
-    -- Find project by path prefix matching
-    local norm_path = norm(file_path):lower()
-    local best_project, best_len = nil, 0
-    for _, project in pairs(ws._projects) do
-        local project_path = project.path or project.key
-        local project_abs = norm(ws.root .. "/" .. project_path):lower()
-        -- Normalize trailing /. (project path "." → root/.)
-        project_abs = project_abs:gsub("/%.$", "")
-        if norm_path == project_abs or norm_path:sub(1, #project_abs + 1) == project_abs .. "/" then
-            if #project_abs > best_len then
-                best_project = project
-                best_len = #project_abs
-            end
-        end
-    end
-
-    if not best_project then return nil, nil end
-
-    -- Find the ProfileProject for this project in the active profile
-    local pp = profile:project(best_project.key)
-    if not pp or not pp._config_unit then return nil, best_project end
-
-    return pp._config_unit, best_project
+    return test_source.unit_for_file(file_path)
 end
 
 --- Build a neotest position tree from ConfigUnit test entries.
@@ -307,16 +280,7 @@ end
 --- Populates _test_tree caches so discover_positions can return immediately.
 --- TestUnits handle framework probing internally.
 local function ensure_test_cache()
-    local lw = require("loomworks")
-    local profile = lw.get_active_profile()
-    if not profile then return end
-
-    for _, pp in ipairs(profile:projects()) do
-        local unit = pp._config_unit
-        if unit and not unit._test_tree then
-            unit:discover_tests_async(function() end)
-        end
-    end
+    test_source.warm()
 end
 
 --- Set up event listeners for auto-populating test cache.
@@ -338,15 +302,7 @@ local function setup_events()
 
     lw.on("active_set_changed", function()
         -- Invalidate all caches (ConfigUnit, adapter file/dir sets)
-        local profile = lw.get_active_profile()
-        if profile then
-            for _, pp in ipairs(profile:projects()) do
-                local unit = pp._config_unit
-                if unit then
-                    unit:invalidate_tests()
-                end
-            end
-        end
+        test_source.invalidate()
         _test_file_set = nil
         _test_file_set_version = 0
         _test_dir_set = nil
@@ -361,15 +317,10 @@ local function setup_events()
     -- This runs during require("loomworks.neotest") which happens
     -- inside neotest.setup(). The cache must be ready BEFORE neotest
     -- starts its file scan (which happens right after setup returns).
-    if lw.get_workspace() and lw.get_active_profile() then
-        for _, pp in ipairs(lw.get_active_profile():projects()) do
-            local unit = pp._config_unit
-            if unit and not unit._test_tree then
-                -- Safe: we're in the main thread during require(),
-                -- not in a coroutine.
-                unit:discover_tests()
-            end
-        end
+    if test_source.ready() then
+        -- Safe: we're in the main thread during require(), not in a
+        -- coroutine.
+        test_source.warm(true)
     end
 end
 
@@ -394,12 +345,10 @@ function adapter.discover_positions(path)
     end
 
     local ok, result = pcall(function()
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return nil end
+    local root = test_source.root()
+    if not root then return nil end
 
-    local profile = lw.get_active_profile()
-    if not profile then return nil end
+    if not test_source.has_profile() then return nil end
 
     -- Determine if path is a file or directory by checking extension.
     -- Avoid vim.uv.fs_stat which can deadlock in nio coroutine context.
@@ -408,35 +357,32 @@ function adapter.discover_positions(path)
         -- Directory-level discovery: collect cached tests from all ConfigUnits
         local all_entries = {}
         local any_pending = false
-        for _, pp in ipairs(profile:projects()) do
-            local unit = pp._config_unit
-            if not unit then goto continue end
+        for _, u in ipairs(test_source.units()) do
+            local unit = u.unit
+            local project_key, project_abs = u.project, u.dir
+            if not project_key or not project_abs then goto continue end
 
-            local project = pp._project or unit._project
-            if not project then goto continue end
-
-            local project_abs = norm(ws.root .. "/" .. (project.path or project.key)):gsub("/%.$", "")
             local norm_path = norm(path)
-            if norm_path ~= norm(ws.root)
+            if norm_path ~= norm(root)
                 and project_abs:sub(1, #norm_path + 1) ~= norm_path .. "/"
                 and project_abs ~= norm_path then
                 goto continue
             end
 
             -- Use cached data only — never block
-            local entries = unit._test_tree
+            local entries = test_source.cached_tree(unit)
             if not entries then
                 -- Trigger async discovery for next time
                 any_pending = true
-                unit:discover_tests_async(function() end)
+                test_source.discover_async(unit, function() end)
                 goto continue
             end
 
             for _, e in ipairs(entries) do
                 all_entries[#all_entries + 1] = {
-                    id = project.key .. "/" .. e.id,
-                    name = project.key .. ": " .. e.name,
-                    parent = e.parent and (project.key .. "/" .. e.parent) or nil,
+                    id = project_key .. "/" .. e.id,
+                    name = project_key .. ": " .. e.name,
+                    parent = e.parent and (project_key .. "/" .. e.parent) or nil,
                     runnable = e.runnable,
                     framework = e.framework,
                     executable = e.executable,
@@ -456,13 +402,13 @@ function adapter.discover_positions(path)
         return build_neotest_tree(all_entries, path, path:match("[/\\]([^/\\]+)$") or path, path)
     else
         -- File-level discovery
-        local unit, project = resolve_config_unit(path)
+        local unit = resolve_config_unit(path)
         if not unit then return nil end
 
         -- Use cached data only — never block
-        local entries = unit._test_tree
+        local entries = test_source.cached_tree(unit)
         if not entries then
-            unit:discover_tests_async(function() end)
+            test_source.discover_async(unit, function() end)
             return nil
         end
 
@@ -569,7 +515,7 @@ local function prepare_step(unit, cmd)
     if type(cmd.prepare) ~= "function" then return true end
     local ok_nio, nio = pcall(require, "nio")
     if ok_nio and nio.current_task and nio.current_task() then nio.scheduler() end
-    local ok = unit:_prepare_test_step("test: " .. tostring(cmd.test_id or "?"), cmd)
+    local ok = test_source.prepare_step(unit, "test: " .. tostring(cmd.test_id or "?"), cmd)
     return ok
 end
 
@@ -605,7 +551,7 @@ function adapter.build_spec(args)
     end
 
     -- Check if the project needs to be built first.
-    local state = unit:local_state()
+    local state = test_source.local_state(unit)
     if state == "unconfigured" or state == "configure_failed" then
         vim.schedule(function()
             vim.notify("loomworks: project needs to be configured before running tests. Use [c] in the status page.", vim.log.levels.WARN)
@@ -619,10 +565,10 @@ function adapter.build_spec(args)
     -- of the saved-targets TestUnit), each parsed by its own TestUnit.
     local test_cmd, tu
     if pos.type == "test" or pos.type == "namespace" then
-        test_cmd, tu = unit:test_command_for(original_id or pos.name)
+        test_cmd, tu = test_source.command_for(unit, original_id or pos.name)
         if not test_cmd then return nil end
     else
-        local all = unit:test_commands_all()
+        local all = test_source.commands_all(unit)
         if #all == 0 then return nil end
         if #all > 1 and args.strategy ~= "dap" then
             local specs = {}
@@ -696,12 +642,9 @@ function adapter.results(spec, result, tree)
     -- Try to parse structured output (JUnit XML) via TestUnit
     local tu = ctx.test_unit
     if ctx.output_path and tu then
-        local parsed = tu:parse_results(ctx.output_path)
+        local parsed = test_source.parse_results(tu, ctx.output_path)
         if parsed then
             if ctx.config_unit then
-                -- Apply results to ConfigUnit's test cache
-                ctx.config_unit:_apply_test_results(parsed)
-
                 -- Map parsed results to neotest format
                 local pos = tree:data()
                 for _, r in ipairs(parsed) do
@@ -721,12 +664,9 @@ function adapter.results(spec, result, tree)
                     end
                 end
 
-                -- Emit event for UI updates
-                local lw = require("loomworks")
-                local ws = lw.get_workspace()
-                if ws then
-                    ws._core._deps.events.emit("test_results_changed", ctx.config_unit)
-                end
+                -- Apply results to the unit's test cache and emit the
+                -- event for UI updates
+                test_source.apply_results(ctx.config_unit, parsed)
             end
         end
     end

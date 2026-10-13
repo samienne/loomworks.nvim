@@ -23,6 +23,7 @@ M.plugin = {
     "^loomworks%.integrations%.lsp%.",
     "^loomworks%.neotest$",
     "^loomworks%.loomtest_adapter$",
+    "^loomworks%.test_source$",      -- where the test adapters read tests (spec §19.16 "Tests", step 5m)
     "^loomworks%.debug$",
     "^loomworks%.session_tracker$",
     "^loomworks%.lsp$",
@@ -60,6 +61,10 @@ M.shared = {
     -- readiness): the editor's LSP layer reads it in-process, the daemon
     -- serves the same shape (`LspConfig/1`, step 5l).
     "^loomworks%.lsp_config$",
+    -- The tests view's state (`view.Tests/1`, spec §19.13 "The tests view"):
+    -- the editor builds it in-process through test_source, the daemon serves
+    -- the same shape (step 5m).
+    "^loomworks%.test_state$",
 }
 
 local binary_toplevel = {

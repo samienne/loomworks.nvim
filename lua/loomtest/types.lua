@@ -16,16 +16,25 @@
 --- @field invalidate fun()
 --- @field get_cursor_test fun(bufnr: number, line: number): string|nil
 --- @field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean)) optional: build test targets before running
+--- @field start? fun(selection: string[]|nil, opts: { no_build: boolean }, sink: loomtest.RunSink): loomtest.RunHandle|nil optional: an adapter-executed run (LOOMTEST.md §3) — when present loomtest calls it for every run (selection nil = run all) instead of run / run_suite / run_all / ensure_built / parse_results
+
+--- An adapter-executed run's report channel (LOOMTEST.md §3).
+--- @class loomtest.RunSink
+--- @field status fun(updates: { id: string, status: string, duration?: number, message?: string }[]) node statuses by exact id
+--- @field done fun(ok: boolean, err?: string) the run ended
+
+--- @class loomtest.RunHandle
+--- @field cancel fun()
 
 --- @class loomtest.TestNode
 --- @field id string unique identifier
 --- @field name string display name
---- @field type string "target" | "suite" | "test"
+--- @field type string "target" | "suite" | "test" (adapter-supplied suites are shown as given, never inferred)
 --- @field parent string|nil parent node id
 --- @field file string|nil absolute source file path
 --- @field line number|nil 1-based line number in source
 --- @field runnable boolean whether this node can be executed
---- @field status string|nil "passed"|"failed"|"skipped"|"errored"|nil
+--- @field status string|nil "passed"|"failed"|"skipped"|"errored"|"running"|"pending"|"queued"|nil (`queued` shows as pending)
 --- @field message string|nil last failure message
 --- @field duration number|nil last duration in milliseconds
 --- @field _output string|nil captured stdout/stderr from the last run

@@ -1620,6 +1620,31 @@ function ConfigUnit:invalidate_tests()
     self._saved_tests_sig = nil
 end
 
+--- The discovered test tree as cached (the merged entries of
+--- `discover_tests`), or nil when none is cached. Never discovers.
+--- @return table[]|nil
+function ConfigUnit:test_tree()
+    return self._test_tree
+end
+
+--- Why this unit has no test tree to discover (the tests view's unit state,
+--- daemon.md §19.13 "The tests view"): `not_configured` (not configured on
+--- this machine, §17.8), `foreign` (its kit builds for another platform,
+--- §18.1) or `no_tests` (no TestUnit and no saved test targets), with the
+--- message shown for it; nil when its TestUnits can discover.
+--- @return "not_configured"|"foreign"|"no_tests"|nil state, string|nil message
+function ConfigUnit:test_availability()
+    if not self:configured_here() then
+        return "not_configured", "not configured on this machine — configure it first"
+    end
+    local token = require("loomworks.remote.foreign").unit_platform(self)
+    if token then
+        return "foreign", "its kit builds for " .. tostring(token) .. ": its tests do not run on this host"
+    end
+    if #self:test_units() == 0 then return "no_tests", nil end
+    return nil, nil
+end
+
 --- Merge test results into the cached test tree.
 --- @param results table[]|nil TestResult entries
 function ConfigUnit:_apply_test_results(results)
