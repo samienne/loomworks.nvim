@@ -2498,6 +2498,7 @@ lw.buf_status(bufnr)                        -- { project, configuration?, tool_k
                                             --   lsp: lw.lsp_buf_state(bufnr) (below)
 lw.lsp_buf_state(bufnr)                     -- "none" | "held" | "ok" | "withheld_unconfigured"
                                             --   | "withheld_no_db" | "withheld_error"
+                                            --   | "withheld_daemon" (daemon mode: no LSP config from the daemon)
 
 -- Events
 lw.on("active_set_changed", function(active_set)

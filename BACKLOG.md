@@ -158,7 +158,11 @@ Step 5l dropped `compile_command` from `loomworks.LspConfig/1` (spec
 §19.20): no client asks the daemon for one file's command today, and the
 editor's `lw.compile_command_for_file` keeps answering from its in-process
 model (§8.4 `compile_command_for`) in every mode, so in `daemon` mode it can
-lag a configure the daemon ran until the editor's model has remerged.
+lag a configure the daemon ran until the editor's model has remerged. It is
+also the one LSP-side read left in the plugin that parses a compilation
+database itself, against the 5l rule that LSP configuration comes only from
+the daemon in `daemon` mode (§19.16 "LSP configuration"): in `daemon` mode it
+should answer from the daemon or fail, not from the editor's model.
 If a client needs it (a CLI `lw compile-command <file>`, an editor action),
 add it at the interface's next version: `{ file }` → the owned
 database's entry for the file, with its `origin`, or "not owned" for a
