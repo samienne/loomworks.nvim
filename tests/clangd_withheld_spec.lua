@@ -536,6 +536,8 @@ describe("lualine loomworks_lsp component", function()
         assert.equals("(no db)", c:update_status())
         with_state("withheld_error")
         assert.equals("(ws error)", c:update_status())
+        with_state("withheld_daemon")
+        assert.equals("(no lsp config)", c:update_status())
     end)
 
     it("colours through lualine's color option: DiagnosticError fg, section bg", function()

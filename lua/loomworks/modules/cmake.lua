@@ -4543,9 +4543,9 @@ function M.lsp_configs(project)
             -- triggers, then return the generated dir immediately (§12.4).
             -- Generation is async + single-flight, so this never blocks LSP
             -- wiring; the previous database (if any) stays readable meanwhile.
-            -- Only when this process generates now: in a daemon-mode editor
-            -- the workspace daemon does while its LSP state is in use (core
-            -- §9.7, §12.4 "one writer").
+            -- Only when this process generates: never in a daemon-mode
+            -- editor, where only the workspace daemon does (core §9.7, §12.4
+            -- "one writer").
             if not ws.generates_lsp_databases or ws:generates_lsp_databases() then
                 M.refresh_generated_cc(build_dir, out_dir, {
                     variant = variant,

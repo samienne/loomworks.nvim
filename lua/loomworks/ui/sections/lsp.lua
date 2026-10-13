@@ -22,18 +22,31 @@ local function cycle(current, values)
 end
 
 --- Render the clangd-options block. Each row toggles or cycles on
---- Enter and writes through `lw.set_lsp_option`, which persists
+--- Enter and writes through `lw.set_lsp_option`: in-process it persists
 --- user.json and emits `lsp_options_changed` so the integration restarts
---- the client — in-process at once; while the workspace daemon carries the
---- LSP configuration through `LspConfig/1.set_option`, applied (and the page
---- re-rendered, `daemon_lsp_config`) from the state read back.
+--- the client; in `daemon` mode only through the workspace daemon's
+--- `LspConfig/1.set_option`, applied (and the page re-rendered,
+--- `daemon_lsp_config`) from the state read back (spec §19.16 "LSP
+--- configuration").
 --- @param tree loomworks.Tree
 --- @param lw table loomworks public API
 local function render_clangd_defaults(tree, lw)
     if not lw.get_lsp_options then return end
-    -- The options in use: the workspace daemon's while its LSP state is
-    -- (spec §19.16 "LSP configuration"), else the model's.
-    local opts = require("loomworks.lsp_source").options("clangd") or lw.get_lsp_options("clangd")
+    local source = require("loomworks.lsp_source")
+    local opts
+    if source.mode() == "daemon" then
+        -- The daemon's options while its LSP state is in use — never the
+        -- editor model's.
+        opts = source.options("clangd")
+        if not opts then
+            tree:node("Server defaults (clangd)", { fold_key = "lsp:defaults:clangd" }, function()
+                tree:item("unavailable: the workspace daemon's LSP configuration is not in use", { hl = "Comment" })
+            end)
+            return
+        end
+    else
+        opts = lw.get_lsp_options("clangd")
+    end
     tree:node("Server defaults (clangd)", {
         fold_key = "lsp:defaults:clangd",
     }, function()

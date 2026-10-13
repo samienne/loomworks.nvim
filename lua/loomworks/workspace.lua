@@ -638,8 +638,6 @@ end
 --- @field _event_handlers { event: string, handler: function }[]
 --- @field _daemon_observer loomworks.daemon.Observer|nil the editor's observer of the workspace daemon (spec §19.16), daemon runtime mode only
 --- @field _operation_router { clean: fun(scope: table, fallback: fun(): loomworks.Future): loomworks.Future|nil }|nil set by the editor in daemon runtime mode (loomworks.daemon.editor_ops.router, step 5k): Profile:clean / ConfigUnit:clean ask it first; nil → in-process
---- @field _lsp_db_owner (fun(): "daemon"|"pending"|"editor")|nil set by the editor's observer in daemon runtime mode (step 5l D6): who generates the owned LSP databases now; nil → this model (in-process mode, the daemon, the CLI)
---- @field _lsp_db_skipped boolean|nil a generation was skipped because the model did not own it (`generates_lsp_databases`); `resume_lsp_databases` catches up
 --- @field _runtime_selection loomworks.daemon.EditorSelection|nil the editor's runtime mode and its source, chosen on load (spec §19.1); the status page's Runtime line
 ---     event-bus subscriptions recorded for teardown. Mirrors the same
 ---     pattern on View. Populated only via `Workspace:on`, walked in
@@ -3661,51 +3659,29 @@ function Workspace._nudge_lsp(build_dir)
     end
 end
 
---- Whether this model generates the owned LSP databases now (§8.4
---- `refresh_lsp_database`; daemon.md §19.16 "LSP configuration"): always,
---- unless the editor's observer says the workspace daemon does (its LSP
---- state is in use) or that it is not decided yet (the LSP layer holds for
---- the daemon). A skipped generation is remembered, and
---- `resume_lsp_databases` catches up once the model owns it again.
---- Modules ask it before a generation they schedule on their own (cmake's
+--- Whether this model generates the owned LSP databases (§8.4
+--- `refresh_lsp_database`; daemon.md §19.16 "LSP configuration"): never in a
+--- `daemon`-mode editor (an observer of the workspace daemon is attached —
+--- only the daemon generates them, whether or not its state is in use);
+--- always otherwise (in-process mode, the daemon itself, the CLI). Modules
+--- ask it before a generation they schedule on their own (cmake's
 --- `lsp_configs`).
 --- @return boolean
 function Workspace:generates_lsp_databases()
-    local owner = self._lsp_db_owner
-    if not owner then return true end
-    local ok, who = pcall(owner)
-    if ok and who ~= "editor" then
-        self._lsp_db_skipped = true
-        return false
-    end
-    return true
-end
-
---- The model owns the owned-database generation again (the editor uses the
---- in-process LSP state, every fallback of daemon.md §19.16): when it skipped
---- any, run the startup pass now (`_refresh_lsp_databases_async`,
---- mtime-gated), and report the in-process readiness (`lsp_ready`) once the
---- active profile's settled — the startup scan's own release never came for
---- the units it skipped.
-function Workspace:resume_lsp_databases()
-    if not self._lsp_db_skipped or self._torn_down then return end
-    if not self:generates_lsp_databases() then return end
-    self._lsp_db_skipped = nil
-    local ws = self
-    self:_refresh_lsp_databases_async(function()
-        if ws._torn_down or ws._lsp_ready then return end
-        ws._lsp_ready = true
-        ws._core._deps.events.emit("lsp_ready")
-    end)
+    return self._daemon_observer == nil
 end
 
 --- @param unit loomworks.ConfigUnit
 --- @param on_settled? fun() called once when the primary DB refresh settles
 function Workspace:_refresh_lsp_database_for(unit, on_settled)
     if not unit then return end
-    -- Not this model's to generate now (D6): skipped, settling nothing, so
-    -- the in-process readiness waits for `resume_lsp_databases`.
-    if not self:generates_lsp_databases() then return end
+    -- Not this model's to generate (a daemon-mode editor, §19.16 "LSP
+    -- configuration"): nothing runs, nothing is watched; it settles at once
+    -- (the model's own readiness takes no part in any LSP decision there).
+    if not self:generates_lsp_databases() then
+        if on_settled then on_settled() end
+        return
+    end
     local project = unit._project
     local mod = project and project._module and project._module.impl or nil
     if not mod or not mod.refresh_lsp_database then return end
@@ -3765,7 +3741,6 @@ function Workspace:_refresh_lsp_database_for(unit, on_settled)
         local ok, watch_path = pcall(mod.lsp_database_watch_path, { build_dir = build_dir })
         if ok and type(watch_path) == "string" then
             self._tracker:watch_signal(watch_path, function()
-                if not self:generates_lsp_databases() then return end
                 pcall(mod.refresh_lsp_database, ctx, on_db_changed)
             end)
         end

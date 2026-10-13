@@ -355,9 +355,12 @@ describe("the observer (§19.16)", function()
             .. "project index: daemon offers no loomworks.view.ProjectsIndex, editor needs /1; "
             .. "operations: daemon offers no loomworks.Build, editor needs /1 — running them in-process; "
             .. "launch: daemon offers no loomworks.Launch, editor needs /1 — running them in-process; "
-            .. "debug adapters: daemon offers no loomworks.DebugConfig, editor needs /1 — running them in-process; "
-            .. "lsp configuration: daemon offers no loomworks.LspConfig, editor needs /1",
+            .. "debug adapters: daemon offers no loomworks.DebugConfig, editor needs /1 — running them in-process",
             obs.feature_note)
+        -- The LSP configuration is never run in-process: its own note
+        -- (§19.16 "LSP configuration" Unavailable).
+        assert.truthy(obs:runtime_line():find("lsp configuration: daemon offers no loomworks.LspConfig, "
+            .. "editor needs /1 — language servers withheld", 1, true))
         assert.truthy(obs:runtime_line():find("observing the workspace daemon", 1, true))
         assert.truthy(obs:runtime_line():find("editor needs /1", 1, true))
         assert.equals("tasks: daemon offers loomworks.Tasks/2,/3, editor needs /1",
@@ -559,13 +562,16 @@ describe("the observer (§19.16)", function()
         vim.wait(300)
         assert.is_nil(obs._sub_only)
         assert.is_nil(obs.feature_note)
-        assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
+        -- Only the LSP configuration's own note (never run in-process).
+        local line = obs:runtime_line():gsub(" — lsp configuration: .* — language servers withheld$", "")
+        assert.is_nil(line:find("editor needs", 1, true))
     end)
 
     it("with no host binary: one note, no relay, and a daemon another client starts is not observed", function()
         obs = attach({ resolve = function() return nil end })
         assert.equals("no-binary", obs.state)
-        assert.equals(binary_select.NONE_NOTE, obs:runtime_line())
+        assert.equals(binary_select.NONE_NOTE .. " — lsp configuration: no lw host binary — language servers withheld",
+            obs:runtime_line())
         assert.same({}, fr.spawns)
         s = new_server(root)
         vim.wait(300)
@@ -1072,7 +1078,8 @@ describe("the observer (§19.16)", function()
         assert.equals("ordinary", asked[1].form)
         assert.same({ LOOMWORKS_LUA = "/src/lua" }, asked[1].env)
         assert.equals("connecting to or starting the workspace daemon (/m/lw (plugin-managed lw) with the Lua "
-            .. "source /src/lua)", obs:runtime_line())
+            .. "source /src/lua) — lsp configuration: waiting for the workspace daemon — language servers held",
+            obs:runtime_line())
         assert.equals("managed", obs.selection.source)
     end)
 

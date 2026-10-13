@@ -96,11 +96,14 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         local fr = FR.new({})
         obs = observer.attach(core:get_workspace(), { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
-        -- The daemon has not loaded the workspace: the LSP layer holds.
-        assert.is_true(vim.wait(10000, function() return (source.phase()) == "unloaded" end, 10),
-            tostring((source.phase())) .. " " .. obs:runtime_line())
-        assert.is_true(source.holding())
-        assert.equals("pending", obs:lsp_db_owner())
+        -- The daemon has not loaded the workspace: the LSP layer waits for
+        -- it, with nothing from the editor's model.
+        assert.is_true(vim.wait(10000, function()
+            local phase, d = source.daemon_phase()
+            return phase == "waiting" and d.why == "unloaded"
+        end, 10), tostring((source.daemon_phase())) .. " " .. obs:runtime_line())
+        assert.is_true(source.waiting())
+        assert.same({}, source.projects())
 
         -- Another client's request loads it in the daemon: in use.
         sess = assert(client.session(srv.address))
@@ -108,12 +111,11 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         local r, err = client.call_sync(sess, "/toolchains", "loomworks.Toolchains", 1, "list", {}, { env = env })
         assert.is_not_nil(r, err and err.message)
         assert.is_true(vim.wait(30000, function() return source.in_use() end, 20),
-            tostring((source.phase())) .. " " .. vim.inspect(obs._lsp_read))
+            tostring((source.daemon_phase())) .. " " .. vim.inspect(obs._lsp_read))
         local rec = source.projects()[1]
         assert.equals("app", rec.project)
         assert.is_string(rec.id)
         assert.equals("unconfigured", rec.entries[1].db_state)
-        assert.equals("daemon", obs:lsp_db_owner())
         -- The switch to the daemon's state re-evaluated as an active-set change.
         assert.is_true(vim.wait(5000, function() return hits.active >= 1 end, 10))
         local before = hits.active

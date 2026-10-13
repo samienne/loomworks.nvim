@@ -145,6 +145,18 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         local launched = {}
         ov.launch_run_task = function(spec) launched[#launched + 1] = spec; return nil end
         local target = require("loomworks.launch_target").new(ws, profile, { project = "app", launch = "run" })
+        -- Refused while the daemon has not loaded the workspace (§19.16
+        -- "Editor operations", step 5l): a read the editor carries loads it.
+        local views = require("loomworks.views")
+        if not (views.header() and views.header().state == "loaded") then
+            assert.truthy(require("loomworks.session_tracker").launch_refusal(target))
+            obs:request("adapters", {}, function() end)
+        end
+        assert.is_true(vim.wait(30000, function()
+            local h = views.header()
+            return h and h.state == "loaded"
+        end, 20), obs:runtime_line())
+        assert.is_nil(require("loomworks.session_tracker").launch_refusal(target))
         require("loomworks.session_tracker").start(target, "launch")
         local ok = vim.wait(120000, function() return #launched > 0 end, 20)
         ov.launch_run_task = orig

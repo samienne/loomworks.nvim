@@ -256,7 +256,7 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `plugin/loomworks.lua` | Command registration (`:LoomworksInit`, `:LoomworksInfo`), double-load guard | Contain logic; import core.lua |
 | `init.lua` | Singleton Core instance, public API surface, version string | Hold state beyond the Core ref; contain business logic |
-| `views.lua` | Editor view store: `view.Header/1` and `view.ProjectsIndex/1` tables from the daemon subscription or the in-process builder; buffer -> project record lookup; `buf_status` derivation | Require binary-side modules; query the workspace itself (builders are registered by init.lua) |
+| `views.lua` | Editor view store: `view.Header/1` and `view.ProjectsIndex/1` tables from the daemon subscription or the in-process builder (in `daemon` mode the builders give `unloaded` / no projects); buffer -> project record lookup (by spelling, else physical identity); `buf_status` derivation | Require binary-side modules; query the workspace itself (builders are registered by init.lua) |
 
 ### Infrastructure Layer
 
@@ -373,7 +373,7 @@ may import from its own layer or any layer below it, never above.
 | `overseer.lua` | Template provider registration, task collection from modules, task launching with readiness checks and build dir lock acquisition, auto-configure-before-build (`filter_unconfigured_tasks` stamps each selected configure task's `configure_reason`, computed by `unit:configure_reason(forced, lw_meta.profile)` — every task's `lw_meta.profile` is the profile whose context assembled it (the profile being built; the active one for a unit-scoped action) and plan steps carry it as `profile`, so staleness and the post-configure record resolve in the same context, spec §5.1 *Resolution context*; `configure_reason_line(meta)` composes it with the module's `reconfigure`/`reconfigure_detail` into the one-line report the CLI prints and `start_one_task` logs; `command_text(spec)` (a spec's `display_cmd` — the command a wrapper runs, e.g. cmake's vcvarsall batch — else `cmd`, via `term.format_argv`) and `log_task_command(ws, name, spec, cwd)` (info-level `name: $ <argv>  (in <cwd>)`, control characters escaped) are shared by `start_one_task` (logged from the raw builder result, then `display_cmd` is stripped before `harden`/overseer) and the CLI's `run_build_steps` (via `build_run.step_lines`; always logged; printed under `==> [kind]` with `lw build -v`), and `plan_profile_build` steps carry `display_cmd`; `plan_profile_build(profile, { reconfigure = true })` forwards `force_full_reconfigure` into the module context and selects every configure task — `lw build --reconfigure`), profile-level operations; **nice/ionice cmd wrapping** for action ∈ {configure, build, clean} (Linux only, via `loomworks.nice`) so long tasks yield CPU/IO to the editor. **Assembles the `ModuleContext`** each module's `tasks()` sees, and single-sources the compiler-cache fields at every build-context site: `compiler_cache = {tool,path}|nil` (core-resolved via `compiler_cache.resolve_for`) that the module applies, and `recorded_cache_launcher` (the unit's frozen `module_info.cache_launcher`) that lets a module detect a launcher change, plus the previous-configure record `recorded_module_info` (the unit's `module_info`) / `recorded_options` (core's option snapshot) that lets a module classify a reconfigure, and the **configuration environment** (spec §1.3.3): `configuration_env` (resolved via `config_env.resolve`) and `env` = tool env with `configuration_env` layered on top (`config_env.compose`), at every context-assembly site (configure/build/clean, per-unit and per-profile, `build_spec_for`; `target.lua`'s per-target build uses the same composition) — all additive-optional (no `api_version` bump). **Faithful reconfigure** (spec §5.1): a configure task's optional `pre_configure_reset` (build-dir-relative configure-state entries) is executed by core — `start_one_task` runs `Workspace:_pre_configure_reset` after acquiring the exclusive lock and before the builder (refusal releases the locks and rejects), and `plan_profile_build` steps carry it (plus `module_info`) so the headless runner does the same. A clean task declaring `wipe_build_dir` (shell's default clean) has no command: `run_*_clean` call `_wipe_build_dir` (`_validate_build_dir` — never the root — then `io.rm_rf_async`), `plan_profile_clean` emits a `wipe_build_dir` step the CLI validates + `io.rm_rf`s. Every `new_task` spec first passes `harden` (`loomworks.exe.harden_spec`) | Import core.lua directly; own state beyond task generation |
 | `lsp.lua` | LSP dispatch layer + plugin-style integration registry. On load, scans every runtime path for `integrations/lsp/*.lua` and requires each — integrations self-register via `register(server, M)`. Exposes generic `cmd(server, base)` / `root_dir(server, fallback)` factories, a `setup_servers(opts)` that installs enabled integrations via `vim.lsp.config` + `vim.lsp.enable`, buffer excludes (`default_excludes()` / `excluded(bufnr)` + `LspAttach` detach autocmd) applied uniformly across all managed integrations, `get_status()` dispatching per-server status fields to integrations, and the **generic restart machinery**: `wrap_on_exit(server, user_on_exit)` distinguishes managed-stop / clean external stop / unexpected death; `mark_managed_stop(client_id)` lets integrations flag their own intentional stops; per-`(server, root_dir)` throttle (4 attempts / 5min sliding window) deferring with `vim.defer_fn`; `is_suppressed` / `clear_suppression` / `reset_attempts` for the UI Reset path; subscribes to `lsp_options_changed` and dispatches to integrations' `on_lsp_options_changed` for cmd-affecting toggles. Reads projects, entries, options and readiness only through `lsp_source.lua` (never the model). **The entries are content-memoized** (in `lsp_config.lua`): on `active_set_changed` every integration iterates every project's entries, so a per-project cache keyed on `{generation, ws.root, project.key, active-profile key, resolved build_dir/config_key/build-state/tool, fallback cached.build_dir + tool_data clangd, hash(type_config)}` returns the prior `module.lsp_configs()` result on a hit — a no-op switch and the second integration on a tick pay nothing. The memo is blown on `workspace_changed` / `workspace_closed` and its keys invalidated (generation bump) on `lsp_options_changed`; the early return-on-hit is structured so a future mtime-guarded side effect inside `lsp_configs` is skipped on hits too | Contain server-specific wiring (lives in `integrations/lsp/<server>.lua`) |
 | `lsp_config.lua` | The LSP configuration state (shared side, host-neutral): the `lsp_configs` content memo (per environment in the daemon: at most `ENV_SLOTS` (4) environments per project, least recently used dropped first, each named by the SHA-256 of its signature), `db_state` derivation, the core `db_dir` / `db_rev` entry fields, `state(ws, opts)` in the `LspConfig/1.get` shape and its `signature` | Use `vim.*`, start servers, decide withhold reasons (integrations do) |
-| `lsp_source.lua` | Where `lsp.lua` and the integrations read the LSP state: today the in-process state from the `loomworks` facade; step 5l C makes it the daemon's alone in `daemon` mode (waiting / unavailable instead of any fallback), the in-process state remaining only for `in-process` mode until step 6b | Let the LSP layer reach into the model any other way; fall back to the in-process state in `daemon` mode |
+| `lsp_source.lua` | Where `lsp.lua` and the integrations read the LSP state: in `daemon` mode the daemon's alone (the observer's `lsp_phase`: in use, waiting or unavailable instead of any fallback), the in-process state from the `loomworks` facade only in `in-process` mode until step 6b; the change diff, option writes through the daemon | Let the LSP layer reach into the model any other way; fall back to the in-process state in `daemon` mode |
 | `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement; **always-on `--pch-storage=disk`** + **user-configurable `--clang-tidy`/`--background-index`/`--background-index-priority`/`extra_args`** appended to every cmd (last-wins via LLVM `cl::opt`); reads via `Workspace:get_lsp_options("clangd")` (defaults applied); coalesced restart on `on_lsp_options_changed`; **OOM-adaptive `-j` step-down** via `on_unexpected_exit` (seed `-j 12` on first OOM, halve to 1 floor, give up after); single-retry policy for non-OOM crashes; nvim LSP log snapshot rotation (5 generations) on every (re)start; `reset(root_dir)` clears adaptive state and re-enables clangd | Reference specific modules; read `project.cmake` or other module-specific fields |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
 | `task_tracker.lua` | Overseer component bridging task lifecycle to ConfigUnit, cache recording, and build dir lock release on completion/dispose (idempotent) | Be imported by anything except overseer |
@@ -1661,7 +1661,7 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   instead of the model: `state`, `projects`, `project_for_buf`,
   `find_by_root`, `options`, `loaded`, `loaded_and_ready`, `pending`,
   `root`, built from the `loomworks` facade's model (its one model read)
-  when it serves the in-process state. *(5l B:)* the daemon serves the same builder on
+  only in `in-process` mode (5l C below). *(5l B:)* the daemon serves the same builder on
   `/lsp` (`core_interfaces.lsp_impl`, beside `DebugConfig/1`): `get` answers
   a state other than `loaded` at once, never loading; a loaded model is read
   in a model segment of the caller's environment, the memo keyed by that
@@ -1682,23 +1682,57 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `_refresh_lsp_databases_async` regenerate every configured-here unit's
   database, the active profile's first, releasing `_lsp_ready` once those
   settled; configures and builds regenerate as in-process.
-  *(Plan, 5l C:)* in `daemon` mode `lsp_source.lua` serves **only** the
-  daemon's state (cached per connection like the debug adapters, re-read on
-  its `changed` and on `Workspace/1` `changed`, emitting
-  `daemon_lsp_config`) — no in-process fallback: while the observer is
-  connecting, the state is `unloaded` or the connection is lost it reports
-  "waiting" (the §9.7 gate keeps buffers `held`, no timeout; a lost
-  connection — "unloaded on disconnect", spec §19.16 — first stops every
-  controlled client under the root via the managed-stop path); with no host
-  binary, `LspConfig/1` not carried, a declined/failed `get` or a state
-  `error`/`refused` it reports "unavailable" with the reason (buffers
-  `withheld_daemon` / `withheld_error`, the Runtime-line note). It maps a
-  buffer to its project only by `lw.buf_project`; options are written only
-  through `LspConfig/1.set_option` (an error when not carried or failed);
-  and in `daemon` mode the editor's Workspace never calls `lsp_configs` or
-  `refresh_lsp_database` (the daemon is the one generator). The in-process
-  source remains only for `runtime.mode = "in-process"`, removed with the
-  in-process editor (step 6b).
+  *(5l C:)* in `daemon` mode `lsp_source.lua` serves **only** the daemon's
+  state — no in-process fallback; `mode()` is `daemon` while the loaded
+  workspace has an observer. The observer subscribes to `/lsp` (`M.LSP`,
+  `callable`: `get` / `set_option` are called while subscribed) and caches
+  the last `get` per connection (`_lsp_read`, made with the editor's
+  environment once discovered, again on its `changed`, on `Workspace/1`
+  `changed` and on reconnect; each read carries a token in `_lsp_fetch`, so
+  a reply to a read from before a reconnect or a `/lsp` remove + re-add is
+  ignored; a declined/failed read is cached with its reason, debug-logged).
+  `Observer:lsp_phase()` is `loaded` (in use, with the state), `waiting`
+  (`why`: connecting, `unloaded`, or `disconnected` — `_lost`, set by
+  `_on_closed` and cleared only when the daemon reports `loaded` again,
+  through its header view or an LSP read) or `unavailable` (`kind` `error`
+  for a state `error`/`refused`, else `daemon`: no binary, protocol 10, an
+  incompatible daemon, the interface missing or at another version, `get`
+  degraded — never a "running in-process" method note — or a
+  declined/failed read); `lsp_note()` is its Runtime-line note (warning
+  when unavailable) and `runtime_line` adds `LOST_NOTE` while `_lost`. Every
+  change (a read, a state move in `_set`, a close) emits
+  `daemon_lsp_config`. `lsp.lua` decides a buffer under the root `held`
+  while waiting (the gate's safety timer is not armed then) and
+  `withheld_daemon` / `withheld_error` while unavailable, and otherwise
+  against the daemon's state; `_on_source_changed` applies
+  `lsp_source.changes()` (`lost` → `stop_controlled_clients`: every client
+  of an integration with `withhold_reason` under the root stopped through
+  `mark_managed_stop`, its buffers parked `held` for the re-evaluation;
+  `switched` / `entries` → integrations' `on_active_set_changed`; per-key
+  `options` (none on the first state in use) → `on_lsp_options_changed`;
+  raised `db_rev` → `on_owned_database_changed`), releases the gate when the
+  state is in use and `ready` or unavailable and arms the timer only for a
+  loaded-but-not-ready wait. The model's own `lsp_ready`,
+  `active_set_changed`, `task_stopped` and `lsp_options_changed` are ignored
+  in `daemon` mode. Buffer → project is `lw.buf_project`'s record key only
+  (`views.match`, which, like `views.under` for the gate, falls back to the
+  path's physical identity — real path of it or its nearest existing
+  ancestor — when its spelling matches nothing: a Windows 8.3 short name or
+  a link under a real-path root). Options: `lw.set_lsp_option` in `daemon`
+  mode goes only through `editor_ops.set_lsp_option` (`LspConfig/1.
+  set_option`; not carried, `invalid`, `refused`, `declined` and a failed
+  call each an error naming what happened, nothing written); the status
+  page shows the daemon's options or "unavailable". In `daemon` mode
+  `Workspace:generates_lsp_databases()` is false (an observer is attached):
+  `_refresh_lsp_database_for` settles at once without generating or
+  watching, and cmake's `lsp_configs` schedules nothing. §19.13: with an
+  observer `Core:view_header` / `view_projects_index` return `unloaded` /
+  no projects instead of building from the model; `Observer:
+  workspace_unloaded()` (lost, not connected, or the daemon's header / LSP
+  state `unloaded`) makes `session_tracker.launch_refusal` refuse a run or
+  debug launch. The in-process source remains only for `runtime.mode =
+  "in-process"`, removed with the in-process editor (step 6b).
+
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
   request kind as its interface method (entities as `{ key }`) and maps the

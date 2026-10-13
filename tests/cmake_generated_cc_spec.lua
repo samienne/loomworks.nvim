@@ -377,7 +377,7 @@ describe("cmake lsp_configs compile_commands_dir (generated vs build dir)", func
         assert.is_false(scheduled)
     end)
 
-    it("schedules generation only while the workspace's model generates (daemon.md §19.16 D6)", function()
+    it("schedules generation only when the workspace's model generates (never in a daemon-mode editor, core §9.7)", function()
         local orig = cmake.refresh_generated_cc
         local scheduled = 0
         cmake.refresh_generated_cc = function() scheduled = scheduled + 1 end

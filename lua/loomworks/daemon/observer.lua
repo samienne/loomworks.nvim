@@ -87,6 +87,9 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- §19.16 "Channel upgrades"): a weighing runs no process, it only decides
 --- whether a check is due (CHANNEL_RETRY_S, the daily INTERVAL_S).
 M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
+--- The Runtime line's note while a lost connection keeps the workspace
+--- unloaded (§19.16 "Unloaded on disconnect", spec/ui.md §1.1).
+M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting for it"
 
 --- @class loomworks.daemon.Observer
 --- @field ws loomworks.Workspace
@@ -112,10 +115,11 @@ M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 --- @field _debug_adapters { languages: table[]|nil }|nil `DebugConfig/1.adapters` as last read on this connection (step 5k C2; `languages` nil: that read failed or was declined)
 --- @field _debug_fetch fun(records: table[]|nil)[]|nil an `adapters` read in flight: its waiters (with_debug_adapters)
 --- @field _debug_again boolean|nil a model change arrived during that read: read again after it
---- @field _lsp_read { state: loomworks.LspConfigState|nil }|nil `LspConfig/1.get` as last read on this connection (step 5l C; `state` nil: that read failed or was declined)
---- @field _lsp_fetch boolean|nil a `get` is in flight
+--- @field _lsp_read { state: loomworks.LspConfigState|nil, reason: string|nil }|nil `LspConfig/1.get` as last read on this connection (step 5l C; `state` nil: that read failed or was declined, `reason` says how)
+--- @field _lsp_fetch table|nil the `get` in flight: its token (a reply to an older read — before a reconnect, or `/lsp` removed and re-added — is ignored)
 --- @field _lsp_again boolean|nil a `changed` arrived during that read: read again after it
---- @field _lsp_inproc boolean|nil the LSP layer uses the in-process state until a read answers `loaded` (the §9.7 hold timed out first, or a connection was lost — §19.16 "LSP configuration"); kept across connections
+--- @field _lsp_get_why string|nil why `LspConfig/1.get` is degraded on this connection (the daemon lacks it): the LSP note's reason
+--- @field _lost boolean|nil a connection the editor held was lost: its workspace is unloaded until the daemon reports `loaded` again (§19.16 "Unloaded on disconnect"); kept across connections
 --- @field _relay loomworks.daemon.RelayProc|nil the relay in flight, until its `welcome` or its exit (single flight); after `welcome` the relay is the connection's (`conn.relay`)
 --- @field _relay_token table|nil identifies that relay's callback: `{ form, answer, conn }` (one after a stop or a replacement is ignored)
 --- @field _want table|nil the relay to spawn once a probe or download in flight ends: `{ form, instance?, answer?, prefix? }`
@@ -314,9 +318,6 @@ function M.attach(ws, opts)
     M._current = self
     -- The domain objects' cleans ask it (step 5k; loomworks.daemon.editor_ops).
     ws._operation_router = require("loomworks.daemon.editor_ops").router
-    -- Who generates the owned LSP databases (step 5l D6, §19.16 "LSP
-    -- configuration"): the model asks before each generation.
-    ws._lsp_db_owner = function() return self:lsp_db_owner() end
     if sel.warning then self.warning = sel.warning end
     self:start(false)
     return self
@@ -351,6 +352,9 @@ end
 function Observer:_set_view(name, state)
     views.set(self, name, state)
     self:_emit("daemon_view_changed", { view = name })
+    -- The daemon reports the workspace loaded: a lost connection's unload
+    -- ends (§19.16 "Unloaded on disconnect").
+    if name == "header" and type(state) == "table" and state.state == "loaded" then self:_daemon_loaded() end
 end
 
 --- Drop this observer's daemon views (all, or `name`) from the store: they
@@ -367,8 +371,12 @@ end
 --- Set the state and the note; the status page re-renders.
 function Observer:_set(state, note)
     if self.state == state and self.note == note then return end
+    local moved = self.state ~= state
     self.state, self.note = state, note
     self:_emit("daemon_runtime_changed", self)
+    -- A new state can move the LSP phase (no binary: unavailable;
+    -- connecting or waiting: held).
+    if moved then self:_lsp_changed() end
 end
 
 --- Start observing (spec §19.16 "Through the relay"): spawn an ordinary
@@ -1333,7 +1341,9 @@ function Observer:_connected_note()
     if self.mode == "interfaces" and (offers_any or self._sub_only) then
         for _, want in ipairs(M.FEATURES) do
             local st = self._feat[want.feature]
-            if st ~= "subscribed" and st ~= "pending" and st ~= "available" and self._why[want.feature] then
+            -- (The LSP configuration's own note says it: lsp_note.)
+            if st ~= "subscribed" and st ~= "pending" and st ~= "available" and self._why[want.feature]
+                and want ~= M.LSP then
                 notes[#notes + 1] = self._why[want.feature]
             end
         end
@@ -1348,7 +1358,7 @@ function Observer:_connected_note()
     if self.incompat_note then note = note .. " — " .. self.incompat_note end
     self:_set("connected", note)
     -- The LSP state's first read on this connection, once discovered (§19.16
-    -- "LSP configuration"); a feature found missing ends the connecting hold.
+    -- "LSP configuration"); a feature found missing makes it unavailable.
     if not self._lsp_read and not self._lsp_fetch and self:can_call("get") then
         self:_fetch_lsp()
     end
@@ -1400,7 +1410,7 @@ end
 --- @param done fun()
 function Observer:_subscribe(conn, done)
     self._feat, self._why, self._sub_only = {}, {}, nil
-    self._degraded, self._method_notes = nil, nil
+    self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq = nil
@@ -1634,11 +1644,13 @@ function Observer:_on_closed(c)
     self.mode = nil
     self.feature_note = nil
     self.incompat_note = nil
-    -- No connection: the LSP layer uses the in-process state at once, until
-    -- a read after a reconnect answers `loaded` (§19.16 "LSP configuration").
-    self._lsp_inproc = true
+    -- The workspace is unloaded until a reconnect's daemon reports it
+    -- `loaded` (§19.16 "Unloaded on disconnect"): its remote tasks end
+    -- below, the controlled language servers stop (the LSP layer, on the
+    -- `lost` change) and their buffers are held.
+    self._lost = true
     self._feat, self._why, self._sub_only = nil, nil, nil
-    self._degraded, self._method_notes = nil, nil
+    self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq = nil
@@ -1655,7 +1667,7 @@ function Observer:_on_closed(c)
         return self:_after_retire("the workspace daemon (pid " .. tostring(d and d.pid) .. ") is retiring")
     end
     if self._relay then return end
-    self:_spawn({ form = "no-launch", prefix = "the workspace daemon disconnected" })
+    self:_spawn({ form = "no-launch", prefix = M.LOST_NOTE })
 end
 
 --- Apply the workspace files' pending changes now (spec §19.12).
@@ -1917,8 +1929,18 @@ function Observer:_degrade(method, err)
     self._degraded = self._degraded or {}
     if self._degraded[method] then return end
     self._degraded[method] = true
-    self._method_notes = self._method_notes or {}
     local want = METHOD_IFACE[method] or M.BUILD
+    -- The LSP configuration never runs in-process (§19.16 "LSP
+    -- configuration"): a missing `get` makes it unavailable (lsp_note says
+    -- why), a missing `set_option` makes an option write an error.
+    if want == M.LSP then
+        if method == "get" then
+            self._lsp_get_why = string.format("daemon offers no %s/%d.%s (%s)", want.iface, want.v, method,
+                tostring(err and (err.message or err.code) or "?"))
+        end
+        return self:_lsp_changed()
+    end
+    self._method_notes = self._method_notes or {}
     self._method_notes[#self._method_notes + 1] = string.format(
         "%s: daemon offers no %s/%d.%s (%s) — running them in-process", want.feature, want.iface,
         want.v, method, tostring(err and (err.message or err.code) or "?"))
@@ -2143,10 +2165,12 @@ end
 
 --- Read `LspConfig/1.get` (with the editor's environment, as every call) into
 --- the per-connection cache (single flight: a `changed` during a read reads
---- once more after it). A failed or declined read is cached as absent
---- (`state` nil) until the next `changed`, `Workspace/1` `changed` or
---- reconnect, with a debug-log line only. A read that answers `loaded` ends
---- an in-process fallback of a timed-out hold or a lost connection.
+--- once more after it). Each read carries a token: a reply to an older read
+--- (before a reconnect, or `/lsp` removed and re-added on this connection)
+--- is ignored. A failed or declined read is cached as absent (`state` nil,
+--- with its reason) until the next `changed`, `Workspace/1` `changed` or
+--- reconnect, and logged at debug level: the language servers are withheld
+--- meanwhile, never configured in-process (§19.16 "LSP configuration").
 function Observer:_fetch_lsp()
     if self._lsp_fetch then
         self._lsp_again = true
@@ -2154,19 +2178,26 @@ function Observer:_fetch_lsp()
     end
     if not self:can_call("get") then return end
     local conn = self.conn
-    self._lsp_fetch = true
+    local token = {}
+    self._lsp_fetch = token
     self:request("get", {}, function(r)
-        if self.conn ~= conn or self.state == "stopped" then return end
+        if self.conn ~= conn or self.state == "stopped" or self._lsp_fetch ~= token then return end
         self._lsp_fetch = nil
         local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
         local st = res and type(res.state) == "string" and type(res.projects) == "table" and res or nil
+        local reason = nil
         if not st then
-            self:_debug("lsp configuration: LspConfig/1.get " .. tostring(r.reason or (res and res.outcome) or r.outcome)
-                .. " — the in-process state until the next change")
-        elseif st.state == "loaded" then
-            self._lsp_inproc = nil
+            if r.outcome ~= "ok" then
+                reason = "LspConfig/1.get failed: " .. tostring(r.reason or r.outcome)
+            elseif res and res.outcome == "declined" then
+                reason = "LspConfig/1.get declined" .. (res.reason and (" (" .. tostring(res.reason) .. ")") or "")
+            else
+                reason = "LspConfig/1.get answered " .. tostring(res and (res.message or res.outcome) or "nothing usable")
+            end
+            self:_debug("lsp configuration: " .. reason .. " — language servers withheld until the next change")
         end
-        self._lsp_read = { state = st }
+        self._lsp_read = { state = st, reason = reason }
+        if st and st.state == "loaded" then self:_daemon_loaded() end
         if self._lsp_again then
             self._lsp_again = nil
             self:_fetch_lsp()
@@ -2183,70 +2214,115 @@ function Observer:_debug(msg)
     if log and log.debug then pcall(log.debug, log, "daemon: %s", msg) end
 end
 
---- Where the LSP layer stands with this observer (§19.16 "LSP
---- configuration"), and the daemon's state when it is in use:
----   "loaded"     in use: carried and the last read answered `loaded`
----   "connecting" the describe, the subscription or the first read not
----                answered yet (or no connection yet): hold
----   "unloaded"   the daemon has not loaded the workspace yet: hold
----   "declined"   the last read was declined or failed, or answered `error` /
----                `refused`: in-process until the next read
----   "inproc"     the hold timed out, or the connection was lost while
----                carried: in-process until a read answers `loaded`
----   "none"       not carried (no binary, protocol 10, an incompatible daemon,
----                the interface missing, refused or degraded): in-process
---- @return "loaded"|"connecting"|"unloaded"|"declined"|"inproc"|"none" phase
---- @return loomworks.LspConfigState|nil state the daemon's (phase "loaded")
+--- The daemon reports the workspace `loaded` (its header view, or an
+--- `LspConfig/1` read): a lost connection's unload ends (§19.16 "Unloaded on
+--- disconnect").
+function Observer:_daemon_loaded()
+    if not self._lost then return end
+    self._lost = nil
+    self:_emit("daemon_runtime_changed", self)
+end
+
+--- Whether the editor's workspace is unloaded in `daemon` mode (§19.13,
+--- §19.16 "Unloaded on disconnect"): no connection yet or any more, a lost
+--- connection the daemon has not reported `loaded` again since, or the
+--- daemon reporting it `unloaded` (its header view, else its LSP state).
+--- A run or debug launch is refused then (§19.16 "Editor operations").
+--- @return boolean unloaded
+--- @return string|nil why the status a refused launch names
+function Observer:workspace_unloaded()
+    if self.state == "stopped" then return false, nil end
+    if self._lost then return true, M.LOST_NOTE end
+    if self.state ~= "connected" or self.mode == nil then
+        return true, "the editor is not connected to the workspace daemon yet"
+    end
+    local header = views.daemon_state(self, "header")
+    local st = self._lsp_read and self._lsp_read.state
+    local state = (type(header) == "table" and header.state) or (type(st) == "table" and st.state) or nil
+    if state == "unloaded" then return true, "the workspace daemon has not loaded the workspace yet" end
+    return false, nil
+end
+
+--- Why the LSP configuration cannot come from this connected daemon (§19.16
+--- "LSP configuration" Unavailable), or nil (it can, or it is not settled
+--- yet). `kind` "error" for a failed or refused load (§9.8
+--- `withheld_error`), else "daemon" (`withheld_daemon`).
+--- @return { kind: "error"|"daemon", note: string }|nil
+function Observer:_lsp_unavailable()
+    if self.mode ~= "interfaces" then
+        return { kind = "daemon", note = "the workspace daemon offers no loomworks.LspConfig/1 (protocol 10)" }
+    end
+    if self.incompat_note or self._retire then
+        return { kind = "daemon", note = "the workspace daemon is incompatible" }
+    end
+    local f = self._feat and self._feat[M.LSP.feature]
+    if f == "pending" then return nil end
+    if f ~= "subscribed" then
+        local why = self._why and self._why[M.LSP.feature]
+        -- Not settled yet (no note either): the describe is in flight.
+        if f == nil and not why then return nil end
+        why = why and (why:gsub("^lsp configuration: ", "")) or "daemon offers no loomworks.LspConfig/1"
+        return { kind = "daemon", note = why }
+    end
+    if self._degraded and self._degraded.get then
+        return { kind = "daemon", note = self._lsp_get_why or "daemon offers no loomworks.LspConfig/1.get" }
+    end
+    local read = self._lsp_read
+    if not read then return nil end
+    local st = read.state
+    if not st then return { kind = "daemon", note = read.reason or "LspConfig/1.get failed" } end
+    if st.state == "error" or st.state == "refused" then
+        return { kind = "error", note = st.state == "refused" and "the workspace daemon's load of the workspace was refused"
+            or "the workspace daemon's load of the workspace failed" }
+    end
+    return nil
+end
+
+--- Where the LSP configuration stands with this observer (§19.16 "LSP
+--- configuration"):
+---   "loaded"      in use: carried and the last read answered `loaded`;
+---                 detail: the daemon's state
+---   "waiting"     connecting, the first read not answered, the daemon's
+---                 workspace `unloaded`, or unloaded by a lost connection:
+---                 buffers held, no timeout; detail `{ why =
+---                 "connecting"|"unloaded"|"disconnected" }`
+---   "unavailable" no host binary, the interface not carried, a declined or
+---                 failed read, a state `error` / `refused`: buffers withheld;
+---                 detail `{ kind = "error"|"daemon", note }`
+--- @return "loaded"|"waiting"|"unavailable" phase
+--- @return table detail
 function Observer:lsp_phase()
-    if self.state == "stopped" or self.state == "no-binary" then return "none" end
+    if self.state == "no-binary" then
+        return "unavailable", { kind = "daemon", note = "no lw host binary" }
+    end
     local read = self._lsp_read
     local st = read and read.state
     if st and st.state == "loaded" and self:can_call("get") then return "loaded", st end
-    if self._lsp_inproc then return "inproc" end
-    if self.state ~= "connected" or self.mode == nil then return "connecting" end
-    if self.mode ~= "interfaces" or self.incompat_note or self._retire then return "none" end
-    local f = self._feat and self._feat[M.LSP.feature]
-    if f == "pending" then return "connecting" end
-    if f ~= "subscribed" then
-        -- Not settled yet (no note either): the describe is in flight.
-        if f == nil and not (self._why and self._why[M.LSP.feature]) then return "connecting" end
-        return "none"
+    if self.state == "connected" and self.mode ~= nil then
+        local u = self:_lsp_unavailable()
+        if u then return "unavailable", u end
+        if not self._lost and st and st.state == "unloaded" then return "waiting", { why = "unloaded" } end
     end
-    if self._degraded and self._degraded.get then return "none" end
-    if not read then return "connecting" end
-    if not st or st.state == "error" or st.state == "refused" then return "declined" end
-    return "unloaded"
+    return "waiting", { why = self._lost and "disconnected" or "connecting" }
 end
 
---- Who generates the owned LSP databases now (step 5l D6): the daemon while
---- its state is in use, nobody yet while the LSP layer holds for it, else the
---- editor's model (every fallback row, exactly as in-process).
---- @return "daemon"|"pending"|"editor"
-function Observer:lsp_db_owner()
-    local phase = self:lsp_phase()
-    if phase == "loaded" then return "daemon" end
-    if phase == "connecting" or phase == "unloaded" then return "pending" end
-    return "editor"
+--- The Runtime line's note for the LSP configuration (spec/ui.md §1.1), nil
+--- while the daemon's state is in use; `warn` for an unavailable one.
+--- @return string|nil note
+--- @return boolean warn
+function Observer:lsp_note()
+    local phase, d = self:lsp_phase()
+    if phase == "loaded" then return nil, false end
+    if phase == "waiting" then
+        return "lsp configuration: waiting for the workspace daemon — language servers "
+            .. (d.why == "disconnected" and "stopped, held" or "held"), false
+    end
+    return "lsp configuration: " .. d.note .. " — language servers withheld", true
 end
 
---- The §9.7 hold timed out (the LSP layer's safety timeout): while still
---- connecting or `unloaded`, the in-process state from now on, until the
---- daemon reports `loaded` (§19.16 "LSP configuration").
-function Observer:lsp_hold_timed_out()
-    local phase = self:lsp_phase()
-    if phase ~= "connecting" and phase ~= "unloaded" then return end
-    self._lsp_inproc = true
-    self:_lsp_changed()
-end
-
---- The LSP state or where it comes from may have changed: the model resumes
---- the database generation it skipped once it owns it again (D6), and the
---- LSP layer re-reads its source (`daemon_lsp_config`).
+--- The LSP state or where it stands may have changed: the LSP layer re-reads
+--- its source (`daemon_lsp_config`).
 function Observer:_lsp_changed()
-    local ws = self.ws
-    if ws and not ws._torn_down and ws.resume_lsp_databases and self:lsp_db_owner() == "editor" then
-        pcall(ws.resume_lsp_databases, ws)
-    end
     self:_emit("daemon_lsp_config", {})
 end
 
@@ -2359,6 +2435,12 @@ function Observer:runtime_line()
     if self.channel_note then t = t .. " — " .. self.channel_note end
     if self.retired_note and self.state ~= "connected" then t = t .. " (" .. self.retired_note .. ")" end
     if self.warning then t = t .. " (" .. self.warning .. ")" end
+    -- A lost connection keeps the workspace unloaded until the daemon
+    -- reports it `loaded` (§19.16 "Unloaded on disconnect"), reconnected too.
+    if self._lost and not t:find(M.LOST_NOTE, 1, true) then t = t .. " — " .. M.LOST_NOTE end
+    -- Where the language servers stand (§19.16 "LSP configuration").
+    local lsp = self:lsp_note()
+    if lsp then t = t .. " — " .. lsp end
     return t
 end
 
@@ -2367,7 +2449,9 @@ end
 --- state or note. nil when no mode was selected yet, or when the default
 --- picked `in-process` with nothing to report. `warn` is true while a
 --- `daemon`-mode observer is not connected (a version mismatch, no host
---- binary, waiting) and for an ignored value or unreadable settings file.
+--- binary, waiting), while a lost connection keeps the workspace unloaded,
+--- while the LSP configuration is unavailable, and for an ignored value or
+--- unreadable settings file.
 --- @param ws loomworks.Workspace|nil
 --- @return string|nil text, boolean warn
 function M.runtime_line(ws)
@@ -2375,7 +2459,10 @@ function M.runtime_line(ws)
     if not sel then return nil, false end
     local head = sel.mode .. " (" .. sel.source .. ")"
     local obs = M.of(ws)
-    if obs then return head .. " — " .. obs:runtime_line(), obs.state ~= "connected" end
+    if obs then
+        local _, lsp_warn = obs:lsp_note()
+        return head .. " — " .. obs:runtime_line(), obs.state ~= "connected" or obs._lost == true or lsp_warn
+    end
     local parts = {}
     if sel.reason then parts[#parts + 1] = sel.reason end
     if sel.warning then parts[#parts + 1] = sel.warning end
@@ -2410,8 +2497,7 @@ function Observer:stop()
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end
     if M._current == self then M._current = nil end
     if self.ws and self.ws._operation_router then self.ws._operation_router = nil end
-    if self.ws and self.ws._lsp_db_owner then self.ws._lsp_db_owner = nil end
-    self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
+    self._lsp_read, self._lsp_fetch, self._lsp_again, self._lost = nil, nil, nil, nil
 end
 
 M.Observer = Observer
