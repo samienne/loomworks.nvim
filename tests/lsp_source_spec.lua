@@ -8,7 +8,7 @@ local lsp_config = require("loomworks.lsp_config")
 local source = require("loomworks.lsp_source")
 local lw = require("loomworks")
 
-local FACADE = { "get_workspace", "get_projects", "lsp_ready", "project_for_buf",
+local FACADE = { "get_workspace", "get_projects", "lsp_ready", "buf_project",
     "get_setup_error", "get_lsp_options" }
 
 --- A fake workspace whose active profile maps project keys to build dirs.
@@ -93,14 +93,17 @@ describe("lsp_source (in-process)", function()
         assert.is_nil(source.root())
     end)
 
-    it("project_for_buf maps a buffer through the facade to its record", function()
-        lw.project_for_buf = function(bufnr) return bufnr == 7 and projects.B or nil end
+    it("project_for_buf maps a buffer by lw.buf_project's record key (§19.13)", function()
+        lw.buf_project = function(bufnr) return bufnr == 7 and { key = "B" } or nil end
         local rec = source.project_for_buf(7)
         assert.equals("B", rec.project)
         assert.equals("/ws/B", rec.entries[1].root_dir)
         assert.equals("/ws/b/B", rec.entries[1].db_dir)
         assert.is_nil(source.project_for_buf(8))
-        lw.project_for_buf = nil
+        -- A record the state has no project for maps to none.
+        lw.buf_project = function() return { key = "Gone" } end
+        assert.is_nil(source.project_for_buf(7))
+        lw.buf_project = nil
         assert.is_nil(source.project_for_buf(7))
     end)
 

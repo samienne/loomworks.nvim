@@ -194,12 +194,16 @@ end
 -- ---------------------------------------------------------------------------
 --
 -- Projects, entries (with `db_state`, `db_dir`, `db_rev`), options and
--- readiness come from loomworks/lsp_source.lua, which serves the state built
--- by the host-neutral loomworks/lsp_config.lua (content-memoized
+-- readiness come from loomworks/lsp_source.lua: in `daemon` mode only the
+-- workspace daemon's `LspConfig/1` state (daemon.md §19.16 "LSP
+-- configuration": while it is not in use buffers are held or withheld, never
+-- configured from anything else); in `in-process` mode the state built by
+-- the host-neutral loomworks/lsp_config.lua (content-memoized
 -- `lsp_configs`). This layer never reads the workspace model itself.
 
 local lsp_config = require("loomworks.lsp_config")
 local source = require("loomworks.lsp_source")
+local views = require("loomworks.views")
 
 --- Return the first lsp_configs entry a project's module emits for a
 --- given server, or nil. Kept as public API; the LSP layer itself reads
@@ -506,15 +510,16 @@ local function workspace_root()
     return lw.workspace_root()
 end
 
---- Whether a buffer's file lives under `root` (boundary-aware prefix check).
+--- Whether a buffer's file lives under `root` (boundary-aware prefix check;
+--- a path spelled otherwise than the root — a Windows 8.3 short name, a
+--- link — by its physical identity, loomworks.views `under`).
 --- @param bufnr integer
 --- @param root string
 --- @return boolean
 local function buf_under_root(bufnr, root)
     local name = vim.api.nvim_buf_get_name(bufnr)
     if not name or name == "" then return false end
-    local p, r = norm_cmp(name), norm_cmp(root):gsub("/+$", "")
-    return p == r or p:sub(1, #r + 1) == r .. "/"
+    return views.under(root, name)
 end
 
 --- Whether a LOADED workspace exists AND its owned LSP databases are ready.
@@ -583,9 +588,13 @@ end
 --- Arm the safety timeout (once). If no readiness/failure signal arrives, the
 --- queue drains through each buffer's resolver so a buffer never stays in the
 --- hold (§9.7). A managed resolver never starts a database-less server for a
---- buffer under the workspace root — it withholds instead (§9.8).
+--- buffer under the workspace root — it withholds instead (§9.8). Not armed
+--- while the editor waits for the workspace daemon (daemon.md §19.16 "LSP
+--- configuration" Waiting: no timeout); in daemon mode it bounds only the
+--- wait for the daemon's `ready`, and a buffer it resolves is decided
+--- against the daemon's state (still waiting by then: it stays `held`).
 local function gate_arm_timer()
-    if _gate_timer then return end
+    if _gate_timer or source.waiting() then return end
     _gate_timer = vim.uv.new_timer()
     local ms = M._gate_timeout_ms or GATE_TIMEOUT_MS
     _gate_timer:start(ms, 0, function()
@@ -614,6 +623,11 @@ end
 function M.gated_root_dir(bufnr, on_dir, resolve, server)
     -- Ready: a workspace is loaded and its owned databases are in place.
     if workspace_loaded_and_ready() then
+        return resolve(bufnr, on_dir)
+    end
+    -- Daemon mode, the configuration unavailable: nothing to wait for — the
+    -- resolver withholds (§9.8 `withheld_daemon` / `withheld_error`).
+    if (source.daemon_phase()) == "unavailable" then
         return resolve(bufnr, on_dir)
     end
     -- Not ready. Hold only if this buffer belongs to a loomworks workspace — the
@@ -684,7 +698,7 @@ end
 --- Severity order for aggregating a buffer's per-server statuses.
 local STATE_RANK = {
     none = 0, ok = 1, held = 2,
-    withheld_no_db = 3, withheld_unconfigured = 4, withheld_error = 5,
+    withheld_no_db = 3, withheld_unconfigured = 4, withheld_daemon = 5, withheld_error = 6,
 }
 
 --- Record a buffer's status for one server; redraws statuslines on change.
@@ -778,6 +792,17 @@ end
 --- @return loomworks.LspBufState status, table|nil entry
 local function decide(server, bufnr)
     if not source.available() then return "none", nil end
+
+    -- Daemon mode (daemon.md §19.16 "LSP configuration"): while the daemon's
+    -- state is not in use, a buffer under the root waits (`held`) or is
+    -- withheld — never decided against the editor's own model.
+    local phase, detail = source.daemon_phase()
+    if phase and phase ~= "loaded" then
+        local root = source.root() or workspace_root()
+        if not root or not buf_under_root(bufnr, root) then return "none", nil end
+        if phase == "waiting" then return "held", nil end
+        return (type(detail) == "table" and detail.kind == "error") and "withheld_error" or "withheld_daemon", nil
+    end
 
     if not source.loaded() then
         if _ws_failed_root and buf_under_root(bufnr, _ws_failed_root) then
@@ -957,6 +982,13 @@ local function reevaluate_pass(retrigger)
 
     -- 2. Running clients whose buffers became withheld or now route to another
     --    entry: stop (managed — no auto-restart, no suppression) or detach.
+    --    Daemon mode with the state not in use (daemon.md §19.16 "Running
+    --    clients"): waiting while connected, or an unavailable configuration,
+    --    stops no client — a running client keeps running and its buffers
+    --    keep status `ok` until a state in use says otherwise. Only a lost
+    --    connection stops them (`stop_controlled_clients`).
+    local phase = source.daemon_phase()
+    if phase and phase ~= "loaded" then return end
     for server, integration in pairs(_integrations) do
         if integration.withhold_reason then
             for _, client in ipairs(vim.lsp.get_clients({ name = server })) do
@@ -1053,9 +1085,9 @@ function M.on_owned_database_changed(build_dir)
     M.reevaluate()
 
     -- The projects with an entry that reads this dir's owned database: its
-    -- `db_dir` (the module's, e.g. a `compile_commands_from` redirect target,
-    -- else the project's active build dir). A module's own `build_dir` field
-    -- is opaque and never matched.
+    -- `db_dir` (§8.4: the module's when it redirects the entry to another
+    -- unit's database, else the project's active build dir). A module's own
+    -- `build_dir` field is opaque and never matched.
     local target = norm_cmp(build_dir)
     for _, rec in ipairs(source.projects()) do
         local hit = false
@@ -1290,6 +1322,99 @@ local function discover()
     end
 end
 
+--- Apply one option change to the integrations, as the in-process
+--- `lsp_options_changed` does.
+--- @param payload { server: string, key: string, value: any }
+local function apply_option_change(payload)
+    -- lsp options can feed lsp_configs output; invalidate every memo key.
+    lsp_config.bump_generation()
+    for _, int in pairs(_integrations) do
+        if int.on_lsp_options_changed then
+            vim.schedule(function() int.on_lsp_options_changed(payload) end)
+        end
+    end
+end
+
+--- A lost connection unloads the workspace (daemon.md §19.16 "Unloaded on
+--- disconnect"): every client of a server loomworks controls (an integration
+--- with `withhold_reason`, the §9.4 default path) under the root is stopped
+--- through the managed-stop path (neither suppressed nor counted against the
+--- restart throttle) and its buffers under the root become `held`, parked
+--- for the re-evaluation that starts them once the daemon reports the
+--- workspace `loaded` and their entry usable.
+local function stop_controlled_clients()
+    local root = source.root() or workspace_root()
+    if not root then return end
+    for server, integration in pairs(_integrations) do
+        if integration.withhold_reason then
+            for _, client in ipairs(vim.lsp.get_clients({ name = server })) do
+                local held, other = {}, 0
+                for bufnr in pairs(client.attached_buffers or {}) do
+                    if vim.api.nvim_buf_is_valid(bufnr) and buf_under_root(bufnr, root) then
+                        held[#held + 1] = bufnr
+                    else
+                        other = other + 1
+                    end
+                end
+                local under = client.root_dir and views.under(root, client.root_dir)
+                if #held > 0 or under then
+                    if other == 0 then
+                        M.mark_managed_stop(client.id)
+                        client:stop()
+                    else
+                        for _, bufnr in ipairs(held) do pcall(vim.lsp.buf_detach_client, bufnr, client.id) end
+                    end
+                    for _, bufnr in ipairs(held) do
+                        set_buf_state(bufnr, server, "held")
+                        mark_withheld(bufnr, server)
+                    end
+                end
+            end
+        end
+    end
+end
+
+--- The daemon's LSP state may have changed (the observer's
+--- `daemon_lsp_config`, daemon.md §19.16 "LSP configuration"): a new read,
+--- or the state starting or stopping being in use. A lost connection stops
+--- the controlled clients first (`stop_controlled_clients`). Changed options
+--- apply as an option change; a switch or changed entries re-evaluate as an
+--- active-set change (§9.8 — a client restarts only when its resolved binary
+--- or database directory differs); a raised `db_rev` is that entry's
+--- owned-database completion signal. The hold is released once the daemon's
+--- state is in use and `ready`, or when the configuration is unavailable
+--- (the buffers are then withheld); while the editor waits for the daemon it
+--- stays, with no timeout (§9.7).
+function M._on_source_changed()
+    local ch = source.changes()
+    if ch.lost then pcall(stop_controlled_clients) end
+    for _, payload in ipairs(ch.options) do apply_option_change(payload) end
+    if ch.switched or ch.entries then
+        for _, int in pairs(_integrations) do
+            if int.on_active_set_changed then
+                vim.schedule(int.on_active_set_changed)
+            end
+        end
+    end
+    for _, dir in ipairs(ch.written) do M.on_owned_database_changed(dir) end
+    local phase = source.daemon_phase()
+    if phase == "unavailable" or workspace_loaded_and_ready() then
+        gate_release()
+    elseif phase == "loaded" and #_gate_queue > 0 then
+        -- In use but not `ready`: the safety timeout bounds this wait only.
+        gate_arm_timer()
+    end
+    M.reevaluate()
+end
+
+--- Whether the editor's own model events are to be ignored by the LSP layer:
+--- in daemon mode they reach it only through the daemon's state (§9.8
+--- "Re-evaluation").
+--- @return boolean
+local function daemon_mode()
+    return source.mode() == "daemon"
+end
+
 --- Wire integration listeners to the loomworks event bus. Idempotent.
 local _listeners_wired = false
 local function wire_listeners()
@@ -1307,11 +1432,18 @@ local function wire_listeners()
     -- compile_commands_dir (with compile_commands.json already on disk for
     -- configured units) are in place, so held buffers resolve now and each
     -- server starts once, correct, with no follow-up restart.
+    -- (Not in daemon mode: the daemon's own `ready` releases it then,
+    -- daemon.md §19.16 "LSP configuration".)
     lw.on("lsp_ready", function()
+        if daemon_mode() then return end
         gate_release()
         M.reevaluate()
     end)
+    lw.on("daemon_lsp_config", function()
+        M._on_source_changed()
+    end)
     lw.on("active_set_changed", function()
+        if daemon_mode() then return end
         for _, int in pairs(_integrations) do
             if int.on_active_set_changed then
                 vim.schedule(int.on_active_set_changed)
@@ -1322,6 +1454,7 @@ local function wire_listeners()
         M.reevaluate()
     end)
     lw.on("task_stopped", function()
+        if daemon_mode() then return end
         M.reevaluate()
     end)
     lw.on("workspace_changed", function(ws)
@@ -1359,13 +1492,8 @@ local function wire_listeners()
         lsp_config.clear_memo()
     end)
     lw.on("lsp_options_changed", function(payload)
-        -- lsp options can feed lsp_configs output; invalidate every memo key.
-        lsp_config.bump_generation()
-        for _, int in pairs(_integrations) do
-            if int.on_lsp_options_changed then
-                vim.schedule(function() int.on_lsp_options_changed(payload) end)
-            end
-        end
+        if daemon_mode() then return end
+        apply_option_change(payload)
     end)
 end
 

@@ -373,7 +373,7 @@
 
 --- Buffer status info for statusline/LSP integration.
 --- Per-buffer LSP status of a managed language server (spec §9.8).
---- @alias loomworks.LspBufState "none"|"held"|"ok"|"withheld_unconfigured"|"withheld_no_db"|"withheld_error"
+--- @alias loomworks.LspBufState "none"|"held"|"ok"|"withheld_unconfigured"|"withheld_no_db"|"withheld_error"|"withheld_daemon"
 
 --- @class loomworks.BufStatus
 --- @field profile_key? string full active profile key
@@ -390,7 +390,8 @@
 ---     the workspace, nil when there are no diagnostics. Workspace-level
 ---     (not buffer-scoped) — same value for every buffer in the workspace.
 --- @field lsp loomworks.LspBufState per-buffer LSP status (spec §9.8):
----     none, held, ok, withheld_unconfigured, withheld_no_db, withheld_error.
+---     none, held, ok, withheld_unconfigured, withheld_no_db, withheld_error,
+---     withheld_daemon.
 
 --- Cached target info from module file-api parsing. Runtime-only.
 --- @class loomworks.CachedTarget

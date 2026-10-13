@@ -1120,11 +1120,15 @@ end
 
 --- `loomworks.view.Header/1`'s state built from the in-process model (spec
 --- §19.13 "Two sources, one shape"): the daemon's builder, without the
---- session fields and ids only the daemon fills. A failed load reports as
+--- session fields and ids only the daemon fills (`in-process` mode only). A failed load reports as
 --- the daemon's `error_state` does (cli.lua).
 --- @return loomworks.ViewHeader
 function Core:view_header()
     local ws = self._workspace
+    -- In `daemon` mode a view is never built from the editor's model
+    -- (§19.13): with no daemon table (not connected yet, the connection
+    -- lost, the view not offered) the workspace shows unloaded.
+    if ws and ws._daemon_observer then return { root = ws.root, state = "unloaded" } end
     local e = not ws and self._setup_error or nil
     local err
     if e then
@@ -1139,7 +1143,11 @@ end
 --- (no ids; no projects when no workspace is loaded).
 --- @return loomworks.ViewProjectsIndex
 function Core:view_projects_index()
-    return require("loomworks.view_state").projects_index(self._workspace)
+    -- In `daemon` mode never built from the model (§19.13): empty, so
+    -- `lw.buf_project` maps no buffer until the daemon reports `loaded`.
+    local ws = self._workspace
+    if ws and ws._daemon_observer then return { projects = {} } end
+    return require("loomworks.view_state").projects_index(ws)
 end
 
 --- Detach the active workspace fully. Called on VimLeave-style shutdown.

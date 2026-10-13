@@ -180,6 +180,41 @@ qmlls integration).
 
 ---
 
+## Owned compile database briefly missing during the swap
+
+cmake's `async_rename` (modules/cmake.lua) first moves the previous
+`compile_commands.json` aside to `.bak`, then renames the new temp file into
+place, retrying a locked rename (Windows EACCES/EPERM) a few times on a
+timer. Between the two renames, and for good if every retry fails, there is
+no `compile_commands.json`: a clangd reading it then (or a §9.8 `no_db`
+check) sees no database, and a failed swap leaves only the `.bak`. The gap
+comes only from that pre-move: libuv's `fs_rename` already replaces an
+existing destination in one step on every platform (on Windows it calls
+`MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`). Fix: rename the temp file
+directly over the old database, and keep a `.bak` (if still wanted) by
+copying the old file rather than moving it.
+
+---
+
+## Leaked owned-database temp files; sparse `extra_args`
+
+- A process that crashes (or is killed) mid-generation leaves its
+  `compile_commands.json.<pid>.tmp` beside the database (cmake.md §12.4: each
+  process removes only its own). Nothing removes it later. Have the writer
+  (or housekeeping) remove such a temp file whose pid is no longer running
+  and that is older than a generation could take — never another live
+  process's.
+- `lsp.clangd.extra_args` is read with `ipairs`
+  (`Workspace:_validate_lsp_options`): a list with a hole silently loses
+  every element after it. user.json cannot produce one — a JSON `null`
+  element decodes to `vim.NIL`, which `ipairs` walks past and the validator
+  drops as a non-string — so holes arise only from Lua callers passing a
+  sparse table (e.g. `lw.set_lsp_option` with `{ "a", nil, "b" }`). Read it
+  by its integer keys in order instead (dropping non-strings, as now), or
+  refuse it like `lsp_option_problem` refuses a mistyped write.
+
+---
+
 ## `_validate_build_dir`: trailing dot/space segments on Windows
 
 `_validate_build_dir` accepts segments with trailing dot/space on Windows

@@ -88,6 +88,24 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   deploy in Neovim, as an in-process launch does. An error starting the
   prepared program is reported instead of leaving its progress spinning.
   In-process mode is unchanged. (#201)
+- In daemon runtime mode the language servers are configured only from the
+  workspace daemon: a configure, reset or profile switch run in the daemon
+  (from the CLI too) starts, withholds or restarts clangd in Neovim without
+  reopening the buffer, only the daemon writes the compile database
+  loomworks owns, and the status page's LSP options are written only
+  through the daemon (a failed write is an error; nothing is saved
+  locally). While Neovim waits for the daemon (connecting, or the daemon
+  has not loaded the workspace) buffers stay held; when the daemon cannot
+  give the configuration (no `lw` binary, an older daemon, its load failed)
+  they are withheld (lualine `(no lsp config)`), with the reason on the
+  status page's Runtime line; a language server already running keeps
+  running meanwhile. Losing the connection, or the daemon reporting the
+  workspace unloaded, unloads it in Neovim until the daemon reports it
+  loaded again: run/debug launches are not offered and are refused, the
+  statusline shows no project, and on a lost connection its language
+  servers stop and their buffers wait. An editor attaching to the daemon
+  makes it load the workspace, so an editor-only session no longer stays
+  unloaded. In-process mode is unchanged. (#205)
 - `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
   `label`, `type`, `path`, `abs_path` and the active configuration, tool key
   and state). It matches on a separator boundary, so a project at `/a/foo`
@@ -613,6 +631,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what needs it. (#196, #198)
 
 ### Fixed
+- A language server is no longer routed to a project whose directory merely
+  shares a name prefix with the buffer's (a project at `/a/foo` no longer
+  claims a file in `/a/foobar`): the LSP layer maps a buffer to its project
+  as `lw.buf_project` does. A file opened through another spelling of the
+  workspace's path (a Windows 8.3 short name such as `RUNNER~1`, a junction
+  or symlink), or a project whose root is spelled that way, now belongs to
+  the project it really lies in; a file reached through a link inside a
+  project that points outside it still belongs to that project. (#205)
 - Changing an LSP option whose save is refused (a stale or untrusted working
   copy) no longer keeps the unsaved option or restarts clangd; an unknown
   option or a value of the wrong type is refused without writing anything

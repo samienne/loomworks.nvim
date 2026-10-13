@@ -517,14 +517,23 @@ function M.get_lsp_options(server)
     return core:get_lsp_options(server)
 end
 
---- Set a single LSP option and persist to user.json.
+--- Set a single LSP option and persist to user.json. In `daemon` mode
+--- (spec §19.16 "LSP configuration") it is written only by the workspace
+--- daemon's `LspConfig/1.set_option`: this returns true once the call is
+--- sent and `cb` learns the outcome; not carried, refused or failed is an
+--- error (notified) and nothing is written.
 --- @param server string
 --- @param key string
---- @param value any
+--- @param value any nil removes the key
+--- @param cb? fun(ok: boolean, err: string|nil) called with the outcome
 --- @return boolean ok false when not saved (notified)
 --- @return string|nil err
-function M.set_lsp_option(server, key, value)
-    return core:set_lsp_option(server, key, value)
+function M.set_lsp_option(server, key, value, cb)
+    local source = require("loomworks.lsp_source")
+    if source.mode() == "daemon" then return source.set_option(server, key, value, cb) end
+    local ok, err = core:set_lsp_option(server, key, value)
+    if cb then cb(ok, err) end
+    return ok, err
 end
 
 -- ---------------------------------------------------------------------------
@@ -981,6 +990,17 @@ local function resolve_and_start(mode)
     end
 
     local tracker = require("loomworks.session_tracker")
+
+    -- `daemon` mode with the workspace unloaded (spec §19.16 "Editor
+    -- operations"): a run or debug launch is not offered — no target
+    -- picker — and is refused with that status.
+    local why = tracker.launch_refusal({ _profile = profile })
+    if why then
+        vim.notify("loomworks: cannot " .. (mode == "debug" and "debug" or "run") .. ": " .. why,
+            vim.log.levels.WARN)
+        return
+    end
+
     local launch_target = profile:default_target()
 
     if launch_target and launch_target:is_valid() and launch_target:is_launchable() then

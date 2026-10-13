@@ -546,6 +546,58 @@ function M.set_debug_adapter(ws, language, adapter, cb)
     end)
 end
 
+--- Set a language server's option (`value` nil: removes the key) in the
+--- working copy, in `daemon` mode (§19.16 "LSP configuration" Options):
+--- **only** through `LspConfig/1.set_option` — the editor never writes
+--- user.json `lsp` itself, and applies the option only from the state it
+--- reads back, not from its own write. Every other outcome is an error,
+--- notified with what happened, and nothing is written: the interface not
+--- carried, a `refused` result (the daemon's message), an `invalid_args`
+--- (an unknown server or key, a value its schema rejects), a `declined`
+--- one, or a call that failed or got no answer (a timeout, the connection
+--- lost). `cb(ok, err)` on the main loop.
+--- @param ws loomworks.Workspace|nil
+--- @param server string
+--- @param key string
+--- @param value any
+--- @param cb? fun(ok: boolean, err: string|nil)
+--- @return boolean sent false when it failed at once (notified, `cb` called)
+--- @return string|nil err
+function M.set_lsp_option(ws, server, key, value, cb)
+    cb = cb or function() end
+    local function fail(err)
+        vim.notify("loomworks: LSP option not saved — " .. err, vim.log.levels.ERROR)
+        cb(false, err)
+        return false, err
+    end
+    local obs = require("loomworks.daemon.observer").of(ws)
+    if not (obs and obs.state ~= "stopped" and obs:can_call("set_option")) then
+        local note = obs and obs:lsp_note() or nil
+        return fail("the workspace daemon does not carry the LSP configuration"
+            .. (note and (" (" .. note .. ")") or ""))
+    end
+    obs:request("set_option", { server = server, key = key, value = value }, function(r)
+        if r.outcome == "invalid" then return fail("invalid: " .. tostring(r.reason)) end
+        if r.outcome ~= "ok" then
+            return fail("the call to the workspace daemon failed: " .. tostring(r.reason or r.outcome))
+        end
+        local res = type(r.result) == "table" and r.result or {}
+        if res.outcome == "refused" then
+            return fail("the workspace daemon refused it: " .. tostring(res.message or "refused"))
+        end
+        if res.outcome == "declined" then
+            return fail("the workspace daemon declined it" .. (res.reason and (" (" .. tostring(res.reason) .. ")") or ""))
+        end
+        if res.outcome ~= nil and res.outcome ~= "ok" then
+            return fail("the workspace daemon answered " .. tostring(res.message or res.outcome))
+        end
+        -- Applied from the read back (its `model_change` reads it too).
+        obs:_fetch_lsp()
+        cb(true)
+    end)
+    return true
+end
+
 --- The router a daemon-mode workspace carries (`ws._operation_router`): the
 --- domain objects' cleans ask it, with no dependency on the editor.
 M.router = {

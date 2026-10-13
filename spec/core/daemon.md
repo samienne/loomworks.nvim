@@ -1610,7 +1610,8 @@ saves the working copy or the cache, and it watches no files.
 workspace's `name` and `active_profile` (the active profile's key, absent when
 none); `error` or `refused` (a trust, newer-schema or journal refusal) with
 the load failure's `error` message; or `unloaded` before the daemon loaded the
-workspace. Sending `welcome` never loads the workspace.
+workspace. Sending `welcome` never loads the workspace (an editor's
+connection starts a load right after it, §19.16 "Loaded on attach").
 
 **As interfaces.** *(`lw.internal.Snapshot/1` and
 `loomworks.Workspace/1.header`: implemented, step 5g.2 part A
@@ -1722,6 +1723,12 @@ unknown enum value as neutral.
   its `abs_path` or starts with its `abs_path` followed by `/`, so a project
   at `/a/foo` does not match a buffer in `/a/foobar`. Both paths are compared
   in their normalized form (§2.3: `/`-separated, and lowercased on Windows).
+  A buffer's record is chosen first by physical path (links, junctions and
+  Windows 8.3 short names resolved): of the records whose physical path
+  contains the buffer's physical path, separator-bounded, the one with the
+  longest physical path wins; only when there is none, of the records whose
+  normalized `abs_path` contains the buffer's normalized path,
+  separator-bounded, the one with the longest normalized `abs_path` wins.
   This deliberately fixes today's `project_for_buf`, whose bare prefix test
   lets `/a/foo` claim a buffer in `/a/foobar`.
 
@@ -2263,8 +2270,8 @@ client's working directory is not sent: the client resolves the workspace
 root, and every step runs in its own absolute directory (the step's, or the
 root) on both paths.
 
-**Live workspace.** The daemon loads its workspace on its first operation
-(the same load as the in-process path) and keeps it. Its file tracker does
+**Live workspace.** The daemon loads its workspace on its first operation,
+or when an editor attaches (§19.16 "Loaded on attach") (the same load as the in-process path) and keeps it. Its file tracker does
 not poll: before accepting each operation the daemon applies every pending
 external change to its files exactly as its file watcher would — including a
 trust refusal (§17.4), which unloads the workspace and is returned as
@@ -2885,7 +2892,8 @@ an entry's server binary resolves as the editor would run it.
   withheld, never started).
 - **Waiting.** While the editor waits for the daemon — the relay starting or
   connecting, the describe or the first `get` not answered, the state
-  `unloaded` (the daemon has not loaded the workspace yet), or the
+  `unloaded` (the daemon has not loaded the workspace yet — "Loaded on
+  attach" below), or the
   workspace unloaded because the connection was lost ("Unloaded on
   disconnect" below) — buffers under the root stay
   **held** (§9.8 status `held`) with **no timeout**: the §9.7 safety timeout
@@ -3348,6 +3356,15 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   "Through the relay" above — a `--no-launch` relay, with `--skip-instance`
   for an incompatible daemon, instead of watching the handle. The editor
   then keeps no list of skipped daemons of its own.)*
+- **Loaded on attach.** *(Step 5l.)* When an editor connects (`role =
+  "observer"`), the daemon, after its `welcome`, starts loading the
+  workspace unless it is loaded or a load is under way — as a `snapshot`
+  loads it, in the daemon's own environment and without waiting for tool
+  detection — so an editor-only session does not stay `unloaded`. A
+  connection without that role (the CLI) never starts a load, and
+  `LspConfig/1.get` still never loads. Because this load uses the daemon's
+  own environment, a later operation from a client whose environment
+  differs reloads the workspace first (§19.15).
 - **Unloaded on disconnect.** *(Step 5l.)* When a connection the editor
   held is lost, for any reason (the daemon stopped, crashed, retired or
   dropped this client, the relay ended), the editor's workspace is

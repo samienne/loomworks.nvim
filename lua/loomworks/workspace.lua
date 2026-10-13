@@ -3659,10 +3659,29 @@ function Workspace._nudge_lsp(build_dir)
     end
 end
 
+--- Whether this model generates the owned LSP databases (§8.4
+--- `refresh_lsp_database`; daemon.md §19.16 "LSP configuration"): never in a
+--- `daemon`-mode editor (an observer of the workspace daemon is attached —
+--- only the daemon generates them, whether or not its state is in use);
+--- always otherwise (in-process mode, the daemon itself, the CLI). Modules
+--- ask it before a generation they schedule on their own (cmake's
+--- `lsp_configs`).
+--- @return boolean
+function Workspace:generates_lsp_databases()
+    return self._daemon_observer == nil
+end
+
 --- @param unit loomworks.ConfigUnit
 --- @param on_settled? fun() called once when the primary DB refresh settles
 function Workspace:_refresh_lsp_database_for(unit, on_settled)
     if not unit then return end
+    -- Not this model's to generate (a daemon-mode editor, §19.16 "LSP
+    -- configuration"): nothing runs, nothing is watched; it settles at once
+    -- (the model's own readiness takes no part in any LSP decision there).
+    if not self:generates_lsp_databases() then
+        if on_settled then on_settled() end
+        return
+    end
     local project = unit._project
     local mod = project and project._module and project._module.impl or nil
     if not mod or not mod.refresh_lsp_database then return end

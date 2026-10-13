@@ -667,6 +667,23 @@ local function start_run(target, mode)
     end)
 end
 
+--- Why a run or debug launch of `target` is refused now, or nil: in
+--- `daemon` mode while the editor's workspace is unloaded (spec §19.16
+--- "Editor operations": not offered, refused with that status). Never loads
+--- the daemon modules (in-process mode has no observer).
+--- @param target loomworks.LaunchTarget
+--- @return string|nil
+function M.launch_refusal(target)
+    local mod = package.loaded["loomworks.daemon.observer"]
+    if type(mod) ~= "table" or not (target and target._profile) then return nil end
+    local ws = require("loomworks.daemon.editor_ops").scope_workspace({ profile = target._profile })
+    local obs = ws and mod.of(ws) or nil
+    if not obs then return nil end
+    local unloaded, why = obs:workspace_unloaded()
+    if not unloaded then return nil end
+    return "the workspace is unloaded (" .. tostring(why) .. ")"
+end
+
 --- Start a launch or debug run.
 --- Shows confirmation if something is already running.
 --- @param target loomworks.LaunchTarget
@@ -684,6 +701,18 @@ function M.start(target, mode)
             vim.notify("loomworks: " .. err, vim.log.levels.WARN)
             return
         end
+    end
+
+    -- `daemon` mode with the workspace unloaded — the daemon reports it
+    -- `unloaded`, or the connection is lost (spec §19.16
+    -- "Editor operations", "Unloaded on disconnect"): refused with that
+    -- status, never prepared in-process (its launch information comes only
+    -- from the daemon).
+    local why = M.launch_refusal(target)
+    if why then
+        vim.notify("loomworks: cannot " .. (mode == "debug" and "debug" or "run") .. " '"
+            .. target:display_name() .. "': " .. why, vim.log.levels.WARN)
+        return
     end
 
     -- A running session, or a launch the workspace daemon is preparing:
