@@ -135,8 +135,12 @@ function M.lsp_check(service, force)
     end
     -- Inside a model segment the process has the client's environment: the
     -- check after the segment (in the daemon's own) decides, `force` kept.
+    -- A subscription made inside a segment (a slow load spans event-loop
+    -- turns) records no baseline, and its `get` may have read the state
+    -- before the segment's change: the check after the segment then sends
+    -- `changed` (a re-read), never only records.
     if service.current ~= nil then
-        if force then service._lsp_force = true end
+        if force or service._lsp_sig == nil then service._lsp_force = true end
         return
     end
     force = force or service._lsp_force

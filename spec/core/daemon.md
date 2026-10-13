@@ -1723,10 +1723,12 @@ unknown enum value as neutral.
   its `abs_path` or starts with its `abs_path` followed by `/`, so a project
   at `/a/foo` does not match a buffer in `/a/foobar`. Both paths are compared
   in their normalized form (§2.3: `/`-separated, and lowercased on Windows).
-  A buffer is under a record when its normalized path or its physical path
-  (links, junctions and Windows 8.3 short names resolved) is under the
-  record's normalized `abs_path` or its physical path, separator-bounded; of
-  several such records the one with the longest physical path wins.
+  A buffer's record is chosen first by physical path (links, junctions and
+  Windows 8.3 short names resolved): of the records whose physical path
+  contains the buffer's physical path, separator-bounded, the one with the
+  longest physical path wins; only when there is none, of the records whose
+  normalized `abs_path` contains the buffer's normalized path,
+  separator-bounded, the one with the longest normalized `abs_path` wins.
   This deliberately fixes today's `project_for_buf`, whose bare prefix test
   lets `/a/foo` claim a buffer in `/a/foobar`.
 
@@ -3360,7 +3362,9 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   loads it, in the daemon's own environment and without waiting for tool
   detection — so an editor-only session does not stay `unloaded`. A
   connection without that role (the CLI) never starts a load, and
-  `LspConfig/1.get` still never loads.
+  `LspConfig/1.get` still never loads. Because this load uses the daemon's
+  own environment, a later operation from a client whose environment
+  differs reloads the workspace first (§19.15).
 - **Unloaded on disconnect.** *(Step 5l.)* When a connection the editor
   held is lost, for any reason (the daemon stopped, crashed, retired or
   dropped this client, the relay ended), the editor's workspace is

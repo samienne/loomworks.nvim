@@ -219,6 +219,36 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.is_false(views.under(ws.root .. "/vend", link .. "/lib/x.c"))
         end)
 
+        it("a junction nested in a project into a shorter physical path maps to the junction's project", function()
+            -- A at C:/src/ws; B at C:/src/ws/ext, a junction to D:/e. The
+            -- buffer C:/src/ws/ext/f.c is physically D:/e/f.c: under B's
+            -- physical root (shorter than A's) and under A only by spelling.
+            -- Physical containment wins, so both spellings map to B.
+            local saved = views._fs_realpath
+            local owner = {}
+            views._fs_realpath = function(p)
+                p = p:gsub("\\", "/")
+                local rest = p:match("^[Cc]:/src/ws/ext(.*)$")
+                if rest and (rest == "" or rest:sub(1, 1) == "/") then return "D:\\e" .. rest end
+                if p:match("^[Cc]:/src/ws$") or p:match("^[Cc]:/src/ws/") then return p end
+                if p:match("^[Dd]:/e$") or p:match("^[Dd]:/e/") then return p end
+                return nil
+            end
+            local ok, err = pcall(function()
+                local index = { projects = {
+                    { key = "a", abs_path = "C:/src/ws" },
+                    { key = "b", abs_path = "C:/src/ws/ext" },
+                } }
+                views.set(owner, "projects", index) -- forget cached identities
+                assert.equals("b", views.match(index, "C:/src/ws/ext/f.c").key)
+                assert.equals("b", views.match(index, "D:/e/f.c").key)
+                assert.equals("a", views.match(index, "C:/src/ws/f.c").key)
+            end)
+            views._fs_realpath = saved
+            views.clear(owner)
+            assert(ok, err)
+        end)
+
         it("an unreachable UNC path never resolves above its share", function()
             local saved = views._fs_realpath
             -- Nothing on the share resolves; `/` would resolve to the drive root.

@@ -159,6 +159,25 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         assert.equals("loaded", header_state())
     end)
 
+    it("an editor that subscribes while the attach load still runs sees it loaded", function()
+        -- A slow load (a slow machine): the editor's /lsp subscription and
+        -- first `get` arrive inside the load's model segment, so the
+        -- subscription records no baseline and `get` answers `unloaded`; the
+        -- end of the load must still send `changed`.
+        start_server()
+        local host = srv.service.host
+        local load = host.load
+        host.load = function(...)
+            vim.wait(3000, function() return false end, 20)
+            return load(...)
+        end
+        attach_editor()
+        assert.is_true(vim.wait(60000, function() return source.in_use() end, 20),
+            tostring((source.daemon_phase())) .. " " .. obs:runtime_line())
+        assert.equals("loaded", header_state())
+        assert.equals("app", source.projects()[1].project)
+    end)
+
     it("a CLI client does not make the daemon load", function()
         start_server()
         sess = assert(client.session(srv.address))

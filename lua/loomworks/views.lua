@@ -213,20 +213,21 @@ local function forms(path)
 end
 
 --- Whether `path` (forms `ps`, `pp`) lies under a root (forms `rs`, `rp`):
---- either form of the path under either form of the root.
+--- its physical identity under the root's, or its normalized spelling under
+--- the root's.
 local function under_forms(rs, rp, ps, pp)
-    return in_root(rp, pp) or in_root(rs, ps) or in_root(rp, ps) or in_root(rs, pp)
+    return in_root(rp, pp) or in_root(rs, ps)
 end
 
 --- The record of `index` whose root contains `path` on a separator boundary
---- (§19.13 "Views": equal, or followed by `/`), the deepest one winning. A
---- path lies under a root when its normalized spelling or its physical
---- identity (a Windows 8.3 short name, a junction or symlink resolved) lies
---- under the root's spelling or physical identity — so a link inside a
---- project pointing outside it still maps by its spelling, and a link
---- resolving into another project maps by its identity. Of several matching
---- records the one with the longest physical root wins: a spelling under an
---- outer project that resolves into an inner one maps to the inner one.
+--- (§19.13 "Views": equal, or followed by `/`). Records whose physical root
+--- (a Windows 8.3 short name, a junction or symlink resolved) contains the
+--- path's physical identity come first, the longest physical root winning;
+--- only when there is none, records whose normalized root contains the
+--- path's normalized spelling, the longest normalized root winning. So a
+--- link resolving into another project maps by its identity, a link inside
+--- a project pointing outside every project still maps by its spelling, and
+--- lengths are only ever compared within one space.
 --- @param index loomworks.ViewProjectsIndex|nil
 --- @param path string an absolute path
 --- @return loomworks.ViewProjectRecord|nil
@@ -236,7 +237,8 @@ function M.match(index, path)
     end
     if #index.projects == 0 then return nil end
     local ps, pp = forms(path)
-    local best, best_len = nil, -1
+    local phys, phys_len = nil, -1
+    local spelled, spelled_len = nil, -1
     for _, rec in ipairs(index.projects) do
         if type(rec) == "table" and type(rec.abs_path) == "string" then
             local f = norm_cache[rec]
@@ -244,16 +246,18 @@ function M.match(index, path)
                 f = { forms(rec.abs_path) }
                 norm_cache[rec] = f
             end
-            if #f[2] > best_len and under_forms(f[1], f[2], ps, pp) then
-                best, best_len = rec, #f[2]
+            if #f[2] > phys_len and in_root(f[2], pp) then
+                phys, phys_len = rec, #f[2]
+            elseif not phys and #f[1] > spelled_len and in_root(f[1], ps) then
+                spelled, spelled_len = rec, #f[1]
             end
         end
     end
-    return best
+    return phys or spelled
 end
 
---- Whether `path` lies under `root` (separator-bounded), by either form of
---- each (as `match`).
+--- Whether `path` lies under `root` (separator-bounded): physically, or by
+--- normalized spelling (the two spaces `match` ranks in).
 --- @param root string
 --- @param path string
 --- @return boolean
