@@ -24,12 +24,17 @@ local BUILTIN_VARIABLES = {
 }
 
 --- Build full variable list including user-defined project variables.
+--- `${target_dir}` is offered only when `opts.target_context` says the launch
+--- context resolves a build target (spec §8.7: unavailable for a command-type
+--- launch).
 --- @param project table|nil the launch project with .variables
+--- @param opts? { target_context?: boolean }
 --- @return table[] variable definitions
-function M.build_variable_list(project)
+function M.build_variable_list(project, opts)
     local vars = {}
+    local with_target = opts and opts.target_context
     for _, v in ipairs(BUILTIN_VARIABLES) do
-        vars[#vars + 1] = v
+        if v.var ~= "target_dir" or with_target then vars[#vars + 1] = v end
     end
     if project and project.variables then
         local names = {}
@@ -205,6 +210,8 @@ end
 ---   launch_project: loomworks.Project|nil — the project owning this launch config
 ---   existing_destinations: string[]|nil — destinations already in use (for duplicate detection)
 ---   current_destination: string|nil — the destination being edited (excluded from duplicate check)
+---   target_context: boolean|nil — the launch context may resolve a build
+---     target, so the destination picker offers `${target_dir}` (spec §8.7)
 ---   on_accept: fun(dest: string, source: table)
 ---   on_cancel: fun()
 function M.open(opts)
@@ -218,7 +225,7 @@ function M.open(opts)
     local profile = opts.profile
     local ws = opts.workspace
     local launch_project = opts.launch_project
-    local all_variables = M.build_variable_list(launch_project)
+    local all_variables = M.build_variable_list(launch_project, { target_context = opts.target_context })
 
     local dest_segments = M.parse_segments(opts.destination or "")
     local dest_error = nil

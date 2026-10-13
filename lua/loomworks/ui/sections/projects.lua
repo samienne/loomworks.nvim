@@ -1128,6 +1128,8 @@ return function(tree, ctx)
                                         profile = lw.get_active_profile(),
                                         workspace = lw.get_workspace(),
                                         launch_project = project,
+                                        -- A project-level step also runs for its build targets (§8.7).
+                                        target_context = true,
                                         existing_destinations = dest_keys,
                                         current_destination = captured_dest,
                                         on_accept = function(new_dest, new_source)
@@ -1192,6 +1194,7 @@ return function(tree, ctx)
                                     profile = lw.get_active_profile(),
                                     workspace = lw.get_workspace(),
                                     launch_project = project,
+                                    target_context = true,
                                     existing_destinations = dest_keys,
                                     on_accept = function(new_dest, new_source)
                                         local editable = get_editable_copy()

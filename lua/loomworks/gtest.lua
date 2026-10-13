@@ -370,16 +370,34 @@ end
 M.MAX_CAPTURED_BYTES = 1024 * 1024
 
 --- Cap a captured text at `MAX_CAPTURED_BYTES` (see above): the kept part ends
---- at the last newline within the cap (or exactly at the cap when there is
---- none), followed by "... [truncated: N more bytes]".
+--- at the last newline within the cap (or, when there is none, at the cap
+--- backed up to a UTF-8 character boundary), followed by
+--- "... [truncated: N more bytes]". Linear in the cap: a backward byte scan,
+--- never a pattern (an unanchored `.*\n` find is super-linear on one huge line).
 --- @param text string|nil
 --- @return string|nil
 function M.cap_captured(text)
     local cap = M.MAX_CAPTURED_BYTES
     if type(text) ~= "string" or #text <= cap then return text end
-    -- The last newline within the cap (greedy `.*` ends at it).
-    local _, nl = text:sub(1, cap):find(".*\n")
-    local cut = nl or cap
+    local byte = string.byte
+    -- The last newline within the cap.
+    local cut
+    for i = cap, 1, -1 do
+        if byte(text, i) == 10 then cut = i; break end
+    end
+    if not cut then
+        -- Hard cut: never split a multibyte character. Byte cap+1 is the first
+        -- one dropped; while it is a continuation byte (0x80-0xBF), the
+        -- character it belongs to started within the cap, so back up.
+        cut = cap
+        while cut > 0 do
+            local b = byte(text, cut + 1)
+            if b < 0x80 or b > 0xBF then break end
+            cut = cut - 1
+        end
+        -- Only continuation bytes up to the cap: not UTF-8, cut at the cap.
+        if cut == 0 then cut = cap end
+    end
     return text:sub(1, cut) .. "... [truncated: " .. (#text - cut) .. " more bytes]"
 end
 

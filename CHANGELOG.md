@@ -401,8 +401,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   targets up. (#208) With `runtime-mode daemon`, the workspace daemon runs
   the whole plan, saved targets included, with the same output; a plan that
   runs saved targets on a device stays in the `lw` process. (#212)
-- The launch and deploy editors offer `${target_dir}` in their path segment
-  pickers. (#214)
+- The deploy editor offers `${target_dir}` in its destination segment picker
+  for a project's deploy steps (not for a command launch's, where it is
+  unavailable). A project-level step also runs for the project's command
+  launches, so a project-level destination using `${target_dir}` fails the
+  deploy of a command launch. (#214)
 
 ### Changed
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)

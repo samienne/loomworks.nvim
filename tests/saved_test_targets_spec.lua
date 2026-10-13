@@ -639,6 +639,32 @@ describe("lw test plan (§16.16)", function()
         assert.is_nil(c.stderr:find("C: skipped", 1, true), c.stderr)
     end)
 
+    it("foreign skip note under --discovered: no saved-target claim or advice", function()
+        -- A has saved targets, but --discovered leaves them out of the plan.
+        local _, ppa = fake_unit("A", { batch = true, foreign = true, saved = { "X" },
+            targets = { X = fake_target("X") } })
+        local _, ppb = fake_unit("B", { batch = true })
+        local r = run_plan(fake_profile({ ppa, ppb }), { sel = "discovered" })
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.truthy(r.stderr:find("A: skipped — its discovered tests cannot run on this host (arm64)", 1, true),
+            r.stderr)
+        assert.is_nil(r.stderr:find("no saved test targets", 1, true), r.stderr)
+        assert.is_nil(r.stderr:find("lw test-target add", 1, true), r.stderr)
+    end)
+
+    it("foreign skip note when its saved targets are unsupported: says so, no add advice", function()
+        local _, ppa = fake_unit("A", { batch = true, foreign = true, saved = { "X" },
+            targets = { X = fake_target("X") } })
+        ppa._config_unit._project._module.impl.parse_targets = nil
+        local _, ppb = fake_unit("B", { saved = { "Y" }, targets = { Y = fake_target("Y") } })
+        local r = run_plan(fake_profile({ ppa, ppb }), {})
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.truthy(r.stderr:find("A: skipped", 1, true), r.stderr)
+        assert.truthy(r.stderr:find("its saved test targets are not supported by its module", 1, true), r.stderr)
+        assert.is_nil(r.stderr:find("no saved test targets", 1, true), r.stderr)
+        assert.is_nil(r.stderr:find("lw test-target add", 1, true), r.stderr)
+    end)
+
     it("foreign without saved targets is refused; device options need an executable step", function()
         local _, ppa = fake_unit("A", { batch = true, foreign = true })
         local r = run_plan(fake_profile({ ppa }), {})
