@@ -5,6 +5,14 @@ they don't get lost.
 
 ---
 
+## `working_dir`: Windows UNC / rooted forms, backslashes, `..`
+
+`working_dir` (saved test entries, §1.3.4, and a launch's `working_dir`,
+§8.7) treats Windows UNC `\\server\share` and rooted `\dir` forms as
+workspace-relative, and does not normalize backslashes or `..` segments. Fix
+`resolve_working_dir` (`test_targets.lua`) and the launch `working_dir`
+resolution together, so both accept the same forms the same way.
+
 ## `views.normalize` / `deps.normalize`: `vim.fs.normalize` expands `$VAR` and `~`
 
 `loomworks.views.normalize` (the separator-boundary match of `lw.buf_project`

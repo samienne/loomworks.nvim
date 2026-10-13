@@ -14,6 +14,7 @@ local BUILTIN_VARIABLES = {
     { var = "workspace_root", label = "Workspace root",     root_only = true },
     { var = "build_dir",      label = "Build directory",    root_only = true },
     { var = "project_path",   label = "Project path",       root_only = true },
+    { var = "target_dir",     label = "Target directory",   root_only = true },
     { var = "variant",        label = "Variant",            root_only = false },
     { var = "config_set",     label = "Configuration set",  root_only = false },
 }

@@ -707,7 +707,9 @@ variable-expanded in each target's launch context, so `${target_dir}` (§8.7)
 names each target's own artifact directory. The override applies only to
 named targets: on an invocation that names none it is a usage error, and on
 a named target that runs on a device it is a usage error (exit 2), as for a run (the
-device working directory comes from the `device` block, §18.9). A named target that is **foreign**
+device working directory comes from the `device` block, §18.9). "Runs on a
+device" covers both a foreign build target (§18.1) and a module-declared
+device launch target (§11.4); the check is made before anything is built or run. A named target that is **foreign**
 (§18.1) runs on a device (§18.5–§18.6; device selection §18.3) and its results
 file is pulled back; a host-runnable one runs locally. Caller-forwarded
 arguments go to each named executable. A JUnit request writes the parsed
@@ -801,7 +803,12 @@ no spaces).
 run (invariant 19). When that unit also has saved entries, its batch step
 is dropped from the plan with a note on standard error naming the project and
 platform, and its saved entries run as above (a build target's artifact on a
-device). When the plan would then hold no step at all — no saved lists, or
+device). A foreign unit with **no** saved entries contributes no step; it is
+never skipped silently — when the plan still holds other steps, a note on
+standard error names the project, says its registered tests cannot run on
+this host (with the platform) and that it has no saved entries, and points at
+saving entries (`lw test-target add`) to run its executables on a device.
+When the plan would then hold no step at all — no saved lists, or
 the discovered-only selector — the invocation is refused as above. Device
 options are accepted when the plan has at least one executable step, and are
 a usage error otherwise.

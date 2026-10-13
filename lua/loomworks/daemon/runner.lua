@@ -515,6 +515,11 @@ function M.run(svc, ctx)
             return finish(1, "--prefix cannot wrap a device target ('" .. lt:display_name() ..
                 "') — a local wrapper does not apply to on-device execution.")
         end
+        -- Likewise a per-invocation working directory: a usage error (exit 2).
+        if args.cwd and lt:requires_device() then
+            return finish(2, "--cwd does not apply to a device run ('" .. lt:display_name()
+                .. "') — set the project's device.working_dir instead")
+        end
         -- A foreign artifact runs on a device, in the client (§19.15): before
         -- any deploy, which the client then does itself.
         if rp.foreign_of(lt) then return finish(0, nil, { device = true }) end

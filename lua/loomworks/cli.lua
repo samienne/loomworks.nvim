@@ -2602,6 +2602,15 @@ function M._foreign_of(lt)
   return require("loomworks.run_prep").foreign_of(lt)
 end
 
+--- Whether a launch target runs on a device: a foreign build target (§18.1)
+--- or a module-declared device launch target (`requires_device()`).
+--- @param lt loomworks.LaunchTarget
+--- @return boolean
+function M._runs_on_device(lt)
+  if lt.requires_device and lt:requires_device() then return true end
+  return M._foreign_of(lt) ~= nil
+end
+
 --- Run a foreign build target on a device (spec §16.17, §18.5): deploy on the
 --- host → stage → execute remotely. Returns the invocation's exit status (the
 --- device program's; a lost status is a transport failure, EXIT_TRANSPORT).
@@ -2707,6 +2716,12 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
   if #prefix_tokens > 0 and lt:requires_device() then
     die("--prefix cannot wrap a device target ('" .. lt:display_name() ..
       "') — a local wrapper does not apply to on-device execution.")
+  end
+  -- Likewise a per-invocation working directory: a usage error (exit 2), as
+  -- for a foreign build target, before anything is deployed or run.
+  if opts.cwd_override and lt:requires_device() then
+    die("--cwd does not apply to a device run ('" .. lt:display_name()
+      .. "') — set the project's device.working_dir instead", 2)
   end
 
   -- A foreign build target (spec §18.1) never runs here: it is routed to a
@@ -2831,7 +2846,7 @@ function M._test_targets(ws, profile, names, opts, deps)
   --- `--cwd` never applies to a device run (as for `lw run --cwd`): a usage
   --- error, refused before anything is built or run.
   local function check_cwd(name, lt)
-    if opts.cwd_override and lt and M._foreign_of(lt) then
+    if opts.cwd_override and lt and M._runs_on_device(lt) then
       die("--cwd does not apply to a device run ('" .. name .. "') — set the project's device.working_dir instead", 2)
     end
   end
