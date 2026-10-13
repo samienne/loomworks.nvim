@@ -2736,7 +2736,8 @@ function M._run_foreign(lt, ws, f, opts, deps)
       .. tostring(f.platform or f.what) .. "), where a local wrapper does not apply.")
   end
   if opts.cwd_override then
-    die("--cwd does not apply to a device run — set the project's device.working_dir instead")
+    -- A usage error (exit 2), as for `lw test --target --cwd` on a device.
+    die("--cwd does not apply to a device run ('" .. f.name .. "') — set the project's device.working_dir instead", 2)
   end
   local runner = f.platform and runners.for_foreign(f) or nil
   if not runner then die(foreign.refusal(f)) end
