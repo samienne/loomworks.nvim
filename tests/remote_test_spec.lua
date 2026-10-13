@@ -297,7 +297,6 @@ describe("named test executables on the host", function()
                     build = function() end, resolve_target = function() return lt end,
                     run_spec = function(step)
                         seen = step.cmd
-                        local xml
                         for _, a in ipairs(step.cmd) do xml = xml or a:match("^%-%-gtest_output=xml:(.+)$") end
                         fx.write(xml, gtest_xml({ { name = "a" }, { name = "b", fail = true } }))
                         return 0

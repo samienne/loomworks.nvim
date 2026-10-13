@@ -49,6 +49,16 @@ end
 if fail then os.exit(4) end
 ]]
 
+--- A saved test target's program (run by nvim -l): `<name> [args…]`. Prints
+--- its name, cwd-independent arguments and a stderr line; exits 3 when
+--- $LW_TEST_FAIL_SAVED names it.
+local SAVED = [[
+local name = arg[1]
+io.write("saved " .. name .. " ARGS=" .. table.concat(arg, ",", 2) .. string.char(10))
+io.stderr:write("saved stderr " .. name .. string.char(10))
+if os.getenv("LW_TEST_FAIL_SAVED") == name then os.exit(3) end
+]]
+
 --- The test-only module: the shell module plus a native batch runner.
 local function module_source(runner)
     return ([[
@@ -67,6 +77,8 @@ function TU:run_command_all(opts)
 end
 function TU:run_command_all_rebuilds() return false end
 function M.create_test_unit(unit) return setmetatable({ _config_unit = unit }, TU) end
+-- (No build targets: saved test targets name launch configurations.)
+function M.parse_targets() return {} end
 return M
 ]]):format(runner)
 end
@@ -133,8 +145,10 @@ describe("lw test through the workspace daemon (real processes)", function()
     local roots = {}
 
     --- A workspace with two `lwtestmod` projects (app, lib) and a profile
-    --- `dev` (app=Debug, lib=Debug), created by lw itself.
-    local function workspace()
+    --- `dev` (app=Debug, lib=Debug), created by lw itself. `saved`: app's
+    --- saved test targets (§1.3.4) — launch configurations `chk` and `chk2`
+    --- running the SAVED program — as its project-wide `tests` list.
+    local function workspace(saved)
         local root = H.tmp()
         roots[#roots + 1] = root
         vim.fn.mkdir(root .. "/app", "p")
@@ -157,6 +171,29 @@ describe("lw test through the workspace daemon (real processes)", function()
         }))
         local r = H.lw({ "--no-input", "--no-daemon", "profile", "create", "dev" }, { env = env, cwd = root })
         assert.equals(0, r.code, r.stderr)
+        if saved then
+            -- Programs are named only by the local config (§17): the launches
+            -- and the list go to the user file, signed with this machine's key.
+            local prog = root .. "/saved.lua"
+            write(prog, SAVED)
+            local function launch(name)
+                return { command = nv, args = { "--headless", "-u", "NONE", "-l", prog, name } }
+            end
+            local app = project("app")
+            app.launch = { chk = launch("chk"), chk2 = launch("chk2") }
+            app.lwtestmod.tests = saved
+            local upath = root .. "/.nvim/loomworks.user.json"
+            trust._set_key_path(env.data .. "/trust.key")
+            local status, body = trust.verify("user", read(upath))
+            assert.equals("valid", status)
+            local user = vim.json.decode(body)
+            user.projects = user.projects or {}
+            user.projects.app = app
+            local signed, serr = trust.sign("user", trust.encode(user))
+            trust._set_key_path(nil)
+            if not signed then error(serr) end
+            write(upath, signed)
+        end
         return root
     end
     local function lw(root, args, extra)
@@ -239,15 +276,70 @@ describe("lw test through the workspace daemon (real processes)", function()
         -- runner, the runner arguments and the JUnit files.
         local ok = lw(b, { "--no-input", "test", "dev", "--", "-R", "x" })
         assert.equals(0, ok.code, ok.stderr)
-        assert.truthy(ok.stdout:find("==> [test] app:Debug", 1, true), ok.stdout)
+        assert.truthy(ok.stdout:find("==> [test] app: nvim", 1, true), ok.stdout)
         assert.truthy(ok.stdout:find("tests of lib FOO=nil ARGS=-R,x", 1, true), ok.stdout)
-        assert.truthy(ok.stdout:find("TESTS OK: dev (2 runs)", 1, true), ok.stdout)
+        assert.truthy(ok.stdout:find("TESTS OK: dev (2 steps)", 1, true), ok.stdout)
         local bad = lw(b, { "--no-input", "test", "dev" }, { LW_TEST_FAIL_UNIT = "app" })
         assert.equals(1, bad.code)
         assert.truthy(bad.stdout:find("tests of lib", 1, true), bad.stdout)
-        assert.truthy(bad.stderr:find("lw: 1 of 2 test run(s) failed: app:Debug", 1, true), bad.stderr)
+        assert.truthy(bad.stderr:find("lw: 1 of 2 test steps failed", 1, true), bad.stderr)
         local reports = files_of(b .. "/reports")
         assert.truthy(next(reports), "no JUnit file written")
+    end)
+
+    it("saved test targets: the daemon runs the whole plan, as in-process (§16.16, §19.15)", function()
+        local tests = { "chk", { "chk2", "--x" } }
+        local a, b = workspace(tests), workspace(tests)
+        local cases = {
+            { { "test", "dev" } },
+            { { "test", "dev" }, { LW_TEST_FAIL_SAVED = "chk2" } },
+            { { "test", "dev" }, { LW_TEST_FAIL_UNIT = "app" } },
+            { { "test", "dev", "--junit", "reports/s.xml" } },
+            { { "test", "dev", "--junit", "reports/t.xml" }, { LW_TEST_FAIL_SAVED = "chk" } },
+            -- A mixed plan refuses arguments after `--` before the build (exit 2).
+            { { "test", "dev", "--", "-R", "x" } },
+            { { "test", "dev" }, { LW_TEST_FAIL = "build" } },
+        }
+        for _, c in ipairs(cases) do
+            local args = { "--no-input" }
+            vim.list_extend(args, c[1])
+            local ra = lw(a, { "--no-daemon", unpack(args) }, vim.tbl_extend("force", c[2] or {},
+                { LOOMWORKS_RUNTIME = "in-process" }))
+            local rb = lw(b, args, c[2])
+            local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2] or {})
+            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
+            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
+            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
+            assert.is_true(ra.stderr:find(NOTICE, 1, true) == nil, what)
+            local refused = c[1][3] == "--"
+            assert.equals(not refused, rb.stderr:find(NOTICE, 1, true) ~= nil, what .. "\n" .. rb.stderr)
+            assert.same(cache_of(a, env.data .. "/trust.key"), cache_of(b, env.data .. "/trust.key"), what)
+            assert.same(files_of(a .. "/reports"), files_of(b .. "/reports"), what)
+        end
+        local ok = lw(b, { "--no-input", "test", "dev" })
+        assert.equals(0, ok.code, ok.stderr)
+        assert.truthy(ok.stderr:find(NOTICE, 1, true), ok.stderr)
+        for _, s in ipairs({ "==> [test] app: chk", "saved chk ARGS=", "saved chk2 ARGS=--x",
+            "passed  (exit status only — no per-case results)",
+            "TESTS OK: dev (4 steps)" }) do
+            assert.truthy(ok.stdout:find(s, 1, true), s .. "\n" .. ok.stdout)
+        end
+        local bad = lw(b, { "--no-input", "test", "dev" }, { LW_TEST_FAIL_SAVED = "chk2" })
+        assert.equals(1, bad.code)
+        assert.truthy(bad.stdout:find("saved chk2", 1, true), bad.stdout)
+        assert.truthy(bad.stderr:find("lw: 1 of 4 test steps failed", 1, true), bad.stderr)
+        assert.truthy(next(files_of(b .. "/reports")), "no JUnit file written")
+
+        -- An entry that resolves to nothing fails after the build, before any
+        -- step runs — the same message on both paths.
+        local c, d = workspace({ "nope" }), workspace({ "nope" })
+        local rc = lw(c, { "--no-input", "--no-daemon", "test", "dev" }, { LOOMWORKS_RUNTIME = "in-process" })
+        local rd = lw(d, { "--no-input", "test", "dev" })
+        assert.equals(1, rc.code, rc.stderr)
+        assert.equals(rc.code, rd.code, rd.stderr)
+        assert.equals(norm(rc.stdout, c), norm(rd.stdout, d))
+        assert.equals(norm(rc.stderr, c), drop_notice(norm(rd.stderr, d)))
+        assert.truthy(rd.stderr:find("saved test entry 'nope'", 1, true), rd.stderr)
     end)
 
     it("--target and in-process mode stay in-process (--target says so in one line); an attached selection uses a live daemon", function()
@@ -279,7 +371,7 @@ describe("lw test through the workspace daemon (real processes)", function()
             end
             if case[1][1] ~= "--target" then
                 assert.equals(0, x.code, x.stderr)
-                assert.truthy(x.stdout:find("TESTS OK: dev (2 runs)", 1, true), x.stdout)
+                assert.truthy(x.stdout:find("TESTS OK: dev (2 steps)", 1, true), x.stdout)
             end
         end
     end)

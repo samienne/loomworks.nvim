@@ -1814,9 +1814,10 @@ resolved with the same messages and exit codes as in-process (§16.9).
 [--target <name>]… [--force] [--reconfigure] [-v] [-- <args>]`) in
 `runtime-mode daemon` (`daemon/service.lua`, `daemon/runner.lua`,
 `daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
-`_delegate`), and for the batch form of `lw test` (`lw test [<profile>]
-[--junit <file>] [-- <args>]`, §16.16; `lw test --target` stays in-process,
-see Routing), and for the preparation of `lw run` (§16.17; see Run;
+`_delegate`), and for the plan form of `lw test` (`lw test [<profile>]
+[--junit <file>] [-- <args>]`, §16.16, saved test targets included — the
+plan shared with the in-process host in `test_plan.lua`; `lw test --target`,
+`--saved`, `--discovered` and `--list` stay in-process, see Routing), and for the preparation of `lw run` (§16.17; see Run;
 `run_prep.lua`, the client's `_finish_routed_run`; device runs stay
 in-process, see Routing), and for `lw clean [<profile>]` (§16.1; see Clean;
 the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
@@ -1877,14 +1878,21 @@ parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
   §16.9) and a request in a different environment while another build runs
   in it (see Environment).
 
-`test { args, interactive, env, command }` — the batch form of `lw test`
-(§16.16) — has the same outcomes; `args` carries `profile`, `junit` (the
-`--junit` path, made absolute by the client against its working directory, as
-the in-process host does) and `extra` (the arguments after `--`, for the
-native test runner). It is also `refused` when the profile builds with a
-foreign kit (§18.6, the in-process refusal pointing at `lw test --target`).
-Its task's `meta.kind` is `test`. In this section "build" stands for either
-operation unless a rule names one.
+`test { args, interactive, env, command }` — the plan form of `lw test`
+(§16.16: each unit's native runner, then its saved test targets) — has the
+same outcomes; `args` carries `profile`, `junit` (the `--junit` path, made
+absolute by the client against its working directory, as the in-process host
+does) and `extra` (the arguments after `--`, for the plan's steps). The plan's
+pre-build checks are the in-process ones, made before acceptance: their notes
+travel with the reply, and a refusal is `refused` with the in-process message
+and exit code (a foreign kit's registered tests with no saved test target,
+§18.6, pointing at `lw test --target` and `lw test-target add`; arguments
+after `--` for a plan of both kinds, exit 2). A plan with saved test targets
+on a unit a foreign kit builds runs them on a device, which stays with the
+client as a device run does: `declined` (`profile '<p>' builds for
+<platform>; device test runs stay in this process`). Its task's `meta.kind`
+is `test`. In this section "build" stands for either operation unless a rule
+names one.
 
 **Same behaviour.** An operation run in the daemon is behaviorally identical to
 the in-process operation it replaces — the same step sequence, locks, gates,
@@ -1908,17 +1916,26 @@ every process of the build, including ones whose output a build script
 captures, so they would change what a build does; a user who wants colour sets
 them in the environment of `lw build`, which the step receives.
 
-For a test run it is the sequence of §16.16: the build-directory locks taken
-as for a build and held across the build AND the test runs (a native runner
-may rebuild), the build steps above in their for-test form (a unit whose
-runner rebuilds itself is not built separately; no steps → no `building
-profile:` line), the units' targets parsed, then one `==> [test] <name>` line
-per native runner, every runner run even after one failed, its JUnit file
-materialized at the requested path (a warning line when the runner wrote
-none) and `JUnit: <path>` lines, and finally either `no tests to run for
-profile '<p>'…`, `TESTS OK: <profile> (<n> run[s])`, or the failure `<k> of
-<n> test run(s) failed: <names>` with exit 1. A build step that fails ends the
-test run as it ends a build.
+For a test run it is the test plan of §16.16, the in-process host's own code
+(`test_plan.lua`) run with the task as its host: the build-directory locks
+taken as for a build and held across the build AND the test steps (a native
+runner may rebuild), the build steps above in their for-test form (a unit
+whose runner rebuilds itself is not built separately unless it has saved test
+targets; no steps → no `building profile:` line), the units' targets parsed,
+every saved entry resolved before the first step (a missing one fails the
+test run with the in-process message), then each step with its `==> [test]
+…` line — a native runner (`<project>: <runner>`), or a saved test target
+(its launch's deploy, its working directory, `${target_dir}`, the gtest
+results option, its one-line outcome) — every step run even after one
+failed, its JUnit file at the requested path (one per step when several; a
+warning line when none was written) with its `JUnit: <path>` line, and
+finally either `no tests to run for profile '<p>'`, or the per-step summary
+and `TESTS OK: <profile> (<n> step[s])`, or the failure `<k> of <n> test
+step[s] failed` with exit 1. Each program is spawned as a build step is
+(streamed, cancellable). A build step that fails ends the test run as it ends
+a build. A saved target whose artifact is found foreign only once built (no
+kit platform) is not run on a device by the daemon: its step fails with a
+line saying so.
 
 **Run.** `lw run` (§16.17) is split: the daemon **prepares** the launch, the
 client **executes** it. The program is the user's own — interactive,
@@ -2421,8 +2438,9 @@ and output. An attached operation prints no `… through the workspace daemon
 (pid N)` line and no "running without it" line for its attached selection.
 
 `lw test` (step 5) is routed by the same rules, an argument `cmd_test` refuses
-taking the place of one `cmd_build` refuses (device options without
-`--target` among them), and its lines name the test: `lw: the workspace daemon
+taking the place of one `cmd_build` refuses — as does a form the request does
+not carry (`--saved`, `--discovered`, `--list`, device options, §16.16,
+§16.34): it runs in-process — and its lines name the test: `lw: the workspace daemon
 declined the test (<reason>); running without it`, `lw: the workspace daemon
 could not take the test (<reason>); running without it` and `lw: testing
 through the workspace daemon (pid N)`. Its named-executable form, `lw test

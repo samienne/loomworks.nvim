@@ -398,7 +398,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   executable being run (launches with a target, saved entries,
   `lw test --target`, which also takes `--cwd <dir>`). The status page shows
   a read-only `Tests:` line, and the test explorer and neotest pick the saved
-  targets up. (#208)
+  targets up. (#208) With `runtime-mode daemon`, the workspace daemon runs
+  the whole plan, saved targets included, with the same output; a plan that
+  runs saved targets on a device stays in the `lw` process. (#212)
 
 ### Changed
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)

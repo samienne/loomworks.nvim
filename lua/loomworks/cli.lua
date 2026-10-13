@@ -2763,154 +2763,40 @@ function M._run_resolved(spec, opts, root, deps)
   return (run({ cmd = full, cwd = spec.cwd, env = spec.env }, root))
 end
 
---- Run ONE test executable step (spec §16.16, §18.6) — the shared executor of
---- named (`--target`) and saved test entries. `lt` is the resolved
---- `LaunchTarget` (the same object `lw run <name>` uses): a build target, or a
---- launch configuration. A launch's deploy steps run first (a failed deploy
---- fails the step without running the program). The program runs on a device
---- when its build-target artifact is foreign (§18.5), locally otherwise, with
---- argv = program, the framework results option (only for a build target's
---- artifact the gtest helper recognises), a launch's own args, the step's
---- `args` (already expanded), then the caller-forwarded args. The outcome is
---- judged from exit status + parsed results (+ crashes / missing results on a
---- device). Prints the step header and its one-line outcome; writes JUnit to
---- `opts.junit_path` when given.
---- `opts = { label, header?, args?, extra?, dev, junit_path?, saved?, cwd?,
---- entry_working_dir?, cwd_override? }`: `cwd` is a saved entry's resolved
---- working directory (absolute; it replaces the program's), `entry_working_dir`
---- the entry's `working_dir` as written (a device step notes it is not used),
---- `cwd_override` a named target's per-invocation `--cwd` (raw, expanded in
---- the target's launch context; refused for a device run). With
---- `saved` (a saved entry's step) a refused or unresolvable run fails the step
---- instead of the invocation, and a program without per-case results is
---- judged on its exit status alone and written to JUnit as one test case.
---- @return boolean failed, string[] reasons, table counts, boolean exit_only
-function M._run_test_executable(ws, lt, opts, deps)
+--- The in-process host of the test plan (loomworks.test_plan): lines on this
+--- process's stdout / stderr, a refusal ends it (`die`), each program runs on
+--- this terminal (`run_spec`) and a device step through `_run_foreign`.
+--- `deps` (tests): run_spec, plus `_run_foreign` deps.
+--- @return table host
+function M._test_host(ws, deps)
   deps = deps or {}
-  local test_run = require("loomworks.remote.test_run")
-  local gtest = require("loomworks.gtest")
-  local remote_run = require("loomworks.remote.run")
-  local label = opts.label
-  local tail = {}
-  for _, a in ipairs(opts.args or {}) do tail[#tail + 1] = a end
-  for _, a in ipairs(opts.extra or {}) do tail[#tail + 1] = a end
-  local cfg = lt._launch_config
-  -- The results option applies only to a build target's artifact (§16.16).
-  local artifact = not (cfg and not cfg.target)
-  local f = artifact and M._foreign_of(lt) or nil
-  local results, results_requested, results_missing, failed, reasons
-
-  --- A step that cannot run: fail it (saved entry) or the invocation.
-  local function refuse(msg)
-    if not opts.saved then die(msg) end
-    errw("lw: " .. msg .. "\n")
-    return { msg }
-  end
-
-  if f and opts.cwd_override then
-    die("--cwd does not apply to a device run ('" .. label .. "') — set the project's device.working_dir instead", 2)
-  end
-  -- A device step takes its working directory from the `device` block, never
-  -- from the entry (§1.3.4 "Working directory"): say so.
-  out(string.format("==> [test] %s%s", opts.header or label,
-    f and (opts.entry_working_dir and " (on a device; its working_dir is not used there)" or " (on a device)") or ""))
-  if opts.saved then
-    local ok, why = lt:is_valid()
-    if not ok then
-      reasons = refuse("launch target is not runnable: " ..
-        table.concat(type(why) == "table" and why or { "invalid" }, "; "))
-    end
-    if not reasons and f and not (f.platform and require("loomworks.remote.runners").for_foreign(f)) then
-      reasons = refuse(require("loomworks.remote.foreign").refusal(f))
-    end
-  end
-  -- A launch's deploy steps run before its program (§8.8.4).
-  if not reasons and cfg then
-    local dok, derr = lt:deploy_sync()
-    if not dok then reasons = refuse("deploy failed: " .. tostring(derr)) end
-  end
-
-  if reasons then
-    failed = true
-  elseif f then
-    local hook, st = test_run.device_hook(f.name, tail)
+  local host = { out = out, err = errw, fail = function(msg, code) die(msg, code) end }
+  function host.foreign_of(lt) return M._foreign_of(lt) end
+  function host.spawn(spec, cb) return cb((deps.run_spec or run_spec)(spec, ws.root)) end
+  function host.exec(lt, o, cb) return cb(M._run_test_executable(ws, lt, o, deps)) end
+  function host.foreign(lt, f, o, cb)
     local outcome
-    local dev = opts.dev or DEV.new_device_opts()
+    local dev = o.dev or DEV.new_device_opts()
     M._run_foreign(lt, ws, f, {
-      extra_args = {}, device = dev.device, fresh = dev.fresh, no_build = cfg ~= nil,
+      extra_args = {}, device = dev.device, fresh = dev.fresh, no_build = o.no_build,
       timeout = dev.timeout, timeouts = dev.timeouts, log_options = dev.log_options,
-      no_wait = dev.no_wait, before_exec = hook,
+      no_wait = dev.no_wait, before_exec = o.before_exec,
       on_result = function(r) outcome = r; return r.exit_code end,
     }, deps)
-    results_requested = st.framework == "gtest"
-    local path = st.results_name and outcome.results[st.results_name]
-    results = path and gtest.parse_xml_results(path) or nil
-    if path and not results then results = {} end
-    results_missing = results_requested and not path
-    failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
-      results = results, results_missing = results_missing, crashes = #outcome.crashes,
-      transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
-    remote_run.report(outcome, function(s2) errw(s2 .. "\n") end, failed)
-  else
-    local spec, serr = lt:resolve_launch_spec({ working_dir = opts.cwd_override })
-    if not spec then
-      reasons = refuse("cannot resolve test executable: " .. tostring(serr))
-      failed = true
-    else
-      -- A saved entry's working directory replaces the program's (§1.3.4).
-      if opts.cwd then spec.cwd = opts.cwd end
-      local xml
-      if artifact and gtest.probe_sync(spec.cmd, label, { env = spec.env, cwd = spec.cwd }) == "gtest" then
-        results_requested = true
-        -- In the workspace's .nvim/tmp, not the system temp dir (§16.40).
-        xml = require("loomworks.housekeeping").tmp_path(ws.root, "lw-test-", ".xml")
-        -- argv: program, results option, the launch's own args, then the tail.
-        table.insert(spec.args, 1, "--gtest_output=xml:" .. xml)
-      end
-      for _, a in ipairs(tail) do spec.args[#spec.args + 1] = a end
-      local argv = { spec.cmd }
-      for _, a in ipairs(spec.args) do argv[#argv + 1] = a end
-      local code = (deps.run_spec or run_spec)({ cmd = argv, cwd = spec.cwd, env = spec.env }, ws.root)
-      if xml then
-        if uv.fs_stat(xml) then
-          results = gtest.parse_xml_results(xml) or {}
-          os.remove(xml)
-        else
-          results_missing = true
-        end
-      end
-      failed, reasons = test_run.judge({ status = code, results_requested = results_requested,
-        results = results, results_missing = results_missing })
-    end
+    return cb(outcome)
   end
-  -- A saved program without per-case results is judged on its exit status
-  -- alone, and is one JUnit case (§16.16 "Results option").
-  local exit_only = opts.saved and not results_requested and true or false
-  local c = test_run.count(results)
-  if failed then
-    out(string.format("%s: FAILED (%s)%s", label, table.concat(reasons, ", "),
-      #c.failed_ids > 0 and (": " .. table.concat(c.failed_ids, ", ")) or ""))
-  elseif exit_only then
-    out(label .. ": passed (exit status 0; no per-case results)")
-  else
-    out(string.format("%s: %d test%s passed%s", label, c.total - c.skipped, (c.total - c.skipped) == 1 and "" or "s",
-      c.skipped > 0 and (", " .. c.skipped .. " skipped") or ""))
-  end
-  if opts.junit_path then
-    local junit_results = results
-    if exit_only then
-      junit_results = { { test_id = "test:" .. label, status = failed and "failed" or "passed",
-        message = failed and table.concat(reasons or {}, ", ") or nil } }
-    end
-    if junit_results then
-      local ok, werr = test_run.write_file(opts.junit_path, test_run.junit_xml(label, junit_results))
-      if ok then out("JUnit: " .. opts.junit_path)
-      else errw("lw: warning: cannot write JUnit " .. opts.junit_path .. ": " .. tostring(werr) .. "\n") end
-    else
-      errw("lw: warning: no JUnit output for " .. label .. " (no results file)\n")
-    end
-  end
-  return failed, reasons or {}, c, exit_only
+  return host
+end
+
+--- Run ONE test executable step in this process (spec §16.16, §18.6;
+--- loomworks.test_plan.exec_step documents `opts`). A step that cannot run
+--- fails the invocation (`die`) unless it is a saved entry's.
+--- @return boolean failed, string[] reasons, table counts, boolean exit_only, string|nil junit_path
+function M._run_test_executable(ws, lt, opts, deps)
+  local r
+  require("loomworks.test_plan").exec_step(ws, lt, opts, M._test_host(ws, deps),
+    function(...) r = { ... } end)
+  return r[1], r[2], r[3], r[4], r[5]
 end
 
 --- Run named test executables (spec §16.16, §18.6): build the profile, then
@@ -2995,297 +2881,56 @@ function M._test_targets(ws, profile, names, opts, deps)
 end
 
 --- Whether device options were given (spec §16.34).
-function M._has_device_opts(d)
-  return d and (d.device or d.fresh or d.timeout or d.no_wait or d.log_options) and true or false
-end
+function M._has_device_opts(d) return require("loomworks.test_plan").has_device_opts(d) end
 
---- The pre-build test plan of a profile (spec §16.16): per unit, in the
---- profile's project order, whether its batch step is planned and its saved
---- entries. `sel` is nil, "saved" or "discovered". Pure model data — reads no
---- build directory beyond the static batch-runner question. An invalid `tests`
---- declaration (§1.3.4) is planned as one invalid entry, so it fails like a
---- missing entry.
---- @return table[] units { unit, project, pp, batch, batch_dropped, platform, saved, entries }
---- @return integer n_batch, integer n_exec
-function M._test_plan_units(profile, sel)
-  local foreign = require("loomworks.remote.foreign")
-  local units, n_batch, n_exec = {}, 0, 0
-  for _, pp in ipairs(profile:projects()) do
-    local unit = pp._config_unit
-    local project = unit and unit._project
-    if unit and project then
-      local u = { unit = unit, project = project, pp = pp, entries = {} }
-      if sel ~= "saved" then
-        local list_fn = unit.batch_runner_test_units or unit.test_units
-        for _, tu in ipairs(list_fn and list_fn(unit) or {}) do
-          if tu.run_command_all and not tu.is_saved_targets then u.batch = true end
-        end
-      end
-      if sel ~= "discovered" and unit.saved_test_targets then
-        u.saved = unit:saved_test_targets()
-        u.entries = u.saved and u.saved.entries or {}
-        if u.saved and u.saved.invalid then
-          u.entries = { { invalid = "tests", decl_invalid = true, index = 1 } }
-        end
-        local mod = project._module and project._module.impl
-        if #u.entries > 0 and not (mod and mod.parse_targets) then
-          -- §1.3.4 Applicability: kept, reported as unsupported, never acted on.
-          u.unsupported = true
-          u.entries = {}
-        end
-      end
-      local token, tool = foreign.unit_platform(unit)
-      if token and u.batch then
-        u.batch, u.batch_dropped, u.platform, u.tool = false, true, token, tool
-      end
-      if u.batch then n_batch = n_batch + 1 end
-      n_exec = n_exec + #u.entries
-      units[#units + 1] = u
-    end
-  end
-  return units, n_batch, n_exec
-end
+--- The pre-build test plan of a profile (spec §16.16; loomworks.test_plan.units).
+--- @return table[] units, integer n_batch, integer n_exec
+function M._test_plan_units(profile, sel) return require("loomworks.test_plan").units(profile, sel) end
 
 --- The project's executable targets, for messages ("App:a, App:b").
-function M._executables_of(unit)
-  local labels = {}
-  for id, t in pairs(type(unit.targets) == "table" and unit.targets or {}) do
-    if t.is_executable and t:is_executable() then
-      labels[#labels + 1] = unit._project.key .. ":" .. ((t.display_name and t:display_name()) or id)
-    end
-  end
-  table.sort(labels)
-  return next(labels) and table.concat(labels, ", ") or "(none)"
-end
+function M._executables_of(unit) return require("loomworks.test_plan").executables_of(unit) end
 
 --- The project's launch configurations in the model, for messages.
-function M._launches_of(project)
-  local labels = {}
-  for name, cfg in pairs(type(project.launch) == "table" and project.launch or {}) do
-    if type(cfg) == "table" and (cfg.command or cfg.target) then labels[#labels + 1] = project.key .. ":" .. name end
-  end
-  table.sort(labels)
-  return next(labels) and table.concat(labels, ", ") or "(none)"
-end
+function M._launches_of(project) return require("loomworks.test_plan").launches_of(project) end
 
---- The resolution context of a unit's saved entries (spec §1.3.4
---- "Resolution"): the project's launch configurations, the trust-ignored
---- launches, and the unit's parsed build targets (nil = unknown).
+--- The resolution context of a unit's saved entries (spec §1.3.4).
 function M._tt_rctx(ws, unit, project, level)
-  local test_targets = require("loomworks.test_targets")
-  return {
-    launches = project.launch,
-    launch_ignored = function(n) return test_targets.launch_ignored(ws._shared_ignored, project, n) end,
-    targets = unit and type(unit.targets) == "table" and unit.targets or nil,
-    level = level,
-  }
-end
-
---- The `lw test-target remove` form that drops a saved entry at its level
---- (`--index <k>` for one occurrence of a repeated name).
-function M._test_target_remove_hint(profile, project, entry, source)
-  local level = (source and source._project) and (" --config " .. source.name) or " --project-wide"
-  if not entry.name then
-    return "fix it in the file by hand, or clear the list: lw test-target clear " .. profile.key .. " "
-      .. project.key .. level
-  end
-  return "lw test-target remove " .. profile.key .. " " .. project.key .. ":" .. entry.name
-    .. (entry.repeated and (" --index " .. entry.index) or "") .. level
+  return require("loomworks.test_plan").rctx(ws, unit, project, level)
 end
 
 --- `lw test [profile] [--saved | --discovered]` — the test plan (spec §16.16):
 --- per unit, its batch step then one executable step per saved entry. Every
 --- step runs even when an earlier one failed; the invocation succeeds iff the
 --- build and every step succeeded. `opts = { sel?, junit?, extra, dev }`.
+--- The plan is loomworks.test_plan, shared with the workspace daemon's test
+--- run (§19.15); this is its in-process host.
 --- `deps` (tests): build(profile, ws, keep), run_spec, launch_target, plus
 --- `_run_foreign` deps.
 --- @return integer exit code
 function M._test_plan(ws, profile, opts, deps)
   deps = deps or {}
-  local overseer = require("loomworks.overseer")
-  local test_targets = require("loomworks.test_targets")
-  local plan, n_batch, n_exec = M._test_plan_units(profile, opts.sel)
-  local extra = opts.extra or {}
-
-  -- Foreign units: the batch step is never run on the host (invariant 19).
-  for _, u in ipairs(plan) do
-    if u.batch_dropped and #u.entries > 0 then
-      note(string.format("lw: note: %s: its registered tests cannot run on this host (%s) — "
-        .. "skipping its batch runner; its saved test targets run on a device", u.project.key, u.platform))
-    end
-  end
-  if n_batch + n_exec == 0 then
-    for _, u in ipairs(plan) do
-      if u.batch_dropped then
-        local tool = u.tool
-        die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
-          .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]"
-          .. "\n  or save them: lw test-target add %s <exe>",
-          profile.key, tostring(tool and (tool.key or tool.label) or "?"), u.platform, profile.key, profile.key))
-      end
-    end
-  end
-  for _, u in ipairs(plan) do
-    if u.unsupported then
-      note("lw: note: " .. u.project.key .. ": saved test targets are not supported by its module (no build targets) — ignored")
-    end
-  end
-  if M._has_device_opts(opts.dev) and n_exec == 0 then
-    die("device options apply to test executables: lw test <profile> --target <exe> …, "
-      .. "or saved test targets (lw test-target add)", 2)
-  end
-  if #extra > 0 and n_batch > 0 and n_exec > 0 then
-    die("arguments after `--` need a plan of one kind — the native runners' arguments and the "
-      .. "test programs' differ.\n  only the saved test executables: lw test " .. profile.key .. " --saved -- …"
-      .. "\n  only the native runners:        lw test " .. profile.key .. " --discovered -- …"
-      .. "\n  named executables:              lw test " .. profile.key .. " --target <exe> -- …", 2)
-  end
-
-  local keep = {}
-  for _, u in ipairs(plan) do if #u.entries > 0 then keep[u.unit] = true end end
+  local test_plan = require("loomworks.test_plan")
+  local pre = test_plan.precheck(profile, opts)
+  for _, n in ipairs(pre.notes) do note(n) end
+  if pre.err then die(pre.err, pre.code) end
 
   local function body()
     if deps.build then
-      deps.build(profile, ws, keep)
+      deps.build(profile, ws, pre.keep)
     else
-      run_build_steps(profile, ws, { for_test = { keep = keep } })
+      run_build_steps(profile, ws, { for_test = { keep = pre.keep } })
     end
     for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
-
-    -- Resolve every saved entry before the first step runs (missing → fail):
-    -- a launch configuration first, else an executable build target (§1.3.4).
-    local missing = {}
-    for _, u in ipairs(plan) do
-      u.exec = {}
-      local level = u.saved and test_targets.level_label(u.saved.source) or u.project.key
-      local rctx = M._tt_rctx(ws, u.unit, u.project, level)
-      for _, e in ipairs(u.entries) do
-        local r = test_targets.resolve_entry(e, rctx)
-        -- Args and working_dir expand in the entry's launch context, where
-        -- `${target_dir}` is its build target's artifact directory (§8.7).
-        local lctx = r.state == "ok"
-          and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
-        if r.state == "ok" then
-          local lt
-          if r.kind == "launch" then
-            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
-              { kind = "launch", project = u.project, name = e.name })
-          else
-            local dname = (r.target.display_name and r.target:display_name()) or r.target.id
-            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
-              { kind = "target", project = u.project, name = dname, target_id = r.target.id })
-          end
-          u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = r.kind, args = test_targets.expand_args(e.args, lctx),
-            cwd = (test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)) }
-        else
-          local why = r.reason or ("cannot be resolved (the build targets of " .. u.project.key .. " are unknown)")
-          if e.decl_invalid then why = "`tests` of " .. level .. " is not an array of saved test entries" end
-          missing[#missing + 1] = string.format(
-            "saved test entry '%s' (%s): %s.\n    executables: %s\n    launch configurations: %s\n    remove it: %s",
-            test_targets.entry_label(e), level, why, M._executables_of(u.unit), M._launches_of(u.project),
-            M._test_target_remove_hint(profile, u.project, e, u.saved and u.saved.source))
-        end
-      end
-    end
-    if #missing > 0 then die(table.concat(missing, "\n  ")) end
-
-    -- Batch steps (after the build: a runner without a test set plans none).
-    local skip = {}
-    for _, u in ipairs(plan) do if not u.batch then skip[u.unit] = true end end
-    local probe = (n_batch > 0) and overseer.plan_profile_test(profile, { skip_units = skip }) or {}
-    local batch_count = {}
-    for _, st in ipairs(probe or {}) do batch_count[st.unit] = (batch_count[st.unit] or 0) + 1 end
-
-    -- The final ordered steps and their JUnit labels (§16.16).
-    local steps, labels = {}, {}
-    for _, u in ipairs(plan) do
-      if batch_count[u.unit] then
-        local label = u.project.key .. ":" .. tostring(u.unit:variant())
-        steps[#steps + 1] = { kind = "batch", unit = u.unit, project = u.project, label = label }
-        labels[label] = (labels[label] or 0) + 1
-      end
-      for _, x in ipairs(u.exec) do
-        steps[#steps + 1] = { kind = "exec", unit = u.unit, project = u.project, entry = x.entry,
-          lt = x.lt, args = x.args, cwd = x.cwd, label = x.entry.name }
-        labels[x.entry.name] = (labels[x.entry.name] or 0) + 1
-      end
-    end
-    if #steps == 0 then
+    local prepared, perr = test_plan.prepare(ws, profile, pre, opts, deps)
+    if not prepared then die(perr) end
+    if #prepared.steps == 0 then
       out("no tests to run for profile '" .. profile.key .. "'")
       return 0
     end
-    -- Same label twice: qualify the executable step with its project, then,
-    -- when its name repeats in its list, with its occurrence index.
-    for _, st in ipairs(steps) do
-      if st.kind == "exec" and labels[st.label] > 1 then
-        st.label = st.project.key .. ":" .. st.label
-          .. (st.entry.repeated and ("#" .. st.entry.index) or "")
-      end
-    end
-    local multi = #steps > 1
-    local function junit_for(label)
-      return opts.junit and overseer._junit_dest_for(opts.junit, label, multi) or nil
-    end
-    local batch_steps = {}
-    if n_batch > 0 then
-      local planned = overseer.plan_profile_test(profile, {
-        skip_units = skip, extra_args = (#extra > 0) and extra or nil, junit = opts.junit,
-        junit_dest_for = function(label) return junit_for(label) end,
-      })
-      for _, st in ipairs(planned or {}) do
-        batch_steps[st.unit] = batch_steps[st.unit] or {}
-        table.insert(batch_steps[st.unit], st)
-      end
-    end
-    local okj, jerr = require("loomworks.build_run").prepare_junit(opts.junit)
-    if not okj then die(jerr) end
-
-    local summary, n_failed = {}, 0
-    for _, st in ipairs(steps) do
-      if st.kind == "batch" then
-        for _, b in ipairs(batch_steps[st.unit] or {}) do
-          out(string.format("==> [test] %s: %s", st.project.key, b.runner or "runner"))
-          local code = (deps.run_spec or run_spec)(b, ws.root)
-          if b.junit_dest and b.junit_out then
-            if norm_cmp(b.junit_out) ~= norm_cmp(b.junit_dest) then
-              if uv.fs_stat(b.junit_out) then
-                uv.fs_copyfile(b.junit_out, b.junit_dest)
-                out("JUnit: " .. b.junit_dest)
-              else
-                errw("lw: warning: no JUnit output for " .. st.label .. "\n")
-              end
-            elseif uv.fs_stat(b.junit_dest) then
-              out("JUnit: " .. b.junit_dest)
-            else
-              errw("lw: warning: no JUnit output for " .. st.label .. "\n")
-            end
-          end
-          local ok = code == 0
-          if not ok then n_failed = n_failed + 1 end
-          summary[#summary + 1] = string.format("  %-28s %s", st.project.key .. ": " .. (b.runner or "runner"),
-            ok and "passed" or ("FAILED (exit status " .. tostring(code) .. ")"))
-        end
-      else
-        local name = test_targets.entry_label(st.entry)
-        local failed, reasons, _, exit_only = M._run_test_executable(ws, st.lt, {
-          label = name, header = st.project.key .. ": " .. name, saved = true,
-          args = st.args, cwd = st.cwd, entry_working_dir = st.entry.working_dir,
-          extra = extra, dev = opts.dev, junit_path = junit_for(st.label),
-        }, deps)
-        if failed then n_failed = n_failed + 1 end
-        summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
-          failed and ("FAILED (" .. table.concat(reasons, ", ") .. ")") or "passed",
-          exit_only and "  (exit status only — no per-case results)" or "")
-      end
-    end
-    out("")
-    out("summary — profile '" .. profile.key .. "':")
-    for _, l in ipairs(summary) do out(l) end
-    if n_failed > 0 then
-      die(string.format("%d of %d test step%s failed", n_failed, #summary, #summary == 1 and "" or "s"), 1)
-    end
-    out(string.format("TESTS OK: %s (%d step%s)", profile.key, #summary, #summary == 1 and "" or "s"))
-    return 0
+    local rc, err
+    test_plan.run(ws, profile, prepared, opts, M._test_host(ws, deps), function(code, msg) rc, err = code, msg end)
+    if err then die(err, rc) end
+    return rc
   end
 
   local rc
@@ -8876,7 +8521,8 @@ end
 --- this process's working directory as `cmd_test` does. Returns "target" for
 --- the named-executable form (`--target`, not carried in this step), or nil
 --- when `cmd_test` would refuse the arguments or they carry a form the daemon
---- does not (device options without `--target`; `cmd_test` reports them).
+--- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options:
+--- `cmd_test` runs or reports them in-process).
 --- @param args string[] argv, args[1] == "test"
 --- @return table|"target"|nil
 function M._test_request(args)

@@ -34,7 +34,7 @@
 ---     environment while another build runs). The client runs in-process.
 ---
 --- **Request** `{ kind = "test", args = { profile?, junit?, extra? }, … }` —
---- the same outcomes; also "refused" for a foreign kit's profile (§18.6).
+--- the same outcomes; the plan checks (test_plan.precheck) refuse as in-process; "declined" when saved test targets would run on a device (§16.16).
 ---
 --- **Request** `{ kind = "prepare_run", args = { profile?, target?, project?,
 --- kind?, cwd?, extra?, no_build?, quiet? }, … }` (§19.15 "Run") — the same
@@ -733,10 +733,27 @@ function Service:_accept(ctx)
             return ctx.reply({ outcome = "refused", message = err, exit_code = 1, notes = ctx.notes })
         end
     end
-    -- A foreign kit's registered tests cannot run on this host (§18.6).
-    local foreign = ctx.op == "test" and profile and build_run.foreign_batch_refusal(profile) or nil
-    if foreign then
-        return ctx.reply({ outcome = "refused", message = foreign, exit_code = 1, notes = ctx.notes })
+    -- A test run's plan is checked before the build, as in-process (§16.16):
+    -- its notes go with the reply; a refusal (a foreign kit's tests with no
+    -- saved test target, §18.6; arguments after `--` for a mixed plan) is
+    -- refused with the in-process message and exit code. Saved test targets
+    -- a foreign kit builds run on a device, which stays in the client (as a
+    -- device `lw run`): declined.
+    local test_pre
+    if ctx.op == "test" and profile then
+        test_pre = require("loomworks.test_plan").precheck(profile, { extra = a.extra or {} })
+        if test_pre.device_platform then
+            return ctx.reply({ outcome = "declined", reason = "profile '" .. profile.key .. "' builds for "
+                .. test_pre.device_platform .. "; device test runs stay in this process" })
+        end
+        if #test_pre.notes > 0 then
+            ctx.notes = ctx.notes or {}
+            for _, n in ipairs(test_pre.notes) do ctx.notes[#ctx.notes + 1] = n end
+        end
+        if test_pre.err then
+            return ctx.reply({ outcome = "refused", message = test_pre.err, exit_code = test_pre.code or 1,
+                notes = ctx.notes })
+        end
     end
     -- A run of a profile built by a foreign kit is a device run: its device
     -- locks, staging and program liveness stay with the client (§19.15). (A
@@ -782,7 +799,7 @@ function Service:_accept(ctx)
     end
     local run = runner.run(self, {
         op = ctx.op, task = task, ws = ws, profile = profile, units = units, env = ctx.env, command = ctx.command,
-        args = args, clean_steps = clean_steps,
+        args = args, clean_steps = clean_steps, test_pre = test_pre,
     })
     self.server:log("%s %s (task %s) accepted", ctx.op, units and build_run.units_label(units) or profile.key,
         task.id)

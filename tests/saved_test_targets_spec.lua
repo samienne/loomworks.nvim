@@ -1484,6 +1484,7 @@ describe("saved launch deploys: every runner path (§16.16, §8.8)", function()
         local applied = {}
         local unit = setmetatable({
             state = function() return "built" end,
+            local_state = function() return "built" end,
             test_command_for = function(_, id) return cmds[id], { kind = "tu" } end,
             test_commands_all = function()
                 local all = {}

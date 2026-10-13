@@ -1,6 +1,6 @@
 --- loomworks/daemon/runner.lua — run a profile build in the daemon (spec
---- §19.15), streaming it on the task stream — or a batch test run (`lw test`,
---- §16.16): the same locks and for-test build, then each native test runner —
+--- §19.15), streaming it on the task stream — or a test run (`lw test`,
+--- §16.16): the same locks and for-test build, then the test plan (loomworks.test_plan) —
 --- or the preparation of `lw run` (§19.15 "Run"): the same locks and build
 --- (unless `no_build`), the locks released, then the launch target selected,
 --- deployed and its launch spec resolved (loomworks.run_prep), returned in
@@ -234,9 +234,9 @@ end
 --- @field ctx table|nil the service request that started it
 --- @field cancel fun(reason?: string, code?: integer)
 
---- Run a build, or a batch test run (`ctx.op == "test"`, spec §16.16, §19.15):
+--- Run a build, or a test run (`ctx.op == "test"`, spec §16.16, §19.15):
 --- the same locks and build steps (in their for-test form), then — the locks
---- still held — each native test runner, every one even after one failed; or
+--- still held — the test plan (loomworks.test_plan: native runners, saved test targets), every step even after one failed; or
 --- the preparation of a run (`ctx.op == "run"`, §19.15 "Run"): the build (not
 --- under `args.no_build`), the locks released, then `prepare` (target, gate,
 --- deploy, launch spec), ending the task with `launch` or `device`; or the
@@ -393,53 +393,46 @@ function M.run(svc, ctx)
     end
 
     -- ---- the test phase (op == "test"), after the build steps -------------
-    local tsteps, ti, failed, wrote, ran = nil, 0, {}, {}, {}
-    local next_test
-    local function test_done(step, code, signal)
-        if ended_by_cancel() then return end
-        code = build_run.exit_status(code, signal)
-        if code ~= 0 then failed[#failed + 1] = step.name or "?" end
-        ran[#ran + 1] = { name = step.name or "?", exit_code = code, status = code == 0 and "passed" or "failed" }
-        -- JUnit at the caller's path, also for a failed run (CI wants it).
-        local path, warning = build_run.junit_result(step)
-        if path then wrote[#wrote + 1] = path elseif warning then task:line("err", warning) end
-        task:progress(0.5 + ti / #tsteps / 2)
-        next_test()
-    end
-    next_test = function()
+    -- The in-process test plan (loomworks.test_plan, §16.16), its host this
+    -- task: the same steps, lines, JUnit files, summary and failure. Each
+    -- program is spawned like a build step (streamed, cancellable); the
+    -- plan goes on in a model segment once it exited. A device step is not
+    -- run here: the service declined a plan whose kit runs on a device.
+    local test_plan = require("loomworks.test_plan")
+    local test_host = {
+        out = function(s) task:line("out", s) end,
+        err = function(s) task:line("err", s) end,
+        fail = function(msg, code) finish(code or 1, msg) end,
+        progress = function(f) task:progress(0.5 + f / 2) end,
+    }
+    function test_host.spawn(spec, cb)
         if run.cancelled then return finish(run.cancel_code, stopped()) end
         local okc, why = current()
         if not okc then return finish(1, stopped(why)) end
-        ti = ti + 1
-        if ti > #tsteps then
-            release_all()
-            for _, p in ipairs(wrote) do task:line("out", "JUnit: " .. p) end
-            -- The structured results (Tests/1.run's task result, §19.15).
-            local results = { result = { steps = ran, junit = wrote } }
-            local ok_line, failure = build_run.test_summary(profile, failed, #tsteps)
-            if failure then return finish(1, failure, results) end
-            task:line("out", ok_line)
-            return finish(0, nil, results)
-        end
-        local step = tsteps[ti]
-        task:line("out", string.format("==> [test] %s", step.name or "?"))
-        spawn(step, function(code, signal) test_done(step, code, signal) end)
+        spawn(spec, function(code, signal)
+            if ended_by_cancel() then return end
+            local okn, whyn = current()
+            if not okn then return finish(1, stopped(whyn)) end
+            cb(build_run.exit_status(code, signal))
+        end)
     end
+    function test_host.exec(lt, o, cb) return test_plan.exec_step(ws, lt, o, test_host, cb) end
     local function test_phase()
         -- Parse the units' targets before planning: a test step's run
         -- environment (sibling DLL dirs on Windows) derives from them.
         for _, pp in ipairs(profile:projects()) do build_run.ensure_unit_targets(ws, pp._config_unit) end
-        local ts, units = require("loomworks.overseer").plan_profile_test(profile,
-            { extra_args = args.extra, junit = args.junit })
-        if not ts or #ts == 0 then
+        local topts = { junit = args.junit, extra = args.extra or {} }
+        local prepared, perr = test_plan.prepare(ws, profile, ctx.test_pre, topts)
+        if not prepared then return finish(1, perr) end
+        if #prepared.steps == 0 then
             release_all()
-            task:line("out", build_run.no_tests_line(profile, units))
+            task:line("out", "no tests to run for profile '" .. profile.key .. "'")
             return finish(0, nil, { result = { steps = {}, junit = {} } })
         end
-        local okj, jerr = build_run.prepare_junit(args.junit)
-        if not okj then return finish(1, jerr) end
-        tsteps = ts
-        next_test()
+        test_plan.run(ws, profile, prepared, topts, test_host, function(code, err, results)
+            -- (The structured results: Tests/1.run's task result, §19.15.)
+            finish(code, err, { result = results })
+        end)
     end
 
     -- ---- the run's preparation (op == "run"), after the build ---------------
@@ -691,6 +684,13 @@ function M.run(svc, ctx)
         end
     end
     task:start({ name = label, kind = op, profile = profile and profile.key or nil, units = units })
+    -- A test run's pre-build plan: the service's (its notes and refusal were
+    -- the reply's, before acceptance), else checked here.
+    if testing and not ctx.test_pre then
+        ctx.test_pre = test_plan.precheck(profile, { extra = args.extra or {} })
+        for _, n in ipairs(ctx.test_pre.notes) do task:line("note", n) end
+        if ctx.test_pre.err then finish(ctx.test_pre.code, ctx.test_pre.err); return run end
+    end
     -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
     if running and args.no_build then prepare(); return run end
     if target_scoped then target_scope(); return run end
@@ -728,8 +728,9 @@ function M.run(svc, ctx)
     local plan_err
     if testing then
         -- The for-test build: a unit whose runner rebuilds itself is not
-        -- built separately; the arguments after `--` are the test runner's.
-        steps, plan_err = build_run.plan(profile, { for_test = true })
+        -- built separately unless it has saved test targets (`keep`); the
+        -- arguments after `--` are the test steps'.
+        steps, plan_err = build_run.plan(profile, { for_test = { keep = ctx.test_pre.keep } })
     else
         steps, plan_err = build_run.plan(profile, {
             -- (A run's `extra` are the program's arguments, not the build's.)

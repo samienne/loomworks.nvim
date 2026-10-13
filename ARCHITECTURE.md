@@ -1166,17 +1166,28 @@ re-cut onto master step by step; this section is expanded as each step lands.
 
 **Step 5, first operation moved: the batch `lw test` (spec §19.15)** adds:
 
-- `build_run.lua` — the host-neutral test-run pieces both hosts use:
-  `foreign_batch_refusal`, `no_tests_line`, `prepare_junit`, `junit_result`
-  (copy/confirm a runner's JUnit file, or the warning line), `test_summary`.
-  `cli.cmd_test` is rewritten onto them.
+- `test_plan.lua` — the test plan of §16.16 (native runners, then saved test
+  targets), host-neutral and written in continuation-passing style over a
+  host (`out`, `err`, `fail`, `spawn`, `exec`, `foreign?`, `progress?`):
+  `units` / `precheck` (before the build: notes, refusals, `keep`,
+  `device_platform`), `prepare` (after it: entries resolved, batch steps and
+  JUnit labels), `run` (the steps, the per-step summary, `TESTS OK`) and
+  `exec_step` (one executable: deploy, working dir, gtest results option,
+  device run through `host.foreign`, JUnit). The in-process host
+  (`cli._test_host`: `run_spec`, `die`, `_run_foreign`) calls back
+  synchronously; `cli._test_plan`, `_test_targets` and `_run_test_executable`
+  are thin wrappers over it. `build_run.lua` keeps `prepare_junit` and
+  `junit_result` (copy/confirm a runner's JUnit file, or the warning line).
 - `daemon/runner.lua` — `run(svc, ctx)` takes `ctx.op` (`"build"` | `"test"`).
   A test run takes the same locks, plans the for-test build
-  (`plan{ for_test = true }`; no steps goes straight to the tests), then —
-  locks still held — `ensure_unit_targets`, `overseer.plan_profile_test` and
-  each runner through the same streamed `spawn` as a build step, continuing
-  after a failed runner; the task meta's `kind` is the op, cancellations end
-  `<op> stopped: <reason>`.
+  (`plan{ for_test = { keep } }`; no steps goes straight to the tests), then —
+  locks still held — `ensure_unit_targets` and the shared plan with the task
+  as host: each program through the same streamed `spawn` as a build step,
+  the plan continuing in a model segment after it exited; no `foreign` (the
+  service declines a plan whose kit runs saved targets on a device); the
+  task meta's `kind` is the op, cancellations end `<op> stopped: <reason>`.
+  The service runs `test_plan.precheck` before accepting (notes with the
+  reply, refusals with the in-process message and exit code).
 - `daemon/service.lua` — `on_build` / `on_test` → `_on_operation(op, …)`
   (validates `junit`; resolves with usage `lw <op> <profile>`; refuses a
   foreign kit's test run); `server.lua` dispatches `test`; `protocol.KIND.test`;
