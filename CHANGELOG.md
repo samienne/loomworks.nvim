@@ -165,6 +165,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what needs it. (#196, #198)
 
 ### Fixed
+- `lw test` no longer hangs for hours parsing a results file with a very
+  large failing test case (for example an assertion failing many thousands
+  of times in a loop). (#209)
 - On macOS and Linux, a workspace daemon started from one environment (a
   desktop terminal) is now usable from another (ssh, cron, `sudo -u`, a
   container shell) whose `TMPDIR` / `XDG_RUNTIME_DIR` differ, instead of being
