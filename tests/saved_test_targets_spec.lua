@@ -1624,7 +1624,10 @@ describe("saved launch deploys: every runner path (§16.16, §8.8)", function()
         -- Resolved references still deploy.
         r, err = deploy.resolve_deploy_step("${workspace_root}/out/x", { project = "App", path = "${build_dir}/f" }, ctx)
         assert.is_table(r, err)
-        assert.equals(root .. "/out/x", r.dest_path)
+        -- The temp root may be an 8.3 short path on Windows (RUNNER~1) while
+        -- the workspace root is long-form; compare canonical forms.
+        local function canon(p) return vim.fs.normalize(vim.uv.fs_realpath(p) or p):lower() end
+        assert.equals(canon(root) .. "/out/x", vim.fs.normalize(r.dest_path):lower())
     end)
 
     it("lw test --target --cwd: a device target is a usage error before any build or run", function()
