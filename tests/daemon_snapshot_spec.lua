@@ -286,3 +286,49 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
         c2:close()
     end)
 end)
+
+-- Regression: the snapshot's `shared_ignored` is the list program_fields.strip
+-- returns (spec §17.6, §19.13); with output validation on, a workspace whose
+-- loomworks.json carries a stripped program-bearing field must still answer
+-- its snapshot (the schema once declared an object and rejected it).
+describe("daemon snapshot of stripped program-bearing fields (§17.6, §19.13)", function()
+    local root, srv, saved_validate
+    before_each(function()
+        saved_validate = vim.env.LW_TEST_VALIDATE_PROTOCOL
+        vim.env.LW_TEST_VALIDATE_PROTOCOL = "1"
+        trust._set_key_path(H.tmp() .. "/trust.key")
+        root = H.shell_workspace({ profile = true })
+        write_user(root)
+        -- A shared launch configuration naming a program: stripped on load.
+        local cfg = vim.json.decode(read(root .. "/loomworks.json"))
+        cfg.projects.app.launch = { evil = { command = "calc.exe", args = { "--pwn" } } }
+        write(root .. "/loomworks.json", vim.json.encode(cfg))
+        srv = server_mod.new(root, { exit = function() end, tick_ms = 100 })
+        service.attach(srv, cli._daemon_build_host())
+        assert(srv:start_attached({ command = "build" }))
+    end)
+    after_each(function()
+        if not srv.stopped then srv:stop("test end", 0) end
+        pcall(function() require("loomworks")._core():shutdown() end)
+        trust._set_key_path(nil)
+        vim.env.LW_TEST_VALIDATE_PROTOCOL = saved_validate
+    end)
+
+    it("answers a snapshot whose shared_ignored lists the stripped field", function()
+        local conn = assert(client.loopback_session(srv))
+        local snap, err = snapshot.fetch(conn)
+        assert.is_nil(err)
+        assert.equals("ok", snap and snap.outcome)
+        assert.is_true(vim.islist(snap.shared_ignored), vim.inspect(snap.shared_ignored))
+        assert.equals(1, #snap.shared_ignored)
+        local e = snap.shared_ignored[1]
+        assert.equals("launch", e.kind)
+        assert.equals("projects.app.launch.evil", e.label)
+        assert.same({ "projects", "app", "launch", "evil" }, e.path)
+        -- The projection carries the same list.
+        local proj = assert(snapshot.project(root, snap))
+        assert.equals(1, #proj._shared_ignored)
+        assert.equals("projects.app.launch.evil", proj._shared_ignored[1].label)
+        conn:close()
+    end)
+end)
