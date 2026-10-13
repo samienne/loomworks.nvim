@@ -638,6 +638,26 @@ Related and DONE: an abstract configuration is no longer buildable — a
 profile mapping one reports itself unbuildable instead of letting the module
 pick a default build type (spec §1.4).
 
+## Saved test targets — deferred pieces
+
+Spec §1.3.4 / §16.16 ship v1 without these:
+
+- **List variables (planned follow-up).** A project variable of a list type
+  (declared, overridden per configuration and filled per profile like the
+  other types) would let a profile choose its own saved list, or supply a
+  run of args to an entry, without a per-profile `tests` field. Entry args
+  are already expanded with string/path variables (§1.3.4); entry names are
+  not expanded.
+- **Build only what the plan runs** (the saved targets plus the full builds of
+  units with batch steps) instead of the whole profile.
+- **Editor:** an inline saved-targets editor in the configuration editor
+  (picker of executables, reorder, args, `P` intent through the
+  configuration); a profile-level "run saved tests" action; an explorer
+  filter for saved targets; device test runs from the editor.
+- **Batch/saved de-duplication in headless runs** when a saved executable is
+  also registered with the native runner (the editor tree already
+  de-duplicates by executable).
+
 ## Plugin-based loomtest adapter discovery
 
 Mirror the existing plugin-based module registry idea: loomtest should

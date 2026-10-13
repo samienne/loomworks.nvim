@@ -20,7 +20,7 @@ function TestUnit:discover_async(callback) end
 --- Construct a command to run a specific test.
 --- @param test_id string
 --- @param opts? table
---- @return table|nil { cmd, env, cwd, output_path }
+--- @return table|nil { cmd, env, cwd, output_path, prepare?, test_id? } (`prepare` runs when the step executes; `false, err` fails it)
 function TestUnit:test_command(test_id, opts) end
 
 --- Construct a command to run all tests as structured, per-test output (editor

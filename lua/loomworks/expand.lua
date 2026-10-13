@@ -46,12 +46,41 @@ function M.expand_dict(dict, ctx)
     return result
 end
 
+--- The host directory of a resolved build target's artifact (spec §8.7
+--- `${target_dir}`), or nil while it is not known: no artifact, no build
+--- directory, or a unit not configured on this machine.
+--- @param target loomworks.Target|nil
+--- @param unit loomworks.ConfigUnit|nil the unit the target belongs to (fallback)
+--- @return string|nil
+function M.target_dir(target, unit)
+    if type(target) ~= "table" or type(target.artifact) ~= "string" or target.artifact == "" then
+        return nil
+    end
+    local u = target._config_unit or unit
+    local paths = require("loomworks.paths")
+    local artifact = target.artifact
+    if not paths.is_absolute(artifact) then
+        if not u then return nil end
+        if type(u.configured_here) == "function" and not u:configured_here() then return nil end
+        local bd = type(u.build_dir) == "function" and u:build_dir() or u.build_dir_value
+        if type(bd) ~= "string" or bd == "" then return nil end
+        artifact = paths.artifact_path(bd, artifact)
+    end
+    artifact = artifact:gsub("\\", "/")
+    return artifact:match("^(.*)/[^/]*$") or nil
+end
+
 --- Build a launch expansion context from workspace state.
+--- `opts.target` is the build target the thing being run resolves to (a
+--- target-backed launch's, a default target's, a saved entry's, a named test
+--- target's): it defines `${target_dir}` (spec §8.7), absent otherwise — so
+--- a reference to it is unresolved, never empty.
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
 --- @param project loomworks.Project
+--- @param opts? { target?: loomworks.Target|nil }
 --- @return table<string, string>
-function M.launch_context(ws, profile, project)
+function M.launch_context(ws, profile, project, opts)
     local ctx = {
         workspace_root = ws.root,
     }
@@ -73,6 +102,12 @@ function M.launch_context(ws, profile, project)
     local pp = profile:project(project.key)
     if pp and pp._config_unit then
         ctx.build_dir = pp._config_unit.build_dir_value or ""
+    end
+
+    -- The resolved build target's artifact directory (built-in, before the
+    -- project variables so they may reference it).
+    if opts and opts.target then
+        ctx.target_dir = M.target_dir(opts.target, pp and pp._config_unit or nil)
     end
 
     -- User-defined project variables (resolved via configuration inheritance,

@@ -69,10 +69,11 @@
 --- @class loomworks.ConfigProject
 --- @field path string relative path from workspace root
 --- @field type string module type ("cmake", "typescript")
---- @field type_config table module-specific configuration from loomworks.json (without `device` and `description`)
+--- @field type_config table module-specific configuration from loomworks.json (without `device`, `description` and `tests`)
 --- @field depends_on? string[]
 --- @field device? table remote-execution block (spec §18.9), lifted out of the module section
 --- @field description? any project description (spec §1.10), lifted out of the module section as read
+--- @field tests? any project-wide saved test targets (spec §1.3.4), lifted out of the module section as read
 
 --- Explicit profile definition in loomworks.json.
 --- @class loomworks.ConfigProfileDef
@@ -217,6 +218,7 @@
 --- @field type_config? table module-specific configuration
 --- @field device? table remote-execution block (spec §18.9)
 --- @field description? any project description as read (spec §1.10)
+--- @field tests? any project-wide saved test targets as read (spec §1.3.4)
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool_key? string cache key suffix
@@ -245,6 +247,7 @@
 --- @field from_preset? boolean derived from CMakePresets.json
 --- @field role? string e.g. "compile_commands"
 --- @field description? string generic field (spec §1.10): a generated configuration's read-only module default (§8.1); a user configuration's declared description (core-owned)
+--- @field tests? table generic field (spec §1.3.4): a user configuration's saved test targets, grafted from the declared table (a module never sees it)
 --- @field compile_commands_generated? boolean cmake §12: effective flag for whether loomworks reconstructs compile_commands.json (Visual Studio / Xcode generators, which CMake doesn't emit one for). Computed default, not user-authored — not serialized.
 
 --- Cmake's project-level module_info shape (documented as an example; core treats it as opaque).

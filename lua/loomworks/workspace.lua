@@ -234,6 +234,8 @@ local function merge_project(shared, user)
         -- the user.json declaration's presence or absence wins, never a
         -- field-by-field fallback to the shared one.
         description = user.description,
+        -- So are the project-wide saved test targets (spec §1.3.4, §2.4).
+        tests = user.tests,
     }
     local prov = { user_project_fields = true }
 
@@ -2472,7 +2474,9 @@ function Workspace:diagnostics()
             -- declared project variables. Values are placeholders; only key
             -- presence matters to `expand.unresolved_vars`.
             local allowed = {}
-            for name in pairs(vars_mod.RESERVED_NAMES) do allowed[name] = "" end
+            for name in pairs(vars_mod.RESERVED_NAMES) do
+                if not vars_mod.LAUNCH_ONLY_NAMES[name] then allowed[name] = "" end
+            end
             if type(project.variables) == "table" then
                 for name in pairs(project.variables) do allowed[name] = "" end
             end
@@ -4565,6 +4569,7 @@ function Workspace:_config_from_objects()
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
+                tests = project:tests_for_file(),
                 variables = project.variables,
             }
         end
@@ -4653,9 +4658,12 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     if project.device and next(project.device) then
         type_config.device = vim.deepcopy(project.device)
     end
-    -- So does the description (spec §1.10).
+    -- So does the description (spec §1.10), and the project-wide saved test
+    -- targets (spec §1.3.4).
     local desc = item_description(project)
     if desc ~= nil then type_config.description = desc end
+    local tests = project.tests_for_file and project:tests_for_file()
+    if tests ~= nil then type_config.tests = tests end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -4698,9 +4706,12 @@ function Workspace:_serialize_project(project)
     if project.device and next(project.device) then
         type_config.device = vim.deepcopy(project.device)
     end
-    -- So does the description (spec §1.10).
+    -- So does the description (spec §1.10), and the project-wide saved test
+    -- targets (spec §1.3.4).
     local desc = item_description(project)
     if desc ~= nil then type_config.description = desc end
+    local tests = project.tests_for_file and project:tests_for_file()
+    if tests ~= nil then type_config.tests = tests end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -4942,6 +4953,7 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
                         and user_proj.type == old_shared.type
                         and vim.deep_equal(desc_value(user_proj.description),
                             desc_value(old_shared.description))
+                        and vim.deep_equal(user_proj.tests, old_shared.tests)
 
                 if synced_decl and new_projects[pkey] then
                     local new_shared = new_projects[pkey]
@@ -4949,13 +4961,15 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
                     if user_proj.path ~= new_shared.path
                             or user_proj.type ~= new_shared.type
                             or not vim.deep_equal(desc_value(user_proj.description),
-                                desc_value(new_shared.description)) then
+                                desc_value(new_shared.description))
+                            or not vim.deep_equal(user_proj.tests, new_shared.tests) then
                         changed = true
                     end
                     user_proj.path = new_shared.path
                     user_proj.type = new_shared.type
                     user_proj.depends_on = new_shared.depends_on
                     user_proj.description = new_shared.description
+                    user_proj.tests = new_shared.tests
                 end
 
                 -- Sync individual configurations
@@ -5064,6 +5078,7 @@ function Workspace:_user_config_from_objects()
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
+                tests = project:tests_for_file(),
                 variables = project.variables,
             }
         end
@@ -5196,6 +5211,8 @@ function Workspace:is_project_decl_modified(project)
     if not vim.deep_equal(item_description(project), desc_value(bp.description)) then
         return true
     end
+    -- So are the project-wide saved test targets (spec §1.3.4).
+    if not vim.deep_equal(project:tests_for_file(), bp.tests) then return true end
 
     -- Compare module settings (type_config minus configurations)
     local current_tc = project.type_config and vim.deepcopy(project.type_config) or {}
@@ -5317,10 +5334,19 @@ end
 --- Pure: writes nothing, changes no intent.
 --- @param opts? { all: boolean|nil, no_profiles: boolean|nil }
 --- @return table raw JSON-compatible table
+--- @return string[] dropped saved test-entry args with no entry to return to (spec §17.6)
 function Workspace:shared_snapshot(opts)
     local raw = self:_serialize_config(opts)
-    require("loomworks.program_fields").regraft(raw, self._shared_ignored)
-    return raw
+    local _, dropped = require("loomworks.program_fields").regraft(raw, self._shared_ignored)
+    return raw, dropped or {}
+end
+
+--- Name the shared saved test-entry args a publish dropped (spec §17.6).
+--- @param dropped string[]|nil
+function Workspace:_report_dropped_test_args(dropped)
+    if not dropped or #dropped == 0 then return end
+    self._core._deps.notify("loomworks: publish dropped args from loomworks.json:\n  "
+        .. table.concat(dropped, "\n  "), vim.log.levels.WARN)
 end
 
 --- Normalized build directories the profiles' units use now (import report:
@@ -5607,12 +5633,13 @@ end
 --- Updates the file tracker's cached content to suppress self-write detection.
 --- @return boolean ok, string|nil err
 function Workspace:_save_config()
-    local raw = self:shared_snapshot()
+    local raw, dropped = self:shared_snapshot()
     local path = M.paths(self.root).config
     local ok, err = self._core._deps.io.write_json(path, raw)
     if ok and self._tracker then
         self._tracker:mark_written(path)
     end
+    if ok then self:_report_dropped_test_args(dropped) end
     return ok, err
 end
 
@@ -5727,10 +5754,11 @@ function Workspace:publish_one(item)
     -- Program-bearing values the shared layer carried (ignored at load, spec
     -- §17.6) are written back where the working copy supplies nothing, so
     -- re-publishing an item never drops a teammate's committed value.
-    require("loomworks.program_fields").regraft(existing, self._shared_ignored)
+    local _, dropped = require("loomworks.program_fields").regraft(existing, self._shared_ignored)
 
     local ok, err = self._core._deps.io.write_json(path, existing)
     if not ok then return false, err end
+    self:_report_dropped_test_args(dropped)
     if self._tracker then
         self._tracker:mark_written(path)
     end
@@ -6057,6 +6085,7 @@ function Workspace:_serialize_config_internal()
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
+                tests = project:tests_for_file(),
                 variables = project.variables,
             }
         end
@@ -6125,9 +6154,12 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     if project.device and next(project.device) then
         type_config.device = vim.deepcopy(project.device)
     end
-    -- So does the description (spec §1.10).
+    -- So does the description (spec §1.10), and the project-wide saved test
+    -- targets (spec §1.3.4).
     local desc = item_description(project)
     if desc ~= nil then type_config.description = desc end
+    local tests = project.tests_for_file and project:tests_for_file()
+    if tests ~= nil then type_config.tests = tests end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -6794,6 +6826,26 @@ end
 --- The message of a refused stale working-copy save (spec §2.7).
 M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on disk"
     .. " (another lw or editor) — reloaded it; your last change was not saved, redo it"
+
+--- A saved test-target list of `project` changed (spec §1.3.4): drop the
+--- cached test trees of its units (the list is not a configure input — no
+--- unit becomes stale) and tell the hosts. Only `tests_invalidated` is
+--- emitted (test explorer + status page refresh) — not `active_set_changed`,
+--- which would also re-evaluate the LSP integrations for no reason.
+--- @param project loomworks.Project
+function Workspace:_saved_tests_changed(project)
+    local events = self._core and self._core._deps and self._core._deps.events
+    local emitted = false
+    for _, unit in pairs(self._config_units or {}) do
+        if unit._project == project and unit.invalidate_tests then
+            unit:invalidate_tests()
+            if events then events.emit("tests_invalidated", unit) end
+            emitted = true
+        end
+    end
+    -- No unit yet: still refresh the views showing the `Tests:` line.
+    if events and not emitted then events.emit("tests_invalidated", nil) end
+end
 
 --- Save the working copy. Guarded against concurrent writers (spec §2.7): when
 --- the file changed on disk since this process last read or wrote it, nothing

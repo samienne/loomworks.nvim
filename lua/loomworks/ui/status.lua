@@ -204,6 +204,7 @@ local view = View.new({
         "operation_started",
         "operation_finished",
         "profile_renamed",
+        "tests_invalidated",
     },
 })
 

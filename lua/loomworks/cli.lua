@@ -2132,24 +2132,26 @@ ensure_unit_targets = function(ws, unit)
   if ok and targets then unit:set_targets(targets) end
 end
 
---- `lw test [profile] [--junit <file>] [-- <args>]` — build a profile, then run
---- its tests via each module's native runner, reporting a real exit code.
---- Args after `--` are forwarded to the native batch runner (e.g.
---- `-- -j 4` / `-- --num-processes 4`). `--junit <file>` writes JUnit XML for CI
---- (one file per unit — a label suffix when a profile runs several).
+--- `lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--junit <file>]
+--- [--list [--json]] [-- <args>]` — build a profile, then run its test plan
+--- (spec §16.16): per unit, the module's native batch runner, then its saved
+--- test targets. `--target` replaces the whole plan for the run; `--saved` /
+--- `--discovered` keep one kind of step; `--list` reports the plan read-only.
+--- Args after `--` are forwarded (to the runners, or to the executables).
+--- `--junit <file>` writes JUnit XML for CI (one file per step when several).
 function M.cmd_test(ws, args)
-  local overseer = require("loomworks.overseer")
-  -- Split on `--`: everything after is forwarded to the native test runner.
+  -- Split on `--`: everything after is forwarded to the test runner/programs.
   local pre, extra, seen_sep = {}, {}, false
   for i = 2, #args do
     if not seen_sep and args[i] == "--" then seen_sep = true
     elseif seen_sep then extra[#extra + 1] = args[i]
     else pre[#pre + 1] = args[i] end
   end
-  -- Pre-`--` tokens: `--junit <file>`, `--target <exe>` (repeatable), device
-  -- options (§16.34) and a positional profile.
-  local profile_name, junit
+  -- Pre-`--` tokens: `--junit <file>`, `--target <exe>` (repeatable), the plan
+  -- selectors, `--list [--json]`, device options (§16.34) and a profile.
+  local profile_name, junit, sel, list, json, cwd_override
   local names, dev_opts = {}, DEV.new_device_opts()
+  local selectors = 0
   local i = 1
   while pre[i] do
     if pre[i] == "--junit" then
@@ -2158,92 +2160,56 @@ function M.cmd_test(ws, args)
       i = i + 2
     elseif pre[i] == "--target" then
       if not pre[i + 1] then die("--target requires a test executable name") end
+      if #names == 0 then selectors = selectors + 1 end
       names[#names + 1] = pre[i + 1]
+      i = i + 2
+    elseif pre[i] == "--saved" or pre[i] == "--discovered" then
+      local s = pre[i]:sub(3)
+      if sel ~= s then selectors = selectors + 1 end
+      sel = s
+      i = i + 1
+    elseif pre[i] == "--list" then list = true; i = i + 1
+    elseif pre[i] == "--json" then json = true; i = i + 1
+    elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then
+      cwd_override = pre[i + 1]
+      if not cwd_override then die(pre[i] .. " requires a directory", 2) end
       i = i + 2
     elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
     elseif not profile_name then
       profile_name = pre[i]; i = i + 1
     else
       die("unexpected argument '" .. tostring(pre[i]) ..
-        "' — usage: lw test [profile] [--target <exe>…] [--junit <file>] [-- args…]")
+        "' — usage: lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--junit <file>] [-- args…]")
     end
   end
+  if selectors > 1 then
+    die("--target, --saved and --discovered select different plans — give at most one "
+      .. "(see `lw help test`)", 2)
+  end
+  if json and not list then die("--json goes with --list: lw test [profile] --list --json", 2) end
+  -- The per-invocation working directory applies to named targets only
+  -- (§16.16); a saved entry carries its own `working_dir`.
+  if cwd_override and #names == 0 then
+    die("--cwd applies to named test executables: lw test [profile] --target <exe> --cwd <dir>"
+      .. " (a saved test target takes its own: lw test-target add … --working-dir <dir>)", 2)
+  end
   if junit then junit = resolve_abs_out(junit, user_cwd()) end
+
+  -- The plan report is read-only (§16.9): the listing profile resolution.
+  if list then
+    if #names > 0 then die("--list reports the saved/discovered plan; --target names its own executables", 2) end
+    return M._test_plan_report(ws, M._resolve_profile_for_listing(ws, profile_name), sel, json)
+  end
 
   local profile
   profile, ws = resolve_build_target(ws, profile_name, "lw test <profile>")
 
-  -- Named test executables run directly — locally or on a device (§16.16).
+  -- Named test executables replace the whole plan (§16.16).
   if #names > 0 then
-    return M._test_targets(ws, profile, names, { junit = junit, extra = extra, dev = dev_opts })
+    return M._test_targets(ws, profile, names, { junit = junit, extra = extra, dev = dev_opts,
+      cwd_override = cwd_override })
   end
-  if dev_opts.device or dev_opts.fresh or dev_opts.timeout or dev_opts.no_wait or dev_opts.log_options then
-    die("device options apply to named test executables: lw test <profile> --target <exe> …")
-  end
-  M._refuse_foreign_batch(profile)
-  -- Hold the build-dir lock across build AND test: a native runner like
-  -- `meson test` rebuilds, so the whole run must be exclusive of other
-  -- processes touching the same build dir.
-  with_build_locks(profile, "build", function()
-    -- Ensure configured + built, but skip building units whose native test
-    -- runner rebuilds itself — e.g. `meson test`. Dies on build failure.
-    run_build_steps(profile, ws, { for_test = true })
-
-    -- Parse build targets before planning: the test step's run environment
-    -- (sibling DLL dirs on Windows) is derived from parsed targets, and
-    -- ctest, unlike `meson test`, does not set that up itself. Without this a
-    -- DLL-dependent test executable fails in the loader (0xc0000135).
-    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
-
-    local test_steps, units = overseer.plan_profile_test(profile,
-      { extra_args = (#extra > 0) and extra or nil, junit = junit })
-    if not test_steps or #test_steps == 0 then
-      out("no tests to run for profile '" .. profile.key .. "'" ..
-        ((units and units > 0) and " — its modules expose no test runner" or ""))
-      return
-    end
-
-    -- ctest's --output-junit and the meson copy target both need the directory
-    -- to exist up front.
-    if junit then
-      local dir = junit:match("^(.*)/[^/]+$")
-      if dir then assert(require("loomworks.io").mkdir_p(dir)) end
-    end
-
-    local failed, wrote = {}, {}
-    for _, step in ipairs(test_steps) do
-      out(string.format("==> [test] %s", step.name or "?"))
-      local code = run_spec(step, ws.root)
-      if code ~= 0 then failed[#failed + 1] = step.name or "?" end
-      -- Materialize JUnit at the caller's path. When the runner wrote it to its
-      -- own fixed location (meson), copy it over; when it wrote there directly
-      -- (ctest), just confirm. Runs even for failed tests — CI wants the report.
-      if step.junit_dest and step.junit_out then
-        if norm_cmp(step.junit_out) ~= norm_cmp(step.junit_dest) then
-          if uv.fs_stat(step.junit_out) then
-            uv.fs_copyfile(step.junit_out, step.junit_dest)
-            wrote[#wrote + 1] = step.junit_dest
-          else
-            errw("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
-          end
-        elseif uv.fs_stat(step.junit_dest) then
-          wrote[#wrote + 1] = step.junit_dest
-        else
-          errw("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
-        end
-      end
-    end
-
-    for _, p in ipairs(wrote) do out("JUnit: " .. p) end
-
-    if #failed > 0 then
-      die(string.format("%d of %d test run(s) failed: %s",
-        #failed, #test_steps, table.concat(failed, ", ")), 1)
-    end
-    out(string.format("TESTS OK: %s (%d run%s)", profile.key, #test_steps,
-      #test_steps == 1 and "" or "s"))
-  end)
-  return 0
+  return M._test_plan(ws, profile, { sel = sel, junit = junit, extra = extra, dev = dev_opts })
 end
 
 --- `lw init` — initialize the working copy (.nvim/loomworks.user.json).
@@ -2599,7 +2565,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
   local args = {}
   if cfg and cfg.args then
     local expand = require("loomworks.expand")
-    local ctx = expand.launch_context(ws, lt._profile, project)
+    local ctx = expand.launch_context(ws, lt._profile, project, { target = f.target })
     for _, a in ipairs(expand.expand_array(cfg.args, ctx) or {}) do args[#args + 1] = a end
   end
   for _, a in ipairs(opts.extra_args or {}) do args[#args + 1] = a end
@@ -2705,93 +2671,111 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
   return run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
 end
 
---- The batch runner is a host program that would execute the profile's test
---- binaries here: never for a cross kit (spec §15 invariant 19, §18.6). Dies
---- naming the kit and platform, pointing at `lw test --target`.
---- @param profile loomworks.Profile
-function M._refuse_foreign_batch(profile)
-  for _, pp in ipairs(profile:projects()) do
-    local token, tool = require("loomworks.remote.foreign").unit_platform(pp._config_unit)
-    if token then
-      die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
-        .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]",
-        profile.key, tostring(tool and (tool.key or tool.label) or "?"), token, profile.key))
-    end
-  end
-end
-
---- Run named test executables (spec §16.16, §18.6): build the profile, then
---- run each named executable directly with its framework's results option —
---- on a device when foreign (§18.5), locally otherwise — and judge each
---- outcome from exit status + parsed results (+ crashes / missing results on a
---- device). `opts = { junit?, extra = string[], dev = device options }`.
---- `deps` (tests): build(profile, ws), resolve_target(ws, profile, name) → lt,
---- run_spec, backend, liveness_ms, write_out, write_err.
---- @return integer exit code
-function M._test_targets(ws, profile, names, opts, deps)
+--- Run ONE test executable step (spec §16.16, §18.6) — the shared executor of
+--- named (`--target`) and saved test entries. `lt` is the resolved
+--- `LaunchTarget` (the same object `lw run <name>` uses): a build target, or a
+--- launch configuration. A launch's deploy steps run first (a failed deploy
+--- fails the step without running the program). The program runs on a device
+--- when its build-target artifact is foreign (§18.5), locally otherwise, with
+--- argv = program, the framework results option (only for a build target's
+--- artifact the gtest helper recognises), a launch's own args, the step's
+--- `args` (already expanded), then the caller-forwarded args. The outcome is
+--- judged from exit status + parsed results (+ crashes / missing results on a
+--- device). Prints the step header and its one-line outcome; writes JUnit to
+--- `opts.junit_path` when given.
+--- `opts = { label, header?, args?, extra?, dev, junit_path?, saved?, cwd?,
+--- entry_working_dir?, cwd_override? }`: `cwd` is a saved entry's resolved
+--- working directory (absolute; it replaces the program's), `entry_working_dir`
+--- the entry's `working_dir` as written (a device step notes it is not used),
+--- `cwd_override` a named target's per-invocation `--cwd` (raw, expanded in
+--- the target's launch context; refused for a device run). With
+--- `saved` (a saved entry's step) a refused or unresolvable run fails the step
+--- instead of the invocation, and a program without per-case results is
+--- judged on its exit status alone and written to JUnit as one test case.
+--- @return boolean failed, string[] reasons, table counts, boolean exit_only
+function M._run_test_executable(ws, lt, opts, deps)
   deps = deps or {}
   local test_run = require("loomworks.remote.test_run")
   local gtest = require("loomworks.gtest")
   local remote_run = require("loomworks.remote.run")
-  if deps.build then
-    deps.build(profile, ws)
-  else
-    with_build_locks(profile, "build", function() run_build_steps(profile, ws, {}) end)
-  end
-  local function resolve(name)
-    if deps.resolve_target then return deps.resolve_target(ws, profile, name) end
-    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
-    local matches, all = match_targets(ws, profile, name, nil, "target")
-    if #matches == 0 then
-      local labels = {}
-      for _, c in ipairs(all) do if c.kind == "target" then labels[#labels + 1] = c.project.key .. ":" .. c.name end end
-      die("no executable target '" .. name .. "' in profile '" .. profile.key .. "'.\n  executables: " ..
-        (next(labels) and table.concat(labels, ", ") or "(none)"))
-    elseif #matches > 1 then
-      local labels = {}
-      for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
-      die("'" .. name .. "' is ambiguous: " .. table.concat(labels, ", ") .. "\n  qualify with <project>:<name>.")
-    end
-    return candidate_launch_target(ws, profile, matches[1])
+  local label = opts.label
+  local tail = {}
+  for _, a in ipairs(opts.args or {}) do tail[#tail + 1] = a end
+  for _, a in ipairs(opts.extra or {}) do tail[#tail + 1] = a end
+  local cfg = lt._launch_config
+  -- The results option applies only to a build target's artifact (§16.16).
+  local artifact = not (cfg and not cfg.target)
+  local f = artifact and M._foreign_of(lt) or nil
+  local results, results_requested, results_missing, failed, reasons
+
+  --- A step that cannot run: fail it (saved entry) or the invocation.
+  local function refuse(msg)
+    if not opts.saved then die(msg) end
+    errw("lw: " .. msg .. "\n")
+    return { msg }
   end
 
-  local several = #names > 1
-  local failed_names, wrote = {}, {}
-  for _, name in ipairs(names) do
-    local lt = resolve(name)
-    local f = M._foreign_of(lt)
-    local results, results_requested, results_missing, failed, reasons
-    if f then
-      out(string.format("==> [test] %s (on a device)", name))
-      local hook, st = test_run.device_hook(f.name)
-      local outcome
-      M._run_foreign(lt, ws, f, {
-        extra_args = opts.extra, device = opts.dev.device, fresh = opts.dev.fresh,
-        timeout = opts.dev.timeout, timeouts = opts.dev.timeouts, log_options = opts.dev.log_options,
-        no_wait = opts.dev.no_wait, before_exec = hook,
-        on_result = function(r) outcome = r; return r.exit_code end,
-      }, deps)
-      results_requested = st.framework == "gtest"
-      local path = st.results_name and outcome.results[st.results_name]
-      results = path and gtest.parse_xml_results(path) or nil
-      if path and not results then results = {} end
-      results_missing = results_requested and not path
-      failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
-        results = results, results_missing = results_missing, crashes = #outcome.crashes,
-        transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
-      remote_run.report(outcome, function(s2) errw(s2 .. "\n") end, failed)
+  if f and opts.cwd_override then
+    die("--cwd does not apply to a device run ('" .. label .. "') — set the project's device.working_dir instead", 2)
+  end
+  -- A device step takes its working directory from the `device` block, never
+  -- from the entry (§1.3.4 "Working directory"): say so.
+  out(string.format("==> [test] %s%s", opts.header or label,
+    f and (opts.entry_working_dir and " (on a device; its working_dir is not used there)" or " (on a device)") or ""))
+  if opts.saved then
+    local ok, why = lt:is_valid()
+    if not ok then
+      reasons = refuse("launch target is not runnable: " ..
+        table.concat(type(why) == "table" and why or { "invalid" }, "; "))
+    end
+    if not reasons and f and not (f.platform and require("loomworks.remote.runners").for_foreign(f)) then
+      reasons = refuse(require("loomworks.remote.foreign").refusal(f))
+    end
+  end
+  -- A launch's deploy steps run before its program (§8.8.4).
+  if not reasons and cfg then
+    local dok, derr = lt:deploy_sync()
+    if not dok then reasons = refuse("deploy failed: " .. tostring(derr)) end
+  end
+
+  if reasons then
+    failed = true
+  elseif f then
+    local hook, st = test_run.device_hook(f.name, tail)
+    local outcome
+    local dev = opts.dev or DEV.new_device_opts()
+    M._run_foreign(lt, ws, f, {
+      extra_args = {}, device = dev.device, fresh = dev.fresh, no_build = cfg ~= nil,
+      timeout = dev.timeout, timeouts = dev.timeouts, log_options = dev.log_options,
+      no_wait = dev.no_wait, before_exec = hook,
+      on_result = function(r) outcome = r; return r.exit_code end,
+    }, deps)
+    results_requested = st.framework == "gtest"
+    local path = st.results_name and outcome.results[st.results_name]
+    results = path and gtest.parse_xml_results(path) or nil
+    if path and not results then results = {} end
+    results_missing = results_requested and not path
+    failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
+      results = results, results_missing = results_missing, crashes = #outcome.crashes,
+      transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
+    remote_run.report(outcome, function(s2) errw(s2 .. "\n") end, failed)
+  else
+    local spec, serr = lt:resolve_launch_spec({ working_dir = opts.cwd_override })
+    if not spec then
+      reasons = refuse("cannot resolve test executable: " .. tostring(serr))
+      failed = true
     else
-      out(string.format("==> [test] %s", name))
-      local spec, serr = lt:resolve_launch_spec({ extra_args = opts.extra })
-      if not spec then die("cannot resolve test executable: " .. tostring(serr)) end
-      local fw = gtest.probe_sync(spec.cmd, name, { env = spec.env, cwd = spec.cwd })
+      -- A saved entry's working directory replaces the program's (§1.3.4).
+      if opts.cwd then spec.cwd = opts.cwd end
       local xml
-      if fw == "gtest" then
+      if artifact and gtest.probe_sync(spec.cmd, label, { env = spec.env, cwd = spec.cwd }) == "gtest" then
         results_requested = true
         -- (no vim.fn.tempname in the standalone host)
         xml = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-test-" .. require("loomworks.remote.transport").nonce() .. ".xml"
-        spec.args[#spec.args + 1] = "--gtest_output=xml:" .. xml
+        -- argv: program, results option, the launch's own args, then the tail.
+        table.insert(spec.args, 1, "--gtest_output=xml:" .. xml)
       end
+      for _, a in ipairs(tail) do spec.args[#spec.args + 1] = a end
       local argv = { spec.cmd }
       for _, a in ipairs(spec.args) do argv[#argv + 1] = a end
       local code = (deps.run_spec or run_spec)({ cmd = argv, cwd = spec.cwd, env = spec.env }, ws.root)
@@ -2806,26 +2790,110 @@ function M._test_targets(ws, profile, names, opts, deps)
       failed, reasons = test_run.judge({ status = code, results_requested = results_requested,
         results = results, results_missing = results_missing })
     end
-    local c = test_run.count(results)
-    if failed then
-      failed_names[#failed_names + 1] = name
-      out(string.format("%s: FAILED (%s)%s", name, table.concat(reasons, ", "),
-        #c.failed_ids > 0 and (": " .. table.concat(c.failed_ids, ", ")) or ""))
-    else
-      out(string.format("%s: %d test%s passed%s", name, c.total - c.skipped, (c.total - c.skipped) == 1 and "" or "s",
-        c.skipped > 0 and (", " .. c.skipped .. " skipped") or ""))
+  end
+  -- A saved program without per-case results is judged on its exit status
+  -- alone, and is one JUnit case (§16.16 "Results option").
+  local exit_only = opts.saved and not results_requested and true or false
+  local c = test_run.count(results)
+  if failed then
+    out(string.format("%s: FAILED (%s)%s", label, table.concat(reasons, ", "),
+      #c.failed_ids > 0 and (": " .. table.concat(c.failed_ids, ", ")) or ""))
+  elseif exit_only then
+    out(label .. ": passed (exit status 0; no per-case results)")
+  else
+    out(string.format("%s: %d test%s passed%s", label, c.total - c.skipped, (c.total - c.skipped) == 1 and "" or "s",
+      c.skipped > 0 and (", " .. c.skipped .. " skipped") or ""))
+  end
+  if opts.junit_path then
+    local junit_results = results
+    if exit_only then
+      junit_results = { { test_id = "test:" .. label, status = failed and "failed" or "passed",
+        message = failed and table.concat(reasons or {}, ", ") or nil } }
     end
-    if opts.junit then
-      if results then
-        local p = test_run.junit_path(opts.junit, name, several)
-        local ok, werr = test_run.write_file(p, test_run.junit_xml(name, results))
-        if ok then wrote[#wrote + 1] = p else errw("lw: warning: cannot write JUnit " .. p .. ": " .. tostring(werr) .. "\n") end
-      else
-        errw("lw: warning: no JUnit output for " .. name .. " (no results file)\n")
-      end
+    if junit_results then
+      local ok, werr = test_run.write_file(opts.junit_path, test_run.junit_xml(label, junit_results))
+      if ok then out("JUnit: " .. opts.junit_path)
+      else errw("lw: warning: cannot write JUnit " .. opts.junit_path .. ": " .. tostring(werr) .. "\n") end
+    else
+      errw("lw: warning: no JUnit output for " .. label .. " (no results file)\n")
     end
   end
-  for _, p in ipairs(wrote) do out("JUnit: " .. p) end
+  return failed, reasons or {}, c, exit_only
+end
+
+--- Run named test executables (spec §16.16, §18.6): build the profile, then
+--- run each named executable through `M._run_test_executable`, in its
+--- project directory or the per-invocation `cwd_override`.
+--- `opts = { junit?, extra = string[], dev = device options, cwd_override? }`.
+--- `deps` (tests): build(profile, ws), resolve_target(ws, profile, name) → lt,
+--- run_spec, backend, liveness_ms, write_out, write_err.
+--- @return integer exit code
+function M._test_targets(ws, profile, names, opts, deps)
+  deps = deps or {}
+  local test_run = require("loomworks.remote.test_run")
+  --- `quiet`: an unresolvable name yields nil instead of dying.
+  local function resolve(name, quiet)
+    if deps.resolve_target then return deps.resolve_target(ws, profile, name) end
+    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
+    local matches, all = match_targets(ws, profile, name, nil, "target")
+    if quiet and #matches ~= 1 then return nil end
+    if #matches == 0 then
+      local labels = {}
+      for _, c in ipairs(all) do if c.kind == "target" then labels[#labels + 1] = c.project.key .. ":" .. c.name end end
+      die("no executable target '" .. name .. "' in profile '" .. profile.key .. "'.\n  executables: " ..
+        (next(labels) and table.concat(labels, ", ") or "(none)"))
+    elseif #matches > 1 then
+      local labels = {}
+      for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
+      die("'" .. name .. "' is ambiguous: " .. table.concat(labels, ", ") .. "\n  qualify with <project>:<name>.")
+    end
+    return candidate_launch_target(ws, profile, matches[1])
+  end
+  --- `--cwd` never applies to a device run (as for `lw run --cwd`): a usage
+  --- error, refused before anything is built or run.
+  local function check_cwd(name, lt)
+    if opts.cwd_override and lt and M._foreign_of(lt) then
+      die("--cwd does not apply to a device run ('" .. name .. "') — set the project's device.working_dir instead", 2)
+    end
+  end
+
+  -- Before the build: every name whose target is already known (a unit
+  -- configured here). Targets read now are dropped again so the build's
+  -- result is what runs.
+  if opts.cwd_override then
+    local fresh = {}
+    if not deps.resolve_target then
+      for _, pp in ipairs(profile:projects()) do
+        local u = pp._config_unit
+        if u and not u.targets then fresh[#fresh + 1] = u end
+      end
+    end
+    for _, name in ipairs(names) do check_cwd(name, resolve(name, true)) end
+    for _, u in ipairs(fresh) do u.targets = nil end
+  end
+  if deps.build then
+    deps.build(profile, ws)
+  else
+    with_build_locks(profile, "build", function() run_build_steps(profile, ws, {}) end)
+  end
+  -- After the build: resolve every name, and check all of them, before the
+  -- first one runs.
+  local lts = {}
+  for i, name in ipairs(names) do
+    lts[i] = resolve(name)
+    check_cwd(name, lts[i])
+  end
+
+  local several = #names > 1
+  local failed_names = {}
+  for i, name in ipairs(names) do
+    local lt = lts[i]
+    local failed = M._run_test_executable(ws, lt, {
+      label = name, extra = opts.extra, dev = opts.dev, cwd_override = opts.cwd_override,
+      junit_path = opts.junit and test_run.junit_path(opts.junit, name, several) or nil,
+    }, deps)
+    if failed then failed_names[#failed_names + 1] = name end
+  end
   if #failed_names > 0 then
     die(string.format("%d of %d test executable%s failed: %s", #failed_names, #names,
       #names == 1 and "" or "s", table.concat(failed_names, ", ")), 1)
@@ -2834,6 +2902,474 @@ function M._test_targets(ws, profile, names, opts, deps)
   return 0
 end
 
+--- Whether device options were given (spec §16.34).
+function M._has_device_opts(d)
+  return d and (d.device or d.fresh or d.timeout or d.no_wait or d.log_options) and true or false
+end
+
+--- The pre-build test plan of a profile (spec §16.16): per unit, in the
+--- profile's project order, whether its batch step is planned and its saved
+--- entries. `sel` is nil, "saved" or "discovered". Pure model data — reads no
+--- build directory beyond the static batch-runner question. An invalid `tests`
+--- declaration (§1.3.4) is planned as one invalid entry, so it fails like a
+--- missing entry.
+--- @return table[] units { unit, project, pp, batch, batch_dropped, platform, saved, entries }
+--- @return integer n_batch, integer n_exec
+function M._test_plan_units(profile, sel)
+  local foreign = require("loomworks.remote.foreign")
+  local units, n_batch, n_exec = {}, 0, 0
+  for _, pp in ipairs(profile:projects()) do
+    local unit = pp._config_unit
+    local project = unit and unit._project
+    if unit and project then
+      local u = { unit = unit, project = project, pp = pp, entries = {} }
+      if sel ~= "saved" then
+        local list_fn = unit.batch_runner_test_units or unit.test_units
+        for _, tu in ipairs(list_fn and list_fn(unit) or {}) do
+          if tu.run_command_all and not tu.is_saved_targets then u.batch = true end
+        end
+      end
+      if sel ~= "discovered" and unit.saved_test_targets then
+        u.saved = unit:saved_test_targets()
+        u.entries = u.saved and u.saved.entries or {}
+        if u.saved and u.saved.invalid then
+          u.entries = { { invalid = "tests", decl_invalid = true, index = 1 } }
+        end
+        local mod = project._module and project._module.impl
+        if #u.entries > 0 and not (mod and mod.parse_targets) then
+          -- §1.3.4 Applicability: kept, reported as unsupported, never acted on.
+          u.unsupported = true
+          u.entries = {}
+        end
+      end
+      local token, tool = foreign.unit_platform(unit)
+      if token and u.batch then
+        u.batch, u.batch_dropped, u.platform, u.tool = false, true, token, tool
+      end
+      if u.batch then n_batch = n_batch + 1 end
+      n_exec = n_exec + #u.entries
+      units[#units + 1] = u
+    end
+  end
+  return units, n_batch, n_exec
+end
+
+--- The project's executable targets, for messages ("App:a, App:b").
+function M._executables_of(unit)
+  local labels = {}
+  for id, t in pairs(type(unit.targets) == "table" and unit.targets or {}) do
+    if t.is_executable and t:is_executable() then
+      labels[#labels + 1] = unit._project.key .. ":" .. ((t.display_name and t:display_name()) or id)
+    end
+  end
+  table.sort(labels)
+  return next(labels) and table.concat(labels, ", ") or "(none)"
+end
+
+--- The project's launch configurations in the model, for messages.
+function M._launches_of(project)
+  local labels = {}
+  for name, cfg in pairs(type(project.launch) == "table" and project.launch or {}) do
+    if type(cfg) == "table" and (cfg.command or cfg.target) then labels[#labels + 1] = project.key .. ":" .. name end
+  end
+  table.sort(labels)
+  return next(labels) and table.concat(labels, ", ") or "(none)"
+end
+
+--- The resolution context of a unit's saved entries (spec §1.3.4
+--- "Resolution"): the project's launch configurations, the trust-ignored
+--- launches, and the unit's parsed build targets (nil = unknown).
+function M._tt_rctx(ws, unit, project, level)
+  local test_targets = require("loomworks.test_targets")
+  return {
+    launches = project.launch,
+    launch_ignored = function(n) return test_targets.launch_ignored(ws._shared_ignored, project, n) end,
+    targets = unit and type(unit.targets) == "table" and unit.targets or nil,
+    level = level,
+  }
+end
+
+--- The `lw test-target remove` form that drops a saved entry at its level
+--- (`--index <k>` for one occurrence of a repeated name).
+function M._test_target_remove_hint(profile, project, entry, source)
+  local level = (source and source._project) and (" --config " .. source.name) or " --project-wide"
+  if not entry.name then
+    return "fix it in the file by hand, or clear the list: lw test-target clear " .. profile.key .. " "
+      .. project.key .. level
+  end
+  return "lw test-target remove " .. profile.key .. " " .. project.key .. ":" .. entry.name
+    .. (entry.repeated and (" --index " .. entry.index) or "") .. level
+end
+
+--- `lw test [profile] [--saved | --discovered]` — the test plan (spec §16.16):
+--- per unit, its batch step then one executable step per saved entry. Every
+--- step runs even when an earlier one failed; the invocation succeeds iff the
+--- build and every step succeeded. `opts = { sel?, junit?, extra, dev }`.
+--- `deps` (tests): build(profile, ws, keep), run_spec, launch_target, plus
+--- `_run_foreign` deps.
+--- @return integer exit code
+function M._test_plan(ws, profile, opts, deps)
+  deps = deps or {}
+  local overseer = require("loomworks.overseer")
+  local test_targets = require("loomworks.test_targets")
+  local plan, n_batch, n_exec = M._test_plan_units(profile, opts.sel)
+  local extra = opts.extra or {}
+
+  -- Foreign units: the batch step is never run on the host (invariant 19).
+  for _, u in ipairs(plan) do
+    if u.batch_dropped and #u.entries > 0 then
+      note(string.format("lw: note: %s: its registered tests cannot run on this host (%s) — "
+        .. "skipping its batch runner; its saved test targets run on a device", u.project.key, u.platform))
+    end
+  end
+  if n_batch + n_exec == 0 then
+    for _, u in ipairs(plan) do
+      if u.batch_dropped then
+        local tool = u.tool
+        die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
+          .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]"
+          .. "\n  or save them: lw test-target add %s <exe>",
+          profile.key, tostring(tool and (tool.key or tool.label) or "?"), u.platform, profile.key, profile.key))
+      end
+    end
+  end
+  for _, u in ipairs(plan) do
+    if u.unsupported then
+      note("lw: note: " .. u.project.key .. ": saved test targets are not supported by its module (no build targets) — ignored")
+    end
+  end
+  if M._has_device_opts(opts.dev) and n_exec == 0 then
+    die("device options apply to test executables: lw test <profile> --target <exe> …, "
+      .. "or saved test targets (lw test-target add)", 2)
+  end
+  if #extra > 0 and n_batch > 0 and n_exec > 0 then
+    die("arguments after `--` need a plan of one kind — the native runners' arguments and the "
+      .. "test programs' differ.\n  only the saved test executables: lw test " .. profile.key .. " --saved -- …"
+      .. "\n  only the native runners:        lw test " .. profile.key .. " --discovered -- …"
+      .. "\n  named executables:              lw test " .. profile.key .. " --target <exe> -- …", 2)
+  end
+
+  local keep = {}
+  for _, u in ipairs(plan) do if #u.entries > 0 then keep[u.unit] = true end end
+
+  local function body()
+    if deps.build then
+      deps.build(profile, ws, keep)
+    else
+      run_build_steps(profile, ws, { for_test = { keep = keep } })
+    end
+    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
+
+    -- Resolve every saved entry before the first step runs (missing → fail):
+    -- a launch configuration first, else an executable build target (§1.3.4).
+    local missing = {}
+    for _, u in ipairs(plan) do
+      u.exec = {}
+      local level = u.saved and test_targets.level_label(u.saved.source) or u.project.key
+      local rctx = M._tt_rctx(ws, u.unit, u.project, level)
+      for _, e in ipairs(u.entries) do
+        local r = test_targets.resolve_entry(e, rctx)
+        -- Args and working_dir expand in the entry's launch context, where
+        -- `${target_dir}` is its build target's artifact directory (§8.7).
+        local lctx = r.state == "ok"
+          and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
+        if r.state == "ok" then
+          local lt
+          if r.kind == "launch" then
+            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
+              { kind = "launch", project = u.project, name = e.name })
+          else
+            local dname = (r.target.display_name and r.target:display_name()) or r.target.id
+            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
+              { kind = "target", project = u.project, name = dname, target_id = r.target.id })
+          end
+          u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = r.kind, args = test_targets.expand_args(e.args, lctx),
+            cwd = (test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)) }
+        else
+          local why = r.reason or ("cannot be resolved (the build targets of " .. u.project.key .. " are unknown)")
+          if e.decl_invalid then why = "`tests` of " .. level .. " is not an array of saved test entries" end
+          missing[#missing + 1] = string.format(
+            "saved test entry '%s' (%s): %s.\n    executables: %s\n    launch configurations: %s\n    remove it: %s",
+            test_targets.entry_label(e), level, why, M._executables_of(u.unit), M._launches_of(u.project),
+            M._test_target_remove_hint(profile, u.project, e, u.saved and u.saved.source))
+        end
+      end
+    end
+    if #missing > 0 then die(table.concat(missing, "\n  ")) end
+
+    -- Batch steps (after the build: a runner without a test set plans none).
+    local skip = {}
+    for _, u in ipairs(plan) do if not u.batch then skip[u.unit] = true end end
+    local probe = (n_batch > 0) and overseer.plan_profile_test(profile, { skip_units = skip }) or {}
+    local batch_count = {}
+    for _, st in ipairs(probe or {}) do batch_count[st.unit] = (batch_count[st.unit] or 0) + 1 end
+
+    -- The final ordered steps and their JUnit labels (§16.16).
+    local steps, labels = {}, {}
+    for _, u in ipairs(plan) do
+      if batch_count[u.unit] then
+        local label = u.project.key .. ":" .. tostring(u.unit:variant())
+        steps[#steps + 1] = { kind = "batch", unit = u.unit, project = u.project, label = label }
+        labels[label] = (labels[label] or 0) + 1
+      end
+      for _, x in ipairs(u.exec) do
+        steps[#steps + 1] = { kind = "exec", unit = u.unit, project = u.project, entry = x.entry,
+          lt = x.lt, args = x.args, cwd = x.cwd, label = x.entry.name }
+        labels[x.entry.name] = (labels[x.entry.name] or 0) + 1
+      end
+    end
+    if #steps == 0 then
+      out("no tests to run for profile '" .. profile.key .. "'")
+      return 0
+    end
+    -- Same label twice: qualify the executable step with its project, then,
+    -- when its name repeats in its list, with its occurrence index.
+    for _, st in ipairs(steps) do
+      if st.kind == "exec" and labels[st.label] > 1 then
+        st.label = st.project.key .. ":" .. st.label
+          .. (st.entry.repeated and ("#" .. st.entry.index) or "")
+      end
+    end
+    local multi = #steps > 1
+    local function junit_for(label)
+      return opts.junit and overseer._junit_dest_for(opts.junit, label, multi) or nil
+    end
+    local batch_steps = {}
+    if n_batch > 0 then
+      local planned = overseer.plan_profile_test(profile, {
+        skip_units = skip, extra_args = (#extra > 0) and extra or nil, junit = opts.junit,
+        junit_dest_for = function(label) return junit_for(label) end,
+      })
+      for _, st in ipairs(planned or {}) do
+        batch_steps[st.unit] = batch_steps[st.unit] or {}
+        table.insert(batch_steps[st.unit], st)
+      end
+    end
+    if opts.junit then
+      local dir = opts.junit:match("^(.*)/[^/]+$")
+      if dir then assert(require("loomworks.io").mkdir_p(dir)) end
+    end
+
+    local summary, n_failed = {}, 0
+    for _, st in ipairs(steps) do
+      if st.kind == "batch" then
+        for _, b in ipairs(batch_steps[st.unit] or {}) do
+          out(string.format("==> [test] %s: %s", st.project.key, b.runner or "runner"))
+          local code = (deps.run_spec or run_spec)(b, ws.root)
+          if b.junit_dest and b.junit_out then
+            if norm_cmp(b.junit_out) ~= norm_cmp(b.junit_dest) then
+              if uv.fs_stat(b.junit_out) then
+                uv.fs_copyfile(b.junit_out, b.junit_dest)
+                out("JUnit: " .. b.junit_dest)
+              else
+                errw("lw: warning: no JUnit output for " .. st.label .. "\n")
+              end
+            elseif uv.fs_stat(b.junit_dest) then
+              out("JUnit: " .. b.junit_dest)
+            else
+              errw("lw: warning: no JUnit output for " .. st.label .. "\n")
+            end
+          end
+          local ok = code == 0
+          if not ok then n_failed = n_failed + 1 end
+          summary[#summary + 1] = string.format("  %-28s %s", st.project.key .. ": " .. (b.runner or "runner"),
+            ok and "passed" or ("FAILED (exit status " .. tostring(code) .. ")"))
+        end
+      else
+        local name = test_targets.entry_label(st.entry)
+        local failed, reasons, _, exit_only = M._run_test_executable(ws, st.lt, {
+          label = name, header = st.project.key .. ": " .. name, saved = true,
+          args = st.args, cwd = st.cwd, entry_working_dir = st.entry.working_dir,
+          extra = extra, dev = opts.dev, junit_path = junit_for(st.label),
+        }, deps)
+        if failed then n_failed = n_failed + 1 end
+        summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
+          failed and ("FAILED (" .. table.concat(reasons, ", ") .. ")") or "passed",
+          exit_only and "  (exit status only — no per-case results)" or "")
+      end
+    end
+    out("")
+    out("summary — profile '" .. profile.key .. "':")
+    for _, l in ipairs(summary) do out(l) end
+    if n_failed > 0 then
+      die(string.format("%d of %d test step%s failed", n_failed, #summary, #summary == 1 and "" or "s"), 1)
+    end
+    out(string.format("TESTS OK: %s (%d step%s)", profile.key, #summary, #summary == 1 and "" or "s"))
+    return 0
+  end
+
+  local rc
+  if deps.build then
+    rc = body()
+  else
+    -- Hold the build-dir lock across build AND test: a native runner like
+    -- `meson test` rebuilds, so the whole run must be exclusive.
+    with_build_locks(profile, "build", function() rc = body() end)
+  end
+  return rc or 0
+end
+
+--- One saved entry of the plan report (spec §16.16 "Plan report"): name,
+--- occurrence index, resolved kind, args and working_dir as written and
+--- expanded, and a resolution state. `here` = the unit is configured on this
+--- machine. Values expand in the entry's launch context (`${target_dir}`
+--- only where its build target is known); an unresolved reference leaves the
+--- expanded value nil.
+--- @return table
+function M._report_entry(ws, profile, u, e, here, local_only)
+  local test_targets = require("loomworks.test_targets")
+  local level = test_targets.level_label(u.saved and u.saved.source)
+  local rctx = M._tt_rctx(ws, here and u.unit or nil, u.project, level)
+  local r = test_targets.resolve_entry(e, rctx)
+  local state = r.state
+  if state == "ok" and r.target then
+    local bd = u.unit:build_dir()
+    local art = bd and r.target.artifact and require("loomworks.paths").artifact_path(bd, r.target.artifact)
+    if not (art and uv.fs_stat(art)) then state = "not built" end
+  elseif state == "unknown" and r.kind == "launch" then
+    -- A target-backed launch on an unconfigured unit: its program is a build
+    -- target nobody built here yet.
+    state = "not built"
+  end
+  local lctx = e.name and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
+  local expanded
+  if e.args and #e.args > 0 then
+    local ex, unresolved = test_targets.expand_args(e.args, lctx)
+    if #unresolved == 0 then expanded = ex end
+  elseif e.name then
+    expanded = {}
+  end
+  local wd_expanded
+  if e.working_dir then
+    local abs, unresolved = test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)
+    if #unresolved == 0 then wd_expanded = abs end
+  end
+  local program_values = (e.args and #e.args > 0) or e.working_dir ~= nil
+  return {
+    name = e.name, index = e.index or 1, repeated = e.repeated or nil,
+    invalid = e.invalid ~= nil and (e.decl_invalid and "tests (not an array)" or e.invalid) or nil,
+    kind = r.kind, also_target = r.also_target, args = e.args or {}, args_expanded = expanded,
+    working_dir = e.working_dir, working_dir_expanded = wd_expanded,
+    local_only = (program_values and local_only) or nil, state = state, reason = r.reason,
+  }
+end
+
+--- `lw test --list [--json]` (spec §16.16 "Plan report"): what bare `lw test`
+--- would run — read-only: nothing is configured, built or run. The selectors
+--- shape the reported plan.
+--- @return integer exit code
+function M._test_plan_report(ws, profile, sel, json)
+  local test_targets = require("loomworks.test_targets")
+  local plan = M._test_plan_units(profile, sel)
+  local units = {}
+  local any = false
+  for _, u in ipairs(plan) do
+    local unit = u.unit
+    local here = unit.configured_here and unit:configured_here()
+    local ju = { project = u.project.key, configuration = u.pp:variant_name() }
+    if u.batch or u.batch_dropped then
+      local runner, count
+      if here then
+        for _, tu in ipairs(unit:batch_runner_test_units()) do
+          if tu.run_command_all and not tu.is_saved_targets then
+            local ok, spec = pcall(tu.run_command_all, tu, {})
+            if ok and type(spec) == "table" and type(spec.cmd) == "table" and type(spec.cmd[1]) == "string" then
+              runner = spec.cmd[1]:gsub("\\", "/"):match("([^/]+)$"):gsub("%.[eE][xX][eE]$", "")
+            end
+            if not u.batch_dropped then
+              local okd, entries = pcall(tu.discover, tu)
+              if okd and type(entries) == "table" then
+                local has_child = {}
+                for _, e in ipairs(entries) do if e.parent then has_child[e.parent] = true end end
+                count = 0
+                for _, e in ipairs(entries) do
+                  if e.parent or not has_child[e.id] then count = count + 1 end
+                end
+              end
+            end
+          end
+        end
+      end
+      ju.batch = { runner = runner or "native runner", tests = count, dropped = u.batch_dropped or nil,
+        platform = u.platform }
+      if u.batch then any = true end
+    end
+    if u.saved and #u.entries > 0 then
+      if here then ensure_unit_targets(ws, unit) end
+      local src = u.saved.source
+      -- Args and working_dir from the shared layer only are stripped (§17.6):
+      -- mark entries of a list that also reaches loomworks.json.
+      local local_only = src and src._intent ~= nil and src._intent ~= "local"
+      ju.saved = { source = test_targets.source_text(src, u.pp:configuration()),
+        level = test_targets.level_label(src), entries = {} }
+      for _, e in ipairs(u.entries) do
+        table.insert(ju.saved.entries, M._report_entry(ws, profile, u, e, here, local_only))
+        any = true
+      end
+    elseif u.unsupported then
+      ju.saved = { unsupported = true, entries = {} }
+    end
+    units[#units + 1] = ju
+  end
+  if json then
+    for _, ju in ipairs(units) do
+      for _, e in ipairs(ju.saved and ju.saved.entries or {}) do
+        -- Machine form (§16.16): kind / expanded args null when unknown;
+        -- working_dir null when the entry has none, its expansion null then
+        -- or when a reference in it is unresolved.
+        e.kind = e.kind or vim.NIL
+        e.args_expanded = e.args_expanded or vim.NIL
+        e.working_dir = e.working_dir or vim.NIL
+        e.working_dir_expanded = e.working_dir_expanded or vim.NIL
+        e.source = ju.saved.source
+        e.repeated, e.reason = nil, nil
+      end
+    end
+    out(vim.json.encode({ profile = profile.key, selector = sel, units = units, empty = not any }))
+    return 0
+  end
+  out("test plan — profile '" .. profile.key .. "'" .. (sel and (" (--" .. sel .. ")") or "") .. ":")
+  if not any then
+    out("  (no tests) — save a test target: lw test-target add " .. profile.key .. " <target>")
+    return 0
+  end
+  for _, ju in ipairs(units) do
+    if ju.batch or (ju.saved and #ju.saved.entries > 0) then
+      out("  " .. ju.project .. " (" .. tostring(ju.configuration) .. ")")
+      if ju.batch then
+        if ju.batch.dropped then
+          out("    " .. ju.batch.runner .. "  — dropped: its registered tests cannot run on this host (" ..
+            tostring(ju.batch.platform) .. ")")
+        else
+          out("    " .. ju.batch.runner .. (ju.batch.tests and ("  (" .. ju.batch.tests .. " tests)") or ""))
+        end
+      end
+      if ju.saved then
+        for _, e in ipairs(ju.saved.entries) do
+          local name = e.name and (e.name .. (e.repeated and (" #" .. e.index) or ""))
+            or ("invalid entry " .. test_targets.raw_text(e.invalid))
+          local args = ""
+          if #e.args > 0 then
+            args = "  " .. table.concat(e.args, " ")
+            local ex = e.args_expanded and table.concat(e.args_expanded, " ")
+            if ex and ex ~= table.concat(e.args, " ") then args = args .. "  → " .. ex end
+          end
+          if e.working_dir then
+            args = args .. "  (in " .. e.working_dir
+            if e.working_dir_expanded and e.working_dir_expanded ~= e.working_dir then
+              args = args .. " → " .. e.working_dir_expanded
+            end
+            args = args .. ")"
+          end
+          if e.local_only then args = args .. "  (local only)" end
+          local kind = e.kind and (e.kind .. (e.also_target and ", also a build target" or "")) or "?"
+          out(string.format("    %s%s  [%s; %s]  %s", name, args, kind, ju.saved.source, e.state))
+        end
+      end
+    end
+  end
+  return 0
+end
 --- `lw launch list [project]` — list command-type launch configs.
 function M.cmd_launch_list(ws, proj_name)
   local projs = {}
@@ -4301,6 +4837,8 @@ function M.cmd_project_show(root, name)
   M._describe_block(proj.description)
   out("  path            " .. (proj.path or "."))
   if proj._intent then out("  intent          " .. proj._intent) end
+  local pw = proj.own_test_targets and proj:own_test_targets()
+  M._show_test_targets(pw and { entries = pw, source = proj, invalid = proj._tests and proj._tests.invalid } or nil, nil)
 
   local cfgs = proj:get_configurations()
   table.sort(cfgs, function(a, b) return a.name < b.name end)
@@ -4844,6 +5382,7 @@ function M.cmd_configuration_show(root, proj_name, cfg_name)
   if cfg._overrides and next(cfg._overrides) then
     out("  overrides (compiler-family):"); print_dict("    ", cfg._overrides)
   end
+  M._show_test_targets(cfg.test_targets and cfg:test_targets(), cfg)
   local ok, reasons = cfg:is_valid()
   if not ok then out("  invalid: " .. table.concat(reasons, "; ")) end
   local rows = config_set_rows(ws, proj)
@@ -4937,6 +5476,32 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   return 0
 end
 
+--- The show views' saved-test-targets row (spec §16.9): the effective list
+--- with its source; nothing when none is declared.
+--- @param eff { entries: table[], source: table }|nil
+--- @param cfg loomworks.Configuration|nil the configuration shown (nil: project)
+function M._show_test_targets(eff, cfg)
+  if not eff then return end
+  local tt = require("loomworks.test_targets")
+  local names = {}
+  for _, e in ipairs(eff.entries) do
+    names[#names + 1] = tt.entry_label(e) .. ((e.args and #e.args > 0) and (" [" .. table.concat(e.args, " ") .. "]") or "")
+      .. (e.working_dir and (" (in " .. e.working_dir .. ")") or "")
+  end
+  if eff.invalid then names = { "invalid (not an array)" } end
+  out("  tests           " .. (#names > 0 and table.concat(names, ", ") or "none (explicit)") ..
+    "  (" .. tt.source_text(eff.source, cfg) .. ")")
+end
+
+--- Saved test targets (spec §1.3.4) are a list, edited with `lw test-target`
+--- only — the dotted configuration grammar refuses a `tests` param (§16.9).
+function M._refuse_tests_param(param)
+  if param == "tests" or (type(param) == "string" and param:match("^tests%.")) then
+    die("saved test targets are edited with `lw test-target` (add | remove | clear), " ..
+      "not `lw config set/unset` — see `lw help test-target`")
+  end
+end
+
 --- `lw config set <project> <name> <param> <value>`
 function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
   if not (proj_name and cfg_name and param) or value == nil then
@@ -4950,6 +5515,7 @@ function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
   if param == "description" then
     return M.cmd_describe("config", root, { "config", "describe", proj_name, cfg_name, value })
   end
+  M._refuse_tests_param(param)
   return edit_configuration(root, proj_name, cfg_name, param, value, "set")
 end
 
@@ -4964,6 +5530,7 @@ function M.cmd_configuration_unset(root, proj_name, cfg_name, param)
   if param == "description" then
     return M.cmd_describe("config", root, { "config", "describe", proj_name, cfg_name, "--clear" })
   end
+  M._refuse_tests_param(param)
   return edit_configuration(root, proj_name, cfg_name, param, nil, "unset")
 end
 
@@ -6180,6 +6747,485 @@ function M.cmd_target(root, args)
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_listing(ws, name)
   return print_target_list(ws, profile)
+end
+
+-- ---------------------------------------------------------------------------
+-- Saved test targets (spec §1.3.4, §16.9): `lw test-target`
+-- ---------------------------------------------------------------------------
+
+M.TEST_TARGET_USAGE = "usage: lw test-target [list] [profile]\n" ..
+  "       lw test-target add [<profile>] <name>… [--config <name> | --project-wide] [--working-dir <dir>] [--unchecked] [-- <args>…]\n" ..
+  "       lw test-target remove [<profile>] <name>… [--index <k>] [--config <name> | --project-wide]\n" ..
+  "       lw test-target clear [<profile>] [<project>] [--config <name> | --project-wide] [--empty]"
+
+--- Parse a `lw test-target <sub>` argv: positionals, `--config <name>`,
+--- `--project-wide`, `--unchecked`, `--empty`, `--index <k>`,
+--- `--working-dir <dir>` (alias `--cwd`), and args after `--`.
+function M._tt_parse(args)
+  local o = { pos = {}, extra = nil }
+  local i = 3
+  while args[i] do
+    local a = args[i]
+    if a == "--" then
+      o.extra = {}
+      for k = i + 1, #args do o.extra[#o.extra + 1] = args[k] end
+      break
+    elseif a == "--config" then
+      o.config = args[i + 1]
+      if not o.config then die("--config needs a configuration name\n" .. M.TEST_TARGET_USAGE, 2) end
+      i = i + 2
+    elseif a == "--index" then
+      local k = tonumber(args[i + 1] or "")
+      if not k or k < 1 or k % 1 ~= 0 then
+        die("--index needs an occurrence index (1, 2, …) as `lw test-target` lists it\n" .. M.TEST_TARGET_USAGE, 2)
+      end
+      o.index = k
+      i = i + 2
+    elseif a == "--working-dir" or a == "--cwd" then
+      o.working_dir = args[i + 1]
+      if not o.working_dir or o.working_dir == "" then
+        die(a .. " needs a directory (absolute or workspace-root-relative)\n" .. M.TEST_TARGET_USAGE, 2)
+      end
+      i = i + 2
+    elseif a == "--project-wide" then o.project_wide = true; i = i + 1
+    elseif a == "--unchecked" then o.unchecked = true; i = i + 1
+    elseif a == "--empty" then o.empty = true; i = i + 1
+    else o.pos[#o.pos + 1] = a; i = i + 1 end
+  end
+  if o.config and o.project_wide then
+    die("--config and --project-wide name different levels — give one\n" .. M.TEST_TARGET_USAGE, 2)
+  end
+  return o
+end
+
+--- Split off a leading profile operand: the first positional names a profile
+--- when it is exactly a profile key (target names never are). Returns the
+--- profile (resolved like `lw target set`) and the remaining operands.
+function M._tt_profile(ws, pos, usage)
+  local first = pos[1]
+  local rest = {}
+  local named
+  if first then
+    for _, p in ipairs(ws._profiles or {}) do
+      if p.key == first then named = p end
+    end
+  end
+  for k = named and 2 or 1, #pos do rest[#rest + 1] = pos[k] end
+  if named then return named, rest end
+  return resolve_profile(ws, nil, { usage = usage }), rest
+end
+
+--- The level an edit writes to (§16.9 "Write level"): `--project-wide` → the
+--- project; `--config <name>` → that user configuration; otherwise the
+--- configuration the profile maps for the project when it is a USER
+--- configuration, else the project-wide list.
+--- @return loomworks.Configuration|loomworks.Project level
+function M._tt_level(profile, project, o)
+  if o.project_wide then return project end
+  if o.config then return resolve_config(project, o.config, true) end
+  local pp = profile:project(project.key)
+  local cfg = pp and pp:configuration()
+  if cfg and cfg.is_user and not cfg:is_auto_gen() and not cfg._source_missing then return cfg end
+  return project
+end
+
+--- The effective list at a level: a configuration's (own → bases →
+--- project-wide), or the project's own.
+--- @return { entries: loomworks.SavedTestEntry[], source: table, invalid: boolean|nil }|nil
+function M._tt_effective(level)
+  if level._project then return level:test_targets() end
+  local own = level:own_test_targets()
+  return own and { entries = own, source = level, invalid = level._tests and level._tests.invalid } or nil
+end
+
+--- The profiles whose mapped configuration of `project` takes its list from
+--- `level` (after an edit) — "used by" in the edit message.
+function M._tt_used_by(ws, project, level)
+  local keys = {}
+  for _, p in ipairs(ws._profiles or {}) do
+    local pp = p.project and p:project(project.key)
+    local cfg = pp and pp:configuration()
+    local eff = cfg and cfg:test_targets()
+    if eff and eff.source == level then keys[#keys + 1] = p.key end
+  end
+  table.sort(keys)
+  return keys
+end
+
+--- Resolve an `add` operand to its project and stored (unqualified) name, as
+--- `lw test --target` resolves names (§16.16: `project:name` qualification,
+--- ambiguity between projects), except that a launch configuration of the
+--- project also matches and is preferred over a same-named build target
+--- (§1.3.4, §16.9). An unconfigured project's targets are unknown: a name that
+--- is not one of its launch configurations is refused unless `unchecked`.
+--- @return loomworks.Project project, string name, "launch"|"target"|nil kind
+function M._tt_resolve_add(ws, profile, name, unchecked)
+  for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
+  local matches = match_targets(ws, profile, name, nil, nil)
+  -- One match per project, the launch configuration preferred.
+  local by_project, order = {}, {}
+  for _, c in ipairs(matches) do
+    local cur = by_project[c.project]
+    if not cur then
+      by_project[c.project] = c
+      order[#order + 1] = c.project
+    elseif cur.kind ~= "launch" and c.kind == "launch" then
+      by_project[c.project] = c
+    end
+  end
+  if #order > 1 then
+    local labels = {}
+    for _, p in ipairs(order) do labels[#labels + 1] = fmt_cand(by_project[p]) end
+    die("'" .. name .. "' is ambiguous: " .. table.concat(labels, ", ") .. "\n  qualify with <project>:<name>.")
+  end
+  local scope, bare = nil, name
+  local pfx, rest = name:match("^([^:]+):(.+)$")
+  if pfx and profile:project(pfx) then scope, bare = pfx, rest end
+  if #order == 1 then
+    local c = by_project[order[1]]
+    return c.project, bare, c.kind
+  end
+  local candidates, unknown = {}, {}
+  for _, pp in ipairs(profile:projects()) do
+    local unit = pp._config_unit
+    local project = unit and unit._project
+    local mod = project and project._module and project._module.impl
+    if project and (not scope or project.key == scope) and mod and mod.parse_targets then
+      candidates[#candidates + 1] = unit
+      if type(unit.targets) ~= "table" then unknown[#unknown + 1] = unit end
+    end
+  end
+  if #unknown > 0 then
+    local names = {}
+    for _, u in ipairs(unknown) do names[#names + 1] = u._project.key end
+    if not unchecked then
+      die("the build targets of " .. table.concat(names, ", ") .. " are not known on this machine "
+        .. "(not configured here), and '" .. bare .. "' is not a launch configuration — build first: lw build "
+        .. profile.key .. "\n  or save the name without checking: lw test-target add " .. profile.key .. " "
+        .. name .. " --unchecked")
+    end
+    if #unknown > 1 then
+      die("'" .. name .. "': several projects' targets are unknown (" .. table.concat(names, ", ") ..
+        ") — qualify with <project>:<name>")
+    end
+    note("lw: warning: saving '" .. bare .. "' on " .. unknown[1]._project.key ..
+      " unchecked — its build targets are not known here; `lw test` fails if it is not an executable")
+    return unknown[1]._project, bare, nil
+  end
+  if #candidates == 0 then
+    die("no project of profile '" .. profile.key .. "' has build targets to save as test targets")
+  end
+  local lines = {}
+  for _, unit in ipairs(candidates) do
+    lines[#lines + 1] = "\n  " .. unit._project.key .. " executables: " .. M._executables_of(unit)
+      .. "\n  " .. unit._project.key .. " launch configurations: " .. M._launches_of(unit._project)
+  end
+  die("'" .. name .. "' is neither an executable target nor a launch configuration in profile '"
+    .. profile.key .. "'." .. table.concat(lines))
+end
+
+--- Refuse an add / remove at a level whose own `tests` is not an array
+--- (§1.3.4): it is kept verbatim, so an edit would have to discard it.
+function M._tt_refuse_invalid(profile, project, level)
+  if level._tests and level._tests.invalid then
+    local test_targets = require("loomworks.test_targets")
+    local flag = level._project and (" --config " .. level.name) or " --project-wide"
+    die("`tests` of " .. test_targets.level_label(level) .. " is not an array of saved test entries — "
+      .. "fix it in the file, or clear it: lw test-target clear " .. profile.key .. " " .. project.key .. flag)
+  end
+end
+
+--- Write `entries` at `level` (or report the no-op) and print where (§16.9).
+--- `before` is the level's effective list before the edit; `copied` the
+--- inherited source a materialised list came from. `force` writes even when
+--- the list is unchanged (an add always writes).
+function M._tt_write(ws, project, level, entries, before, copied, verb_done, force)
+  local test_targets = require("loomworks.test_targets")
+  local where = test_targets.level_label(level)
+  -- No-op rule (§16.9): an edit that leaves the effective list as it was
+  -- writes nothing (no materialisation either), says so and exits 0.
+  if not force and test_targets.fingerprint(before and before.entries) == test_targets.fingerprint(entries) then
+    out(where .. ": " .. verb_done.unchanged .. " (unchanged)")
+    return false
+  end
+  local ok, err = level:set_test_targets(entries)
+  if not ok then die("could not save: " .. tostring(err)) end
+  local used = M._tt_used_by(ws, project, level)
+  out(verb_done.done .. " on " .. where .. " (used by " ..
+    (next(used) and table.concat(used, ", ") or "no profile") .. ")")
+  if copied then
+    out("  copied " .. #copied.entries .. " inherited entr" .. (#copied.entries == 1 and "y" or "ies") ..
+      " from " .. (copied.source._project and copied.source.name or "the project-wide list"))
+  end
+  local shared
+  if level._project then
+    shared = config_reaches_shared(ws, project, level.name)
+  else
+    shared = item_reaches_shared(ws, "projects", project, nil)
+  end
+  publish_hint(shared)
+  return true
+end
+
+--- The list a level starts from for an edit: its own, or — materialise on
+--- inherit (§16.9) — a copy of what it inherits.
+--- @return loomworks.SavedTestEntry[] entries, table|nil copied
+function M._tt_base(level)
+  local own = level:own_test_targets()
+  if own then return vim.deepcopy(own), nil end
+  local eff = M._tt_effective(level)
+  if eff and #eff.entries > 0 and eff.source ~= level then return vim.deepcopy(eff.entries), eff end
+  return {}, nil
+end
+
+--- `lw test-target add [<profile>] <name>… [--config|--project-wide] [--working-dir <dir>]
+--- [--unchecked] [-- args]`. Appends one entry per name, even for a name
+--- already in the list (§1.3.4 "Duplicates"), and reports a repeated name's
+--- occurrence index. Args and the working_dir are stored unexpanded; an entry
+--- with a working_dir is written in the table form.
+--- (`ws_in`, tests: an already-loaded workspace.)
+function M._tt_add(root, args, ws_in)
+  local o = M._tt_parse(args)
+  if o.index then die("--index applies to `remove` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  local ws = ws_in or load_workspace(root, false)
+  local profile, names = M._tt_profile(ws, o.pos, "lw test-target add <profile> <name>")
+  if #names == 0 then die(M.TEST_TARGET_USAGE, 2) end
+  local new_args = (o.extra and #o.extra > 0) and o.extra or nil
+  -- Group by level, keeping operand order.
+  local groups, order = {}, {}
+  for _, name in ipairs(names) do
+    local project, bare, kind = M._tt_resolve_add(ws, profile, name, o.unchecked)
+    local level = M._tt_level(profile, project, o)
+    M._tt_refuse_invalid(profile, project, level)
+    if not groups[level] then
+      groups[level] = { project = project, names = {} }
+      order[#order + 1] = level
+    end
+    table.insert(groups[level].names, { name = bare, kind = kind })
+  end
+  for _, level in ipairs(order) do
+    local g = groups[level]
+    local before = M._tt_effective(level)
+    local entries, copied = M._tt_base(level)
+    local labels = {}
+    for _, n in ipairs(g.names) do
+      entries[#entries + 1] = { name = n.name, args = new_args and vim.deepcopy(new_args) or nil,
+        working_dir = o.working_dir }
+      local k = 0
+      for _, e in ipairs(entries) do if e.name == n.name then k = k + 1 end end
+      labels[#labels + 1] = n.name .. (k > 1 and (" #" .. k) or "") .. (n.kind and (" (" .. n.kind .. ")") or "")
+    end
+    M._tt_write(ws, g.project, level, entries, before, copied,
+      { done = "saved " .. table.concat(labels, ", "), unchanged = "" }, true)
+  end
+  return 0
+end
+
+--- `lw test-target remove [<profile>] <name>… [--index <k>] [--config|--project-wide]`:
+--- drops every entry with each name, or with `--index <k>` only the k-th
+--- occurrence of a single name (§16.9).
+function M._tt_remove(root, args, ws_in)
+  local o = M._tt_parse(args)
+  if o.extra then die("arguments after `--` apply to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  if o.working_dir then die("--working-dir applies to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  local ws = ws_in or load_workspace(root, false)
+  local profile, names = M._tt_profile(ws, o.pos, "lw test-target remove <profile> <name>")
+  if #names == 0 then die(M.TEST_TARGET_USAGE, 2) end
+  if o.index and #names > 1 then
+    die("--index removes one occurrence of a single name — give one name\n" .. M.TEST_TARGET_USAGE, 2)
+  end
+  local test_targets = require("loomworks.test_targets")
+  local groups, order = {}, {}
+  for _, name in ipairs(names) do
+    local scope, bare = nil, name
+    local pfx, rest = name:match("^([^:]+):(.+)$")
+    if pfx and profile:project(pfx) then scope, bare = pfx, rest end
+    local hits, invalid_levels = {}, {}
+    for _, pp in ipairs(profile:projects()) do
+      local project = pp._config_unit and pp._config_unit._project or pp._project
+      if project and (not scope or project.key == scope) then
+        local level = M._tt_level(profile, project, o)
+        if level._tests and level._tests.invalid then
+          invalid_levels[#invalid_levels + 1] = { project = project, level = level }
+        end
+        local eff = M._tt_effective(level)
+        for _, e in ipairs(eff and eff.entries or {}) do
+          if e.name == bare then hits[#hits + 1] = { project = project, level = level, eff = eff }; break end
+        end
+      end
+    end
+    -- A level whose own `tests` is not an array cannot be searched or edited
+    -- (§1.3.4): refuse it before saying the name is not saved.
+    if #hits == 0 and invalid_levels[1] then
+      M._tt_refuse_invalid(profile, invalid_levels[1].project, invalid_levels[1].level)
+    end
+    if #hits == 0 then
+      out("'" .. name .. "' is not saved for profile '" .. profile.key .. "' (nothing to remove)")
+    elseif #hits > 1 then
+      local ks = {}
+      for _, h in ipairs(hits) do ks[#ks + 1] = h.project.key .. ":" .. bare end
+      die("'" .. name .. "' is saved in several projects: " .. table.concat(ks, ", ") ..
+        "\n  qualify with <project>:<name>.")
+    else
+      local h = hits[1]
+      M._tt_refuse_invalid(profile, h.project, h.level)
+      if o.index then
+        local found
+        for _, e in ipairs(h.eff.entries) do
+          if e.name == bare and e.index == o.index then found = true end
+        end
+        if not found then
+          local listed = {}
+          for _, e in ipairs(h.eff.entries) do
+            if e.name == bare then
+              listed[#listed + 1] = "#" .. e.index .. ((e.args and #e.args > 0)
+                and ("  " .. table.concat(e.args, " ")) or "")
+            end
+          end
+          die("'" .. name .. "' has no entry #" .. o.index .. " on " .. test_targets.level_label(h.eff.source)
+            .. ".\n  its entries: " .. table.concat(listed, ", "))
+        end
+      end
+      if not groups[h.level] then
+        groups[h.level] = { project = h.project, names = {} }
+        order[#order + 1] = h.level
+      end
+      table.insert(groups[h.level].names, bare)
+    end
+  end
+  for _, level in ipairs(order) do
+    local g = groups[level]
+    local before = M._tt_effective(level)
+    local entries, copied = M._tt_base(level)
+    local drop = {}
+    for _, n in ipairs(g.names) do drop[n] = true end
+    local kept = {}
+    for _, e in ipairs(entries) do
+      local gone = e.name and drop[e.name] and (not o.index or e.index == o.index)
+      if not gone then kept[#kept + 1] = e end
+    end
+    local list = table.concat(g.names, ", ") .. (o.index and (" #" .. o.index) or "")
+    M._tt_write(ws, g.project, level, kept, before, copied,
+      { done = "removed " .. list, unchanged = list .. " not saved" })
+  end
+  return 0
+end
+
+--- `lw test-target clear [<profile>] [<project>] [--config|--project-wide] [--empty]`:
+--- remove the declaration at a level (it inherits again), or with `--empty`
+--- declare an explicit empty list.
+function M._tt_clear(root, args, ws_in)
+  local o = M._tt_parse(args)
+  if o.extra then die("arguments after `--` apply to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  if o.working_dir then die("--working-dir applies to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  if o.index then die("--index applies to `remove` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  local ws = ws_in or load_workspace(root, false)
+  local pos = o.pos
+  local profile, rest
+  if #pos >= 2 then
+    profile = resolve_profile(ws, pos[1], { usage = "lw test-target clear <profile>" })
+    rest = { pos[2] }
+  else
+    profile, rest = M._tt_profile(ws, pos, "lw test-target clear <profile>")
+  end
+  local only = rest[1]
+  if only and not profile:project(only) then
+    die("project '" .. only .. "' is not in profile '" .. profile.key .. "'")
+  end
+  local test_targets = require("loomworks.test_targets")
+  for _, pp in ipairs(profile:projects()) do
+    local project = pp._config_unit and pp._config_unit._project or pp._project
+    if project and (not only or project.key == only) then
+      local level = M._tt_level(profile, project, o)
+      local own = level:own_test_targets()
+      local invalid = level._tests and level._tests.invalid
+      local where = test_targets.level_label(level)
+      if o.empty then
+        if own and #own == 0 and not invalid then
+          out(where .. ": already an explicit empty list (unchanged)")
+        else
+          M._tt_write(ws, project, level, {}, M._tt_effective(level), nil,
+            { done = "set an explicit empty list", unchanged = "empty" }, true)
+        end
+      elseif own == nil then
+        out(where .. ": declares no saved test targets (nothing to clear)")
+      else
+        local ok, err = level:set_test_targets(nil)
+        if not ok then die("could not save: " .. tostring(err)) end
+        local eff = M._tt_effective(level)
+        out("cleared " .. where .. (eff and #eff.entries > 0
+          and (" — it now inherits " .. #eff.entries .. " from " .. test_targets.source_text(eff.source,
+            level._project and level or nil)) or ""))
+        publish_hint(level._project and config_reaches_shared(ws, project, level.name)
+          or item_reaches_shared(ws, "projects", project, nil))
+      end
+    end
+  end
+  return 0
+end
+
+--- `lw test-target [list] [profile]`: per project of the profile, the
+--- effective saved list in order — each entry's name, its occurrence index
+--- where the name repeats, its args and working_dir as written, its resolved kind where known
+--- — and the list's source (read-only).
+function M._tt_list(root, name, ws_in)
+  local test_targets = require("loomworks.test_targets")
+  local ws = ws_in or load_workspace(root, false)
+  local profile = resolve_profile_for_listing(ws, name)
+  out("saved test targets — profile '" .. profile.key .. "':")
+  local any = false
+  for _, pp in ipairs(profile:projects()) do
+    local unit = pp._config_unit
+    local project = unit and unit._project or pp._project
+    if project then
+      local cfg = pp:configuration()
+      local eff = cfg and cfg:test_targets()
+        or (project:own_test_targets() and { entries = project:own_test_targets(), source = project,
+          invalid = project._tests and project._tests.invalid })
+      local head = "  " .. project.key .. " (" .. tostring(pp:variant_name()) .. ")"
+      if eff and eff.invalid then
+        any = true
+        out(head .. ": `tests` of " .. test_targets.level_label(eff.source)
+          .. " is not an array — kept as written, and treated as missing")
+      elseif eff and #eff.entries > 0 then
+        any = true
+        out(head .. "  — " .. test_targets.source_text(eff.source, cfg) ..
+          " (" .. test_targets.level_label(eff.source) .. ")")
+        local here = unit and unit.configured_here and unit:configured_here()
+        if here then ensure_unit_targets(ws, unit) end
+        local rctx = M._tt_rctx(ws, here and unit or nil, project, test_targets.level_label(eff.source))
+        for _, e in ipairs(eff.entries) do
+          local r = test_targets.resolve_entry(e, rctx)
+          local kind = r.state == "missing" and "missing" or r.kind
+          out("    " .. test_targets.entry_label(e)
+            .. ((e.args and #e.args > 0) and ("  " .. table.concat(e.args, " ")) or "")
+            .. (e.working_dir and ("  (in " .. e.working_dir .. ")") or "")
+            .. (kind and ("  [" .. kind .. "]") or ""))
+        end
+      elseif eff then
+        out(head .. ": none (explicit, " .. test_targets.level_label(eff.source) .. ")")
+      else
+        out(head .. ": none — add: lw test-target add " .. profile.key .. " " .. project.key .. ":<name>")
+      end
+    end
+  end
+  if not any then
+    out("  `lw test` runs only the native test runners; save an executable or a launch: lw test-target add " ..
+      profile.key .. " <name>")
+  end
+  return 0
+end
+
+--- `lw test-target [list] [profile] | add | remove | clear` (spec §16.9).
+--- `add` / `remove` / `clear` are reserved sub-keywords; list a profile
+--- literally named so with `lw test-target list <name>`.
+function M.cmd_test_target(root, args)
+  local sub = args[2]
+  if sub == "add" then return M._tt_add(root, args) end
+  if sub == "remove" or sub == "rm" then return M._tt_remove(root, args) end
+  if sub == "clear" then return M._tt_clear(root, args) end
+  if sub == "list" then return M._tt_list(root, args[3]) end
+  return M._tt_list(root, sub)
 end
 
 M._collect_targets = collect_targets
@@ -9114,6 +10160,7 @@ local COMP_COMMANDS = {
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "export", "import", "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes",
+  "test-target",
   "--no-input",
 }
 
@@ -9340,6 +10387,23 @@ function M.cmd_complete(cword, words)
       emit(sorted_unique(comp_launch_names(comp_ws(root))))    -- <target> on named profile
     elseif (sub == "list" or sub == "clear" or sub == "unset") and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- [profile]
+    end
+    return 0
+  elseif cmd == "test-target" then
+    -- `test-target [list] [profile]` | `add|remove [<profile>] <name>…` |
+    -- `clear [<profile>] [<project>]`.
+    if n == 1 then
+      emit(sorted_unique(vim.list_extend({ "list", "add", "remove", "clear" },
+        comp_profile_names(comp_ws(root)))))
+    elseif sub == "add" or sub == "remove" then
+      local ws_c = comp_ws(root)
+      emit(sorted_unique(vim.list_extend(vim.list_extend({ "--config", "--project-wide" },
+        sub == "add" and { "--unchecked", "--working-dir" } or { "--index" }), comp_profile_names(ws_c))))
+    elseif sub == "clear" then
+      emit(sorted_unique(vim.list_extend({ "--config", "--project-wide", "--empty" },
+        comp_profile_names(comp_ws(root)))))
+    elseif sub == "list" and n == 2 then
+      emit(comp_profile_names(comp_ws(root)))
     end
     return 0
   elseif cmd == "config" or cmd == "configuration" or cmd == "cfg" then
@@ -9965,14 +11029,17 @@ args/env/working-dir layered on top — no hand-written path.
 
 Configs live in the project's working copy; they reach loomworks.json when the
 project is published (`lw project publish <project>`).]],
-  test = [[lw test [profile | config-set] [--junit <file>] [-- runner-args…]
-lw test [profile] --target <exe> [--target <exe>…] [--junit <file>] [-- exe-args…]
+  test = [[lw test [profile | config-set] [--saved | --discovered] [--junit <file>] [-- args…]
+lw test [profile] --target <exe> [--target <exe>…] [--cwd <dir>] [--junit <file>] [-- exe-args…]
+lw test [profile] --list [--json] [--saved | --discovered]
 
-Build a profile, then run its tests through each module's NATIVE runner (cmake
--> ctest, meson -> `meson test`), streaming output and reporting a REAL exit
-code: 0 iff the build succeeded and every runner passed, non-zero otherwise.
-A profile whose modules expose no test runner reports "no tests"
-and exits 0 — not a failure.
+Build a profile, then run its test plan: per project, the module's NATIVE
+runner (cmake -> ctest, meson -> `meson test`) and then each SAVED test entry
+— a build target or a launch configuration (`lw help test-target`) —
+streaming output and reporting a REAL exit code: 0
+iff the build succeeded and every step passed. Every step runs even when an
+earlier one failed; a summary lists each step's outcome. A profile with no
+steps reports "no tests" and exits 0 — not a failure.
 
 Profile resolution and onboarding match `lw build`: interactively it can create
 a profile from a configuration set; in --no-input / CI it needs an explicit
@@ -9980,24 +11047,91 @@ profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
 
   profile        e.g. Debug:ninja-clang-19  (unique substring works)
   config-set     a set name (interactive: onboards a profile, then tests)
+  --saved        run only the saved test executables (no native runners)
+  --discovered   run only the native runners (saved lists ignored)
+  --list         print the plan without configuring, building or running:
+                 each saved entry's kind (target / launch), args and working_dir
+                 (written and expanded), source and state (--json:
+                 machine-readable)
   --junit <file> Write JUnit XML for CI reporters. ctest maps to
                  --output-junit; meson's fixed testlog is copied here. One file
-                 per invocation; when a profile runs several test units a label
-                 suffix is inserted (report.xml -> report.app-Debug.xml).
-  -- args…       Everything after `--` is forwarded to the native batch runner,
-                 e.g. `-- -j 4` (ctest) or `-- --num-processes 4` (meson).
+                 when the plan has one step; otherwise one per step, a label
+                 suffix inserted (report.xml -> report.app-Debug.xml,
+                 report.CoreTests.xml).
+  -- args…       Forwarded when every step is of one kind: to the native
+                 runners (e.g. `-- -j 4` for ctest) or to the test programs.
+                 A mixed plan refuses them — add --saved or --discovered.
+
+A saved entry that names neither a launch configuration nor an executable
+target of its project fails the run before anything executes. A launch entry
+runs like `lw run <name>`: its deploy steps, then the program with the
+launch's environment, working directory and own args, then the entry's args.
+An entry runs in its own working_dir when it has one, else a launch entry in
+the launch's, a build target in its project directory (`${target_dir}` names
+the directory of the target's executable).
+Only a gtest executable built by the project gets per-test results
+(--gtest_output); any other entry passes or fails on its exit status (one
+JUnit case). A saved target also registered with ctest runs in both steps
+(use --saved / --discovered to pick one).
 
 CI example (JUnit + 4-way parallel ctest):
-  lw --no-input test Debug:ninja-gcc-12 --junit results.xml -- -j 4
+  lw --no-input test Debug:ninja-gcc-12 --discovered --junit results.xml -- -j 4
 
-Named test executables (--target, repeatable): each is built and run DIRECTLY
-(not through the batch runner) with gtest's XML results option; the outcome
-fails on a non-zero exit, a failed test in the XML, a missing XML, or (on a
-device) a crash report. Args after `--` go to each executable. A cross-built
-executable runs on a device (`lw help device`; --device, --fresh, --timeout,
---query-timeout, --transfer-timeout, --log, --no-wait apply). A profile whose kit cross-compiles refuses the plain
-batch-runner form — its registered tests cannot run on this host:
+Named test executables (--target, repeatable) replace the whole plan: each is
+built and run DIRECTLY with gtest's XML results option; the outcome fails on a
+non-zero exit, a failed test in the XML, a missing XML, or (on a device) a
+crash report. Args after `--` go to each executable. Each runs in its project
+directory, or every one in --cwd <dir> (alias --working-dir; absolute or
+workspace-root-relative, ${...} expanded per target, e.g. --cwd '${target_dir}');
+--cwd is refused without --target and for a device run. A cross-built executable
+runs on a device (`lw help device`; --device, --fresh, --timeout,
+--query-timeout, --transfer-timeout, --log, --no-wait apply). On a profile whose
+kit cross-compiles, a project's native runner cannot run on this host: it is
+skipped (with a note) when the project has saved test targets, which run on a
+device; with none at all the run is refused:
   lw test Debug:ohos-kit --target MyTests -- --gtest_filter=Scene.*]],
+  ["test-target"] = [[lw test-target [list] [profile]
+lw test-target add [<profile>] <name>… [--config <name> | --project-wide] [--working-dir <dir>] [--unchecked] [-- <args>…]
+lw test-target remove [<profile>] <name>… [--index <k>] [--config <name> | --project-wide]
+lw test-target clear [<profile>] [<project>] [--config <name> | --project-wide] [--empty]
+
+Saved test targets: programs plain `lw test` runs after each project's native
+runner. Each entry names a build target or a launch configuration of its
+project ("Name", ["Name", "arg", …] or { "name": "Name", "args": […],
+"working_dir": "…" } in the file); when both exist the launch configuration
+wins. A name may be listed several times (e.g. with different
+args); its entries are told apart by occurrence (#1, #2, …). A configuration
+uses its own list, else its base's, else the project-wide one; the nearest
+list wins whole (lists never merge), and an explicit empty list means "none
+here". Args and working_dir expand ${...} variables like a launch's (with
+${target_dir}: the directory of the entry's build-target executable); names
+never do. An entry runs in its working_dir, else (a launch) the launch's, else
+the project directory; on a device the device block sets it instead.
+
+  list     per project of the profile: the effective list in order, each
+           entry's occurrence (#k when repeated), args, working_dir, kind
+           (target / launch) and where it comes from (own / inherited /
+           project-wide)
+  add      append entries, resolved like `lw test --target` (`project:name`
+           qualifies), launch configurations included. Arguments after `--`
+           become the args of every entry added in that call, and
+           --working-dir <dir> (alias --cwd) its working_dir (both stored
+           unexpanded). Adding a name already listed appends another entry.
+           A project not configured here has unknown targets: build first,
+           or --unchecked.
+  remove   drop every entry with each name; --index <k> drops only the k-th
+           occurrence of a single name
+  clear    remove the list at a level (it inherits again); --empty saves an
+           explicit empty list instead
+
+Where an edit writes: the configuration the profile maps when it is one of your
+configurations, otherwise the project-wide list. --config <name> /
+--project-wide choose explicitly. Every edit prints where it wrote and which
+profiles use that list. Editing a level that inherits its list first copies the
+inherited list there (and says so).
+
+Entry names are honoured from loomworks.json; an entry's args and working_dir
+are program settings and are used only from your local config (`lw help trust`).]],
   init = [[lw init [--name <name>]
 
 Initialize the workspace working copy (.nvim/loomworks.user.json). The shared
@@ -11038,6 +12172,7 @@ Usage: lw [command] [args]
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)
   test  [profile]   build a profile, then run its tests (real exit code)
+  test-target <sub> saved test targets plain `lw test` also runs: list | add | remove | clear
   run [target]      build, then execute a target on the active profile
   run <profile> <target>  same, on a named profile
   target [profile]  list a profile's launchable targets (default marked *)
@@ -11372,6 +12507,10 @@ local function main()
   -- its own workspace load (build-free, like status) — no tool detection.
   if command == "target" then
     finish(M.cmd_target(root, a))
+  end
+  -- `test-target` edits saved test targets (§16.9); its own workspace load.
+  if command == "test-target" then
+    finish(M.cmd_test_target(root, a))
   end
 
   local ws = load_workspace(root)

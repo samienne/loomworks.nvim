@@ -163,10 +163,23 @@ function M.validate_deploy_definitions(deploy)
     return true
 end
 
+--- "deploy <what> references unresolved variable(s) ${a}, ${b}".
+--- @param what string
+--- @param vars string[]
+--- @return string
+local function unresolved_msg(what, vars)
+    local refs = {}
+    for _, v in ipairs(vars) do refs[#refs + 1] = "${" .. v .. "}" end
+    return "deploy " .. what .. " references unresolved variable" .. (#refs > 1 and "s " or " ")
+        .. table.concat(refs, ", ") .. " (not defined in this launch context)"
+end
+
 --- Resolve a single deploy step to concrete source and destination paths.
+--- A `${...}` reference that does not resolve (in the destination, or a
+--- `path` source) fails the step, never expands to a literal path.
 --- @param dest_template string destination path template (with ${} variables)
 --- @param source_def table source descriptor { project, target?, path?, configuration? }
---- @param ctx table { workspace, profile, launch_project }
+--- @param ctx table { workspace, profile, launch_project, launch_build_target? }
 --- @return table|nil resolved { source_path, dest_path, source_build_dir_id, source_rel_path }
 --- @return string|nil error
 function M.resolve_deploy_step(dest_template, source_def, ctx)
@@ -175,7 +188,15 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
     local launch_project = ctx.launch_project
 
     -- Expand destination in the launch target's project context
-    local launch_ctx = expand.launch_context(ws, profile, launch_project)
+    local launch_ctx = expand.launch_context(ws, profile, launch_project,
+        { target = ctx.launch_build_target })
+    -- An unresolved reference (e.g. `${target_dir}` for a command launch or
+    -- an unconfigured unit, §8.7) would stay literal and copy into a folder
+    -- named after it: fail the step instead, naming the variable.
+    local dest_unresolved = expand.unresolved_vars(dest_template, launch_ctx)
+    if #dest_unresolved > 0 then
+        return nil, unresolved_msg("destination '" .. dest_template .. "'", dest_unresolved)
+    end
     local dest_path = expand.expand_string(dest_template, launch_ctx)
 
     -- Make destination absolute if not already
@@ -280,6 +301,10 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
         }
         if profile._config_set_ref then
             source_ctx.config_set = profile._config_set_ref.name
+        end
+        local src_unresolved = expand.unresolved_vars(source_rel_path, source_ctx)
+        if #src_unresolved > 0 then
+            return nil, unresolved_msg("source path '" .. source_rel_path .. "'", src_unresolved)
         end
         source_rel_path = expand.expand_string(source_rel_path, source_ctx)
         -- If expansion produced an absolute path, use it directly
