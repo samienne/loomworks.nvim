@@ -92,7 +92,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 - `lw run --cwd` on a target that runs on a device is now a usage error
   (exit 2) naming the target, like `lw test --target --cwd`, instead of
-  exit 1. (#PR)
+  exit 1. (#211)
 - `lw test` no longer hangs for hours parsing a results file with a very
   large failing test case (for example an assertion failing many thousands
   of times in a loop). (#209)
