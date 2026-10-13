@@ -990,6 +990,17 @@ local function resolve_and_start(mode)
     end
 
     local tracker = require("loomworks.session_tracker")
+
+    -- `daemon` mode with the workspace unloaded (spec §19.16 "Editor
+    -- operations"): a run or debug launch is not offered — no target
+    -- picker — and is refused with that status.
+    local why = tracker.launch_refusal({ _profile = profile })
+    if why then
+        vim.notify("loomworks: cannot " .. (mode == "debug" and "debug" or "run") .. ": " .. why,
+            vim.log.levels.WARN)
+        return
+    end
+
     local launch_target = profile:default_target()
 
     if launch_target and launch_target:is_valid() and launch_target:is_launchable() then

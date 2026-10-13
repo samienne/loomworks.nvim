@@ -256,7 +256,7 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `plugin/loomworks.lua` | Command registration (`:LoomworksInit`, `:LoomworksInfo`), double-load guard | Contain logic; import core.lua |
 | `init.lua` | Singleton Core instance, public API surface, version string | Hold state beyond the Core ref; contain business logic |
-| `views.lua` | Editor view store: `view.Header/1` and `view.ProjectsIndex/1` tables from the daemon subscription or the in-process builder (in `daemon` mode the builders give `unloaded` / no projects); buffer -> project record lookup (by spelling, else physical identity); `buf_status` derivation | Require binary-side modules; query the workspace itself (builders are registered by init.lua) |
+| `views.lua` | Editor view store: `view.Header/1` and `view.ProjectsIndex/1` tables from the daemon subscription or the in-process builder (in `daemon` mode the builders give `unloaded` / no projects); buffer -> project record lookup (path and roots by physical identity); `buf_status` derivation | Require binary-side modules; query the workspace itself (builders are registered by init.lua) |
 
 ### Infrastructure Layer
 
@@ -1704,7 +1704,9 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `daemon_lsp_config`. `lsp.lua` decides a buffer under the root `held`
   while waiting (the gate's safety timer is not armed then) and
   `withheld_daemon` / `withheld_error` while unavailable, and otherwise
-  against the daemon's state; `_on_source_changed` applies
+  against the daemon's state; while not `loaded` the re-evaluation skips its
+  running-client pass (§19.16 "Running clients": waiting or unavailable
+  stops no client, their buffers keep `ok`); `_on_source_changed` applies
   `lsp_source.changes()` (`lost` → `stop_controlled_clients`: every client
   of an integration with `withhold_reason` under the root stopped through
   `mark_managed_stop`, its buffers parked `held` for the re-evaluation;
@@ -1715,10 +1717,10 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   loaded-but-not-ready wait. The model's own `lsp_ready`,
   `active_set_changed`, `task_stopped` and `lsp_options_changed` are ignored
   in `daemon` mode. Buffer → project is `lw.buf_project`'s record key only
-  (`views.match`, which, like `views.under` for the gate, falls back to the
-  path's physical identity — real path of it or its nearest existing
-  ancestor — when its spelling matches nothing: a Windows 8.3 short name or
-  a link under a real-path root). Options: `lw.set_lsp_option` in `daemon`
+  (`views.match`, which, like `views.under` for the gate, compares the path
+  and every root by physical identity — real path of it or its nearest
+  existing ancestor, cached per spelling — keeping the separator-bounded,
+  longest-match rule: a Windows 8.3 short name or a link on either side). Options: `lw.set_lsp_option` in `daemon`
   mode goes only through `editor_ops.set_lsp_option` (`LspConfig/1.
   set_option`; not carried, `invalid`, `refused`, `declined` and a failed
   call each an error naming what happened, nothing written); the status
@@ -1728,9 +1730,11 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   watching, and cmake's `lsp_configs` schedules nothing. §19.13: with an
   observer `Core:view_header` / `view_projects_index` return `unloaded` /
   no projects instead of building from the model; `Observer:
-  workspace_unloaded()` (lost, not connected, or the daemon's header / LSP
-  state `unloaded`) makes `session_tracker.launch_refusal` refuse a run or
-  debug launch. The in-process source remains only for `runtime.mode =
+  workspace_unloaded()` (exactly: a lost connection not reported `loaded`
+  again, or a connected daemon's header / LSP state `unloaded` — not
+  no-binary or a first connection) makes `session_tracker.launch_refusal`
+  refuse a run or debug launch, and `lw.launch_target` / `debug_target`
+  offer no target picker then. The in-process source remains only for `runtime.mode =
   "in-process"`, removed with the in-process editor (step 6b).
 
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a

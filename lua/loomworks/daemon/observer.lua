@@ -2224,18 +2224,18 @@ function Observer:_daemon_loaded()
 end
 
 --- Whether the editor's workspace is unloaded in `daemon` mode (§19.13,
---- §19.16 "Unloaded on disconnect"): no connection yet or any more, a lost
---- connection the daemon has not reported `loaded` again since, or the
---- daemon reporting it `unloaded` (its header view, else its LSP state).
---- A run or debug launch is refused then (§19.16 "Editor operations").
+--- §19.16 "Unloaded on disconnect", "Editor operations"): exactly a lost
+--- connection the daemon has not reported `loaded` again since (also while
+--- waiting for the reconnect), or a connected daemon reporting it
+--- `unloaded` (its header view, else its LSP state). Nothing else — no host
+--- binary, a first connection still being made — unloads it. A run or
+--- debug launch is refused then (§19.16 "Editor operations").
 --- @return boolean unloaded
 --- @return string|nil why the status a refused launch names
 function Observer:workspace_unloaded()
     if self.state == "stopped" then return false, nil end
     if self._lost then return true, M.LOST_NOTE end
-    if self.state ~= "connected" or self.mode == nil then
-        return true, "the editor is not connected to the workspace daemon yet"
-    end
+    if self.state ~= "connected" or self.mode == nil then return false, nil end
     local header = views.daemon_state(self, "header")
     local st = self._lsp_read and self._lsp_read.state
     local state = (type(header) == "table" and header.state) or (type(st) == "table" and st.state) or nil

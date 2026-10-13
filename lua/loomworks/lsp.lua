@@ -982,6 +982,13 @@ local function reevaluate_pass(retrigger)
 
     -- 2. Running clients whose buffers became withheld or now route to another
     --    entry: stop (managed — no auto-restart, no suppression) or detach.
+    --    Daemon mode with the state not in use (daemon.md §19.16 "Running
+    --    clients"): waiting while connected, or an unavailable configuration,
+    --    stops no client — a running client keeps running and its buffers
+    --    keep status `ok` until a state in use says otherwise. Only a lost
+    --    connection stops them (`stop_controlled_clients`).
+    local phase = source.daemon_phase()
+    if phase and phase ~= "loaded" then return end
     for server, integration in pairs(_integrations) do
         if integration.withhold_reason then
             for _, client in ipairs(vim.lsp.get_clients({ name = server })) do

@@ -164,6 +164,44 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.is_nil(views.match(index, H.tmp() .. "/elsewhere/x.cpp"))
         end)
 
+        it("a linked spelling inside an outer project maps to the inner project it really lies in", function()
+            -- Projects `ws` and `ws/longdirname`; the buffer is spelled through
+            -- a link inside `ws` that resolves into `longdirname` (as a Windows
+            -- 8.3 `LONGDI~1` does): its spelling matches the outer project,
+            -- its physical identity the inner one — the inner one wins.
+            local inner = ws.root .. "/longdirname"
+            vim.fn.mkdir(inner, "p")
+            local link = ws.root .. "/via"
+            assert(vim.uv.fs_symlink(inner, link, { dir = true, junction = true }))
+            local index = { projects = {
+                { key = "outer", abs_path = vim.uv.fs_realpath(ws.root) },
+                { key = "inner", abs_path = vim.uv.fs_realpath(inner) },
+            } }
+            assert.equals("inner", views.match(index, link .. "/x.c").key)
+            assert.equals("outer", views.match(index, ws.root .. "/other/x.c").key)
+            -- A real 8.3 short name, where the volume generates them.
+            if vim.fn.has("win32") == 1 then
+                local out = vim.fn.system({ "cmd", "/c", "for %I in (\"" .. inner:gsub("/", "\\") .. "\") do @echo %~sI" })
+                local short = vim.trim(out or ""):gsub("\\", "/")
+                if vim.v.shell_error == 0 and short:find("~", 1, true) then
+                    assert.equals("inner", views.match(index, short .. "/x.c").key)
+                end
+            end
+        end)
+
+        it("a project root spelled through a link matches a buffer opened by its real path", function()
+            local real = ws.root .. "/realroot"
+            vim.fn.mkdir(real .. "/src", "p")
+            local link = H.tmp() .. "/rootlink"
+            assert(vim.uv.fs_symlink(real, link, { dir = true, junction = true }))
+            local index = { projects = { { key = "app", abs_path = link } } }
+            local file = vim.uv.fs_realpath(real) .. "/src/x.cpp"
+            assert.equals("app", views.match(index, file).key)
+            assert.is_true(views.under(link, file))
+            assert.is_false(views.under(H.tmp() .. "/rootlin", file))
+            assert.is_nil(views.match(index, ws.root .. "/elsewhere/x.cpp"))
+        end)
+
         it("waits while connecting and while unloaded, with no in-process state", function()
             local obs, calls = fake_obs()
             -- No connection yet: waiting.
@@ -507,6 +545,71 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             vim.api.nvim_buf_delete(buf, { force = true })
             assert(ok, err)
         end)
+
+        -- §19.16 "Running clients": waiting while connected, or an
+        -- unavailable configuration, starts no client and stops none; the
+        -- buffers of a running client keep status `ok`.
+        local function running_client_case(make_not_loaded)
+            local obs = fake_obs(function(m) if m == "get" then return dstate({ server = "fakesrv" }) end end)
+            daemon_index(obs)
+            obs:_fetch_lsp()
+            wait_phase("loaded")
+            local buf = vim.api.nvim_create_buf(true, false)
+            vim.api.nvim_buf_set_name(buf, root .. "/app/main.cpp")
+            lsp.managed_root_dir("fakesrv", buf, function() end)
+            assert.equals("ok", lsp.buf_state(buf))
+            local stopped, detached = 0, 0
+            local client = { id = 4343, root_dir = ws.root .. "/app", attached_buffers = { [buf] = true } }
+            function client:stop() stopped = stopped + 1 end
+            local orig_get, orig_mark, orig_detach = vim.lsp.get_clients, lsp.mark_managed_stop, vim.lsp.buf_detach_client
+            local managed = {}
+            vim.lsp.get_clients = function(f)
+                if f and f.name == "fakesrv" then return { client } end
+                return {}
+            end
+            lsp.mark_managed_stop = function(id) managed[#managed + 1] = id end
+            vim.lsp.buf_detach_client = function() detached = detached + 1 end
+            local ok, err = pcall(function()
+                make_not_loaded(obs)
+                lsp._reevaluate_now()
+                assert.equals(0, stopped)
+                assert.equals(0, detached)
+                assert.same({}, managed)
+                assert.equals("ok", lsp.buf_state(buf))
+                -- A new buffer with no running client is still held/withheld.
+                local other = vim.api.nvim_create_buf(true, false)
+                vim.api.nvim_buf_set_name(other, root .. "/app/other.cpp")
+                local started = 0
+                lsp.managed_root_dir("fakesrv", other, function() started = started + 1 end)
+                assert.equals(0, started)
+                assert.is_true(vim.tbl_contains({ "held", "withheld_daemon", "withheld_error" }, lsp.buf_state(other)))
+                vim.api.nvim_buf_delete(other, { force = true })
+            end)
+            vim.lsp.get_clients, lsp.mark_managed_stop, vim.lsp.buf_detach_client = orig_get, orig_mark, orig_detach
+            vim.api.nvim_buf_delete(buf, { force = true })
+            assert(ok, err)
+        end
+
+        it("an unavailable configuration stops no running client; its buffers stay ok", function()
+            running_client_case(function(obs)
+                obs._lsp_read = { state = nil }
+                wait_phase("unavailable")
+            end)
+        end)
+
+        it("a failed (error) reload stops no running client", function()
+            running_client_case(function(obs)
+                obs._lsp_read = { state = dstate({ state = "error", ready = false, projects = {} }) }
+                wait_phase("unavailable")
+            end)
+        end)
+
+        it("waiting while connected (daemon reports unloaded) stops no running client", function()
+            running_client_case(function(obs)
+                obs._lsp_read = { state = dstate({ state = "unloaded", ready = false, projects = {} }) }
+                wait_phase("waiting")
+            end)
+        end)
     end)
 
     describe("options", function()
@@ -639,8 +742,13 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             local target = { _profile = { _workspace = ws } }
             assert.is_nil(tracker.launch_refusal(target)) -- in-process mode
             local obs = fake_obs()
+            -- Only a daemon reporting `unloaded` or a lost connection
+            -- unloads the workspace: no host binary, or a first connection
+            -- still being made, refuses nothing.
+            obs.state = "no-binary"
+            assert.is_nil(tracker.launch_refusal(target))
             obs.state = "connecting"
-            assert.truthy(tracker.launch_refusal(target):find("not connected", 1, true))
+            assert.is_nil(tracker.launch_refusal(target))
             obs.state = "connected"
             views.set(obs, "header", { root = ws.root, state = "unloaded" })
             assert.truthy(tracker.launch_refusal(target):find("has not loaded the workspace", 1, true))
@@ -648,6 +756,38 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.is_nil(tracker.launch_refusal(target))
             obs:_on_closed(obs.conn)
             assert.truthy(tracker.launch_refusal(target):find(observer.LOST_NOTE, 1, true))
+            -- Waiting for the reconnect: still unloaded.
+            obs.state = "connecting"
+            assert.truthy(tracker.launch_refusal(target):find(observer.LOST_NOTE, 1, true))
+        end)
+
+        it("a run or debug launch is not offered while the workspace is unloaded (no target picker)", function()
+            local lw = require("loomworks")
+            local profile = ws:get_profiles()[1]
+            assert.truthy(profile)
+            local orig_pick, orig_default, orig_notify = lw._pick_target, profile.default_target, vim.notify
+            local orig_active = lw.get_active_profile
+            lw.get_active_profile = function() return profile end
+            local picked, notes = 0, {}
+            lw._pick_target = function() picked = picked + 1 end
+            profile.default_target = function() return nil end
+            vim.notify = function(m) notes[#notes + 1] = m end
+            local ok, err = pcall(function()
+                local obs = fake_obs()
+                obs:_on_closed(obs.conn)
+                lw.launch_target()
+                assert.equals(0, picked)
+                assert.truthy(notes[#notes]:find(observer.LOST_NOTE, 1, true), notes[#notes])
+                -- Loaded again: offered.
+                obs._lost = nil
+                obs.state, obs.mode = "connected", "interfaces"
+                views.set(obs, "header", { root = ws.root, state = "loaded" })
+                lw.launch_target()
+                assert.equals(1, picked)
+            end)
+            lw._pick_target, profile.default_target, vim.notify = orig_pick, orig_default, orig_notify
+            lw.get_active_profile = orig_active
+            assert(ok, err)
         end)
     end)
 end)

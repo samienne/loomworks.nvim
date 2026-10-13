@@ -133,12 +133,12 @@ function M.normalize(p)
     return is_win and p:lower() or p
 end
 
---- Normalized `abs_path` per record (records are replaced, never mutated).
+--- Canonical `abs_path` per record (records are replaced, never mutated).
 local norm_cache = setmetatable({}, { __mode = "k" })
 
---- Normalized physical identity per path spelling (a Windows 8.3 short
---- name, a junction or symlink resolve to one path), bounded: cleared when
---- it grows past CANON_MAX entries.
+--- Normalized physical identity per normalized path spelling (a Windows 8.3
+--- short name, a junction or symlink resolve to one path), bounded: cleared
+--- when it grows past CANON_MAX entries.
 local canon_cache, canon_count, CANON_MAX = {}, 0, 512
 
 --- `path`'s real path when it exists, else its nearest existing ancestor's
@@ -159,12 +159,14 @@ local function realpath(path)
     return nil
 end
 
---- `path` resolved to its physical identity and normalized, or nil when it
---- resolves to the spelling it already has.
+--- `path` in the one canonical space every comparison here uses: its
+--- physical identity (resolved through links and 8.3 short names),
+--- normalized; its normalized spelling when nothing along it resolves.
+--- Cached per spelling, so a hot path resolves each spelling once.
 --- @param path string
---- @param p string `path` normalized
---- @return string|nil
-local function canonical(path, p)
+--- @return string
+local function canonical(path)
+    local p = M.normalize(path)
     local c = canon_cache[p]
     if c == nil then
         local ok, r = pcall(realpath, path)
@@ -172,35 +174,24 @@ local function canonical(path, p)
         if canon_count >= CANON_MAX then canon_cache, canon_count = {}, 0 end
         canon_cache[p], canon_count = c, canon_count + 1
     end
-    return c ~= p and c or nil
+    return c
 end
 
---- The longest-prefix record of `index` for the normalized path `p`.
---- @param index loomworks.ViewProjectsIndex
+--- Whether canonical `p` is canonical `root` or lies under it (§19.13
+--- "Views": equal, or followed by `/`).
+--- @param root string
 --- @param p string
---- @return loomworks.ViewProjectRecord|nil
-local function longest(index, p)
-    local best, best_len = nil, -1
-    for _, rec in ipairs(index.projects) do
-        if type(rec) == "table" and type(rec.abs_path) == "string" then
-            local prefix = norm_cache[rec]
-            if not prefix then
-                prefix = M.normalize(rec.abs_path)
-                norm_cache[rec] = prefix
-            end
-            if (p == prefix or p:sub(1, #prefix + 1) == prefix .. "/") and #prefix > best_len then
-                best, best_len = rec, #prefix
-            end
-        end
-    end
-    return best
+--- @return boolean
+local function in_root(root, p)
+    return p == root or p:sub(1, #root + 1) == root .. "/"
 end
 
 --- The record of `index` whose `abs_path` is the longest prefix of `path` on
---- a separator boundary (§19.13 "Views": equal, or followed by `/`). A path
---- spelled otherwise than the root it lies under (a Windows 8.3 short name,
---- a link — the root is its real path) is matched by its physical identity
---- when its spelling matches nothing.
+--- a separator boundary (§19.13 "Views": equal, or followed by `/`). Both
+--- the path and every root are compared by their physical identity (a
+--- Windows 8.3 short name, a junction or symlink — on either side — maps to
+--- the folder it names), so a spelling that lies under an outer project but
+--- resolves into an inner one maps to the inner one.
 --- @param index loomworks.ViewProjectsIndex|nil
 --- @param path string an absolute path
 --- @return loomworks.ViewProjectRecord|nil
@@ -208,26 +199,32 @@ function M.match(index, path)
     if type(index) ~= "table" or type(index.projects) ~= "table" or type(path) ~= "string" or path == "" then
         return nil
     end
-    local p = M.normalize(path)
-    local best = longest(index, p)
-    if best or #index.projects == 0 then return best end
-    local c = canonical(path, p)
-    return c and longest(index, c) or nil
+    if #index.projects == 0 then return nil end
+    local p = canonical(path)
+    local best, best_len = nil, -1
+    for _, rec in ipairs(index.projects) do
+        if type(rec) == "table" and type(rec.abs_path) == "string" then
+            local prefix = norm_cache[rec]
+            if not prefix then
+                prefix = canonical(rec.abs_path)
+                norm_cache[rec] = prefix
+            end
+            if #prefix > best_len and in_root(prefix, p) then
+                best, best_len = rec, #prefix
+            end
+        end
+    end
+    return best
 end
 
---- Whether `path` lies under `root` (separator-bounded), by its spelling or
---- else its physical identity (as `match`).
+--- Whether `path` lies under `root` (separator-bounded), both compared by
+--- their physical identity (as `match`).
 --- @param root string
 --- @param path string
 --- @return boolean
 function M.under(root, path)
-    if type(root) ~= "string" or type(path) ~= "string" or path == "" then return false end
-    local r = M.normalize(root)
-    local function in_root(p) return p == r or p:sub(1, #r + 1) == r .. "/" end
-    local p = M.normalize(path)
-    if in_root(p) then return true end
-    local c = canonical(path, p)
-    return c ~= nil and in_root(c)
+    if type(root) ~= "string" or root == "" or type(path) ~= "string" or path == "" then return false end
+    return in_root(canonical(root), canonical(path))
 end
 
 --- `lw.buf_project`: the ProjectsIndex record of a buffer's file.

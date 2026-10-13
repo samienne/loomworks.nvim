@@ -704,7 +704,7 @@ function M.start(target, mode)
     end
 
     -- `daemon` mode with the workspace unloaded — the daemon reports it
-    -- `unloaded`, or the connection is lost or not made yet (spec §19.16
+    -- `unloaded`, or the connection is lost (spec §19.16
     -- "Editor operations", "Unloaded on disconnect"): refused with that
     -- status, never prepared in-process (its launch information comes only
     -- from the daemon).
