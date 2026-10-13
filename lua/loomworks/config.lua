@@ -103,6 +103,23 @@ function M._extract_description(type_config)
     return description, copy
 end
 
+--- Lift a project's project-wide saved test targets (`tests`, spec §1.3.4) out
+--- of its module section, like `description`: core owns the field and the
+--- module never sees it in `type_config`. Returns the raw value and a copy of
+--- `type_config` without it (the raw table is never mutated).
+--- @param type_config table module section
+--- @return any tests, table type_config
+function M._extract_tests(type_config)
+    if type(type_config) ~= "table" or type_config.tests == nil then
+        return nil, type_config
+    end
+    local tests = type_config.tests
+    local copy = {}
+    for k, v in pairs(type_config) do copy[k] = v end
+    copy.tests = nil
+    return tests, copy
+end
+
 --- Normalize raw project definitions into internal format.
 --- Extracts type from the inner key (e.g. { cmake = {} } -> type = "cmake").
 --- Does NOT validate path existence on disk.
@@ -127,6 +144,8 @@ function M.normalize_projects(raw_projects)
         local device, description
         device, type_config = M._extract_device(key, def, ptype, type_config)
         description, type_config = M._extract_description(type_config)
+        local tests
+        tests, type_config = M._extract_tests(type_config)
         projects[key] = {
             path = def.path or key,
             type = ptype,
@@ -137,6 +156,7 @@ function M.normalize_projects(raw_projects)
             deploy = def.deploy,
             device = device,
             description = description,
+            tests = tests,
         }
     end
     return projects, nil
@@ -169,6 +189,8 @@ function M.validate(raw, root)
         local device, description
         device, type_config = M._extract_device(key, def, ptype, type_config)
         description, type_config = M._extract_description(type_config)
+        local tests
+        tests, type_config = M._extract_tests(type_config)
 
         local project_path = def.path or key
         local abs_path = root .. "/" .. project_path
@@ -286,6 +308,7 @@ function M.validate(raw, root)
             deploy = def.deploy,
             device = device,
             description = description,
+            tests = tests,
         }
     end
 

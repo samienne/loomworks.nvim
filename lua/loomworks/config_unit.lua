@@ -46,9 +46,27 @@
 --- @field _test_tree table[]|nil cached merged test entries from all TestUnits
 --- @field _test_results table[]|nil last parsed test results
 --- @field _test_units loomworks.TestUnit[]|nil lazily created TestUnit array
+---        (the module's, then core's saved-targets TestUnit, spec §8.9.3)
+--- @field _saved_tests_sig string|nil fingerprint of the saved test-target list
+---        the cached TestUnits / test tree were built for (spec §1.3.4)
 --- @field _last_test_task_id number|nil most recent test overseer task ID
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
+
+--- A module-configuration snapshot (`_cached_module_config`) as compared for
+--- staleness: without core-owned keys an older loomworks recorded as module
+--- fields — `tests` (spec §1.3.4) — so moving between versions never forces a
+--- reconfigure. Returns `{}` for nil.
+--- @param snap table|nil
+--- @return table
+function ConfigUnit._snapshot_without_core_fields(snap)
+    if type(snap) ~= "table" then return {} end
+    if snap.tests == nil then return snap end
+    local copy = {}
+    for k, v in pairs(snap) do copy[k] = v end
+    copy.tests = nil
+    return copy
+end
 
 --- Create a new ConfigUnit (shell only — call _apply(data) to resolve references).
 --- @param workspace loomworks.Workspace
@@ -656,7 +674,8 @@ function ConfigUnit:stale_reason(profile)
         local what = describe_option_change(self._cached_options or {}, fingerprint)
         return what ~= "" and ("options changed (" .. what .. ")") or "options changed"
     end
-    if not vim.deep_equal(self._cached_module_config or {}, self._configuration.module_config or {}) then
+    if not vim.deep_equal(ConfigUnit._snapshot_without_core_fields(self._cached_module_config),
+            self._configuration.module_config or {}) then
         return "module configuration changed"
     end
     -- Configuration environment change (spec §1.3.3): a configure input like
@@ -949,6 +968,32 @@ function ConfigUnit:set_targets(raw)
     for id, data in pairs(raw) do
         self.targets[id] = Target.new(self, id, data)
     end
+end
+
+--- Parse this unit's build targets when they are not known yet (the passive
+--- equivalent of the post-configure scan): only for a build directory this
+--- machine configured (spec §17.8), through the module's `parse_targets`.
+--- Returns `self.targets` (nil = unknown).
+--- @return table<string, loomworks.Target>|nil
+function ConfigUnit:ensure_targets()
+    if self.targets then return self.targets end
+    local project = self._project
+    local mod = project and project._module and project._module.impl
+    local build_dir = self:build_dir()
+    if not (mod and mod.parse_targets and build_dir) then return nil end
+    if not self:configured_here() then return nil end
+    local cfg = self._configuration
+    local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
+        or (self._cached_module_config and self._cached_module_config.variant)
+        or (self.variant and self:variant())
+    local root = self._workspace and self._workspace.root or ""
+    local ok, targets = pcall(mod.parse_targets, {
+        build_dir = build_dir,
+        project_path = root .. "/" .. (project.path or project.key),
+        config_name = config_name,
+    })
+    if ok and targets then self:set_targets(targets) end
+    return self.targets
 end
 
 --- Materialize a skeleton cache entry for this configuration.
@@ -1295,6 +1340,7 @@ end
 --- Created lazily by calling the module's create_test_unit factory.
 --- @return loomworks.TestUnit[]
 function ConfigUnit:test_units()
+    self:_check_saved_tests()
     if self._test_units then return self._test_units end
     -- Discovery runs binaries from the build dir: only one this machine
     -- configured (spec §17.8). Not cached, so it appears once configured.
@@ -1305,20 +1351,57 @@ function ConfigUnit:test_units()
     if require("loomworks.remote.foreign").unit_platform(self) then return {} end
 
     local impl = self:_module_impl()
-    if not impl or not impl.create_test_unit then
-        self._test_units = {}
-        return self._test_units
+    local units = {}
+    if impl and impl.create_test_unit then
+        local tu = impl.create_test_unit(self)
+        if tu then units[#units + 1] = tu end
     end
-
-    local tu = impl.create_test_unit(self)
-    self._test_units = tu and { tu } or {}
+    -- Core's saved-targets TestUnit (spec §8.9.1–§8.9.3), after the module's,
+    -- when the saved list resolves non-empty and the module can resolve names
+    -- to targets (`parse_targets`).
+    local saved = self:saved_test_targets()
+    if saved and (#saved.entries > 0 or saved.invalid) and impl and impl.parse_targets then
+        units[#units + 1] = require("loomworks.test_units.saved_targets").new(self)
+    end
+    self._saved_tests_sig = self:_saved_tests_fingerprint()
+    self._test_units = units
     return self._test_units
+end
+
+--- The configuration's effective saved test-target list (spec §1.3.4,
+--- §8.9.3) and its source (a Configuration or the Project), or nil when none
+--- is declared along the chain (an explicit `[]` gives an empty `entries`).
+--- Pure model data — no build directory is read — so it is safe before
+--- configure and on an unconfigured unit.
+--- @return { entries: loomworks.SavedTestEntry[], source: loomworks.Configuration|loomworks.Project, invalid: boolean|nil }|nil
+function ConfigUnit:saved_test_targets()
+    local cfg = self._configuration
+    if not cfg or cfg._removed or not cfg.test_targets then return nil end
+    return cfg:test_targets()
+end
+
+--- Fingerprint of the effective saved list (names + args).
+--- @return string
+function ConfigUnit:_saved_tests_fingerprint()
+    local saved = self:saved_test_targets()
+    return (saved and saved.invalid and "invalid\1" or "")
+        .. require("loomworks.test_targets").fingerprint(saved and saved.entries)
+end
+
+--- Drop the cached TestUnits / test tree when the saved list changed since
+--- they were built (spec §8.9.3: changing the list invalidates the tree).
+function ConfigUnit:_check_saved_tests()
+    if (self._test_units or self._test_tree)
+            and self._saved_tests_sig ~= self:_saved_tests_fingerprint() then
+        self:invalidate_tests()
+    end
 end
 
 --- TestUnits for answering static questions about this unit's native batch
 --- runner — whether one exists and whether it rebuilds its own targets
---- (spec §8.9.2) — without discovery. A configured unit returns `test_units()`
---- unchanged. An unconfigured one (e.g. a fresh clone, where the plan's
+--- (spec §8.9.2) — without discovery. Module TestUnits only — never the
+--- saved-targets TestUnit (spec §8.9.3). A configured unit returns the module
+--- TestUnits of `test_units()`. An unconfigured one (e.g. a fresh clone, where the plan's
 --- configure step has not run yet) gets TestUnits constructed passively through
 --- the module factory: the constructors only store fields, and callers must ask
 --- only `run_command_all` presence / `run_command_all_rebuilds()`, never
@@ -1326,7 +1409,13 @@ end
 --- A cross kit gets no host batch runner either way (spec §18.1).
 --- @return loomworks.TestUnit[]
 function ConfigUnit:batch_runner_test_units()
-    if self._test_units or self:configured_here() then return self:test_units() end
+    if self._test_units or self:configured_here() then
+        local out = {}
+        for _, tu in ipairs(self:test_units()) do
+            if not tu.is_saved_targets then out[#out + 1] = tu end
+        end
+        return out
+    end
     if require("loomworks.remote.foreign").unit_platform(self) then return {} end
     local impl = self:_module_impl()
     if not impl or not impl.create_test_unit then return {} end
@@ -1339,29 +1428,75 @@ end
 --- Discovery is passive — it never triggers configure/build.
 --- @return table[]|nil TestTree entries
 function ConfigUnit:discover_tests()
+    self:_check_saved_tests()
     if self._test_tree then return self._test_tree end
 
     local units = self:test_units()
     if #units == 0 then return nil end
 
-    local all_entries = {}
-    for _, tu in ipairs(units) do
-        local entries = tu:discover()
-        if entries then
-            for _, e in ipairs(entries) do
-                all_entries[#all_entries + 1] = e
-            end
-        end
-    end
+    local per_unit = {}
+    for i, tu in ipairs(units) do per_unit[i] = tu:discover() end
+    local all_entries = ConfigUnit._merge_test_entries(units, per_unit)
 
     if #all_entries == 0 then return nil end
     self._test_tree = all_entries
     return self._test_tree
 end
 
+--- Normalised executable path for de-duplication.
+local function exe_key(p)
+    if type(p) ~= "string" or p == "" then return nil end
+    local k = p:gsub("\\", "/")
+    if package.config:sub(1, 1) == "\\" then k = k:lower():gsub("%.exe$", "") end
+    return k
+end
+
+--- Merge the TestUnits' entries in unit order (spec §8.9.3). When a module
+--- TestUnit and the saved-targets TestUnit expose the SAME executable, one
+--- entry is kept — the module's (it carries the runner's cwd / env /
+--- timeout); the saved entry contributes only its `args` (`saved_args`), and
+--- the saved entry's children are dropped with it. Only a `target` entry whose
+--- name occurs once in its list and that has no `working_dir` of its own
+--- merges: a `launch` entry (its own environment and working directory), a
+--- `target` entry with its own `working_dir`, and a repeated name's entries
+--- (each with its own args) stay beside the module's entry.
+--- @param units loomworks.TestUnit[]
+--- @param per_unit (table[]|nil)[] discover() results, by unit index
+--- @return table[]
+function ConfigUnit._merge_test_entries(units, per_unit)
+    local all, by_exe = {}, {}
+    for i, tu in ipairs(units) do
+        local entries = per_unit[i]
+        if entries then
+            if tu.is_saved_targets then
+                local dropped = {}
+                for _, e in ipairs(entries) do
+                    local key = not e.parent and e.saved_kind == "target" and not e.saved_repeated
+                        and not e.saved_working_dir and exe_key(e.executable) or nil
+                    local owner = key and by_exe[key]
+                    if owner then
+                        dropped[e.id] = true
+                        owner.saved_args = e.args
+                    elseif not (e.parent and dropped[e.parent]) then
+                        all[#all + 1] = e
+                    end
+                end
+            else
+                for _, e in ipairs(entries) do
+                    all[#all + 1] = e
+                    local key = not e.parent and exe_key(e.executable) or nil
+                    if key and not by_exe[key] then by_exe[key] = e end
+                end
+            end
+        end
+    end
+    return all
+end
+
 --- Discover tests asynchronously. Delegates to TestUnits.
 --- @param callback fun(entries: table[]|nil)
 function ConfigUnit:discover_tests_async(callback)
+    self:_check_saved_tests()
     if self._test_tree then
         callback(self._test_tree)
         return
@@ -1373,17 +1508,14 @@ function ConfigUnit:discover_tests_async(callback)
         return
     end
 
-    local all_entries = {}
+    local per_unit = {}
     local pending = #units
-    for _, tu in ipairs(units) do
+    for i, tu in ipairs(units) do
         tu:discover_async(function(entries)
-            if entries then
-                for _, e in ipairs(entries) do
-                    all_entries[#all_entries + 1] = e
-                end
-            end
+            per_unit[i] = entries
             pending = pending - 1
             if pending == 0 then
+                local all_entries = ConfigUnit._merge_test_entries(units, per_unit)
                 if #all_entries == 0 then
                     callback(nil)
                 else
@@ -1400,6 +1532,7 @@ function ConfigUnit:invalidate_tests()
     self._test_tree = nil
     self._test_results = nil
     self._test_units = nil
+    self._saved_tests_sig = nil
 end
 
 --- Merge test results into the cached test tree.
@@ -1440,6 +1573,62 @@ function ConfigUnit:_find_test_unit(test_id)
     return units[1]
 end
 
+--- The merged-tree entry for an id (spec §8.9.3), or nil.
+--- @param test_id string
+--- @return table|nil
+function ConfigUnit:_tree_entry(test_id)
+    for _, e in ipairs(self._test_tree or {}) do
+        if e.id == test_id then return e end
+    end
+    return nil
+end
+
+--- Build the command for one test, suite or target through the TestUnit that
+--- OWNS the id (spec §8.9.4 owning-unit dispatch). When the id (or its target)
+--- is a module entry that a saved target de-duplicated into, the saved entry's
+--- `args` are appended. Returns the command and the owning TestUnit (which
+--- parses the results).
+--- @param test_id string
+--- @param opts? table
+--- @return table|nil cmd, loomworks.TestUnit|nil tu
+function ConfigUnit:test_command_for(test_id, opts)
+    local tu = self:_find_test_unit(test_id)
+    if not tu then return nil, nil end
+    local cmd = tu:test_command(test_id, opts)
+    if not cmd then return nil, tu end
+    local e = self:_tree_entry(test_id)
+    local target = e and (e.parent and self:_tree_entry(e.parent) or e) or nil
+    if target and target.saved_args and #target.saved_args > 0 and type(cmd.cmd) == "table" then
+        cmd = vim.deepcopy(cmd)
+        for _, a in ipairs(target.saved_args) do cmd.cmd[#cmd.cmd + 1] = a end
+    end
+    return cmd, tu
+end
+
+--- The "run all" commands of this unit (spec §8.9.4): one per TestUnit that
+--- has `test_command_all`, and one per runnable top-level entry of a TestUnit
+--- without it (the saved-targets TestUnit). Each item pairs the command with
+--- the TestUnit that parses its results.
+--- @param opts? table
+--- @return { cmd: table, tu: loomworks.TestUnit, id: string|nil }[]
+function ConfigUnit:test_commands_all(opts)
+    local out = {}
+    for _, tu in ipairs(self:test_units()) do
+        local all = tu.test_command_all and tu:test_command_all(opts) or nil
+        if all then
+            out[#out + 1] = { cmd = all, tu = tu }
+        elseif tu.is_saved_targets then
+            for _, e in ipairs(tu:entries() or {}) do
+                if not e.parent and e.runnable then
+                    local c = tu:test_command(e.id, opts)
+                    if c then out[#out + 1] = { cmd = c, tu = tu, id = e.id } end
+                end
+            end
+        end
+    end
+    return out
+end
+
 --- Run a single test. Handles the full prerequisite chain:
 --- configure if needed → build if needed → run test.
 --- @param test_id string test identifier from discover_tests
@@ -1474,12 +1663,10 @@ end
 --- @return loomworks.Future
 function ConfigUnit:_launch_test(test_id, opts)
     local future_mod = require("loomworks.future")
-    local tu = self:_find_test_unit(test_id)
+    local test_cmd, tu = self:test_command_for(test_id, opts)
     if not tu then
         return future_mod.rejected("no test unit for " .. test_id)
     end
-
-    local test_cmd = tu:test_command(test_id, opts)
     if not test_cmd then
         return future_mod.rejected("test unit cannot build command for " .. test_id)
     end
@@ -1500,13 +1687,47 @@ function ConfigUnit:_launch_test_all(opts)
         return future_mod.rejected("no test units")
     end
 
-    local tu = units[1]
-    local test_cmd = tu:test_command_all(opts)
-    if not test_cmd then
+    -- Every TestUnit (spec §8.9.4), one task after another (TestUnits may
+    -- share a results path).
+    local cmds = self:test_commands_all(opts)
+    if #cmds == 0 then
         return future_mod.rejected("test unit cannot build command")
     end
+    local unit = self
+    local failed = false
+    local function step(i)
+        if i > #cmds then
+            if failed then return future_mod.rejected("test failed") end
+            return future_mod.resolved(true)
+        end
+        local c = cmds[i]
+        local label = c.id and ("test: " .. (c.id:match("^target:(.+)$") or c.id)) or "test: all"
+        return unit:_run_test_task(label, c.cmd, c.tu):next(function() return step(i + 1) end,
+            function() failed = true; return step(i + 1) end)
+    end
+    return step(1)
+end
 
-    return self:_run_test_task("test: all", test_cmd, tu)
+--- Run a test step's own preparation (`test_cmd.prepare`, e.g. a saved
+--- launch entry's deploy, spec §16.16) — the one place every editor runner
+--- (overseer task, neotest) calls it, once, just before the program runs.
+--- A failure (`false, err`, or an error raised) marks the step's entry failed
+--- and is reported; the caller must then not run the program.
+--- @param name string display name for the step
+--- @param test_cmd table { prepare?, test_id? }
+--- @return boolean ok, string|nil err
+function ConfigUnit:_prepare_test_step(name, test_cmd)
+    if type(test_cmd.prepare) ~= "function" then return true end
+    local ok, pok, perr = pcall(test_cmd.prepare)
+    if ok and pok then return true end
+    local msg = tostring((ok and perr) or (not ok and pok) or "preparation failed")
+    vim.notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
+    if test_cmd.test_id then
+        self:_apply_test_results({ { test_id = test_cmd.test_id, status = "failed", message = msg } })
+        local events = self._workspace and self._workspace._core and self._workspace._core._deps.events
+        if events then events.emit("test_results_changed", self) end
+    end
+    return false, msg
 end
 
 --- Run a test task via overseer and parse results on completion.
@@ -1520,6 +1741,12 @@ function ConfigUnit:_run_test_task(name, test_cmd, tu)
     if not ok then
         return future_mod.rejected("overseer.nvim not found")
     end
+
+    -- A step's own preparation (a saved launch entry's deploy, spec §16.16)
+    -- runs now, when the step executes; a failure fails this step without
+    -- running its program, and the entry shows as failed.
+    local pok, perr = ConfigUnit._prepare_test_step(self, name, test_cmd)
+    if not pok then return future_mod.rejected(perr) end
 
     local f = future_mod.Future.new()
     local unit = self
