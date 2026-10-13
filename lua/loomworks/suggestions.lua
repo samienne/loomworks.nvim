@@ -1187,4 +1187,29 @@ end
 
 M.register_health(M.launcher_provider, { persist = false, area = "launcher" })
 
+-- ---------------------------------------------------------------------------
+-- Provider #5 — running workspace daemons (HEALTH-ONLY, REPORT-ONLY, §19.6.1)
+--
+-- One process scan (tens of milliseconds); an informational count line when
+-- this user runs any workspace daemon on this host. Never connects to one.
+-- ---------------------------------------------------------------------------
+
+--- Health provider: how many workspace daemons run (lw daemon list).
+--- @return loomworks.Suggestion[]
+function M.daemon_count_provider()
+    -- Test seam: the suites keep health output hermetic (a machine-wide scan
+    -- sees the daemons other spec files run at the same time).
+    local off = os.getenv("LOOMWORKS_TEST_NO_DAEMON_SCAN")
+    if off and off ~= "" and off ~= "0" then return {} end
+    local ok, list = pcall(function() return (require("loomworks.daemon.discover").list()) end)
+    if not ok or type(list) ~= "table" or #list == 0 then return {} end
+    local n, idle = require("loomworks.daemon.discover").counts(list)
+    return { {
+        kind = "info",
+        title = string.format("%d workspace daemon%s running (%d idle) — lw daemon list", n, n == 1 and "" or "s", idle),
+    } }
+end
+
+M.register_health(M.daemon_count_provider, { persist = false, area = "lw" })
+
 return M

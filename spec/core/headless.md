@@ -153,14 +153,40 @@ them on the native build command before any wrapping, so they take effect
 exactly as if typed on that command (e.g. cmake `--build <dir> --target <t>
 <args>`, meson `compile -C <dir> <t> <args>`), whatever toolchain environment
 the build runs in. An argument the build's wrapper cannot pass through
-faithfully is refused with the reason, never dropped. Targets are applied to
-every project of the profile; a project whose module does not support target
-selection makes a `--target` build an error, as does forwarding arguments to a
-module that neither accepts them nor runs a command they could be appended to
-(§8.1). Targets are not refused up front against the unit's introspected
-target list (it can omit targets the module does not introspect); the build
-tool decides, and when such a build fails the closing message names each
-requested target the list lacks, with close matches.
+faithfully is refused with the reason, never dropped. A project whose module
+does not support target selection makes a `--target` build an error, as does
+forwarding arguments to a module that neither accepts them nor runs a command
+they could be appended to (§8.1).
+
+**Naming a build target.** A `--target` operand takes exactly the form
+`lw target` lists (§16.18, `<project>:<target>`), or the bare target name.
+`<project>:<target>` is **project-qualified** only when `<project>` names one
+of the profile's projects (a module's own target syntax may contain `:`);
+otherwise the whole operand is a bare name. Every operand is resolved to the
+projects that build it before anything runs (no configure, no build tool),
+using the profile's projects' **known target lists**:
+
+- a qualified operand selects that project;
+- a bare name present in exactly one project's known list selects that
+  project; present in several, it is refused as ambiguous before anything
+  runs, listing the qualified candidates (`<project>:<target>`);
+- a bare name in no known list — a target the module does not introspect
+  (e.g. a cmake custom/utility target, or a build-system target such as
+  `install`), one of a project whose list is not known yet, or a misspelling —
+  is given to every project of the profile, and their build tool decides.
+
+When a `--target` build fails, the closing message names each requested target
+the failing project's (then-known) list lacks, with close matches from the
+profile's projects in the qualified form. A project's target list is
+**known** when its build is configured on this machine and needs no configure
+now (§5.2; a configure can change its targets), and the module introspects
+targets (§8). The build tool receives the **bare** target name, in each
+selected project's build directory; a project no operand selects is neither
+configured nor built by that invocation. The same project-qualification rule
+(a prefix counts only when it names one of the profile's projects) applies to
+every target operand: `lw run` (§16.17), `lw test --target` (§16.16) and
+`lw target set`. A build routed through the workspace daemon (§19.15) resolves
+its operands identically — the resolution is part of the shared build plan.
 
 A build is additionally gated by the output-artifact conflict rule (§16.28):
 a unit whose build would overwrite an artifact currently owned by another
@@ -180,7 +206,9 @@ rules of §2.3 and §5.3. This contract does not itself serialize cross-process
 concurrent access to a shared build directory; a host MAY add advisory
 exclusion. loomworks does: configure/build/clean/reset (§16.30) hold a
 **per-build-directory advisory lockfile** — an `O_EXCL` create (atomic across
-processes) with an
+processes) of `<dir>.loomworks-lock` beside the directory's §4.6 identity (its
+resolved real path, so every spelling of one folder finds the same lockfile,
+before and after configure creates the directory) with an
 mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
 editor and the CLI share this lock, so neither operates on a directory the other
 holds — in particular a reset (§16.30) cannot remove a directory the other is
@@ -202,8 +230,15 @@ reclaim, and refuses a live or hung holder's lock naming it (exit 1);
 `lw unlock --force …` removes the record whatever the holder's state, without
 stopping it, after warning that it may still be running and writing. A build
 directory argument is a path (it contains a separator), relative to the
-workspace root or absolute, and must lie under the root; only the lockfile
-`<dir>.loomworks-lock` itself, a regular file, is removed. The CLI also releases
+workspace root or absolute, and must lie under the root both as spelled and
+by its §4.6 identity (its resolved real path under the root's, so a junction
+or symlink to a folder outside the workspace is refused, naming the resolved
+lockfile for removal by hand); only the lockfile `<dir>.loomworks-lock`
+beside that identity, a regular file, is removed. Compatibility: a version
+before this identity rule derives the lockfile from the spelled path, so with
+an aliased spelling (a symlinked or junctioned workspace root, macOS `/tmp` →
+`/private/tmp`) an older pinned `lw` and a current one take different
+lockfiles and do not exclude each other. The CLI also releases
 its build locks on interrupt as well as on normal exit, so an interrupted
 (Ctrl-C'd) build does not leave a lock for the stale-reclaim window. An
 **interrupt** is any of: SIGINT (Ctrl-C), SIGTERM, SIGHUP (a terminal hangup)
@@ -227,6 +262,15 @@ message and is left unchanged.
 Success or failure is reported via process exit status; task output streams
 to standard output and standard error. No editor UI is required or
 produced.
+
+A step or launched program that a **signal** ended (on POSIX: the
+out-of-memory killer, `kill -9` on the build tool) has **failed**, whatever
+exit code the platform reports for it: its status is the conventional
+128 + the signal number (137 for SIGKILL), its failure line names the signal
+(`build failed (killed by signal 9 (SIGKILL)): <step>`), and it is never
+recorded as configured or built. A step the runner itself stopped (a
+cancelled daemon build, §19.15) is still reported as stopped. Platforms
+without such signals report the exit code unchanged.
 
 Text the runner prints on its own behalf — status, health, profile,
 configuration and tool listings, diagnostics — routinely includes **data**
@@ -264,7 +308,17 @@ install a global bundle. Answering help never fetches anything.
 option and points at `lw help <command>`, and nothing runs — a mistyped option
 never falls through to a build or a launch. The global options (non-interactive
 control, create intent, source selection, pin bypass) are known to every
-command. The check stops at `--`: what follows belongs to a program or native
+command, and are recognised before the command and among its own arguments,
+up to the first `--` — never after it. After a launch configuration's command
+(or `--from-target <target>`) when one is added, every token is the program's,
+verbatim, a global option or a `--` included; only a `--` before the command
+ends lw's options there. When a launch configuration's arguments are edited and
+on the set-value commands (a configuration parameter, a project variable's
+default, a profile fill, a setting), a global option before `--` is lw's own
+and `--` is the escape: every token after it is an argument or the value,
+verbatim. When a global option taken that way selects a development source that
+is not configured, the error adds a hint to put the token after `--`. A
+`--help` / `-h` is help only within the same bound. The check stops at `--`: what follows belongs to a program or native
 tool and is passed through untouched. It also stops where a command's grammar
 hands the rest of the line to someone else or takes a value that may itself
 start with `-`: the program arguments after a launch configuration's command
@@ -589,7 +643,8 @@ that cannot emit JUnit reports that without failing the run.
 A headless test invocation MAY instead name one or more **test
 executables** (build targets). Each named target is built, then run directly —
 not through the native batch runner — with its framework's machine-readable
-results option (§8.9), and its outcome is judged per §18.6 (exit status, parsed
+results option (§8.9), writing the results file to the workspace's
+`.nvim/tmp/` (§16.40) and removing it once read, and its outcome is judged per §18.6 (exit status, parsed
 failures, missing results, crash reports). A named target that is **foreign**
 (§18.1) runs on a device (§18.5–§18.6; device selection §18.3) and its results
 file is pulled back; a host-runnable one runs locally. Caller-forwarded
@@ -667,7 +722,9 @@ so the optional operands are never ambiguous with program arguments.
 **Shared code paths.** Resolution, dependency build, deploy, and the launch
 command/spec are the same seams the editor drives; the headless runner differs
 only in executing the resolved spec directly rather than through the editor's
-task runner (§16.1).
+task runner (§16.1). Through the workspace daemon (§19.15, Run) the same seams
+run in the daemon up to the resolved spec, and the invoking client executes
+it, with the attachment, exit status and output rules above unchanged.
 
 **Setting the default target** is a management operation (§16.9): it selects,
 per profile, the default build target and writes it to the working copy
@@ -793,6 +850,37 @@ query for the profile's resolved launcher and folds the result into the report.
 When no launcher is resolved, `--cache-stats` reports that there is nothing to
 query rather than erroring; with **no active profile** (or an active profile
 without a C/C++ project) it prints a one-line reason instead of nothing.
+
+Each row of the overview's **profile list** carries the profile's **build
+state** in parentheses after the profile name (`*1 Dev (built)`), so a user or
+script can see that a build or clean took effect. The row has no separate
+configuration-set column: a profile's name is always its configuration set's
+name, followed by `:<tools>` when it has tools (§1.6 "Profile key format"), so
+the set is already visible (the row only displays the name, never parses it).
+The label is the interactive host's aggregate profile status (`spec/ui.md` §1.5
+`{status_label}`) — the same vocabulary and the same aggregation over the
+profile's configuration units, never a separate one: a single word when every
+unit agrees (`built`, `configured`, `unconfigured`, `unknown`, `empty` for a
+profile with no projects), otherwise the per-state counts (`1 built, 1
+unconfigured`, `1 building`, `2/2 cleaning`), written verbatim (`(1 built, 1
+unconfigured)`), aligned in one column after the names. On a terminal
+where the overview is colored (stdout a tty, `NO_COLOR` unset) the
+parenthesized state takes the color of the host's highlight for that label:
+built green, configured (and mixed counts) blue, unconfigured and unknown dim,
+running yellow, failed and cleaning red; elsewhere it is plain. The state is
+the last persisted one (the build cache, §2), read fresh by each invocation; while the
+workspace daemon runs a task (§19.6 "Running tasks"), the profiles and units
+that task resolves to show it running (`building`, `configuring`, `cleaning`,
+and `deleting` for a reset, §16.30),
+exactly as the interactive host shows a task it observes in the daemon
+(§19.16). An operation another process runs **in-process** (no daemon) is not
+visible to the overview; its result shows once it persists.
+
+The overview shows the workspace runtime's `Runtime` line and, when the
+workspace daemon is running tasks, one line per task (operation, profile,
+origin, elapsed, percent) — §19.6. Asking the daemon is bounded, never
+launches it, and never fails or changes the overview: a failed query is one
+line.
 
 The overview also renders the **suggestions** count line (`spec/ui.md` §1.1) when
 the suggestion framework has findings — a one-line advisory pointing at
@@ -973,7 +1061,8 @@ launcher, or re-exec'd by the redirect (§16.23) — MUST **provision** the pinn
 release's bundle before it resolves system Lua (a command that resolves none —
 pin management, §16.24 — provisions nothing): acquire the bundle for the pinned
 version, verify it against the pinned bundle hash, and extract it to a
-**pinned-release cache in the per-user data directory**, keyed by the pinned
+**pinned-release cache in the install folder** (below; the per-user data
+directory unless overridden), keyed by the pinned
 version **and** the pinned bundle hash, then resolve system Lua from there rather
 than from the newest machine-global install. Provisioning is idempotent: a bundle
 the host itself extracted there after verification is reused without
@@ -1003,6 +1092,53 @@ launcher's form (§16.24 "Invoked form"). The host removes the value from its ow
 environment once read, so nothing it starts inherits it. A launcher that does not
 set it (an earlier generation) is still honoured, with the `./lw.sh` form.
 
+**Install folder.** What the host installs — the release bundles of an
+acquisition or self-update (§16.13), and the pinned-release cache above (the
+redirect's pinned host binaries, §16.23, and the pinned bundles), together with
+the record of which release's notes were last shown (§16.37), which describes
+those bundles — lives in the **install folder**: the per-user data directory,
+unless the environment value `LOOMWORKS_INSTALL_DIR` names another one (an
+absolute path; a relative value is not honoured and the host says so, once, on
+standard error). It exists for an lw that another program runs and provisions —
+the editor plugin runs its own lw with the install folder inside the editor's
+data, so everything that lw downloads stays there. The value is inherited, so a
+daemon the host starts installs into the same folder, and so does a pinned host
+a redirect re-execs — when that pinned release knows the install folder. A
+pinned release from before it ignores the value: the redirecting host still
+fetches the pinned host binary and provisions the pinned bundle into the
+install folder (§16.23), but that pinned host then provisions its own copy of
+the bundle into the per-user data directory, as it always did. (There is no
+clean hand-over: such a host accepts a system-Lua root only as a development
+source, §16.11, which changes what it reports and allows.)
+
+The install folder may be any directory, shared with unrelated files, so the
+host MUST recognise its release bundles there strictly. It lists, ranks (the
+newest bundle is what runs, §16.13) and removes (keeping the newest three)
+only entries named `lua-<version>` whose version is a release version —
+`<n>.<n>.<n>` with an optional `-<pre-release>` of dot-separated alphanumeric
+identifiers, and a safe path segment (§16.23) — that are real directories (a
+symbolic link or junction never counts, and is never followed) holding a real
+`loomworks/` directory with the bundle's CLI entry `loomworks/cli.lua` as a
+regular file. A removal re-checks the entry, requires its resolved path to be a
+direct child of the resolved install folder, and never removes the bundle just
+installed or the bundle the running host loaded. Installing a release whose
+`lua-<version>` name is taken there by anything else fails with a message
+naming it; that entry is never replaced. A forced reinstall (`--force`) of
+the version whose bundle the running host loaded (the same resolved-path
+identity) is refused with a message, before anything is fetched: the bundle in
+use is never removed or swapped (its files may be open), and reinstalling it
+takes a different lw version. Its temporary download and staging
+names (`.dl-<version>.zip`, `.stage-<version>`) are formed only from such a
+version.
+
+It moves only installations: the **shared runtime state** — the
+trust store (§17), the daemons' runtime directory, sockets, identity and logs
+(§19), device locks (§18), acquired modules (§16.20), host settings — stays in
+the per-user data and configuration directories for every lw on the machine,
+whoever runs it, so a plugin-run lw and a user's own lw see one trust store and
+meet one workspace daemon. Housekeeping (§16.40) prunes only the per-user data
+directory; an install folder is its owner's to prune.
+
 A launcher never downloads or extracts the bundle itself — it fetches and execs
 only the host binary, and the exec'd host self-provisions the bundle as above,
 so the launcher depends on nothing beyond a system downloader and a hash tool.
@@ -1014,7 +1150,10 @@ Unix-style shell environment) cannot change its behavior.
 ### 16.23 Global pin-aware redirect
 
 A globally-installed host, invoked for a **workspace operation** (build, run,
-test, configure, clean) inside a repository that carries a pin, MUST honor the
+test, configure, clean, reset — every command the CLI routes to the workspace
+daemon, §19.15 — and the `daemon` sub-commands that **start a workspace
+daemon**: `daemon run`, in every form including the editor's `--stdio` one, and
+`daemon restart`) inside a repository that carries a pin, MUST honor the
 pin. It resolves the pinned version from the workspace root — the same root
 discovery that locates the workspace files (§2). When the pinned version equals
 the running host's own release version it runs the operation **in-process**: no
@@ -1030,10 +1169,42 @@ cleans up, and the redirecting host neither dies nor exits before the pinned
 host has finished; an interrupt addressed to the redirecting host alone (a
 POSIX signal sent to its process only) is forwarded to the pinned host.
 
+**A pin older than the command.** Some redirected commands are newer than
+version pins: `reset` (first released in 0.1.27), `daemon run` and `daemon
+restart` (0.1.43-beta.5) and the `--stdio` form of `daemon run`
+(0.1.43-beta.15). A pin naming a release before the one that introduced the
+command MUST NOT be redirected to for it — that host would only fail with an
+unknown command. Instead the invoked host does not redirect and leaves the
+workspace daemon to the pinned release (as for a command it runs itself,
+below): a `daemon run` or `daemon restart` refuses with one line on standard
+error naming the pinned version and the release that introduced the command,
+and exits 1 without starting anything (the editor then works without a daemon,
+§19.16); `reset` runs as the invoked host, without the workspace daemon, after
+one such line.
+
+**One daemon per pinned workspace.** Whoever starts it — the editor, which
+launches `lw daemon run` with the binary it selected (§19.16), a CLI command, a
+`daemon restart` — the daemon of a pinned workspace is the pinned release. For
+`daemon run` the workspace is the one its `--root` names (the daemon runs from
+the per-user state directory, §19.10) — for a `daemon` command its `--root`
+decides which pin applies even when a launcher passed the user's directory
+(which may lie in another, nested pinned root) — and the redirect carries that
+root across the exec; the redirecting host that stays alive as the pinned
+daemon's parent is not itself a daemon, and the process scan (§19.6.1) never
+lists it or kills it as one; its one-line notice goes to standard error, since a daemon's
+standard output may be its protocol stream. A command the invoked host runs
+itself in such a repository (a configuration edit, a profile selection) leaves
+the workspace daemon to the pinned release: in daemon mode its ensure step
+(§19.10) neither launches, stops nor retires one — the command runs without the
+daemon, silently (a line in the runtime log) — so a global lw and the pinned
+lw never replace each other's daemon in turn (§19.9). The daemon's control
+sub-commands — `daemon status`, `list`, `stop`, `kill` — speak the frozen
+control subset to a daemon of any version (§19.8) and run as the invoked host.
+
 Redirection applies only to workspace operations. **Host and management
-operations** — reporting the host version, self-update, install, and pin
-management (§16.24: the status page, `install` and `upgrade`) — MUST NOT
-redirect; they always run as the invoked (global)
+operations** — reporting the host version (also its descriptor, §16.41),
+the release query (§16.42), self-update, install, and pin management (§16.24: the status page, `install`
+and `upgrade`) — MUST NOT redirect; they always run as the invoked (global)
 host, so that, for example, updating the pin is never carried out by the old
 pinned version. Redirection MUST be guarded against recursion: once a host is
 running as the pinned version with the pinned bundle loaded, it never redirects
@@ -1068,7 +1239,7 @@ The following invariants are normative:
   repo-provided script would be an arbitrary-code-execution vector.
 - **Nothing executed from the repository tree.** The host binary a redirect runs
   and the bundle it loads are the artifacts the host fetched and verified into
-  the per-user pinned cache (§16.22) — never a same-named file shipped inside
+  the pinned cache of its install folder (§16.22) — never a same-named file shipped inside
   the repository, whatever its hash.
 - **Bounded residual risk.** A malicious pin can at worst force acquisition of an
   authentic but **older / downgraded** official release; it cannot introduce
@@ -1724,13 +1895,31 @@ non-interactive host (§16.3) the confirmation flag is **mandatory** — without
 reset refuses with a message naming the flag, rather than deleting unprompted.
 This is the destructive-management posture of §16.9: it authors nothing in the
 working copy, but it does discard cache and on-disk state, so it never proceeds
-silently. Reset reports success only after confirming the targeted directories
+silently. Once it holds its locks and before removing anything, reset plans
+again and compares with what it listed: a directory that appeared or vanished
+in between (another process's build that finished and released before the
+locks were taken) makes it refuse — `the build directories to reset changed
+since they were listed — run lw reset again`, exit 1, nothing removed — so it
+never removes a directory the user was not shown. A targeted directory the
+deletion would refuse (outside the workspace root, §4.6 validation) is never
+listed as removed: the listing names it as not removed, and only its cached
+state is cleared. Reset reports success only after confirming the targeted directories
 are **actually gone from disk** — the removal completing is not by itself
 proof (a directory can briefly persist after deletion, or a removal can fail), so
 a directory that is still present once the removal settles is reported as a
 failure rather than reported as removed. On success the removed directories are
 reported and the exit status is **0**; on any failure the reason is reported and
 the exit status is non-zero.
+
+**Through the workspace daemon.** *(§19.19 step 5d.)* In
+`runtime-mode daemon` the CLI's reset runs in the workspace daemon (§19.15
+"Reset"): the same plan, listing, confirmation, locks, deletion, verification,
+lines and exit codes as above. The daemon never prompts: it returns the
+listing, the client asks, and the confirmed request carries a token of the
+listed plan, so a reset whose directories changed between the listing and the
+answer refuses instead of removing directories the user was not shown. The
+editor and `lw status` show the running reset like any task the daemon runs
+(§19.16, §16.18).
 
 **Concurrent editor.** Reset is designed to run while an editor host is live on
 the same workspace, and coexistence rests on the same three-file/cache
@@ -2744,7 +2933,8 @@ bytes, not the terminal rendering.
 Combining two sources, or `--clear` with a source, is a usage error. `-e` may be
 combined with `-m`, `-F` or `<text>`, which then pre-fill the editor, as in git.
 
-**Editor.** `-e` opens `$VISUAL`, then `$EDITOR`, on a temporary file. The file
+**Editor.** `-e` opens `$VISUAL`, then `$EDITOR`, on a temporary file in the
+workspace's `.nvim/tmp/` (§16.40), removed afterwards. The file
 is pre-filled with the current description (or the pre-fill), followed by
 comment lines starting with `#` that name the item and explain the format. On
 save, the `#` lines are removed (the stored text is never commented) and the
@@ -3416,8 +3606,10 @@ help. The rules:
   command (the host-level ones included) with every sub-command it accepts,
   and lists the topics that are not commands. Every option a command accepts is
   documented in that command's help topic, its short spelling included; only a
-  pure alias of a documented command or sub-command, and an option accepted
-  solely for compatibility as a no-op, MAY stay undocumented. A usage error that
+  pure alias of a documented command or sub-command, an option accepted
+  solely for compatibility as a no-op, and a hidden test-only option its own
+  section keeps out of `--help` (`lw daemon run --private`, §19.10 "Tests"),
+  MAY stay undocumented. A usage error that
   lists a command's sub-commands lists all of them.
 
 ### 16.39 Configuration export and import
@@ -3695,3 +3887,415 @@ three places:
 - the help for pull names export and import for another machine;
 - a pull whose source working copy is not signed by this machine, which is the
   usual sign that it was copied from elsewhere, adds that line too.
+
+### 16.40 Per-user state outside the workspace
+
+*Status: implemented — the moves into the workspace (#121); housekeeping,
+`lw cleanup` and the host's last-use update (#122).*
+
+What a workspace's own operations produce lives **inside the workspace**, under
+`<root>/.nvim/`. Outside the workspace, `lw` keeps only the per-user state
+listed in this section. Every item is **bounded**, and every transient item an
+interrupted process can leave behind (a crash, a kill, a power loss) is
+**self-healing**: the next `lw` run removes it (housekeeping, below), and
+`lw cleanup` removes it on request. No other location outside the workspace is
+written, and nothing outside the names listed here is ever removed.
+
+**Locations.**
+
+- `<data>`: the per-user data directory, `%LOCALAPPDATA%\loomworks` on
+  Windows, else `$XDG_DATA_HOME/loomworks` or `~/.local/share/loomworks`.
+  `LOOMWORKS_DATA_DIR` overrides it.
+- `<config>`: `%APPDATA%\loomworks`, else `$XDG_CONFIG_HOME/loomworks` or
+  `~/.config/loomworks`.
+- `<cache>`: the tool cache directory, `%LOCALAPPDATA%\loomworks\cache` on
+  Windows, else `$XDG_CACHE_HOME/loomworks` or `~/.cache/loomworks`.
+- `<run>`: the POSIX per-user socket directories of §19.7.
+- `<tmp>`: the operating system's temporary directory (`%TEMP%` on Windows).
+- `<exe>`: the installed `lw` binary.
+
+**Kept.** Each item is bounded as stated. Housekeeping never removes one,
+except where the last column says so.
+
+| Item | Bound | Removed by |
+|---|---|---|
+| `<config>/config.json` | one file | the user (`lw settings`) |
+| `<data>/trust.key` | one key (§17.2) | never |
+| `<cache>/tools.json` | one file; one entry per module type (§16.43) | rewritten by a tool scan |
+| `<data>/release-notes-seen` | one line (§16.37) | never |
+| `<data>/lua-<ver>/` | the newest three releases (§16.13) | self-update |
+| `<data>/modules/<name>/` | the installed modules (§16.20) | module removal |
+| `<data>/pinned/<sha256>/lua-<ver>/`, `<data>/pinned/lw-<ver>-<asset>` | the pinned releases in use (§16.22, §16.23) | `lw cleanup --all`, once unused for 30 days |
+| `<data>/daemon/` | an empty directory, the daemon's working directory (§19.10) | never |
+| `<data>/device-locks/<serial>.lock` | one per device, while an operation on it runs (§18.7) | its holder; housekeeping once the holder is provably gone |
+| `<data>/device-locks/<serial>.leftover` | one per device with a program left running on it (§18.7) | the run that stops the program; never housekeeping |
+| `<run>/<hash>.sock` | one per running daemon (§19.7) | the daemon; housekeeping once stale |
+| `<data>/.housekeeping` | one empty stamp file | never |
+| `<exe>` | the binary | the user |
+
+With an install folder (`LOOMWORKS_INSTALL_DIR`, §16.22) the release bundles,
+`release-notes-seen` and `pinned/` are in that folder instead of `<data>`;
+neither housekeeping nor `lw cleanup` looks there — its owner prunes it.
+
+**Transient.** These exist only while an operation runs. One that is still
+there afterwards was left by an interrupted process: a **leftover**. A
+leftover is removed once it is older than the age given, by modification time
+(a time in the future counts as recent).
+
+| Leftover | Made by | Removed when older than |
+|---|---|---|
+| `<data>/.dl-<ver>.zip`, `<data>/.stage-<ver>/` | self-update (§16.13) | 24 hours |
+| `<data>/pinned/.dl-<sha256>-<ver>.zip`, `<data>/pinned/.stage-<sha256>-<ver>/`, `<data>/pinned/lw-<ver>-<asset>.dl` | pinned provisioning (§16.22, §16.23) | 24 hours |
+| `<data>/pinned/.trash-<nonce>/` | pruning a pinned release (below) | any age |
+| `<data>/modules/.dl-<name>.zip`, `<data>/modules/.stage-<name>/` | module installation (§16.20) | 24 hours |
+| `<data>/release-notes-seen.tmp`, `<data>/release-notes-seen.tmp<digits>` | recording the seen release (§16.37) | 24 hours |
+| `<data>/device-locks/<serial>.leftover.tmp.<pid>`, `<data>/device-locks/<serial>.lock.reclaim.<nonce>` | device-lock writes and reclaims (§18.7, §19.5) | 24 hours |
+| `<cache>/tools.json.<pid>.<nonce>.tmp` *(from step 5r)* | writing the tool cache (§16.43) | 24 hours |
+| `<tmp>/lw_vcvars_<arch>_<16 hex digits>.bat` (Windows) | the MSVC environment probe | 1 hour |
+| `<run>/<hash>.sock.reclaim.<nonce>` | removing a stale socket (below) | 1 hour |
+| `<exe>.new` | host self-update (§16.32) | 24 hours |
+| `<exe>.old` (Windows) | host self-update (§16.32) | any age (it cannot be removed while it still runs) |
+
+`<exe>.new` and `<exe>.old` are looked for only beside a running `lw` host:
+not in the editor, and not beside a bare runtime running a source tree.
+`<exe>.old` only on Windows: elsewhere the binary is replaced in one rename,
+and an `<exe>.old` is the user's own (a rollback copy, say) and stays.
+
+**Legacy locations.** Earlier versions kept the following outside the
+workspace. This version keeps them inside it (below), and removes what earlier
+versions left behind:
+
+| Leftover | Removed |
+|---|---|
+| `<data>/daemon/logs/<16 hex digits>.log`, `<data>/daemon/logs/<16 hex digits>.log.1` | by housekeeping when unmodified for 30 days; by `lw cleanup` at any age |
+| `<tmp>/lw-test-<hex>.xml` | when older than 24 hours |
+| `<tmp>/lw-describe-<hex>.txt` | when older than 7 days |
+
+**Inside the workspace.** The runtime log is `<root>/.nvim/loomworks.daemon.log`,
+with one rotated predecessor (§19.10). The results file of a named test
+executable (§16.16) is `<root>/.nvim/tmp/lw-test-<hex>.xml`, and the editor
+buffer of a description (§16.35) is `<root>/.nvim/tmp/lw-describe-<hex>.txt`.
+`.nvim/tmp/` is created when first needed (`.nvim/` only when the workspace
+root exists; the root itself is never created). Each file is removed after
+use. A leftover there is removed by housekeeping and by `lw cleanup` run in
+that workspace, after 24 hours (results) or 7 days (editor buffers). If
+`.nvim/tmp/` cannot be created, the file is made in `<tmp>` under the same
+name, where a leftover is a legacy-location leftover.
+
+The runtime log is written only while it is lw's own: a regular file that is
+empty or starts with a runtime-log line, appended to through a descriptor
+checked to be the file `lstat` saw. A file at its name that is not (one a
+repository ships in `.nvim/`, say) is never written, rotated or removed, and
+an existing `.log.1` that is not lw's stops rotation (nothing more is
+written). The lines lost that way are only diagnostics; rewriting a file the
+repository owns would not be.
+
+**Last use of a pinned release.** A host that redirects to a pinned release
+(§16.23) sets the modification time of the pinned bundle directory and of the
+pinned host binary to the current time. The bundle does the same for itself at
+the start of every command-line run: when the running bundle root, or the
+running executable, resolves to `<data>/pinned/<sha256>/lua-<ver>` or
+`<data>/pinned/lw-<ver>-<asset>`, it gets the current time. So a pinned
+release run through a host older than this rule is still recorded once the
+release itself has it. Otherwise the time of provisioning stands in for the
+last use, and a pruned release that is still needed is provisioned again
+(downloaded and verified, §16.22) on its next use.
+
+#### Housekeeping
+
+A command-line invocation removes leftovers at the start of its run:
+
+- **When.** In every command that resolves a workspace root (found or not),
+  except `daemon` and `cleanup`, at most once per 24 hours per user. The stamp
+  file `<data>/.housekeeping` records the last pass. A run claims the pass by
+  setting the stamp's modification time before it starts. Two processes that
+  claim at once both run the pass, which is safe: every removal tolerates a
+  concurrent remover. The editor host never runs it, and neither does a run
+  with `LOOMWORKS_NO_HOUSEKEEPING=1` (the test suites set it).
+- **Only lw's data directory.** `<data>` (and everything below it) is read
+  only when it shows it is lw's: it holds the machine key, the stamp,
+  `pinned/`, or an installed release `lua-<ver>/loomworks/cli.lua`. A data
+  directory without one (`LOOMWORKS_DATA_DIR` pointed at a home directory,
+  say) is never scanned, and no stamp is written into it.
+- **What.** Exactly the leftovers in the tables above whose age has passed,
+  and the leftovers in the current workspace's `.nvim/tmp/`. Never the pinned
+  releases (only `lw cleanup --all` prunes them), and never a legacy runtime
+  log modified within 30 days.
+- **Bounded.** It reads only the fixed directories above, one level deep. It
+  never walks a tree, except a leftover directory it removes. It stops
+  reading `<tmp>` after 10,000 entries. Its socket tests wait about a second
+  in all, at most.
+- **Silent.** It never prints, never prompts, never changes the exit status
+  and never stops the command. Every error is swallowed. When the run is in a
+  workspace and the pass removed something or failed to, it writes one line
+  to the runtime log (§19.10).
+- **In the bundle.** It lives in the release bundle, not the host. Every
+  host then runs it, including hosts older than this rule, which load the
+  newest bundle (§16.14), and it needs no host interface newer than the oldest
+  host in use. Only the last-use update above is host-side; on an older host
+  its absence makes pruning earlier, never unsafe.
+
+#### `lw cleanup`
+
+```
+lw cleanup [--dry-run | --yes] [--all] [--pinned-older-than <duration>]
+```
+
+Lists what `lw` left outside the workspace and, on request, removes it. It
+needs no workspace, never loads one, never starts the daemon and never
+prompts.
+
+- **A dry run is the default** (`--dry-run` makes it explicit). It lists each
+  item it would remove: a short kind, the path, the size (for a directory, the
+  sum of its files) and the age. Then the total, and that `--yes` removes
+  them. With nothing to remove it says so. Exit 0.
+- `--yes` (`-y`) removes them and reports each removal. An item that cannot
+  be removed (in use, permission) is named with the reason, and the command
+  then exits 1. `--dry-run` together with `--yes` is a usage error (exit 2).
+- The **default set** is the housekeeping set, whatever the stamp says, plus
+  every legacy runtime log whatever its age: this version never writes the
+  old location, so whatever is there is a leftover, and a dry run lists it
+  before anything is removed. (Housekeeping, which removes without asking,
+  keeps the 30-day age: a repository pinning a release older than this rule
+  still writes there.)
+- `--all` adds the **pinned releases unused for 30 days**
+  (`<data>/pinned/<sha256>/lua-<ver>/`, `<data>/pinned/lw-<ver>-<asset>`) —
+  only those — and counts the pinned releases it keeps. With nothing to remove
+  and no `--all`, the command says what `--all` would add.
+- `--pinned-older-than <duration>` sets that 30-day threshold and implies the
+  pinned part of `--all`. A duration is a whole number of seconds, or a whole
+  number with `s`, `m`, `h` or `d` (`90d`, `12h`). An invalid duration is a
+  usage error.
+- A `--yes` run also sets the housekeeping stamp.
+
+A pinned release is **never** pruned when it is
+
+- of the version that the nearest `lw.pin` above the current directory pins
+  (whatever its hash);
+- the running executable or the running bundle;
+- used within the threshold (by modification time).
+
+A pinned bundle directory is removed by first renaming it, in one step, to
+`<data>/pinned/.trash-<nonce>`. A rename that fails (on Windows: a file in it
+is in use) skips the item. Then the renamed tree is removed. A `<sha256>/`
+directory left empty is removed with `rmdir`. A pinned host binary is
+unlinked (on Windows a running one cannot be, and is skipped).
+
+#### Removal safety
+
+Every removal by housekeeping and `lw cleanup` follows these rules:
+
+1. **Exact names.** An entry is a candidate only when its whole name matches
+   its pattern above. Versions are release versions: three dot-separated
+   numbers and an optional pre-release or build tail (`0.1.40`,
+   `0.1.40-beta.1`), and safe versions (§16.22);
+   `<sha256>` is 64 lowercase hex digits, `<name>` is a valid module name
+   (§16.20), `<arch>` is a known `vcvarsall` architecture, nonces and hashes
+   are hex digits of the stated length, and `<pid>` is digits. A near miss is
+   never touched.
+2. **Fixed parents.** A candidate is a direct child of one of the fixed
+   directories: `<data>`, `<data>/pinned`, `<data>/pinned/<sha256>`,
+   `<data>/modules`, `<data>/device-locks` (in its default location only),
+   `<data>/daemon/logs`, `<tmp>`, the directory of `<exe>`, a `<run>`
+   directory, and `<root>/.nvim/tmp`. The directory must be a real directory
+   (`lstat`: not a symbolic link or junction), and its resolved path must be
+   the resolved location expected; below `<data>`, it must lie under the
+   resolved `<data>` with a separator boundary.
+3. **No links.** Entries are examined with `lstat`. A candidate name that is
+   a symbolic link or junction is never touched, nor followed. A file
+   candidate must be a regular file, a directory candidate a directory, a
+   socket candidate a socket. Inside a leftover directory being removed, links
+   are removed as links, never followed. Removing a hard link removes only
+   that name; a read-only file is made writable for its removal only when it
+   has no other link (the attribute belongs to the file, not the name). In a
+   shared temporary directory (POSIX) only the user's own files are
+   candidates.
+4. **Age before removal.** A leftover is removed only past its age. Nothing
+   younger is touched.
+5. **Never in use.** A device lock is removed only when its holder is
+   provably gone (same host, no process with its id and start time, §19.5)
+   and it records no running program (§18.7), and only by the nonce-checked
+   reclaim of §19.5. A socket is removed only when it lies in a per-user
+   directory of §19.7 (a real directory owned by the user, mode `0700`), is a
+   socket owned by the user, is older than an hour and **refuses a
+   connection**. A socket named for a workspace whose daemon is running (by a
+   process scan, §19.6.1) is never connected to, nor is any when the scan
+   fails or finds a daemon whose workspace it cannot tell. A socket is first
+   moved aside; if what was moved is not the file tested (same device, inode
+   and modification time; a daemon bound the name meanwhile), it is put back,
+   and if the name is taken again already it is left where it was moved,
+   never unlinked. Pinned releases follow the rules above.
+6. **Never anything else.** The kept items, `.leftover` files, the
+   `<data>/daemon/` directory, and anything not listed here are never removed.
+
+### 16.41 Binary descriptor
+
+`lw version --json` prints the **binary descriptor**: what this lw implements,
+for a program that has to decide whether it can use a binary before starting a
+daemon with it (the editor's quick pre-check, §19.16; authoritative is
+`Root.describe` after connecting, §19.20). It is a host command (§16.23: it
+never redirects), needs no workspace and starts no daemon. It describes the
+system Lua this invocation resolved (§16.11) — the release bundle, the pinned
+bundle in pinned context, a development source — so a host with no system Lua
+at all (a release host before its first `lw self-update`) has none to describe
+and exits non-zero. Plain `lw version` is unchanged: one line of text.
+
+The descriptor describes the binary invoked, never what a redirect command
+(§16.23) would run in a pinned repository: a caller that launches `daemon run`
+in a repository pinned to another release learns that release's capabilities
+only from the handshake after the launch (§19.9, §19.16).
+
+The descriptor is the binary half of `Root.describe`, with the same field
+shapes and without a session:
+
+| Field | Content |
+|---|---|
+| `descriptor` | the descriptor format version (1); fields are only ever added |
+| `binary` | `lw_version` (the release version, or a development build's fingerprint, §19.9), `impl`, `dev` |
+| `transport` | the transport range, `min` (`protocol_min`) .. `max` (`protocol`) (§19.8) |
+| `schemas` | the working-copy (`user`) and `cache` schema versions it reads and writes (§19.9) |
+| `objects` | the core objects a daemon of this binary mounts, each interface with its versions, its `same_build` / `internal` / `deprecated` flags, and per version the sha256 of its schema document (`schema_digest`) — computed from the same registry a daemon mounts, never listed by hand |
+| `root_methods` | the methods of `loomworks.Root/1` |
+
+Interfaces a module mounts depend on the workspace and are not part of it. The
+document's schema is `spec/protocol/meta/descriptor.schema.json`. The output is
+canonical — keys sorted, two-space indent — so equal descriptors are equal
+bytes.
+
+**Published with each release.** The release publishes the descriptor of the
+release as the asset `lw-<version>-descriptor.json`, listed in the signed
+`SHA256SUMS` (§16.15) like every other asset. It is produced by the release
+itself — the released host running the released bundle as `lw version --json`
+— and the release fails unless it names that release (not a development
+build). A program that pins a release can so learn what it implements before
+downloading its binary.
+
+### 16.42 Release query
+
+`lw release query [--channel stable|unstable] [--json]` resolves an update
+channel (§16.29) to a **verified** release: its version, the SHA-256 of every
+host asset and its descriptor (§16.41). It is how a program that runs a
+verified `lw` (the editor's managed `lw`, §19.16 "Channel upgrades") learns
+which release a channel offers and what that release implements before it
+downloads anything. It is a host command (§16.23): it never redirects, needs
+no workspace, starts no daemon and writes nothing to disk — it neither saves
+the channel (unlike self-update, §16.29) nor installs, caches or provisions
+anything.
+
+Steps:
+1. Resolve the channel by the §16.29 precedence (`--channel`, then
+   `LOOMWORKS_CHANNEL`, then the host configuration, then stable).
+2. Resolve the newest release on that channel, with the §16.29 ordering (a
+   pre-release ranks below its release).
+3. Fetch the release's `SHA256SUMS` and its signature and verify the
+   signature with the key embedded in the host (§16.15).
+4. Fetch the release's `lw-<version>-descriptor.json` (§16.41) and verify its
+   SHA-256 against the signed sums.
+
+The release source follows §16.29: the fixed origin, or the user-set
+release-source override (environment or host configuration; a local
+directory, `file://` or a mirror). An override supersedes the channel; the
+result then says so (`channel_ignored`), and the plain output warns as
+self-update does. The install-folder override (§16.22) is honoured for
+anything the host itself needs; the query adds nothing to it. Every fetch is
+bounded (`--timeout <seconds>` overrides the overall limit).
+
+**Output.** With `--json`, one canonical JSON document (keys sorted,
+two-space indent):
+
+| Field | Content |
+|---|---|
+| `query` | the output format version (1); fields are only ever added |
+| `channel` | the channel resolved in step 1 |
+| `channel_ignored` | `true` when a release-source override superseded it |
+| `source` | `origin` or `override` |
+| `version` | the release version resolved in step 2 |
+| `prerelease` | whether that version is a pre-release |
+| `assets` | the published host assets, each mapped to its SHA-256 from the verified sums |
+| `descriptor` | the release's descriptor document (§16.41), hash-verified |
+
+Without `--json` it prints the channel, the version and whether it is a
+pre-release, one line each.
+
+**Failures.** No network or no release on the channel, a signature that does
+not verify, a descriptor or sums whose hash does not match, a release with no
+descriptor asset (a release older than §16.41: "release predates the
+descriptor") and a version that is not a valid release version each exit
+non-zero with one line on standard error, and print nothing on standard
+output. Verification is never relaxed: the transport relaxation of §16.22 does
+not waive the signature or a hash.
+
+### 16.43 Machine-level tool cache
+
+*Status: implemented, step 5r part C (§19.11 "Warm restarts";
+`loomworks.tool_cache`). Before it, an entry was served whenever the cache
+covered the needed module types, with no fingerprint.*
+
+Detecting toolchains (§3.3) probes compilers and installations and takes
+seconds, so `lw` keeps the last result per **module type** in the
+machine-level tool cache `<cache>/tools.json` (§16.40). Toolchains are a
+machine fact, not a workspace one: the file is shared by every workspace, by
+the in-process CLI and by every workspace daemon (§19), and by older `lw`
+releases on the same machine. It holds no build directories and is never a
+source of a deletion.
+
+**Entries.** Besides the fields every release reads (`version`, `timestamp`,
+the covered module types and their tools), the file holds one entry per
+module type: `{ tools, timestamp, fp }` — the detected tools, when that
+type's detection finished, and the **fingerprint** of its inputs. The cache
+`version` stays `1`: an older release ignores the extra fields and keeps
+reading and writing the fields it knows, and a writer of this release keeps
+those fields up to date as well, so releases sharing the file never treat
+each other's writes as a miss. (Bumping the version would make each release
+rewrite the file for itself on every run.) The implementation verifies that
+the oldest supported release reads a file written this way and that this
+release reads a file an older one rewrote (no per-type entry, or a stale
+one: a miss for that type).
+
+**Fingerprint.** A module type's fingerprint covers, and only covers:
+- the identity of the `lw` that detected it, including its `lw_version` (a
+  development build's identity includes its source hash);
+- the normalized executable search path (the entries, in order, as the
+  environment inventory normalizes them, §16.33), `PATHEXT` on Windows, and
+  the platform;
+- the module id and the module interface version (§8.0);
+- the modification time of each search-path directory (absent when it does
+  not exist), so a compiler newly installed into a directory already on the
+  search path changes it.
+
+There is no module hook: core computes the fingerprint without module
+knowledge. Project files are not an input — detection does not read them;
+what a workspace contributes is only the set of module types it needs.
+
+**Reuse.** A load that detects tools reuses each needed module type whose
+entry's fingerprint matches the current inputs and detects only the others
+(a mismatching, missing or unreadable entry is a miss for that type). There
+is no time-to-live. `lw tools` detects every type and rewrites every entry.
+The same check applies in both hosts — the in-process CLI and the workspace
+daemon read the file through one function — so a changed search path or an
+upgraded `lw` re-detects in either. A command that never detects (one that
+does not wait for tools, `lw tools --cached`) serves the cached entries as
+today, whatever their fingerprint. A module type whose module is not loaded
+(missing or rejected, §8.0) is neither reused nor written, so installing the
+module later detects it.
+
+**Writing.** Each module type is written as soon as its detection finishes:
+the file is re-read, that type's entry (and the shared fields) replaced, and
+the result written to a uniquely named temporary file beside it
+(`tools.json.<pid>.<nonce>.tmp`) that is renamed over `tools.json` — no
+backup copy, and outside any workspace transaction (§19.4). A type whose
+detection had not finished when the process stopped or abandoned the work is
+not written. A process killed mid-write leaves at most the temporary file
+(a leftover, §16.40), never a torn `tools.json`; an unreadable file is
+treated as empty and rewritten.
+
+**Limits.** The file has no lock: two writers that read before either
+renames can lose one update (last writer wins), which costs only a later
+re-detection of that type. On Windows, a rename blocked by another process
+(a reader, an antivirus scan) is retried briefly and then given up, losing
+only that cache write. Not covered by the fingerprint — and so needing
+`lw tools` — is a toolchain change that touches no search-path directory
+(an installation found through a registry or installer query rather than
+the search path, or an upgrade in place that keeps the directory's
+modification time), and a module plugin upgraded without a change of its
+interface version.

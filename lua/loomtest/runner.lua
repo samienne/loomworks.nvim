@@ -395,7 +395,7 @@ function M.debug(adapter, spec, test_ids, opts)
 
         local adapter_type = "codelldb"
         if ws then
-            adapter_type = debug_mod.resolve_adapter(ws, "c++")
+            adapter_type = require("loomworks.debug_config").resolve_adapter(ws, "c++")
         end
 
         debug_mod.run({

@@ -1,0 +1,187 @@
+{
+  "interface": "loomworks.DebugConfig",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /debug (spec 19.20 DebugConfig/1, 8.9.6 Adapter configuration): the workspace's debug-adapter mapping, per language. No signal of its own: a change reaches subscribers as Workspace/1 changed. Whether an adapter is installed is the client's question, never the daemon's.",
+  "methods": {
+    "adapters": {
+      "description": "One record per known language (known_languages): the adapter in effect, the integration's default, the adapters known for the language and whether the working copy overrides the default.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/AdaptersResult"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    },
+    "set_adapter": {
+      "description": "Set the language's adapter in the working copy (user.json debug.adapters, never loomworks.json), stored as given; with no adapter, remove the override so the default applies. Written as the in-process Workspace:set_debug_adapter writes it, in a model segment, the write's model_change (Workspace/1 changed) before the reply. A refused or failed write changes neither the file nor the model: the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "language"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "type": "string"
+          },
+          "adapter": {
+            "description": "The DAP adapter type (a client's picker offers known); absent: back to the default.",
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Ok"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "known_languages": {
+      "description": "Every language a module or integration declares (spec 8.9.6 Language-based adapter resolution), sorted.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/LanguagesResult"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    }
+  },
+  "$defs": {
+    "Ok": {
+      "type": "object",
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "AdapterRecord": {
+      "type": "object",
+      "required": [
+        "language",
+        "known",
+        "overridden"
+      ],
+      "properties": {
+        "language": {
+          "type": "string"
+        },
+        "adapter": {
+          "description": "The adapter in effect; absent with neither an override nor a default.",
+          "type": "string"
+        },
+        "default": {
+          "description": "The integration's default adapter for the language, if any.",
+          "type": "string"
+        },
+        "known": {
+          "description": "The adapters known for the language, from the integrations' declarations (never from the client's debugger).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "overridden": {
+          "description": "The working copy sets this language's adapter.",
+          "type": "boolean"
+        }
+      }
+    },
+    "AdaptersResult": {
+      "type": "object",
+      "required": [
+        "outcome",
+        "languages"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AdapterRecord"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "LanguagesResult": {
+      "type": "object",
+      "required": [
+        "outcome",
+        "languages"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

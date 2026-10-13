@@ -26,6 +26,9 @@ import zipfile
 with zipfile.ZipFile("loomworks-lua-0.0.0-test.zip", "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("loomworks/_release_marker.lua", 'return "0.0.0-test"\n')
     z.writestr("loomworks/sub/note.txt", "hello from the release bundle\n")
+    # Every real bundle carries the CLI entry; installed_releases only lists a
+    # lua-<ver> directory holding it (spec 16.22 "Install folder").
+    z.writestr("loomworks/cli.lua", "return {}\n")
 PY
 sha=$(openssl dgst -sha256 -r loomworks-lua-0.0.0-test.zip | cut -d' ' -f1)
 size=$(wc -c < loomworks-lua-0.0.0-test.zip | tr -d ' ')

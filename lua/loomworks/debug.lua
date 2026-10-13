@@ -1,14 +1,9 @@
 --- loomworks/debug.lua — DAP integration.
 --- Translates loomworks domain data into nvim-dap launch configurations.
+--- The adapter tables (defaults, known adapters, user.json overrides) are
+--- host-neutral and live in loomworks/debug_config.lua.
 
 local M = {}
-
---- Default adapter mapping: language → DAP adapter type.
---- @type table<string, string>
-local DEFAULT_ADAPTERS = {
-    ["c++"] = "codelldb",
-    typescript = "pwa-node",
-}
 
 --- JS/TS debug adapters that need runtimeExecutable transformation.
 --- @type table<string, boolean>
@@ -24,6 +19,30 @@ function M.available()
     return ok
 end
 
+--- Is `adapter` registered in nvim-dap (§8.9.6: the client's question,
+--- never the daemon's)? False without nvim-dap or without an adapter.
+--- @param adapter string|nil
+--- @return boolean
+function M.adapter_installed(adapter)
+    local ok, dap = pcall(require, "dap")
+    return ok and adapter ~= nil and dap.adapters[adapter] ~= nil
+end
+
+--- The install hint for an adapter nvim-dap lacks (one notification).
+--- @param adapter string|nil
+--- @param language? string the debug language (named when it has no adapter)
+function M.adapter_hint(adapter, language)
+    if not adapter then
+        vim.notify("loomworks: no debug adapter for " .. tostring(language or "this language")
+            .. " — set one in the Debug Adapters section.", vim.log.levels.WARN)
+        return
+    end
+    vim.notify(
+        "loomworks: debug adapter '" .. adapter
+            .. "' not configured. Install via :Mason and restart.",
+        vim.log.levels.WARN)
+end
+
 --- Launch or attach a debug session via nvim-dap.
 --- @param spec { program: string, args?: string[], cwd?: string, env?: table<string, string>, adapter: string, name?: string, extra?: table, request?: string, attach_pid?: number }
 --- @param callbacks? { on_terminated?: fun(), on_pid?: fun(pid: number) }
@@ -31,11 +50,8 @@ function M.run(spec, callbacks)
     local ok, dap = pcall(require, "dap")
     if not ok then return false end
 
-    if not dap.adapters[spec.adapter] then
-        vim.notify(
-            "loomworks: debug adapter '" .. spec.adapter
-                .. "' not configured. Install via :Mason and restart.",
-            vim.log.levels.WARN)
+    if not M.adapter_installed(spec.adapter) then
+        M.adapter_hint(spec.adapter)
         return false
     end
 
@@ -147,51 +163,6 @@ function M.run(spec, callbacks)
 
     dap.run(config)
     return true
-end
-
---- Resolve the DAP adapter type for a language.
---- Checks workspace debug settings (from user.json) first, falls back to defaults.
---- @param workspace loomworks.Workspace
---- @param language string language name (e.g. "c++", "typescript")
---- @return string|nil adapter_type
-function M.resolve_adapter(workspace, language)
-    local settings = workspace._debug_settings
-    if settings and settings.adapters and settings.adapters[language] then
-        return settings.adapters[language]
-    end
-    return DEFAULT_ADAPTERS[language]
-end
-
---- Known adapters per language (for picker UI).
---- @type table<string, string[]>
-local KNOWN_ADAPTERS = {
-    ["c++"] = { "codelldb", "cppdbg" },
-    typescript = { "pwa-node", "pwa-chrome" },
-}
-
---- Get the list of known adapters for a language.
---- @param language string
---- @return string[]
-function M.known_adapters(language)
-    return KNOWN_ADAPTERS[language] or {}
-end
-
---- Get the default adapter for a language.
---- @param language string
---- @return string|nil
-function M.default_adapter(language)
-    return DEFAULT_ADAPTERS[language]
-end
-
---- Get all known languages.
---- @return string[]
-function M.known_languages()
-    local langs = {}
-    for lang in pairs(DEFAULT_ADAPTERS) do
-        langs[#langs + 1] = lang
-    end
-    table.sort(langs)
-    return langs
 end
 
 return M

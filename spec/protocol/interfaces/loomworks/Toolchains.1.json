@@ -1,0 +1,71 @@
+{
+  "interface": "loomworks.Toolchains",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /toolchains (spec 19.14, 19.20): the toolchains detected in the client's environment. The protocol-10 query tools stays as its v0 alias; rescan lands with the command methods (step 5o).",
+  "methods": {
+    "list": {
+      "description": "The toolchains detected in the client's environment, per module type (the live model is not changed). Loads the workspace when none is loaded.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/ToolList"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    }
+  },
+  "$defs": {
+    "ToolList": {
+      "type": "object",
+      "required": [
+        "outcome",
+        "tools"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "tools": {
+          "description": "Per module type, its toolchains: key (absent for a module whose single tool has none), label and the tool's data.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "tool_data": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

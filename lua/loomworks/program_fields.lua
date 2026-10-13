@@ -341,23 +341,34 @@ local function launch_summary(e)
     return " \"" .. d.fit(d.inert_line(sum), 60) .. "\""
 end
 
+--- The ignored shared values still in effect: those the working copy does
+--- not supply in their place (spec §17.6).
+--- @param ignored table[]|nil
+--- @param merged table|nil merged config (internal shape) the model was built from
+--- @return table[] ignored entries
+function M.active(ignored, merged)
+    local out = {}
+    for _, e in ipairs(ignored or {}) do
+        if get_path(merged, e.path) == nil then out[#out + 1] = e end
+    end
+    return out
+end
+
 --- Diagnostics for ignored shared values that the working copy does not supply.
 --- @param ignored table[]|nil
 --- @param merged table|nil merged config (internal shape) the model was built from
 --- @return loomworks.Diagnostic[]
 function M.diagnostics(ignored, merged)
     local out = {}
-    for _, e in ipairs(ignored or {}) do
-        if get_path(merged, e.path) == nil then
-            out[#out + 1] = {
-                severity = "warn",
-                source = e.project and ("Project/" .. e.project) or "Workspace",
-                message = "loomworks.json sets " .. e.label .. " (" .. e.detail .. ")"
-                    .. launch_summary(e)
-                    .. " — ignored: program settings are used only from your local config (lw help trust)",
-                target_fold_key = e.project and ("project:" .. e.project) or nil,
-            }
-        end
+    for _, e in ipairs(M.active(ignored, merged)) do
+        out[#out + 1] = {
+            severity = "warn",
+            source = e.project and ("Project/" .. e.project) or "Workspace",
+            message = "loomworks.json sets " .. e.label .. " (" .. e.detail .. ")"
+                .. launch_summary(e)
+                .. " — ignored: program settings are used only from your local config (lw help trust)",
+            target_fold_key = e.project and ("project:" .. e.project) or nil,
+        }
     end
     return out
 end

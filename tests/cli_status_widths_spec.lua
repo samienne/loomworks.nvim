@@ -86,8 +86,8 @@ describe("status_profile_rows (name column sizing)", function()
     assert.is_truthy(rows[1]:find(long, 1, true))   -- full name present …
     assert.is_nil(rows[1]:find("…", 1, true))       -- … and never truncated
     assert.is_true(name_w >= 50)
-    -- The set value still renders after the name.
-    assert.is_truthy(rows[1]:find("set=dev", 1, true))
+    -- No set column: the set is the name's prefix (spec §16.18).
+    assert.is_nil(rows[1]:find("set=", 1, true))
   end)
 
   it("truncates a long name with an ellipsis on a narrow terminal", function()

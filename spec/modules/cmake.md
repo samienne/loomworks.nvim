@@ -57,6 +57,17 @@ refused. Any violation fails the task with the reason — the command never runs
 unwrapped instead. The environment snapshot the meson module takes from
 vcvarsall uses the same rules and an unpredictable temporary file name.
 
+**Visual Studio Installer on PATH.** vcvarsall (VsDevCmd and its extension
+scripts) runs the installation locator `vswhere.exe` by bare name, from the
+Visual Studio Installer folder (`<ProgramFiles(x86)>\Microsoft Visual
+Studio\Installer`, else the same under `<ProgramFiles>`), which is usually not
+on the search path. The wrapper's step environment, and the environment of the
+meson snapshot, therefore get that folder appended to the search path when it
+exists and is not already on it (case-insensitive) — otherwise every run prints
+"'vswhere.exe' is not recognized". It is part of the step's environment, so an
+in-process and a daemon-routed step (core §19.15) get the same. Output is not
+filtered: a real vcvarsall failure stays visible.
+
 **Build request.** The build task applies core's build request (core §8.1,
 headless `lw build --target <t> -- <args>`) to the native command before it is
 wrapped: `cmake --build <build_dir> [--config <variant>] [--target <t>…]
@@ -702,7 +713,13 @@ and both keyed to the active ConfigUnit's build directory:
 
 1. **clangd** — integration-specific fields (`binary`,
    `binary_required`, `compile_commands_dir`) documented in
-   [`spec/integrations/lsp/clangd.md`](../integrations/lsp/clangd.md).
+   [`spec/integrations/lsp/clangd.md`](../integrations/lsp/clangd.md),
+   and the core field `db_dir` (core §8.4): the build directory whose
+   database clangd reads — the `compile_commands_from` target unit's
+   (the one configured here first, else the first with a build directory),
+   else the active ConfigUnit's. The qmlls entry sets no `db_dir` (core
+   fills in the active build directory); its own `build_dir` is a qmlls
+   field core never reads.
 2. **qmlls** — emitted unconditionally (no QML detection); inert on
    non-QML projects since no `.qml` buffers exist to attach to.
    Integration-specific fields (`binary`, `binary_required`,
@@ -875,7 +892,7 @@ never builds one giant Lua table and encodes it in a single call, and never
 decodes the native database. This keeps memory and time flat for very large
 projects.
 
-The writer runs **asynchronously off the main loop**: reconstruction — reading the per-target file-api replies, building the compiled-source entries and the header-attribution index, the header directory listing (§12.3), attributing the discovered headers, and the entry-by-entry stream — is sliced across scheduled turns (each phase processes a bounded, time-boxed batch of targets, headers, or entries) so a large project never freezes the UI mid-generation. Generation is **single-flight per build directory**: overlapping triggers for the same directory coalesce onto the in-flight run, and a trigger arriving mid-generation (e.g. a reconfigure landing while a run is active) marks the run *dirty* so it re-checks freshness on settle and regenerates exactly once more if still stale. The stream is written to a temporary file and atomically renamed into place only on completion, so clangd never observes a half-written database — the previous database stays readable until the new one is complete.
+The writer runs **asynchronously off the main loop**: reconstruction — reading the per-target file-api replies, building the compiled-source entries and the header-attribution index, the header directory listing (§12.3), attributing the discovered headers, and the entry-by-entry stream — is sliced across scheduled turns (each phase processes a bounded, time-boxed batch of targets, headers, or entries) so a large project never freezes the UI mid-generation. Generation is **single-flight per build directory**: overlapping triggers for the same directory coalesce onto the in-flight run, and a trigger arriving mid-generation (e.g. a reconfigure landing while a run is active) marks the run *dirty* so it re-checks freshness on settle and regenerates exactly once more if still stale. The stream is written to a temporary file and atomically renamed into place only on completion, so clangd never observes a half-written database — the previous database stays readable until the new one is complete. The temporary file is named per process (`compile_commands.json.<pid>.tmp`, beside the database, so the rename stays on one filesystem): single-flight is per process, and the workspace daemon and another process (an `lw` command run without the daemon, or an editor in `in-process` mode — a `daemon`-mode editor never generates, core §9.7) may write the same database at once — neither may truncate, rename or remove the other's temporary file. A failed write or rename removes only its own.
 
 ### 12.3 Header entries — Tier-1 directory attribution
 
@@ -939,6 +956,8 @@ Regeneration is triggered from three idempotent paths, so the owned database ref
 3. **File-api reply watch** — loomworks watches the file-api reply directory (via the workspace file tracker's `fs_poll`) and regenerates on change, catching reconfigures loomworks did not drive (e.g. a manual `cmake`).
 
 All three funnel through the same mtime-gated, single-flight, side-effect-idempotent regeneration; the workspace drives them through the generic module hooks in core §8.4 (`refresh_lsp_database` / `lsp_database_watch_path`).
+
+In `daemon` mode (core §9.7, daemon.md §19.16 "LSP configuration") all three run in the daemon only, whether or not the editor currently has the daemon's LSP state: the editor's model never generates, watches or schedules a regeneration (it never calls `lsp_configs`), so an editor never writes a database beside the daemon. An editor in `in-process` mode (the transition path, until daemon.md §19.19 6b) generates as described here.
 
 **Completion signal.** Because generation is asynchronous, the owned `compile_commands.json` may first appear *after* a clangd client is already wired for a build directory. When a regeneration actually writes the database, the module reports completion to core (§8.4 `refresh_lsp_database`'s `done` callback) and core forwards a targeted LSP re-resolution for the affected ConfigUnit's projects. In the common case the database already existed on disk (atomic-rename replacement, §12.2), so the client already started with `--compile-commands-dir` and clangd merely auto-reloads the new content — no re-resolution needed. The signal matters only when the database went from **absent to present** (e.g. a project's first-ever configure), letting clangd pick up the directory it previously had no file for without the user reopening the buffer.
 

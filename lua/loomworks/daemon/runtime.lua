@@ -59,9 +59,11 @@ function M.resolve(configured, opts)
     return M.DEFAULT, "default", warning
 end
 
---- The idle-timeout setting (spec §19.11) and its default (1 hour).
+--- The idle-timeout setting (spec §19.11 "Idle exit").
 M.IDLE_SETTING = "daemon-idle-timeout"
-M.IDLE_DEFAULT = 3600
+--- The idle grace (spec §19.11 "Warm restarts", step 5r): the default of the
+--- idle timeout, defined only here; every other default refers to it.
+M.IDLE_GRACE_SECONDS = 45
 
 --- Parse a duration: seconds (`3600`) or `<n>s|m|h` (`90s`, `30m`, `1h`).
 --- @param v any
@@ -76,14 +78,42 @@ function M.parse_duration(v)
 end
 
 --- The daemon's idle timeout in seconds from a settings table (an invalid
---- value falls back to the default).
+--- or absent value falls back to the idle grace `IDLE_GRACE_SECONDS`).
 --- @param cfg table|nil
 --- @return integer
 function M.idle_seconds(cfg)
-    return M.parse_duration(cfg and cfg[M.IDLE_SETTING]) or M.IDLE_DEFAULT
+    return M.parse_duration(cfg and cfg[M.IDLE_SETTING]) or M.IDLE_GRACE_SECONDS
 end
 
 local function truthy(v) return v ~= nil and v ~= "" and v ~= "0" and v:lower() ~= "false" end
+
+--- How long an attached run waits for another attached run that holds the
+--- workspace's runtime lock before it fails "workspace busy" (spec §19.2):
+--- the setting and its default (5 s).
+M.BUSY_WAIT_SETTING = "runtime-busy-wait"
+M.BUSY_WAIT_DEFAULT_MS = 5000
+
+--- Parse a busy-wait value: `0` (no wait), `<n>ms`, or a duration of
+--- `parse_duration` (`5`, `5s`, `1m`). Returns milliseconds, or nil when invalid.
+--- @param v any
+--- @return integer|nil
+function M.parse_busy_wait(v)
+    if v == 0 or v == "0" then return 0 end
+    if type(v) == "string" then
+        local ms = tonumber(v:match("^%s*(%d+)%s*ms%s*$") or "")
+        if ms then return ms end
+    end
+    local s = M.parse_duration(v)
+    return s and s * 1000 or nil
+end
+
+--- The busy wait in milliseconds from a settings table (an invalid value
+--- falls back to the default).
+--- @param cfg table|nil
+--- @return integer
+function M.busy_wait_ms(cfg)
+    return M.parse_busy_wait(cfg and cfg[M.BUSY_WAIT_SETTING]) or M.BUSY_WAIT_DEFAULT_MS
+end
 
 --- Does this command use the workspace daemon (spec §19.1)? During the
 --- transition: only in `daemon` mode, and not when attached is selected —
@@ -108,6 +138,116 @@ function M.select(configured, opts)
     end
     if truthy(getenv("CI")) then return { daemon = false, mode = mode, reason = "CI", warning = warning } end
     return { daemon = true, mode = mode, warning = warning }
+end
+
+--- The end-state value that selects attached (spec §19.1). The editor reads it
+--- from lw's setting as `in-process`.
+M.NO_DAEMON = "no-daemon"
+
+--- Read lw's own `runtime-mode` setting from the per-user settings file
+--- `lw settings` writes (spec §16.40, `<config>/config.json`). Read only,
+--- never written. A missing file, an empty file or a missing key is absent
+--- (nil, nil); a path that exists but is not a readable regular file (e.g. a
+--- directory), or a file that is not a JSON object, returns nil and the reason.
+--- @param path? string the settings file (default `boot.paths.config_file()`)
+--- @return any value, string|nil err
+function M.read_setting(path)
+    path = path or require("boot.paths").config_file()
+    local uv = vim.uv or vim.loop
+    local unreadable = "cannot read lw's settings file " .. path
+    local st = uv.fs_stat(path)
+    if not st then return nil, nil end
+    -- A directory (or any other non-regular file) at the path is unreadable,
+    -- never absent: on POSIX `io.open` succeeds on a directory and the read
+    -- returns nil.
+    if st.type ~= "file" then return nil, unreadable end
+    local f = io.open(path, "r")
+    if not f then return nil, unreadable end
+    local content = f:read("*a")
+    f:close()
+    if content == nil then return nil, unreadable end
+    if content:match("^%s*$") then return nil, nil end
+    local ok, data = pcall(vim.json.decode, content)
+    if not ok or type(data) ~= "table" then
+        return nil, "lw's settings file " .. path .. " is not a JSON object"
+    end
+    local v = data[M.SETTING]
+    if v == vim.NIL then v = nil end
+    return v, nil
+end
+
+--- @alias loomworks.daemon.RuntimeSource "env"|"setup"|"lw setting"|"default"
+
+--- @class loomworks.daemon.EditorSelection
+--- @field mode string the effective mode (`in-process` | `daemon`)
+--- @field source loomworks.daemon.RuntimeSource the source that decided
+--- @field daemon boolean the editor observes the workspace daemon
+--- @field reason string|nil the environment variable that turned `daemon` into `in-process` (`LOOMWORKS_NO_DAEMON=1`, `CI`)
+--- @field warning string|nil ignored values and an unreadable settings file (the Runtime line's note)
+
+--- The editor's runtime mode (spec §19.1), in this precedence: the
+--- environment (`LOOMWORKS_RUNTIME`, then `LOOMWORKS_NO_DAEMON` and `CI`,
+--- which turn `daemon` into `in-process`); the setup option `runtime.mode`;
+--- lw's setting `runtime-mode` (read from its settings file on every call,
+--- `no-daemon` meaning `in-process`); the `in-process` default. An invalid
+--- value or an unreadable settings file is reported in `warning` and skipped.
+--- @param opts? { configured?: string, getenv?: fun(name:string):string|nil, settings_file?: string, read_setting?: fun(path:string|nil):any, string|nil }
+--- @return loomworks.daemon.EditorSelection
+function M.editor_select(opts)
+    opts = opts or {}
+    local getenv = opts.getenv or os.getenv
+    local notes = {}
+    local mode, source
+    local env = getenv(M.ENV)
+    if env ~= nil and env ~= "" then
+        if M.is_valid(env) then
+            mode, source = env, "env"
+        else
+            notes[#notes + 1] = string.format("%s=%s is not one of in-process|daemon; ignoring it", M.ENV, tostring(env))
+        end
+    end
+    local configured = opts.configured
+    if not mode and configured ~= nil and configured ~= "" then
+        if M.is_valid(configured) then
+            mode, source = configured, "setup"
+        else
+            notes[#notes + 1] = string.format("runtime.mode '%s' is not one of in-process|daemon; ignoring it",
+                tostring(configured))
+        end
+    end
+    if not mode then
+        local v, err = (opts.read_setting or M.read_setting)(opts.settings_file)
+        if err then
+            notes[#notes + 1] = err .. "; ignoring its runtime-mode"
+        elseif v ~= nil then
+            if v == M.NO_DAEMON then
+                mode, source = M.IN_PROCESS, "lw setting"
+            elseif M.is_valid(v) then
+                mode, source = v, "lw setting"
+            else
+                notes[#notes + 1] = string.format(
+                    "lw setting runtime-mode '%s' is not one of in-process|daemon|no-daemon; ignoring it", tostring(v))
+            end
+        end
+    end
+    if not mode then mode, source = M.DEFAULT, "default" end
+    local sel = { mode = mode, source = source, daemon = mode == M.DAEMON }
+    if sel.daemon then
+        local nd, reason = getenv("LOOMWORKS_NO_DAEMON"), nil
+        if nd == "1" then
+            reason = "LOOMWORKS_NO_DAEMON=1"
+        elseif nd ~= "0" then
+            if nd ~= nil and nd ~= "" then
+                notes[#notes + 1] = "LOOMWORKS_NO_DAEMON=" .. nd .. " is not 1 or 0; ignoring it"
+            end
+            if truthy(getenv("CI")) then reason = "CI" end
+        end
+        if reason then
+            sel.mode, sel.source, sel.daemon, sel.reason = M.IN_PROCESS, "env", false, reason
+        end
+    end
+    if #notes > 0 then sel.warning = table.concat(notes, "; ") end
+    return sel
 end
 
 return M

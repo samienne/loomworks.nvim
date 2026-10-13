@@ -204,6 +204,7 @@
 --- @field server string                server name (e.g. "clangd")
 --- @field root_dir? string             absolute project-root path for client scoping
 --- @field db_state? "ready"|"unconfigured" whether the unit supplying build-dir-derived inputs (the compile DB) is configured on this machine (spec §8.4, §9.1). Derived by core from the active ConfigUnit when a module omits it
+--- @field db_dir? string               the build directory whose owned database (§8.4 `refresh_lsp_database`) the entry reads; set by a module that redirects its database to another unit, else filled by core with the project's active build dir (spec §8.4, daemon.md §19.20)
 --- @field binary? string               override server executable (env expansion supported)
 --- @field binary_required? boolean     refuse to start when `binary` is missing — use when stock PATH server would be actively wrong
 --- @field compile_commands_dir? string (clangd) directory containing compile_commands.json
@@ -372,7 +373,7 @@
 
 --- Buffer status info for statusline/LSP integration.
 --- Per-buffer LSP status of a managed language server (spec §9.8).
---- @alias loomworks.LspBufState "none"|"held"|"ok"|"withheld_unconfigured"|"withheld_no_db"|"withheld_error"
+--- @alias loomworks.LspBufState "none"|"held"|"ok"|"withheld_unconfigured"|"withheld_no_db"|"withheld_error"|"withheld_daemon"
 
 --- @class loomworks.BufStatus
 --- @field profile_key? string full active profile key
@@ -389,7 +390,8 @@
 ---     the workspace, nil when there are no diagnostics. Workspace-level
 ---     (not buffer-scoped) — same value for every buffer in the workspace.
 --- @field lsp loomworks.LspBufState per-buffer LSP status (spec §9.8):
----     none, held, ok, withheld_unconfigured, withheld_no_db, withheld_error.
+---     none, held, ok, withheld_unconfigured, withheld_no_db, withheld_error,
+---     withheld_daemon.
 
 --- Cached target info from module file-api parsing. Runtime-only.
 --- @class loomworks.CachedTarget

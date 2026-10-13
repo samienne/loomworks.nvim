@@ -15,7 +15,40 @@ editor height). Window position and size can be configured via `setup()`
 options or overridden per `open()` call — the `win` table is passed
 directly to `Snacks.win`. The page contains these sections in order:
 
-1. **Header** — plugin version, workspace name, workspace root
+1. **Header** — plugin version, workspace name, workspace root (from
+   `loomworks.view.Header/1`, daemon.md §19.13 "Two sources, one shape":
+   the daemon's while subscribed, shown as it is — `Workspace: not loaded in
+   the workspace daemon` before the daemon loads it — otherwise built
+   in-process; in `daemon` mode never built in-process,
+   showing `unloaded` while the workspace is unloaded, core §19.16 "Unloaded
+   on disconnect"), and one
+   `Runtime` line, the header's last line (above Diagnostics, never further
+   down the page): the runtime mode, the source that selected it (core
+   §19.1: `env`, `setup`, `lw setting`, `default`), and in `daemon` mode the
+   observer's current state or note (core §19.16), e.g. `Runtime:   daemon
+   (lw setting) — observing daemon pid 4242`, `Runtime:   daemon (setup) —
+   no lw host binary (LOOMWORKS_LW: not set; binary.path setting: not set;
+   lw on PATH: no lw on the search path; plugin-managed lw: none wanted
+   (the plugin carries no pin yet)) — running in-process`, `Runtime:   daemon
+   (setup) — downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from
+   https://… — running in-process meanwhile`, `Runtime:   daemon (env) — the workspace daemon
+   disconnected — workspace unloaded, waiting for it` (core §19.16
+   "Unloaded on disconnect"; warning highlight), `Runtime:   in-process (lw setting)`. A
+   note that leaves the editor running in-process although `daemon` was
+   selected (a version mismatch, no host binary, a failed download) uses the
+   warning highlight. *(Step 5k, plan:)* a degraded operations feature is the
+   same note, e.g. `operations: daemon offers no loomworks.Build/1.configure
+   — running them in-process` (core §19.16 "Editor operations"), and an
+   operation that ran in-process although `daemon` was selected says
+   `(in-process)` in its progress title. *(Step 5l:)* the language servers
+   are never configured in-process in `daemon` mode (core §19.16 "LSP
+   configuration"): while the editor waits for the daemon the note is
+   `lsp configuration: waiting for the workspace daemon — language servers
+   held` (after a lost connection the servers were stopped, `— language
+   servers stopped, held`), and when the daemon cannot give the configuration it names the
+   reason in the warning highlight, e.g. `lsp configuration: daemon offers
+   no loomworks.LspConfig/1 — language servers withheld`.
+   Absent only when `in-process` was selected by the default.
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
    health\``, shown only when the suggestion framework has one or more
@@ -36,8 +69,8 @@ directly to `Snacks.win`. The page contains these sections in order:
 5. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
 6. **Configuration Sets** — declared sets with tool entries
 7. **Projects** — all projects with their configurations
-8. **Tasks** — active loomworks-managed tasks and held build-dir locks
-   (hidden when both empty). Placed at the bottom because it's the
+8. **Tasks** — active loomworks-managed tasks, tasks observed in the
+   workspace daemon, and held build-dir locks (hidden when all empty). Placed at the bottom because it's the
    runtime-state diagnostic surface — only interesting when something
    is wrong.
 
@@ -208,6 +241,14 @@ appears like any other profile; it simply has fewer projects when expanded.
 Note: "Has active Operation" means this profile initiated the action.
 Profiles that share ConfigUnits with the initiating profile show spinners
 (from running ConfigUnit state) but not the orange highlight or timer.
+A remote task observed in the workspace daemon (core §19.16) counts as the
+active Operation of the profile its `start` meta names, with the same
+highlight, spinners and timer, plus its origin marker (§1.9) after the
+timer. The Cancel action below does not cover it (the editor cannot cancel a
+remote task); a profile whose only running tasks are remote offers no Cancel.
+*(Step 5k, plan:)* a task the editor itself started in the daemon (core
+§19.16 "Editor operations") is not remote: it is the profile's own active
+Operation, without an origin marker, and Cancel sends `Tasks/1.cancel`.
 
 **Cancel action** (added to the Enter picker when `profile:is_running()`):
 
@@ -650,7 +691,33 @@ reader sees workspace state first.
      `task:stop()` via `Workspace:cancel_task`) and `Open overseer`
      (opens the overseer task list for output inspection). Esc
      dismisses without action.
-4. Sub-section `Build directory locks` (only when at least one lock
+4. **Remote tasks** observed in the workspace daemon (core §19.16) — an
+   operation started elsewhere, e.g. `lw build` in a terminal — are rows of
+   item 3, in the same format, ordered with the local ones by start, with
+   an origin marker as the row's last token:
+   ```
+   ▸ {project_key} : {config_key} — {action}  {pct}%  {elapsed}  {origin}
+   ```
+   - `{action}` is the task's `kind`; `{pct}%` is its last progress tick
+     (omitted before the first), in place of `[N/M]`.
+   - `{origin}` is `lw` (started by the CLI) or `editor` (another editor),
+     dimmed; local tasks have none.
+   - One row per unit of the task's profile (resolved units by their domain
+     objects, unresolved ones by the names the daemon sent); a task with no
+     units shows one row `▸ {profile} — {action}  {origin}`.
+   - **Enter** offers `Show output` (the same output view as a local task's,
+     following the stream while the task runs; capped, core §19.16) and
+     `Open overseer` — the task is listed read-only there as `[lw] build dev`
+     (step 5k C1b; offered only while overseer can list it, core §19.16
+     "Tasks in the task runner"); no `Cancel task`: the task belongs to its
+     client (core §19.15).
+   - *(Step 5k:)* a task the editor started in the daemon is a row of
+     item 3, not of item 4: no origin marker, `{pct}%` in place of `[N/M]`,
+     one row per unit of the task, `Cancel task` sending `Tasks/1.cancel`
+     and `Open overseer` opening its single overseer task (core §19.16
+     "Tasks in the task runner"). *(Step 5k C1a: the row, `Show output` and
+     `Cancel task`; C1b: `Open overseer`.)* The reset action above leaves remote tasks alone.
+5. Sub-section `Build directory locks` (only when at least one lock
    is held or has a non-empty queue):
    ```
    ▸ {build_dir}  exclusive · shared(N) · queued(N)
@@ -667,8 +734,12 @@ reader sees workspace state first.
 
 **Section invariants:**
 
-- Renders nothing when `get_active_tasks()` and
-  `get_build_dir_locks_info()` are both empty.
+- Renders nothing when `get_active_tasks()`, `get_daemon_tasks()` and
+  `get_build_dir_locks_info()` are all empty.
+- A remote task's unit reports the same running state as a local task's
+  everywhere a unit's state is shown (Profiles, Projects, build directories,
+  the statusline component), the statusline spinner runs while any remote
+  task runs, and both clear when it ends (core §19.16, End).
 - Per-row Enter opens a menu rather than firing directly. Both
   actions are recoverable, but a misclicked cancel costs a full
   rebuild on a large project — the menu serves as a one-keystroke
@@ -708,6 +779,11 @@ Shown when `<C-n>` is pressed. Floating window centered in editor.
 
 **Root resolution**: Uses `ws.root` if a workspace is loaded, otherwise
 resolves from cwd via `workspace.resolve_root()`.
+
+**Refused before it is shown**: the nuke's safety checks and locks are
+checked first (`nuke_check(root)`, spec §19.3 — another process's build or
+workspace operation); a refusal shows only an error notification
+(`loomworks: cannot nuke: …`) and no dialog.
 
 **Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
 
@@ -1064,7 +1140,12 @@ Users can override these by defining the highlight groups before plugin load.
 ## 3. Winbar / Statusline Component
 
 `lualine/components/loomworks.lua` provides a lualine component for
-winbar display.
+winbar display. Its data are the `loomworks.view.Header/1` and
+`loomworks.view.ProjectsIndex/1` tables (daemon.md §19.13 "Views"; step 5j),
+read through `lw.buf_status()`: the daemon's while the editor is subscribed,
+shown as they are, otherwise built in-process with the same shape. The
+component reaches into neither the workspace nor its events: its spinner
+runs while a render shows a running state.
 
 **Default display**: `{set_name} {join} {project}/{configuration}`
 
@@ -1086,7 +1167,8 @@ and join string are not affected. This is the display-text rule of `specificatio
 component never shows descriptions.
 
 **Returns empty** when:
-- No workspace loaded
+- No workspace loaded (the header's `state` is not `loaded`; with a daemon
+  subscription, also while the daemon has not loaded the workspace)
 - No active profile
 - Current buffer is not in any project
 
@@ -1127,7 +1209,8 @@ this component renders, or `nil` when there is no active configuration set or
 the buffer is in no project. Fields: `profile_key`, `set_name`, `tool_key`,
 `project`, `configuration`, `status`, `profile_state`, `diagnostic_severity`,
 and **`lsp`** — the buffer's per-buffer LSP status from core §9.8 (`none`,
-`held`, `ok`, `withheld_unconfigured`, `withheld_no_db`, `withheld_error`).
+`held`, `ok`, `withheld_unconfigured`, `withheld_no_db`, `withheld_error`,
+`withheld_daemon`).
 Because `buf_status` is `nil` without an active profile, the same value is also
 available unconditionally from **`loomworks.lsp_buf_state(bufnr)`**, which
 returns `none` for buffers loomworks has no LSP opinion about. The status page
@@ -1148,6 +1231,7 @@ that gap:
 | `withheld_unconfigured` | `(unconfigured)` in `DiagnosticError` |
 | `withheld_no_db` | `(no db)` in `DiagnosticError` |
 | `withheld_error` | `(ws error)` in `DiagnosticError` |
+| `withheld_daemon` | `(no lsp config)` in `DiagnosticError` |
 | anything else (`none`, `held`, `ok`) | empty string |
 
 "In `DiagnosticError`" means that group's foreground on the section's own

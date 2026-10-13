@@ -249,12 +249,14 @@ function Project:config_units_for_configuration(configuration)
     return result
 end
 
---- Get the running action for this project (any config).
+--- Get the running action shown for this project (any config) — its own
+--- tasks' or a task observed in the workspace daemon (spec §19.16). Display only.
 --- @return string|nil action ("configure" or "build")
 function Project:running_action()
     for _, unit in pairs(self._workspace._config_units) do
-        if unit._project == self and unit:is_running() then
-            return unit:running_action()
+        if unit._project == self then
+            local action = unit:shown_action()
+            if action then return action end
         end
     end
     return nil
@@ -275,7 +277,7 @@ end
 --- @return string|nil action
 function Project:config_running_action(configuration)
     for _, unit in ipairs(self:config_units_for_configuration(configuration)) do
-        local action = unit:running_action()
+        local action = unit:shown_action()
         if action then return action end
     end
     return nil

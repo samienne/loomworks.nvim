@@ -253,6 +253,197 @@ describe("refusing unsigned / modified .nvim files (§17.4)", function()
 end)
 
 -- ===========================================================================
+describe("a refused working copy that becomes valid loads again (§17.4)", function()
+    local USER = { _meta = { version = 2 }, active_profile = "debug" }
+
+    -- Test deps whose FileTracker records each tracker (its watched paths,
+    -- whether it was stopped) and lets a test deliver a change by hand. Like
+    -- the real tracker, `watch` takes its baseline from a fresh read;
+    -- `hooks.before_watch` runs just before it (a change racing the watch).
+    local function setup_core(files, hooks)
+        hooks = hooks or {}
+        local trackers = {}
+        local deps = h.make_test_deps(files, {
+            trust = trust,
+            FileTracker = { new = function(o)
+                local t = { opts = o, paths = {}, stopped = false, paused = false, seen = {} }
+                function t:watch(p)
+                    if hooks.before_watch then hooks.before_watch(p) end
+                    self.paths[#self.paths + 1] = p
+                    self.seen[p] = o.read_file and o.read_file(p)
+                end
+                function t:unwatch() end
+                function t:stop() self.stopped = true end
+                function t:content(p) return self.seen[p] end
+                function t:mark_written() end
+                function t:pause() self.paused = true end
+                function t:resume() self.paused = false end
+                trackers[#trackers + 1] = t
+                return t
+            end },
+        })
+        local core = Core.new(deps)
+        return core, trackers
+    end
+    -- The live tracker watching `path` (not stopped), if any.
+    local function watcher_of(trackers, path)
+        for _, t in ipairs(trackers) do
+            if not t.stopped then
+                for _, p in ipairs(t.paths) do if p == path then return t end end
+            end
+        end
+    end
+    local UPATH = "/root/.nvim/loomworks.user.json"
+
+    local function refused(files)
+        local signed = h.signed("user", USER)
+        files["loomworks.json"] = h.make_config_json()
+        files["loomworks.user.json"] = (signed:gsub('"debug"', '"other"'))
+        local core, trackers = setup_core(files)
+        core:setup({ root = "/root" })
+        assert.is_nil(core:get_workspace())
+        assert.equals("invalid", core:get_setup_error().trust.status)
+        return core, trackers, signed
+    end
+
+    it(":LoomworksTrust on a working copy restored valid loads the refused workspace", function()
+        local files = {}
+        local core, _, signed = refused(files)
+        files["loomworks.json"] = h.make_config_json()
+        files["loomworks.user.json"] = signed -- restored byte-identical
+        local lw = require("loomworks")
+        local gc = lw._core()
+        local saved = { gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root }
+        gc._deps, gc._workspace, gc._setup_error, gc._state =
+            core._deps, nil, core:get_setup_error(), "uninitialized"
+        local ok, res = pcall(lw.trust_user_prefs, "/root", {
+            confirm = function() error("no prompt for a valid file") end })
+        local ws, serr = gc._workspace, gc._setup_error
+        gc:shutdown()
+        gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root =
+            saved[1], saved[2], saved[3], saved[4], saved[5]
+        assert.is_true(ok, tostring(res))
+        assert.equals("valid", res)
+        assert.is_nil(serr)
+        assert.is_not_nil(ws)
+    end)
+
+    it("a refused working copy restored on disk loads without user action", function()
+        local files = {}
+        local core, trackers, signed = refused(files)
+        local w = assert(watcher_of(trackers, UPATH), "the refused file is watched")
+        -- Still invalid: another edit does not reload (no repeated refusal).
+        w.opts.callback(UPATH, (signed:gsub('"debug"', '"third"')))
+        assert.is_nil(core:get_workspace())
+        assert.equals(w, watcher_of(trackers, UPATH))
+        -- Restored with its original signature: the workspace loads.
+        files["loomworks.user.json"] = signed
+        w.opts.callback(UPATH, signed)
+        assert.is_nil(core:get_setup_error())
+        assert.is_not_nil(core:get_workspace())
+        assert.is_true(w.stopped, "the refusal watch stops once the workspace loads")
+        core:shutdown()
+    end)
+
+    it("the refusal watch stops on shutdown and on a new setup", function()
+        local files = {}
+        local core, trackers = refused(files)
+        local w = assert(watcher_of(trackers, UPATH))
+        core:shutdown()
+        assert.is_true(w.stopped)
+
+        core:setup({ root = "/root" }) -- refused again: a new watch
+        local w2 = assert(watcher_of(trackers, UPATH))
+        assert.are_not.equal(w, w2)
+        core:setup({ root = "/other" }) -- another workspace (cwd change)
+        assert.is_true(w2.stopped)
+        core:shutdown()
+    end)
+
+    it("a working copy that becomes valid while the watch starts loads (no change event)", function()
+        local files = {}
+        local signed = h.signed("user", USER)
+        files["loomworks.json"] = h.make_config_json()
+        files["loomworks.user.json"] = (signed:gsub('"debug"', '"other"'))
+        local core, trackers = setup_core(files, { before_watch = function(p)
+            if p == UPATH then files["loomworks.user.json"] = signed end
+        end })
+        core:setup({ root = "/root" })
+        assert.is_nil(core:get_setup_error())
+        assert.is_not_nil(core:get_workspace())
+        assert.is_nil(core._refused_watch)
+        assert.is_true(trackers[1].stopped, "the refusal watch stopped")
+        core:shutdown()
+    end)
+
+    it("a refused cache starts no watch", function()
+        local files = {}
+        local cache_text = h.signed("cache", vim.json.decode(h.make_cache_json()))
+        trust._set_key_path(key_dir .. "/this-machine/trust.key") -- signed elsewhere
+        files["loomworks.json"] = h.make_config_json()
+        files["loomworks.user.json"] = h.signed("user", USER)
+        files["loomworks.cache.json"] = cache_text
+        local core, trackers = setup_core(files)
+        core:setup({ root = "/root" })
+        assert.equals("cache", core:get_setup_error().trust.kind)
+        for _, t in ipairs(trackers) do
+            for _, p in ipairs(t.paths) do
+                assert.is_falsy(p:find("loomworks.cache.json", 1, true), "no watch on the refused cache")
+            end
+        end
+        core:shutdown()
+    end)
+
+    it(":LoomworksTrust on another root never replaces the refused workspace", function()
+        local files = {}
+        local core = refused(files)
+        files["loomworks.user.json"] = h.signed("user", USER) -- valid under any root
+        local lw = require("loomworks")
+        local gc = lw._core()
+        local saved = { gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root }
+        local refusal = core:get_setup_error()
+        gc._deps, gc._workspace, gc._setup_error, gc._state =
+            core._deps, nil, refusal, "uninitialized"
+        local ok, res = pcall(lw.trust_user_prefs, "/other", {
+            confirm = function() error("no prompt for a valid file") end })
+        local ws, serr = gc._workspace, gc._setup_error
+        gc:shutdown()
+        gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root =
+            saved[1], saved[2], saved[3], saved[4], saved[5]
+        core:shutdown()
+        assert.is_true(ok, tostring(res))
+        assert.equals("valid", res)
+        assert.is_nil(ws, "no workspace was loaded for the other root")
+        assert.equals(refusal, serr)
+    end)
+
+    it("a valid change whose file is invalid again on disk is refused again", function()
+        local files = {}
+        local core, trackers, signed = refused(files)
+        local w = assert(watcher_of(trackers, UPATH))
+        -- The event carries a valid content, but the file was edited again.
+        w.opts.callback(UPATH, signed)
+        assert.is_nil(core:get_workspace())
+        assert.equals("invalid", core:get_setup_error().trust.status)
+        local w2 = assert(watcher_of(trackers, UPATH), "the file is watched again")
+        assert.are_not.equal(w, w2)
+        core:shutdown()
+    end)
+
+    it("the CLI keeps no watch on a refused file", function()
+        local files = {}
+        local signed = h.signed("user", USER)
+        files["loomworks.json"] = h.make_config_json()
+        files["loomworks.user.json"] = (signed:gsub('"debug"', '"other"'))
+        local core, trackers = setup_core(files)
+        core._deps.quiet_trust_errors = true
+        core:setup({ root = "/root" })
+        assert.is_nil(core:get_workspace())
+        assert.is_nil(watcher_of(trackers, UPATH))
+    end)
+end)
+
+-- ===========================================================================
 describe("trust / discard / nuke from the CLI (§17.10)", function()
     local cli = require("loomworks.cli")
     local root
@@ -650,6 +841,117 @@ describe("version-control queries disable repository hooks (§17.8)", function()
     it("every git call carries core.fsmonitor/core.hooksPath overrides", function()
         local cmd = require("loomworks.cli")._git_base_cmd()
         assert.same({ "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" }, cmd)
+    end)
+end)
+
+-- ===========================================================================
+-- What the status page and a build say about trust (§17.3, §17.6, §17.10).
+-- Field report: a working copy copied from another workspace on this machine
+-- loaded and built, and the status title read "loomworks — untrusted" — the
+-- workspace's NAME (its directory), not a trust state. These pin that a
+-- same-machine copy is trusted by design (the root is not bound) and that the
+-- page and a build say plainly what is trusted and what is ignored.
+describe("trust on the status page and in a build (§17.10)", function()
+    local cli = require("loomworks.cli")
+    local roots = {}
+    local function root_dir()
+        local r = tmpdir(); roots[#roots + 1] = r; return r
+    end
+    before_each(function() require("loomworks")._core()._workspace = nil end)
+    after_each(function()
+        require("loomworks")._core()._workspace = nil
+        for _, r in ipairs(roots) do vim.fn.delete(r, "rf") end
+        roots = {}
+    end)
+
+    local SHARED = {
+        projects = { App = {
+            path = ".",
+            shell = {
+                build_dir = "${workspace_root}/out",
+                configure_cmd = { "configure-it" }, build_cmd = { "build-it" },
+                env = { MARKER = "from-shared" },
+                configurations = { Debug = { env = { MARKER2 = "from-shared" } } },
+            },
+            launch = { serve = { command = "C:/benign/tool.exe" } },
+        } },
+        configuration_sets = { dev = { App = "Debug" } },
+    }
+    local function signed_user(extra)
+        local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
+        for k, v in pairs(extra or {}) do user[k] = v end
+        return assert(trust.sign("user", trust.encode(user)))
+    end
+    local function profile_of(ws, key)
+        for _, p in ipairs(ws._profiles or {}) do if p.key == key then return p end end
+    end
+    local function status(root)
+        return capture(function() return cli.cmd_status(root, { can_pull = false }) end)
+    end
+
+    it("a working copy signed here stays valid when copied to another workspace (root not bound, §17.3)", function()
+        local a, b = root_dir(), root_dir()
+        local text = signed_user({ projects = { App = { shell = vim.empty_dict(), launch = {
+            serve = { command = "C:/benign/tool.exe" } } } } })
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        write(b .. "/loomworks.json", vim.json.encode(SHARED))
+        write(a .. "/.nvim/loomworks.user.json", text)
+        write(b .. "/.nvim/loomworks.user.json", text)
+        assert.equals("valid", (trust.verify("user", read(b .. "/.nvim/loomworks.user.json"))))
+        local l = capture(function() return cli._load_workspace(b, false) end)
+        assert.is_nil(l.exit_code, l.stderr)
+        -- Its program settings are used: no "ignored" diagnostic for the launch
+        -- the working copy supplies.
+        for _, d in ipairs(l.ret:diagnostics()) do
+            assert.is_nil(d.message:find("launch.serve", 1, true), d.message)
+        end
+    end)
+
+    it("the Trust row: a signed working copy is used; no working copy says so", function()
+        local a = root_dir()
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        write(a .. "/.nvim/loomworks.user.json", signed_user())
+        local r = status(a)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.matches("Trust%s+local config signed on this machine", r.stdout)
+
+        require("loomworks")._core()._workspace = nil
+        local b = root_dir()
+        write(b .. "/loomworks.json", vim.json.encode(SHARED))
+        local r2 = status(b)
+        assert.is_nil(r2.exit_code, r2.stderr)
+        assert.matches("Trust%s+no local config", r2.stdout)
+    end)
+
+    it("the Trust row counts the program settings ignored in loomworks.json", function()
+        local a = root_dir()
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        local r = status(a)
+        assert.is_nil(r.exit_code, r.stderr)
+        -- shell.env, configurations.Debug.env, launch.serve
+        assert.matches("3 program settings in loomworks.json ignored", r.stdout, 1, true)
+        assert.matches("lw help trust", r.stdout, 1, true)
+    end)
+
+    it("a build notice names the ignored program settings of the profile's projects", function()
+        local a = root_dir()
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        write(a .. "/.nvim/loomworks.user.json", signed_user())
+        local l = capture(function() return cli._load_workspace(a, false) end)
+        assert.is_nil(l.exit_code, l.stderr)
+        local ws = l.ret
+        local profile = assert(profile_of(ws, "dev"))
+        local line = require("loomworks.build_run").trust_notice(ws, profile)
+        assert.equals("lw: 3 program settings in loomworks.json ignored — only your local config "
+            .. "may name programs or environment (`lw status` lists them; lw help trust)", line)
+        -- The working copy supplying one: it is used, and no longer counted.
+        require("loomworks")._core()._workspace = nil
+        write(a .. "/.nvim/loomworks.user.json", signed_user({ projects = { App = { shell = vim.empty_dict(), launch = {
+            serve = { command = "C:/benign/tool.exe" } } } } }))
+        local l2 = capture(function() return cli._load_workspace(a, false) end)
+        assert.is_nil(l2.exit_code, l2.stderr)
+        line = require("loomworks.build_run").trust_notice(l2.ret, assert(profile_of(l2.ret, "dev")))
+        assert.matches("^lw: 2 program settings", line)
     end)
 end)
 

@@ -600,7 +600,7 @@ function adapter.build_spec(args)
     if not test_cmd then return nil end
 
     -- Check if the project needs to be built first.
-    local state = unit:state()
+    local state = unit:local_state()
     if state == "unconfigured" or state == "configure_failed" then
         vim.schedule(function()
             vim.notify("loomworks: project needs to be configured before running tests. Use [c] in the status page.", vim.log.levels.WARN)

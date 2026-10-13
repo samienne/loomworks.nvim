@@ -210,6 +210,60 @@ describe("io", function()
         end)
     end)
 
+    describe("write_json_signed", function()
+        local trust = require("loomworks.trust")
+        local orig_sign, orig_write, writes, tmpdir
+        before_each(function()
+            tmpdir = make_tmpdir()
+            orig_sign, orig_write = trust.sign, io_mod.write_file_atomic
+            trust.sign = function(_, content) return content end
+            writes = 0
+            io_mod.write_file_atomic = function(...)
+                writes = writes + 1
+                return orig_write(...)
+            end
+        end)
+        after_each(function()
+            trust.sign, io_mod.write_file_atomic = orig_sign, orig_write
+            io_mod._txn_hook = nil
+            vim.fn.delete(tmpdir, "rf")
+        end)
+
+        it("leaves a file holding the identical bytes untouched", function()
+            local path = tmpdir .. "/state.json"
+            local ok, err, _, bytes = io_mod.write_json_signed(path, "cache", { a = 1 })
+            assert.is_true(ok, err)
+            assert.equals(1, writes)
+            assert.equals(bytes, read_raw(path))
+            ok, err, _, bytes = io_mod.write_json_signed(path, "cache", { a = 1 })
+            assert.is_true(ok, err)
+            assert.equals(1, writes)
+            assert.equals(read_raw(path), bytes)
+        end)
+
+        it("writes different bytes", function()
+            local path = tmpdir .. "/state.json"
+            assert.is_true((io_mod.write_json_signed(path, "cache", { a = 1 })))
+            local ok, _, _, bytes = io_mod.write_json_signed(path, "cache", { a = 2 })
+            assert.is_true(ok)
+            assert.equals(2, writes)
+            assert.equals(bytes, read_raw(path))
+        end)
+
+        it("still writes identical bytes inside a transaction", function()
+            local path = tmpdir .. "/state.json"
+            assert.is_true((io_mod.write_json_signed(path, "cache", { a = 1 })))
+            local staged = 0
+            io_mod._txn_hook = {
+                read = function() return false end,
+                write = function() staged = staged + 1; return true, true end,
+            }
+            assert.is_true((io_mod.write_json_signed(path, "cache", { a = 1 })))
+            assert.equals(2, writes)
+            assert.equals(1, staged)
+        end)
+    end)
+
     describe("rm_rf", function()
         it("removes a directory tree", function()
             local dir = tmpdir()

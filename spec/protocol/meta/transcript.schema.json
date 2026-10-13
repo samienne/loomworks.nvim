@@ -1,0 +1,68 @@
+{
+  "description": "Meta-schema of a golden transcript file (spec 19.20 'Schemas and conformance'): transcripts/<namespace>/<Rest>.<v>.json, the cases of one interface version, replayed by the conformance runner against any binary over the standard-I/O transport. The format (fixtures, the handshake, the steps, the selector and the matchers) is described in lua/loomworks/proto/conformance.lua (its header comment).",
+  "type": "object",
+  "required": ["transcripts", "interface", "version", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "transcripts": { "description": "The transcript format version.", "const": 1 },
+    "interface": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[A-Za-z][A-Za-z0-9_.]*$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "description": { "type": "string" },
+    "cases": { "type": "array", "items": { "$ref": "#/$defs/Case" } }
+  },
+  "$defs": {
+    "Case": {
+      "type": "object",
+      "required": ["name", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "fixture": { "description": "The workspace the runner prepares (default empty).", "enum": ["empty", "shell"] },
+        "hello": { "description": "Fields over the default hello of the handshake.", "type": "object" },
+        "handshake": { "description": "false: the case sends its own hello (no automatic handshake).", "type": "boolean" },
+        "allow": { "description": "Frames that may arrive unconsumed, any number of times.", "type": "array", "items": { "$ref": "#/$defs/Frame" } },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/Step" } }
+      }
+    },
+    "Step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["send"],
+          "additionalProperties": false,
+          "properties": {
+            "send": { "$ref": "#/$defs/Frame" },
+            "malformed": { "description": "The frame is deliberately invalid: not validated before sending.", "type": "boolean" },
+            "description": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["expect"],
+          "additionalProperties": false,
+          "properties": {
+            "expect": { "$ref": "#/$defs/Frame" },
+            "timeout_ms": { "type": "integer", "minimum": 0 },
+            "description": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["expect_none", "within_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "expect_none": { "$ref": "#/$defs/Frame" },
+            "within_ms": { "type": "integer", "minimum": 0 },
+            "description": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "Frame": {
+      "description": "A frame template (send) or pattern (expect, allow): a frame whose values may be matchers.",
+      "type": "object",
+      "required": ["kind"]
+    }
+  }
+}

@@ -28,16 +28,33 @@ bundle="loomworks-lua-${version}.zip"
 
 # Deterministic zip of lua/loomworks -> loomworks/… (fixed order + timestamps),
 # so identical input yields an identical hash. Python's zipfile is miniz-readable.
-python3 - "$repo/lua/loomworks" "$out/$bundle" "$repo/CHANGELOG.md" <<'PY'
+# The protocol's schema documents (spec 19.20) ride along as loomworks/protocol/
+# (transport.json, meta/, interfaces/; not the frozen snapshots), served by
+# the daemon's Root.schema.
+#
+# The plugin pin (loomworks/provision/pinned.lua, spec 19.16 "Plugin pin") is
+# left out: it is plugin-only, and the pin commit that follows a release's
+# build commit must not change the bundle it pins.
+python3 - "$repo/lua/loomworks" "$out/$bundle" "$repo/CHANGELOG.md" "$repo/spec/protocol" <<'PY'
 import sys, os, zipfile
-src, outzip, notes = sys.argv[1], sys.argv[2], sys.argv[3]
+src, outzip, notes, proto = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 base = os.path.dirname(src)  # .../lua
+EXCLUDE = {"loomworks/provision/pinned.lua"}
 files = []
 for r, _, fs in os.walk(src):
     for f in fs:
         p = os.path.join(r, f)
-        files.append((os.path.relpath(p, base).replace(os.sep, "/"), p))
+        arc = os.path.relpath(p, base).replace(os.sep, "/")
+        if arc not in EXCLUDE:
+            files.append((arc, p))
 files.append(("loomworks/CHANGELOG.md", notes))
+files.append(("loomworks/protocol/transport.json", os.path.join(proto, "transport.json")))
+for sub in ("meta", "interfaces"):
+    for r, _, fs in os.walk(os.path.join(proto, sub)):
+        for f in fs:
+            if f.endswith(".json"):
+                p = os.path.join(r, f)
+                files.append(("loomworks/protocol/" + os.path.relpath(p, proto).replace(os.sep, "/"), p))
 files.sort()
 with zipfile.ZipFile(outzip, "w", zipfile.ZIP_DEFLATED) as z:
     for arc, p in files:

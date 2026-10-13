@@ -21,6 +21,12 @@ out="$stage/lw"
 src="$stage/src"
 cp -R "$repo/lua" "$src"
 [ -f "$repo/CHANGELOG.md" ] && cp "$repo/CHANGELOG.md" "$src/loomworks/CHANGELOG.md"
+# The protocol's schema documents (spec 19.20), served by Root.schema, as a
+# release bundle carries them (loomworks/protocol/; the frozen snapshots stay
+# in the source tree).
+mkdir -p "$src/loomworks/protocol"
+cp "$repo/spec/protocol/transport.json" "$src/loomworks/protocol/"
+cp -R "$repo/spec/protocol/meta" "$repo/spec/protocol/interfaces" "$src/loomworks/protocol/"
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)

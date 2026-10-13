@@ -855,6 +855,9 @@ function M.make_test_deps(files, opts)
                     stop = function() end,
                     content = function(_, path) return file_lookup(path) end,
                     mark_written = function() end,
+                    paused = false,
+                    pause = function(self) self.paused = true end,
+                    resume = function(self) self.paused = false end,
                 }
             end,
         },

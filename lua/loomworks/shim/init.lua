@@ -283,6 +283,8 @@ end
 --- false`) shows its window, exactly like a direct terminal launch. Build/test
 --- keep the default: captured pipes and, on Windows, hidden (no flashing
 --- console windows). `opts.hide` overrides the default hide behavior.
+local M_STREAM_GRACE_MS = 500
+
 function vim.system(cmd, opts, on_exit)
   opts = opts or {}
   -- Resolve against the child's PATH when the caller sets one (as libuv
@@ -290,7 +292,7 @@ function vim.system(cmd, opts, on_exit)
   -- 127 like a failed spawn below.
   local resolved, rerr = which(cmd[1], opts.env, opts.cwd)
   if not resolved then
-    local res = { code = 127, stdout = "", stderr = tostring(rerr) }
+    local res = { code = 127, signal = 0, stdout = "", stderr = tostring(rerr), spawn_error = tostring(rerr) }
     if on_exit then on_exit(res) end
     return { wait = function() return res end }
   end
@@ -319,22 +321,65 @@ function vim.system(cmd, opts, on_exit)
   -- them identically — the stdio table above is the only difference.
   inherit = inherit or inherit_err
 
+  -- nvim's vim.system streams each chunk to an `opts.stdout` / `opts.stderr`
+  -- FUNCTION when one is given (called `(err, data)`, `data = nil` once at
+  -- EOF) and then leaves that stream out of the result. The workspace daemon
+  -- streams a build's output this way (spec §19.15). A streamed run finishes
+  -- only after both pipes reached EOF (bounded by STREAM_GRACE_MS after the
+  -- exit, for a grandchild that keeps a pipe open — e.g. MSVC's mspdbsrv), so
+  -- no output written just before the exit is lost.
+  local stdout_cb = (not inherit and type(opts.stdout) == "function") and opts.stdout or nil
+  local stderr_cb = (not inherit and type(opts.stderr) == "function") and opts.stderr or nil
+  local streaming = stdout_cb ~= nil or stderr_cb ~= nil
   local out, err = {}, {}
   local result, handle
   local timed_out = false
-  handle = uv.spawn(exe, {
+  local exit_code, exit_signal, eofs, grace = nil, 0, 0, nil
+  local function finalize()
+    if result then return end
+    if grace then pcall(function() grace:stop(); grace:close() end); grace = nil end
+    pcall(function() so:read_stop(); se:read_stop() end)
+    pcall(function() if not so:is_closing() then so:close() end end)
+    pcall(function() if not se:is_closing() then se:close() end end)
+    if stdout_cb then pcall(stdout_cb, nil, nil) end
+    if stderr_cb then pcall(stderr_cb, nil, nil) end
+    result = {
+      code = timed_out and 124 or exit_code,
+      signal = exit_signal,
+      stdout = stdout_cb and "" or table.concat(out),
+      stderr = stderr_cb and "" or table.concat(err),
+    }
+    if on_exit then on_exit(result) end
+  end
+  local spawned
+  handle, spawned = uv.spawn(exe, {
     args = args,
     stdio = stdio,
     cwd = opts.cwd,
     env = build_spawn_env(opts.env, opts.clear_env),
     hide = hide,
-  }, function(code)
+  }, function(code, signal)
+    handle:close()
+    -- As nvim's SystemCompleted, `signal` is the signal that ended the child
+    -- (0 if none). Unlike nvim, `code` is then 128 + signal (as the shim's
+    -- jobs and nvim's jobs report it): a signal-ended process — POSIX libuv
+    -- reports code 0 — is never read as success (spec §16.7). Windows reports
+    -- an exit code (signal 0, or its emulated kill's with exit code 1): kept.
+    if (code == 0 or code == nil) and signal and signal ~= 0 then code = 128 + signal end
+    exit_signal = signal or 0
+    if streaming then
+      exit_code = code
+      if eofs >= 2 then return finalize() end
+      grace = uv.new_timer()
+      grace:start(M_STREAM_GRACE_MS, 0, function() finalize() end)
+      return
+    end
     if not inherit then
       so:read_stop(); se:read_stop(); so:close(); se:close()
     end
-    handle:close()
     result = {
       code = timed_out and 124 or code,
+      signal = exit_signal,
       stdout = inherit and "" or table.concat(out),
       stderr = inherit and "" or table.concat(err),
     }
@@ -342,11 +387,23 @@ function vim.system(cmd, opts, on_exit)
   end)
   if not handle then
     if not inherit then so:close(); se:close() end
-    result = { code = 127, stdout = "", stderr = "spawn failed: " .. tostring(exe) }
+    -- `spawn_error` (a shim extension): why the program could not be started.
+    result = { code = 127, signal = 0, stdout = "", spawn_error = tostring(spawned),
+      stderr = "spawn failed: " .. tostring(exe) .. ": " .. tostring(spawned) }
     if on_exit then on_exit(result) end
   elseif not inherit then
-    uv.read_start(so, function(_, d) if d then out[#out + 1] = d end end)
-    uv.read_start(se, function(_, d) if d then err[#err + 1] = d end end)
+    local function reader(cb, buf)
+      return function(e, d)
+        if d then
+          if cb then pcall(cb, e, d) else buf[#buf + 1] = d end
+        elseif streaming then
+          eofs = eofs + 1
+          if eofs >= 2 and exit_code ~= nil then finalize() end
+        end
+      end
+    end
+    uv.read_start(so, reader(stdout_cb, out))
+    uv.read_start(se, reader(stderr_cb, err))
   end
   -- `opts.timeout` (ms), as nvim's vim.system: kill a child still running when
   -- it elapses (its exit then reports code 124, like nvim).
@@ -370,6 +427,12 @@ function vim.system(cmd, opts, on_exit)
       return result
     end,
     pid = handle and uv.process_get_pid and uv.process_get_pid(handle) or nil,
+    -- As nvim's SystemObj:kill(signal): signal the child while it runs.
+    kill = function(_, signal)
+      if handle and not result and not handle:is_closing() then
+        pcall(uv.process_kill, handle, signal or "sigterm")
+      end
+    end,
   }
 end
 

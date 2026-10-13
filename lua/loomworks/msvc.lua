@@ -105,6 +105,88 @@ end
 M.BAT_PREAMBLE = "@echo off\r\nsetlocal DisableDelayedExpansion\r\n"
     .. "set \"NoDefaultCurrentDirectoryInExePath=1\"\r\n"
 
+-- ---------------------------------------------------------------------------
+-- The Visual Studio Installer folder on vcvarsall's PATH. VS 2022's
+-- vcvarsall.bat (VsDevCmd.bat and its ext scripts) runs `vswhere.exe` by bare
+-- name; it lives in "<ProgramFiles(x86)>\Microsoft Visual Studio\Installer",
+-- which is usually not on PATH, so every run printed "'vswhere.exe' is not
+-- recognized ..." (and continued). Every environment loomworks runs vcvarsall
+-- in gets that folder appended — when it exists, and only once. Output is
+-- never filtered: a real failure stays visible.
+-- ---------------------------------------------------------------------------
+
+--- Environment reader (overridable by tests). Reads the PROCESS environment —
+--- inside a daemon request scope that is the requesting client's
+--- (loomworks.daemon.envscope).
+--- @param name string
+--- @return string|nil
+function M._getenv(name) return os.getenv(name) end
+
+--- The Visual Studio Installer folder (where vswhere.exe lives), or nil when
+--- it does not exist: `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer`,
+--- else the same under `%ProgramFiles%` (32-bit / ARM layouts).
+--- @return string|nil dir backslash-separated
+function M.installer_dir()
+    for _, var in ipairs({ "ProgramFiles(x86)", "ProgramFiles" }) do
+        local base = M._getenv(var)
+        if type(base) == "string" and base ~= "" then
+            local dir = (base:gsub("/", "\\"):gsub("\\+$", ""))
+                .. "\\Microsoft Visual Studio\\Installer"
+            local st = uv.fs_stat(dir)
+            if st and st.type == "directory" then return dir end
+        end
+    end
+    return nil
+end
+
+--- A PATH entry's comparison key: backslashes, no trailing separator, no
+--- surrounding quotes, case-folded (Windows paths are case-insensitive).
+local function path_entry_key(e)
+    return (e:gsub('^%s*"', ""):gsub('"%s*$', ""):gsub("/", "\\"):gsub("\\+$", ""):lower())
+end
+
+--- `env` (a step / spawn environment overlay, not modified) with the Visual
+--- Studio Installer folder appended to its PATH when that folder exists and
+--- is not already on it (case-insensitive). The PATH extended is the
+--- overlay's own (any casing of the name — collapsed to one `PATH` key), else
+--- the inherited process PATH. Returns a copy; unchanged when there is
+--- nothing to add.
+--- @param env table<string, string>|nil
+--- @return table<string, string>
+function M.with_installer_path(env)
+    local out = {}
+    for k, v in pairs(env or {}) do out[k] = v end
+    local dir = M.installer_dir()
+    if not dir then return out end
+    local base, name
+    for k, v in pairs(out) do
+        if type(k) == "string" and k:upper() == "PATH" then base, name = v, k end
+    end
+    if not base then
+        base = M._getenv("PATH") or ""
+        -- Spell the key as the inherited environment does (`Path` in a normal
+        -- Windows session): hosts that merge the overlay over the inherited
+        -- environment case-sensitively (vim.system) must not end up with two
+        -- PATH entries, of which Windows would honour an arbitrary one.
+        local ok, cur = pcall(uv.os_environ)
+        if ok and type(cur) == "table" then
+            for k in pairs(cur) do
+                if type(k) == "string" and k:upper() == "PATH" then name = k; break end
+            end
+        end
+    end
+    local want = path_entry_key(dir)
+    for e in base:gmatch("[^;]+") do
+        if path_entry_key(e) == want then return out end
+    end
+    for k in pairs(out) do
+        if type(k) == "string" and k:upper() == "PATH" then out[k] = nil end
+    end
+    base = base:gsub(";+$", "")
+    out[name or "PATH"] = base .. (base ~= "" and ";" or "") .. dir
+    return out
+end
+
 --- Create `path` exclusively (after removing whatever is there, without
 --- following a link) and write `content`. Refuses to write through a
 --- pre-existing symlink / junction planted at that name.
@@ -275,7 +357,10 @@ function M.vcvars_env(vcvarsall, arch)
         .. "set\r\n")
     if not okw then return nil, "could not write temp batch: " .. tostring(werr) end
 
-    local res = require("loomworks.exe").system({ "cmd.exe", "/d", "/c", bat }, { text = true }):wait()
+    -- The Installer folder on PATH so vcvarsall finds vswhere.exe (above).
+    local penv = M.with_installer_path(nil)
+    local res = require("loomworks.exe").system({ "cmd.exe", "/d", "/c", bat },
+        { text = true, env = next(penv) and penv or nil }):wait()
     pcall(os.remove, bat)
     if res.code ~= 0 or not res.stdout or res.stdout == "" then
         return nil, "vcvarsall failed (exit " .. tostring(res.code) .. ")"

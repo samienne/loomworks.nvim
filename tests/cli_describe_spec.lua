@@ -209,6 +209,12 @@ describe("lw describe", function()
     end
     describe_cmd(root, "project", "App", "-e")
     assert.same({ "fake-editor", "--wait" }, { seen[1], seen[2] })
+    -- The buffer is in the workspace's .nvim/tmp (spec §16.40), removed after.
+    local buf = seen[#seen]
+    assert.is_truthy(buf:match("/%.nvim/tmp/lw%-describe%-%x+%.txt$"), buf)
+    local rp = (vim.uv or vim.loop).fs_realpath
+    assert.equals(rp(root .. "/.nvim/tmp"), rp((buf:gsub("/[^/]+$", ""))))
+    assert.is_nil((vim.uv or vim.loop).fs_stat(buf))
     assert.equals("Edited summary\n\nEdited body", read_user(root).projects.App.typescript.description)
 
     cli._describe_run_editor = function() return 1 end

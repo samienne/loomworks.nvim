@@ -31,6 +31,7 @@ local function fake_profile(opts)
     build_dir = nil,              --       build_dir, gives up → no build targets)
     _project = project,
     state = function() return opts.state or "configured" end,
+    local_state = function() return opts.state or "configured" end,
   }
   return {
     key = opts.key or "p1",

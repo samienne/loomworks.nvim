@@ -1,0 +1,42 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.view.ProjectsIndex",
+  "version": 1,
+  "description": "Object /views (spec 19.13 Views, 19.20): get, and the update signal with the full state as initial.",
+  "cases": [
+    {
+      "name": "get reports no projects without loading the workspace",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/views", "iface": "loomworks.view.ProjectsIndex", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "projects": [] } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/views", "iface": "loomworks.view.ProjectsIndex", "v": 1, "method": "get", "args": { "x": 1 } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "subscribing returns the full state as initial; a load sends update with every project, and a build that changes no record sends none",
+      "fixture": "shell",
+      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/views", "iface": "loomworks.view.ProjectsIndex", "v": 1, "signals": ["update"] } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0, "initial": { "projects": [] } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok" } } },
+        { "expect": {
+            "kind": "signal", "object": "/views", "iface": "loomworks.view.ProjectsIndex", "v": 1, "name": "update",
+            "sub_id": { "$var": "sub" }, "seq": 1,
+            "args": { "projects": [ {
+              "id": { "$bind": "app_id", "$type": "string" }, "key": "app", "label": "app", "type": "shell",
+              "path": "app", "abs_path": { "$pattern": "/app$" }, "active": { "$absent": true }
+            } ] }
+        } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/views", "iface": "loomworks.view.ProjectsIndex", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "projects": [ { "id": { "$var": "app_id" }, "key": "app" } ] } } },
+        { "send": { "kind": "build", "req_id": 4, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
+        { "expect": { "kind": "ok", "req_id": 4, "outcome": "accepted", "task_id": { "$bind": "task" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },
+        { "expect_none": { "kind": "signal", "object": "/views", "name": "update" }, "within_ms": 200 }
+      ]
+    }
+  ]
+}

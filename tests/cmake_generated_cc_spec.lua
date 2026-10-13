@@ -362,6 +362,45 @@ describe("cmake lsp_configs compile_commands_dir (generated vs build dir)", func
         assert.equals("ready", cfgs[1].db_state)
     end)
 
+    it("sets no db_dir (and generates nothing) with no active profile (core §8.4)", function()
+        local orig = cmake.refresh_generated_cc
+        local scheduled = false
+        cmake.refresh_generated_cc = function() scheduled = true end
+        local ok, cfgs = pcall(cmake.lsp_configs, fake_project({ ws_root = "/work" }))
+        cmake.refresh_generated_cc = orig
+        assert.is_true(ok, tostring(cfgs))
+        assert.equals("clangd", cfgs[1].server)
+        assert.is_nil(cfgs[1].db_dir)
+        assert.is_nil(cfgs[1].compile_commands_dir)
+        assert.equals("unconfigured", cfgs[1].db_state)
+        assert.is_nil(cfgs[2].db_dir) -- the qmlls entry never sets one
+        assert.is_false(scheduled)
+    end)
+
+    it("schedules generation only when the workspace's model generates (never in a daemon-mode editor, core §9.7)", function()
+        local orig = cmake.refresh_generated_cc
+        local scheduled = 0
+        cmake.refresh_generated_cc = function() scheduled = scheduled + 1 end
+        local project = fake_project({
+            ws_root = "/work",
+            build_dir = "/work/.nvim/build/myapp/ninja/Debug",
+            config = { base_name = "Debug", module_config = { variant = "Debug" } },
+            tool_data = { generator = "Ninja" },
+        })
+        local generates = false
+        project._workspace.generates_lsp_databases = function() return generates end
+        local ok, cfgs = pcall(cmake.lsp_configs, project)
+        assert.is_true(ok, tostring(cfgs))
+        -- The workspace daemon generates: the entry still points at the
+        -- owned database, nothing scheduled here.
+        assert.is_truthy(cfgs[1].compile_commands_dir:find("/.nvim/cache/cc/", 1, true))
+        assert.equals(0, scheduled)
+        generates = true
+        cmake.lsp_configs(project)
+        cmake.refresh_generated_cc = orig
+        assert.equals(1, scheduled)
+    end)
+
     it("falls back to the build dir when compile_commands_generated = false", function()
         local build_dir = "/work/.nvim/build/myapp/ninja/Debug"
         local cfgs = cmake.lsp_configs(fake_project({
@@ -703,6 +742,34 @@ describe("cmake streaming writer", function()
             assert.is_string(e.directory)
             assert.equals("table", type(e.arguments))
         end
+    end)
+
+    it("writes through a per-process temp file, never another process's", function()
+        -- Another process (the daemon's D6 regeneration, or a daemon-mode
+        -- editor) is mid-write of the same database under the old fixed name
+        -- and under its own pid-named temp file: neither may be truncated,
+        -- renamed into place or removed by this process.
+        local out_dir = tmp .. "/cache/cc"
+        vim.fn.mkdir(out_dir, "p")
+        local out = out_dir .. "/compile_commands.json"
+        local foreign = { out .. ".tmp", out .. ".999999999.tmp" }
+        for _, p in ipairs(foreign) do
+            local f = assert(io.open(p, "w")); f:write("FOREIGN"); f:close()
+        end
+
+        local own = cmake._cc_writer_tmp_path(out)
+        assert.equals(out .. "." .. tostring((vim.uv or vim.loop).os_getpid()) .. ".tmp", own)
+
+        local n = cmake.generate_compile_commands(tmp .. "/build", out_dir, { variant = "Debug" })
+        assert.is_truthy(n and n >= 2)
+
+        for _, p in ipairs(foreign) do
+            local f = assert(io.open(p, "r"), "foreign temp file was removed: " .. p)
+            assert.equals("FOREIGN", f:read("*a")); f:close()
+        end
+        assert.is_nil((vim.uv or vim.loop).fs_stat(own), "own temp file left behind")
+        local f = assert(io.open(out, "r"))
+        assert.equals(n, #vim.json.decode(f:read("*a"))); f:close()
     end)
 end)
 

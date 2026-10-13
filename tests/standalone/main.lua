@@ -194,6 +194,30 @@ do
   local res2 = update.self_update({})
   ok(res2 and res2.updated == false, "second run is a no-op (already installed)")
 
+  -- `--force` naming the version this process RUNS from must never rm_rf the
+  -- running bundle (same identity check as gc: realpath, Windows case): it is
+  -- refused and the bundle stays intact. A forced reinstall of a version that
+  -- is not running still replaces it.
+  do
+    local running = data .. "/lua-0.0.0-test"
+    local marker = running .. "/loomworks/_release_marker.lua"
+    local probe = running .. "/loomworks/_running_probe.txt"
+    local pf = io.open(probe, "wb"); pf:write("in use"); pf:close()
+    local win = package.config:sub(1, 1) == "\\"
+    local spelled = win and running:upper():gsub("/", "\\") or running
+    local fr, ferr = update.self_update({ force = true, running_root = spelled })
+    ok(fr == nil and type(ferr) == "string" and ferr:find("running", 1, true) ~= nil,
+      "forced reinstall of the running version is refused  (got " .. tostring(ferr) .. ")")
+    ok(uv.fs_stat(marker) ~= nil and uv.fs_stat(probe) ~= nil,
+      "the running bundle is left untouched")
+    ok(uv.fs_stat(data .. "/.stage-0.0.0-test") == nil and uv.fs_stat(data .. "/.dl-0.0.0-test.zip") == nil,
+      "a refused reinstall leaves no staging/download residue")
+    local fr2, ferr2 = update.self_update({ force = true, running_root = data .. "/lua-9.9.9" })
+    ok(fr2 and fr2.updated == true, "forced reinstall of a non-running version proceeds"
+      .. (ferr2 and (" — " .. ferr2) or ""))
+    ok(uv.fs_stat(marker) ~= nil and uv.fs_stat(probe) == nil, "and replaces that bundle")
+  end
+
   -- tampered manifest at the mirror must be rejected (no install)
   local good = readfile(FX .. "manifest.json")
   local badmirror = sandbox .. "/badmirror"
@@ -1146,11 +1170,291 @@ do
     "status not redirected")
   eq(act({ command = "build", pin = nil, self_version = "1.0.0" }), "no-pin",
     "no pin -> no redirect")
-  for _, c in ipairs({ "build", "run", "test", "clean", "configure" }) do
+  for _, c in ipairs({ "build", "run", "test", "clean", "configure", "reset" }) do
     ok(pin.is_redirect_command(c), c .. " is a redirect command")
   end
   ok(not pin.is_redirect_command("publish"), "publish is not a redirect command")
   ok(not pin.is_redirect_command("bootstrap"), "bootstrap is not a redirect command")
+  -- `lw daemon`: the sub-commands that start a workspace daemon follow the pin
+  -- (what the editor launches, `daemon run [--stdio]`, and `restart`); the
+  -- control sub-commands stay with the invoked host (spec §16.23).
+  ok(pin.is_redirect_command("daemon", "run"), "daemon run is a redirect command")
+  ok(pin.is_redirect_command("daemon", "restart"), "daemon restart is a redirect command")
+  for _, s in ipairs({ "status", "list", "stop", "kill" }) do
+    ok(not pin.is_redirect_command("daemon", s), "daemon " .. s .. " is not a redirect command")
+  end
+  ok(not pin.is_redirect_command("daemon", nil), "bare `daemon` (status) is not a redirect command")
+  ok(not pin.is_redirect_command("profile", "run"), "a sub-command word alone never redirects")
+  eq(act({ command = "daemon", sub = "run", pin = P, self_version = "1.0.0" }), "redirect",
+    "daemon run in a pinned repo -> redirect")
+  eq(act({ command = "daemon", sub = "stop", pin = P, self_version = "1.0.0" }), "in-process",
+    "daemon stop -> in-process")
+  eq(act({ command = "daemon", sub = "run", pin = P, self_version = "1.0.0", pinned_sentinel = "2.0.0" }),
+    "in-process", "daemon run as the pinned host -> never redirect again")
+  eq(act({ command = "daemon", sub = "run", pin = P, self_version = "2.0.0" }), "in-process",
+    "daemon run, pin == self -> in-process")
+  -- The command words: global flags and `--root <dir>` are not words.
+  local c1, s1 = pin.command_words({ "daemon", "run", "--root", "/w", "--stdio" })
+  ok(c1 == "daemon" and s1 == "run", "command_words: daemon run --root /w --stdio")
+  local c2, s2 = pin.command_words({ "--no-input", "daemon", "--root", "/w", "restart" })
+  ok(c2 == "daemon" and s2 == "restart", "command_words skips a global flag and --root's value")
+  local c3, s3 = pin.command_words({ "--root=/w", "daemon", "run" })
+  ok(c3 == "daemon" and s3 == "run", "command_words: --root=<dir>")
+  local c4, s4 = pin.command_words({})
+  ok(c4 == nil and s4 == nil, "command_words of nothing")
+  local c5, s5 = pin.command_words({ "run", "--", "daemon" })
+  ok(c5 == "run" and s5 == nil, "command_words stops at --")
+  -- Host flags are lw's own only before `--` and outside a program's args
+  -- (spec §16.7). On `launch set` / set-value commands `--` is the escape.
+  local function peel(...)
+    local fwd, f = pin.peel_host_flags({ ... })
+    return table.concat(fwd, " "), f
+  end
+  local p1, f1 = peel("--no-input", "launch", "set", "App", "demo", "--dev", "--x", "D:\\src\\x")
+  ok(f1.dev and f1.dev_in_args and p1 == "--no-input launch set App demo --x D:\\src\\x",
+    "peel: launch set's --dev before -- is lw's (with the hint)  (" .. p1 .. ")")
+  ok(pin.dev_unconfigured_message(true):find("after `--`", 1, true) ~= nil
+    and pin.dev_unconfigured_message(false):find("after `--`", 1, true) == nil,
+    "dev_unconfigured_message: the put-it-after-`--` hint only for a --dev after the command")
+  local p1b, f1b = peel("launch", "set", "P", "t", "--", "--dev", "--x", "y")
+  ok(not f1b.dev and p1b == "launch set P t -- --dev --x y", "peel: launch set -- --dev kept")
+  local p2, f2 = peel("--no-input", "launch", "set", "App", "demo", "--", "--dev")
+  ok(not f2.dev and p2:find("-- --dev", 1, true) ~= nil, "peel: launch set -- --dev kept")
+  local p3, f3 = peel("--no-input", "launch", "add", "App", "ed", "Editor.exe", "--", "--dev")
+  ok(not f3.dev and p3:find("-- --dev", 1, true) ~= nil, "peel: launch add … -- --dev kept")
+  local p4, f4 = peel("launch", "add", "App", "ed", "Editor.exe", "--dev=x", "--no-pin")
+  ok(not f4.dev and not f4.no_pin and p4:find("--dev=x --no-pin", 1, true) ~= nil,
+    "peel: launch add's program args after the command are kept")
+  local _, f4b = peel("launch", "add", "App", "ed", "--from-target", "t", "--dev")
+  ok(not f4b.dev, "peel: launch add --from-target <t> args are kept")
+  local p5, f5 = peel("run", "demo", "--", "--dev", "--no-pin")
+  ok(not f5.dev and not f5.no_pin and p5 == "run demo -- --dev --no-pin", "peel: run -- --dev kept")
+  local p6, f6 = peel("--dev", "build", "--no-pin", "Dev", "--dev=/src/lua", "--", "-j4")
+  ok(f6.dev and f6.dev_in_args and f6.dev_path == "/src/lua" and f6.no_pin and p6 == "build Dev -- -j4",
+    "peel: host flags among a command's own args still apply  (" .. p6 .. ")")
+  local p7, f7 = peel("launch", "add", "App", "ed", "--no-pin", "node", "-x")
+  ok(f7.no_pin and p7 == "launch add App ed node -x", "peel: before launch add's command it is lw's")
+  eq(pin.own_end({ "--no-input", "run", "x", "--", "y" }), 4, "own_end: at --")
+  eq(pin.own_end({ "build", "Dev" }), 3, "own_end: none")
+  local p8, f8 = peel("config", "set", "App", "Debug", "options.X", "--", "--dev")
+  ok(not f8.dev and p8 == "config set App Debug options.X -- --dev", "peel: a set-value after -- is kept")
+  local _, f8b = peel("config", "set", "App", "Debug", "options.X", "--dev")
+  ok(f8b.dev and f8b.dev_in_args, "peel: a set-value --dev before -- is lw's")
+  local _, f8c = peel("--dev", "build")
+  ok(f8c.dev and not f8c.dev_in_args, "peel: a leading --dev is not in the args")
+  local p8d, f8d = peel("launch", "add", "app", "dev", "npm", "run", "dev", "--", "--port", "3000", "--dev")
+  ok(not f8d.dev and p8d == "launch add app dev npm run dev -- --port 3000 --dev",
+    "peel: launch add's -- after the command is a program arg")
+  eq(pin.own_end({ "launch", "set", "app", "run", "--env", "K=V", "--no-input" }), 8,
+    "own_end: launch set's trailing --no-input is lw's")
+  eq(pin.own_end({ "launch", "add", "app", "x", "node", "--help" }), 6,
+    "own_end: a launch add program's --help is the program's")
+  local _, f9 = peel("config", "set", "--dev", "App", "Debug", "options.X", "v")
+  ok(f9.dev, "peel: before the value operand it is lw's")
+  local _, f10 = peel("project", "set", "App", "--type", "string", "V", "--", "--no-pin")
+  ok(not f10.no_pin, "peel: project set --type <t> <name> -- <value>")
+  local _, f10b = peel("project", "set", "App", "V", "x", "--no-pin")
+  ok(f10b.no_pin, "peel: project set's trailing --no-pin is lw's")
+  eq(pin.root_option({ "daemon", "run", "--root", "/w" }), "/w", "root_option: --root <dir>")
+  eq(pin.root_option({ "daemon", "run", "--root=C:/w" }), "C:/w", "root_option: --root=<dir>")
+  eq(pin.root_option({ "build" }), nil, "root_option: none")
+  -- foreign_pin: the pinned version when this host is not it and nothing
+  -- bypasses the pin (its own commands then leave the daemon alone).
+  eq(pin.foreign_pin({ pin = P, self_version = "1.0.0" }), "2.0.0", "foreign_pin: another version")
+  eq(pin.foreign_pin({ pin = P }), "2.0.0", "foreign_pin: a host of unknown version")
+  eq(pin.foreign_pin({ pin = P, self_version = "2.0.0" }), nil, "foreign_pin: the pinned version itself")
+  eq(pin.foreign_pin({ self_version = "1.0.0" }), nil, "foreign_pin: no pin")
+  for _, k in ipairs({ "pinned_sentinel", "dev", "lw_override", "no_pin" }) do
+    eq(pin.foreign_pin({ pin = P, self_version = "1.0.0", [k] = k == "pinned_sentinel" and "2.0.0" or true }),
+      nil, "foreign_pin: none under " .. k)
+  end
+end
+
+print("boot.pin — a pin older than the command is never redirected to (§16.23)")
+do
+  local pin = require("boot.pin")
+  local function act(o) return (pin.decide(o)) end
+  local function P(v) return { version = v, hashes = {} } end
+  eq(pin.redirect_since("reset"), "0.1.27", "reset: since 0.1.27")
+  eq(pin.redirect_since("daemon", "run"), "0.1.43-beta.5", "daemon run: since 0.1.43-beta.5")
+  eq(pin.redirect_since("daemon", "run", true), "0.1.43-beta.15", "daemon run --stdio: since 0.1.43-beta.15")
+  eq(pin.redirect_since("daemon", "restart", true), "0.1.43-beta.5", "--stdio only matters for run")
+  eq(pin.redirect_since("build"), nil, "build: every pinnable release has it")
+  eq(act({ command = "reset", pin = P("0.1.26"), self_version = "0.1.44" }), "unsupported",
+    "reset under a pin older than lw reset -> unsupported")
+  eq(act({ command = "reset", pin = P("0.1.27"), self_version = "0.1.44" }), "redirect",
+    "reset under a pin that has it -> redirect")
+  eq(act({ command = "daemon", sub = "run", stdio = true, pin = P("0.1.43-beta.14"), self_version = "0.1.44" }),
+    "unsupported", "daemon run --stdio under a pin before the stdio transport -> unsupported")
+  eq(act({ command = "daemon", sub = "run", stdio = true, pin = P("0.1.43-beta.15"), self_version = "0.1.44" }),
+    "redirect", "daemon run --stdio under a pin that has it -> redirect")
+  eq(act({ command = "daemon", sub = "run", pin = P("0.1.43-beta.14"), self_version = "0.1.44" }),
+    "redirect", "daemon run (socket) under beta.14 -> redirect (numeric pre-release order)")
+  eq(act({ command = "daemon", sub = "restart", pin = P("0.1.42"), self_version = "0.1.44" }),
+    "unsupported", "daemon restart under 0.1.42 -> unsupported")
+  eq(act({ command = "build", pin = P("0.1.20"), self_version = "0.1.44" }), "redirect",
+    "build under an old pin still redirects")
+  local _, _, since = pin.decide({ command = "reset", pin = P("0.1.20"), self_version = "0.1.44" })
+  eq(since, "0.1.27", "decide names the release that introduced the command")
+  eq(pin.foreign_pin({ pin = P("0.1.20"), self_version = "0.1.44" }), "0.1.20",
+    "the daemon stays the pinned lw's (foreign_pin) when not redirected")
+end
+
+print("host — daemon commands under a too-old pin, and --root over LW_ROOT (§16.23)")
+do
+  local sb = paths.norm(root .. "/tests/.tmp-oldpin"); paths.rm_rf(sb)
+  local repo, other = sb .. "/repo", sb .. "/other"
+  paths.mkdirp(repo); paths.mkdirp(other)
+  local function write_pin(dir, v)
+    local f = assert(io.open(dir .. "/lw.pin", "wb"))
+    f:write(require("boot.pin").serialize(v, { [require("boot.pin").bundle_asset(v)] = string.rep("a", 64) }))
+    f:close()
+  end
+  write_pin(repo, "0.1.43-beta.10")
+  write_pin(other, "0.1.43-beta.20")
+  local base_env = {}
+  local override = { LOCALAPPDATA = sb, XDG_DATA_HOME = sb, APPDATA = sb, XDG_CONFIG_HOME = sb,
+    LOOMWORKS_RELEASE_URL = sb .. "/no-mirror" }
+  for k, v in pairs(uv.os_environ()) do
+    if override[k] == nil and k ~= "LOOMWORKS_LUA" and k ~= "LOOMWORKS_LW" and k ~= "LOOMWORKS_PINNED"
+        and k ~= "LW_ROOT" and k ~= "LOOMWORKS_INSTALL_DIR" then
+      base_env[#base_env + 1] = k .. "=" .. v
+    end
+  end
+  for k, v in pairs(override) do base_env[#base_env + 1] = k .. "=" .. v end
+  local function host(args, extra)
+    local env = {}
+    for _, e in ipairs(base_env) do env[#env + 1] = e end
+    for k, v in pairs(extra or {}) do env[#env + 1] = k .. "=" .. v end
+    local logf = sb .. "/out.txt"
+    local fd = assert(uv.fs_open(logf, "w", 420))
+    local done, code = false, nil
+    local argv = { "lua", "--" }
+    for _, a in ipairs(args) do argv[#argv + 1] = a end
+    local h = uv.spawn(uv.exepath(), { args = argv, cwd = root, env = env, stdio = { nil, fd, fd } },
+      function(c) code = c; done = true end)
+    if h then
+      while not done do uv.run("once") end
+      h:close()
+    end
+    uv.fs_close(fd)
+    return code, slurp(logf) or ""
+  end
+  local code, out = host({ "daemon", "run", "--stdio", "--root", repo })
+  ok(code == 1 and out:find("predates `lw daemon run --stdio` (added in 0.1.43-beta.15)", 1, true)
+    and out:find("not started", 1, true) and not out:find("fetching", 1, true),
+    "daemon run --stdio under a pin before it: refused, nothing fetched  (exit " .. tostring(code) .. ": " .. out .. ")")
+  code, out = host({ "daemon", "restart", "--root", other }, nil)
+  ok(out:find("this repo pins lw 0.1.43-beta.20; fetching", 1, true) ~= nil,
+    "daemon restart under a pin that has it: redirected  (got " .. out .. ")")
+  -- A launcher's LW_ROOT (the user's cwd) must not override the daemon's --root.
+  code, out = host({ "daemon", "run", "--stdio", "--root", repo }, { LW_ROOT = other })
+  ok(code == 1 and out:find("pins lw 0.1.43-beta.10", 1, true) ~= nil,
+    "daemon run: --root wins over LW_ROOT  (exit " .. tostring(code) .. ": " .. out .. ")")
+  code, out = host({ "daemon", "run", "--stdio", "--root", other }, { LW_ROOT = repo })
+  ok(out:find("pins lw 0.1.43-beta.20; fetching", 1, true) ~= nil,
+    "daemon run: --root wins over LW_ROOT, the other way  (got " .. out .. ")")
+  paths.rm_rf(sb)
+end
+
+print("boot.paths — install folder (LOOMWORKS_INSTALL_DIR)")
+do
+  local function with_env(name, value, fn)
+    local old = uv.os_getenv(name)
+    if value then uv.os_setenv(name, value) else uv.os_unsetenv(name) end
+    local okf, err = pcall(fn)
+    if old then uv.os_setenv(name, old) else uv.os_unsetenv(name) end
+    if not okf then error(err, 0) end
+  end
+  local data = paths.norm(root .. "/tests/.tmp-install/data")
+  local inst = paths.norm(root .. "/tests/.tmp-install/inst")
+  paths.rm_rf(root .. "/tests/.tmp-install")
+  for _, d in ipairs({ data .. "/lua-1.0.0", inst .. "/lua-2.0.0" }) do
+    paths.mkdirp(d .. "/loomworks")
+    local f = assert(io.open(d .. "/loomworks/cli.lua", "wb")); f:write("return {}\n"); f:close()
+  end
+  with_env("LOOMWORKS_DATA_DIR", data, function()
+    with_env("LOOMWORKS_INSTALL_DIR", nil, function()
+      eq(paths.install_dir(), data, "unset: the install folder is the data dir")
+      eq(update.pinned_root(), data .. "/pinned", "unset: pinned cache under the data dir")
+      eq(paths.newest_release_root(), data .. "/lua-1.0.0", "unset: releases from the data dir")
+    end)
+    with_env("LOOMWORKS_INSTALL_DIR", inst .. "/", function()
+      eq(paths.install_dir(), inst, "set: the install folder (normalized)")
+      eq(paths.data_dir(), data, "set: the data dir (shared state) does not move")
+      eq(update.pinned_root(), inst .. "/pinned", "set: pinned host binaries + bundles under it")
+      eq(update.pinned_binary_path("2.0.0", "lw-linux-x86_64"), inst .. "/pinned/lw-2.0.0-lw-linux-x86_64",
+        "set: the redirect's pinned host binary under it")
+      eq(paths.newest_release_root(), inst .. "/lua-2.0.0", "set: release bundles from it")
+      eq(paths.modules_dir(), data .. "/modules", "set: acquired modules stay in the data dir")
+    end)
+    with_env("LOOMWORKS_INSTALL_DIR", "relative/dir", function()
+      local d, why = paths.install_dir_override()
+      ok(d == nil and type(why) == "string" and why:find("not an absolute path", 1, true),
+        "a relative LOOMWORKS_INSTALL_DIR is not honoured, with a reason")
+      eq(paths.install_dir(), data, "relative: the data dir is used")
+    end)
+  end)
+  paths.rm_rf(root .. "/tests/.tmp-install")
+end
+
+print("lw version --json — the binary descriptor (spec §16.41)")
+do
+  local sb = paths.norm(root .. "/tests/.tmp-descriptor")
+  paths.rm_rf(sb); paths.mkdirp(sb .. "/home")
+  local override = { LOOMWORKS_DATA_DIR = sb .. "/home", LOCALAPPDATA = sb .. "/home", APPDATA = sb .. "/home",
+    XDG_DATA_HOME = sb .. "/home", XDG_CONFIG_HOME = sb .. "/home", LOOMWORKS_LUA = paths.norm(root .. "/lua"),
+    LOOMWORKS_NO_HOUSEKEEPING = "1" }
+  local env = {}
+  for k, v in pairs(uv.os_environ()) do
+    if override[k] == nil and k ~= "LOOMWORKS_PINNED" and k ~= "LOOMWORKS_LW" and k ~= "LW_ROOT"
+        and k ~= "LOOMWORKS_INSTALL_DIR" then
+      env[#env + 1] = k .. "=" .. v
+    end
+  end
+  for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+  local function run(args)
+    local logf, errf = sb .. "/out.txt", sb .. "/err.txt"
+    local fd = assert(uv.fs_open(logf, "w", 420))
+    local fe = assert(uv.fs_open(errf, "w", 420))
+    local done, code = false, nil
+    local argv = { "lua", "--" }
+    for _, a2 in ipairs(args) do argv[#argv + 1] = a2 end
+    local h = uv.spawn(uv.exepath(), { args = argv, cwd = root, env = env, stdio = { nil, fd, fe } },
+      function(c) code = c; done = true end)
+    if h then
+      local t = uv.new_timer()
+      t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+      while not done do uv.run("once") end
+      t:stop(); t:close(); h:close()
+    end
+    uv.fs_close(fd); uv.fs_close(fe)
+    return code, slurp(logf) or "", slurp(errf) or ""
+  end
+  local code, out, err = run({ "version", "--json" })
+  eq(code, 0, "lw version --json exits 0  (" .. err:sub(1, 200) .. ")")
+  local doc = json.decode(out)
+  ok(type(doc) == "table", "it prints one JSON document")
+  doc = type(doc) == "table" and doc or {}
+  eq(doc.descriptor, 1, "descriptor format 1")
+  ok(type(doc.transport) == "table" and type(doc.transport.max) == "number"
+    and doc.transport.min <= doc.transport.max, "a transport range")
+  ok(type(doc.schemas) == "table" and type(doc.schemas.user) == "number", "the working-copy schemas")
+  ok(type(doc.binary) == "table" and doc.binary.dev == true and doc.binary.impl == "lua",
+    "a development source is described as a dev build")
+  local names = {}
+  for _, o in ipairs(doc.objects or {}) do
+    for _, i in ipairs(o.interfaces or {}) do names[i.name] = i end
+  end
+  ok(names["loomworks.Root"] and names["loomworks.Build"] and names["lw.internal.Snapshot"],
+    "the root and the core interfaces are listed")
+  ok(names["loomworks.Build"] and type(names["loomworks.Build"].schema_digest) == "table"
+    and #(names["loomworks.Build"].schema_digest["1"] or "") == 64, "with each version's schema digest")
+  ok(out:find('^{%s*"binary"') ~= nil, "canonical key order")
+  local tcode, tout = run({ "version" })
+  eq(tcode, 0, "plain lw version still exits 0")
+  ok(tout:find("^lw %- host: ") ~= nil and not tout:find("{", 1, true), "plain lw version is unchanged text")
+  paths.rm_rf(sb)
 end
 
 print("boot.update — versioned_base URL shapes")
@@ -1993,6 +2297,231 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.release_query — lw release query (§16.42, signed local mirror)")
+do
+  local rq = require("boot.release_query")
+  local pin = require("boot.pin")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function sign(data) return priv:sign(data, "sha256") end
+  local function put(p, bytes)
+    paths.mkdirp(p:match("^(.*)/[^/]*$"))
+    local f = assert(io.open(p, "wb")); f:write(bytes); f:close()
+  end
+
+  local sb = root .. "/tests/.tmp-release-query"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"
+
+  -- A flat mirror of `version`: manifest.json naming it, the host binaries,
+  -- the bundle, the descriptor, and the signed SHA256SUMS over them.
+  -- o.no_descriptor leaves the descriptor out of the release; o.sums_extra
+  -- adds lines to the signed list.
+  local function stage(version, o)
+    o = o or {}
+    paths.rm_rf(mirror); paths.mkdirp(mirror)
+    put(mirror .. "/manifest.json", json.encode({ version = version }))
+    local exp, lines = {}, {}
+    local list = { "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe", pin.bundle_asset(version) }
+    local desc = '{\n  "binary": {\n    "lw_version": "' .. version .. '"\n  },\n  "descriptor": 1,\n' ..
+      '  "objects": [],\n  "transport": {\n    "max": 3,\n    "min": 1\n  }\n}\n'
+    if o.desc then desc = o.desc end
+    if not o.no_descriptor then
+      list[#list + 1] = rq.descriptor_asset(version)
+      put(mirror .. "/" .. rq.descriptor_asset(version), desc)
+    end
+    for _, a in ipairs(list) do
+      local bytes = a == rq.descriptor_asset(version) and desc or (a .. ":" .. version .. "\n")
+      if a ~= rq.descriptor_asset(version) then put(mirror .. "/" .. a, bytes) end
+      exp[a] = verify.sha256_hex(bytes)
+      lines[#lines + 1] = exp[a] .. "  " .. a
+    end
+    local sums = table.concat(lines, "\n") .. "\n"
+    put(mirror .. "/SHA256SUMS", sums)
+    put(mirror .. "/SHA256SUMS.sig", sign(sums))
+    return exp, desc
+  end
+
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  uv.os_unsetenv("LOOMWORKS_CHANNEL")
+
+  -- success: the verified release, its host-asset hashes and the descriptor
+  local V = "4.5.6-beta.2"
+  local exp = stage(V)
+  local before = {}
+  for name in uv.fs_scandir_next, uv.fs_scandir(mirror) do before[#before + 1] = name end
+  local res, err = rq.query({ channel = "unstable" })
+  ok(res ~= nil, "query resolves the mirror's release" .. (err and (" - " .. err) or ""))
+  if res then
+    eq(res.query, 1, "query format 1")
+    eq(res.version, V, "version from the mirror's manifest")
+    eq(res.prerelease, true, "a -beta version is a prerelease")
+    eq(res.channel, "unstable", "the requested channel is reported")
+    eq(res.channel_ignored, true, "a release-url override supersedes the channel")
+    eq(res.source, "override", "source is the override")
+    eq(res.assets["lw-windows-x86_64.exe"], exp["lw-windows-x86_64.exe"], "asset hash from the signed sums")
+    local n = 0; for _ in pairs(res.assets) do n = n + 1 end
+    eq(n, 3, "assets are the three host binaries (no bundle, no descriptor)")
+    eq(res.descriptor.binary and res.descriptor.binary.lw_version, V, "the descriptor document is carried")
+  end
+  local after = 0
+  for _ in uv.fs_scandir_next, uv.fs_scandir(mirror) do after = after + 1 end
+  eq(after, #before, "the query writes nothing next to the release")
+
+  -- run(): canonical JSON on stdout, nothing on stderr; it round-trips
+  local code, out, eout = rq.run({ "release", "query", "--channel", "unstable", "--json" })
+  eq(code, 0, "run --json exits 0")
+  ok(eout == nil, "run --json prints nothing on stderr")
+  ok(out and out:sub(1, 14) == '{\n  "assets": ', "JSON is canonical (sorted keys, two-space indent)")
+  ok(out and out:find('"objects": []', 1, true) ~= nil, "an empty descriptor array stays []")
+  local back = out and json.decode(out)
+  eq(back and back.version, V, "the JSON round-trips")
+  eq(back and back.channel_ignored, true, "channel_ignored in the JSON")
+
+  -- plain output: three lines; the superseded non-default channel is warned about
+  local pcode, pout, perr = rq.run({ "release", "query", "--channel", "unstable" })
+  eq(pcode, 0, "plain run exits 0")
+  eq(pout, "channel: unstable\nversion: " .. V .. "\nprerelease: yes\n", "plain output: channel, version, prerelease")
+  ok(perr and perr:find("channel unstable is ignored", 1, true) ~= nil, "plain output warns of the override")
+  local _, _, serr = rq.run({ "release", "query", "--channel", "stable" })
+  ok(serr == nil, "no warning for stable (the override's own behavior)")
+
+  -- a stable release (no prerelease suffix), channel from LOOMWORKS_CHANNEL
+  stage("4.6.0")
+  uv.os_setenv("LOOMWORKS_CHANNEL", "stable")
+  local sres = rq.query({})
+  eq(sres and sres.prerelease, false, "a plain version is not a prerelease")
+  eq(sres and sres.channel, "stable", "channel from LOOMWORKS_CHANNEL")
+  uv.os_unsetenv("LOOMWORKS_CHANNEL")
+
+  -- unknown channel (flag or environment)
+  local ures, uerr = rq.query({ channel = "nightly" })
+  ok(ures == nil and uerr:find("unknown update channel", 1, true), "an unknown --channel fails")
+  uv.os_setenv("LOOMWORKS_CHANNEL", "beta")
+  local ucode, uout, uerr2 = rq.run({ "release", "query", "--json" })
+  ok(ucode == 1 and uout == nil and uerr2:find("unknown update channel 'beta'", 1, true),
+    "an unknown LOOMWORKS_CHANNEL fails, nothing on stdout")
+  uv.os_unsetenv("LOOMWORKS_CHANNEL")
+
+  -- a bad signature: nothing is trusted
+  stage(V)
+  put(mirror .. "/SHA256SUMS.sig", readfile(FX .. "manifest.json.sig"))
+  local bcode, bout, berr = rq.run({ "release", "query", "--json" })
+  ok(bcode == 1 and bout == nil and berr:find("signature", 1, true), "a bad SHA256SUMS signature fails  (" .. tostring(berr) .. ")")
+  eq(select(2, berr:gsub("\n", "")), 1, "the failure is one stderr line")
+
+  -- a descriptor whose bytes do not match the signed sums
+  stage(V)
+  put(mirror .. "/" .. rq.descriptor_asset(V), '{"descriptor":1,"forged":true}')
+  local dres, derr = rq.query({})
+  ok(dres == nil and derr:find("does not match the signed SHA256SUMS", 1, true), "a descriptor hash mismatch fails")
+
+  -- a signed descriptor that is a JSON array, not an object (also an empty one)
+  for _, arr in ipairs({ "[]", '[{"binary":{"lw_version":"' .. V .. '"}}]' }) do
+    stage(V, { desc = arr })
+    local ares, aerr = rq.query({})
+    ok(ares == nil and aerr and aerr:find("not a JSON object", 1, true), "a top-level array descriptor fails: " .. arr)
+  end
+
+  -- a signed descriptor describing another version
+  stage(V, { desc = '{"binary":{"lw_version":"9.9.9"},"descriptor":1}' })
+  local wres, werr = rq.query({})
+  ok(wres == nil and werr and werr:find("does not match the release version", 1, true),
+    "a descriptor whose binary.lw_version differs from the release fails  (" .. tostring(werr) .. ")")
+  stage(V, { desc = '{"descriptor":1}' })
+  ok(rq.query({}) == nil, "a descriptor without binary.lw_version fails")
+
+  -- a sums file tampered after signing
+  stage(V)
+  put(mirror .. "/SHA256SUMS", readfile(mirror .. "/SHA256SUMS") .. string.rep("0", 64) .. "  extra\n")
+  ok(rq.query({}) == nil, "SHA256SUMS changed after signing fails")
+
+  -- a release older than the descriptor
+  stage(V, { no_descriptor = true })
+  local ores, oerr = rq.query({})
+  ok(ores == nil and oerr:find("predates the descriptor", 1, true), "a release without a descriptor fails")
+
+  -- a manifest naming an unsafe version
+  stage(V)
+  put(mirror .. "/manifest.json", json.encode({ version = "../../evil" }))
+  local vres, verr = rq.query({})
+  ok(vres == nil and verr:find("unsafe version", 1, true), "an invalid release version fails")
+
+  -- offline / unreachable: a missing mirror, an unreachable server
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", sb .. "/no-such-mirror")
+  local mres, merr = rq.query({})
+  ok(mres == nil and merr:find("manifest", 1, true), "a missing mirror fails  (" .. tostring(merr) .. ")")
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "http://127.0.0.1:9/releases")
+  local t0 = os.time()
+  local nres = rq.query({ timeout = 5 })
+  ok(nres == nil and os.time() - t0 <= 15, "an unreachable server fails within the time limit")
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+
+  -- argument parsing: usage errors exit 2
+  eq(select(1, rq.run({ "release" })), 2, "`lw release` without a sub-command is a usage error")
+  eq(select(1, rq.run({ "release", "list" })), 2, "an unknown sub-command is a usage error")
+  eq(select(1, rq.run({ "release", "query", "--bogus" })), 2, "an unknown option is a usage error")
+  eq(select(1, rq.run({ "release", "query", "--timeout", "0" })), 2, "--timeout must be a positive whole number")
+  eq(select(1, rq.run({ "release", "query", "--channel" })), 2, "--channel needs a value")
+  local bc, bo, be = rq.run({ "release", "query", "--channel", "bogus" })
+  ok(bc == 2 and bo == nil and be and be:find("unknown update channel 'bogus'", 1, true),
+    "an unknown --channel flag is a usage error (exit 2)")
+  eq(select(1, rq.run({ "release", "query", "--channel=" })), 2, "an empty --channel= is a usage error")
+  local go = rq.parse_args({ "--insecure", "--verbose", "release", "query", "--non-interactive", "--verify" })
+  ok(go ~= nil, "the global flags `lw bootstrap` tolerates parse")
+  local po = rq.parse_args({ "--no-input", "release", "query", "--channel=unstable", "--timeout=7", "--json" })
+  ok(po and po.channel == "unstable" and po.timeout == 7 and po.json, "the = forms and a leading global flag parse")
+
+  -- the host never redirects it, in a pinned repository (spec §16.23): the
+  -- spawned source host embeds the production key, so the test mirror's
+  -- signature fails - with one stderr line, nothing on stdout, nothing
+  -- provisioned and nothing written to the data or config directories.
+  do
+    stage(V)
+    local repo = sb .. "/repo"; paths.mkdirp(repo)
+    local hashes = {}
+    for _, a in pairs(pin.HOST_ASSETS) do hashes[a] = string.rep("a", 64) end
+    hashes[pin.bundle_asset("1.0.0")] = string.rep("b", 64)
+    put(repo .. "/lw.pin", pin.serialize("1.0.0", hashes))
+    local home = sb .. "/home"; paths.mkdirp(home)
+    local override = { LOCALAPPDATA = home, XDG_DATA_HOME = home, APPDATA = home, XDG_CONFIG_HOME = home,
+      HOME = home, LW_ROOT = repo, LOOMWORKS_RELEASE_URL = mirror }
+    local env = {}
+    for k, v in pairs(uv.os_environ()) do
+      if override[k] == nil and k ~= "LOOMWORKS_LUA" and k ~= "LOOMWORKS_LW" and k ~= "LOOMWORKS_PINNED"
+          and k ~= "LOOMWORKS_CHANNEL" then
+        env[#env + 1] = k .. "=" .. v
+      end
+    end
+    for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+    local outf, errf = sb .. "/stdout.txt", sb .. "/stderr.txt"
+    local fo = assert(uv.fs_open(outf, "w", 420))
+    local fe = assert(uv.fs_open(errf, "w", 420))
+    local done, rc = false, nil
+    local h = uv.spawn(uv.exepath(), { args = { "../../../lua", "--", "release", "query", "--json" },
+      cwd = repo, env = env, stdio = { nil, fo, fe } }, function(c) rc = c; done = true end)
+    if h then
+      local t = uv.new_timer()
+      t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+      while not done do uv.run("once") end
+      t:stop(); t:close(); h:close()
+    end
+    uv.fs_close(fo); uv.fs_close(fe)
+    local sout, serr2 = slurp(outf) or "", slurp(errf) or ""
+    ok(h ~= nil, "spawned a source-run host in a pinned repo")
+    eq(rc, 1, "the failed query exits 1  (" .. serr2 .. ")")
+    eq(sout, "", "nothing on stdout")
+    ok(serr2:find("^lw: release query failed: ") and serr2:find("signature", 1, true)
+      and select(2, serr2:gsub("\n", "")) == 1, "one stderr line naming the signature")
+    ok(not serr2:find("pin", 1, true), "no redirect or provisioning of the pinned lw")
+    local entries = 0
+    for _ in uv.fs_scandir_next, uv.fs_scandir(home) do entries = entries + 1 end
+    eq(entries, 0, "nothing written to the data or config directories")
+  end
+
+  uv.os_unsetenv("LOOMWORKS_RELEASE_URL")
+  paths.rm_rf(sb)
+end
+
 print("boot.bootstrap — beta.2 fixes: committed attribution, uncommitted state, --check, prerelease pins (§16.24)")
 do
   local bootstrap = require("boot.bootstrap")
@@ -2738,7 +3267,9 @@ do
   local sb = root .. "/tests/.tmp-relorder"; paths.rm_rf(sb); paths.mkdirp(sb)
   uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
   for _, v in ipairs({ "0.1.0", "0.2.0-beta.1", "0.2.0" }) do
-    paths.mkdirp(paths.data_dir() .. "/lua-" .. v)
+    local d = paths.data_dir() .. "/lua-" .. v
+    paths.mkdirp(d .. "/loomworks")
+    local f = assert(io.open(d .. "/loomworks/cli.lua", "wb")); f:write("return {}\n"); f:close()
   end
   local rels = paths.installed_releases()
   eq(rels[1] and rels[1].ver, "0.2.0", "newest = the full release")
@@ -2748,6 +3279,67 @@ do
   ok(uv.fs_stat(paths.data_dir() .. "/lua-0.2.0"), "gc keeps the newest full release")
   ok(not uv.fs_stat(paths.data_dir() .. "/lua-0.2.0-beta.1"), "gc removes the pre-release below it")
   ok(not uv.fs_stat(paths.data_dir() .. "/lua-0.1.0"), "gc removes the older release")
+  paths.rm_rf(sb)
+end
+
+print("boot.paths — installed_releases + gc in a shared install folder (§16.22 Install folder)")
+do
+  -- LOOMWORKS_INSTALL_DIR may name any folder (here: a stand-in for $HOME).
+  -- Only real `lua-<release version>` bundle directories are listed, ranked
+  -- or removed; foreign lua-* folders, links/junctions, and the running bundle
+  -- never are.
+  local win = package.config:sub(1, 1) == "\\"
+  local sb = paths.norm(root .. "/tests/.tmp-relshared"); paths.rm_rf(sb)
+  local home, outside = sb .. "/home", sb .. "/outside"
+  local function put(p, body)
+    paths.mkdirp((p:gsub("/[^/]*$", "")))
+    local f = assert(io.open(p, "wb")); f:write(body or "x"); f:close()
+  end
+  local function bundle(d) put(d .. "/loomworks/cli.lua", "return {}\n") end
+  bundle(home .. "/lua-0.1.40"); bundle(home .. "/lua-0.1.41"); bundle(home .. "/lua-0.1.42")
+  bundle(home .. "/lua-0.1.39"); bundle(home .. "/lua-0.1.38")
+  put(home .. "/lua-language-server/bin/lua-language-server", "binary")
+  put(home .. "/lua-5.4.6/src/lua.c", "int main(){}")        -- ranks above 0.1.x by version
+  bundle(home .. "/lua-9.9.9-rc..1")                          -- unsafe version
+  bundle(home .. "/lua-1.0.0+meta")                           -- not a strict release version
+  bundle(outside .. "/lua-7.7.7"); put(outside .. "/precious.txt", "keep")
+  local linked = uv.fs_symlink(outside .. "/lua-7.7.7", home .. "/lua-7.7.7", win and { junction = true } or { dir = true })
+  local old_env = uv.os_getenv("LOOMWORKS_INSTALL_DIR")
+  uv.os_setenv("LOOMWORKS_INSTALL_DIR", home)
+  local okp, perr = pcall(function()
+    local vers = {}
+    for _, r in ipairs(paths.installed_releases()) do vers[#vers + 1] = r.ver end
+    eq(table.concat(vers, ","), "0.1.42,0.1.41,0.1.40,0.1.39,0.1.38",
+      "only real lua-<release> bundle directories are listed")
+    eq(paths.newest_release_root(), home .. "/lua-0.1.42", "a foreign lua-5.4.6 never ranks as newest")
+    ok(paths.is_release_version("0.2.0-beta.1") and paths.is_release_version("1.2.3"),
+      "strict release versions accepted")
+    ok(not paths.is_release_version("5.4") and not paths.is_release_version("language-server")
+      and not paths.is_release_version("1.0.0+meta") and not paths.is_release_version("1.0.0-rc..1"),
+      "anything else refused")
+    -- keep 1, except 0.1.41, running bundle 0.1.39: only 0.1.40 and 0.1.38 go.
+    update.gc(1, "0.1.41", home .. "/lua-0.1.39")
+    ok(uv.fs_stat(home .. "/lua-0.1.42"), "gc keeps the newest")
+    ok(uv.fs_stat(home .. "/lua-0.1.41/loomworks/cli.lua"), "gc never removes `except`")
+    ok(uv.fs_stat(home .. "/lua-0.1.39/loomworks/cli.lua"), "gc never removes the running bundle")
+    ok(not uv.fs_stat(home .. "/lua-0.1.40"), "gc removes an old bundle")
+    ok(not uv.fs_stat(home .. "/lua-0.1.38"), "gc removes another old bundle")
+    ok(uv.fs_stat(home .. "/lua-language-server/bin/lua-language-server"), "gc never touches lua-language-server")
+    ok(uv.fs_stat(home .. "/lua-5.4.6/src/lua.c"), "gc never touches a foreign lua-5.4.6")
+    ok(uv.fs_stat(home .. "/lua-1.0.0+meta/loomworks/cli.lua"), "gc never touches a non-release name")
+    if linked then
+      ok(uv.fs_stat(outside .. "/lua-7.7.7/loomworks/cli.lua") and uv.fs_stat(outside .. "/precious.txt"),
+        "a linked lua-<ver> is neither listed nor followed by gc")
+      -- Even the running-bundle guard aside, a link is never listed.
+      update.gc(0, nil, nil)
+      ok(uv.fs_stat(outside .. "/lua-7.7.7/loomworks/cli.lua"), "gc(0) still never follows the link")
+    else
+      ok(true, "(symlink/junction not creatable here; linked-bundle check skipped)")
+    end
+  end)
+  if old_env then uv.os_setenv("LOOMWORKS_INSTALL_DIR", old_env) else uv.os_unsetenv("LOOMWORKS_INSTALL_DIR") end
+  if linked then uv.fs_unlink(home .. "/lua-7.7.7"); pcall(uv.fs_rmdir, home .. "/lua-7.7.7") end
+  if not okp then error(perr, 0) end
   paths.rm_rf(sb)
 end
 
@@ -2902,8 +3494,26 @@ do
   local saved = update.RELEASES_API_URL
   update.RELEASES_API_URL = api  -- bare path -> download.fetch reads it locally
   local ver, e = update.resolve_unstable_version()
-  eq(ver, "0.2.0-beta.1",
-    "newest NON-draft (pre-release included, draft skipped)" .. (e and (" — " .. e) or ""))
+  eq(ver, "0.2.0",
+    "highest NON-draft version (draft skipped; a pre-release orders below its release)"
+    .. (e and (" — " .. e) or ""))
+
+  -- Publish order is NOT version order: a stable v0.1.43 cut after the
+  -- v0.1.44-beta.1 pre-release sits first in the API list, yet unstable must
+  -- still pick the highest version (§16.29) — never move users DOWN. A higher
+  -- draft is still ignored.
+  put(api, '[{"draft":false,"prerelease":false,"tag_name":"v0.1.43"},'
+    .. '{"draft":true,"prerelease":true,"tag_name":"v0.1.45-beta.1"},'
+    .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.44-beta.1"},'
+    .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.43-beta.16"}]')
+  local hv, he = update.resolve_unstable_version()
+  eq(hv, "0.1.44-beta.1",
+    "unstable picks the highest version, not the first listed" .. (he and (" — " .. he) or ""))
+  -- An unsafe tag anywhere in the list still fails the whole query.
+  put(api, '[{"draft":false,"tag_name":"v0.1.44"},{"draft":false,"tag_name":"v../../evil"}]')
+  local uv, ue = update.resolve_unstable_version()
+  ok(uv == nil and type(ue) == "string" and ue:find("unsafe", 1, true) ~= nil,
+    "an unsafe tag later in the list still fails the query")
 
   put(api, '[{"draft":false,"tag_name":"v../../evil"}]')
   local bad, be = update.resolve_unstable_version()
@@ -3316,6 +3926,62 @@ do
   ok(ms >= 250 and ms < 10000, string.format("…promptly (%.0f ms)", ms))
 end
 
+print("a step that a signal ended is a failure, 128 + signal (§16.7)")
+do
+  -- POSIX libuv reports a signal-ended child as exit code 0 + the signal; a
+  -- SIGKILLed (OOM-killed) build tool used to be read as success.
+  require("loomworks.shim")
+  local is_win = package.config:sub(1, 1) == "\\"
+  local build_run = require("loomworks.build_run")
+  eq((build_run.exit_status(0, 9)), 137, "exit_status: code 0 + SIGKILL -> 137")
+  eq((build_run.exit_status(1, 15)), 1, "exit_status: Windows' emulated kill keeps its exit code")
+  -- A plain nonzero exit, on every platform, through all three spawns.
+  _G.LOOMWORKS_CLI_NO_AUTORUN = true
+  local cli = require("loomworks.cli")
+  local runner = require("loomworks.daemon.runner")
+  local function runner_done(cmd)
+    local got
+    runner.spawn({ cmd = cmd, cwd = root, env = uv.os_environ() }, {
+      output = function() end, done = function(c, s) got = { c, s } end })
+    local deadline = uv.now() + 20000
+    while not got and uv.now() < deadline do uv.run("once") end
+    return got or {}
+  end
+  local exit3 = is_win and { (os.getenv("COMSPEC") or "C:/Windows/System32/cmd.exe"), "/c", "exit 3" }
+    or { "/bin/sh", "-c", "exit 3" }
+  local r3 = vim.system(exit3, { text = true }):wait()
+  eq(r3.code, 3, "shim vim.system: exit 3")
+  eq(r3.signal, 0, "shim vim.system: no signal")
+  local g3 = runner_done(exit3)
+  ok(g3[1] == 3 and g3[2] == nil, "daemon runner.spawn: exit 3, no signal")
+  local c3, s3 = cli._run_spec({ cmd = exit3 }, root)
+  ok(c3 == 3 and s3 == nil, "in-process run_spec: exit 3, no signal")
+  if is_win then
+    print("  (signals skipped on Windows: none in the POSIX sense; covered by the nvim suite)")
+  else
+    local kill9 = { "/bin/sh", "-c", "kill -9 $$" }
+    local res = vim.system(kill9, { text = true }):wait()
+    eq(res.code, 137, "shim vim.system: a SIGKILLed child reports 137")
+    eq(res.signal, 9, "shim vim.system: ...and the signal")
+    res = vim.system({ "/bin/sh", "-c", "kill -TERM $$" }, { stdio = "inherit" }):wait()
+    eq(res.code, 143, "shim vim.system (inherited stdio): a SIGTERMed child reports 143")
+    res = vim.system({ "/bin/sh", "-c", "exit 0" }, { text = true }):wait()
+    eq(res.code, 0, "shim vim.system: a clean exit is still 0")
+
+    -- The daemon's step spawn.
+    local got = runner_done(kill9)
+    eq(got[1], 137, "daemon runner.spawn: a SIGKILLed step is done with 137")
+    eq(got[2], 9, "daemon runner.spawn: ...and the signal")
+
+    -- The in-process step spawn (lw build / clean / test / run).
+    local code, sig = cli._run_spec({ cmd = kill9 }, root)
+    eq(code, 137, "in-process run_spec: a SIGKILLed step returns 137")
+    eq(sig, 9, "in-process run_spec: ...and the signal")
+    eq(build_run.failure_message({ kind = "build", name = "app" }, code, nil, sig),
+      "build failed (killed by signal 9 (SIGKILL)): app", "the failure line names the signal")
+  end
+end
+
 print("SECURITY — host Lua search paths never reach the current directory")
 do
   local luapath = require("boot.luapath")
@@ -3666,6 +4332,162 @@ do
   wn.record_seen(dir, "0.1.39")
   eq((readfile(dir .. "/release-notes-seen"):gsub("%s+", "")), "0.1.40", "record_seen never lowers")
   paths.rm_rf(dir)
+end
+
+print("loomworks.housekeeping - leftovers outside the workspace under luvi (spec §16.40)")
+do
+  local vim = require("loomworks.shim")
+  local hk = require("loomworks.housekeeping")
+  local win = package.config:sub(1, 1) == "\\"
+  local now = os.time()
+  local old = now - 40 * 86400
+  local base = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-hk-" .. tostring(uv.hrtime())
+  paths.mkdirp(base)
+  base = (uv.fs_realpath(base) or base):gsub("\\", "/")
+  local data, tmp, outside = base .. "/data", base .. "/tmp", base .. "/outside"
+  for _, d in ipairs({ data, tmp, outside, data .. "/pinned" }) do paths.mkdirp(d) end
+  local function put(p, s) local f = assert(io.open(p, "wb")); f:write(s or "x"); f:close(); return p end
+  put(outside .. "/precious.txt", "precious")
+  put(data .. "/trust.key") -- lw's data directory (marker, spec §16.40)
+  local o = { data = data, tmp_dirs = { tmp }, run_dirs = {}, sockets = false, exe = false,
+    bundle = false, pin_version = false, now = now, force = true }
+  -- A leftover, aged; and a near miss.
+  local dl = put(data .. "/.dl-0.1.40.zip"); uv.fs_utime(dl, old, old)
+  local near = put(data .. "/.dl-0.1.40.zip.keep"); uv.fs_utime(near, old, old)
+  -- A file symlink and a directory link at leftover names (POSIX; Windows: junction).
+  local flink = data .. "/.dl-0.1.41.zip"
+  local fl = uv.fs_symlink(outside .. "/precious.txt", flink)
+  local dlink = data .. "/.stage-0.1.41"
+  local dli = uv.fs_symlink(outside, dlink, win and { junction = true } or nil)
+  local items = hk.collect(o)
+  local got = {}
+  for _, it in ipairs(items) do got[it.path] = true end
+  ok(got[dl] and not got[near], "an aged leftover is found, a near-miss name is not")
+  ok(not got[flink] and not got[dlink], "links at leftover names are never candidates  (file link: "
+    .. tostring(fl) .. ", dir link: " .. tostring(dli) .. ")")
+  for _, it in ipairs(items) do hk.remove(it, now) end
+  ok(uv.fs_lstat(dl) == nil and uv.fs_lstat(near) ~= nil, "the leftover is removed, the near miss kept")
+  eq(readfile(outside .. "/precious.txt"), "precious", "a link target is never touched")
+  -- The startup pass: once, then not again within the day.
+  local dl2 = put(data .. "/.dl-0.1.42.zip"); uv.fs_utime(dl2, old, old)
+  local r1 = hk.startup(nil, o)
+  ok(r1 == 1 and uv.fs_lstat(dl2) == nil, "startup removes it  (" .. tostring(r1) .. ")")
+  local dl3 = put(data .. "/.dl-0.1.43.zip"); uv.fs_utime(dl3, old, old)
+  ok(hk.startup(nil, o) == nil and uv.fs_lstat(dl3) ~= nil, "startup runs at most once a day")
+  -- Temp files of another user (shared /tmp) are never candidates.
+  local x = put(tmp .. "/lw-test-" .. string.rep("c", 24) .. ".xml"); uv.fs_utime(x, old, old)
+  local function has(list, p) for _, it in ipairs(list) do if it.path == p then return true end end end
+  ok(has(hk.collect(o), x), "this user's aged temp leftover is found")
+  if not win then
+    local other = {}
+    for k, v in pairs(o) do other[k] = v end
+    other.uid = -12345
+    ok(not has(hk.collect(other), x), "another user's temp file is not a candidate")
+  end
+  if not win then
+    -- Sockets (spec §16.40 rule 5): a stale one (nobody listens) goes, a live
+    -- one stays, both owned by us in a 0700 directory.
+    local rd = base .. "/run"
+    assert(uv.fs_mkdir(rd, tonumber("700", 8)))
+    local stale = rd .. "/0123456789abcdef.sock"
+    local live = rd .. "/fedcba9876543210.sock"
+    -- Bind elsewhere and rename into place: libuv unlinks the name it bound
+    -- on close, so the renamed file survives with nobody listening.
+    local s1 = uv.new_pipe(false)
+    assert(s1:bind(rd .. "/tmp1.sock"))
+    assert(uv.fs_rename(rd .. "/tmp1.sock", stale))
+    s1:close()
+    local s2 = uv.new_pipe(false)
+    assert(s2:bind(live))
+    s2:listen(4, function() end)
+    vim.wait(50)
+    for _, p in ipairs({ stale, live }) do uv.fs_utime(p, now - 7200, now - 7200) end
+    local so = { data = base .. "/nodata", tmp_dirs = {}, run_dirs = { rd }, sockets = true, exe = false, now = now,
+      live_daemon_hashes = {} }
+    local sit = hk.collect(so)
+    local sg = {}
+    for _, it in ipairs(sit) do sg[it.path] = it end
+    ok(sg[stale] ~= nil and sg[live] == nil, "a socket refusing connections is stale; a listening one is not")
+    for _, it in ipairs(sit) do hk.remove(it, now) end
+    ok(uv.fs_lstat(stale) == nil and uv.fs_lstat(live) ~= nil, "the stale socket is removed, the live one kept")
+    -- A daemon rebinding the name between test and removal is put back.
+    local s3 = uv.new_pipe(false)
+    assert(s3:bind(rd .. "/tmp3.sock")); assert(uv.fs_rename(rd .. "/tmp3.sock", stale)); s3:close()
+    uv.fs_utime(stale, now - 7200, now - 7200)
+    local again = hk.collect(so)
+    local item
+    for _, it in ipairs(again) do if it.path == stale then item = it end end
+    ok(item ~= nil, "the second stale socket is found")
+    if item then
+      uv.fs_unlink(stale)
+      local s4 = uv.new_pipe(false)
+      assert(s4:bind(stale)); s4:listen(4, function() end)
+      -- Old enough to pass the re-check, but not the file tested (its inode
+      -- may well be reused; its modification time differs).
+      uv.fs_utime(stale, now - 7300, now - 7300)
+      local rok = hk.remove(item, now)
+      ok(not rok and uv.fs_lstat(stale) ~= nil and uv.fs_lstat(stale).type == "socket",
+        "a socket rebound meanwhile is put back")
+      s4:close()
+    end
+    -- A socket named for a running daemon is never probed (no connection
+    -- reaches it) and never a candidate.
+    do
+      local hits = 0
+      local s6 = uv.new_pipe(false)
+      local live6 = rd .. "/aaaaaaaaaaaaaaaa.sock"
+      assert(s6:bind(live6))
+      s6:listen(4, function() hits = hits + 1 end)
+      uv.fs_utime(live6, now - 7200, now - 7200)
+      local so6 = {}
+      for k, v in pairs(so) do so6[k] = v end
+      so6.live_daemon_hashes = { aaaaaaaaaaaaaaaa = true }
+      local l6 = hk.collect(so6)
+      vim.wait(200)
+      ok(not has(l6, live6) and hits == 0, "a running daemon's socket is not connected to  (connections: " .. hits .. ")")
+      so6.live_daemon_hashes = {}
+      hk.collect(so6)
+      vim.wait(200)
+      ok(hits >= 1, "without that, the same socket would have been probed  (connections: " .. hits .. ")")
+      s6:close()
+    end
+    -- Put back finds the name taken again: the moved socket is left, never unlinked.
+    do
+      local s7 = uv.new_pipe(false)
+      assert(s7:bind(rd .. "/tmp7.sock")); assert(uv.fs_rename(rd .. "/tmp7.sock", stale)); s7:close()
+      uv.fs_utime(stale, now - 7200, now - 7200)
+      local it7
+      for _, it in ipairs(hk.collect(so)) do if it.path == stale then it7 = it end end
+      ok(it7 ~= nil, "a third stale socket is found")
+      if it7 then
+        local aside_seen
+        local s8 = uv.new_pipe(false)
+        hk._after_aside = function(_, aside)
+          aside_seen = aside
+          -- The tested file is replaced (a new inode, fresh mtime) and the
+          -- name bound again by someone else before the check.
+          uv.fs_unlink(aside)
+          local s9 = uv.new_pipe(false); assert(s9:bind(aside .. "x")); assert(uv.fs_rename(aside .. "x", aside)); s9:close()
+          assert(s8:bind(stale))
+        end
+        local rok, why = hk.remove(it7, now)
+        hk._after_aside = nil
+        ok(not rok and aside_seen and uv.fs_lstat(aside_seen) ~= nil and uv.fs_lstat(stale) ~= nil,
+          "when the name is taken again, the moved socket stays  (" .. tostring(why) .. ")")
+        s8:close()
+        if aside_seen then uv.fs_unlink(aside_seen) end
+      end
+    end
+    -- A run directory that is not 0700 is never cleaned.
+    assert(uv.fs_chmod(rd, tonumber("755", 8)))
+    local s5 = uv.new_pipe(false)
+    assert(s5:bind(rd .. "/tmp5.sock")); assert(uv.fs_rename(rd .. "/tmp5.sock", stale)); s5:close()
+    uv.fs_utime(stale, now - 7200, now - 7200)
+    eq(#hk.collect(so), 0, "a run directory that is not 0700 is skipped")
+    s2:close()
+    vim.wait(20)
+  end
+  paths.rm_rf(base)
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

@@ -711,9 +711,11 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
 end
 
 --- Rebuild the build dir reverse index from ConfigUnit objects.
---- Maps normalized_build_dir -> array of ConfigUnits that reference it.
+--- Maps build-dir identity -> array of ConfigUnits that reference it.
 --- @param config_units table[] array of ConfigUnit objects
---- @param normalize function path normalization function
+--- @param normalize function the key of a build dir path (the workspace's
+---   `_build_dir_identity`: resolved real path, spec §4.6; plain path
+---   normalization when none is given)
 --- @return table<string, table[]> build_dir_refs
 function M.sync_build_dir_refs(config_units, normalize)
     local refs = {}
@@ -816,7 +818,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local build_dirs = sync_build_dirs(ctx, workspace, cache)
     local config_units, profile_projects = sync_profile_projects_and_config_units(
         ctx, workspace, cache, deps)
-    local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
+    local build_dir_refs = M.sync_build_dir_refs(config_units, deps.build_dir_key or deps.normalize)
     local artifact_refs = M.sync_artifact_refs(config_units, deps.normalize)
 
     -- Set _source and _intent on projects, config_sets, and profiles

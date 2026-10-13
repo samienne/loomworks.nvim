@@ -1,0 +1,36 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Profiles",
+  "version": 1,
+  "description": "Object /profiles (spec 19.14, 19.20): compiler_cache, with references by key and by id.",
+  "cases": [
+    {
+      "name": "compiler_cache answers for a mapped project, by key and by id",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "compiler_cache", "args": { "profile": { "key": "dev" }, "project": { "key": "app" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "index": { "profiles": { "dev": { "$bind": "dev_id" } }, "projects": { "app": { "$bind": "app_id" } } } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "compiler_cache", "args": { "profile": { "id": { "$var": "dev_id" } }, "project": { "id": { "$var": "app_id" } } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } }
+      ]
+    },
+    {
+      "name": "an unknown profile, an unmapped project and a stale id are refused; a missing reference is invalid",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "compiler_cache", "args": { "profile": { "key": "nope" }, "project": { "key": "app" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "compiler_cache", "args": { "profile": { "key": "dev" }, "project": { "key": "other" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "compiler_cache", "args": { "profile": { "id": "no-such-id" }, "project": { "key": "app" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "compiler_cache", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "interface": "loomworks.Profiles",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /profiles (spec 19.14, 19.20): queries of a profile. Step 5g.2 lands compiler_cache (the protocol-10 query profile_cache stays as its v0 alias); list and the command methods follow in step 5o.",
+  "methods": {
+    "compiler_cache": {
+      "description": "The compiler cache the profile resolves for one of its projects, as lw profile query <profile> <project> cache prints it; cache is absent when the project's module does not cache C/C++. Probes the client's PATH. An unknown profile, a project the profile does not map, or a stale id is the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "profile",
+          "project"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "project": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/CompilerCacheResult"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    }
+  },
+  "$defs": {
+    "CompilerCacheResult": {
+      "type": "object",
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "cache": {
+          "type": "object",
+          "required": [
+            "policy",
+            "present",
+            "stale",
+            "msvc_auto_off",
+            "applicable"
+          ],
+          "properties": {
+            "policy": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "stale": {
+              "type": "boolean"
+            },
+            "msvc_auto_off": {
+              "type": "boolean"
+            },
+            "applicable": {
+              "type": "boolean"
+            },
+            "not_applied_reason": {
+              "type": "string"
+            },
+            "not_applied_hint": {
+              "type": "string"
+            }
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

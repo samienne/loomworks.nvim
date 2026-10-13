@@ -202,24 +202,11 @@ function LaunchTarget:build(on_complete)
         return future_mod.rejected(err)
     end
 
-    -- Guard: if the selected ConfigUnit points at an abstract
-    -- Configuration (no `variant` set on module_config — the state
-    -- we end up in when a module's default_configurations couldn't
-    -- parse its source manifest and the profile references a stub
-    -- user config), bail out with a specific error rather than
-    -- handing a no-op variant to the module and watching the chain
-    -- hang on a phantom task. A clear message beats a silent spinner.
-    if self._config_unit and self._config_unit._configuration
-        and self._config_unit._configuration.is_abstract
-        and self._config_unit._configuration:is_abstract() then
-        local cfg_name = self._config_unit._configuration.name or "?"
-        local proj_name = self._project and self._project.key or "?"
-        local abs_err = string.format(
-            "configuration '%s' on project '%s' is abstract "
-            .. "(no variant resolved) — can't build. "
-            .. "Check module auto-detection (e.g. `:messages` for "
-            .. "module parse warnings).",
-            cfg_name, proj_name)
+    -- Guard: an abstract Configuration (no variant resolved) is refused
+    -- with a specific error rather than handing a no-op variant to the
+    -- module and watching the chain hang on a phantom task.
+    local abs_err = self:abstract_error()
+    if abs_err then
         if on_complete then on_complete(false) end
         return future_mod.rejected(abs_err)
     end
@@ -234,11 +221,46 @@ function LaunchTarget:build(on_complete)
         end
     end
 
-    -- Collect ALL dependencies: explicit + deploy source projects.
-    -- Explicit `depends_on` entries use the active profile's mapping
-    -- (no config hint); deploy source entries may pin
-    -- `configuration:` in the descriptor so they can be built even
-    -- when the source project isn't part of the active profile.
+    local f = self:_build_deps(self:build_dependencies())
+        :next(function() return self:_deploy_phase("pre_build") end)
+        :next(function() return build_self() end)
+
+    if on_complete then
+        f:next(function() on_complete(true) end)
+         :catch(function() on_complete(false) end)
+    end
+    return f
+end
+
+--- The guard of a launch target whose ConfigUnit maps an abstract
+--- Configuration (no `variant` on module_config — what a stub user
+--- configuration is when a module's default_configurations could not parse
+--- its source manifest): the refusal, or nil. Shared by build() and the
+--- daemon's target-scoped launch build (spec §19.15 "Build scope of a
+--- launch").
+--- @return string|nil
+function LaunchTarget:abstract_error()
+    local unit = self._config_unit
+    if not (unit and unit._configuration and unit._configuration.is_abstract
+        and unit._configuration:is_abstract()) then
+        return nil
+    end
+    return string.format(
+        "configuration '%s' on project '%s' is abstract "
+        .. "(no variant resolved) — can't build. "
+        .. "Check module auto-detection (e.g. `:messages` for "
+        .. "module parse warnings).",
+        unit._configuration.name or "?", self._project and self._project.key or "?")
+end
+
+--- The dependencies a launch builds before itself (spec §8.8.4 step 3), in
+--- order: the project's explicit `depends_on` (the active profile's mapping,
+--- no configuration hint), then the deploy source projects (a source may pin
+--- `configuration:` in its descriptor, so it builds even when its project is
+--- not part of the profile). De-duplicated by (project, hint). Shared by
+--- build() and the daemon's target-scoped launch build (§19.15).
+--- @return { project: loomworks.Project, config_hint: string|nil }[]
+function LaunchTarget:build_dependencies()
     local all_deps = {}
     local seen = {}
     if self._project then
@@ -251,8 +273,7 @@ function LaunchTarget:build(on_complete)
                 end
             end
         end
-        local deploy_deps = self:_deploy_source_projects()
-        for _, entry in ipairs(deploy_deps) do
+        for _, entry in ipairs(self:_deploy_source_projects()) do
             local key = entry.project.key .. "\0" .. (entry.config_hint or "")
             if not seen[key] then
                 seen[key] = true
@@ -260,16 +281,19 @@ function LaunchTarget:build(on_complete)
             end
         end
     end
+    return all_deps
+end
 
-    local f = self:_build_deps(all_deps)
-        :next(function() return self:_deploy_phase("pre_build") end)
-        :next(function() return build_self() end)
-
-    if on_complete then
-        f:next(function() on_complete(true) end)
-         :catch(function() on_complete(false) end)
-    end
-    return f
+--- The refusal of a dependency no configuration resolves for (§8.8.4).
+--- @param project loomworks.Project
+--- @return string
+function LaunchTarget.unresolved_dependency_message(project)
+    return string.format(
+        "cannot resolve a configuration to build for "
+        .. "dependency '%s' — either add it to the active "
+        .. "profile's configuration_set, or pin "
+        .. "`configuration:` in the deploy source descriptor",
+        project.key)
 end
 
 --- Build dependency projects sequentially. Returns a Future.
@@ -311,12 +335,8 @@ function LaunchTarget:_build_deps(deps)
         chain = chain:next(function()
             local unit = self:_resolve_dep_config_unit(captured_dep, captured_hint)
             if not unit then
-                return future_mod.rejected(string.format(
-                    "cannot resolve a configuration to build for "
-                    .. "dependency '%s' — either add it to the active "
-                    .. "profile's configuration_set, or pin "
-                    .. "`configuration:` in the deploy source descriptor",
-                    captured_dep.key))
+                return future_mod.rejected(
+                    LaunchTarget.unresolved_dependency_message(captured_dep))
             end
             vim.notify("loomworks: building dependency " .. captured_dep.key,
                 vim.log.levels.INFO)
@@ -660,9 +680,18 @@ end
 function LaunchTarget:_launch_command()
     local spec = self:resolve_command_spec()
     if not spec then return end
+    spec.name = self._project.key .. ": " .. (self._launch_name or "launch")
+    self:launch_resolved(spec)
+end
 
-    local cmd, args, cwd, env = spec.cmd, spec.args, spec.cwd, spec.env
-
+--- Start a resolved launch in the editor's task runner (overseer) as this
+--- target's launch task — a command configuration's in-process launch, and
+--- every launch whose preparation the workspace daemon returned (step 5k C2,
+--- §19.16 "Editor operations": the program is the editor's, its `env` the
+--- launch's own contribution, which the task inherits the editor's
+--- environment under). A previous completed launch task is disposed.
+--- @param spec { name: string, cmd: string, args?: string[], cwd?: string, env?: table<string, string> }
+function LaunchTarget:launch_resolved(spec)
     -- Dispose previous completed launch task
     if self._launch_task_id then
         local ok_os, overseer_mod = pcall(require, "overseer")
@@ -675,68 +704,55 @@ function LaunchTarget:_launch_command()
         end
     end
 
-    local task_name = self._project.key .. ": " .. (self._launch_name or "launch")
-
     local overseer = require("loomworks.overseer")
     self._launch_task_id = overseer.launch_run_task({
-        name = task_name,
-        cmd = cmd,
-        args = args,
-        cwd = cwd,
-        env = env,
+        name = spec.name,
+        cmd = spec.cmd,
+        args = spec.args,
+        cwd = spec.cwd,
+        env = spec.env,
     })
 end
 
 --- Debug this target via nvim-dap.
---- Falls back to launch() if nvim-dap is not available.
+--- Falls back to launch() if nvim-dap is not available. The program is
+--- resolved exactly as its run (spec §8.9.6 "One spec for run and debug",
+--- run_prep.resolve_debug); single-adapter: the first debug language's
+--- adapter. Multi-adapter launches are started by the session tracker
+--- (multi_adapter_specs).
 function LaunchTarget:debug()
     if not debug_mod.available() then
         self:launch()
         return
     end
-    if self._launch_config then
-        self:_debug_command()
-    elseif self._target and self._target:is_executable() then
-        self:_debug_target()
+    local spec, err, severity = require("loomworks.run_prep").resolve_debug(self)
+    if not spec then
+        if err then
+            vim.notify("loomworks: " .. err,
+                severity == "error" and vim.log.levels.ERROR or vim.log.levels.WARN)
+        end
+        return
     end
+    debug_mod.run({
+        name = spec.name,
+        adapter = spec.adapters[1].adapter,
+        program = spec.program,
+        args = spec.args,
+        cwd = spec.cwd,
+        env = spec.env,
+    })
 end
 
---- Build the resolved spec data for debug from a command-type launch config.
---- Returns adapter-agnostic data. Adapter-specific transforms happen in debug.run().
---- @return table spec_data { program, args, cwd, env }
---- @return string adapter resolved adapter type
-function LaunchTarget:_resolve_debug_spec()
-    local cfg = self._launch_config
-    local ws = self._workspace
-    local ctx = expand.launch_context(ws, self._profile, self._project)
-
-    local cmd = expand.expand_string(cfg.command, ctx)
-    local args = expand.expand_array(cfg.args, ctx) or {}
-
-    local cwd
-    if cfg.working_dir then
-        local expanded_cwd = expand.expand_string(cfg.working_dir, ctx)
-        if expanded_cwd:match("^/") or expanded_cwd:match("^%a:") then
-            cwd = expanded_cwd
-        else
-            cwd = ws.root .. "/" .. expanded_cwd
-        end
-    else
-        cwd = ws.root .. "/" .. (self._project.path or self._project.key)
-    end
-
-    -- Denylisted loader/interpreter variables are refused (spec §17.9).
-    local env = require("loomworks.env_policy").filter(
-        expand.expand_dict(cfg.env, ctx), { label = "launch " .. tostring(self._launch_name or "?") })
-    local lang = self._project._module and self._project._module:primary_language() or "c++"
-    local adapter = debug_mod.resolve_adapter(ws, lang)
-
-    return {
-        program = cmd,
-        args = args,
-        cwd = cwd,
-        env = env,
-    }, adapter
+--- The adapter that launches this target's debug session, and its language
+--- (spec §8.9.6: a launch configuration's first `debug` language, else the
+--- module's primary language). The editor checks it is installed before it
+--- asks the workspace daemon to prepare the debug launch (§19.16), with
+--- `resolve` the daemon's language → adapter mapping
+--- (editor_ops.debug_adapter_resolver; default: the workspace's).
+--- @param resolve? fun(language: string): string|nil
+--- @return string|nil adapter, string language
+function LaunchTarget:primary_debug_adapter(resolve)
+    return require("loomworks.run_prep").primary_adapter(self, resolve)
 end
 
 --- Check if this launch target has a multi-adapter debug config.
@@ -746,78 +762,18 @@ function LaunchTarget:is_multi_adapter()
     return cfg and cfg.debug and type(cfg.debug) == "table" and #cfg.debug > 1
 end
 
---- Get the resolved multi-adapter specs for this launch target.
---- Returns adapter entries and the base spec data for the primary adapter.
---- @return { adapter: string }[] adapters, table spec_data
+--- Get the resolved multi-adapter specs for this launch target: the adapter
+--- entries in order and the program spec (run_prep.resolve_debug, the same
+--- spec as the run's). nil and the reason when it does not resolve.
+--- @return { adapter: string }[]|nil adapters, table|string spec_data_or_err
 function LaunchTarget:multi_adapter_specs()
-    local cfg = self._launch_config
-    local spec_data = self:_resolve_debug_spec()
-    local ws = self._workspace
+    local spec, err = require("loomworks.run_prep").resolve_debug(self)
+    if not spec then return nil, err or "nothing to debug" end
     local parsed = {}
-    for _, entry in ipairs(cfg.debug) do
-        local language = type(entry) == "string" and entry or entry.language
-        parsed[#parsed + 1] = { adapter = debug_mod.resolve_adapter(ws, language) }
+    for _, a in ipairs(spec.adapters) do
+        parsed[#parsed + 1] = { adapter = a.adapter }
     end
-    return parsed, spec_data
-end
-
---- Debug from a command-type config (loomworks.json launch section).
---- Only handles single-adapter. Multi-adapter is handled by session_tracker.
-function LaunchTarget:_debug_command()
-    local cfg = self._launch_config
-    if not cfg or not cfg.command then return end
-
-    local spec_data, adapter = self:_resolve_debug_spec()
-
-    -- Single adapter: use debug[] first entry if present, else module default
-    if cfg.debug and type(cfg.debug) == "table" and #cfg.debug == 1 then
-        local entry = cfg.debug[1]
-        local language = type(entry) == "string" and entry or entry.language
-        adapter = debug_mod.resolve_adapter(self._workspace, language)
-    end
-
-    debug_mod.run({
-        name = self._project.key .. ": debug " .. (self._launch_name or "launch"),
-        adapter = adapter,
-        program = spec_data.program,
-        args = spec_data.args,
-        cwd = spec_data.cwd,
-        env = spec_data.env,
-        extra = spec_data.extra,
-    })
-end
-
---- Debug a module target (executable produced by a module, e.g. cmake).
-function LaunchTarget:_debug_target()
-    local target = self._target
-    if not target:is_executable() or not target.artifact then return end
-
-    local unit = target._config_unit
-    if not unit then return end
-
-    local build_dir = unit:build_dir()
-    if not build_dir then
-        vim.notify("loomworks: no build directory for " .. target.id, vim.log.levels.WARN)
-        return
-    end
-
-    local artifact_path = require("loomworks.paths").artifact_path(build_dir, target.artifact)
-    -- Debugging a foreign target is refused in this version (spec §18.11); it
-    -- must never start on the host (§18.1).
-    local host_ok, foreign_err = require("loomworks.remote.foreign").check_local(unit, artifact_path)
-    if not host_ok then
-        vim.notify("loomworks: " .. foreign_err, vim.log.levels.ERROR)
-        return
-    end
-    local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
-    local lang = unit._project and unit._project._module and unit._project._module:primary_language() or "c++"
-
-    debug_mod.run({
-        name = project_name .. ": debug " .. target.id,
-        program = artifact_path,
-        cwd = build_dir,
-        adapter = debug_mod.resolve_adapter(self._workspace, lang),
-    })
+    return parsed, { program = spec.program, args = spec.args, cwd = spec.cwd, env = spec.env }
 end
 
 --- Check if this target has a build step.
@@ -871,6 +827,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Device target operations
 -- ---------------------------------------------------------------------------
+
+--- Discover the devices of this target's workspace (Workspace:scan_devices):
+--- the device picker of a device launch.
+--- @param cb fun(devices: loomworks.Device[])
+function LaunchTarget:scan_devices(cb)
+    return self._workspace:scan_devices(cb)
+end
 
 --- Install the built artifact onto a device. Returns a Future.
 --- Resolves the artifact path via the module, then runs the install command.

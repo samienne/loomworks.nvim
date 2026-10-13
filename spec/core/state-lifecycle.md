@@ -36,7 +36,8 @@
    │ configure_failed │
    └──────────────────┘
 
-   Any state ──── delete/clean ────► deleting ────► unconfigured (clean, success)
+   Any state ──── delete/clean ────► deleting ────► unconfigured (wipe clean, success;
+                                                      module clean: §4.7)
                                                     or removed (delete, success)
                                                     or unknown (failure)
 
@@ -317,8 +318,14 @@ configurations (Debug and Release produce output in the same directory,
 selected at build time via `--config`). When deleting a configuration that
 shares a build directory with other configurations:
 
-1. A reverse index (`_build_dir_refs`) maps each normalized build directory
-   to the set of cache keys that reference it. Rebuilt during every remerge.
+1. A reverse index (`_build_dir_refs`) maps each build directory to the set
+   of cache keys that reference it. Rebuilt during every remerge. Build
+   directories are compared by resolved real path (for a directory that does
+   not exist yet, the real path of its nearest existing ancestor plus the rest
+   of the path), so one folder spelled differently -- a junction or symlink, a
+   Windows 8.3 short name, an aliased workspace root -- is one directory; this
+   applies equally to grouping a clean's wipes into one batch (§4.7) and to
+   the build-directory locks (§5.3, §16.6).
 2. Before adding a directory to the deletion queue, subtract the cache keys
    being deleted in the current batch from the ref set.
 3. If remaining refs > 0 → skip the directory (don't rm -rf). The cache
@@ -396,6 +403,12 @@ cannot be moved aside has removed the area like the caches: harmless,
 derived data regenerated on the next configure.
 
 ### 4.7 Cleaning
+
+A module clean (the build system's own artifact clean, §16.1) that succeeds
+moves its `built` / `failed_build` units to `configured` (other states are
+unchanged); a core-performed wipe (§8.1) resets them to `unconfigured`. The
+state is recorded only after the clean succeeded — a failed module clean
+records nothing. The steps below are the wipe's.
 
 **Profile clean** (`C` key):
 1. For each project in the profile:
@@ -712,6 +725,9 @@ the build. The build dir operation queue prevents this:
 run concurrently when dequeued), but shared batching stops at an exclusive
 boundary.
 
+**Identity**: A build directory's lock is keyed by its §4.6 identity, so
+operations naming one folder by two spellings share one lock.
+
 **Scope**: The build dir lock is a separate layer from task readiness
 (section 5.1). Readiness checks ConfigUnit state; the build dir lock gates
 actual task launching to prevent filesystem corruption.
@@ -768,7 +784,12 @@ profiles don't clobber each other.
 
 **Preemption rules**:
 - Clean/delete **cancel** any active build/configure Operations on the
-  same ConfigUnits (stopping their overseer tasks).
+  same ConfigUnits (stopping their overseer tasks). *(Step 5k, plan:)* for
+  an operation the editor runs in the workspace daemon, the cancel is
+  `Tasks/1.cancel` and only for tasks the editor owns; a conflicting task
+  another client started (a `lw build` in a terminal) is not cancelled, and
+  the clean meets its build-directory locks (daemon.md §19.15 "The editor as
+  owner").
 - Build/configure issued during a clean/delete are **deferred** via
   `after_deletions()` until the deletion Operation completes.
 
@@ -956,6 +977,7 @@ Events are the primary mechanism for cross-component communication.
 | `deletion_failed`      | `{ items, errors }` | One or more build dir deletions failed |
 | `tools_detected`       | `tools_by_type` | Tool detection completed |
 | `lsp_ready`            | (none) | Active profile's owned LSP databases generated/settled — releases the deferred-LSP gate (§9.7) |
+| `lsp_database_written` | `{ workspace, db_dir }` | An owned LSP database was (re)written (§8.4 `refresh_lsp_database`'s `done(true)`), after its `db_rev` was raised — the daemon's `LspConfig/1` `changed` (§19.20) |
 | `lsp_buf_state_changed` | `{ bufnr, server, state }` | A buffer's per-server LSP status (§9.8: `none` / `held` / `ok` / `withheld_*`) changed; emitted scheduled, followed by a statusline redraw. `state` is the status for that one `server`, not the aggregated per-buffer status (`loomworks.lsp_buf_state(bufnr)`) |
 | `devices_changed`      | `Device[]` | Device scan completed |
 

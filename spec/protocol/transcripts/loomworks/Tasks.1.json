@@ -1,0 +1,68 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Tasks",
+  "version": 1,
+  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): list, cancel, the started and ended signals and the task_id subscription filter. Tasks are started with the protocol-10 build request (task-streamed interface methods land in step 5g.2 part B).",
+  "cases": [
+    {
+      "name": "list is empty and cancel of a task that is not running is refused",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "tasks": [] } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": "no-such-task" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "args": { "frobnicate": 1 } } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "a subscriber sees a task start and end; a task_id filter for another task sees neither",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1 } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "all" }, "seq": 0 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "args": { "task_id": "no-such-task" } } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "sub_id": { "$bind": "other" }, "seq": 0 } } },
+        { "send": { "kind": "build", "req_id": 3, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
+        { "expect": { "kind": "ok", "req_id": 3, "outcome": "accepted", "task_id": { "$bind": "task" } } },
+        { "expect": {
+            "kind": "signal", "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "name": "started", "sub_id": { "$var": "all" }, "seq": 1,
+            "args": { "task": { "task_id": { "$var": "task" }, "kind": "build", "profile": "dev", "origin": "cli", "started_at": { "$type": "integer" } } }
+        } },
+        { "expect": {
+            "kind": "signal", "object": "/tasks", "name": "ended", "sub_id": { "$var": "all" }, "seq": 2,
+            "args": { "task_id": { "$var": "task" }, "exit_code": 0, "error": { "$absent": true } }
+        }, "timeout_ms": 120000 },
+        { "expect_none": { "kind": "signal", "object": "/tasks", "sub_id": { "$var": "other" } }, "within_ms": 200 },
+        { "send": { "kind": "call", "req_id": 4, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "tasks": [] } } }
+      ]
+    },
+    {
+      "name": "the owner lists its running task and cancels it",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1 } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" } } } },
+        { "send": { "kind": "build", "req_id": 2, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env", "$with": { "LW_TEST_SLEEP": "60000" } }, "command": "lw build" } },
+        { "expect": { "kind": "ok", "req_id": 2, "outcome": "accepted", "task_id": { "$bind": "task" } } },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "started", "args": { "task": { "task_id": { "$var": "task" } } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "tasks": [ { "task_id": { "$var": "task" }, "kind": "build", "owned": true } ] } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": { "$var": "task" } } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "ended", "args": { "task_id": { "$var": "task" }, "exit_code": 130 } }, "timeout_ms": 60000 }
+      ]
+    }
+  ]
+}
