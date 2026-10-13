@@ -3238,10 +3238,21 @@ function M._test_plan(ws, profile, opts, deps)
       note(string.format("lw: note: %s: its registered tests cannot run on this host (%s) — "
         .. "skipping its batch runner; its saved test targets run on a device", u.project.key, u.platform))
     elseif u.batch_dropped and n_batch + n_exec > 0 then
-      -- Never skipped silently: name the unit and how to include it.
-      note(string.format("lw: note: %s: skipped — its registered tests cannot run on this host (%s) "
-        .. "and it has no saved test targets; to run executables on a device: lw test-target add %s %s:<exe>",
-        u.project.key, u.platform, profile.key, u.project.key))
+      -- Never skipped silently: name the unit, and how to include it only when
+      -- it truly has no saved entries (under --discovered they were not
+      -- planned; unsupported ones were cleared — neither is "none saved").
+      local why
+      if opts.sel == "discovered" then
+        why = string.format("its discovered tests cannot run on this host (%s)", u.platform)
+      elseif u.unsupported then
+        why = string.format("its registered tests cannot run on this host (%s) and its saved test "
+          .. "targets are not supported by its module", u.platform)
+      else
+        why = string.format("its registered tests cannot run on this host (%s) and it has no saved test "
+          .. "targets; to run executables on a device: lw test-target add %s %s:<exe>",
+          u.platform, profile.key, u.project.key)
+      end
+      note(string.format("lw: note: %s: skipped — %s", u.project.key, why))
     end
   end
   if n_batch + n_exec == 0 then

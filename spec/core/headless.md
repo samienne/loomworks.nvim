@@ -748,11 +748,16 @@ no spaces).
 run (invariant 19). When that unit also has saved entries, its batch step
 is dropped from the plan with a note on standard error naming the project and
 platform, and its saved entries run as above (a build target's artifact on a
-device). A foreign unit with **no** saved entries contributes no step; it is
-never skipped silently — when the plan still holds other steps, a note on
-standard error names the project, says its registered tests cannot run on
-this host (with the platform) and that it has no saved entries, and points at
-saving entries (`lw test-target add`) to run its executables on a device.
+device). A foreign unit with **no** planned saved entries contributes no step;
+it is never skipped silently — when the plan still holds other steps, a note
+on standard error names the project and says its tests cannot run on this
+host (with the platform). The rest of the note says why it has no executable
+step: under the discovered-only selector, only that its discovered tests
+cannot run here (its saved entries, if any, were not selected); when its
+saved entries exist but are unsupported by its module (§1.3.4
+Applicability), that they are unsupported; only when it truly has no saved
+entries does the note say so and point at saving entries
+(`lw test-target add`) to run its executables on a device.
 When the plan would then hold no step at all — no saved lists, or
 the discovered-only selector — the invocation is refused as above. Device
 options are accepted when the plan has at least one executable step, and are
