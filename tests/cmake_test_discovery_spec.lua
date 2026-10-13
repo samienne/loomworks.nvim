@@ -304,6 +304,45 @@ describe("gtest helper", function()
             assert.equals("hello", results[2].output)
         end)
 
+        -- Run `fn` with the cap temporarily set to `cap` bytes.
+        local function with_cap(cap, fn)
+            local saved = gtest.MAX_CAPTURED_BYTES
+            gtest.MAX_CAPTURED_BYTES = cap
+            local ok, err = pcall(fn)
+            gtest.MAX_CAPTURED_BYTES = saved
+            if not ok then error(err, 0) end
+        end
+
+        it("caps one huge line with no newline quickly (hard cut + marker)", function()
+            with_cap(32 * 1024, function()
+                local text = string.rep("x", 40 * 1024)
+                local t0 = vim.uv.hrtime()
+                local capped = gtest.cap_captured(text)
+                local elapsed = (vim.uv.hrtime() - t0) / 1e9
+                assert.is_true(elapsed < 1, ("cap took %.2f s (limit 1 s)"):format(elapsed))
+                local kept, more = capped:match("^(.-)%.%.%. %[truncated: (%d+) more bytes%]$")
+                assert.is_not_nil(kept)
+                assert.equals(32 * 1024, #kept)
+                assert.equals(8 * 1024, tonumber(more))
+            end)
+        end)
+
+        it("does not split a UTF-8 character straddling a hard cut", function()
+            with_cap(10, function()
+                -- "é" (2 bytes) at bytes 10-11; "€" (3 bytes) at bytes 9-11.
+                for _, case in ipairs({
+                    { "abcdefghi" .. "é" .. "xyz", "abcdefghi" },
+                    { "abcdefgh" .. "€" .. "xyz", "abcdefgh" },
+                    { "abcdefghij" .. "é", "abcdefghij" },   -- char starts after the cap
+                }) do
+                    local capped = gtest.cap_captured(case[1])
+                    local kept, more = capped:match("^(.-)%.%.%. %[truncated: (%d+) more bytes%]$")
+                    assert.equals(case[2], kept)
+                    assert.equals(#case[1] - #kept, tonumber(more))
+                end
+            end)
+        end)
+
         it("should return nil for missing file", function()
             local results = gtest.parse_xml_results("/nonexistent/path.xml")
             assert.is_nil(results)

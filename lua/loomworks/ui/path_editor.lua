@@ -20,12 +20,17 @@ local BUILTIN_VARIABLES = {
 }
 
 --- Build variable list including user-defined project variables.
+--- `${target_dir}` is offered only when `opts.target_context` says the edited
+--- context resolves a build target (spec §8.7: unavailable for a command-type
+--- launch or a deploy source path).
 --- @param project table|nil project with .variables
+--- @param opts? { target_context?: boolean }
 --- @return table[]
-function M.build_variable_list(project)
+function M.build_variable_list(project, opts)
     local vars = {}
+    local with_target = opts and opts.target_context
     for _, v in ipairs(BUILTIN_VARIABLES) do
-        vars[#vars + 1] = v
+        if v.var ~= "target_dir" or with_target then vars[#vars + 1] = v end
     end
     if project and project.variables then
         local names = {}
@@ -144,11 +149,13 @@ end
 ---   project?: loomworks.Project — for user-defined variables
 ---   workspace?: loomworks.Workspace — for preview resolution
 ---   profile?: loomworks.Profile — for preview resolution
+---   target_context?: boolean — the edited context resolves a build target,
+---     so `${target_dir}` is offered (spec §8.7)
 ---   on_accept: fun(path: string) — called with composed path
 ---   on_cancel: fun()
 function M.open(opts)
     local segments = M.parse_segments(opts.path or "")
-    local all_variables = M.build_variable_list(opts.project)
+    local all_variables = M.build_variable_list(opts.project, { target_context = opts.target_context })
     local ws = opts.workspace
     local profile = opts.profile
     local project = opts.project

@@ -49,8 +49,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw test --target`, which also takes `--cwd <dir>`). The status page shows
   a read-only `Tests:` line, and the test explorer and neotest pick the saved
   targets up. (#208)
-- The launch and deploy editors offer `${target_dir}` in their path segment
-  pickers. (#214)
+- The deploy editor offers `${target_dir}` in its destination segment picker
+  for a project's deploy steps (not for a command launch's, where it is
+  unavailable). (#214)
 
 ### Changed
 
