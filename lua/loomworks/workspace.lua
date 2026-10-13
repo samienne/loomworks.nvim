@@ -2474,7 +2474,9 @@ function Workspace:diagnostics()
             -- declared project variables. Values are placeholders; only key
             -- presence matters to `expand.unresolved_vars`.
             local allowed = {}
-            for name in pairs(vars_mod.RESERVED_NAMES) do allowed[name] = "" end
+            for name in pairs(vars_mod.RESERVED_NAMES) do
+                if not vars_mod.LAUNCH_ONLY_NAMES[name] then allowed[name] = "" end
+            end
             if type(project.variables) == "table" then
                 for name in pairs(project.variables) do allowed[name] = "" end
             end

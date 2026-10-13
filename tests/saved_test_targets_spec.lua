@@ -229,6 +229,14 @@ describe("tests field: shape and resolution (§1.3.4)", function()
         local ign = r("Ign")                          -- never falls back to the same-named target
         assert.equals("missing", ign.state)
         assert.truthy(ign.reason:find("ignored", 1, true))
+        -- A launch with neither `command` nor `target` is still the launch
+        -- (missing), never the same-named build target.
+        targets.Empty = { id = "Empty", is_executable = function() return true end, display_name = function() return "Empty" end }
+        ctx.launches.Empty = { args = { "--x" } }
+        local empty = r("Empty")
+        assert.equals("launch", empty.kind)
+        assert.equals("missing", empty.state)
+        assert.is_nil(empty.target)
         -- Targets unknown: a command launch still resolves; a name does not.
         ctx.targets = nil
         assert.equals("ok", r("Both").state)
@@ -806,6 +814,15 @@ describe("lw test-target (§16.9)", function()
         assert.truthy(n.stdout:find("nothing to remove", 1, true))
     end)
 
+    it("remove on a level whose own `tests` is not an array is refused (not 'not saved')", function()
+        local root = make_ws({ tests = { targets = { "BaseTests" } } }, "variant:default")
+        local ws = load(root); targets_for(ws)
+        local r = capture(function() return cli._tt_remove(root, { "test-target", "remove", "Dev", "BaseTests" }, ws) end)
+        assert.equals(1, r.exit_code, r.stdout)
+        assert.truthy(r.stderr:find("is not an array of saved test entries", 1, true), r.stderr)
+        assert.falsy(r.stdout:find("not saved", 1, true))
+    end)
+
     it("clear removes the declaration (inherits again); --empty declares []", function()
         local root = make_ws(SECTION, "Rel")
         local ws = load(root); targets_for(ws)
@@ -932,13 +949,66 @@ describe("ConfigUnit + saved-targets TestUnit (§8.9.2–§8.9.3)", function()
         assert.equals("--again", cmd.cmd[#cmd.cmd])
         local lc = tu:test_command("launch:chk")
         package.loaded["loomworks.launch_target"] = orig_lt
-        assert.same({ "chk" }, deployed)             -- deploy ran before the command
+        -- The deploy runs when the step executes (its `prepare`), not while
+        -- the command is built.
+        assert.same({}, deployed)
+        assert.is_function(lc.prepare)
+        assert.is_true(lc.prepare())
+        assert.same({ "chk" }, deployed)
+        assert.equals("launch:chk", lc.test_id)
         assert.same({ "/usr/bin/tool", "--own", "--e" }, lc.cmd)
         assert.equals("/w", lc.cwd)
         assert.equals("1", lc.env.M)
         assert.is_nil(lc.output_path)                -- no results option for a command launch
         assert.is_nil(tu:run_command_all())
         assert.is_nil(tu:test_command_all())
+    end)
+
+    it("a failed deploy fails its step at execution (run-all keeps it; editor + loomtest runners)", function()
+        local SavedTU = require("loomworks.test_units.saved_targets")
+        local orig_lt = package.loaded["loomworks.launch_target"]
+        package.loaded["loomworks.launch_target"] = { new = function()
+            return {
+                deploy_sync = function() return false, "boom" end,
+                resolve_launch_spec = function() return { cmd = "/usr/bin/tool", args = {}, cwd = "/w" } end,
+            }
+        end }
+        local unit = saved_unit({ "Run", "chk" }, { chk = { command = "tool" } })
+        local tu = SavedTU.new(unit)
+        tu:discover()
+        unit.test_units = function() return { tu } end
+        local cmds = ConfigUnit.test_commands_all(unit, {})
+        package.loaded["loomworks.launch_target"] = orig_lt
+        local ids = {}
+        for _, c in ipairs(cmds) do ids[#ids + 1] = c.id end
+        assert.same({ "target:Run", "launch:chk" }, ids)     -- never silently dropped
+        local chk = cmds[2].cmd
+
+        -- Editor run: the step fails, no task starts, the entry is marked failed.
+        local orig_ov = package.loaded["overseer"]
+        local started = {}
+        package.loaded["overseer"] = { new_task = function(t) started[#started + 1] = t.name
+            return { id = 1, subscribe = function() end, start = function() end } end, open = function() end }
+        local applied
+        unit._apply_test_results = function(_, res) applied = res end
+        local f = ConfigUnit._run_test_task(unit, "test: chk", chk, tu)
+        assert.equals("rejected", f._state)
+        assert.same({}, started)
+        assert.equals("launch:chk", applied[1].test_id)
+        assert.equals("failed", applied[1].status)
+        assert.truthy(applied[1].message:find("deploy failed: boom", 1, true))
+
+        -- loomtest runner: same, and the next spec still runs (on_done).
+        local loomtest = { apply_results = function(res) applied = res end, get_node = function() return nil end }
+        local explorer = { is_open = function() return false end, refresh = function() end }
+        applied = nil
+        local done = false
+        require("loomtest.runner")._execute_task({}, chk, { "launch:chk" }, loomtest, explorer, function() done = true end)
+        package.loaded["overseer"] = orig_ov
+        assert.same({}, started)
+        assert.is_true(done)
+        assert.equals("launch:chk", applied[1].test_id)
+        assert.equals("failed", applied[1].status)
     end)
 
     it("a non-array declaration shows one errored entry", function()
@@ -1073,5 +1143,334 @@ describe("status page Tests: line (ui)", function()
         assert.same({ "⚠ ign" }, warn)
         assert.truthy(text(helpers.test_targets_chunks({ entries = {}, source = base, invalid = true }, base, nil, 80))
             :find("invalid", 1, true))
+    end)
+end)
+
+-- ===========================================================================
+-- Table entries with working_dir, ${target_dir} and `lw test --target --cwd`
+-- (spec §1.3.4 "Shape" / "Working directory" / "Persistence", §8.7, §16.9,
+-- §16.16, §17.6).
+describe("table entries and working_dir (§1.3.4)", function()
+    it("parses the table form; the form never changes the entry or its occurrence", function()
+        local decl = tt.parse({ "X", { name = "X" }, { name = "X", args = { "a" } }, { "X", "a" },
+            { name = "X", working_dir = "${target_dir}" }, { name = "X", args = {}, future = { k = 1 } } }, "App/T")
+        assert.same({ "X", "X", "X", "X", "X", "X" }, names(decl.entries))
+        local idx = {}
+        for _, e in ipairs(decl.entries) do idx[#idx + 1] = e.index end
+        assert.same({ 1, 2, 3, 4, 5, 6 }, idx)
+        assert.same({ "a" }, decl.entries[3].args)
+        assert.equals("${target_dir}", decl.entries[5].working_dir)
+        assert.same({ future = { k = 1 } }, decl.entries[6].extra)
+        assert.equals("target:X#2", tt.entry_id(decl.entries[2], "target"))
+        -- Written back in the shortest form; unknown keys keep the table form.
+        assert.same({ "X", "X", { "X", "a" }, { "X", "a" },
+            { name = "X", working_dir = "${target_dir}" }, { name = "X", future = { k = 1 } } }, tt.serialize(decl))
+    end)
+
+    it("an invalid table entry is kept verbatim (no string name, bad args / working_dir)", function()
+        local raw = { { args = { "a" } }, { name = 3 }, { name = "" }, { name = "X", args = "a" },
+            { name = "X", args = { "a", 1 } }, { name = "X", working_dir = 5 } }
+        local decl = tt.parse(raw, "App/Bad")
+        for _, e in ipairs(decl.entries) do assert.is_not_nil(e.invalid) end
+        assert.same(raw, tt.serialize(decl))
+    end)
+
+    it("persists a working_dir in the table form and reads it back", function()
+        local root = make_ws(nil, "variant:default")
+        local ws = load(root)
+        assert.is_true(project(ws, "App"):set_test_targets({ { name = "A", working_dir = "data" },
+            { name = "B", args = { "--b" } }, { name = "C", extra = { later = true } } }))
+        local user = read_json(root .. "/.nvim/loomworks.user.json")
+        assert.same({ { name = "A", working_dir = "data" }, { "B", "--b" }, { name = "C", later = true } },
+            user.projects.App.typescript.tests)
+        local own = project(load(root), "App"):own_test_targets()
+        assert.equals("data", own[1].working_dir)
+        assert.same({ later = true }, own[3].extra)
+    end)
+
+    it("a working_dir change changes the fingerprint (invalidates the test tree)", function()
+        assert.are_not.equal(tt.fingerprint({ { name = "A" } }), tt.fingerprint({ { name = "A", working_dir = "d" } }))
+    end)
+
+    it("resolve_working_dir: absolute as-is, else workspace-root-relative, expanded", function()
+        assert.equals("/abs/d", tt.resolve_working_dir("/abs/d", {}, "/root"))
+        assert.equals("/root/rel/x", tt.resolve_working_dir("rel/${v}", { v = "x" }, "/root"))
+        local p, un = tt.resolve_working_dir("${target_dir}/data", {}, "/root")
+        assert.equals("/root/${target_dir}/data", p)
+        assert.same({ "target_dir" }, un)
+        assert.is_nil(tt.resolve_working_dir(nil, {}, "/root"))
+    end)
+end)
+
+describe("trust: entry working_dir is program-bearing (§17.6)", function()
+    local pf = require("loomworks.program_fields")
+    local SHARED = { projects = { App = { cmake = {
+        configurations = { Tests = { variant = "Release", tests = {
+            { name = "AssetTests", working_dir = "${target_dir}" },
+            { name = "R", args = { "--a" }, working_dir = "w", future = 1 }, "R" } } },
+    } } } }
+    local function stripped()
+        local cfg = require("loomworks.config").parse(vim.json.encode(SHARED), "/root")
+        return cfg, pf.strip(cfg, require("loomworks.modules"))
+    end
+
+    it("strips args and working_dir, keeps names and unknown keys; names the value", function()
+        local cfg, ignored = stripped()
+        assert.same({ "AssetTests", { name = "R", future = 1 }, "R" },
+            cfg.projects.App.type_config.configurations.Tests.tests)
+        local msgs = {}
+        for _, d in ipairs(pf.diagnostics(ignored, cfg)) do msgs[#msgs + 1] = d.message end
+        assert.truthy(vim.tbl_contains(msgs, "loomworks.json sets projects.App.cmake.configurations.Tests.tests "
+            .. "(AssetTests working_dir = ${target_dir}) — ignored: program settings are used only from your "
+            .. "local config (lw help trust)"), vim.inspect(msgs))
+        assert.equals(3, #msgs)
+        -- A working copy giving that occurrence a working_dir silences only that one.
+        local merged = vim.deepcopy(cfg)
+        merged.projects.App.type_config.configurations.Tests.tests[1] = { name = "AssetTests", working_dir = "mine" }
+        assert.equals(2, #pf.diagnostics(ignored, merged))
+    end)
+
+    it("regraft restores the working_dir by name + occurrence, in the table form", function()
+        local _, ignored = stripped()
+        local raw = { projects = { App = { cmake = { configurations = { Tests = { tests = {
+            "New", "R", "AssetTests", { name = "R", working_dir = "mine" } } } } } } } }
+        local _, dropped = pf.regraft(raw, ignored)
+        assert.same({ "New", { name = "R", args = { "--a" }, working_dir = "w" },
+            { name = "AssetTests", working_dir = "${target_dir}" }, { name = "R", working_dir = "mine" } },
+            raw.projects.App.cmake.configurations.Tests.tests)
+        assert.same({}, dropped)
+    end)
+end)
+
+describe("${target_dir} (§8.7)", function()
+    local expand = require("loomworks.expand")
+    local vars = require("loomworks.variables")
+    local function unit_at(bd, here)
+        return { build_dir = function() return bd end, configured_here = function() return here ~= false end }
+    end
+
+    it("is the artifact's host directory; absent without a target or while unconfigured", function()
+        local u = unit_at("/bd")
+        assert.equals("/bd/bin", expand.target_dir({ artifact = "bin/app" }, u))
+        assert.equals("C:/x/out", expand.target_dir({ artifact = "C:\\x\\out\\app.exe" }, nil))
+        assert.is_nil(expand.target_dir({ artifact = "bin/app" }, unit_at("/bd", false)))
+        assert.is_nil(expand.target_dir({ artifact = "bin/app" }, unit_at(nil)))
+        assert.is_nil(expand.target_dir(nil, u))
+    end)
+
+    it("is in the launch context only with a target; project variables may use it", function()
+        local _, pp = fake_unit("A", { build_dir = "/bd", variables = { data = { type = "path", default = "${target_dir}/data" } } })
+        local profile = fake_profile({ pp })
+        local proj = pp._config_unit._project
+        local without = expand.launch_context({ root = "/r" }, profile, proj)
+        assert.is_nil(without.target_dir)
+        assert.same({ "target_dir" }, expand.unresolved_vars("${target_dir}", without))
+        local with = expand.launch_context({ root = "/r" }, profile, proj, { target = fake_target("T") })
+        assert.equals("/bd", with.target_dir)
+        assert.equals("/bd/data", with.data)
+    end)
+
+    it("is a reserved name, but unresolved in configure options", function()
+        assert.is_true(vars.RESERVED_NAMES.target_dir)
+        assert.is_true(vars.LAUNCH_ONLY_NAMES.target_dir)
+    end)
+
+    it("LaunchTarget: a target's --cwd / working_dir and a target-backed launch expand it; deploy too", function()
+        local root = make_ws(nil, "variant:default")
+        local ws = load(root)
+        local p = project(ws, "App")
+        local unit
+        for _, u in pairs(ws._config_units) do if u._project == p then unit = u end end
+        unit.state_value, unit.build_dir_value = "built", root .. "/build"
+        unit.targets = { CoreTests = Target.new(unit, "CoreTests", { type = "executable", artifact = "bin/c" }) }
+        p.launch = { chk = { target = "CoreTests", working_dir = "${target_dir}/w", args = { "${target_dir}" } },
+            cmd = { command = "tool", working_dir = "${target_dir}" } }
+        local profile = ws._profiles[1]
+        local LT = require("loomworks.launch_target")
+        local t = LT.new(ws, profile, { project = "App", target = "CoreTests" })
+        assert.equals(root .. "/build/bin/x", t:_effective_cwd("${target_dir}/x"))
+        local l = LT.new(ws, profile, { project = "App", launch = "chk" })
+        local spec = l:resolve_command_spec()
+        assert.equals(root .. "/build/bin/w", spec.cwd)
+        assert.same({ root .. "/build/bin" }, spec.args)
+        -- A command launch resolves no target: the reference stays unresolved.
+        local c = LT.new(ws, profile, { project = "App", launch = "cmd" })
+        assert.truthy(c:resolve_command_spec().cwd:find("${target_dir}", 1, true))
+        -- Deploy destinations of a target-backed launch.
+        local deploy = require("loomworks.deploy")
+        local orig = expand.launch_context
+        local seen
+        expand.launch_context = function(w, pr, pj, o) seen = o and o.target; return orig(w, pr, pj, o) end
+        deploy.resolve_deploy_step("${target_dir}/x", { project = "App", path = "f" },
+            { workspace = ws, profile = profile, launch_project = p, launch_build_target = unit.targets.CoreTests })
+        expand.launch_context = orig
+        assert.equals(unit.targets.CoreTests, seen)
+    end)
+end)
+
+describe("lw test: working directories (§16.16)", function()
+    local gtest = require("loomworks.gtest")
+    local orig_probe
+    before_each(function() orig_probe = gtest.probe_sync; gtest.probe_sync = function() return nil end end)
+    after_each(function() gtest.probe_sync = orig_probe end)
+
+    local function lt_for(c, seen)
+        local cfg = c.kind == "launch" and c.project.launch[c.name] or nil
+        return {
+            _launch_config = cfg,
+            is_valid = function() return true end,
+            deploy_sync = function() return true end,
+            resolve_launch_spec = function(_, o)
+                seen[#seen + 1] = o and o.working_dir or false
+                if cfg then return { cmd = cfg.command or "/bin/L", args = {}, cwd = cfg.working_dir or "/proj" } end
+                return { cmd = "/bin/" .. c.name, args = {}, cwd = "/proj" }
+            end,
+        }
+    end
+
+    it("an entry runs in its working_dir, else the launch's, else the project directory", function()
+        local _, ppa = fake_unit("A", { build_dir = "/bd",
+            saved = { { name = "T", working_dir = "${target_dir}/data" }, "T", { name = "chk", working_dir = "rel" }, "chk" },
+            targets = { T = fake_target("T") },
+            launch = { chk = { command = "/usr/bin/chk", working_dir = "/w" } } })
+        local cwds, seen = {}, {}
+        local deps = {
+            build = function() end,
+            run_spec = function(step) cwds[#cwds + 1] = step.cwd; return 0 end,
+            launch_target = function(_, _, c) return lt_for(c, seen) end,
+        }
+        local r = capture(function()
+            return cli._test_plan({ root = "/root" }, fake_profile({ ppa }), { extra = {}, dev = cli._new_device_opts() }, deps)
+        end)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.same({ "/bd/data", "/proj", "/root/rel", "/w" }, cwds)
+    end)
+
+    it("a device step ignores the entry's working_dir and says so", function()
+        local _, ppa = fake_unit("A", { saved = { { name = "T", working_dir = "d" } }, targets = { T = fake_target("T") } })
+        local orig_f = cli._foreign_of
+        local foreign = require("loomworks.remote.foreign")
+        local orig_ref = foreign.refusal
+        cli._foreign_of = function() return { name = "T" } end
+        foreign.refusal = function() return "no runner here" end
+        local r = capture(function()
+            return cli._test_plan({ root = "/root" }, fake_profile({ ppa }), { extra = {}, dev = cli._new_device_opts() },
+                { build = function() end, run_spec = function() return 0 end,
+                  launch_target = function(_, _, c) return lt_for(c, {}) end })
+        end)
+        cli._foreign_of, foreign.refusal = orig_f, orig_ref
+        assert.truthy(r.stdout:find("==> [test] A: T (on a device; its working_dir is not used there)", 1, true), r.stdout)
+    end)
+
+    it("--target --cwd overrides every named target's directory; refused without --target and on a device", function()
+        local seen = {}
+        local c = { kind = "target", name = "T", project = { key = "A" } }
+        local deps = { build = function() end, run_spec = function() return 0 end,
+            resolve_target = function() return lt_for(c, seen) end }
+        local r = capture(function()
+            return cli._test_targets({ root = "/root" }, { key = "P" }, { "T", "T" },
+                { extra = {}, dev = cli._new_device_opts(), cwd_override = "${target_dir}" }, deps)
+        end)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.same({ "${target_dir}", "${target_dir}" }, seen)      -- expanded per target by its LaunchTarget
+        local u = capture(function() cli.cmd_test({}, { "test", "--cwd", "/x" }) end)
+        assert.equals(2, u.exit_code)
+        assert.truthy(u.stderr:find("--target", 1, true))
+        local orig_f = cli._foreign_of
+        cli._foreign_of = function() return { name = "T", platform = "arm64" } end
+        local d = capture(function()
+            return cli._test_targets({ root = "/root" }, { key = "P" }, { "T" },
+                { extra = {}, dev = cli._new_device_opts(), cwd_override = "/x" }, deps)
+        end)
+        cli._foreign_of = orig_f
+        assert.equals(1, d.exit_code)
+        assert.truthy(d.stderr:find("--cwd does not apply to a device run", 1, true), d.stderr)
+    end)
+
+    it("--list --json: working_dir as written and expanded (null when unresolved), also_target", function()
+        local _, ppa = fake_unit("A", { build_dir = "/bd",
+            saved = { { name = "T", working_dir = "${target_dir}" }, "T", { name = "L", working_dir = "${lw_no_such_var_xyz}" }, "L" },
+            targets = { T = fake_target("T"), L = fake_target("L") }, launch = { L = { command = "tool" } } })
+        local r = capture(function() return cli._test_plan_report({ root = "/root" }, fake_profile({ ppa }), nil, true) end)
+        local es = vim.json.decode(r.stdout).units[1].saved.entries
+        assert.equals("${target_dir}", es[1].working_dir)
+        assert.equals("/bd", es[1].working_dir_expanded)
+        assert.equals(vim.NIL, es[2].working_dir)
+        assert.equals(vim.NIL, es[2].working_dir_expanded)
+        assert.equals(vim.NIL, es[3].working_dir_expanded)    -- unresolved reference
+        assert.is_true(es[4].also_target)
+        assert.is_nil(es[1].also_target)
+        -- Not configured here: ${target_dir} is unavailable, also_target absent.
+        local _, ppb = fake_unit("B", { here = false, build_dir = "/bd",
+            saved = { { name = "T", working_dir = "${target_dir}" }, "L" }, launch = { L = { command = "tool" } } })
+        local u = capture(function() return cli._test_plan_report({ root = "/root" }, fake_profile({ ppb }), nil, true) end)
+        local ub = vim.json.decode(u.stdout).units[1].saved.entries
+        assert.equals(vim.NIL, ub[1].working_dir_expanded)
+        assert.is_nil(ub[2].also_target)
+        -- Text form shows it.
+        local t = capture(function() return cli._test_plan_report({ root = "/root" }, fake_profile({ ppa }), nil, false) end)
+        assert.truthy(t.stdout:find("(in ${target_dir} → /bd)", 1, true), t.stdout)
+    end)
+end)
+
+describe("lw test-target add --working-dir (§16.9)", function()
+    it("stores the working_dir unexpanded in the table form; list shows it; remove refuses it", function()
+        local root = make_ws(nil, "variant:default")
+        local ws = load(root)
+        for _, u in pairs(ws._config_units or {}) do
+            u.targets = { CoreTests = Target.new(u, "CoreTests", { type = "executable", artifact = "c" }) }
+        end
+        local r = capture(function() return cli._tt_add(root,
+            { "test-target", "add", "Dev", "CoreTests", "--working-dir", "${target_dir}", "--", "--a" }, ws) end)
+        assert.is_nil(r.exit_code, r.stderr)
+        capture(function() return cli._tt_add(root, { "test-target", "add", "Dev", "CoreTests", "--cwd", "data" }, ws) end)
+        capture(function() return cli._tt_add(root, { "test-target", "add", "Dev", "CoreTests" }, ws) end)
+        local user = read_json(root .. "/.nvim/loomworks.user.json")
+        assert.same({ { name = "CoreTests", args = { "--a" }, working_dir = "${target_dir}" },
+            { name = "CoreTests", working_dir = "data" }, "CoreTests" }, user.projects.App.typescript.tests)
+        local l = capture(function() return cli._tt_list(root, nil, ws) end)
+        assert.truthy(l.stdout:find("CoreTests #1  --a  (in ${target_dir})", 1, true), l.stdout)
+        local rm = capture(function() return cli._tt_remove(root,
+            { "test-target", "remove", "Dev", "CoreTests", "--working-dir", "x" }, ws) end)
+        assert.equals(2, rm.exit_code)
+    end)
+end)
+
+describe("saved-targets TestUnit: working directories (§8.9.2)", function()
+    it("target and launch entries run in the entry's working_dir; such a target never merges", function()
+        local SavedTU = require("loomworks.test_units.saved_targets")
+        local orig_lt = package.loaded["loomworks.launch_target"]
+        package.loaded["loomworks.launch_target"] = { new = function()
+            return { deploy_sync = function() return true end,
+                resolve_launch_spec = function() return { cmd = "/usr/bin/tool", args = {}, cwd = "/w" } end }
+        end }
+        local unit
+        local project = { key = "App", launch = { chk = { command = "tool" } } }
+        local ws = { root = "/root", _projects = { project }, _profiles = {} }
+        local profile = { key = "Dev", project = function(_, k) return k == "App" and { _config_unit = unit } or nil end }
+        local raw = { { name = "Run", working_dir = "${target_dir}/d" }, { name = "chk", working_dir = "rel" }, "chk" }
+        unit = {
+            _project = project, _workspace = ws,
+            build_dir = function() return "/b" end,
+            ensure_targets = function() return unit.targets end,
+            saved_test_targets = function()
+                local d = tt.parse(raw, "App/Tests")
+                return { entries = d.entries, source = { name = "Tests", _project = project } }
+            end,
+            context_profile = function() return profile end,
+            configured_here = function() return true end,
+            run_env = function() return nil end,
+        }
+        unit.targets = { Run = Target.new(unit, "Run", { type = "executable", artifact = "bin/Run" }) }
+        local tu = SavedTU.new(unit)
+        local entries = tu:discover()
+        assert.is_true(entries[1].saved_working_dir)
+        assert.equals("/b/bin/d", tu:test_command("target:Run").cwd)
+        assert.equals("/root/rel", tu:test_command("launch:chk").cwd)
+        assert.equals("/w", tu:test_command("launch:chk#2").cwd)
+        package.loaded["loomworks.launch_target"] = orig_lt
+        local merged = ConfigUnit._merge_test_entries({ {}, { is_saved_targets = true } }, {
+            { { id = "target:Run", executable = entries[1].executable } }, { entries[1] } })
+        assert.equals(2, #merged)
     end)
 end)

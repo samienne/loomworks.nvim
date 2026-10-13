@@ -2132,7 +2132,7 @@ ensure_unit_targets = function(ws, unit)
   if ok and targets then unit:set_targets(targets) end
 end
 
---- `lw test [profile] [--target <exe>… | --saved | --discovered] [--junit <file>]
+--- `lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--junit <file>]
 --- [--list [--json]] [-- <args>]` — build a profile, then run its test plan
 --- (spec §16.16): per unit, the module's native batch runner, then its saved
 --- test targets. `--target` replaces the whole plan for the run; `--saved` /
@@ -2149,7 +2149,7 @@ function M.cmd_test(ws, args)
   end
   -- Pre-`--` tokens: `--junit <file>`, `--target <exe>` (repeatable), the plan
   -- selectors, `--list [--json]`, device options (§16.34) and a profile.
-  local profile_name, junit, sel, list, json
+  local profile_name, junit, sel, list, json, cwd_override
   local names, dev_opts = {}, DEV.new_device_opts()
   local selectors = 0
   local i = 1
@@ -2170,12 +2170,16 @@ function M.cmd_test(ws, args)
       i = i + 1
     elseif pre[i] == "--list" then list = true; i = i + 1
     elseif pre[i] == "--json" then json = true; i = i + 1
+    elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then
+      cwd_override = pre[i + 1]
+      if not cwd_override then die(pre[i] .. " requires a directory", 2) end
+      i = i + 2
     elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
     elseif not profile_name then
       profile_name = pre[i]; i = i + 1
     else
       die("unexpected argument '" .. tostring(pre[i]) ..
-        "' — usage: lw test [profile] [--target <exe>… | --saved | --discovered] [--junit <file>] [-- args…]")
+        "' — usage: lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--junit <file>] [-- args…]")
     end
   end
   if selectors > 1 then
@@ -2183,6 +2187,12 @@ function M.cmd_test(ws, args)
       .. "(see `lw help test`)", 2)
   end
   if json and not list then die("--json goes with --list: lw test [profile] --list --json", 2) end
+  -- The per-invocation working directory applies to named targets only
+  -- (§16.16); a saved entry carries its own `working_dir`.
+  if cwd_override and #names == 0 then
+    die("--cwd applies to named test executables: lw test [profile] --target <exe> --cwd <dir>"
+      .. " (a saved test target takes its own: lw test-target add … --working-dir <dir>)", 2)
+  end
   if junit then junit = resolve_abs_out(junit, user_cwd()) end
 
   -- The plan report is read-only (§16.9): the listing profile resolution.
@@ -2196,7 +2206,8 @@ function M.cmd_test(ws, args)
 
   -- Named test executables replace the whole plan (§16.16).
   if #names > 0 then
-    return M._test_targets(ws, profile, names, { junit = junit, extra = extra, dev = dev_opts })
+    return M._test_targets(ws, profile, names, { junit = junit, extra = extra, dev = dev_opts,
+      cwd_override = cwd_override })
   end
   return M._test_plan(ws, profile, { sel = sel, junit = junit, extra = extra, dev = dev_opts })
 end
@@ -2554,7 +2565,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
   local args = {}
   if cfg and cfg.args then
     local expand = require("loomworks.expand")
-    local ctx = expand.launch_context(ws, lt._profile, project)
+    local ctx = expand.launch_context(ws, lt._profile, project, { target = f.target })
     for _, a in ipairs(expand.expand_array(cfg.args, ctx) or {}) do args[#args + 1] = a end
   end
   for _, a in ipairs(opts.extra_args or {}) do args[#args + 1] = a end
@@ -2672,7 +2683,12 @@ end
 --- judged from exit status + parsed results (+ crashes / missing results on a
 --- device). Prints the step header and its one-line outcome; writes JUnit to
 --- `opts.junit_path` when given.
---- `opts = { label, header?, args?, extra?, dev, junit_path?, saved? }`. With
+--- `opts = { label, header?, args?, extra?, dev, junit_path?, saved?, cwd?,
+--- entry_working_dir?, cwd_override? }`: `cwd` is a saved entry's resolved
+--- working directory (absolute; it replaces the program's), `entry_working_dir`
+--- the entry's `working_dir` as written (a device step notes it is not used),
+--- `cwd_override` a named target's per-invocation `--cwd` (raw, expanded in
+--- the target's launch context; refused for a device run). With
 --- `saved` (a saved entry's step) a refused or unresolvable run fails the step
 --- instead of the invocation, and a program without per-case results is
 --- judged on its exit status alone and written to JUnit as one test case.
@@ -2699,7 +2715,13 @@ function M._run_test_executable(ws, lt, opts, deps)
     return { msg }
   end
 
-  out(string.format("==> [test] %s%s", opts.header or label, f and " (on a device)" or ""))
+  if f and opts.cwd_override then
+    die("--cwd does not apply to a device run ('" .. label .. "') — set the project's device.working_dir instead")
+  end
+  -- A device step takes its working directory from the `device` block, never
+  -- from the entry (§1.3.4 "Working directory"): say so.
+  out(string.format("==> [test] %s%s", opts.header or label,
+    f and (opts.entry_working_dir and " (on a device; its working_dir is not used there)" or " (on a device)") or ""))
   if opts.saved then
     local ok, why = lt:is_valid()
     if not ok then
@@ -2738,11 +2760,13 @@ function M._run_test_executable(ws, lt, opts, deps)
       transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
     remote_run.report(outcome, function(s2) errw(s2 .. "\n") end, failed)
   else
-    local spec, serr = lt:resolve_launch_spec({})
+    local spec, serr = lt:resolve_launch_spec({ working_dir = opts.cwd_override })
     if not spec then
       reasons = refuse("cannot resolve test executable: " .. tostring(serr))
       failed = true
     else
+      -- A saved entry's working directory replaces the program's (§1.3.4).
+      if opts.cwd then spec.cwd = opts.cwd end
       local xml
       if artifact and gtest.probe_sync(spec.cmd, label, { env = spec.env, cwd = spec.cwd }) == "gtest" then
         results_requested = true
@@ -2798,8 +2822,9 @@ function M._run_test_executable(ws, lt, opts, deps)
 end
 
 --- Run named test executables (spec §16.16, §18.6): build the profile, then
---- run each named executable through `M._run_test_executable`.
---- `opts = { junit?, extra = string[], dev = device options }`.
+--- run each named executable through `M._run_test_executable`, in its
+--- project directory or the per-invocation `cwd_override`.
+--- `opts = { junit?, extra = string[], dev = device options, cwd_override? }`.
 --- `deps` (tests): build(profile, ws), resolve_target(ws, profile, name) → lt,
 --- run_spec, backend, liveness_ms, write_out, write_err.
 --- @return integer exit code
@@ -2833,7 +2858,7 @@ function M._test_targets(ws, profile, names, opts, deps)
   for _, name in ipairs(names) do
     local lt = resolve(name)
     local failed = M._run_test_executable(ws, lt, {
-      label = name, extra = opts.extra, dev = opts.dev,
+      label = name, extra = opts.extra, dev = opts.dev, cwd_override = opts.cwd_override,
       junit_path = opts.junit and test_run.junit_path(opts.junit, name, several) or nil,
     }, deps)
     if failed then failed_names[#failed_names + 1] = name end
@@ -3011,18 +3036,24 @@ function M._test_plan(ws, profile, opts, deps)
       u.exec = {}
       local level = u.saved and test_targets.level_label(u.saved.source) or u.project.key
       local rctx = M._tt_rctx(ws, u.unit, u.project, level)
-      local lctx = #u.entries > 0 and require("loomworks.expand").launch_context(ws, profile, u.project) or nil
       for _, e in ipairs(u.entries) do
         local r = test_targets.resolve_entry(e, rctx)
-        if r.state == "ok" and r.kind == "launch" then
-          local lt = (deps.launch_target or candidate_launch_target)(ws, profile,
-            { kind = "launch", project = u.project, name = e.name })
-          u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = "launch", args = test_targets.expand_args(e.args, lctx) }
-        elseif r.state == "ok" then
-          local dname = (r.target.display_name and r.target:display_name()) or r.target.id
-          local lt = (deps.launch_target or candidate_launch_target)(ws, profile,
-            { kind = "target", project = u.project, name = dname, target_id = r.target.id })
-          u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = "target", args = test_targets.expand_args(e.args, lctx) }
+        -- Args and working_dir expand in the entry's launch context, where
+        -- `${target_dir}` is its build target's artifact directory (§8.7).
+        local lctx = r.state == "ok"
+          and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
+        if r.state == "ok" then
+          local lt
+          if r.kind == "launch" then
+            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
+              { kind = "launch", project = u.project, name = e.name })
+          else
+            local dname = (r.target.display_name and r.target:display_name()) or r.target.id
+            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
+              { kind = "target", project = u.project, name = dname, target_id = r.target.id })
+          end
+          u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = r.kind, args = test_targets.expand_args(e.args, lctx),
+            cwd = (test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)) }
         else
           local why = r.reason or ("cannot be resolved (the build targets of " .. u.project.key .. " are unknown)")
           if e.decl_invalid then why = "`tests` of " .. level .. " is not an array of saved test entries" end
@@ -3052,7 +3083,7 @@ function M._test_plan(ws, profile, opts, deps)
       end
       for _, x in ipairs(u.exec) do
         steps[#steps + 1] = { kind = "exec", unit = u.unit, project = u.project, entry = x.entry,
-          lt = x.lt, args = x.args, label = x.entry.name }
+          lt = x.lt, args = x.args, cwd = x.cwd, label = x.entry.name }
         labels[x.entry.name] = (labels[x.entry.name] or 0) + 1
       end
     end
@@ -3117,7 +3148,8 @@ function M._test_plan(ws, profile, opts, deps)
         local name = test_targets.entry_label(st.entry)
         local failed, reasons, _, exit_only = M._run_test_executable(ws, st.lt, {
           label = name, header = st.project.key .. ": " .. name, saved = true,
-          args = st.args, extra = extra, dev = opts.dev, junit_path = junit_for(st.label),
+          args = st.args, cwd = st.cwd, entry_working_dir = st.entry.working_dir,
+          extra = extra, dev = opts.dev, junit_path = junit_for(st.label),
         }, deps)
         if failed then n_failed = n_failed + 1 end
         summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
@@ -3147,10 +3179,13 @@ function M._test_plan(ws, profile, opts, deps)
 end
 
 --- One saved entry of the plan report (spec §16.16 "Plan report"): name,
---- occurrence index, resolved kind, args as written and expanded, and a
---- resolution state. `here` = the unit is configured on this machine.
+--- occurrence index, resolved kind, args and working_dir as written and
+--- expanded, and a resolution state. `here` = the unit is configured on this
+--- machine. Values expand in the entry's launch context (`${target_dir}`
+--- only where its build target is known); an unresolved reference leaves the
+--- expanded value nil.
 --- @return table
-function M._report_entry(ws, profile, u, e, here, lctx, local_only)
+function M._report_entry(ws, profile, u, e, here, local_only)
   local test_targets = require("loomworks.test_targets")
   local level = test_targets.level_label(u.saved and u.saved.source)
   local rctx = M._tt_rctx(ws, here and u.unit or nil, u.project, level)
@@ -3165,6 +3200,7 @@ function M._report_entry(ws, profile, u, e, here, lctx, local_only)
     -- target nobody built here yet.
     state = "not built"
   end
+  local lctx = e.name and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
   local expanded
   if e.args and #e.args > 0 then
     local ex, unresolved = test_targets.expand_args(e.args, lctx)
@@ -3172,11 +3208,18 @@ function M._report_entry(ws, profile, u, e, here, lctx, local_only)
   elseif e.name then
     expanded = {}
   end
+  local wd_expanded
+  if e.working_dir then
+    local abs, unresolved = test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)
+    if #unresolved == 0 then wd_expanded = abs end
+  end
+  local program_values = (e.args and #e.args > 0) or e.working_dir ~= nil
   return {
     name = e.name, index = e.index or 1, repeated = e.repeated or nil,
     invalid = e.invalid ~= nil and (e.decl_invalid and "tests (not an array)" or e.invalid) or nil,
     kind = r.kind, also_target = r.also_target, args = e.args or {}, args_expanded = expanded,
-    local_only = (e.args and #e.args > 0 and local_only) or nil, state = state, reason = r.reason,
+    working_dir = e.working_dir, working_dir_expanded = wd_expanded,
+    local_only = (program_values and local_only) or nil, state = state, reason = r.reason,
   }
 end
 
@@ -3223,14 +3266,13 @@ function M._test_plan_report(ws, profile, sel, json)
     if u.saved and #u.entries > 0 then
       if here then ensure_unit_targets(ws, unit) end
       local src = u.saved.source
-      -- Args from the shared layer only are stripped (§17.6): mark entries of
-      -- a list that also reaches loomworks.json.
+      -- Args and working_dir from the shared layer only are stripped (§17.6):
+      -- mark entries of a list that also reaches loomworks.json.
       local local_only = src and src._intent ~= nil and src._intent ~= "local"
-      local lctx = require("loomworks.expand").launch_context(ws, profile, u.project)
       ju.saved = { source = test_targets.source_text(src, u.pp:configuration()),
         level = test_targets.level_label(src), entries = {} }
       for _, e in ipairs(u.entries) do
-        table.insert(ju.saved.entries, M._report_entry(ws, profile, u, e, here, lctx, local_only))
+        table.insert(ju.saved.entries, M._report_entry(ws, profile, u, e, here, local_only))
         any = true
       end
     elseif u.unsupported then
@@ -3241,9 +3283,13 @@ function M._test_plan_report(ws, profile, sel, json)
   if json then
     for _, ju in ipairs(units) do
       for _, e in ipairs(ju.saved and ju.saved.entries or {}) do
-        -- Machine form (§16.16): kind / expanded args null when unknown.
+        -- Machine form (§16.16): kind / expanded args null when unknown;
+        -- working_dir null when the entry has none, its expansion null then
+        -- or when a reference in it is unresolved.
         e.kind = e.kind or vim.NIL
         e.args_expanded = e.args_expanded or vim.NIL
+        e.working_dir = e.working_dir or vim.NIL
+        e.working_dir_expanded = e.working_dir_expanded or vim.NIL
         e.source = ju.saved.source
         e.repeated, e.reason = nil, nil
       end
@@ -3276,8 +3322,15 @@ function M._test_plan_report(ws, profile, sel, json)
             args = "  " .. table.concat(e.args, " ")
             local ex = e.args_expanded and table.concat(e.args_expanded, " ")
             if ex and ex ~= table.concat(e.args, " ") then args = args .. "  → " .. ex end
-            if e.local_only then args = args .. "  (local only)" end
           end
+          if e.working_dir then
+            args = args .. "  (in " .. e.working_dir
+            if e.working_dir_expanded and e.working_dir_expanded ~= e.working_dir then
+              args = args .. " → " .. e.working_dir_expanded
+            end
+            args = args .. ")"
+          end
+          if e.local_only then args = args .. "  (local only)" end
           local kind = e.kind and (e.kind .. (e.also_target and ", also a build target" or "")) or "?"
           out(string.format("    %s%s  [%s; %s]  %s", name, args, kind, ju.saved.source, e.state))
         end
@@ -5402,6 +5455,7 @@ function M._show_test_targets(eff, cfg)
   local names = {}
   for _, e in ipairs(eff.entries) do
     names[#names + 1] = tt.entry_label(e) .. ((e.args and #e.args > 0) and (" [" .. table.concat(e.args, " ") .. "]") or "")
+      .. (e.working_dir and (" (in " .. e.working_dir .. ")") or "")
   end
   if eff.invalid then names = { "invalid (not an array)" } end
   out("  tests           " .. (#names > 0 and table.concat(names, ", ") or "none (explicit)") ..
@@ -6669,13 +6723,13 @@ end
 -- ---------------------------------------------------------------------------
 
 M.TEST_TARGET_USAGE = "usage: lw test-target [list] [profile]\n" ..
-  "       lw test-target add [<profile>] <name>… [--config <name> | --project-wide] [--unchecked] [-- <args>…]\n" ..
+  "       lw test-target add [<profile>] <name>… [--config <name> | --project-wide] [--working-dir <dir>] [--unchecked] [-- <args>…]\n" ..
   "       lw test-target remove [<profile>] <name>… [--index <k>] [--config <name> | --project-wide]\n" ..
   "       lw test-target clear [<profile>] [<project>] [--config <name> | --project-wide] [--empty]"
 
 --- Parse a `lw test-target <sub>` argv: positionals, `--config <name>`,
---- `--project-wide`, `--unchecked`, `--empty`, `--index <k>`, and args after
---- `--`.
+--- `--project-wide`, `--unchecked`, `--empty`, `--index <k>`,
+--- `--working-dir <dir>` (alias `--cwd`), and args after `--`.
 function M._tt_parse(args)
   local o = { pos = {}, extra = nil }
   local i = 3
@@ -6695,6 +6749,12 @@ function M._tt_parse(args)
         die("--index needs an occurrence index (1, 2, …) as `lw test-target` lists it\n" .. M.TEST_TARGET_USAGE, 2)
       end
       o.index = k
+      i = i + 2
+    elseif a == "--working-dir" or a == "--cwd" then
+      o.working_dir = args[i + 1]
+      if not o.working_dir or o.working_dir == "" then
+        die(a .. " needs a directory (absolute or workspace-root-relative)\n" .. M.TEST_TARGET_USAGE, 2)
+      end
       i = i + 2
     elseif a == "--project-wide" then o.project_wide = true; i = i + 1
     elseif a == "--unchecked" then o.unchecked = true; i = i + 1
@@ -6887,9 +6947,11 @@ function M._tt_base(level)
   return {}, nil
 end
 
---- `lw test-target add [<profile>] <name>… [--config|--project-wide] [--unchecked] [-- args]`.
---- Appends one entry per name, even for a name already in the list (§1.3.4
---- "Duplicates"), and reports a repeated name's occurrence index.
+--- `lw test-target add [<profile>] <name>… [--config|--project-wide] [--working-dir <dir>]
+--- [--unchecked] [-- args]`. Appends one entry per name, even for a name
+--- already in the list (§1.3.4 "Duplicates"), and reports a repeated name's
+--- occurrence index. Args and the working_dir are stored unexpanded; an entry
+--- with a working_dir is written in the table form.
 --- (`ws_in`, tests: an already-loaded workspace.)
 function M._tt_add(root, args, ws_in)
   local o = M._tt_parse(args)
@@ -6916,7 +6978,8 @@ function M._tt_add(root, args, ws_in)
     local entries, copied = M._tt_base(level)
     local labels = {}
     for _, n in ipairs(g.names) do
-      entries[#entries + 1] = { name = n.name, args = new_args and vim.deepcopy(new_args) or nil }
+      entries[#entries + 1] = { name = n.name, args = new_args and vim.deepcopy(new_args) or nil,
+        working_dir = o.working_dir }
       local k = 0
       for _, e in ipairs(entries) do if e.name == n.name then k = k + 1 end end
       labels[#labels + 1] = n.name .. (k > 1 and (" #" .. k) or "") .. (n.kind and (" (" .. n.kind .. ")") or "")
@@ -6933,6 +6996,7 @@ end
 function M._tt_remove(root, args, ws_in)
   local o = M._tt_parse(args)
   if o.extra then die("arguments after `--` apply to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  if o.working_dir then die("--working-dir applies to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
   local ws = ws_in or load_workspace(root, false)
   local profile, names = M._tt_profile(ws, o.pos, "lw test-target remove <profile> <name>")
   if #names == 0 then die(M.TEST_TARGET_USAGE, 2) end
@@ -6945,16 +7009,24 @@ function M._tt_remove(root, args, ws_in)
     local scope, bare = nil, name
     local pfx, rest = name:match("^([^:]+):(.+)$")
     if pfx and profile:project(pfx) then scope, bare = pfx, rest end
-    local hits = {}
+    local hits, invalid_levels = {}, {}
     for _, pp in ipairs(profile:projects()) do
       local project = pp._config_unit and pp._config_unit._project or pp._project
       if project and (not scope or project.key == scope) then
         local level = M._tt_level(profile, project, o)
+        if level._tests and level._tests.invalid then
+          invalid_levels[#invalid_levels + 1] = { project = project, level = level }
+        end
         local eff = M._tt_effective(level)
         for _, e in ipairs(eff and eff.entries or {}) do
           if e.name == bare then hits[#hits + 1] = { project = project, level = level, eff = eff }; break end
         end
       end
+    end
+    -- A level whose own `tests` is not an array cannot be searched or edited
+    -- (§1.3.4): refuse it before saying the name is not saved.
+    if #hits == 0 and invalid_levels[1] then
+      M._tt_refuse_invalid(profile, invalid_levels[1].project, invalid_levels[1].level)
     end
     if #hits == 0 then
       out("'" .. name .. "' is not saved for profile '" .. profile.key .. "' (nothing to remove)")
@@ -7014,6 +7086,7 @@ end
 function M._tt_clear(root, args, ws_in)
   local o = M._tt_parse(args)
   if o.extra then die("arguments after `--` apply to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
+  if o.working_dir then die("--working-dir applies to `add` only\n" .. M.TEST_TARGET_USAGE, 2) end
   if o.index then die("--index applies to `remove` only\n" .. M.TEST_TARGET_USAGE, 2) end
   local ws = ws_in or load_workspace(root, false)
   local pos = o.pos
@@ -7062,7 +7135,7 @@ end
 
 --- `lw test-target [list] [profile]`: per project of the profile, the
 --- effective saved list in order — each entry's name, its occurrence index
---- where the name repeats, its args as written, its resolved kind where known
+--- where the name repeats, its args and working_dir as written, its resolved kind where known
 --- — and the list's source (read-only).
 function M._tt_list(root, name, ws_in)
   local test_targets = require("loomworks.test_targets")
@@ -7095,6 +7168,7 @@ function M._tt_list(root, name, ws_in)
           local kind = r.state == "missing" and "missing" or r.kind
           out("    " .. test_targets.entry_label(e)
             .. ((e.args and #e.args > 0) and ("  " .. table.concat(e.args, " ")) or "")
+            .. (e.working_dir and ("  (in " .. e.working_dir .. ")") or "")
             .. (kind and ("  [" .. kind .. "]") or ""))
         end
       elseif eff then
@@ -10293,7 +10367,7 @@ function M.cmd_complete(cword, words)
     elseif sub == "add" or sub == "remove" then
       local ws_c = comp_ws(root)
       emit(sorted_unique(vim.list_extend(vim.list_extend({ "--config", "--project-wide" },
-        sub == "add" and { "--unchecked" } or { "--index" }), comp_profile_names(ws_c))))
+        sub == "add" and { "--unchecked", "--working-dir" } or { "--index" }), comp_profile_names(ws_c))))
     elseif sub == "clear" then
       emit(sorted_unique(vim.list_extend({ "--config", "--project-wide", "--empty" },
         comp_profile_names(comp_ws(root)))))
@@ -10925,7 +10999,7 @@ args/env/working-dir layered on top — no hand-written path.
 Configs live in the project's working copy; they reach loomworks.json when the
 project is published (`lw project publish <project>`).]],
   test = [[lw test [profile | config-set] [--saved | --discovered] [--junit <file>] [-- args…]
-lw test [profile] --target <exe> [--target <exe>…] [--junit <file>] [-- exe-args…]
+lw test [profile] --target <exe> [--target <exe>…] [--cwd <dir>] [--junit <file>] [-- exe-args…]
 lw test [profile] --list [--json] [--saved | --discovered]
 
 Build a profile, then run its test plan: per project, the module's NATIVE
@@ -10945,8 +11019,9 @@ profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
   --saved        run only the saved test executables (no native runners)
   --discovered   run only the native runners (saved lists ignored)
   --list         print the plan without configuring, building or running:
-                 each saved entry's kind (target / launch), args (written and
-                 expanded), source and state (--json: machine-readable)
+                 each saved entry's kind (target / launch), args and working_dir
+                 (written and expanded), source and state (--json:
+                 machine-readable)
   --junit <file> Write JUnit XML for CI reporters. ctest maps to
                  --output-junit; meson's fixed testlog is copied here. One file
                  when the plan has one step; otherwise one per step, a label
@@ -10960,6 +11035,9 @@ A saved entry that names neither a launch configuration nor an executable
 target of its project fails the run before anything executes. A launch entry
 runs like `lw run <name>`: its deploy steps, then the program with the
 launch's environment, working directory and own args, then the entry's args.
+An entry runs in its own working_dir when it has one, else a launch entry in
+the launch's, a build target in its project directory (`${target_dir}` names
+the directory of the target's executable).
 Only a gtest executable built by the project gets per-test results
 (--gtest_output); any other entry passes or fails on its exit status (one
 JUnit case). A saved target also registered with ctest runs in both steps
@@ -10971,7 +11049,10 @@ CI example (JUnit + 4-way parallel ctest):
 Named test executables (--target, repeatable) replace the whole plan: each is
 built and run DIRECTLY with gtest's XML results option; the outcome fails on a
 non-zero exit, a failed test in the XML, a missing XML, or (on a device) a
-crash report. Args after `--` go to each executable. A cross-built executable
+crash report. Args after `--` go to each executable. Each runs in its project
+directory, or every one in --cwd <dir> (alias --working-dir; absolute or
+workspace-root-relative, ${...} expanded per target, e.g. --cwd '${target_dir}');
+--cwd is refused without --target and for a device run. A cross-built executable
 runs on a device (`lw help device`; --device, --fresh, --timeout,
 --query-timeout, --transfer-timeout, --log, --no-wait apply). On a profile whose
 kit cross-compiles, a project's native runner cannot run on this host: it is
@@ -10979,25 +11060,31 @@ skipped (with a note) when the project has saved test targets, which run on a
 device; with none at all the run is refused:
   lw test Debug:ohos-kit --target MyTests -- --gtest_filter=Scene.*]],
   ["test-target"] = [[lw test-target [list] [profile]
-lw test-target add [<profile>] <name>… [--config <name> | --project-wide] [--unchecked] [-- <args>…]
+lw test-target add [<profile>] <name>… [--config <name> | --project-wide] [--working-dir <dir>] [--unchecked] [-- <args>…]
 lw test-target remove [<profile>] <name>… [--index <k>] [--config <name> | --project-wide]
 lw test-target clear [<profile>] [<project>] [--config <name> | --project-wide] [--empty]
 
 Saved test targets: programs plain `lw test` runs after each project's native
 runner. Each entry names a build target or a launch configuration of its
-project ("Name" or ["Name", "arg", …] in the file); when both exist the launch
-configuration wins. A name may be listed several times (e.g. with different
+project ("Name", ["Name", "arg", …] or { "name": "Name", "args": […],
+"working_dir": "…" } in the file); when both exist the launch configuration
+wins. A name may be listed several times (e.g. with different
 args); its entries are told apart by occurrence (#1, #2, …). A configuration
 uses its own list, else its base's, else the project-wide one; the nearest
 list wins whole (lists never merge), and an explicit empty list means "none
-here". Args expand ${...} variables like launch args; names never do.
+here". Args and working_dir expand ${...} variables like a launch's (with
+${target_dir}: the directory of the entry's build-target executable); names
+never do. An entry runs in its working_dir, else (a launch) the launch's, else
+the project directory; on a device the device block sets it instead.
 
   list     per project of the profile: the effective list in order, each
-           entry's occurrence (#k when repeated), args, kind (target /
-           launch) and where it comes from (own / inherited / project-wide)
+           entry's occurrence (#k when repeated), args, working_dir, kind
+           (target / launch) and where it comes from (own / inherited /
+           project-wide)
   add      append entries, resolved like `lw test --target` (`project:name`
            qualifies), launch configurations included. Arguments after `--`
-           become the args of every entry added in that call (stored
+           become the args of every entry added in that call, and
+           --working-dir <dir> (alias --cwd) its working_dir (both stored
            unexpanded). Adding a name already listed appends another entry.
            A project not configured here has unknown targets: build first,
            or --unchecked.
@@ -11012,8 +11099,8 @@ configurations, otherwise the project-wide list. --config <name> /
 profiles use that list. Editing a level that inherits its list first copies the
 inherited list there (and says so).
 
-Entry names are honoured from loomworks.json; an entry's args are program
-settings and are used only from your local config (`lw help trust`).]],
+Entry names are honoured from loomworks.json; an entry's args and working_dir
+are program settings and are used only from your local config (`lw help trust`).]],
   init = [[lw init [--name <name>]
 
 Initialize the workspace working copy (.nvim/loomworks.user.json). The shared

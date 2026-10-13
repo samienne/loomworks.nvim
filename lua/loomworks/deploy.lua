@@ -166,7 +166,7 @@ end
 --- Resolve a single deploy step to concrete source and destination paths.
 --- @param dest_template string destination path template (with ${} variables)
 --- @param source_def table source descriptor { project, target?, path?, configuration? }
---- @param ctx table { workspace, profile, launch_project }
+--- @param ctx table { workspace, profile, launch_project, launch_build_target? }
 --- @return table|nil resolved { source_path, dest_path, source_build_dir_id, source_rel_path }
 --- @return string|nil error
 function M.resolve_deploy_step(dest_template, source_def, ctx)
@@ -175,7 +175,8 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
     local launch_project = ctx.launch_project
 
     -- Expand destination in the launch target's project context
-    local launch_ctx = expand.launch_context(ws, profile, launch_project)
+    local launch_ctx = expand.launch_context(ws, profile, launch_project,
+        { target = ctx.launch_build_target })
     local dest_path = expand.expand_string(dest_template, launch_ctx)
 
     -- Make destination absolute if not already

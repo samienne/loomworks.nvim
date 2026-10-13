@@ -191,6 +191,27 @@ end
 --- Internal: execute the overseer task (after build if needed).
 --- `on_done` (optional) runs after the results were applied.
 function M._execute_task(adapter, spec, test_ids, loomtest, explorer, on_done)
+    -- The spec's own preparation (e.g. a saved launch entry's deploy) runs
+    -- when the step executes; a failure fails this step without running its
+    -- program, and the next spec still runs.
+    if type(spec.prepare) == "function" then
+        local ok, err = spec.prepare()
+        if not ok then
+            local msg = tostring(err or "preparation failed")
+            vim.notify("loomtest: " .. msg, vim.log.levels.ERROR)
+            if spec.test_id then
+                -- Its cases never ran: no longer pending.
+                for _, id in ipairs(test_ids) do
+                    local node = loomtest.get_node(id)
+                    if node and node.parent == spec.test_id and node.status == "pending" then node.status = nil end
+                end
+                loomtest.apply_results({ { test_id = spec.test_id, status = "failed", message = msg } })
+            end
+            if explorer.is_open() then explorer.refresh() end
+            if on_done then on_done() end
+            return
+        end
+    end
     local overseer = require("overseer")
     fidget_update("0% ✔ 0")
 
@@ -390,6 +411,19 @@ function M.debug(adapter, spec, test_ids, opts)
     local explorer = require("loomtest.explorer")
 
     local function start_debug()
+        -- The spec's own preparation (a saved launch entry's deploy) first.
+        if type(spec.prepare) == "function" then
+            local pok, perr = spec.prepare()
+            if not pok then
+                local msg = tostring(perr or "preparation failed")
+                vim.notify("loomtest: " .. msg, vim.log.levels.ERROR)
+                if spec.test_id then
+                    loomtest.apply_results({ { test_id = spec.test_id, status = "failed", message = msg } })
+                    if explorer.is_open() then explorer.refresh() end
+                end
+                return
+            end
+        end
         local lw = require("loomworks")
         local ws = lw.get_workspace()
 

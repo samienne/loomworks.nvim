@@ -1456,9 +1456,10 @@ end
 --- entry is kept — the module's (it carries the runner's cwd / env /
 --- timeout); the saved entry contributes only its `args` (`saved_args`), and
 --- the saved entry's children are dropped with it. Only a `target` entry whose
---- name occurs once in its list merges: a `launch` entry (its own environment
---- and working directory) and a repeated name's entries (each with its own
---- args) stay beside the module's entry.
+--- name occurs once in its list and that has no `working_dir` of its own
+--- merges: a `launch` entry (its own environment and working directory), a
+--- `target` entry with its own `working_dir`, and a repeated name's entries
+--- (each with its own args) stay beside the module's entry.
 --- @param units loomworks.TestUnit[]
 --- @param per_unit (table[]|nil)[] discover() results, by unit index
 --- @return table[]
@@ -1471,7 +1472,7 @@ function ConfigUnit._merge_test_entries(units, per_unit)
                 local dropped = {}
                 for _, e in ipairs(entries) do
                     local key = not e.parent and e.saved_kind == "target" and not e.saved_repeated
-                        and exe_key(e.executable) or nil
+                        and not e.saved_working_dir and exe_key(e.executable) or nil
                     local owner = key and by_exe[key]
                     if owner then
                         dropped[e.id] = true
@@ -1717,6 +1718,23 @@ function ConfigUnit:_run_test_task(name, test_cmd, tu)
     local ok, overseer = pcall(require, "overseer")
     if not ok then
         return future_mod.rejected("overseer.nvim not found")
+    end
+
+    -- A step's own preparation (a saved launch entry's deploy, spec §16.16)
+    -- runs now, when the step executes; a failure fails this step without
+    -- running its program, and the entry shows as failed.
+    if type(test_cmd.prepare) == "function" then
+        local pok, perr = test_cmd.prepare()
+        if not pok then
+            local msg = tostring(perr or "preparation failed")
+            vim.notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
+            if test_cmd.test_id then
+                self:_apply_test_results({ { test_id = test_cmd.test_id, status = "failed", message = msg } })
+                local events = self._workspace and self._workspace._core and self._workspace._core._deps.events
+                if events then events.emit("test_results_changed", self) end
+            end
+            return future_mod.rejected(msg)
+        end
     end
 
     local f = future_mod.Future.new()

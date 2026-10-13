@@ -122,10 +122,12 @@ local function nth_test_entry(list, name, k)
     return nil, nil
 end
 
---- Strip the args of a saved test list's entries (spec §1.3.4, §17.6), in
---- place. The entry itself stays, reduced to its name (a name is not
---- program-bearing). Returns one ignored entry per stripped entry, recording
---- the entry's name and occurrence index (its place for a regraft).
+--- Strip the args and the working_dir of a saved test list's entries (spec
+--- §1.3.4, §17.6), in place. The entry itself stays, reduced to its name and
+--- any unknown table keys (neither is program-bearing), written in its
+--- shortest form. Returns one ignored entry per stripped value (`test_args` /
+--- `test_working_dir`), recording the entry's name and occurrence index (its
+--- place for a regraft).
 --- @param tests any the `tests` value (raw shape)
 --- @param path string[] path of `tests` in the parsed config
 --- @param raw_path string[] path of `tests` in the raw file
@@ -140,14 +142,24 @@ local function strip_test_args(tests, path, raw_path, anchor, label)
     for i, el in ipairs(tests) do entries[i] = tt.parse_entry(el) end
     tt.index_entries(entries)
     for i, te in ipairs(entries) do
-        if te.name and te.args then
-            out[#out + 1] = {
-                kind = "test_args", value = te.args, test_target = te.name, test_index = te.index,
-                path = path, raw_path = raw_path, anchor = anchor,
-                label = label,
-                detail = tt.entry_label(te) .. " args = " .. table.concat(te.args, " "),
-            }
-            tests[i] = te.name
+        if te.name and (te.args or te.working_dir ~= nil) then
+            if te.args then
+                out[#out + 1] = {
+                    kind = "test_args", value = te.args, test_target = te.name, test_index = te.index,
+                    path = path, raw_path = raw_path, anchor = anchor,
+                    label = label,
+                    detail = tt.entry_label(te) .. " args = " .. table.concat(te.args, " "),
+                }
+            end
+            if te.working_dir ~= nil then
+                out[#out + 1] = {
+                    kind = "test_working_dir", value = te.working_dir, test_target = te.name, test_index = te.index,
+                    path = path, raw_path = raw_path, anchor = anchor,
+                    label = label,
+                    detail = tt.entry_label(te) .. " working_dir = " .. te.working_dir,
+                }
+            end
+            tests[i] = tt.serialize_entry({ name = te.name, extra = te.extra })
         end
     end
     return out
@@ -372,11 +384,13 @@ end
 --- entry owning it) is present in `raw` and that `raw` does not already set is
 --- restored, creating intermediate tables below the anchor. Entries whose
 --- anchor is absent (the item was removed or not published) are dropped.
---- Saved test-entry args (§17.6) go back by entry name + occurrence index:
---- the args stripped from the k-th shared entry named N return to the k-th
---- entry named N of the published list, unless it carries args of its own.
---- When the item is published but its list has no k-th entry named N, the
---- args have no place to return to: they are dropped and named in `dropped`.
+--- Saved test-entry args and working_dir (§17.6) go back by entry name +
+--- occurrence index: the values stripped from the k-th shared entry named N
+--- return to the k-th entry named N of the published list, each unless it
+--- carries a value of its own (an entry getting a working_dir back is written
+--- in the table form). When the item is published but its list has no k-th
+--- entry named N, the values have no place to return to: they are dropped and
+--- named in `dropped`.
 --- @param raw table serialized loomworks.json content
 --- @param ignored table[]|nil
 --- @return table raw
@@ -385,17 +399,20 @@ function M.regraft(raw, ignored)
     local dropped = {}
     for _, e in ipairs(ignored or {}) do
         local rp = e.raw_path
-        if e.kind == "test_args" then
+        if e.kind == "test_args" or e.kind == "test_working_dir" then
+            local tt = require("loomworks.test_targets")
             local tests = rp and get_path(raw, rp)
             local pos, te
-            if require("loomworks.test_targets").is_list(tests) then
+            if tt.is_list(tests) then
                 pos, te = nth_test_entry(tests, e.test_target, e.test_index or 1)
             end
             if pos then
-                if not te.args then
-                    local el = { te.name }
-                    for _, a in ipairs(e.value) do el[#el + 1] = a end
-                    tests[pos] = el
+                if e.kind == "test_args" and not te.args then
+                    te.args = vim.deepcopy(e.value)
+                    tests[pos] = tt.serialize_entry(te)
+                elseif e.kind == "test_working_dir" and te.working_dir == nil then
+                    te.working_dir = e.value
+                    tests[pos] = tt.serialize_entry(te)
                 end
             elseif rp and type(get_path(raw, rp, e.anchor)) == "table" then
                 dropped[#dropped + 1] = e.label .. " (" .. e.detail .. ")"
@@ -437,13 +454,17 @@ function M.diagnostics(ignored, merged)
     local out = {}
     for _, e in ipairs(ignored or {}) do
         local supplied
-        if e.kind == "test_args" then
+        if e.kind == "test_args" or e.kind == "test_working_dir" then
             -- Supplied when the working copy's list gives that entry (same
-            -- name + occurrence index) args of its own.
+            -- name + occurrence index) a value of its own.
             local tests = get_path(merged, e.path)
             if require("loomworks.test_targets").is_list(tests) then
                 local _, te = nth_test_entry(tests, e.test_target, e.test_index or 1)
-                supplied = te ~= nil and te.args ~= nil
+                if e.kind == "test_args" then
+                    supplied = te ~= nil and te.args ~= nil
+                else
+                    supplied = te ~= nil and te.working_dir ~= nil
+                end
             end
         else
             supplied = get_path(merged, e.path) ~= nil
@@ -498,7 +519,8 @@ function M.review(user_data, modules)
                         end
                     end
                 end
-                -- Saved test-target args (§1.3.4) are program arguments.
+                -- Saved test-target args and working_dir (§1.3.4) are
+                -- program-bearing.
                 local function test_args(tests, label)
                     local tt = require("loomworks.test_targets")
                     if not tt.is_list(tests) then return end
@@ -507,6 +529,9 @@ function M.review(user_data, modules)
                     for _, te in ipairs(tt.index_entries(entries)) do
                         if te.name and te.args then
                             p(label .. " " .. tt.entry_label(te) .. " args = " .. short(te.args, 90))
+                        end
+                        if te.name and te.working_dir ~= nil then
+                            p(label .. " " .. tt.entry_label(te) .. " working_dir = " .. short(te.working_dir, 90))
                         end
                     end
                 end

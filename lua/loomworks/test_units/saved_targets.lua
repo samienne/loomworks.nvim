@@ -16,7 +16,10 @@
 --- `launch` entry) is probed for gtest and gets per-test children; any other
 --- entry is judged on its exit status. A missing entry is a non-runnable entry
 --- with `status = "errored"` and a message naming the entry and its declaring
---- level — shown, never hidden.
+--- level — shown, never hidden. Each entry runs in its `working_dir`
+--- (expanded in its launch context, where `${target_dir}` is its build
+--- target's artifact directory), else a launch entry in the launch's, else
+--- the project directory (§1.3.4 "Working directory").
 
 local TestUnit = require("loomworks.test_unit")
 local gtest = require("loomworks.gtest")
@@ -26,7 +29,7 @@ local uv = vim.uv or vim.loop
 
 --- @class loomworks.SavedTargetsTestUnit : loomworks.TestUnit
 --- @field is_saved_targets boolean always true (core's saved-targets TestUnit)
---- @field _top_by_id table<string, { entry: loomworks.SavedTestEntry, kind: "launch"|"target", target: loomworks.Target|nil, launch_target: loomworks.LaunchTarget|nil, args: string[] }> resolved top-level entries of the last discovery, by entry id
+--- @field _top_by_id table<string, { entry: loomworks.SavedTestEntry, kind: "launch"|"target", target: loomworks.Target|nil, launch_target: loomworks.LaunchTarget|nil, args: string[], cwd: string|nil }> resolved top-level entries of the last discovery, by entry id (`cwd` = the entry's resolved working_dir)
 --- @field _suffix_by_output table<string, string> child-id suffix by results file (repeated / launch entries)
 local SavedTargetsTestUnit = setmetatable({}, { __index = TestUnit })
 SavedTargetsTestUnit.__index = SavedTargetsTestUnit
@@ -66,9 +69,10 @@ end
 --- The run spec (artifact, cwd, env) of a resolved build target, with the
 --- configuration environment underneath the target's run environment.
 --- @param target loomworks.Target
+--- @param cwd string|nil absolute working directory (nil: the project directory)
 --- @return table|nil spec, string|nil err
-function SavedTargetsTestUnit:_run_spec(target)
-    local spec, err = target:resolve_run_spec()
+function SavedTargetsTestUnit:_run_spec(target, cwd)
+    local spec, err = target:resolve_run_spec(cwd and { working_dir = cwd } or nil)
     if not spec then return nil, err end
     local env = {}
     local unit = self._config_unit
@@ -83,16 +87,17 @@ function SavedTargetsTestUnit:_run_spec(target)
     return spec
 end
 
---- The program, launch args, cwd and env of a resolved top-level entry.
+--- The program, launch args, cwd and env of a resolved top-level entry. The
+--- entry's own working directory (`top.cwd`) replaces the program's.
 --- @param top table resolved top-level entry (`_top_by_id` value)
 --- @return { cmd: string, args: string[], cwd: string|nil, env: table|nil }|nil spec, string|nil err
 function SavedTargetsTestUnit:_program(top)
     if top.kind == "launch" then
         local spec, err = top.launch_target:resolve_launch_spec({})
         if not spec then return nil, err end
-        return { cmd = spec.cmd, args = spec.args or {}, cwd = spec.cwd, env = spec.env }
+        return { cmd = spec.cmd, args = spec.args or {}, cwd = top.cwd or spec.cwd, env = spec.env }
     end
-    local spec, err = self:_run_spec(top.target)
+    local spec, err = self:_run_spec(top.target, top.cwd)
     if not spec then return nil, err end
     return { cmd = spec.cmd, args = {}, cwd = spec.cwd, env = spec.env }
 end
@@ -118,7 +123,7 @@ function SavedTargetsTestUnit:_resolve_entries()
     end
     local targets = unit:ensure_targets()
     local profile = self:_profile()
-    local lctx = profile and require("loomworks.expand").launch_context(ws, profile, project) or nil
+    local expand = require("loomworks.expand")
     local rctx = {
         launches = project and project.launch or nil,
         launch_ignored = function(n)
@@ -133,11 +138,16 @@ function SavedTargetsTestUnit:_resolve_entries()
         local base = {
             id = id, name = label, parent = nil, saved = true,
             saved_kind = r.kind, saved_index = se.index, saved_repeated = se.repeated,
+            saved_working_dir = se.working_dir ~= nil or nil,
         }
         local program, perr
         local top
         if r.state == "ok" and profile then
-            top = { entry = se, kind = r.kind, target = r.target }
+            -- Args and working_dir expand in the entry's launch context,
+            -- with `${target_dir}` where a build target is resolved (§8.7).
+            local lctx = expand.launch_context(ws, profile, project, { target = r.target })
+            top = { entry = se, kind = r.kind, target = r.target, lctx = lctx,
+                cwd = (test_targets.resolve_working_dir(se.working_dir, lctx, ws and ws.root)) }
             if r.kind == "launch" then
                 top.launch_target = require("loomworks.launch_target").new(ws, profile,
                     { project = project.key, launch = se.name })
@@ -145,7 +155,8 @@ function SavedTargetsTestUnit:_resolve_entries()
             program, perr = self:_program(top)
         end
         if program then
-            top.args = test_targets.expand_args(se.args, lctx)
+            top.args = test_targets.expand_args(se.args, top.lctx)
+            top.lctx = nil
             base.runnable = true
             base.executable = program.cmd
             base.args = top.args
@@ -254,13 +265,15 @@ function SavedTargetsTestUnit:_entry(id)
 end
 
 --- Entry-, suite- or case-level command (spec §8.9.2): the program (a
---- `target` entry's run spec, or a `launch` entry's resolved run spec after
---- its deploy steps ran), the results option and framework filter when the
---- program is a recognised framework executable, the launch's own args, then
---- the entry's args (expanded).
+--- `target` entry's run spec, or a `launch` entry's resolved run spec), the
+--- results option and framework filter when the program is a recognised
+--- framework executable, the launch's own args, then the entry's args
+--- (expanded), in the entry's working directory. A `launch` entry's deploy
+--- steps are NOT run here: `prepare` runs them when the step executes (the
+--- runner calls it first; `false, err` fails the step, never drops it).
 --- @param test_id string
 --- @param opts? { gtest_filter?: string }
---- @return table|nil { cmd, env, cwd, output_path }
+--- @return table|nil { cmd, env, cwd, output_path, prepare?: fun(): boolean, string|nil, test_id: string }
 function SavedTargetsTestUnit:test_command(test_id, opts)
     opts = opts or {}
     local e = self:_entry(test_id)
@@ -269,11 +282,16 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     if not top_e or not top_e.runnable then return nil end
     local top = self._top_by_id[top_e.id]
     if not top then return nil end
+    -- A launch entry's deploy steps run when the step executes, not while
+    -- the command is built: the runner calls `prepare` first, and a failed
+    -- deploy fails that step (spec §16.16, §8.8.4).
+    local prepare
     if top.launch_target then
-        local ok, err = top.launch_target:deploy_sync()
-        if not ok then
-            vim.notify("loomworks: " .. top_e.name .. ": deploy failed: " .. tostring(err), vim.log.levels.ERROR)
-            return nil
+        local lt = top.launch_target
+        prepare = function()
+            local ok, err = lt:deploy_sync()
+            if not ok then return false, "deploy failed: " .. tostring(err) end
+            return true
         end
     end
     local spec = self:_program(top)
@@ -296,7 +314,8 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     end
     for _, a in ipairs(spec.args or {}) do cmd[#cmd + 1] = a end
     for _, a in ipairs(top.args or {}) do cmd[#cmd + 1] = a end
-    return { cmd = cmd, env = next(env) and env or nil, cwd = spec.cwd, output_path = output_path }
+    return { cmd = cmd, env = next(env) and env or nil, cwd = spec.cwd, output_path = output_path,
+        prepare = prepare, test_id = top_e.id }
 end
 
 --- nil — run-all iterates the top-level entries (spec §8.9.4).

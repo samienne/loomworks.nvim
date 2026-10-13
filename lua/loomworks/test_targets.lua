@@ -8,7 +8,7 @@
 --- The domain objects (Project, Configuration) own the declarations and the
 --- inheritance walk; this module only knows the value shape:
 ---
----   "tests": [ "Name", ["Name", "arg", …], … ]
+---   "tests": [ "Name", ["Name", "arg", …], { "name": "Name", "args": […], "working_dir": "…" }, … ]
 ---
 --- A name may repeat (each occurrence is its own entry, told apart by its
 --- occurrence index). An element of any other shape is an invalid entry, kept
@@ -20,6 +20,8 @@ local M = {}
 --- @class loomworks.SavedTestEntry
 --- @field name string|nil launch configuration or build target name of the declaring project (unqualified, never expanded); nil for an invalid entry
 --- @field args string[]|nil arguments as written (unexpanded), placed after the program's own
+--- @field working_dir string|nil working directory as written (unexpanded; absolute or workspace-root-relative)
+--- @field extra table<string, any>|nil keys of a table entry this version does not know (kept verbatim, never acted on)
 --- @field index integer occurrence index among the entries with this name (1-based); 1 for an invalid entry
 --- @field repeated boolean|nil true when the name occurs more than once in its list
 --- @field invalid any|nil the raw element of an invalid entry (kept verbatim; the entry is missing)
@@ -86,13 +88,41 @@ function M.index_entries(entries)
     return entries
 end
 
---- Parse one raw element: `"Name"` or a non-empty array of strings
---- `["Name", args…]`; anything else is an invalid entry.
+--- The keys of the table form this version knows (spec §1.3.4).
+local TABLE_KEYS = { name = true, args = true, working_dir = true }
+
+--- Parse one raw element: `"Name"`, a non-empty array of strings
+--- `["Name", args…]`, or a table `{ name, args?, working_dir? }` (unknown
+--- keys kept verbatim in `extra`); anything else is an invalid entry.
 --- @param el any
 --- @return loomworks.SavedTestEntry
 function M.parse_entry(el)
     if type(el) == "string" and el ~= "" then
         return { name = el }
+    end
+    if type(el) == "table" and not is_list(el) then
+        local name, args, wd = el.name, el.args, el.working_dir
+        local ok = type(name) == "string" and name ~= ""
+            and (args == nil or is_list(args))
+            and (wd == nil or type(wd) == "string")
+        if ok and args ~= nil then
+            for _, a in ipairs(args) do
+                if type(a) ~= "string" then ok = false; break end
+            end
+        end
+        if ok then
+            local e = { name = name }
+            if args ~= nil and #args > 0 then e.args = vim.deepcopy(args) end
+            e.working_dir = wd
+            for k, v in pairs(el) do
+                if not TABLE_KEYS[k] then
+                    e.extra = e.extra or {}
+                    e.extra[k] = vim.deepcopy(v)
+                end
+            end
+            return e
+        end
+        return { invalid = vim.deepcopy(el) }
     end
     if is_list(el) and #el > 0 then
         local ok = true
@@ -134,7 +164,7 @@ function M.parse(raw, where)
         if e.invalid ~= nil then
             report_once("bad|" .. tostring(where) .. "|" .. M.raw_text(el),
                 "loomworks: " .. tostring(where or "?") .. ": invalid saved test entry " .. M.raw_text(el)
-                .. ' (expected "Name" or ["Name", args…]) — kept as written, and treated as missing')
+                .. ' (expected "Name", ["Name", args…] or { "name": …, … }) — kept as written, and treated as missing')
         end
         entries[#entries + 1] = e
     end
@@ -149,12 +179,23 @@ function M.declares(decl)
     return decl ~= nil and decl.entries ~= nil
 end
 
---- Serialize one entry: a bare name, `["Name", args…]` when it has args, or
---- an invalid entry's raw element verbatim.
+--- Serialize one entry in the shortest form that holds it (spec §1.3.4
+--- "Persistence"): a bare name, `["Name", args…]` when it has args, the
+--- table form only when it has a `working_dir` or unknown keys (kept
+--- verbatim, so such a table is never shortened), or an invalid entry's raw
+--- element verbatim.
 --- @param e loomworks.SavedTestEntry
 --- @return any
 function M.serialize_entry(e)
     if e.invalid ~= nil then return vim.deepcopy(e.invalid) end
+    if e.working_dir ~= nil or (e.extra and next(e.extra)) then
+        local t = {}
+        for k, v in pairs(e.extra or {}) do t[k] = vim.deepcopy(v) end
+        t.name = e.name
+        if e.args and #e.args > 0 then t.args = vim.deepcopy(e.args) end
+        t.working_dir = e.working_dir
+        return t
+    end
     if not (e.args and #e.args > 0) then return e.name end
     local raw = { e.name }
     for _, a in ipairs(e.args) do raw[#raw + 1] = a end
@@ -185,7 +226,8 @@ function M.with_entries(_decl, entries)
     return { entries = M.index_entries(vim.deepcopy(entries)) }
 end
 
---- A comparable fingerprint of an effective list (names + args), or "" for none.
+--- A comparable fingerprint of an effective list (names, args, working
+--- directories, unknown keys), or "" for none.
 --- @param entries loomworks.SavedTestEntry[]|nil
 --- @return string
 function M.fingerprint(entries)
@@ -196,6 +238,7 @@ function M.fingerprint(entries)
             parts[#parts + 1] = "\2" .. M.raw_text(e.invalid)
         else
             parts[#parts + 1] = e.name .. "\0" .. table.concat(e.args or {}, "\0")
+                .. "\3" .. (e.working_dir or "") .. (e.extra and ("\3" .. M.raw_text(e.extra)) or "")
         end
     end
     return table.concat(parts, "\1")
@@ -352,18 +395,24 @@ function M.resolve_entry(e, ctx)
     local level = ctx.level or "?"
     if e.invalid ~= nil then
         return { state = "missing", reason = "invalid entry at " .. level
-            .. ' (expected "Name" or ["Name", args…])' }
+            .. ' (expected "Name", ["Name", args…] or { "name": …, … })' }
     end
     local name = e.name
     local targets = type(ctx.targets) == "table" and ctx.targets or nil
     local l = type(ctx.launches) == "table" and ctx.launches[name] or nil
-    if type(l) == "table" and (l.command or l.target) then
+    if type(l) == "table" then
+        -- A launch of the model is the launch, whatever its shape: one with
+        -- neither `command` nor `target` is missing, never the same-named
+        -- build target.
         local r = { state = "ok", kind = "launch", launch = l }
         if targets then
             local same = find_target(targets, name)
             r.also_target = (same and same.is_executable and same:is_executable()) and true or nil
         end
-        if l.target then
+        if not (l.command or l.target) then
+            r.state = "missing"
+            r.reason = "launch '" .. name .. "' of " .. level .. " has neither a command nor a target"
+        elseif l.target then
             if not targets then
                 r.state = "unknown"
             else
@@ -407,6 +456,26 @@ function M.launch_ignored(ignored, project, name)
         end
     end
     return false
+end
+
+--- Resolve an entry's `working_dir` like a launch's (spec §1.3.4 "Working
+--- directory", §8.7): variable-expanded in the launch context `lctx`, then
+--- absolute as-is or workspace-root-relative. nil when the entry has none.
+--- An unresolved reference stays literal, as in a launch's `working_dir`,
+--- and is returned in `unresolved`.
+--- @param wd string|nil the entry's working_dir as written
+--- @param lctx table|nil launch expansion context
+--- @param root string|nil workspace root (nil: a relative result is returned as expanded)
+--- @return string|nil abs
+--- @return string[] unresolved names of `${…}` references that resolve to nothing
+function M.resolve_working_dir(wd, lctx, root)
+    if type(wd) ~= "string" or wd == "" then return nil, {} end
+    local expand = require("loomworks.expand")
+    local unresolved = expand.unresolved_vars(wd, lctx)
+    local ex = expand.expand_string(wd, lctx)
+    if ex:match("^/") or ex:match("^%a:") or not root then return ex, unresolved end
+    if ex == "." or ex == "./" then return root, unresolved end
+    return root .. "/" .. ex, unresolved
 end
 
 --- Expand an entry's args like a launch configuration's (spec §1.3.4, §8.7):

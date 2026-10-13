@@ -86,7 +86,7 @@ M.COMMANDS = {
   build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v" }, valued = { "--target" },
     eq = { "--target=" } }),
   test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json" }, DEVICE_FLAGS),
-    valued = concat({ "--junit", "--target" }, DEVICE_VALUED) }),
+    valued = concat({ "--junit", "--target", "--cwd", "--working-dir" }, DEVICE_VALUED) }),
   clean = NONE,
   reset = spec({ flags = { "--all", "-y", "--yes" } }),
   unlock = spec({ flags = { "--all" }, valued = { "--device" } }),
@@ -206,7 +206,7 @@ M.COMMANDS = {
   ["test-target"] = {
     subs = {
       list = NONE,
-      add = spec({ flags = { "--project-wide", "--unchecked" }, valued = { "--config" } }),
+      add = spec({ flags = { "--project-wide", "--unchecked" }, valued = { "--config", "--working-dir", "--cwd" } }),
       remove = spec({ flags = { "--project-wide" }, valued = { "--config", "--index" } }),
       clear = spec({ flags = { "--project-wide", "--empty" }, valued = { "--config" } }),
     },
