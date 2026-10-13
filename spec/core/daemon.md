@@ -1734,7 +1734,15 @@ header's `pid`, `lw_version` and `session_generation`, and every opaque id
 (`active_profile_id`, `config_set_id`, a project record's `id` and
 `active.unit_id`). A view the daemon does not offer (or offers only at another
 version) is built in-process too, with the one Runtime-line note of §19.16
-"Interface client". The plugin keeps `lw.project_for_buf(bufnr)` (it returns
+"Interface client". In `daemon`
+mode a view is **never** built from the editor's own model: while the
+workspace is unloaded — the daemon reports it `unloaded`, the connection is
+lost (§19.16 "Unloaded on disconnect") or not yet made — the header shows
+`unloaded` and the ProjectsIndex is empty, so `lw.buf_project` maps no
+buffer until the daemon reports `loaded`; a view the daemon does not offer
+is shown unavailable with that note, not built in-process. In `in-process`
+mode views are built in-process as above (removed with the in-process
+editor, §19.19 6b). The plugin keeps `lw.project_for_buf(bufnr)` (it returns
 the `loomworks.Project`; from step 5l it is public API only and the LSP layer
 no longer uses it, §19.16 "LSP configuration")
 and adds `lw.buf_project(bufnr)`, returning the buffer's ProjectsIndex record
@@ -2528,7 +2536,8 @@ handle, the runtime lock and the daemon logs to describe what they find;
 nothing they read decides whether, when or to what the editor connects, and
 they never write, remove or lock anything there. The relay needs a host
 binary ("Host binary" below): with none the editor spawns no relay, stays
-in-process, and does not observe a daemon another client started. Its tasks are
+in-process (except its language servers, which are withheld: "LSP
+configuration" below), and does not observe a daemon another client started. Its tasks are
 owned by its connection, so an editor that quits or crashes leaves no task
 running; the daemon itself outlives it under §19.11. Operations move from the
 editor to commands in the order of §19.19. When the shared daemon cannot be
@@ -2733,16 +2742,19 @@ configuration: daemon offers loomworks.LspConfig/2, editor needs /1`); it
 never fails the connection or the other features. The features of step 5j
 are `statusline` (`loomworks.view.Header/1`) and `project index`
 (`loomworks.view.ProjectsIndex/1`), beside `tasks` and `model changes`; a
-degraded view is built in-process (§19.13 "Two sources, one shape"). Step 5k
+degraded view is built in-process (§19.13 "Two sources, one shape";
+in `daemon` mode shown unavailable instead, never built in-process). Step 5k
 adds `operations` (`loomworks.Build/1` with `configure`, `units`, `jobs` and
 qualified targets), `launch` (`loomworks.Launch/1` with `prepare_debug` and
 `build_scope`), `debug adapters` (`loomworks.DebugConfig/1`) and, in `tasks`,
 `Tasks/1.cancel` and `list`; a degraded one runs in-process ("Editor
 operations" below). Step 5l adds `lsp configuration`
 (`loomworks.LspConfig/1`); when it is degraded the language servers are
-configured from the in-process model ("LSP configuration" below). The describe is bounded
+withheld, never configured in-process ("LSP configuration" below). The describe is bounded
 (about 3 s) and never blocks the editor; when it fails or times out the editor
-uses `welcome.objects`. An interface that appears later (the root's
+uses `welcome.objects`. Between a lost connection and the reconnect the
+editor's workspace is unloaded ("Unloaded on disconnect" below); the
+reconnect's discovery and first reads end it. An interface that appears later (the root's
 `objects_changed`) is subscribed to then, and a refused subscription is
 retried once, on the next `objects_changed` or reconnect. A missing interface
 is noted only when the editor gets nothing for it: a daemon whose
@@ -2783,7 +2795,12 @@ owner"):
   above). The program is the editor's, never the daemon's; stopping a run or
   debug session stops it as in-process. While the preparation runs, a stop
   cancels its task (`Tasks/1.cancel`) and no program is started, and a
-  second launch asks, as for a running session, before it replaces it;
+  second launch asks, as for a running session, before it replaces it.
+  *(Step 5l.)* While the workspace is unloaded — the daemon reports it
+  `unloaded`, or the connection is lost ("Unloaded on disconnect" below) —
+  a run or debug launch is not offered and, when asked for, is refused with
+  that status, never prepared in-process: its launch information comes
+  only from the daemon;
 - the debug adapters section reads and writes `DebugConfig/1` (`adapters`,
   `known_languages`, `set_adapter`) and re-reads it on `Workspace/1`
   `changed`.
@@ -2834,72 +2851,104 @@ task; the cross-process build-directory locks (§16.6) serialize them.
 
 **LSP configuration.** *(Step 5l, plan: part 0 this spec; A the
 host-neutral builder of the state, in-process only; B the daemon side,
-§19.20 `LspConfig/1`; C the editor side.)* In `daemon` mode the editor takes
-what its language servers are configured with — each project's
+§19.20 `LspConfig/1`; C the editor side.)* In `daemon` mode what the
+editor's language servers are configured with — each project's
 `lsp_configs` entries with their `db_state` (§9.1), the working copy's
 per-server options (§2, `user.json` `lsp`), and whether the active profile's
-owned databases are ready (§9.7) — from `LspConfig/1.get` while it is
-**carried**: connected through interfaces to a compatible daemon that offers
-`loomworks.LspConfig/1`. The servers stay the editor's: starting and
-stopping them, the integrations (found on the editor's runtime path, §9.2)
-with their `cmd` and `root_dir` factories and `withhold_reason` (with its
-absent-database check), the expansion of variables in a server binary, the
-§9.7 hold, the per-buffer status (§9.8) and the restart throttle (§9.6).
-`get` carries the editor process's whole environment at call time (§19.15
-"Environment"), so an entry's server binary resolves as it would
-in-process. Both sources give one shape (as §19.13 "Two sources, one
-shape"): the in-process state comes from the builder the daemon uses,
-without the opaque ids. The daemon's state is **in use** while carried and
-the last read answered with state `loaded`; in each Fallback row below the
-editor uses the in-process state instead.
+owned databases are ready (§9.7) — comes **only** from the workspace daemon,
+as `LspConfig/1.get` answers it (§19.20). There is no in-process fallback:
+the editor never builds that state itself — it does not call `lsp_configs`,
+derive a `db_state`, read options from its own model, generate or scan an
+owned database, or map a buffer to a project other than by `lw.buf_project`
+— and when the daemon cannot give the state, the servers wait or are
+withheld (below), never configured from anything else. The daemon's state is
+**in use** while the editor is connected through interfaces to a compatible
+daemon that offers `loomworks.LspConfig/1` and the last read answered with
+state `loaded`. The servers stay the editor's: starting and stopping them,
+the integrations (found on the editor's runtime path, §9.2) with their `cmd`
+and `root_dir` factories and `withhold_reason` (with its absent-database
+check), the expansion of variables in a server binary, the §9.7 hold, the
+per-buffer status (§9.8) and the restart throttle (§9.6). `get` carries the
+editor process's whole environment at call time (§19.15 "Environment"), so
+an entry's server binary resolves as the editor would run it.
 
 - **Reads.** The state is cached per connection and read again on
   `LspConfig/1` `changed`, on `Workspace/1` `changed` and on reconnect; the
-  first read is made once the interface is discovered.
+  first read is made once the interface is discovered. A cached state is
+  dropped when its connection is lost.
 - **Readiness.** While the daemon's state is in use, the §9.7 hold is
-  released on the state's `ready`, not on the editor model's own readiness.
-  While the editor is connecting (the describe or the first `get` not
-  answered yet), while the state is `unloaded` (the daemon has not loaded
-  the workspace yet), and while the state is `loaded` but not `ready`,
-  buffers under the root stay held, bounded by the §9.7 safety timeout; a
-  state that becomes `loaded` puts the daemon's state in use. At the timeout
-  a held buffer is resolved as §9.7 says, against the daemon's state when
-  it is in use and against the in-process state otherwise; in the latter
-  case the editor uses the in-process state from then on, as in a Fallback
-  row, until the daemon reports `loaded`.
-- **Owned databases.** While the daemon's state is in use, only the daemon
-  generates the owned LSP databases (§8.4 `refresh_lsp_database`); the
-  editor's model does not, neither at its startup scan nor after a task.
-  Whenever the editor uses the in-process state (every Fallback row), its
-  model generates and scans exactly as in `in-process` mode. A database the
-  daemon (re)writes reaches the editor as a raised `db_rev` on its entry (§19.20),
-  on which the editor runs the owned-database completion handling of §9.8
-  for that entry.
+  released on the state's `ready`; the editor model's own loading,
+  readiness or failure takes no part in the hold or in any LSP decision.
+  While the state is `loaded` but not `ready`, buffers under the root stay
+  held, bounded by the §9.7 safety timeout, at which they are resolved
+  against the daemon's state (a buffer whose entry has no usable database is
+  withheld, never started).
+- **Waiting.** While the editor waits for the daemon — the relay starting or
+  connecting, the describe or the first `get` not answered, the state
+  `unloaded` (the daemon has not loaded the workspace yet), or the
+  workspace unloaded because the connection was lost ("Unloaded on
+  disconnect" below) — buffers under the root stay
+  **held** (§9.8 status `held`) with **no timeout**: the §9.7 safety timeout
+  does not apply, and nothing is resolved against another source. The
+  Runtime line says so (`lsp configuration: waiting for the workspace daemon
+  — language servers held`, spec/ui.md §1.1). The hold ends when a read
+  answers `loaded`, as under "Readiness".
+- **Unavailable.** When the daemon cannot give the state — no host binary
+  ("Host binary" below; the editor's other operations then run as that
+  paragraph says, its language servers do not), a daemon found incompatible,
+  `loomworks.LspConfig/1` missing or offered only at another version, a
+  `get` that is declined or fails, or a state of `error` or `refused` (the
+  daemon's load of the workspace failed or was refused) — buffers under the
+  root are **withheld** (§9.8: `withheld_error` for a state `error` or
+  `refused`, `withheld_daemon` otherwise), and the reason is the Runtime
+  line's note in the warning highlight (e.g. `lsp configuration: daemon
+  offers no loomworks.LspConfig/1 — language servers withheld`, `lsp
+  configuration: no lw host binary — language servers withheld`). A
+  declined or failed read is retried on the next `changed`, `Workspace/1`
+  `changed` or reconnect; a state `loaded` re-evaluates the withheld buffers.
+- **Running clients.** A lost connection stops every client of a server
+  loomworks controls (§9.4 default path) under the root, through the
+  managed-stop path (§9.6, so it is neither suppressed nor counted against
+  the restart throttle), and its buffers become `held` ("Unloaded on
+  disconnect" below); they start again only when the daemon, after the
+  reconnect, reports the workspace `loaded` and their entry usable and
+  `ready` (§9.7). Otherwise only a state in use changes a running client:
+  when its entry becomes withheld it is stopped the same way (§9.8
+  "Re-evaluation"). Waiting while connected, or an unavailable
+  configuration, starts no client and stops none — a client started from an
+  earlier state keeps running, and its buffers keep status `ok`, until a
+  state in use says otherwise, which then restarts a client only when its
+  resolved binary or database directory differs.
+- **Owned databases.** Only the daemon generates the owned LSP databases
+  (§8.4 `refresh_lsp_database`): the editor's model never does — not at its
+  startup scan, not after a task, not on a watched path — whether or not the
+  state is in use. A database the daemon (re)writes reaches the editor as a
+  raised `db_rev` on its entry (§19.20), on which the editor runs the
+  owned-database completion handling of §9.8 for that entry.
 - **Re-evaluation.** When a read gives entries or options that differ from
-  the ones in use, the editor re-evaluates as for an active-set change (§9.8
-  "Re-evaluation"): a withheld buffer whose entry became usable is started,
-  a client whose entry became withheld is stopped through the managed-stop
-  path, and a changed but still usable entry restarts through its
-  integration. Changed options are applied as an in-process option change.
-- **Fallback.** Not carried (no connection, the interface missing or at
-  another version — with the one Runtime-line note of "Interface client"):
-  the in-process state, as before 5l. A `get` that is declined or fails, or
-  a state of `error` or `refused` (the daemon's load failed or was
-  refused): the in-process state at once, with a debug-log line only, until the next `changed`, `Workspace/1` `changed` or
-  reconnect. The connection lost after the state was carried: the
-  in-process state at once, re-evaluated, a client restarted only when its
-  resolved binary or database directory differs; a reconnect switches back
-  to the daemon's state under the same rule.
+  the ones in use, or the state starts or stops being in use, the editor
+  re-evaluates as for an active-set change (§9.8 "Re-evaluation"): a
+  withheld or held buffer whose entry became usable is started, a client
+  whose entry became withheld is stopped through the managed-stop path, and
+  a changed but still usable entry restarts through its integration.
+  Changed options are applied as an option change (clangd: its spec §12.2).
 - **Options.** A per-server option the editor sets (the status page's LSP
-  section) is written by `LspConfig/1.set_option` while carried, otherwise
-  in-process; the editor applies it from the state it reads back, not from
-  its own write. A `refused` write is shown with its
-  message, as in-process.
-- **Buffer → project.** The LSP layer maps a buffer to its project by
-  `lw.buf_project` (§19.13, separator-bounded) in both modes;
-  `lw.project_for_buf` stays public API.
+  section) is written **only** by `LspConfig/1.set_option`; the editor
+  never writes `user.json` `lsp` itself. When the interface is not carried,
+  or the call is refused, fails, or gets no answer before the connection is
+  lost, the write is an error shown with its message (a `refused` one with
+  the daemon's) and nothing changes; the editor applies an option only from
+  the state it reads back, not from its own write.
+- **Buffer → project.** The LSP layer maps a buffer to its project only by
+  `lw.buf_project` (§19.13, separator-bounded), matching the record to the
+  state's project by key; `lw.project_for_buf` stays public API.
 
-In `in-process` mode only the last rule applies.
+*(Transition, until step 6b.)* In `in-process` mode the editor still builds
+the state from its own model with the same builder (§9.2), generates the
+owned databases and writes options in-process, under §9.7 as before 5l; the
+buffer → project rule above applies there too. That path is the
+`in-process` mode's, removed with the in-process editor (§19.19 6b); it is
+never used in `daemon` mode.
 
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, §12) — one per daemon
@@ -3299,6 +3348,19 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   "Through the relay" above — a `--no-launch` relay, with `--skip-instance`
   for an incompatible daemon, instead of watching the handle. The editor
   then keeps no list of skipped daemons of its own.)*
+- **Unloaded on disconnect.** *(Step 5l.)* When a connection the editor
+  held is lost, for any reason (the daemon stopped, crashed, retired or
+  dropped this client, the relay ended), the editor's workspace is
+  **unloaded** in `daemon` mode until a reconnect's daemon reports it
+  `loaded` again — as if the daemon had answered `unloaded`: nothing of the
+  daemon's runs for it. Its remote tasks end ("Tasks" below), an operation
+  past `accepted` fails ("Editor operations" above), and the controlled
+  language servers under the root are stopped and their buffers held
+  ("LSP configuration" above). Programs the editor launched (in its task
+  runner) and debug sessions are not stopped. The Runtime line says so in the warning
+  highlight (`the workspace daemon disconnected — workspace unloaded,
+  waiting for it`, spec/ui.md §1.1) until the daemon reports `loaded`. A
+  workspace swap or shutdown is not a lost connection ("Teardown" below).
 - **Retiring.** On `retiring` (broadcast, or in `welcome`) the observer
   disconnects at once, so a version change completes (§19.11). Once that
   daemon has exited and no other daemon is live, the observer launches one
@@ -3662,10 +3724,12 @@ runtime is deferred until that module is actively developed.
        `changed`) with schema and transcripts on the `shell` fixture, the
        `changed` emission where `header_check` runs and on a database
        written; C — editor side: the cached state and its reads, the
-       fallback rules, buffer → project by `lw.buf_project`, the hold
-       released on the daemon's `ready`, the options written through
-       `set_option`, the editor's own database
-       generation stopped while carried, and a real-daemon end-to-end check
+       hold and withhold rules with no in-process fallback (held while
+       waiting for the daemon, withheld when it cannot give the state),
+       buffer → project by `lw.buf_project`, the hold released on the
+       daemon's `ready`, the options written only through `set_option`,
+       the editor's own database generation stopped in `daemon` mode,
+       and a real-daemon end-to-end check
        (needs A and B; may land as C1, the read path, and C2, the writes and
        the generation owner).
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
@@ -3683,8 +3747,8 @@ runtime is deferred until that module is actively developed.
    daemon; degraded when it cannot be started), after the criteria in DAEMON.md; the
    in-process editor stays one beta cycle behind `runtime.mode =
    "in-process"`, with a deprecation note.
-   - **6b** — the in-process editor is removed; with no host binary the editor
-     runs degraded.
+   - **6b** — the in-process editor is removed (its LSP path with it, §19.16
+     "LSP configuration"); with no host binary the editor runs degraded.
    - **6c** — the binary's Lua moves to its own tree (mechanical); the
      protocol schemas and transcripts become the cross-repository contract,
      in a separate protocol repository pinned by both sides (§19.20).

@@ -19,7 +19,9 @@ directly to `Snacks.win`. The page contains these sections in order:
    `loomworks.view.Header/1`, daemon.md §19.13 "Two sources, one shape":
    the daemon's while subscribed, shown as it is — `Workspace: not loaded in
    the workspace daemon` before the daemon loads it — otherwise built
-   in-process), and one
+   in-process; in `daemon` mode never built in-process,
+   showing `unloaded` while the workspace is unloaded, core §19.16 "Unloaded
+   on disconnect"), and one
    `Runtime` line, the header's last line (above Diagnostics, never further
    down the page): the runtime mode, the source that selected it (core
    §19.1: `env`, `setup`, `lw setting`, `default`), and in `daemon` mode the
@@ -30,14 +32,22 @@ directly to `Snacks.win`. The page contains these sections in order:
    (the plugin carries no pin yet)) — running in-process`, `Runtime:   daemon
    (setup) — downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from
    https://… — running in-process meanwhile`, `Runtime:   daemon (env) — the workspace daemon
-   disconnected — waiting for it`, `Runtime:   in-process (lw setting)`. A
+   disconnected — workspace unloaded, waiting for it` (core §19.16
+   "Unloaded on disconnect"; warning highlight), `Runtime:   in-process (lw setting)`. A
    note that leaves the editor running in-process although `daemon` was
    selected (a version mismatch, no host binary, a failed download) uses the
    warning highlight. *(Step 5k, plan:)* a degraded operations feature is the
    same note, e.g. `operations: daemon offers no loomworks.Build/1.configure
    — running them in-process` (core §19.16 "Editor operations"), and an
    operation that ran in-process although `daemon` was selected says
-   `(in-process)` in its progress title.
+   `(in-process)` in its progress title. *(Step 5l:)* the language servers
+   are never configured in-process in `daemon` mode (core §19.16 "LSP
+   configuration"): while the editor waits for the daemon the note is
+   `lsp configuration: waiting for the workspace daemon — language servers
+   held` (after a lost connection the servers were stopped, `— language
+   servers stopped, held`), and when the daemon cannot give the configuration it names the
+   reason in the warning highlight, e.g. `lsp configuration: daemon offers
+   no loomworks.LspConfig/1 — language servers withheld`.
    Absent only when `in-process` was selected by the default.
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
@@ -1199,7 +1209,8 @@ this component renders, or `nil` when there is no active configuration set or
 the buffer is in no project. Fields: `profile_key`, `set_name`, `tool_key`,
 `project`, `configuration`, `status`, `profile_state`, `diagnostic_severity`,
 and **`lsp`** — the buffer's per-buffer LSP status from core §9.8 (`none`,
-`held`, `ok`, `withheld_unconfigured`, `withheld_no_db`, `withheld_error`).
+`held`, `ok`, `withheld_unconfigured`, `withheld_no_db`, `withheld_error`,
+`withheld_daemon`).
 Because `buf_status` is `nil` without an active profile, the same value is also
 available unconditionally from **`loomworks.lsp_buf_state(bufnr)`**, which
 returns `none` for buffers loomworks has no LSP opinion about. The status page
@@ -1220,6 +1231,7 @@ that gap:
 | `withheld_unconfigured` | `(unconfigured)` in `DiagnosticError` |
 | `withheld_no_db` | `(no db)` in `DiagnosticError` |
 | `withheld_error` | `(ws error)` in `DiagnosticError` |
+| `withheld_daemon` | `(no lsp config)` in `DiagnosticError` |
 | anything else (`none`, `held`, `ok`) | empty string |
 
 "In `DiagnosticError`" means that group's foreground on the section's own

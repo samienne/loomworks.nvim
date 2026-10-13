@@ -359,8 +359,12 @@ current value as a space-separated string; on submit the input is
 tokenised on whitespace and stored as a string array. Empty input
 clears the field; `D` (delete) also clears. Tokens with internal
 whitespace need hand-editing in user.json — same limitation as the
-project-side `cmd_array` editor. Every change calls
-`Workspace:set_lsp_option("clangd", key, value)` which persists
+project-side `cmd_array` editor. Every change is written as the
+runtime mode says: in `daemon` mode only through the daemon's
+`LspConfig/1.set_option` (core daemon.md §19.16 "LSP configuration" —
+not carried, refused or failed is an error and nothing is written; the
+clients restart from the options read back), in `in-process` mode by
+`Workspace:set_lsp_option("clangd", key, value)`, which persists
 user.json synchronously and restarts clients.
 
 ## 14. Environment inventory (`health_inventory`)
