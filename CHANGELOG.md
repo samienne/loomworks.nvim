@@ -38,7 +38,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   profile. `--saved` / `--discovered` run only one kind, `lw test --list`
   shows the plan without building, and `lw test-target add/remove/clear`
   edits the lists. The status page shows a read-only `Tests:` line, and the
-  test explorer and neotest pick the saved targets up. (#TBD)
+  test explorer and neotest pick the saved targets up. (#208)
 
 ### Changed
 
