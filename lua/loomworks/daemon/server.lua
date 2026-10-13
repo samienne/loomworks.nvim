@@ -847,6 +847,12 @@ function Server:_authed(conn)
         retiring = self.retiring, header = header, objects = objects,
     })
     self:_handle_changed()
+    -- An editor attached: the daemon loads the workspace (§19.16 "Loaded on
+    -- attach"); `welcome` above still reported the model as it was.
+    if conn.observer and self.service and self.service.on_editor_attached then
+        local ok, err = pcall(self.service.on_editor_attached, self.service)
+        if not ok then self:log("internal error loading for an editor: %s", tostring(err)) end
+    end
 end
 
 --- Start reading a connection's bytes into `_on_read`.

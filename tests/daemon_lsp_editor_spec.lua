@@ -202,6 +202,62 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.is_nil(views.match(index, ws.root .. "/elsewhere/x.cpp"))
         end)
 
+        it("a link inside a project pointing outside it maps by its spelling", function()
+            -- ws/vendor -> <tmp>/outside: the buffer's physical path is under
+            -- no project, its spelling is under `ws`.
+            local outside = H.tmp() .. "/outside"
+            vim.fn.mkdir(outside, "p")
+            local link = ws.root .. "/vendor"
+            assert(vim.uv.fs_symlink(outside, link, { dir = true, junction = true }))
+            local index = { projects = { { key = "app", abs_path = ws.root } } }
+            assert.equals("app", views.match(index, link .. "/lib/x.c").key)
+            assert.is_true(views.under(ws.root, link .. "/lib/x.c"))
+            -- The outside folder spelled as itself is not in the project.
+            assert.is_nil(views.match(index, outside .. "/lib/x.c"))
+            assert.is_false(views.under(ws.root, outside .. "/lib/x.c"))
+            -- Still separator-bounded on the spelling.
+            assert.is_false(views.under(ws.root .. "/vend", link .. "/lib/x.c"))
+        end)
+
+        it("an unreachable UNC path never resolves above its share", function()
+            local saved = views._fs_realpath
+            -- Nothing on the share resolves; `/` would resolve to the drive root.
+            views._fs_realpath = function(p)
+                if p == "/" then return "C:\\" end
+                if p:sub(1, 2) == "//" then return nil end
+                return saved(p)
+            end
+            local ok, err = pcall(function()
+                local file = "//srvunc/share/x/y.c"
+                assert.is_false(views.under("C:/srvunc/share/x", file))
+                assert.is_nil(views.match({ projects = { { key = "c", abs_path = "C:/srvunc/share" } } }, file))
+                -- Its own spelling still matches a root on the share.
+                assert.is_true(views.under("//srvunc/share/x", file))
+            end)
+            views._fs_realpath = saved
+            assert(ok, err)
+        end)
+
+        it("a retargeted link is re-resolved once the ProjectsIndex view changes", function()
+            local a, b = ws.root .. "/pa", ws.root .. "/pb"
+            vim.fn.mkdir(a, "p"); vim.fn.mkdir(b, "p")
+            local link = H.tmp() .. "/retarget"
+            assert(vim.uv.fs_symlink(a, link, { dir = true, junction = true }))
+            local index = { projects = {
+                { key = "a", abs_path = vim.uv.fs_realpath(a) },
+                { key = "b", abs_path = vim.uv.fs_realpath(b) },
+            } }
+            assert.equals("a", views.match(index, link .. "/x.c").key)
+            assert(vim.uv.fs_unlink(link) or vim.uv.fs_rmdir(link))
+            assert(vim.uv.fs_symlink(b, link, { dir = true, junction = true }))
+            -- Cached until the index view changes.
+            assert.equals("a", views.match(index, link .. "/x.c").key)
+            local owner = {}
+            views.set(owner, "projects", index)
+            assert.equals("b", views.match(index, link .. "/x.c").key)
+            views.clear(owner)
+        end)
+
         it("waits while connecting and while unloaded, with no in-process state", function()
             local obs, calls = fake_obs()
             -- No connection yet: waiting.

@@ -103,7 +103,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   workspace unloaded, unloads it in Neovim until the daemon reports it
   loaded again: run/debug launches are not offered and are refused, the
   statusline shows no project, and on a lost connection its language
-  servers stop and their buffers wait. In-process mode is unchanged. (#205)
+  servers stop and their buffers wait. An editor attaching to the daemon
+  makes it load the workspace, so an editor-only session no longer stays
+  unloaded. In-process mode is unchanged. (#205)
 - `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
   `label`, `type`, `path`, `abs_path` and the active configuration, tool key
   and state). It matches on a separator boundary, so a project at `/a/foo`
@@ -635,7 +637,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   as `lw.buf_project` does. A file opened through another spelling of the
   workspace's path (a Windows 8.3 short name such as `RUNNER~1`, a junction
   or symlink), or a project whose root is spelled that way, now belongs to
-  the project it really lies in. (#205)
+  the project it really lies in; a file reached through a link inside a
+  project that points outside it still belongs to that project. (#205)
 - Changing an LSP option whose save is refused (a stale or untrusted working
   copy) no longer keeps the unsaved option or restarts clangd; an unknown
   option or a value of the wrong type is refused without writing anything

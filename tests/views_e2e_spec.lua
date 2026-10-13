@@ -70,7 +70,7 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
         trust._set_key_path(nil)
     end)
 
-    it("buf_status and buf_project read the daemon's views after it loads, equal to the in-process ones", function()
+    it("buf_status and buf_project read the daemon's views once it loads on attach, equal to the in-process ones", function()
         local lw = require("loomworks")
         local store = require("loomworks.views")
 
@@ -102,17 +102,9 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
             return store.source("header") == "daemon" and store.source("projects") == "daemon"
         end, 10), obs:runtime_line())
 
-        -- Shown literally: the daemon has not loaded the workspace yet.
-        assert.equals("unloaded", lw.view_header().state)
-        assert.is_nil(lw.buf_status(buf))
-        assert.is_nil(lw.buf_project(buf))
-
-        -- Another client's request loads it in the daemon; the views follow
-        -- by `update`.
-        sess = assert(client.session(srv.address))
-        local env = require("loomworks.daemon.envscope").capture()
-        local r, err = client.call_sync(sess, "/toolchains", "loomworks.Toolchains", 1, "list", {}, { env = env })
-        assert.is_not_nil(r, err and err.message)
+        -- The editor attaching makes the daemon load the workspace (§19.16
+        -- "Loaded on attach"): the views follow by `update`, with no other
+        -- client's request.
         assert.is_true(vim.wait(30000, function()
             local h = lw.view_header()
             return h and h.state == "loaded" and lw.buf_status(buf) ~= nil

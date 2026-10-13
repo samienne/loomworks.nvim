@@ -34,6 +34,18 @@ local listeners = {}
 
 local redraw_pending = false
 
+--- Normalized physical identity per normalized path spelling (a Windows 8.3
+--- short name, a junction or symlink resolve to one path). Dropped whenever
+--- the daemon's ProjectsIndex view is set or cleared (a link may have been
+--- retargeted since), and bounded: cleared when it grows past CANON_MAX
+--- entries.
+local canon_cache, canon_count, CANON_MAX = {}, 0, 512
+
+--- Drop every cached physical identity (`canon_cache`).
+local function forget_identities()
+    canon_cache, canon_count = {}, 0
+end
+
 --- A view may have changed: tell the listeners and redraw the statusline
 --- (it reads the store; a running state it then shows starts the spinner).
 --- The store calls it when a daemon view is set or cleared; init.lua calls it
@@ -68,6 +80,7 @@ function M.on_change(fn) listeners[#listeners + 1] = fn end
 function M.set(owner, name, state)
     if type(state) ~= "table" then return end
     daemon[name] = { owner = owner, state = state }
+    if name == "projects" then forget_identities() end
     changed()
 end
 
@@ -82,6 +95,7 @@ function M.clear(owner, name)
         if d.owner == owner and (name == nil or n == name) then
             daemon[n] = nil
             any = true
+            if n == "projects" then forget_identities() end
         end
     end
     if any then changed() end
@@ -133,26 +147,31 @@ function M.normalize(p)
     return is_win and p:lower() or p
 end
 
---- Canonical `abs_path` per record (records are replaced, never mutated).
+--- A record's root forms `{ spelled, physical }` per record (records are
+--- replaced, never mutated).
+--- @type table<table, { [1]: string, [2]: string }>
 local norm_cache = setmetatable({}, { __mode = "k" })
 
---- Normalized physical identity per normalized path spelling (a Windows 8.3
---- short name, a junction or symlink resolve to one path), bounded: cleared
---- when it grows past CANON_MAX entries.
-local canon_cache, canon_count, CANON_MAX = {}, 0, 512
+--- `fs_realpath`, replaceable by tests.
+M._fs_realpath = function(p) return vim.uv.fs_realpath(p) end
 
 --- `path`'s real path when it exists, else its nearest existing ancestor's
 --- real path joined with the rest (a buffer's file may not exist yet); nil
---- when nothing along it resolves.
+--- when nothing along it resolves. Never climbs above a UNC share
+--- (`//server/share`, as loomworks.dir_identity): `/` would resolve to the
+--- current drive's root on Windows.
 --- @param path string
 --- @return string|nil
 local function realpath(path)
-    local cur, tail = vim.fs.normalize(path), ""
+    local start = (vim.fs.normalize(path):gsub("\\", "/"))
+    local unc = start:sub(1, 2) == "//"
+    local cur, tail = start, ""
     for _ = 1, 64 do
-        local r = vim.uv.fs_realpath(cur)
+        local r = M._fs_realpath(cur)
         if r then return (r:gsub("\\", "/"):gsub("/+$", "")) .. tail end
         local parent, seg = cur:match("^(.*)/([^/]+)$")
         if not parent or parent == "" or parent:match("^%a:$") then return nil end
+        if unc and not parent:match("^//[^/]+/[^/]+") then return nil end
         tail = "/" .. seg .. tail
         cur = parent
     end
@@ -186,12 +205,28 @@ local function in_root(root, p)
     return p == root or p:sub(1, #root + 1) == root .. "/"
 end
 
---- The record of `index` whose `abs_path` is the longest prefix of `path` on
---- a separator boundary (§19.13 "Views": equal, or followed by `/`). Both
---- the path and every root are compared by their physical identity (a
---- Windows 8.3 short name, a junction or symlink — on either side — maps to
---- the folder it names), so a spelling that lies under an outer project but
---- resolves into an inner one maps to the inner one.
+--- A root's two forms `{ spelled, physical }` (both normalized).
+--- @param path string
+--- @return string spelled, string physical
+local function forms(path)
+    return M.normalize(path), canonical(path)
+end
+
+--- Whether `path` (forms `ps`, `pp`) lies under a root (forms `rs`, `rp`):
+--- either form of the path under either form of the root.
+local function under_forms(rs, rp, ps, pp)
+    return in_root(rp, pp) or in_root(rs, ps) or in_root(rp, ps) or in_root(rs, pp)
+end
+
+--- The record of `index` whose root contains `path` on a separator boundary
+--- (§19.13 "Views": equal, or followed by `/`), the deepest one winning. A
+--- path lies under a root when its normalized spelling or its physical
+--- identity (a Windows 8.3 short name, a junction or symlink resolved) lies
+--- under the root's spelling or physical identity — so a link inside a
+--- project pointing outside it still maps by its spelling, and a link
+--- resolving into another project maps by its identity. Of several matching
+--- records the one with the longest physical root wins: a spelling under an
+--- outer project that resolves into an inner one maps to the inner one.
 --- @param index loomworks.ViewProjectsIndex|nil
 --- @param path string an absolute path
 --- @return loomworks.ViewProjectRecord|nil
@@ -200,31 +235,33 @@ function M.match(index, path)
         return nil
     end
     if #index.projects == 0 then return nil end
-    local p = canonical(path)
+    local ps, pp = forms(path)
     local best, best_len = nil, -1
     for _, rec in ipairs(index.projects) do
         if type(rec) == "table" and type(rec.abs_path) == "string" then
-            local prefix = norm_cache[rec]
-            if not prefix then
-                prefix = canonical(rec.abs_path)
-                norm_cache[rec] = prefix
+            local f = norm_cache[rec]
+            if not f then
+                f = { forms(rec.abs_path) }
+                norm_cache[rec] = f
             end
-            if #prefix > best_len and in_root(prefix, p) then
-                best, best_len = rec, #prefix
+            if #f[2] > best_len and under_forms(f[1], f[2], ps, pp) then
+                best, best_len = rec, #f[2]
             end
         end
     end
     return best
 end
 
---- Whether `path` lies under `root` (separator-bounded), both compared by
---- their physical identity (as `match`).
+--- Whether `path` lies under `root` (separator-bounded), by either form of
+--- each (as `match`).
 --- @param root string
 --- @param path string
 --- @return boolean
 function M.under(root, path)
     if type(root) ~= "string" or root == "" or type(path) ~= "string" or path == "" then return false end
-    return in_root(canonical(root), canonical(path))
+    local rs, rp = forms(root)
+    local ps, pp = forms(path)
+    return under_forms(rs, rp, ps, pp)
 end
 
 --- `lw.buf_project`: the ProjectsIndex record of a buffer's file.

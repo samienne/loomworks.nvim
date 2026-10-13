@@ -79,39 +79,40 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         trust._set_key_path(nil)
     end)
 
-    it("holds while the daemon is unloaded, then a configure in the daemon makes the entry ready", function()
-        -- In-process first: the reference (the unit is not configured).
-        local inproc = source.projects()
-        assert.equals("app", inproc[1].project)
-        assert.equals("clangd", inproc[1].entries[1].server)
-        assert.equals("unconfigured", inproc[1].entries[1].db_state)
-
+    local function start_server()
         srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000,
             log = function() end })
         srv:registry()
         service.attach(srv, require("loomworks.cli")._daemon_build_host())
         assert(srv:start())
         assert.is_not_nil(srv.interfaces:resolve("/lsp", "loomworks.LspConfig", 1))
+    end
 
+    local function attach_editor()
         local fr = FR.new({})
         obs = observer.attach(core:get_workspace(), { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
-        -- The daemon has not loaded the workspace: the LSP layer waits for
-        -- it, with nothing from the editor's model.
-        assert.is_true(vim.wait(10000, function()
-            local phase, d = source.daemon_phase()
-            return phase == "waiting" and d.why == "unloaded"
-        end, 10), tostring((source.daemon_phase())) .. " " .. obs:runtime_line())
-        assert.is_true(source.waiting())
-        assert.same({}, source.projects())
+    end
 
-        -- Another client's request loads it in the daemon: in use.
-        sess = assert(client.session(srv.address))
-        local env = require("loomworks.daemon.envscope").capture()
-        local r, err = client.call_sync(sess, "/toolchains", "loomworks.Toolchains", 1, "list", {}, { env = env })
-        assert.is_not_nil(r, err and err.message)
+    local function header_state()
+        return require("loomworks.daemon.core_interfaces").header(srv.service).state
+    end
+
+    it("an attaching editor makes the daemon load; a configure in the daemon makes the entry ready", function()
+        -- In-process first: the reference (the unit is not configured).
+        local inproc = source.projects()
+        assert.equals("app", inproc[1].project)
+        assert.equals("clangd", inproc[1].entries[1].server)
+        assert.equals("unconfigured", inproc[1].entries[1].db_state)
+
+        start_server()
+        assert.equals("unloaded", header_state())
+        -- The editor attaching alone loads the workspace in the daemon
+        -- (§19.16 "Loaded on attach"): in use, with no other request.
+        attach_editor()
         assert.is_true(vim.wait(30000, function() return source.in_use() end, 20),
-            tostring((source.daemon_phase())) .. " " .. vim.inspect(obs._lsp_read))
+            tostring((source.daemon_phase())) .. " " .. obs:runtime_line())
+        assert.equals("loaded", header_state())
         local rec = source.projects()[1]
         assert.equals("app", rec.project)
         assert.is_string(rec.id)
@@ -121,6 +122,8 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         local before = hits.active
 
         -- A configure run in the daemon: `changed`, a re-read, ready.
+        sess = assert(client.session(srv.address))
+        local env = require("loomworks.daemon.envscope").capture()
         local res, cerr = client.call_sync(sess, "/build", "loomworks.Build", 1, "configure",
             { profile = { key = "dev" } }, { env = env })
         assert.is_not_nil(res, cerr and cerr.message)
@@ -131,5 +134,36 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         assert.is_true(vim.wait(5000, function() return hits.active > before end, 10))
         -- The editor's model generated nothing meanwhile.
         assert.is_false(core:get_workspace():generates_lsp_databases())
+    end)
+
+    it("an editor-only session reaches loaded and a ready entry with no other request", function()
+        -- Configured beforehand by a CLI client; the daemon then unloads its
+        -- model (as after the background-work cap, §19.11).
+        start_server()
+        sess = assert(client.session(srv.address))
+        local env = require("loomworks.daemon.envscope").capture()
+        local res, cerr = client.call_sync(sess, "/build", "loomworks.Build", 1, "configure",
+            { profile = { key = "dev" } }, { env = env })
+        assert.is_not_nil(res, cerr and cerr.message)
+        assert.is_true(vim.wait(120000, function() return not srv.service.tasks:busy() end, 20))
+        sess:close(); sess = nil
+        assert.is_true(srv.service:abandon_background())
+
+        -- Only the editor from here.
+        assert.equals("unloaded", header_state())
+        attach_editor()
+        assert.is_true(vim.wait(60000, function()
+            local e = source.in_use() and source.projects()[1].entries[1]
+            return e and e.db_state == "ready"
+        end, 20), tostring((source.daemon_phase())) .. " " .. vim.inspect(source.projects()))
+        assert.equals("loaded", header_state())
+    end)
+
+    it("a CLI client does not make the daemon load", function()
+        start_server()
+        sess = assert(client.session(srv.address))
+        vim.wait(500, function() return false end, 20)
+        assert.is_nil(srv.service.ws)
+        assert.equals("unloaded", header_state())
     end)
 end)

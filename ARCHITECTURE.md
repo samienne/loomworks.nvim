@@ -256,7 +256,7 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `plugin/loomworks.lua` | Command registration (`:LoomworksInit`, `:LoomworksInfo`), double-load guard | Contain logic; import core.lua |
 | `init.lua` | Singleton Core instance, public API surface, version string | Hold state beyond the Core ref; contain business logic |
-| `views.lua` | Editor view store: `view.Header/1` and `view.ProjectsIndex/1` tables from the daemon subscription or the in-process builder (in `daemon` mode the builders give `unloaded` / no projects); buffer -> project record lookup (path and roots by physical identity); `buf_status` derivation | Require binary-side modules; query the workspace itself (builders are registered by init.lua) |
+| `views.lua` | Editor view store: `view.Header/1` and `view.ProjectsIndex/1` tables from the daemon subscription or the in-process builder (in `daemon` mode the builders give `unloaded` / no projects); buffer -> project record lookup (path and roots by spelling or physical identity); `buf_status` derivation | Require binary-side modules; query the workspace itself (builders are registered by init.lua) |
 
 ### Infrastructure Layer
 
@@ -766,7 +766,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   load `M._load_workspace_soft` with daemon handlers — notifications and
   refused saves report into the running request — and a manual file
   tracker). Holds the live workspace + the environment signature it was
-  loaded in; `live(ctx)` reloads on another environment (declines while a
+  loaded in. An observer connection's `welcome` (`Server:_authed`) calls
+  `on_editor_attached`, which queues a model segment loading the workspace as
+  `live(ctx, true)` does in the daemon's own environment when none is loaded
+  (§19.16 "Loaded on attach"); `live(ctx)` reloads on another environment (declines while a
   build runs) or a journal, else `FileTracker:sync()` (a refusal re-runs core
   setup → `settle` → the setup error is the refusal). `with_model(ctx, fn)`:
   the FIFO of model segments, drained on the main loop (`vim.schedule`),
@@ -1717,10 +1720,14 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   loaded-but-not-ready wait. The model's own `lsp_ready`,
   `active_set_changed`, `task_stopped` and `lsp_options_changed` are ignored
   in `daemon` mode. Buffer → project is `lw.buf_project`'s record key only
-  (`views.match`, which, like `views.under` for the gate, compares the path
-  and every root by physical identity — real path of it or its nearest
-  existing ancestor, cached per spelling — keeping the separator-bounded,
-  longest-match rule: a Windows 8.3 short name or a link on either side). Options: `lw.set_lsp_option` in `daemon`
+  (`views.match`, which, like `views.under` for the gate, takes a path as
+  under a root when its normalized spelling or its physical identity — real
+  path of it or its nearest existing ancestor, never above a UNC share,
+  cached per spelling and dropped whenever the daemon's ProjectsIndex view is
+  set or cleared — is under the root's spelling or physical identity,
+  separator-bounded; the longest physical root wins: a Windows 8.3 short
+  name or a link on either side, and a link inside a project pointing out of
+  it). Options: `lw.set_lsp_option` in `daemon`
   mode goes only through `editor_ops.set_lsp_option` (`LspConfig/1.
   set_option`; not carried, `invalid`, `refused`, `declined` and a failed
   call each an error naming what happened, nothing written); the status

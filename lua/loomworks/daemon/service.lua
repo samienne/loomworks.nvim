@@ -2,8 +2,9 @@
 --- routed operations: `build`, the batch `test`, the preparation of a run and
 --- `clean` (spec §19.15, §19.19 steps 3, 5 and 5c).
 ---
---- **Live workspace.** The daemon loads its workspace on the first operation
---- (through the host's loader — the same load as the in-process path, which
+--- **Live workspace.** The daemon loads its workspace on the first operation,
+--- or when an editor attaches (`on_editor_attached`, §19.16 "Loaded on
+--- attach") (through the host's loader — the same load as the in-process path, which
 --- refuses a workspace exactly as `lw` does) and keeps it. Before accepting
 --- each operation it applies every pending external change to its files
 --- exactly as its file watcher would (`FileTracker:sync` →
@@ -116,6 +117,7 @@ M.LOAD_WAIT_MS = 45000
 --- @field _lsp_force boolean|nil an owned database was written during a model segment: the deferred check
 ---   sends `changed` even when the state is unchanged (a raised `db_rev`)
 --- @field _lsp_listeners table<string, function> the `lsp_database_written` / `lsp_ready` event handlers
+--- @field _attach_load boolean|nil an editor's attach queued a load (`on_editor_attached`) not yet run
 ---   (removed again when the service stops)
 local Service = {}
 Service.__index = Service
@@ -885,6 +887,26 @@ function Service:abandon_background()
     if next(self.runs) or self:in_segment() then return false end
     if self.ws then self:_unload() end
     return true
+end
+
+--- An editor attached (an observer connection, hello `role = "observer"`,
+--- §19.16 "Loaded on attach"): load the workspace when none is loaded, as a
+--- read-only request does — in a model segment, in the daemon's own
+--- environment, without waiting for tool detection — so an editor-only
+--- session does not stay `unloaded`. Nothing when a model is loaded, a load
+--- is already queued, or the daemon is stopping. A failed load is the header's
+--- error state, as for any load. A CLI connection never calls this.
+function Service:on_editor_attached()
+    if self.ws or self._attach_load or self.stopping or self.server.stopped then return end
+    self._attach_load = true
+    local ctx = { op = "attach", env = envscope.capture(), args = {} }
+    self:with_model(ctx, function()
+        self._attach_load = nil
+        if self.ws or self.stopping then return end
+        local ws, refusal = self:live(ctx, true)
+        if not ws then self.server:log("loading the workspace for an editor failed: %s", tostring(refusal)) end
+        for _, n in ipairs(ctx.notes or {}) do self.server:log("%s", n) end
+    end)
 end
 
 --- Does `conn` own a running build? (The keepalive rule never drops it.)
