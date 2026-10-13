@@ -1383,7 +1383,7 @@ describe("lw test: working directories (§16.16)", function()
                 { extra = {}, dev = cli._new_device_opts(), cwd_override = "/x" }, deps)
         end)
         cli._foreign_of = orig_f
-        assert.equals(1, d.exit_code)
+        assert.equals(2, d.exit_code)      -- a usage error, like `lw run --cwd`
         assert.truthy(d.stderr:find("--cwd does not apply to a device run", 1, true), d.stderr)
     end)
 
@@ -1472,5 +1472,189 @@ describe("saved-targets TestUnit: working directories (§8.9.2)", function()
         local merged = ConfigUnit._merge_test_entries({ {}, { is_saved_targets = true } }, {
             { { id = "target:Run", executable = entries[1].executable } }, { entries[1] } })
         assert.equals(2, #merged)
+    end)
+end)
+
+-- ===========================================================================
+-- Review fixes (#208): neotest runs a step's `prepare`; unresolved deploy
+-- paths fail the step; `lw test --target --cwd` on a device is refused up
+-- front; the loomtest debug path clears pending children on a failed prepare.
+describe("saved launch deploys: every runner path (§16.16, §8.8)", function()
+    local function neotest_unit(cmds)
+        local applied = {}
+        local unit = setmetatable({
+            state = function() return "built" end,
+            test_command_for = function(_, id) return cmds[id], { kind = "tu" } end,
+            test_commands_all = function()
+                local all = {}
+                for _, id in ipairs(cmds._order or {}) do all[#all + 1] = { cmd = cmds[id], tu = { kind = "tu" }, id = id } end
+                return all
+            end,
+            _apply_test_results = function(_, res) for _, r in ipairs(res) do applied[#applied + 1] = r end end,
+        }, { __index = ConfigUnit })
+        return unit, applied
+    end
+    local function tree(unit, pos, id)
+        return {
+            data = function() return pos end,
+            iter_nodes = function()
+                local done = false
+                return function()
+                    if done then return nil end
+                    done = true
+                    return 1, { data = function() return { _config_unit = unit, _original_id = id } end }
+                end
+            end,
+        }
+    end
+    local function cmd(log, name, fail)
+        return { cmd = { "/bin/" .. name }, cwd = "/w", test_id = "launch:" .. name,
+            prepare = function()
+                log[#log + 1] = "deploy " .. name
+                if fail then return false, "deploy failed: boom" end
+                return true
+            end }
+    end
+    local function quiet(fn)
+        local orig = vim.notify
+        vim.notify = function() end
+        local ok, a, b = pcall(fn)
+        vim.notify = orig
+        if not ok then error(a, 0) end
+        return a, b
+    end
+
+    it("neotest: a test's spec runs its deploy once, at build_spec, and carries no prepare", function()
+        local adapter = require("loomworks.neotest")
+        local log = {}
+        local unit = neotest_unit({ ["launch:chk"] = cmd(log, "chk") })
+        local spec = adapter.build_spec({ tree = tree(unit, { type = "test", name = "chk", id = "f::launch:chk" }, "launch:chk") })
+        assert.same({ "deploy chk" }, log)
+        assert.same({ "/bin/chk" }, spec.command)
+        assert.is_nil(spec.prepare)
+        assert.is_nil(spec.context.prepare)
+    end)
+
+    it("neotest: a failed deploy marks the entry failed and runs nothing", function()
+        local adapter = require("loomworks.neotest")
+        local log = {}
+        local unit, applied = neotest_unit({ ["launch:chk"] = cmd(log, "chk", true) })
+        local spec = quiet(function()
+            return adapter.build_spec({ tree = tree(unit, { type = "test", name = "chk", id = "f::launch:chk" }, "launch:chk") })
+        end)
+        assert.is_nil(spec)
+        assert.equals("launch:chk", applied[1].test_id)
+        assert.equals("failed", applied[1].status)
+        assert.truthy(applied[1].message:find("deploy failed: boom", 1, true))
+    end)
+
+    it("neotest: run-all deploys each entry once and skips the one whose deploy failed", function()
+        local adapter = require("loomworks.neotest")
+        local log = {}
+        local unit, applied = neotest_unit({ ["launch:a"] = cmd(log, "a"), ["launch:b"] = cmd(log, "b", true),
+            ["launch:c"] = cmd(log, "c"), _order = { "launch:a", "launch:b", "launch:c" } })
+        local specs = quiet(function()
+            return adapter.build_spec({ tree = tree(unit, { type = "file", name = "f", id = "f" }, nil) })
+        end)
+        assert.same({ "deploy a", "deploy b", "deploy c" }, log)
+        assert.equals(2, #specs)
+        assert.same({ "/bin/a" }, specs[1].command)
+        assert.same({ "/bin/c" }, specs[2].command)
+        assert.equals("launch:b", applied[1].test_id)
+        assert.equals("failed", applied[1].status)
+    end)
+
+    it("loomtest debug: a failed prepare fails the entry and clears its pending children", function()
+        local nodes = { ["launch:chk"] = { id = "launch:chk", status = "pending" },
+            ["test:S.a@launch:chk"] = { id = "test:S.a@launch:chk", parent = "launch:chk", status = "pending" } }
+        local applied
+        local saved = {}
+        for _, m in ipairs({ "loomtest", "loomtest.explorer", "loomworks.debug" }) do saved[m] = package.loaded[m] end
+        package.loaded["loomtest"] = { get_node = function(id) return nodes[id] end,
+            apply_results = function(res) applied = res end }
+        package.loaded["loomtest.explorer"] = { is_open = function() return false end, refresh = function() end }
+        package.loaded["loomworks.debug"] = { available = function() return true end,
+            run = function() error("must not debug") end }
+        local ok, err = pcall(quiet, function()
+            require("loomtest.runner").debug({}, { cmd = { "/bin/chk" }, test_id = "launch:chk",
+                prepare = function() return false, "deploy failed: boom" end }, { "launch:chk", "test:S.a@launch:chk" })
+        end)
+        for m, v in pairs(saved) do package.loaded[m] = v end
+        assert.is_true(ok, err)
+        assert.equals("launch:chk", applied[1].test_id)
+        assert.equals("failed", applied[1].status)
+        assert.is_nil(nodes["test:S.a@launch:chk"].status)
+    end)
+
+    it("ConfigUnit: a prepare that errors fails the step like one that returns false", function()
+        local applied
+        local unit = setmetatable({ _apply_test_results = function(_, res) applied = res end }, { __index = ConfigUnit })
+        local orig_ov = package.loaded["overseer"]
+        local started = {}
+        package.loaded["overseer"] = { new_task = function(t) started[#started + 1] = t.name
+            return { id = 1, subscribe = function() end, start = function() end } end, open = function() end }
+        local f = quiet(function()
+            return ConfigUnit._run_test_task(unit, "test: chk", { cmd = { "/bin/chk" }, test_id = "launch:chk",
+                prepare = function() error("kaput") end }, {})
+        end)
+        package.loaded["overseer"] = orig_ov
+        assert.same({}, started)
+        assert.equals("rejected", f._state)
+        assert.equals("failed", applied[1].status)
+        assert.truthy(applied[1].message:find("kaput", 1, true))
+    end)
+
+    it("deploy: an unresolved ${...} in a destination or source path fails the step, never copies", function()
+        local root = make_ws(nil, "variant:default")
+        local ws = load(root)
+        local p = project(ws, "App")
+        local unit
+        for _, u in pairs(ws._config_units) do if u._project == p then unit = u end end
+        unit.state_value, unit.build_dir_value = "built", root .. "/build"
+        local profile = ws._profiles[1]
+        local deploy = require("loomworks.deploy")
+        local ctx = { workspace = ws, profile = profile, launch_project = p }
+        -- A command launch resolves no target: ${target_dir} stays unresolved.
+        local r, err = deploy.resolve_deploy_step("${target_dir}/x", { project = "App", path = "f" }, ctx)
+        assert.is_nil(r)
+        assert.truthy(err:find("target_dir", 1, true), err)
+        r, err = deploy.resolve_deploy_step("out/x", { project = "App", path = "${lw_no_such_var_xyz}/f" }, ctx)
+        assert.is_nil(r)
+        assert.truthy(err:find("lw_no_such_var_xyz", 1, true), err)
+        -- Resolved references still deploy.
+        r, err = deploy.resolve_deploy_step("${workspace_root}/out/x", { project = "App", path = "${build_dir}/f" }, ctx)
+        assert.is_table(r, err)
+        assert.equals(root .. "/out/x", r.dest_path)
+    end)
+
+    it("lw test --target --cwd: a device target is a usage error before any build or run", function()
+        local builds, runs = 0, 0
+        local lts = { H = { name = "H" }, T = { name = "T" } }
+        for _, lt in pairs(lts) do
+            lt.is_valid = function() return true end
+            lt.deploy_sync = function() return true end
+            lt.resolve_launch_spec = function() return { cmd = "/bin/" .. lt.name, args = {}, cwd = "/proj" } end
+        end
+        local deps = { build = function() builds = builds + 1 end,
+            run_spec = function() runs = runs + 1; return 0 end,
+            resolve_target = function(_, _, name) return lts[name] end }
+        local orig_f = cli._foreign_of
+        cli._foreign_of = function(lt) return lt == lts.T and { name = "T", platform = "arm64" } or nil end
+        local d = capture(function()
+            return cli._test_targets({ root = "/root" }, { key = "P" }, { "H", "T" },
+                { extra = {}, dev = cli._new_device_opts(), cwd_override = "/x" }, deps)
+        end)
+        cli._foreign_of = orig_f
+        assert.equals(2, d.exit_code)
+        assert.truthy(d.stderr:find("--cwd does not apply to a device run ('T')", 1, true), d.stderr)
+        assert.equals(0, builds)
+        assert.equals(0, runs)
+    end)
+
+    it("resolve_entry: a launch with neither command nor target is missing, also with targets unknown", function()
+        local r = tt.resolve_entry({ name = "E", index = 1 }, { launches = { E = { args = { "--x" } } }, level = "App/Tests" })
+        assert.equals("launch", r.kind)
+        assert.equals("missing", r.state)
+        assert.truthy(r.reason:find("neither a command nor a target", 1, true))
     end)
 end)

@@ -1708,6 +1708,28 @@ function ConfigUnit:_launch_test_all(opts)
     return step(1)
 end
 
+--- Run a test step's own preparation (`test_cmd.prepare`, e.g. a saved
+--- launch entry's deploy, spec §16.16) — the one place every editor runner
+--- (overseer task, neotest) calls it, once, just before the program runs.
+--- A failure (`false, err`, or an error raised) marks the step's entry failed
+--- and is reported; the caller must then not run the program.
+--- @param name string display name for the step
+--- @param test_cmd table { prepare?, test_id? }
+--- @return boolean ok, string|nil err
+function ConfigUnit:_prepare_test_step(name, test_cmd)
+    if type(test_cmd.prepare) ~= "function" then return true end
+    local ok, pok, perr = pcall(test_cmd.prepare)
+    if ok and pok then return true end
+    local msg = tostring((ok and perr) or (not ok and pok) or "preparation failed")
+    vim.notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
+    if test_cmd.test_id then
+        self:_apply_test_results({ { test_id = test_cmd.test_id, status = "failed", message = msg } })
+        local events = self._workspace and self._workspace._core and self._workspace._core._deps.events
+        if events then events.emit("test_results_changed", self) end
+    end
+    return false, msg
+end
+
 --- Run a test task via overseer and parse results on completion.
 --- @param name string display name for the task
 --- @param test_cmd table { cmd, env, cwd, output_path }
@@ -1723,19 +1745,8 @@ function ConfigUnit:_run_test_task(name, test_cmd, tu)
     -- A step's own preparation (a saved launch entry's deploy, spec §16.16)
     -- runs now, when the step executes; a failure fails this step without
     -- running its program, and the entry shows as failed.
-    if type(test_cmd.prepare) == "function" then
-        local pok, perr = test_cmd.prepare()
-        if not pok then
-            local msg = tostring(perr or "preparation failed")
-            vim.notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
-            if test_cmd.test_id then
-                self:_apply_test_results({ { test_id = test_cmd.test_id, status = "failed", message = msg } })
-                local events = self._workspace and self._workspace._core and self._workspace._core._deps.events
-                if events then events.emit("test_results_changed", self) end
-            end
-            return future_mod.rejected(msg)
-        end
-    end
+    local pok, perr = ConfigUnit._prepare_test_step(self, name, test_cmd)
+    if not pok then return future_mod.rejected(perr) end
 
     local f = future_mod.Future.new()
     local unit = self

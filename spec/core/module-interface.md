@@ -1139,7 +1139,10 @@ profile's context:
 
 **Unresolvable deploy steps block the launch.** The user is notified with
 a specific error (e.g., "Deploy: NativeLib not in profile", "Deploy:
-target native_lib not found"). The launch does not proceed.
+target native_lib not found"). The launch does not proceed. A destination
+or source path with a `${...}` reference that does not resolve in its
+context (e.g. `${target_dir}` for a command launch, §8.7) is unresolvable:
+the step fails naming the variable, never copying to a literal path.
 
 #### 8.8.3 Freshness tracking
 

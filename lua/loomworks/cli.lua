@@ -2716,7 +2716,7 @@ function M._run_test_executable(ws, lt, opts, deps)
   end
 
   if f and opts.cwd_override then
-    die("--cwd does not apply to a device run ('" .. label .. "') — set the project's device.working_dir instead")
+    die("--cwd does not apply to a device run ('" .. label .. "') — set the project's device.working_dir instead", 2)
   end
   -- A device step takes its working directory from the `device` block, never
   -- from the entry (§1.3.4 "Working directory"): say so.
@@ -2831,15 +2831,12 @@ end
 function M._test_targets(ws, profile, names, opts, deps)
   deps = deps or {}
   local test_run = require("loomworks.remote.test_run")
-  if deps.build then
-    deps.build(profile, ws)
-  else
-    with_build_locks(profile, "build", function() run_build_steps(profile, ws, {}) end)
-  end
-  local function resolve(name)
+  --- `quiet`: an unresolvable name yields nil instead of dying.
+  local function resolve(name, quiet)
     if deps.resolve_target then return deps.resolve_target(ws, profile, name) end
     for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
     local matches, all = match_targets(ws, profile, name, nil, "target")
+    if quiet and #matches ~= 1 then return nil end
     if #matches == 0 then
       local labels = {}
       for _, c in ipairs(all) do if c.kind == "target" then labels[#labels + 1] = c.project.key .. ":" .. c.name end end
@@ -2852,11 +2849,45 @@ function M._test_targets(ws, profile, names, opts, deps)
     end
     return candidate_launch_target(ws, profile, matches[1])
   end
+  --- `--cwd` never applies to a device run (as for `lw run --cwd`): a usage
+  --- error, refused before anything is built or run.
+  local function check_cwd(name, lt)
+    if opts.cwd_override and lt and M._foreign_of(lt) then
+      die("--cwd does not apply to a device run ('" .. name .. "') — set the project's device.working_dir instead", 2)
+    end
+  end
+
+  -- Before the build: every name whose target is already known (a unit
+  -- configured here). Targets read now are dropped again so the build's
+  -- result is what runs.
+  if opts.cwd_override then
+    local fresh = {}
+    if not deps.resolve_target then
+      for _, pp in ipairs(profile:projects()) do
+        local u = pp._config_unit
+        if u and not u.targets then fresh[#fresh + 1] = u end
+      end
+    end
+    for _, name in ipairs(names) do check_cwd(name, resolve(name, true)) end
+    for _, u in ipairs(fresh) do u.targets = nil end
+  end
+  if deps.build then
+    deps.build(profile, ws)
+  else
+    with_build_locks(profile, "build", function() run_build_steps(profile, ws, {}) end)
+  end
+  -- After the build: resolve every name, and check all of them, before the
+  -- first one runs.
+  local lts = {}
+  for i, name in ipairs(names) do
+    lts[i] = resolve(name)
+    check_cwd(name, lts[i])
+  end
 
   local several = #names > 1
   local failed_names = {}
-  for _, name in ipairs(names) do
-    local lt = resolve(name)
+  for i, name in ipairs(names) do
+    local lt = lts[i]
     local failed = M._run_test_executable(ws, lt, {
       label = name, extra = opts.extra, dev = opts.dev, cwd_override = opts.cwd_override,
       junit_path = opts.junit and test_run.junit_path(opts.junit, name, several) or nil,

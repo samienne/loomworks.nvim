@@ -29,8 +29,18 @@ local uv = vim.uv or vim.loop
 
 --- @class loomworks.SavedTargetsTestUnit : loomworks.TestUnit
 --- @field is_saved_targets boolean always true (core's saved-targets TestUnit)
---- @field _top_by_id table<string, { entry: loomworks.SavedTestEntry, kind: "launch"|"target", target: loomworks.Target|nil, launch_target: loomworks.LaunchTarget|nil, args: string[], cwd: string|nil }> resolved top-level entries of the last discovery, by entry id (`cwd` = the entry's resolved working_dir)
+--- @field _top_by_id table<string, { entry: loomworks.SavedTestEntry, kind: "launch"|"target", target: loomworks.Target|nil, launch_target: loomworks.LaunchTarget|nil, args: string[], cwd: string|nil, lctx: table<string, string>|nil }> resolved top-level entries of the last discovery, by entry id (`cwd` = the entry's resolved working_dir; `lctx` = its launch context, only while discovery expands its args — cleared before it is stored)
 --- @field _suffix_by_output table<string, string> child-id suffix by results file (repeated / launch entries)
+--- A discovered tree entry of this TestUnit (beside the generic TestEntry
+--- fields: id, name, parent, runnable, executable, args, status, message).
+--- @class loomworks.SavedTestTreeEntry
+--- @field saved true marks an entry of the saved-targets TestUnit
+--- @field saved_kind "launch"|"target"|nil what the saved name resolved to (nil when unresolved)
+--- @field saved_index integer|nil occurrence of the name in the list (1 = first; `#<k>` ids from 2)
+--- @field saved_repeated boolean|nil the name occurs more than once in the list
+--- @field saved_working_dir true|nil the entry declares its own `working_dir` (never merged into a module entry)
+--- @field saved_args string[]|nil set on a module entry that a once-listed saved `target` entry merged into: the saved entry's args (ConfigUnit._merge_test_entries)
+
 local SavedTargetsTestUnit = setmetatable({}, { __index = TestUnit })
 SavedTargetsTestUnit.__index = SavedTargetsTestUnit
 
@@ -207,7 +217,7 @@ local function add_children(self, entries, e, framework, list)
     end
 end
 
---- @return table[]|nil
+--- @return loomworks.SavedTestTreeEntry[]|nil
 function SavedTargetsTestUnit:discover()
     if self._entries then return self._entries end
     local entries, probe = self:_resolve_entries()
