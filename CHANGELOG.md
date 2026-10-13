@@ -105,7 +105,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   targets up. (#208)
 - The deploy editor offers `${target_dir}` in its destination segment picker
   for a project's deploy steps (not for a command launch's, where it is
-  unavailable). (#PRNUM)
+  unavailable). A project-level step also runs for the project's command
+  launches, so a project-level destination using `${target_dir}` fails the
+  deploy of a command launch. (#PRNUM)
 
 ### Changed
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)
