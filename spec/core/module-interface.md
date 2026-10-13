@@ -1256,6 +1256,17 @@ Loomworks provides test discovery, execution, and result reporting through
 a neotest adapter. ConfigUnit is the test interface — callers never interact
 with TestUnit or framework helpers directly.
 
+*(Step 5m, daemon.md §19.15 "Tests", §19.16 "Tests".)* In `daemon` mode the
+ConfigUnit test interface and the TestUnits run **only in the workspace
+daemon**: discovery (`Tests/1.discover`), runs of selected tests
+(`Tests/1.run_cases`, the pre-run build in the same task), debug preparation
+(`Tests/1.prepare_debug`) and results parsing happen there, and the editor
+reads the tree and results from `view.Tests/1`. The editor's own ConfigUnits
+discover, build and run no tests then; the paths below that the editor drives
+(the loomtest adapter's `ensure_built` and RunSpecs, the neotest adapter,
+the debug listener's XML parsing) are the `in-process` mode's, until step
+6b.
+
 #### 8.9.1 Architecture
 
 ```
@@ -1307,13 +1318,18 @@ background cache population.
 **`test_command(test_id, opts?) → RunSpec|nil`**
 
 Construct the command to run a specific test. Returns
-`{ cmd, env, cwd, output_path }` or nil.
+`{ cmd, env, cwd, output_path }` or nil. *(Step 5m.)* `opts.output_path`, when
+given, is where the run writes its results file; the daemon passes a per-run
+path (`<root>/.nvim/tmp/lw-test-<hex>.xml`, §16.40) so concurrent runs never
+share one. Without it a TestUnit uses its own location (the `in-process`
+editor's path, unchanged until step 6b).
 
 **`test_command_all(opts?) → RunSpec|nil`**
 
 Construct the command to run all tests as structured, per-test output (for the
 editor UI): typically the test executable run under a framework harness that
-emits a machine-readable results file. `opts.filter` for name filtering.
+emits a machine-readable results file. `opts.filter` for name filtering;
+`opts.output_path` as for `test_command`.
 Returns `{ cmd, env, cwd, output_path }` or nil.
 
 **`run_command_all(opts?) → { cmd, env?, cwd?, junit_out? }|nil`**
@@ -1458,6 +1474,13 @@ Same chain, runs all tests.
 
 #### 8.9.4 Neotest adapter
 
+*(Step 5m.)* In `daemon` mode the neotest adapter is not available: it
+discovers nothing and shows one notification per session pointing at the
+loomtest explorer (daemon.md §19.16 "Tests"). What follows is the
+`in-process` mode's adapter. A daemon-mode adapter (positions and results
+from `view.Tests/1`, runs through a CLI relay) is a later, optional part
+(daemon.md §19.19 5m part D).
+
 The loomworks neotest adapter (`neotest/init.lua`) bridges ConfigUnit's
 test interface to neotest's adapter protocol. No framework-specific code
 in the adapter — it works through TestUnit/TestTree only.
@@ -1554,7 +1577,15 @@ serves both hosts (in-process and the daemon's `Launch/1.prepare_debug`,
 daemon.md §19.15 "Debug"); the adapter-specific request shape and the
 installed-adapter check stay in the editor (below).
 
-**Test debugging.** `loomtest.debug(test_id)` mirrors `loomtest.run()`:
+**Test debugging.** *(Step 5m: in `daemon` mode the daemon prepares a test
+debug session — `Tests/1.prepare_debug` builds what a run of the node would
+and returns the `DebugSpec` of that run's step, its program, arguments (the
+filter and the results option included), working directory, environment and
+resolved debug languages; the editor hands it to `debug.run()` and, when the
+session ends, calls `Tests/1.collect` so the daemon parses the results.
+No language or adapter is assumed by the editor; daemon.md §19.15 "Tests".
+The rest of this paragraph is the `in-process` mode's.)*
+`loomtest.debug(test_id)` mirrors `loomtest.run()`:
 same resolution logic (test/suite/target), same build-before-run via
 `ensure_built()`, but dispatches to `runner.debug()` which calls
 `debug.run()` with the test executable, gtest filter args, and

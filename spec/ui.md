@@ -47,7 +47,11 @@ directly to `Snacks.win`. The page contains these sections in order:
    held` (after a lost connection the servers were stopped, `— language
    servers stopped, held`), and when the daemon cannot give the configuration it names the
    reason in the warning highlight, e.g. `lsp configuration: daemon offers
-   no loomworks.LspConfig/1 — language servers withheld`.
+   no loomworks.LspConfig/1 — language servers withheld`. *(Step 5m:)* tests
+   are never discovered or run in-process in `daemon` mode (core §19.16
+   "Tests"): a degraded tests feature is the note `tests: daemon offers no
+   loomworks.view.Tests/1 — tests unavailable` in the warning highlight, and
+   the test explorer's header shows the same status (LOOMTEST.md §4.2).
    Absent only when `in-process` was selected by the default.
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw

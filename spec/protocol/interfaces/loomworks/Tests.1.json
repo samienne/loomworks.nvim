@@ -2,7 +2,7 @@
   "interface": "loomworks.Tests",
   "version": 1,
   "status": "draft",
-  "description": "Object /tests (spec 19.15, 19.20): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Discovery (discover) lands in step 5m.",
+  "description": "Object /tests (spec 19.15, 19.20): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Step 5m (spec 19.15 Tests, 19.20 Tests/1) adds the editor's discover, run_cases, prepare_debug (task-streamed), collect and result with their handlers (parts B1, B2); its results signal, which needs no handler, is declared here from part 0.",
   "methods": {
     "run": {
       "description": "Build the profile, then run its registered tests (lw test [<profile>] [--junit <file>] [-- <args>]).",
@@ -94,6 +94,24 @@
       },
       "needs_env": true,
       "mutates": true
+    }
+  },
+  "signals": {
+    "results": {
+      "description": "Per-case progress of a running run_cases (any client's), batched at most about 4 per second per run, and the cases a collect recorded (task_id absent). A delta on top of loomworks.view.Tests/1, never initial: on a seq gap or a new session generation a client calls view.Tests/1.get, whose state already includes every change results carried. A run's last results precedes the view update that ends it. The batch run sends none.",
+      "args": {
+        "type": "object",
+        "required": ["seq", "cases"],
+        "properties": {
+          "seq": { "description": "Gapless per object and connection (spec 19.12).", "type": "integer", "minimum": 1 },
+          "task_id": { "description": "The run_cases task; absent for a collect.", "$ref": "loomworks.Common/1#/$defs/TaskId" },
+          "cases": {
+            "description": "The cases whose status changed since the previous results of this run, each with its current status.",
+            "type": "array",
+            "items": { "$ref": "loomworks.Common/1#/$defs/TestCaseResult" }
+          }
+        }
+      }
     }
   }
 }

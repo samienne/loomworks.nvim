@@ -60,9 +60,46 @@ used standalone with any adapter.
 ---@field invalidate fun()
 ---@field get_cursor_test fun(bufnr: number, line: number): string|nil
 ---@field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean))
+---@field status? fun(): loomtest.AdapterStatus|nil  header status (§4.2)
+---@field start? fun(selection: string[]|nil, opts: table, sink: loomtest.RunSink): loomtest.RunHandle|nil
+---@field debug_start? fun(test_id: string, sink: loomtest.RunSink): loomtest.RunHandle|nil
+---@field result? fun(test_id: string, callback: fun(r: loomtest.TestResult|nil))
 ```
 
+**Adapter-executed runs** *(step 5m)*. An adapter may run tests itself
+instead of returning RunSpecs: when it has `start`, loomtest calls it for
+every run (`selection` the node ids, nil for run-all; `opts.no_build`), never
+`run` / `run_suite` / `run_all` / `ensure_built` / `parse_results`, and does
+no streaming or output parsing of its own (§5.4, §5.5 do not apply). The
+adapter reports through the sink:
+
+```lua
+---@class loomtest.RunSink
+---@field status fun(updates: { id: string, status: string, duration?: number, message?: string }[])
+---@field done fun(ok: boolean, err?: string)
+
+---@class loomtest.RunHandle
+---@field cancel fun()
+
+---@class loomtest.AdapterStatus
+---@field text string     e.g. "tests: waiting for the workspace daemon"
+---@field level string    "info" | "warn" | "error"
+---@field blocked boolean true: run, debug and refresh are refused with `text`
+```
+
+`debug_start` is the debug form (§13.1); `result` returns a node's output and
+error locations on demand (§8) when the adapter keeps them rather than
+loomtest. A RunSpec adapter (the in-process loomworks adapter, third-party
+adapters) is unchanged.
+
 ### 3.1 TestNode
+
+*(Step 5m.)* An adapter may supply `suite` nodes itself; when any node of a
+target has `type = "suite"`, loomtest does not infer suites for that target
+(§4.1). Results apply by exact `test_id` only, never by name matching, when
+the adapter supplies its own suites. Ids are the adapter's and opaque to
+loomtest. The status values gain `queued` (selected by a running run, not
+started yet), shown as pending.
 
 ```lua
 ---@class loomtest.TestNode
@@ -114,7 +151,8 @@ used standalone with any adapter.
 ### 4.1 Tree structure
 
 Tests grouped by target → suite → test. Suites inferred from test
-names (gtest `Suite.Test` → suite `Suite` with child `Test`).
+names (gtest `Suite.Test` → suite `Suite` with child `Test`), unless the
+adapter supplies suite nodes (§3.1), which are shown as given.
 
 ```
 ▼ ✔ LumeMetaAPITest
@@ -127,7 +165,13 @@ names (gtest `Suite.Test` → suite `Suite` with child `Test`).
 
 ### 4.2 Header
 
-Line 1: adapter description (profile name for loomworks).
+Line 1: adapter description (profile name for loomworks). *(Step 5m.)*
+When the adapter reports a `status` (§3), it replaces the description in
+its level's highlight (e.g. `tests: waiting for the workspace daemon`,
+`tests: daemon offers no loomworks.view.Tests/1`, `tests: workspace
+unloaded`, `tests: discovering…`); while
+it is `blocked`, run, debug and refresh keys show `text` as one notification
+instead of acting.
 Line 2: colored counts — 🧪 total ✔ passed ✗ failed ↻ running ⊘ skipped ○ unknown.
 All counts always shown to prevent layout shifts.
 
@@ -159,6 +203,11 @@ failed > running > pending > passed > skipped > unknown.
 unfolds and restores cursor to the saved node.
 
 ## 5. Test Execution
+
+*(Step 5m.)* §5.1–§5.5 describe RunSpec adapters. With an adapter-executed
+run (§3) the adapter does the build, execution and parsing (for loomworks in
+the daemon, §13.1), loomtest only shows the sink's statuses and the final
+state; §5.3's staleness clearing and §5.6's progress still apply.
 
 ### 5.1 Direct binary execution
 
@@ -305,6 +354,38 @@ repeated name's later occurrence carry an `@<entry id>` suffix on their ids
 stays two nodes. A missing saved entry appears as an errored, non-runnable
 node. A saved entry runs in its own working directory (specification §1.3.4
 "Working directory").
+
+### 13.1 Daemon mode
+
+*(Step 5m; specification daemon.md §19.16 "Tests".)* With `runtime.mode =
+"daemon"` the adapter computes nothing about tests: the tree (units, explicit
+suites, unit-scoped opaque ids, `source`), the unit states and the last
+results come only from the daemon's `loomworks.view.Tests/1`, and its live
+statuses from `Tests/1` `results`. It implements `start`, `debug_start`,
+`result` and `status` (§3):
+
+- **Discovery**: `discover_async` returns the view's nodes; when the view is
+  `stale` and the explorer is open (or on `<C-r>`, forced) it calls
+  `Tests/1.discover`, an owned overseer row, and the tree follows the view's
+  `update`. A unit that is `not_configured`, `foreign`, `no_tests` or
+  `error` shows as one non-runnable node with the view's message.
+- **Runs**: `start` is one `Tests/1.run_cases` (`select` the ids, none for
+  run-all, `no_build` for `<leader>tA`), an owned overseer row whose stop
+  cancels it; the build is in that task (`ensure_built` is not used).
+  `results` signals feed the sink; another client's runs show too.
+- **Debug**: `debug_start` is `Tests/1.prepare_debug` → the returned debug
+  spec to `debug.run()` → `Tests/1.collect` when the session ends; no
+  language or adapter is assumed.
+- **Output**: `o`, `e`, inline marks and diagnostics of failed nodes read
+  `Tests/1.result { id }`.
+- **Status**: unloaded, disconnected, `error`/`refused`, or the interfaces
+  missing → `status` is `blocked` with that text, the tree empty, signs and
+  inline marks cleared; nothing is discovered or run in-process. On reconnect
+  the view restores the tree and the daemon's last results (kept in the
+  daemon's memory for its session).
+
+In `in-process` mode the adapter is the RunSpec adapter above, unchanged,
+until step 6b.
 
 ## 14. Future Considerations
 
