@@ -478,7 +478,8 @@ describe("lw run on a foreign target", function()
         assert.truthy(res.stderr:find("--prefix cannot wrap 'Runner'", 1, true))
         res = run({ cwd_override = "x" })
         assert.is_false(res.ok)
-        assert.truthy(res.stderr:find("--cwd does not apply", 1, true))
+        assert.equals(2, res.exit_code)    -- a usage error, like `lw test --target --cwd`
+        assert.truthy(res.stderr:find("--cwd does not apply to a device run ('Runner')", 1, true), res.stderr)
     end)
 
     it("--print reports the device-side invocation + manifest without staging or executing", function()
