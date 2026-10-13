@@ -10,9 +10,9 @@
 --- @field discover fun(): loomtest.TestNode[]|nil
 --- @field discover_async fun(callback: fun(nodes: loomtest.TestNode[]|nil))
 --- @field run fun(test_id: string, opts?: table): loomtest.RunSpec|nil
---- @field run_all fun(opts?: table): loomtest.RunSpec|nil
+--- @field run_all fun(opts?: table): loomtest.RunSpec|loomtest.RunSpec[]|nil several specs run one after another
 --- @field run_suite fun(suite_id: string, opts?: table): loomtest.RunSpec|nil
---- @field parse_results fun(output_path: string): loomtest.TestResult[]|nil
+--- @field parse_results fun(output_path: string, spec?: loomtest.RunSpec): loomtest.TestResult[]|nil spec = the RunSpec that produced the file
 --- @field invalidate fun()
 --- @field get_cursor_test fun(bufnr: number, line: number): string|nil
 --- @field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean)) optional: build test targets before running
@@ -36,6 +36,8 @@
 --- @field cwd string|nil working directory
 --- @field env table|nil environment variables
 --- @field output_path string|nil path for structured result output
+--- @field prepare (fun(): boolean, string|nil)|nil runs when the step executes, before its program (e.g. a saved launch entry's deploy); `false, err` fails the step without running it
+--- @field test_id string|nil the node a failed `prepare` marks failed
 
 --- @class loomtest.TestResult
 --- @field test_id string matches a TestNode id

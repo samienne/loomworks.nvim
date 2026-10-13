@@ -383,11 +383,17 @@ function M.parse_xml_results(output_path)
     -- Parse line-by-line for performance (gmatch on 675KB+ strings is slow).
     -- gtest XML has one testcase per line for self-closing tags.
     -- Failed tests span multiple lines (<testcase>...<failure>...</testcase>).
-    local in_testcase = nil  -- accumulating a multi-line testcase
+    -- Lines of the multi-line testcase being accumulated. Collected in a table
+    -- and joined once at </testcase>: appending with `..` re-copies the whole
+    -- body for every line (O(N^2)), which hung for hours on a testcase with
+    -- millions of lines (an assertion failing in a loop).
+    local tc_lines = nil
     for line in content:gmatch("[^\n]+") do
-        if in_testcase then
-            in_testcase = in_testcase .. "\n" .. line
+        if tc_lines then
+            tc_lines[#tc_lines + 1] = line
             if line:match("</testcase>") then
+                local in_testcase = table.concat(tc_lines, "\n")
+                tc_lines = nil
                 local attrs = in_testcase:match("<testcase%s(.-[^/])>")
                 local body = in_testcase:match("<testcase[^>]*>(.-)</testcase>") or ""
                 if attrs then
@@ -435,7 +441,6 @@ function M.parse_xml_results(output_path)
                         }
                     end
                 end
-                in_testcase = nil
             end
         elseif line:match("<testcase%s") then
             if line:match("/>%s*$") then
@@ -457,8 +462,6 @@ function M.parse_xml_results(output_path)
                 end
             elseif line:match("</testcase>") then
                 -- Single-line testcase with body (rare)
-                in_testcase = line
-                -- Re-trigger end processing
                 local attrs = line:match("<testcase%s(.-[^/])>")
                 local body = line:match("<testcase[^>]*>(.-)</testcase>") or ""
                 if attrs then
@@ -475,10 +478,9 @@ function M.parse_xml_results(output_path)
                         }
                     end
                 end
-                in_testcase = nil
             else
                 -- Multi-line testcase (has children like <failure>, <system-out>)
-                in_testcase = line
+                tc_lines = { line }
             end
         end
     end

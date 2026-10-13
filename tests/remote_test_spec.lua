@@ -115,10 +115,11 @@ describe("lw test --target on a device", function()
         assert.equals(0, res.ret)
         assert.truthy(res.stdout:find("Runner: 2 tests passed", 1, true))
         assert.truthy(res.stdout:find("TESTS OK: Debug:kit", 1, true))
-        -- forwarded args first, then the results option pointing into the staging root
-        assert.equals("--gtest_filter=Suite.*", dev.last_argv[2])
+        -- the results option pointing into the staging root, then the
+        -- forwarded args (spec §16.16: program, results option, args)
         assert.equals("--gtest_output=xml:" .. DROOT .. "/.loomworks/results/Runner.xml",
-            dev.last_argv[3])
+            dev.last_argv[2])
+        assert.equals("--gtest_filter=Suite.*", dev.last_argv[3])
         local j = fx.read(junit)
         assert.truthy(j:find('<testcase classname="Suite" name="a"', 1, true))
         assert.truthy(j:find('tests="2" failures="0"', 1, true))
@@ -236,16 +237,40 @@ describe("lw test --target on a device", function()
 end)
 
 describe("plain lw test on a foreign profile", function()
+    local function batch_unit(o)
+        local unit = fx.fake_unit(o)
+        unit._project = { key = "App" }
+        unit.batch_runner_test_units = function() return { { run_command_all = function() end } } end
+        return unit
+    end
+
     it("refuses (the batch runner would execute foreign binaries on the host)", function()
-        local unit = fx.fake_unit({ token = "fake-arm64", tool_key = "ohos-kit" })
+        local unit = batch_unit({ token = "fake-arm64", tool_key = "ohos-kit" })
         local profile = { key = "Debug:ohos-kit", projects = function() return { { _config_unit = unit } } end }
-        local res = capture(function() cli._refuse_foreign_batch(profile) end)
+        local built = false
+        local res = capture(function()
+            return cli._test_plan({ root = "/" }, profile, { extra = {}, dev = cli._new_device_opts() },
+                { build = function() built = true end })
+        end)
         assert.is_false(res.ok)
         assert.truthy(res.stderr:find("builds with kit ohos-kit for fake-arm64", 1, true))
         assert.truthy(res.stderr:find("lw test Debug:ohos-kit --target <exe>", 1, true))
-        local host = { key = "h", projects = function() return { { _config_unit = fx.fake_unit({}) } } end }
-        res = capture(function() cli._refuse_foreign_batch(host) end)
-        assert.is_true(res.ok)
+        assert.is_false(built)
+    end)
+
+    it("plans the batch step on the host, drops it only for a foreign kit", function()
+        local host = { key = "h", projects = function() return { { _config_unit = batch_unit({}) } } end }
+        local plan, n_batch = cli._test_plan_units(host)
+        assert.equals(1, n_batch)
+        assert.is_true(plan[1].batch)
+        assert.is_nil(plan[1].batch_dropped)
+        local unit = batch_unit({ token = "fake-arm64", tool_key = "ohos-kit" })
+        local foreign = { key = "f", projects = function() return { { _config_unit = unit } } end }
+        plan, n_batch = cli._test_plan_units(foreign)
+        assert.equals(0, n_batch)
+        assert.is_false(plan[1].batch)
+        assert.is_true(plan[1].batch_dropped)
+        assert.equals("fake-arm64", plan[1].platform)
     end)
 end)
 
@@ -272,7 +297,8 @@ describe("named test executables on the host", function()
                     build = function() end, resolve_target = function() return lt end,
                     run_spec = function(step)
                         seen = step.cmd
-                        local xml = step.cmd[#step.cmd]:match("^%-%-gtest_output=xml:(.+)$")
+                        local xml
+                        for _, a in ipairs(step.cmd) do xml = xml or a:match("^%-%-gtest_output=xml:(.+)$") end
                         fx.write(xml, gtest_xml({ { name = "a" }, { name = "b", fail = true } }))
                         return 0
                     end,
@@ -282,7 +308,9 @@ describe("named test executables on the host", function()
         require("loomworks.io").rm_rf(root)
         assert.is_false(res.ok)
         assert.is_table(seen, tostring(res.ret))
-        assert.equals("--x", seen[2])
+        -- program, results option, then the forwarded args (spec §16.16)
+        assert.truthy(seen[2]:match("^%-%-gtest_output=xml:"))
+        assert.equals("--x", seen[3])
         assert.truthy(res.stdout:find("Local: FAILED (1 failed test): Suite.b", 1, true))
     end)
 end)

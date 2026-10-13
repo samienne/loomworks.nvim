@@ -282,6 +282,16 @@ Project-level fields (`path`, `type`, `depends_on`, module settings like
 `compile_commands_from`) come from user.json if present, otherwise from
 shared.
 
+Saved test targets (`tests`, §1.3.4) follow these rules with no special
+case: a configuration's list comes with the winning configuration table
+(user wins per configuration name), and the project-wide list is a
+project-level field. A list is atomic — never merged entry by entry across
+the two files. A `tests` value is content of its item (it has no intent of
+its own) and counts toward the modified indicator (`+`), auto-sync and revert
+like any other field. Per-entry args and `working_dir` are program-bearing
+and are stripped from the shared layer before this merge; on publish they are
+restored by entry name and occurrence index, never by position (§17.6).
+
 #### Descriptions
 
 A description (§1.10) is part of its item's **content**, never an item of its

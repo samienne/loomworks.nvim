@@ -86,8 +86,29 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   shows `(unconfigured)`, `(no db)` or `(ws error)` in red when loomworks
   withholds clangd for the buffer. `buf_status()` gains an `lsp` field and
   `loomworks.lsp_buf_state(bufnr)` returns the same per-buffer status. (#191)
+- Saved test targets: a configuration (or a whole project) can list test
+  programs in `tests` - a build target or a launch configuration, as
+  `"Name"`, `["Name", "arg", ...]` or
+  `{ "name": "Name", "args": [...], "working_dir": "..." }` (args and
+  working_dir take `${...}` variables; a name may repeat with different
+  args) - and plain `lw test` runs them after the
+  project's ctest / `meson test` run, on a device for a cross-compiling
+  profile. `--saved` / `--discovered` run only one kind, `lw test --list`
+  shows the plan (and whether each entry is a target or a launch) without
+  building, and `lw test-target add/remove/clear` edits the lists
+  (`add --working-dir <dir>` writes the table form). A build-target entry
+  runs in the project directory unless its working_dir says otherwise, and
+  the new `${target_dir}` variable names the directory holding the
+  executable being run (launches with a target, saved entries,
+  `lw test --target`, which also takes `--cwd <dir>`). The status page shows
+  a read-only `Tests:` line, and the test explorer and neotest pick the saved
+  targets up. (#208)
 
 ### Changed
+- `lw test --target` now passes the results option (e.g. `--gtest_output`)
+  first, before the entry's arguments and the arguments forwarded after
+  `--`: program, results option, args. Before, the results option came
+  last. (#208)
 - `lw import`: an item the working copy already has keeps its intent (local or
   local+shared); only new items take theirs from `loomworks.json`. Exporting
   and importing on the same workspace no longer turns shared items local.
@@ -165,6 +186,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what needs it. (#196, #198)
 
 ### Fixed
+- `lw test` no longer hangs for hours parsing a results file with a very
+  large failing test case (for example an assertion failing many thousands
+  of times in a loop). (#209)
 - On macOS and Linux, a workspace daemon started from one environment (a
   desktop terminal) is now usable from another (ssh, cron, `sudo -u`, a
   container shell) whose `TMPDIR` / `XDG_RUNTIME_DIR` differ, instead of being

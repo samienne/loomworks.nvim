@@ -4,6 +4,7 @@
 --- Owned by Project._configurations registry.
 
 local description_mod = require("loomworks.description")
+local test_targets_mod = require("loomworks.test_targets")
 
 --- Build the canonical name for a configuration from a (prefix, base)
 --- pair. Prefixed canonical names take the form `prefix:base` and
@@ -32,6 +33,13 @@ local function split_canonical(name)
     local p, b = name:match("^([^:]+):(.+)$")
     if p then return p, b end
     return nil, name
+end
+
+--- The owning project's key, for messages (nil without a project).
+--- @param cfg table
+--- @return string|nil
+local function project_key(cfg)
+    return cfg._project and cfg._project.key or nil
 end
 
 --- @class loomworks.Configuration
@@ -75,6 +83,11 @@ end
 ---        never written to either file
 --- @field _description_invalid any a non-string `description` in a declared
 ---        configuration, ignored but written back unchanged until set or cleared
+--- @field _tests loomworks.SavedTestDecl|nil this configuration's OWN saved test
+---        targets (spec §1.3.4) — a generic field, never part of `module_config`
+---        (so never a configure input). Only a user configuration has one.
+--- @field _tests_invalid any the raw value of an invalid `tests` declaration (not an
+---        array), kept to write back unchanged
 --- @field _detected_languages string[]|nil languages actually enabled
 ---        by the last successful configure (filled by
 ---        `module.detect_languages` post-configure). Runtime-only
@@ -236,6 +249,15 @@ function Configuration:_update(data)
         self.inherits_names = {}
     end
 
+    -- Saved test targets (generic, spec §1.3.4): only a user configuration
+    -- has a persisted table; a generated one only inherits.
+    if self.is_user then
+        self._tests, self._tests_invalid = test_targets_mod.parse(data.tests,
+            (project_key(self) or "?") .. "/" .. tostring(self.name))
+    else
+        self._tests, self._tests_invalid = nil, nil
+    end
+
     -- Options (generic, not module-specific)
     self.options = data.options or nil
 
@@ -290,7 +312,7 @@ function Configuration:_update(data)
         role = true, inherits = true, options = true, variables = true,
         env = true, overrides = true, languages = true,
         prefix = true, base_name = true, _derived = true,
-        description = true,
+        description = true, tests = true,
     }
     for k, v in pairs(data) do
         if not generic[k] then
@@ -572,6 +594,8 @@ function Configuration:serialize_user_override()
     if self._overrides and next(self._overrides) then entry.overrides = self._overrides end
     if self.languages and #self.languages > 0 then entry.languages = self.languages end
     if self.role then entry.role = self.role end
+    local tests = test_targets_mod.serialize(self._tests, self._tests_invalid)
+    if tests ~= nil then entry.tests = tests end
     -- A user configuration's own description; a generated configuration's
     -- default comes from the module and is never persisted (spec §1.10).
     if not self._description_from_module then
@@ -614,6 +638,8 @@ function Configuration:declared_data()
     if self.role then data.role = self.role end
     local desc = self:description_for_file()
     if desc ~= nil then data.description = desc end
+    local tests = test_targets_mod.serialize(self._tests, self._tests_invalid)
+    if tests ~= nil then data.tests = tests end
     return data
 end
 
@@ -665,6 +691,71 @@ function Configuration:set_description(text)
         return nil, save_err
     end
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- This configuration's OWN saved test-target list (spec §1.3.4), or nil when
+--- it declares none (an explicit `[]` returns an empty array).
+--- @return loomworks.SavedTestEntry[]|nil
+function Configuration:own_test_targets()
+    return self._tests and self._tests.entries or nil
+end
+
+--- The effective saved test-target list (spec §1.3.4): the nearest
+--- declaration wins the WHOLE list — this configuration's own, then its bases
+--- depth-first left-to-right (the order `options` / `env` use), then the
+--- project-wide list. An explicit `[]` is a declaration and stops the walk.
+--- Pure model data (no build directory is read).
+--- `invalid = true` when the winning declaration is not an array (it still
+--- stops the walk; a plan that includes it fails like a missing entry).
+--- @return { entries: loomworks.SavedTestEntry[], source: loomworks.Configuration|loomworks.Project, invalid: boolean|nil }|nil
+function Configuration:test_targets()
+    local visited = {}
+    local function walk(cfg)
+        if visited[cfg] then return nil end
+        visited[cfg] = true
+        local own = cfg:own_test_targets()
+        if own then return { entries = own, source = cfg, invalid = cfg._tests.invalid } end
+        for _, base in ipairs(cfg._inherits or {}) do
+            local found = walk(base)
+            if found then return found end
+        end
+        return nil
+    end
+    local found = walk(self)
+    if found then return found end
+    local project = self._project
+    local pw = project and project.own_test_targets and project:own_test_targets()
+    if pw then return { entries = pw, source = project, invalid = project._tests.invalid } end
+    return nil
+end
+
+--- Replace (or, with nil, remove) this user configuration's own saved
+--- test-target list and save the working copy. Editing is use: a `shared`
+--- configuration (and its project) is materialised. Never a configure input.
+--- @param entries loomworks.SavedTestEntry[]|nil
+--- @return boolean|nil ok, string|nil err
+function Configuration:set_test_targets(entries)
+    local project = self._project
+    local ws = project and project._workspace
+    if self._removed or not ws then
+        return nil, "configuration '" .. self.name .. "' not found"
+    end
+    if self:is_auto_gen() or not self.is_user or self._source_missing then
+        return nil, "configuration '" .. self.name .. "' is generated and is not stored"
+    end
+    local old, old_invalid, old_intent = self._tests, self._tests_invalid, self._intent
+    local old_p_intent, old_p_source = project._intent, project._source
+    self:_mark_user_owned()
+    project:_mark_user_owned()
+    self._tests, self._tests_invalid = test_targets_mod.with_entries(self._tests, entries), nil
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        self._tests, self._tests_invalid, self._intent = old, old_invalid, old_intent
+        project._intent, project._source = old_p_intent, old_p_source
+        return nil, save_err
+    end
+    ws:_saved_tests_changed(project)
     return true
 end
 
