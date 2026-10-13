@@ -631,6 +631,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only what needs it. (#196, #198)
 
 ### Fixed
+- `lw test` no longer hangs for hours parsing a results file with a very
+  large failing test case (for example an assertion failing many thousands
+  of times in a loop). (#209)
 - A language server is no longer routed to a project whose directory merely
   shares a name prefix with the buffer's (a project at `/a/foo` no longer
   claims a file in `/a/foobar`): the LSP layer maps a buffer to its project
