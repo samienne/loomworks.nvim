@@ -664,7 +664,7 @@ function M.reveal(test_id)
             end
         end
         for fold_id in pairs(_folds) do
-            if fold_id:match("^target:") then
+            if fold_id:match("^target:") or fold_id:match("^launch:") then
                 _folds[fold_id] = nil
             end
         end

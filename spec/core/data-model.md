@@ -134,6 +134,10 @@ Loomworks configuration fields in the workspace config:
 <type>.configurations.<name>.languages      — explicit language list override
                                               (string array; falls through to
                                               module.languages when omitted)
+<type>.tests                                — project-wide saved test targets
+                                              (§1.3.4)
+<type>.configurations.<name>.tests          — per-config saved test targets
+                                              (§1.3.4)
 ```
 
 The `languages` field is the resolution axis that drives which tools
@@ -298,12 +302,14 @@ context*).
 
 **Value expansion**: Variable values can reference built-in variables
 (`${workspace_root}`, `${build_dir}`, `${variant}`, `${config_set}`,
-`${project_path}`) but NOT other user-defined variables. This prevents
+`${project_path}`, and in a launch context `${target_dir}`, §8.7) but NOT
+other user-defined variables. This prevents
 circular references and keeps resolution simple. Cross-variable references
 are deferred to a future version (with loop detection).
 
 **Reserved names**: User variables cannot use built-in variable names
-(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`) or the
+(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`,
+`target_dir`) or the
 pre-declared policy name `cache` (§1.3.2), nor the name `env`, which inside a
 compiler-family `overrides` block denotes the environment sub-block (§1.3.3). The
 system rejects *declarations* with reserved names at parse time. `cache` is a special case among the reserved names:
@@ -492,6 +498,168 @@ and `variables`, and uses the same machinery:
   environment only at first configure. A unit configured before the record
   existed compares as having had no configuration environment (none was
   applied then).
+
+### 1.3.4 Saved test targets (`tests`)
+
+A project and a configuration MAY carry a **`tests`** field naming the test
+programs a headless test run executes directly, in addition to what the
+module's own test runner discovers (§16.16). An entry names a build target or
+a launch configuration (§8.7) of the project. It is a generic, core-owned
+field: a module never sees it.
+
+```json
+"App": {
+    "cmake": {
+        "tests": ["CoreTests"],
+        "configurations": {
+            "Tests": {
+                "inherits": "variant:Release",
+                "options": { "APP_UNIT_TESTS": "ON" },
+                "tests": [
+                    "BaseTests",
+                    "CoreTests",
+                    ["RenderTests", "--gtest_filter=-*Slow*"],
+                    ["RenderTests", "--gtest_filter=*Slow*", "--scale=${slow_scale}"],
+                    { "name": "AssetTests", "working_dir": "${target_dir}" },
+                    "schema-check"
+                ]
+            }
+        }
+    },
+    "launch": {
+        "schema-check": { "target": "editor", "args": ["--check-schema"] }
+    }
+}
+```
+
+- **Shape.** `tests` is an ordered array of **entries**. An entry takes one
+  of three forms:
+  - a string — the **name**;
+  - a non-empty array of strings whose first element is the name and whose
+    remaining elements are the entry's **args**;
+  - a **table** `{ "name": "X", "args": [...], "working_dir": "..." }`, whose
+    `args` (an array of strings) and `working_dir` (a string, below) are
+    optional. `name` has the same meaning as in the short forms. A key this
+    version does not know is kept verbatim in the file and never acted on.
+
+  `"X"`, `["X"]` and `{ "name": "X" }` are the same entry, and so are
+  `["X", "a"]` and `{ "name": "X", "args": ["a"] }`; the form never changes
+  an entry's meaning or its occurrence index. Order is run order. An element
+  of any other shape (a number, an empty array, an array with a non-string
+  element, a table without a string `name`, a table whose `args` is not an
+  array of strings or whose `working_dir` is not a string) is an **invalid
+  entry**: it is kept verbatim in the file, reported on its level, and
+  treated as a missing entry (below). A
+  `tests` value that is not an array is an invalid declaration: kept
+  verbatim, reported, and — since it is still a declaration — it stops the
+  inheritance walk; a plan that includes it fails like a missing entry.
+- **Names.** A name is a build target or a launch configuration of **the
+  project it is declared in** — never project-qualified — and is never
+  variable-expanded.
+- **Duplicates.** A name MAY appear several times in one list, for example
+  with different args; each occurrence is its own entry and its own test
+  step. Entries with the same name are told apart by their **occurrence
+  index**: 1 for the first entry with that name in the list, 2 for the second,
+  and so on. The index counts only entries with that name, never absolute
+  position, so inserting or removing an entry with another name does not
+  change it.
+- **Two levels.** The project-wide list lives in the project's module section
+  (`projects.<p>.<type>.tests`), a core-owned key lifted out before the
+  section reaches the module, like `description` (§1.9). The per-configuration
+  list lives in a **user** configuration's table. A module-generated
+  configuration has no persisted table (§1.3), so it can only inherit.
+- **Inheritance: nearest declaration wins the whole list.** The effective list
+  of a configuration is the first `tests` found walking: the configuration's
+  own, then its bases depth-first left-to-right (the order `options` and `env`
+  use), then the project-wide list. Lists never merge: a list has no
+  per-entry identity, and a union would make dropping one entry in a derived
+  configuration impossible. An explicit empty list `[]` is a declaration —
+  "no saved test targets here" — and stops the walk. The resolution reports
+  its **source** as an object reference (the declaring Configuration, or the
+  Project), so hosts can say "own", "inherited from Tests" or "project-wide".
+- **No per-profile level.** A profile carries no list and no override. A
+  profile gets a different list by mapping a different configuration (through
+  its configuration set), and different args through the variable system
+  (§1.3.1, including the profile fill), which args are expanded with (below).
+  There are no list-typed variables in this version; they are planned as a
+  follow-up (BACKLOG), which would let a variable supply a whole list or a
+  run of args.
+- **Args.** An entry's args are expanded exactly like a launch
+  configuration's args (§8.7): built-in variables first, then project
+  variables (§1.3.1) resolved for the unit's configuration in the resolved
+  profile, with the same two-pass rule (a variable's value is itself expanded
+  with built-in variables only). An unresolved or blank reference is handled
+  as it is in a launch configuration's args. Expansion runs when a plan is
+  resolved (§16.16) or a test command is built (§8.9.2), never on the stored
+  data, and only on the args that survive the trust filter (§17.6). Args are
+  program-bearing (§17.6); names are not.
+- **Working directory.** An entry's step runs in a working directory chosen
+  like a launch's (§8.7):
+  - a `target` entry: the entry's `working_dir`, else the **project
+    directory** — the same default as a launch;
+  - a `launch` entry: the entry's `working_dir`, else the launch
+    configuration's `working_dir`, else the project directory. An entry's
+    `working_dir` overrides the launch's for this entry only.
+
+  A `working_dir` is absolute or workspace-root-relative and is
+  variable-expanded in the launch context exactly like a launch's
+  `working_dir` (§8.7; built-in variables including `${target_dir}`, then
+  project variables), when a plan is resolved or a test command is built,
+  never on the stored data, and only when it survives the trust filter
+  (§17.6). An unresolved reference is handled as in a launch's
+  `working_dir`. `working_dir` is program-bearing (§17.6). It is a host
+  directory: a step that runs on a device (§16.16, §18.5) takes its device
+  working directory from the `device` block (§18.9), not from the entry.
+- **Not a configure input.** The list never makes a unit stale and never
+  triggers a configure: it selects among programs the build already produces
+  or the workspace already declares. Changing a variable that an entry's args
+  or `working_dir` reference never does either. The list is not part of the module
+  configuration and not part of any key, and no configure record contains it.
+  A module-configuration snapshot recorded by an older loomworks that read
+  `tests` as a module field is compared **without** that key, so moving
+  between versions does not force a reconfigure. Changing the list
+  invalidates the unit's cached test tree (§8.9.3).
+- **Persistence.** Serialized only where declared: a derived configuration
+  never gets a copy of its base's list (§1.3 "Derived values are not
+  persisted"). A host writes each entry in the shortest form that holds it:
+  a string without args, an array with args, and the table form only when
+  the entry has a `working_dir` or keys this version does not know (kept
+  verbatim). The short forms stay canonical: a table that holds only a name
+  and args is written back in its short form. The list lives in the working
+  copy and publishes with its
+  configuration or project under the intent model (§2.4). Nothing is written
+  to the cache.
+- **Resolution.** Names are data at rest. A host resolves a name to a
+  **kind** — `launch` or `target` — in this order:
+  1. a **launch configuration** of the project that is in the model (§8.7;
+     one the trust filter ignored as a whole is not, §17.6);
+  2. otherwise an **executable build target** of the unit (its parsed build
+     targets, §8.6), known only after the unit is configured.
+
+  A name that matches both resolves to the launch configuration, the more
+  specific of the two, and every report of the entry shows the resolved kind
+  (§16.16). (A run's named target refuses this ambiguity until it is
+  qualified, §16.17; a saved entry has no qualifier, so the rule picks one and
+  says which.) A **missing entry** (§8.9.3, §16.16) is:
+  - an invalid entry, or any entry of an invalid declaration (above);
+  - a name that matches no launch configuration and no build target of the
+    configured unit, or that matches only a build target that is not an
+    executable;
+  - a name that matches a launch configuration the shared layer declares but
+    the trust filter ignored as a whole (§17.6). The entry is **not**
+    resolved to a same-named build target instead: it is missing, and the
+    trust diagnostic names the launch;
+  - a name that resolves to a target-backed launch configuration whose
+    target is missing or not an executable.
+
+  A module device target (§11) is not a launch configuration and cannot be
+  named, as for a run (§16.17). A rename of a configuration or project
+  carries the field with the rest of the table; a rename of a launch
+  configuration rewrites the entries that name it (§8.7); a build-target
+  rename upstream is not tracked and surfaces as a missing entry.
+- **Applicability.** Only a module with `parse_targets` (§8.4) can resolve a
+  saved list. On a project whose module has none the field is kept and
+  reported as unsupported, never acted on.
 
 ### 1.4 Configuration Set
 
@@ -825,7 +993,9 @@ the module section (`projects.<key>.<type>.description`), not a project-level
 key. Core lifts it out before the section reaches the module as `type_config`.
 (An older loomworks reads an unknown project-level key as a second module type
 and refuses the file; it keeps an unknown module-section field. This is the
-same placement rule as the `device` block, §18.9.)
+same placement rule as the `device` block, §18.9.) The project-wide saved test
+targets (`projects.<key>.<type>.tests`, §1.3.4) are another such core-owned
+key in the module section.
 
 **CMake type_config fields**:
 
@@ -840,6 +1010,8 @@ Configuration overrides may include:
 - `role`: `"compile_commands"` hides the configuration from UI
 - `description`: the configuration's description (§1.10), valid in every module's
   configuration table; a generic field, not a module field
+- `tests`: the configuration's saved test targets (§1.3.4); a generic field,
+  not a module field
 
 **Explicit profile fields**:
 

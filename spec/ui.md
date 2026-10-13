@@ -569,6 +569,29 @@ Each configuration shows its available tools:
     ...
 ```
 
+**Saved test targets line** (read-only, modules with `parse_targets`):
+
+A configuration's detail rows (after the description) and a project's
+children (after the path) show its effective saved test-target list (core
+§1.3.4) on one line when it has one:
+```
+  Tests: BaseTests, CoreTests, +7  (inherited from Tests)
+```
+- Names in list order, cut with `+N` to the window width; a name listed
+  several times appears once per entry (args are not shown on this line).
+  The source in parentheses — `own` is omitted, otherwise
+  `inherited from <configuration>` or `project-wide`. An explicit empty list
+  shows `Tests: none (explicit)`.
+- When the unit is configured here, a missing entry (core §1.3.4, §8.9.3)
+  carries a ⚠ (`DiagnosticWarn`); unknown targets (unconfigured) are not
+  flagged. An entry that resolves to a launch configuration is not marked
+  differently on this line; `lw test --list` shows the kind.
+- Entries whose args or `working_dir` come only from the shared layer and
+  are stripped (core §17.6) show the trust diagnostic like other ignored
+  fields. Neither args nor a `working_dir` is shown on this line.
+- No editing on the status page in v1 and no new keys: the list is edited
+  with `lw test-target` (core §16.9). An inline editor is a later addition.
+
 **Targets sub-tree** (post-configure only, modules with `parse_targets`):
 
 When a configuration has cached targets, a foldable "Targets (N)" node

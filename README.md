@@ -675,6 +675,10 @@ Define how to run a project after building:
 
 Variables available: `${workspace_root}`, `${build_dir}`, `${variant}`,
 `${config_set}`, `${project_path}`, plus user-defined project variables.
+`${target_dir}` is the directory containing the executable being run; it
+exists only when a build target is being run (a target-backed launch, a
+default target, a saved test entry, `lw test --target`), and a command launch
+leaves it unexpanded.
 
 Launch configurations that set a `command`, `args`, `env` or `working_dir` are
 honored only from your working copy (`.nvim/loomworks.user.json`, e.g. via
@@ -924,6 +928,101 @@ lists every command and option.
 **Limits (v1).** No standard input for device programs, no debugging on a
 device, no test-explorer integration for device tests, and ctest-registered
 tests do not run on a device yet (name the executables with `--target`).
+
+### Saved test targets
+
+Test executables that are not registered with ctest / `meson test` (for
+example gtest runners a project builds behind an option) can be saved, so
+plain `lw test` runs them too:
+
+```jsonc
+"App": {
+    "cmake": {
+        "tests": ["CoreTests"],                                // project-wide
+        "configurations": {
+            "Tests": {
+                "inherits": "variant:Release",
+                "options": { "APP_UNIT_TESTS": "ON" },
+                "tests": [
+                    "BaseTests",
+                    ["RenderTests", "--gtest_filter=-*Slow*"],
+                    ["RenderTests", "--gtest_filter=*Slow*", "--scale=${slow_scale}"],
+                    { "name": "AssetTests", "working_dir": "${target_dir}" },
+                    "schema-check"                             // a launch configuration
+                ]
+            }
+        }
+    },
+    "launch": {
+        "schema-check": { "target": "editor", "args": ["--check-schema"] }
+    }
+}
+```
+
+- An entry is `"Name"`, `["Name", "arg", …]`, or
+  `{ "name": "Name", "args": […], "working_dir": "…" }` (`args` and
+  `working_dir` optional; other keys are kept but unused). The name is a
+  build target or a launch configuration of the project; when both exist, the
+  launch configuration wins (`lw test --list` shows which). A launch entry
+  runs like `lw run <name>` (deploy steps, environment, working directory, the
+  launch's own args), followed by the entry's args.
+- A build-target entry runs in the project directory, like `lw run`; a
+  launch entry in the launch's `working_dir`. An entry's `working_dir`
+  overrides either (absolute or relative to the workspace root, `${...}`
+  variables allowed). `${target_dir}` is the directory holding the test
+  executable, handy for tests that load data files next to it.
+- A name may appear more than once, e.g. with different args; each entry is
+  its own step.
+- A configuration uses its own list, else its base's, else the project-wide
+  one. The nearest list wins **whole** (lists never merge); `"tests": []`
+  means "none here".
+- Plain `lw test` runs, per project, the native runner (ctest / `meson test`)
+  first and then each saved executable in order, and prints a summary. A
+  saved name that is not an executable target fails the run before anything
+  executes. `--saved` runs only the saved executables, `--discovered` only the
+  native runners, and `--target <exe>` replaces both for that run.
+- Arguments after `--` are allowed only when every step is of one kind (add
+  `--saved` or `--discovered` otherwise). With several steps, `--junit
+  out.xml` writes one file per step.
+- Per-test results (`--gtest_output`) are collected only for gtest
+  executables built by the project; any other entry passes or fails on its
+  exit status alone, and the summary says so.
+- On a cross-compiling profile, saved executables run on a device; the
+  project's ctest step is skipped with a note.
+- `lw test --list [--json]` shows what plain `lw test` would run, without
+  building anything, including whether each entry resolved to a target or a
+  launch.
+- Edit the lists with `lw test-target` (below). A saved name is honoured
+  from `loomworks.json`; an entry's args and `working_dir` are program
+  settings, so they are used only from your local config (see
+  [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)).
+  When you publish, values stripped from `loomworks.json` go back onto the
+  entry with the same name and occurrence number (the 2nd `RenderTests`, ...),
+  not the same position. If you removed an earlier entry of that name
+  locally, a value can land on a different occurrence than before; values
+  left with no entry to go to are dropped, and publish says which.
+- Args and `working_dir` expand `${...}` variables like a launch
+  configuration's (built-ins and project variables); the name is never
+  expanded. Changing a variable never triggers a reconfigure.
+
+```sh
+lw test-target                          # what the active profile has saved
+lw test-target add CoreTests BaseTests  # saved on App/Tests (used by ...)
+lw test-target add RenderTests -- --gtest_filter=-*Slow*
+lw test-target add RenderTests -- --gtest_filter=*Slow*   # a second RenderTests entry
+lw test-target remove RenderTests --index 2              # only the second one
+lw test-target remove BaseTests                          # every BaseTests entry
+lw test-target add AssetTests --working-dir '${target_dir}' # writes the { "name": ... } form
+lw test --list
+```
+
+`add` writes to the configuration the profile maps when that is one of your
+configurations, otherwise to the project-wide list (`--config <name>` /
+`--project-wide` choose explicitly), and prints where. Editing a level that
+inherits its list copies the inherited list there first, and says so.
+`lw test --list --json` reports each entry's `working_dir` as written and
+expanded, and `also_target: true` on a launch entry whose name is also an
+executable build target (the one it does not run).
 
 ### Progress notifications
 
@@ -1759,7 +1858,8 @@ outside a workspace.
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches, the generated compile databases in `.nvim/cache/cc/`); the remedy for a cache not written on this machine |
 | `lw cleanup [--dry-run \| --yes] [--all] [--pinned-older-than <dur>]` | List (default) or remove (`--yes`) what `lw` left behind outside the workspace after an interrupted run: download/staging leftovers, temporary files, a dead holder's device lock, a stale daemon socket. `--all` also prunes pinned releases unused for 30 days (`--pinned-older-than 90d` sets that). `lw` does the same by itself once a day. See [What lw keeps outside the workspace](#what-lw-keeps-outside-the-workspace) |
-| `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
+| `lw test [profile]` | Build, then run tests; real exit code: each project's native runner, then its [saved test targets](#saved-test-targets). `--junit <file>` writes a JUnit report (one per step when several). `--target <exe>` (repeatable) runs named test executables directly instead, in the project directory unless `--cwd <dir>` (alias `--working-dir`; `${target_dir}` allowed) says otherwise — on a device when they are cross-built (see [Running on a device](#running-on-a-device)); `--saved` / `--discovered` run only the saved executables / only the native runners; `--list [--json]` prints the plan without building |
+| `lw test-target [list] [profile]` | Saved test targets: `add [<profile>] <name>… [--config <name> \| --project-wide] [--unchecked] [--working-dir <dir>] [-- <args>…]`, `remove [<profile>] <name>… [--index <k>]`, `clear [<profile>] [<project>] [--empty]` (`--config` / `--project-wide` on each). See [Saved test targets](#saved-test-targets) |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
@@ -2403,6 +2503,7 @@ from (spec §17, `lw help trust`):
   (configuration `env`, compiler-family `overrides.<family>.env`, a shell
   project's `env`), launch configurations with a `command` / `args` / `env` /
   `working_dir`, a project or launch `device` block's `env` / `working_dir`,
+  a saved test entry's args / `working_dir` (the entry itself still runs),
   deploy destinations outside the workspace, SDK installation paths (a shared
   SDK declaration keeps only its type and version requirements), and module
   program settings (a `clangd` / `qmlls` binary,

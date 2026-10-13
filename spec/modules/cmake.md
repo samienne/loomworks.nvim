@@ -616,7 +616,10 @@ extend defaults (add options) rather than replace them.
 
 The cmake module wires into the generic test interface (core §8.9)
 through a single `CTestUnit` per `ConfigUnit`, plus a shared `GTest`
-helper.
+helper. Saved test targets (core §1.3.4) need no cmake code: core's
+saved-targets TestUnit uses the module's `parse_targets` (file-api) and
+`Target:resolve_run_spec`. `CTestUnit` is unchanged; `tests` never reaches
+`module_config`, presets or `-D` arguments.
 
 ### 8.1 CTestUnit
 
@@ -1138,7 +1141,8 @@ build-system droppings.
 - `CTestUnit` never runs `ctest` for a profile whose kit is foreign (core §15
   invariant 19): ctest would execute foreign binaries on the host. The headless
   test run reports that registered tests cannot run on this host and points at
-  `lw test --target`.
+  `lw test --target` and at saving test targets; a unit with saved test targets
+  (core §1.3.4) drops its ctest step and runs those on a device (core §16.16).
 - Named test executables (core §16.16) are run directly. For gtest the results
   option is `--gtest_output=xml:<device path>`; the pulled file is parsed with
   the gtest helper's `parse_xml_results` (§8.2), which accepts gtest's own XML

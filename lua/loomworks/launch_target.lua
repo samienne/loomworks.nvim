@@ -457,6 +457,10 @@ function LaunchTarget:_deploy_phase(phase, on_complete)
         workspace = ws,
         profile = self._profile,
         launch_project = self._project,
+        -- The launch target's build target, for `${target_dir}` in
+        -- destinations (§8.8.4); nil for a command-type launch.
+        launch_build_target = (self._launch_config and (self._launch_config.target and self._config_target or nil))
+            or self._target,
     }
 
     -- Persist deploy records exactly once, whichever settlement path fires
@@ -529,7 +533,9 @@ function LaunchTarget:resolve_command_spec()
     if not cfg then return nil, "no launch configuration" end
 
     local ws = self._workspace
-    local ctx = expand.launch_context(ws, self._profile, self._project)
+    -- `${target_dir}` (§8.7) is defined for a target-backed config only.
+    local ctx = expand.launch_context(ws, self._profile, self._project,
+        { target = cfg.target and self._config_target or nil })
 
     -- A launch config is either command-type (`command`) or target-backed
     -- (`target`). For target-backed, the command is the target's built
@@ -596,7 +602,7 @@ function LaunchTarget:_effective_cwd(override)
     local raw = override or self._working_dir
     if not raw or raw == "" then return nil end
     local ws = self._workspace
-    local ctx = expand.launch_context(ws, self._profile, self._project)
+    local ctx = expand.launch_context(ws, self._profile, self._project, { target = self._target })
     local ex = expand.expand_string(raw, ctx)
     if ex:match("^/") or ex:match("^%a:") then return ex end
     if ex == "." or ex == "./" then return ws.root end
