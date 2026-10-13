@@ -103,6 +103,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw test --target`, which also takes `--cwd <dir>`). The status page shows
   a read-only `Tests:` line, and the test explorer and neotest pick the saved
   targets up. (#208)
+- The launch and deploy editors offer `${target_dir}` in their path segment
+  pickers. (#PRNUM)
 
 ### Changed
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)
@@ -205,6 +207,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   strictly: a `luvi` process counts only when it runs the loomworks app, and an
   `lw-*` binary only when it is a release download (`lw-linux-x86_64`, ...) or a
   pinned copy (`lw-<version>-<asset>`). (#108)
+- `lw test` notes a project whose kit builds for a device and that has no
+  saved test targets, instead of skipping it silently, and says how to
+  include it (`lw test-target add`). (#PRNUM)
+- `lw run --cwd` and `lw test --target --cwd` on a module-declared device
+  launch target are now a usage error (exit 2), as for a cross-built device
+  target. (#PRNUM)
+- Test results keep at most 1 MiB of each test case's failure message and
+  output; longer captures are cut at a line boundary and end with
+  `... [truncated: N more bytes]`. (#PRNUM)
 - Read-only commands (`lw status`, `lw profile list`, `lw export`,
   `lw import --dry-run`, `lw health`, ...) and the editor no longer rewrite a
   build cache written by an earlier loomworks (unsigned) when they load the

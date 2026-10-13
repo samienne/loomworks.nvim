@@ -18,6 +18,7 @@ local BUILTIN_VARIABLES = {
     { var = "workspace_root", label = "Workspace root",     root_only = true },
     { var = "build_dir",      label = "Build directory",    root_only = true },
     { var = "project_path",   label = "Project path",       root_only = true },
+    { var = "target_dir",     label = "Target directory",   root_only = true },
     { var = "variant",        label = "Variant",            root_only = false },
     { var = "config_set",     label = "Configuration set",  root_only = false },
 }
@@ -25,7 +26,7 @@ local BUILTIN_VARIABLES = {
 --- Build full variable list including user-defined project variables.
 --- @param project table|nil the launch project with .variables
 --- @return table[] variable definitions
-local function build_variable_list(project)
+function M.build_variable_list(project)
     local vars = {}
     for _, v in ipairs(BUILTIN_VARIABLES) do
         vars[#vars + 1] = v
@@ -217,7 +218,7 @@ function M.open(opts)
     local profile = opts.profile
     local ws = opts.workspace
     local launch_project = opts.launch_project
-    local all_variables = build_variable_list(launch_project)
+    local all_variables = M.build_variable_list(launch_project)
 
     local dest_segments = M.parse_segments(opts.destination or "")
     local dest_error = nil
