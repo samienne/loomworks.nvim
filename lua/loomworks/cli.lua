@@ -2970,14 +2970,14 @@ function M._report_entry(ws, profile, u, e, here, local_only)
   local lctx = e.name and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
   local expanded
   if e.args and #e.args > 0 then
-    local ex, unresolved = test_targets.expand_args(e.args, lctx)
+    local ex, unresolved = require("loomworks.test_plan").expand_args(e.args, lctx)
     if #unresolved == 0 then expanded = ex end
   elseif e.name then
     expanded = {}
   end
   local wd_expanded
   if e.working_dir then
-    local abs, unresolved = test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)
+    local abs, unresolved = require("loomworks.test_plan").resolve_working_dir(e.working_dir, lctx, ws.root)
     if #unresolved == 0 then wd_expanded = abs end
   end
   local program_values = (e.args and #e.args > 0) or e.working_dir ~= nil

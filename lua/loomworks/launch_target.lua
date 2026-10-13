@@ -437,7 +437,7 @@ end
 ---   depending on Future scheduling, which needs an event loop the CLI does
 ---   not pump. The editor omits it and consumes the returned Future.
 --- @return loomworks.Future
-function LaunchTarget:_deploy_phase(phase, on_complete)
+function LaunchTarget:_deploy_phase(phase, on_complete, opts)
     local future_mod = require("loomworks.future")
     local deploy = self:_resolved_deploy()
     if not deploy then if on_complete then on_complete(true) end; return future_mod.resolved(true) end
@@ -474,7 +474,7 @@ function LaunchTarget:_deploy_phase(phase, on_complete)
     end or nil
 
     local f = deploy_mod.execute_deploy_steps(
-        phase_dict, ctx, ws._deploy_records, ws._core._deps.normalize, cb)
+        phase_dict, ctx, ws._deploy_records, ws._core._deps.normalize, cb, opts)
 
     f:next(function() save_once() end)
 
@@ -495,6 +495,19 @@ function LaunchTarget:deploy_sync()
         if not ok then break end
     end
     return ok, err
+end
+
+--- `deploy_sync` without blocking the event loop: each copy runs
+--- asynchronously (deploy.execute_deploy_steps `opts`: `cancelled`,
+--- `resume`), then `cb(ok, err)`.
+--- @param opts { cancelled: (fun(): boolean)|nil, resume: (fun(fn: function))|nil }|nil
+--- @param cb fun(ok: boolean, err: string|nil)
+function LaunchTarget:deploy_async(opts, cb)
+    local o = { async = true, cancelled = opts and opts.cancelled, resume = opts and opts.resume }
+    self:_deploy_phase("pre_build", function(ok, err)
+        if not ok then return cb(false, err) end
+        self:_deploy_phase("post_build", function(ok2, err2) cb(ok2, err2) end, o)
+    end, o)
 end
 
 --- Execute post-build deploy steps before launching. Returns a Future.

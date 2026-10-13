@@ -157,7 +157,7 @@ function SavedTargetsTestUnit:_resolve_entries()
             -- with `${target_dir}` where a build target is resolved (§8.7).
             local lctx = expand.launch_context(ws, profile, project, { target = r.target })
             top = { entry = se, kind = r.kind, target = r.target, lctx = lctx,
-                cwd = (test_targets.resolve_working_dir(se.working_dir, lctx, ws and ws.root)) }
+                cwd = (require("loomworks.test_plan").resolve_working_dir(se.working_dir, lctx, ws and ws.root)) }
             if r.kind == "launch" then
                 top.launch_target = require("loomworks.launch_target").new(ws, profile,
                     { project = project.key, launch = se.name })
@@ -165,7 +165,7 @@ function SavedTargetsTestUnit:_resolve_entries()
             program, perr = self:_program(top)
         end
         if program then
-            top.args = test_targets.expand_args(se.args, top.lctx)
+            top.args = require("loomworks.test_plan").expand_args(se.args, top.lctx)
             top.lctx = nil
             base.runnable = true
             base.executable = program.cmd

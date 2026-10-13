@@ -482,45 +482,25 @@ end
 
 --- The read-only saved test-targets line (spec/ui.md "Saved test targets
 --- line", core §1.3.4) as `{text, hl}` chunks, or nil when nothing is
---- declared along the chain. Names in list order, cut with `+N` to `width`;
---- the source in parentheses unless it is `item` itself ("own"). With
---- `targets` (the unit's parsed build targets — known only when configured
---- here) a missing entry carries a ⚠; unknown targets are not flagged. An
---- invalid entry, and one naming a launch the trust filter ignored, are
---- missing whatever the targets, so they are always flagged. A name listed
---- several times appears once per entry; args are not shown.
---- @param eff { entries: loomworks.SavedTestEntry[], source: table, invalid: boolean|nil }|nil effective list
---- @param item table|nil the configuration / project the line belongs to
---- @param targets table<string, loomworks.Target>|nil
+--- declared along the chain. Formats a resolved view
+--- (`Project:saved_tests_view`): names in list order, cut with `+N` to
+--- `width`; the source in parentheses unless the list is the item's own; a
+--- missing entry carries a ⚠. A name listed several times appears once per
+--- entry; args are not shown.
+--- @param view { source: string|nil, invalid: boolean|nil, entries: { label: string, missing: boolean }[] }|nil
 --- @param width integer|nil available display width
---- @param project loomworks.Project|nil the declaring project (its launch configurations resolve names first)
 --- @return {[1]: string, [2]: string}[]|nil
-function M.test_targets_chunks(eff, item, targets, width, project)
-    if not eff then return nil end
-    local tt = require("loomworks.test_targets")
-    local src = ""
-    if eff.source ~= item then
-        src = "  (" .. tt.source_text(eff.source, item and item._project and item or nil) .. ")"
-    end
-    if eff.invalid then
+function M.test_targets_chunks(view, width)
+    if not view then return nil end
+    local src = view.source and ("  (" .. view.source .. ")") or ""
+    if view.invalid then
         return { { "Tests: ", "Comment" }, { "⚠ invalid (not an array)", "DiagnosticWarn" },
             src ~= "" and { src, "Comment" } or nil }
     end
-    if #eff.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
-    local ws = project and project._workspace
-    local rctx = {
-        launches = project and project.launch or nil,
-        launch_ignored = project and function(n)
-            return tt.launch_ignored(ws and ws._shared_ignored, project, n)
-        end or nil,
-        targets = targets,
-    }
+    if #view.entries == 0 then return { { "Tests: none (explicit)", "Comment" } } end
     local names = {}
-    for _, e in ipairs(eff.entries) do
-        local r = tt.resolve_entry(e, rctx)
-        local bad = r.state == "missing"
-        local label = e.name or tt.entry_label(e)
-        names[#names + 1] = { (bad and "⚠ " or "") .. label, bad and "DiagnosticWarn" or "Comment" }
+    for _, e in ipairs(view.entries) do
+        names[#names + 1] = { (e.missing and "⚠ " or "") .. e.label, e.missing and "DiagnosticWarn" or "Comment" }
     end
     local avail = (width or 100) - vim.fn.strdisplaywidth("Tests: " .. src)
     local shown, used = 0, 0

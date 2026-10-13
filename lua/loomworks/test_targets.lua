@@ -458,43 +458,4 @@ function M.launch_ignored(ignored, project, name)
     return false
 end
 
---- Resolve an entry's `working_dir` like a launch's (spec §1.3.4 "Working
---- directory", §8.7): variable-expanded in the launch context `lctx`, then
---- absolute as-is or workspace-root-relative. nil when the entry has none.
---- An unresolved reference stays literal, as in a launch's `working_dir`,
---- and is returned in `unresolved`.
---- @param wd string|nil the entry's working_dir as written
---- @param lctx table|nil launch expansion context
---- @param root string|nil workspace root (nil: a relative result is returned as expanded)
---- @return string|nil abs
---- @return string[] unresolved names of `${…}` references that resolve to nothing
-function M.resolve_working_dir(wd, lctx, root)
-    if type(wd) ~= "string" or wd == "" then return nil, {} end
-    local expand = require("loomworks.expand")
-    local unresolved = expand.unresolved_vars(wd, lctx)
-    local ex = expand.expand_string(wd, lctx)
-    if ex:match("^/") or ex:match("^%a:") or not root then return ex, unresolved end
-    if ex == "." or ex == "./" then return root, unresolved end
-    return root .. "/" .. ex, unresolved
-end
-
---- Expand an entry's args like a launch configuration's (spec §1.3.4, §8.7):
---- built-in then project variables of the launch context `lctx`
---- (`expand.launch_context`). Names are never expanded.
---- @param args string[]|nil
---- @param lctx table|nil launch expansion context
---- @return string[] expanded
---- @return string[] unresolved names of `${…}` references that resolve to nothing
-function M.expand_args(args, lctx)
-    local expand = require("loomworks.expand")
-    local out, unresolved, seen = {}, {}, {}
-    for _, a in ipairs(args or {}) do
-        for _, v in ipairs(expand.unresolved_vars(a, lctx)) do
-            if not seen[v] then seen[v] = true; unresolved[#unresolved + 1] = v end
-        end
-    end
-    for i, a in ipairs(expand.expand_array(args or {}, lctx) or {}) do out[i] = a end
-    return out, unresolved
-end
-
 return M

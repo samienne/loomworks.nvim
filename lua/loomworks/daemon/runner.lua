@@ -306,10 +306,11 @@ function M.run(svc, ctx)
         if run.child then
             -- Its exit (any code) then finishes the run without recording.
             M.kill(run.child)
-        elseif run.wiping then
-            -- The wipe stops between entries (its stop predicate sees
-            -- `cancelled`); its end then finishes the run, the locks held
-            -- until nothing more is removed.
+        elseif run.wiping or run.deploying then
+            -- The wipe stops between entries, a test step's deploy between
+            -- copies (their stop predicates see `cancelled`); their end then
+            -- finishes the run, the locks held until nothing more is
+            -- removed / copied.
             return
         else
             svc:with_model(ctx, function() finish(run.cancel_code, stopped()) end)
@@ -406,14 +407,67 @@ function M.run(svc, ctx)
         progress = function(f) task:progress(0.5 + f / 2) end,
     }
     function test_host.spawn(spec, cb)
+        -- (A step ended without calling back leaves no results file behind.)
+        local function drop() if spec.cleanup then pcall(spec.cleanup) end end
+        if run.cancelled then drop(); return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then drop(); return finish(1, stopped(why)) end
+        spawn(spec, function(code, signal)
+            if run.cancelled then drop() end
+            if ended_by_cancel() then return end
+            local okn, whyn = current()
+            if not okn then drop(); return finish(1, stopped(whyn)) end
+            cb(build_run.exit_status(code, signal))
+        end)
+    end
+    -- The framework probe of a build target's artifact, as a child of this
+    -- run (so a cancel kills it) on the event loop — never the in-process
+    -- blocking probe_sync, which would stall every other client for up to
+    -- gtest.PROBE_TIMEOUT_MS per program.
+    function test_host.probe(exe, label, o, cb)
         if run.cancelled then return finish(run.cancel_code, stopped()) end
         local okc, why = current()
         if not okc then return finish(1, stopped(why)) end
-        spawn(spec, function(code, signal)
-            if ended_by_cancel() then return end
+        local gtest = require("loomworks.gtest")
+        if gtest._foreign_diag(exe) then return cb(nil) end
+        local out, timer = {}, nil
+        local child = {}
+        child.obj = M.spawn({ cmd = gtest.probe_argv(exe), cwd = o.cwd, env = envscope.with_overlay(ctx.env, o.env) }, {
+            output = function(stream, text)
+                if stream == "stdout" and type(text) == "string" then out[#out + 1] = text end
+            end,
+            done = function(code)
+                if timer then pcall(function() timer:stop(); timer:close() end); timer = nil end
+                svc:with_model(ctx, function()
+                    if ended_by_cancel() then return end
+                    local okn, whyn = current()
+                    if not okn then return finish(1, stopped(whyn)) end
+                    cb((gtest.probe_outcome(exe, label, { code = code, stdout = table.concat(out) })))
+                end)
+            end,
+        })
+        if not child.obj then return end -- (done(127) is on its way: not gtest)
+        child.pid = child.obj.pid
+        if child.pid then child.start = require("loomworks.proc").start_time(child.pid) end
+        run.child = child
+        timer = uv.new_timer()
+        timer:start(gtest.PROBE_TIMEOUT_MS, 0, function() vim.schedule(function() M.kill(child) end) end)
+    end
+    -- A launch's deploy: each copy on the event loop, stopping between
+    -- copies on a cancel (which then ends the run once the copy in flight
+    -- is done).
+    function test_host.deploy(lt, cb)
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        run.deploying = true
+        lt:deploy_async({
+            cancelled = function() return run.cancelled end,
+            resume = function(fn) svc:with_model(ctx, fn) end,
+        }, function(ok, err)
+            run.deploying = false
+            if run.cancelled then return finish(run.cancel_code, stopped()) end
             local okn, whyn = current()
             if not okn then return finish(1, stopped(whyn)) end
-            cb(build_run.exit_status(code, signal))
+            cb(ok, err)
         end)
     end
     function test_host.exec(lt, o, cb) return test_plan.exec_step(ws, lt, o, test_host, cb) end

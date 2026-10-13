@@ -978,6 +978,51 @@ function Project:own_test_targets()
     return self._tests and self._tests.entries or nil
 end
 
+--- Whether a saved entry naming launch `name` of this project is missing
+--- because the trust filter ignored the shared launch and the working copy
+--- does not supply it (spec §17.6, §1.3.4).
+--- @param name string
+--- @return boolean
+function Project:launch_ignored(name)
+    local ws = self._workspace
+    return test_targets_mod.launch_ignored(ws and ws._shared_ignored, self, name)
+end
+
+--- The read-only saved test-targets line's data (spec/ui.md "Saved test
+--- targets line", core §1.3.4) for an effective list `eff` of `item` (one of
+--- this project's configurations, or the project itself), resolved here so
+--- the status page only formats it. `source` is nil when the list is
+--- `item`'s own. With `targets` (the unit's parsed build targets — known
+--- only when configured here) an entry naming nothing is `missing`; unknown
+--- targets are not flagged. An invalid entry, and one naming a launch the
+--- trust filter ignored, are missing whatever the targets.
+--- @param eff { entries: loomworks.SavedTestEntry[], source: table, invalid: boolean|nil }|nil
+--- @param item table|nil
+--- @param targets table<string, loomworks.Target>|nil
+--- @return { source: string|nil, invalid: boolean|nil, entries: { label: string, missing: boolean }[] }|nil
+function Project:saved_tests_view(eff, item, targets)
+    if not eff then return nil end
+    local view = { entries = {} }
+    if eff.source ~= item then
+        view.source = test_targets_mod.source_text(eff.source, item and item._project and item or nil)
+    end
+    if eff.invalid then view.invalid = true; return view end
+    local project = self
+    local rctx = {
+        launches = self.launch,
+        launch_ignored = function(n) return project:launch_ignored(n) end,
+        targets = targets,
+    }
+    for _, e in ipairs(eff.entries) do
+        local r = test_targets_mod.resolve_entry(e, rctx)
+        view.entries[#view.entries + 1] = {
+            label = e.name or test_targets_mod.entry_label(e),
+            missing = r.state == "missing",
+        }
+    end
+    return view
+end
+
 --- The value to write as the module section's `tests` (spec §1.3.4), or nil.
 --- @return any
 function Project:tests_for_file()

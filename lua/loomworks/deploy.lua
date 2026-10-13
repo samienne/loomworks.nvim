@@ -414,14 +414,24 @@ end
 --- Execute all deploy steps for a launch target. Returns a Future.
 --- Resolves all steps first (fail-fast), then copies as needed.
 --- Source values can be a single descriptor or an array of descriptors.
+---
+--- By default the copies are synchronous and `on_complete` runs before this
+--- returns. With `opts.async` each copy runs on the event loop and the next
+--- step continues through `opts.resume(fn)` (default `vim.schedule`), so a
+--- long copy never blocks the caller's loop; `opts.cancelled()` true before a
+--- step skips it and every later one (the deploy then fails "cancelled").
+--- Only `on_complete` reports an asynchronous deploy (the returned Future is
+--- settled already only for a synchronous one).
 --- @param deploy_dict table<string, table|table[]> deploy definitions from launch config
 --- @param ctx table { workspace, profile, launch_project }
 --- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
 --- @param normalize fun(p: string): string path normalizer
 --- @param on_complete? fun(ok: boolean, err?: string)
+--- @param opts? { async: boolean|nil, cancelled: (fun(): boolean)|nil, resume: (fun(fn: function))|nil }
 --- @return loomworks.Future
-function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_complete)
+function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_complete, opts)
     local future_mod = require("loomworks.future")
+    opts = opts or {}
 
     if not deploy_dict or not next(deploy_dict) then
         if on_complete then on_complete(true) end
@@ -442,50 +452,73 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
         end
     end
 
-    -- Phase 2: check freshness and copy (synchronous file ops)
+    -- Phase 2: check freshness and copy, one step after the other.
     local uv = vim.uv or vim.loop
     local errors = {}
+    local result
+    local resume = opts.resume or vim.schedule
 
-    for _, step in ipairs(resolved_steps) do
-        if M.check_freshness(step, deploy_records, normalize) then
-            local source_stat = uv.fs_stat(step.source_path)
-            if not source_stat then
-                errors[#errors + 1] = "source file missing: " .. step.source_path
-                goto continue
-            end
-
-            local dest_dir = vim.fn.fnamemodify(step.dest_path, ":h")
-            assert(require("loomworks.io").mkdir_p(dest_dir))
-
-            local ok, copy_err = uv.fs_copyfile(step.source_path, step.dest_path)
-            if not ok then
-                errors[#errors + 1] = "copy failed: " .. step.source_path
-                    .. " → " .. step.dest_path .. ": " .. tostring(copy_err)
-                goto continue
-            end
-
-            local source_mtime = source_stat.mtime
-            if type(source_mtime) == "table" then
-                source_mtime = source_mtime.sec
-            end
-            local dest_key = normalize(step.dest_path)
-            deploy_records[dest_key] = {
-                source_build_dir = step.source_build_dir_id,
-                source_rel_path = step.source_rel_path,
-                source_mtime = source_mtime,
-            }
+    local function finish()
+        if #errors > 0 then
+            local err = table.concat(errors, "; ")
+            result = future_mod.rejected(err)
+            if on_complete then on_complete(false, err) end
+            return
         end
-        ::continue::
+        result = future_mod.resolved(true)
+        if on_complete then on_complete(true) end
     end
 
-    if #errors > 0 then
-        local err = table.concat(errors, "; ")
-        if on_complete then on_complete(false, err) end
-        return future_mod.rejected(err)
+    local function copied(step, source_stat, ok, copy_err)
+        if not ok then
+            errors[#errors + 1] = "copy failed: " .. step.source_path
+                .. " → " .. step.dest_path .. ": " .. tostring(copy_err)
+            return
+        end
+        local source_mtime = source_stat.mtime
+        if type(source_mtime) == "table" then
+            source_mtime = source_mtime.sec
+        end
+        local dest_key = normalize(step.dest_path)
+        deploy_records[dest_key] = {
+            source_build_dir = step.source_build_dir_id,
+            source_rel_path = step.source_rel_path,
+            source_mtime = source_mtime,
+        }
     end
 
-    if on_complete then on_complete(true) end
-    return future_mod.resolved(true)
+    local i = 0
+    local function next_step()
+        i = i + 1
+        local step = resolved_steps[i]
+        if not step then return finish() end
+        if opts.cancelled and opts.cancelled() then
+            errors[#errors + 1] = "cancelled"
+            return finish()
+        end
+        if not M.check_freshness(step, deploy_records, normalize) then return next_step() end
+        local source_stat = uv.fs_stat(step.source_path)
+        if not source_stat then
+            errors[#errors + 1] = "source file missing: " .. step.source_path
+            return next_step()
+        end
+        local dest_dir = vim.fn.fnamemodify(step.dest_path, ":h")
+        assert(require("loomworks.io").mkdir_p(dest_dir))
+        if not opts.async then
+            local ok, copy_err = uv.fs_copyfile(step.source_path, step.dest_path)
+            copied(step, source_stat, ok, copy_err)
+            return next_step()
+        end
+        uv.fs_copyfile(step.source_path, step.dest_path, nil, function(copy_err, ok)
+            resume(function()
+                copied(step, source_stat, ok and not copy_err, copy_err)
+                return next_step()
+            end)
+        end)
+    end
+    next_step()
+
+    return result or future_mod.Future.new()
 end
 
 --- Clean deploy records sourced from a given build directory.

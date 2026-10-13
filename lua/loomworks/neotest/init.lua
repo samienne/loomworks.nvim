@@ -569,7 +569,7 @@ local function prepare_step(unit, cmd)
     if type(cmd.prepare) ~= "function" then return true end
     local ok_nio, nio = pcall(require, "nio")
     if ok_nio and nio.current_task and nio.current_task() then nio.scheduler() end
-    local ok = require("loomworks.config_unit")._prepare_test_step(unit, "test: " .. tostring(cmd.test_id or "?"), cmd)
+    local ok = unit:_prepare_test_step("test: " .. tostring(cmd.test_id or "?"), cmd)
     return ok
 end
 

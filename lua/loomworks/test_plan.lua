@@ -11,8 +11,15 @@
 ---   host.err(text)          stderr text (the caller supplies the newline)
 ---   host.fail(msg, code)    end the invocation (`lw: <msg>`, exit code); never
 ---                           returns to the plan (in-process: `die`)
----   host.spawn(spec, cb)    run `{ cmd, cwd?, env? }` (argv[1] unresolved, as
----                           build_run.spawn_spec takes it), then cb(code)
+---   host.spawn(spec, cb)    run `{ cmd, cwd?, env?, cleanup? }` (argv[1]
+---                           unresolved, as build_run.spawn_spec takes it),
+---                           then cb(code); a host that ends the step without
+---                           calling back (a cancel) calls `cleanup()` first
+---   host.probe(exe, label, o, cb)?  probe a build target's artifact for its
+---                           test framework (`o = { env, cwd }`), then
+---                           cb(framework|nil); default gtest.probe_sync here
+---   host.deploy(lt, cb)?    run a launch's deploy steps, then cb(ok, err);
+---                           default lt:deploy_sync() here
 ---   host.exec(lt, o, cb)    one executable step (`exec_step`, or a seam), then
 ---                           cb(failed, reasons, counts, exit_only, junit_path?)
 ---   host.foreign(lt, f, o, cb)  a device run (`o = { dev, no_build,
@@ -23,11 +30,52 @@
 ---   host.progress(f)?       the fraction of the steps done
 ---
 --- The in-process host calls back synchronously; the daemon's after the
---- spawned process exited, in a model segment.
+--- spawned process exited (or the probe / deploy copy finished), in a model
+--- segment, so a step never blocks its event loop; a cancel kills the running
+--- program or probe and skips the remaining deploy copies.
 
 local M = {}
 
 local uv = vim.uv or vim.loop
+
+--- Resolve an entry's `working_dir` like a launch's (spec §1.3.4 "Working
+--- directory", §8.7): variable-expanded in the launch context `lctx`, then
+--- absolute as-is or workspace-root-relative. nil when the entry has none.
+--- An unresolved reference stays literal, as in a launch's `working_dir`,
+--- and is returned in `unresolved`.
+--- @param wd string|nil the entry's working_dir as written
+--- @param lctx table|nil launch expansion context
+--- @param root string|nil workspace root (nil: a relative result is returned as expanded)
+--- @return string|nil abs
+--- @return string[] unresolved names of `${…}` references that resolve to nothing
+function M.resolve_working_dir(wd, lctx, root)
+    if type(wd) ~= "string" or wd == "" then return nil, {} end
+    local expand = require("loomworks.expand")
+    local unresolved = expand.unresolved_vars(wd, lctx)
+    local ex = expand.expand_string(wd, lctx)
+    if ex:match("^/") or ex:match("^%a:") or not root then return ex, unresolved end
+    if ex == "." or ex == "./" then return root, unresolved end
+    return root .. "/" .. ex, unresolved
+end
+
+--- Expand an entry's args like a launch configuration's (spec §1.3.4, §8.7):
+--- built-in then project variables of the launch context `lctx`
+--- (`expand.launch_context`). Names are never expanded.
+--- @param args string[]|nil
+--- @param lctx table|nil launch expansion context
+--- @return string[] expanded
+--- @return string[] unresolved names of `${…}` references that resolve to nothing
+function M.expand_args(args, lctx)
+    local expand = require("loomworks.expand")
+    local out, unresolved, seen = {}, {}, {}
+    for _, a in ipairs(args or {}) do
+        for _, v in ipairs(expand.unresolved_vars(a, lctx)) do
+            if not seen[v] then seen[v] = true; unresolved[#unresolved + 1] = v end
+        end
+    end
+    for i, a in ipairs(expand.expand_array(args or {}, lctx) or {}) do out[i] = a end
+    return out, unresolved
+end
 
 --- Whether device options were given (spec §16.34).
 --- @param d table|nil
@@ -239,8 +287,8 @@ function M.prepare(ws, profile, pre, opts, deps)
                     lt = launch_target(ws, profile,
                         { kind = "target", project = u.project, name = dname, target_id = r.target.id })
                 end
-                u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = r.kind, args = test_targets.expand_args(e.args, lctx),
-                    cwd = (test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)) }
+                u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = r.kind, args = M.expand_args(e.args, lctx),
+                    cwd = (M.resolve_working_dir(e.working_dir, lctx, ws.root)) }
             else
                 local why = r.reason or ("cannot be resolved (the build targets of " .. u.project.key .. " are unknown)")
                 if e.decl_invalid then why = "`tests` of " .. level .. " is not an array of saved test entries" end
@@ -448,16 +496,6 @@ function M.exec_step(ws, lt, opts, host, cb)
             reasons = refuse(require("loomworks.remote.foreign").refusal(f))
         end
     end
-    -- A launch's deploy steps run before its program (§8.8.4).
-    if not reasons and cfg then
-        local dok, derr = lt:deploy_sync()
-        if not dok then
-            local msg = "deploy failed: " .. tostring(derr)
-            reasons = refuse(msg)
-            if not reasons then return host.fail(msg) end
-        end
-    end
-
     -- The step's outcome: its line, its JUnit file, then `cb`.
     local function conclude()
         -- A saved program without per-case results is judged on its exit status
@@ -495,69 +533,101 @@ function M.exec_step(ws, lt, opts, host, cb)
         return cb(failed, reasons or {}, c, exit_only, written)
     end
 
-    if reasons then
-        failed = true
-        return conclude()
-    end
-    if f then
-        if not host.foreign then
-            -- (The workspace daemon declines a plan whose kit runs it on a
-            -- device; this is an artifact found foreign only once built.)
-            reasons = refuse("'" .. label .. "' runs on a device (built for " .. tostring(f.platform or f.what)
-                .. "); the workspace daemon does not run device programs — run it with: lw test --no-daemon")
-            if not reasons then return host.fail("'" .. label .. "' runs on a device; the workspace daemon "
-                .. "does not run device programs") end
+    -- The step itself, once its deploy (if any) is done.
+    local function run_step()
+        if reasons then
             failed = true
             return conclude()
         end
-        local hook, st = test_run.device_hook(f.name, tail)
-        return host.foreign(lt, f, { dev = opts.dev, no_build = cfg ~= nil, before_exec = hook }, function(outcome)
-            results_requested = st.framework == "gtest"
-            local path = st.results_name and outcome.results[st.results_name]
-            results = path and gtest.parse_xml_results(path) or nil
-            if path and not results then results = {} end
-            results_missing = results_requested and not path
-            failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
-                results = results, results_missing = results_missing, crashes = #outcome.crashes,
-                transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
-            remote_run.report(outcome, function(s2) host.err(s2 .. "\n") end, failed)
-            return conclude()
-        end)
-    end
-    local spec, serr = lt:resolve_launch_spec({ working_dir = opts.cwd_override })
-    if not spec then
-        local msg = "cannot resolve test executable: " .. tostring(serr)
-        reasons = refuse(msg)
-        if not reasons then return host.fail(msg) end
-        failed = true
-        return conclude()
-    end
-    -- A saved entry's working directory replaces the program's (§1.3.4).
-    if opts.cwd then spec.cwd = opts.cwd end
-    local xml
-    if artifact and gtest.probe_sync(spec.cmd, label, { env = spec.env, cwd = spec.cwd }) == "gtest" then
-        results_requested = true
-        -- In the workspace's .nvim/tmp, not the system temp dir (§16.40).
-        xml = require("loomworks.housekeeping").tmp_path(ws.root, "lw-test-", ".xml")
-        -- argv: program, results option, the launch's own args, then the tail.
-        table.insert(spec.args, 1, "--gtest_output=xml:" .. xml)
-    end
-    for _, a in ipairs(tail) do spec.args[#spec.args + 1] = a end
-    local argv = { spec.cmd }
-    for _, a in ipairs(spec.args) do argv[#argv + 1] = a end
-    return host.spawn({ cmd = argv, cwd = spec.cwd, env = spec.env }, function(code)
-        if xml then
-            if uv.fs_stat(xml) then
-                results = gtest.parse_xml_results(xml) or {}
-                os.remove(xml)
-            else
-                results_missing = true
+        if f then
+            if not host.foreign then
+                -- (The workspace daemon declines a plan whose kit runs it on a
+                -- device; this is an artifact found foreign only once built.)
+                reasons = refuse("'" .. label .. "' runs on a device (built for " .. tostring(f.platform or f.what)
+                    .. "); the workspace daemon does not run device programs — run it with: lw test --no-daemon")
+                if not reasons then return host.fail("'" .. label .. "' runs on a device; the workspace daemon "
+                    .. "does not run device programs") end
+                failed = true
+                return conclude()
             end
+            local hook, st = test_run.device_hook(f.name, tail)
+            return host.foreign(lt, f, { dev = opts.dev, no_build = cfg ~= nil, before_exec = hook }, function(outcome)
+                results_requested = st.framework == "gtest"
+                local path = st.results_name and outcome.results[st.results_name]
+                results = path and gtest.parse_xml_results(path) or nil
+                if path and not results then results = {} end
+                results_missing = results_requested and not path
+                failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
+                    results = results, results_missing = results_missing, crashes = #outcome.crashes,
+                    transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
+                remote_run.report(outcome, function(s2) host.err(s2 .. "\n") end, failed)
+                return conclude()
+            end)
         end
-        failed, reasons = test_run.judge({ status = code, results_requested = results_requested,
-            results = results, results_missing = results_missing })
-        return conclude()
-    end)
+        local spec, serr = lt:resolve_launch_spec({ working_dir = opts.cwd_override })
+        if not spec then
+            local msg = "cannot resolve test executable: " .. tostring(serr)
+            reasons = refuse(msg)
+            if not reasons then return host.fail(msg) end
+            failed = true
+            return conclude()
+        end
+        -- A saved entry's working directory replaces the program's (§1.3.4).
+        if opts.cwd then spec.cwd = opts.cwd end
+        -- The program runs once probed (a build target's artifact only): through
+        -- the host when it probes asynchronously (the workspace daemon, whose
+        -- cancel kills the probe), else here.
+        local function probed(framework)
+            local xml
+            if framework == "gtest" then
+                results_requested = true
+                -- In the workspace's .nvim/tmp, not the system temp dir (§16.40).
+                xml = require("loomworks.housekeeping").tmp_path(ws.root, "lw-test-", ".xml")
+                -- argv: program, results option, the launch's own args, then the tail.
+                table.insert(spec.args, 1, "--gtest_output=xml:" .. xml)
+            end
+            for _, a in ipairs(tail) do spec.args[#spec.args + 1] = a end
+            local argv = { spec.cmd }
+            for _, a in ipairs(spec.args) do argv[#argv + 1] = a end
+            -- `cleanup`: what a host that ends the step without calling back
+            -- (a cancel) removes — the step's results file.
+            return host.spawn({ cmd = argv, cwd = spec.cwd, env = spec.env,
+                cleanup = xml and function() os.remove(xml) end or nil }, function(code)
+                if xml then
+                    if uv.fs_stat(xml) then
+                        results = gtest.parse_xml_results(xml) or {}
+                        os.remove(xml)
+                    else
+                        results_missing = true
+                    end
+                end
+                failed, reasons = test_run.judge({ status = code, results_requested = results_requested,
+                    results = results, results_missing = results_missing })
+                return conclude()
+            end)
+        end
+        if not artifact then return probed(nil) end
+        local popts = { env = spec.env, cwd = spec.cwd }
+        if host.probe then return host.probe(spec.cmd, label, popts, probed) end
+        return probed((gtest.probe_sync(spec.cmd, label, popts)))
+    end
+
+    -- A launch's deploy steps run before its program (§8.8.4): through the
+    -- host when it has an asynchronous deploy (the workspace daemon, which
+    -- keeps its loop free and stops between copies on a cancel), else here.
+    if not reasons and cfg then
+        local function deployed(dok, derr)
+            if not dok then
+                local msg = "deploy failed: " .. tostring(derr)
+                reasons = refuse(msg)
+                if not reasons then return host.fail(msg) end
+            end
+            return run_step()
+        end
+        if host.deploy then return host.deploy(lt, deployed) end
+        return deployed(lt:deploy_sync())
+    end
+    return run_step()
 end
 
 return M

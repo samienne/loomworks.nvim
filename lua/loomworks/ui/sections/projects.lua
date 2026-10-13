@@ -692,9 +692,9 @@ return function(tree, ctx)
             if proj.own_test_targets and proj._module and proj._module.impl
                     and proj._module.impl.parse_targets then
                 local pw = proj:own_test_targets()
-                local chunks = helpers.test_targets_chunks(pw and { entries = pw, source = proj,
-                    invalid = proj._tests and proj._tests.invalid } or nil,
-                    proj, nil, (tree.width or 100) - 8, proj)
+                local chunks = helpers.test_targets_chunks(proj:saved_tests_view(pw and { entries = pw,
+                    source = proj, invalid = proj._tests and proj._tests.invalid } or nil, proj, nil),
+                    (tree.width or 100) - 8)
                 if chunks then tree:leaf(chunks) end
             end
 
@@ -903,8 +903,9 @@ return function(tree, ctx)
                                             end
                                         end
                                     end
-                                    local chunks = helpers.test_targets_chunks(cname_cfg:test_targets(),
-                                        cname_cfg, known, (tree.width or 100) - 12, proj)
+                                    local chunks = helpers.test_targets_chunks(
+                                        proj:saved_tests_view(cname_cfg:test_targets(), cname_cfg, known),
+                                        (tree.width or 100) - 12)
                                     if chunks then tree:leaf(chunks) end
                                 end
                             end

@@ -101,11 +101,21 @@ end
 --- @return boolean
 M.looks_like_gtest = output_looks_like_gtest
 
+--- How long a probe (`<exe> --gtest_list_tests`) may run before it is killed.
+M.PROBE_TIMEOUT_MS = 5000
+
+--- The argv of a probe of `executable` (seam: tests replace it).
+--- @param executable string
+--- @return string[]
+function M.probe_argv(executable)
+    return { executable, "--gtest_list_tests" }
+end
+
 --- Build vim.system opts for a probe invocation.
 --- @param opts? { env?: table<string, string>, cwd?: string }
 --- @return table
 local function probe_opts(opts)
-    local o = { text = true, timeout = 5000 }
+    local o = { text = true, timeout = M.PROBE_TIMEOUT_MS }
     if opts then
         if opts.env then o.env = opts.env end
         if opts.cwd then o.cwd = opts.cwd end
@@ -196,11 +206,18 @@ end
 function M.probe_sync(executable, target_id, opts)
     local foreign = M._foreign_diag(executable)
     if foreign then return nil, nil, foreign end
-    local result = vim.system(
-        { executable, "--gtest_list_tests" },
-        probe_opts(opts)
-    ):wait()
+    local result = vim.system(M.probe_argv(executable), probe_opts(opts)):wait()
+    return M.probe_outcome(executable, target_id, result)
+end
 
+--- What a finished probe found, from its result `{ code, stdout?, stderr? }`
+--- (a caller that ran the probe itself, e.g. the workspace daemon's
+--- asynchronous one).
+--- @param executable string
+--- @param target_id string
+--- @param result { code: integer, stdout: string|nil, stderr: string|nil }
+--- @return string|nil framework, table[]|nil test_list, string|nil diag
+function M.probe_outcome(executable, target_id, result)
     local diag = summarise_result(result)
     if result.code ~= 0 or not result.stdout then
         return nil, nil, diag
