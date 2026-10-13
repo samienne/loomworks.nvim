@@ -1128,7 +1128,9 @@ return function(tree, ctx)
                                         profile = lw.get_active_profile(),
                                         workspace = lw.get_workspace(),
                                         launch_project = project,
-                                        -- A project-level step also runs for its build targets (§8.7).
+                                        -- A project-level step also runs for its build targets (§8.7),
+                                        -- so ${target_dir} is offered; it also runs for command launches,
+                                        -- where ${target_dir} is unresolved and fails that deploy.
                                         target_context = true,
                                         existing_destinations = dest_keys,
                                         current_destination = captured_dest,
