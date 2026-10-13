@@ -896,7 +896,8 @@ entry whose name occurs once; `launch` entries and repeated names stay beside.
 **GTest** (`gtest.lua`) is a shared helper (not a TestUnit) containing
 gtest-specific functionality: binary probing (`--gtest_list_tests`),
 source location scanning (TEST macro grep with multi-line and
-parameterized support), JUnit XML parsing, and filter construction.
+parameterized support), JUnit XML parsing (each case's captured message and output capped at
+`MAX_CAPTURED_BYTES`, 1 MiB, by `cap_captured`), and filter construction.
 Used by CTestUnit for framework detection and source mapping.
 
 **Neotest adapter** (`neotest/init.lua`) bridges ConfigUnit's test

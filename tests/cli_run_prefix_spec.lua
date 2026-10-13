@@ -367,6 +367,19 @@ describe("cli._run_launch_target — dispatch tail", function()
         assert.is_truthy(res.stderr:find("device target", 1, true))
     end)
 
+    it("--cwd on a module-declared device target is a usage error (exit 2), before deploy or run", function()
+        local ran = false
+        local lt = stub_lt({ device = true, name = "app: dev" })
+        local res = capture(function()
+            return cli._run_launch_target(lt, WS, { cwd_override = "/x", extra_args = {} },
+                { run_spec = function() ran = true; return 0 end })
+        end)
+        assert.equals(2, res.exit_code)
+        assert.is_false(ran)
+        assert.is_false(lt._deployed)
+        assert.truthy(res.stderr:find("--cwd does not apply to a device run ('app: dev')", 1, true), res.stderr)
+    end)
+
     it("--print reports without executing (sh) and skips deploy under --no-build", function()
         local ran = false
         local lt = stub_lt({ spec = { cmd = "prog", args = { "a b" }, cwd = "/w", env = nil } })
