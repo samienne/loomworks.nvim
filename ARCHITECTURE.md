@@ -1762,6 +1762,31 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   refuse a run or debug launch, and `lw.launch_target` / `debug_target`
   offer no target picker then. The in-process source remains only for `runtime.mode =
   "in-process"`, removed with the in-process editor (step 6b).
+- *(Step 5m, planned; spec §19.13 "The tests view", §19.15 "Tests", §19.16
+  "Tests", §19.20 `Tests/1`, LOOMTEST.md §3, §13.1.)* `test_state.lua`
+  (shared side, host-neutral, no `vim.*`; part A) — the one builder of the
+  `view.Tests/1` shape from the active profile's ConfigUnits/TestUnits: unit
+  states (`ok`, `pending`, `not_configured`, `foreign`, `no_tests`,
+  `error`), explicit suite nodes, node ids scoped per unit through an id
+  provider (in-process: stable local keys; the daemon: §19.12 opaque ids),
+  `source`, and the per-node last results. `test_source.lua` (plugin side,
+  like `lsp_source.lua`) — the one place the loomtest and neotest adapters
+  read the tree, states and results: the in-process builder only in
+  `in-process` mode, the daemon's view (observer descriptors for
+  `/views` `.Tests/1` and `/tests` `Tests/1` with its `results` signal, the
+  view store) in `daemon` mode, never a fallback. loomtest gains
+  adapter-supplied suites, exact-id results and the adapter-executed
+  `start` / `debug_start` / `result` / `status` capabilities; the loomworks
+  adapter implements them over `editor_ops` in `daemon` mode (C2) and keeps
+  its RunSpec path for `in-process` only. *(B1/B2:)* `daemon/core_interfaces.lua`
+  mounts the new `Tests/1` methods (`discover` task, `run_cases` task over
+  the `test_plan.lua` lock/build machinery with the structured harness,
+  `prepare_debug`, `collect`, `result`) and `daemon/views.lua` the tests
+  view; the daemon keeps last results in memory per session; each run's
+  results file is `<root>/.nvim/tmp/lw-test-<hex>.xml` (TestUnit
+  `opts.output_path`), replacing the fixed `<build>/.nvim/gtest_results.xml`
+  in the daemon. The transcripts use a harness-only stub test module (tests
+  only). The neotest adapter refuses in `daemon` mode with one notice.
 
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10

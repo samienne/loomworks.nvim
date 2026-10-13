@@ -1,0 +1,88 @@
+{
+  "interface": "loomworks.view.Tests",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /views (spec 19.13 The tests view; step 5m): the active profile's test tree, unit states and last results, which the test explorer, its gutter signs and inline marks show. get returns the full current state (a running run's per-case statuses included); update, declared initial, carries the full state again when discovery changed the tree, when stale or discovering changed, and when a run starts or ends, never a delta. The per-case progress of a run comes as loomworks.Tests/1 results instead; a seq gap in either is recovered with get. The editor builds the same shape in-process without the daemon-only ids (profile_id, the units' id) and with local keys as node ids.",
+  "methods": {
+    "get": {
+      "description": "The view's full current state. Never loads the workspace and never discovers.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": { "$ref": "#/$defs/Tests" },
+      "needs_env": false,
+      "mutates": false
+    }
+  },
+  "signals": {
+    "update": {
+      "description": "The view's full state, sent when discovery changed the tree, when stale or discovering changed, and when a run starts (its selected nodes queued) or ends (their last results), only when it differs from the state last sent on the subscription. A run's last Tests/1 results signal precedes the update that ends it.",
+      "initial": true,
+      "args": { "$ref": "#/$defs/Tests" }
+    }
+  },
+  "$defs": {
+    "Tests": {
+      "type": "object",
+      "required": ["state", "stale", "units"],
+      "properties": {
+        "state": {
+          "description": "The workspace's, as in view.Header/1. units is empty unless loaded. Clients show an unknown state as neutral.",
+          "enum": ["loaded", "unloaded", "error", "refused"]
+        },
+        "profile": { "description": "The active profile's key; absent with none (units then empty).", "type": "string" },
+        "profile_id": { "description": "The active profile's opaque id (spec 19.12): present exactly when profile is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "stale": {
+          "description": "The tree may no longer match the build: no discovery of the active profile in this session yet, or since then a configure, build, clean or reset of one of its units ended (any client's), its saved test target list changed or the active profile changed. Only Tests/1.discover clears it; the daemon never discovers by itself.",
+          "type": "boolean"
+        },
+        "discovering": { "description": "The task of a Tests/1.discover running for this profile, of whichever client.", "$ref": "loomworks.Common/1#/$defs/TaskId" },
+        "units": {
+          "description": "One record per configuration unit of the active profile, in project-key order.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Unit" }
+        }
+      }
+    },
+    "Unit": {
+      "type": "object",
+      "required": ["project", "configuration", "state", "nodes"],
+      "properties": {
+        "id": { "description": "The configuration unit's opaque id; from the daemon only.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "project": { "description": "The project key, as in meta.units.", "type": "string" },
+        "configuration": { "description": "The configuration-unit key, as in meta.units.", "type": "string" },
+        "state": {
+          "description": "ok (discovered; nodes holds its tree), pending (not discovered yet in this session), not_configured (not configured on this machine, spec 17.8), foreign (its kit builds for another platform, spec 18.1), no_tests (no TestUnit and no saved test targets), error (discovery failed). Clients show an unknown state as neutral.",
+          "enum": ["ok", "pending", "not_configured", "foreign", "no_tests", "error"]
+        },
+        "message": { "description": "Why, for error, not_configured and foreign, as the in-process explorer says it.", "type": "string" },
+        "nodes": {
+          "description": "The unit's test tree in discovery order, parents before their children; empty unless state is ok.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Node" }
+        }
+      }
+    },
+    "Node": {
+      "type": "object",
+      "required": ["id", "kind", "name", "runnable"],
+      "properties": {
+        "id": { "description": "The node's id: opaque and daemon-issued (spec 19.12), scoped to its unit, stable while its unit, TestUnit and name are within one session; a local key in-process. Never parsed by a client.", "type": "string" },
+        "kind": {
+          "description": "target (a test executable, a native runner's registered test or a saved test target), suite (explicit: clients never infer suites from case names) or test. Clients show an unknown kind as a plain node.",
+          "enum": ["target", "suite", "test"]
+        },
+        "parent": { "description": "The parent node's id; absent for a top-level node.", "type": "string" },
+        "name": { "description": "The display text.", "type": "string" },
+        "file": { "description": "The source file, absolute and /-separated.", "type": "string" },
+        "line": { "description": "The 1-based source line.", "type": "integer", "minimum": 1 },
+        "runnable": { "description": "Whether Tests/1.run_cases and prepare_debug accept it.", "type": "boolean" },
+        "source": {
+          "description": "Where discovery found it: ctest, meson, gtest (probed cases), saved (a saved test target, spec 1.3.4), or a module's own runner name. Open-ended (a string, not an enum): clients show an unknown source as neutral.",
+          "type": "string"
+        },
+        "status": { "description": "queued or running while a run that selected it is in progress, else its last result in this daemon session; absent when it has none.", "$ref": "loomworks.Common/1#/$defs/TestStatus" },
+        "duration": { "description": "The last result's duration in milliseconds.", "type": "integer", "minimum": 0 },
+        "message": { "description": "The last result's first failure line.", "type": "string" }
+      }
+    }
+  }
+}

@@ -1732,6 +1732,87 @@ unknown enum value as neutral.
   This deliberately fixes today's `project_for_buf`, whose bare prefix test
   lets `/a/foo` claim a buffer in `/a/foobar`.
 
+**The tests view.** *(Step 5m, plan: part 0 this spec; A the host-neutral
+builder, in-process only; B1 the daemon side; C1 the editor's read path.)*
+`loomworks.view.Tests/1`, on `/views` like the two above (`get`, `update`
+declared `initial`, full state, never a delta; the field rules above), backs
+the test explorer, its gutter signs and inline marks (LOOMTEST.md). It
+differs from them in one point: the per-case progress of a running test is
+**not** sent as `update` but as the thin `Tests/1` `results` signal (§19.20
+`Tests/1`), so a run of thousands of cases does not resend the tree several
+times a second. `update` is sent, under the rule above, when discovery
+changed the tree, when `stale` or `discovering` changes, when a run starts
+(its selected nodes become `queued`) and when it ends (their results are the
+last results); `get` always answers the **current** state, a running run's
+per-case statuses included, so a client that saw a `seq` gap in either
+`update` or `results` recovers with one `get`. The daemon sends a run's last
+`results` before the `update` that ends it. Its state is `{ state, profile?,
+profile_id?, stale, discovering?, units }`:
+
+- `state` — the workspace's, as in `view.Header/1`; `units` is empty unless
+  `loaded`.
+- `profile` (string, optional) — the active profile's key; the view covers
+  the active profile only, and is empty (`units` = `[]`) with none.
+  `profile_id` (optional) — its opaque id, from the daemon only.
+- `stale` (boolean) — the tree may no longer match the build: no discovery
+  has run for the active profile in this session yet, or since then a
+  configure, build, clean or reset of one of its units ended (by any client,
+  the CLI's included), its saved test target list changed (§1.3.4), or the
+  active profile changed. Only `Tests/1.discover` clears it. The daemon never
+  discovers by itself: discovery runs test programs and needs the client's
+  environment (§19.16 "Tests").
+- `discovering` (TaskId, optional) — the task of a `Tests/1.discover` that is
+  running for this profile, of whichever client.
+- `units` (array) — one record per configuration unit of the active profile,
+  in project-key order:
+  - `id` (string, optional) — the configuration unit's opaque id (§19.12);
+    from the daemon only.
+  - `project` (string), `configuration` (string) — the keys, as in
+    `meta.units`.
+  - `state` — `ok` (discovered; `nodes` holds its tree), `pending` (not
+    discovered yet in this session), `not_configured` (not configured on this
+    machine, §17.8: discovery runs programs from the build directory),
+    `foreign` (its kit builds for another platform, §18.1), `no_tests` (its
+    module has no TestUnit and it has no saved test targets), `error`
+    (discovery failed). A client shows an unknown state as neutral.
+  - `message` (string, optional) — why, for `error`, `not_configured` and
+    `foreign`, as the in-process explorer says it.
+  - `nodes` (array) — the unit's test tree in discovery order, parents before
+    their children; empty unless `state` is `ok`. A node:
+    - `id` (string) — the node's id: an opaque id issued by the daemon
+      (§19.12), **scoped to its unit**, so the same `Suite.Case` in two
+      projects is two nodes. It is stable while the node's unit, TestUnit and
+      name are, across re-discoveries in one session; a client never parses
+      it. In-process (A) it is a local key with the same scope.
+    - `kind` — `target` (a test executable, a native runner's registered
+      test, or a saved test target), `suite` (an explicit node: a client
+      never infers suites from case names) or `test`; a client shows an
+      unknown kind as a plain node.
+    - `parent` (string, optional) — the parent node's `id`; absent for a
+      top-level node.
+    - `name` (string) — the display text (the saved-entry name with its
+      `#2` suffix, §8.9.2; the case name without its suite).
+    - `file` (string, optional), `line` (integer, optional) — the source
+      location, absolute and `/`-separated, as discovery maps it.
+    - `runnable` (boolean) — whether `run_cases` and `prepare_debug` accept
+      it; a missing saved entry is a non-runnable node with `status`
+      `errored` and its `message`.
+    - `source` (string, optional) — where discovery found it: `ctest`,
+      `meson`, `gtest` (probed cases), `saved` (a saved test target,
+      §1.3.4), or a module's own runner name; open-ended (a string, not an
+      enum) — a client shows an unknown source as neutral.
+    - `status` (optional) — `queued` or `running` while a run that selected
+      it is in progress, else its last result in this daemon session
+      (`passed`, `failed`, `skipped`, `errored`); absent when it has none. A
+      client shows an unknown status as neutral. Last results live in the
+      daemon's memory: they survive the editor's reconnects, not a daemon
+      restart (persisting them is later, §19.19 5m part D).
+    - `duration` (integer, optional, milliseconds), `message` (string,
+      optional, the first failure line) — of the last result.
+
+  Output and error locations are not in the view: a client reads them with
+  `Tests/1.result { id }` (§19.20) when it shows them.
+
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
 while it holds a subscription to the view, otherwise one it builds from its
@@ -1739,14 +1820,16 @@ in-process model with the same builder the daemon uses. The shape is shared;
 what only the daemon knows is optional in it and left out in-process: the
 header's `pid`, `lw_version` and `session_generation`, and every opaque id
 (`active_profile_id`, `config_set_id`, a project record's `id` and
-`active.unit_id`). A view the daemon does not offer (or offers only at another
+`active.unit_id`, the tests view's `profile_id` and unit `id`; its node ids
+are local keys in-process). A view the daemon does not offer (or offers only at another
 version) is built in-process too, with the one Runtime-line note of §19.16
 "Interface client". In `daemon`
 mode a view is **never** built from the editor's own model: while the
 workspace is unloaded — the daemon reports it `unloaded`, the connection is
 lost (§19.16 "Unloaded on disconnect") or not yet made — the header shows
 `unloaded` and the ProjectsIndex is empty, so `lw.buf_project` maps no
-buffer until the daemon reports `loaded`; a view the daemon does not offer
+buffer until the daemon reports `loaded`, and the tests view has no units
+(§19.16 "Tests"); a view the daemon does not offer
 is shown unavailable with that note, not built in-process. In `in-process`
 mode views are built in-process as above (removed with the in-process
 editor, §19.19 6b). The plugin keeps `lw.project_for_buf(bufnr)` (it returns
@@ -2065,6 +2148,97 @@ deploy left to the client. A failing step ends the task with the in-process
 failure line, the later steps not run. With `no_build` neither scope builds
 or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
 editor launch builds what it built in-process, not the whole profile.
+
+**Tests.** *(Step 5m, plan: part 0 this spec; B1 discovery, B2 runs, debug
+preparation and results; the editor's use §19.16 "Tests"; the methods
+§19.20 `Tests/1`.)* The editor's test discovery and its runs of selected
+tests execute in the daemon, like its builds; only a test debug session's
+program is the client's ("Debug" above). They act on the **active profile**
+and its `view.Tests/1` (§19.13 "The tests view"); a node is named by its
+view `id`, and an id that no longer names a node of the view (a
+re-discovery dropped it, the active profile changed, an earlier session's
+id) is refused as a stale reference (§19.20).
+
+- **Discovery** (`Tests/1.discover`, task, `meta.kind = discover`). In the
+  caller's environment (§19.15 "Environment", as a build: a different
+  environment reloads the workspace first, and is declined while a build
+  runs), for each unit of the profile in project-key order, the in-process
+  discovery of §8.9.3 (`discover_tests`: every TestUnit's entries merged,
+  the saved test targets included, the configured-here and foreign-kit
+  rules applied — such units get their view state, not a tree). A unit
+  whose tree is current (discovered since its last configure or build ended
+  and its saved list last changed) is not probed again unless `force`.
+  Probing a unit runs its test programs from its build directory, so it
+  takes that build directory's lock (§16.6; within the daemon it waits in
+  the build-directory operation queue, §5.3, behind a running build or test
+  run of that directory; a holder in another process fails fast, §19.3, and
+  the unit's state is `error` with the busy line) for the probe only. Each
+  probed unit's line is `==> [discover] <project>/<configuration>`
+  followed by its outcome (`<n> tests`, the failure). A unit's failure does
+  not end the task: it is that unit's `error` state, and the task ends 0
+  with `DISCOVER OK: <profile> (<n> tests, <k> failed)`. A cancel stops
+  between units and at a probe's program (killed as a build step is): the
+  units already probed keep their new trees, the others their earlier ones,
+  and the view stays `stale`. The view's `update` is sent before `done`.
+- **Runs** (`Tests/1.run_cases`, task, `meta.kind = test`, `meta.units` the
+  units of the selection). The selection's nodes are resolved first (a
+  stale or non-runnable one refuses the call before acceptance with the
+  in-process message). Then, as the plan of `lw test` (above): the
+  build-directory locks of every selected unit taken up front in canonical
+  order and held across the build and the test steps — within the daemon
+  waiting in the build-directory operation queue (§5.3, FIFO) behind another
+  task of the same directory, so a second editor's run waits for the first;
+  a holder in another process fails fast (§19.3) — then, unless `no_build`,
+  the build of the selection's targets (each selected node's executable
+  target of its unit, as `{ project, target }` targets of `Build/1.build`; a
+  unit whose node has no single target, or run-all, builds the unit) with
+  the build-step sequence and its failure lines, then the test steps. A
+  test step runs one TestUnit's structured harness (§8.9.2 `test_command` /
+  `test_command_all`, the saved-targets TestUnit's entries as §8.9.4
+  run-all does), selected nodes of one executable combined into one
+  invocation where the TestUnit can filter them so, each step announced
+  `==> [test] <project>: <name>` and spawned as a build step is (streamed,
+  cancellable). Each step writes its results file to its **own** path,
+  `<root>/.nvim/tmp/lw-test-<hex>.xml` (§16.40, removed once parsed; never a
+  fixed path in the build directory), so concurrent runs never share one.
+  The daemon reads the harness's per-case progress from the step's output
+  and sends it as `Tests/1` `results` (batched, at most about 4 per second);
+  on the step's end the results file is authoritative and its cases are
+  sent once more as `results`. The summary is `TESTS OK: <scope> (<n>
+  passed)` or `<k> of <n> tests failed` with exit 1; every step runs even
+  after one failed. A cancel kills the running step; its cases still
+  `queued` or `running` become unknown (their status removed, the earlier
+  last result not restored).
+- **Debug preparation** (`Tests/1.prepare_debug`, task, `meta.kind =
+  debug`). Exactly one runnable node (`select` a single `TestNodeRef`
+  object, not an array). The locks and build of a `run_cases`
+  of that node (the locks released when the task ends), then `done` carries
+  the `debug` spec (`loomworks.Common/1` `DebugSpec`) of the test step
+  `run_cases` would have run — program, arguments with the filter and the
+  results option (its own results file as above), working directory and
+  environment as that step's — with the language and adapters resolved as
+  "Debug" above (a saved `launch` entry's `debug` languages, otherwise the
+  primary language of the unit's module), and a `prepared` token. The
+  client runs the program under its debugger; a foreign kit or device target
+  is refused as "Debug" above. `Tests/1.collect { prepared }` (a call, not a
+  task) then parses that results file, records its cases as the nodes' last
+  results, removes the file, sends `results` and the view's `update`, and
+  returns the cases; a file that is missing (the session ended before the
+  program wrote it) records nothing for them. A `prepared` token is the
+  calling connection's: it is dropped, with its results file, by its
+  `collect`, by the connection's close, and when the daemon stops.
+- **Last results** (§19.13 "The tests view"): kept in the daemon's memory per
+  node for the session; a node's `Tests/1.result` answers its last output
+  (from the results file's per-case output, else the step's lines between
+  the case's start and end) and error locations as the TestUnit's parser
+  gives them. A re-discovery keeps the last result of a node whose `id`
+  survives.
+
+The batch `lw test` (`Tests/1.run`, above) is unchanged: native runners with
+an authoritative exit status, no per-case results, no `results` signal; it
+marks the view `stale` like any build. The CLI sends no `Tests/1.discover`,
+`run_cases` or `prepare_debug` in this step (`lw test --list` stays
+in-process, Routing).
 
 **Clean.** *(Step 5c.)* `clean { args, interactive, env, command }` — `lw
 clean [<profile>]` (§16.1: each project's build-system clean on the
@@ -2519,8 +2693,9 @@ the daemon's operations as with any other process:
   actions (§19.16) — until step 5k, which routes its builds, configures,
   module cleans and launch preparations (§19.16 "Editor operations"); its
   deletions (delete a profile, a configuration, an orphaned build directory)
-  stay here until step 5o (`Maintenance/1.execute_deletion`), its test runs
-  until step 5m, and its device-target launches with no step planned.
+  stay here until step 5o (`Maintenance/1.execute_deletion`), and its
+  device-target launches with no step planned. Its test discovery, test runs
+  and test debug preparations move to `Tests/1` in step 5m (§19.16 "Tests").
 
 ### 19.16 The editor as a client
 
@@ -2775,7 +2950,11 @@ qualified targets), `launch` (`loomworks.Launch/1` with `prepare_debug` and
 `Tasks/1.cancel` and `list`; a degraded one runs in-process ("Editor
 operations" below). Step 5l adds `lsp configuration`
 (`loomworks.LspConfig/1`); when it is degraded the language servers are
-withheld, never configured in-process ("LSP configuration" below). The describe is bounded
+withheld, never configured in-process ("LSP configuration" below). Step 5m
+adds `tests` (`loomworks.Tests/1` with `discover`, `run_cases`,
+`prepare_debug`, `collect` and `result`, and `loomworks.view.Tests/1`); when
+it is degraded the test explorer shows tests unavailable, never discovering
+or running them in-process ("Tests" below). The describe is bounded
 (about 3 s) and never blocks the editor; when it fails or times out the editor
 uses `welcome.objects`. Between a lost connection and the reconnect the
 editor's workspace is unloaded ("Unloaded on disconnect" below); the
@@ -2832,8 +3011,8 @@ owner"):
 
 Every other operation stays in-process in 5k: the deletions (a profile, a
 configuration, an orphaned build directory — step 5o, keeping one reviewed
-deletion path, §4.6), test runs and discovery (step 5m), device-target
-launches (build → deploy → install → launch, §11), and model commands such as
+deletion path, §4.6), test runs and discovery (step 5m, "Tests" below),
+device-target launches (build → deploy → install → launch, §11), and model commands such as
 materializing a profile from a configuration set (step 5o; the build that
 follows it is routed). A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the
@@ -2975,6 +3154,82 @@ owned databases and writes options in-process, under §9.7 as before 5l; the
 buffer → project rule above applies there too. That path is the
 `in-process` mode's, removed with the in-process editor (§19.19 6b); it is
 never used in `daemon` mode.
+
+**Tests.** *(Step 5m, plan: part 0 this spec; A the host-neutral builder of
+the view and loomtest's adapter-executed runs, in-process only; B1 the
+daemon's discovery and view, B2 its runs, debug preparation and results,
+§19.20 `Tests/1`, §19.13 "The tests view"; C1 the editor's read path, C2 its
+runs and debug.)* In `daemon` mode the editor computes nothing about tests:
+it does not discover them, build or run a test program, parse a test
+program's output or results file, match a test to a build target, or keep
+results of its own. The test tree, its states and the last results come
+**only** from `view.Tests/1` (with `Tests/1` `results` for a run's
+progress); discovery, runs and debug preparations are `Tests/1` calls. The
+test explorer, its gutter signs and inline marks (LOOMTEST.md) are the
+editor's — rendering, navigation, the cursor's test, the output window.
+
+- **Discovery.** `Tests/1.discover` is a task (§19.20), owned by the editor
+  like an operation's ("Tasks in the task runner" above: one overseer row,
+  cancellable, its one progress entry), carrying the editor's whole
+  environment at call time (§19.15 "Environment"). The editor sends it only
+  when the view needs it: when the explorer is opened or the adapter first
+  asked for the tree while the view is `stale`, on the explorer's refresh
+  (`force`), and when the view turns `stale` while the explorer is open —
+  never on its own otherwise, and not while the view's `discovering` names a
+  running discovery (another client's included), whose `update` it waits
+  for.
+- **Runs.** Running a test, a suite, a target, a file's tests or all of them
+  is one `Tests/1.run_cases` call (`select` the nodes' ids; run-all sends
+  none; "no build" sends `no_build`), owned by the editor and shown as one
+  overseer row whose output is the task's frames. The pre-run build is part
+  of that task, under its locks (§19.15 "Tests"): the editor builds nothing
+  for a test run and the adapter's `ensure_built` is not used. While it runs
+  the explorer, signs and inline marks follow `Tests/1` `results` (another
+  client's runs too); its end is the view's `update`. Stopping the overseer
+  row cancels the task (`Tasks/1.cancel`). Concurrent runs queue behind the
+  build-directory locks (§19.15 "Tests").
+- **Debug.** Debugging a test is `Tests/1.prepare_debug { select }` (`select` a
+  single `TestNodeRef` object, not an array; a task as
+  `Launch/1.prepare_debug` is, building what a run of the node would);
+  the editor hands the returned `debug` to its debugger as for a launch
+  (the adapter-specific shape in the editor), and when the session ends it
+  calls `Tests/1.collect { prepared }` so the daemon reads the results the
+  program wrote and updates the view. The program is the editor's, never the
+  daemon's. No language or adapter is assumed by the editor: they come with
+  the `debug` spec, so the installed-adapter check (§8.9.6) is made after
+  the task's `done` and before `debug.run()`, not before the call as for a
+  launch. When the adapter is not installed the editor shows the install
+  hint, starts no session and calls `Tests/1.collect { prepared }` at once,
+  which drops the token and its results file (the program never ran, so it
+  records nothing); a `done` without `debug` carries no token to drop.
+- **Output.** The output and error locations of a node (the explorer's
+  output window, the first-error jump, the inline marks and diagnostics of
+  failed nodes) are read with `Tests/1.result { id }` when shown.
+- **Unavailable or unloaded.** While the workspace is unloaded (the daemon
+  reports it `unloaded`, or the connection is lost — "Unloaded on
+  disconnect" below, the view cleared then), while it is `error` or
+  `refused`, and while the feature is degraded (no host binary, an
+  incompatible daemon, `loomworks.Tests/1` or `loomworks.view.Tests/1`
+  missing or at another version), the explorer's header shows that status
+  (e.g. `tests: waiting for the workspace daemon`, `tests: daemon offers no
+  loomworks.view.Tests/1`), its tree is empty, and discovery, runs and debug
+  are refused with that status as one notification line — **never** done
+  in-process. Gutter signs and inline marks are cleared with the tree. On
+  reconnect the subscription's `initial` restores the tree and the daemon's
+  last results; a discovery, run or preparation the editor owned past
+  `accepted` fails with the connection ("Editor operations" above) and is
+  never re-run.
+- **Neotest.** The neotest adapter (§8.9.4) is **not available** in `daemon`
+  mode in this step: it discovers nothing and, the first time neotest asks
+  it for anything in a session, shows one notification (`loomworks: neotest
+  is not available with the workspace daemon — use the loomtest explorer`).
+  A daemon-mode neotest (positions from the view, runs through a CLI relay)
+  is later (§19.19 5m part D).
+
+*(Transition, until step 6b.)* In `in-process` mode the editor keeps its
+in-process discovery, its RunSpec runs with loomtest's own streaming and
+results parsing, its `ensure_built` and the neotest adapter, unchanged; that
+path is never used in `daemon` mode.
 
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, §12) — one per daemon
@@ -3391,7 +3646,8 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   daemon's runs for it. Its remote tasks end ("Tasks" below), an operation
   past `accepted` fails ("Editor operations" above), and the controlled
   language servers under the root are stopped and their buffers held
-  ("LSP configuration" above). Programs the editor launched (in its task
+  ("LSP configuration" above); the tests view is cleared and the explorer
+  shows the status ("Tests" above). Programs the editor launched (in its task
   runner) and debug sessions are not stopped. The Runtime line says so in the warning
   highlight (`the workspace daemon disconnected — workspace unloaded,
   waiting for it`, spec/ui.md §1.1) until the daemon reports `loaded`. A
@@ -3767,6 +4023,39 @@ runtime is deferred until that module is actively developed.
        and a real-daemon end-to-end check
        (needs A and B; may land as C1, the read path, and C2, the writes and
        the generation owner).
+     - **5m — Tests through the daemon** (§19.13 "The tests view"; §19.15
+       "Tests"; §19.16 "Tests"; §19.20 `Tests/1`; §8.9; LOOMTEST.md), in
+       parts: 0 — spec (this; the `loomworks.view.Tests/1` schema, the
+       `loomworks.Tests/1` `results` signal schema and the shared result
+       types in `loomworks.Common/1`; the `Tests/1` method schemas land with
+       their handlers in B1 and B2, since the interface registry does not
+       mount a schema method without a handler); A — preparation with no
+       behaviour change, in-process only: one host-neutral builder of the
+       view's shape (unit states, explicit suite nodes, unit-scoped ids with
+       an id provider), a test source the loomtest and neotest adapters read
+       instead of the model, loomtest accepting adapter-supplied suite
+       nodes, exact-id results and an optional adapter-executed `start`
+       capability, a guard ratchet on the new files; B1 — daemon side:
+       `Tests/1.discover` (task) and `view.Tests/1` on `/views` with the
+       `stale` marking and the per-node last results, a harness-only stub
+       test module for the transcripts (it ships only in tests: a static
+       TestUnit discovering from JSON and running an `nvim -l` script that
+       prints gtest-format output and results), schemas and transcripts;
+       B2 — daemon side: `Tests/1.run_cases`, the `results` signal,
+       `Tests/1.result`, `Tests/1.prepare_debug` and `Tests/1.collect`, the
+       per-run results file, schemas and transcripts (B1 and B2 independent
+       after 0); C1 — editor side: the view in the view store, the test
+       source's daemon form, the explorer's header, tree, signs and inline
+       marks on it, the `stale` → `discover` trigger, the unavailable and
+       unloaded handling, no in-process discovery in `daemon` mode, the
+       neotest refusal; C2 — editor side: runs through `run_cases` (owned
+       overseer rows, cancel, live status from `results`), debug through
+       `prepare_debug` → the debug seam → `collect`, `ensure_built` unused in
+       `daemon` mode, the reach-in counts lowered, a real-daemon end-to-end
+       check; D *(optional, later)* — last results persisted across daemon
+       restarts, and a daemon-mode neotest (positions and results from the
+       view, runs through a CLI relay such as `lw test --select <id>…`,
+       designed with `lw test --list`).
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
@@ -3992,7 +4281,7 @@ the steps of §19.19. Their schemas, not this table, are the full contract.
 | `/projects` | `loomworks.Projects/1` | add, remove, configuration add / rename / remove / save, launch_save, deploy_save, variable_set, description_set, type_config_set, expand_preview, candidates |
 | `/projects` | `loomworks.ConfigSets/1` | add, update_mapping, generate_defaults |
 | `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
-| `/tests` | `loomworks.Tests/1` | discover T, run T |
+| `/tests` | `loomworks.Tests/1` | discover T, run T, run_cases T, prepare_debug T, collect, result (results) |
 | `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, device_log |
 | `/debug` | `loomworks.DebugConfig/1` | adapters, set_adapter, known_languages |
 | `/lsp` | `loomworks.LspConfig/1` | get, set_option (changed) |
@@ -4091,6 +4380,61 @@ configuration"), on `/lsp`:
   `Workspace/1` `changed` (a difference visible only under the client's
   environment is not signalled). The state is whole, so a missed `changed`
   is recovered by the next read.
+
+**`Tests/1`.** *(Step 5m, plan: B1 `discover`, B2 the rest; the shared
+types `TestNodeRef`, `TestCaseResult` and `TestStatus` in
+`loomworks.Common/1`, the view `loomworks.view.Tests/1`, specified in part
+0.)* The editor's test discovery, runs and debug preparations (§19.15
+"Tests", §19.16 "Tests"), on `/tests` beside the batch `run`, additively
+(the interface is a draft, so no new version). Every method acts on the
+active profile and names nodes by their view ids (`{ id }`, a
+`TestNodeRef`); a stale id is `refused` with the in-process "no such test"
+message, before acceptance. All of them carry the caller's environment
+(`needs_env`):
+
+- `discover { force? }` — task-streamed (`meta.kind = discover`), the
+  outcomes of `build`; `done.result` `{ exit_code, error?, tests, failed }`:
+  the number of test nodes of the profile's units after discovery and of
+  units whose discovery failed. `force` re-probes units whose tree is
+  current.
+- `run_cases { select?, no_build?, extra? }` — task-streamed (`meta.kind =
+  test`, `meta.units`), the outcomes of `build`. `select` (non-empty array of
+  `TestNodeRef`, runnable nodes): a `target` node runs its executable whole,
+  a `suite` or `test` node with a filter; absent: every runnable node of
+  every unit of the profile (the editor's run-all). `no_build` skips the
+  build; `extra` are arguments appended to every test step's program.
+  `done.result` `{ exit_code, error?, cases, counts }`: `cases` an array of
+  `TestCaseResult` (every case the run reported, in report order), `counts`
+  `{ passed, failed, skipped, errored }`.
+- `prepare_debug { select, no_build? }` — task-streamed (`meta.kind =
+  debug`), the outcomes of `build`; `select` a single `TestNodeRef` object
+  (one runnable node; not an array, unlike `run_cases`).
+  `done.result` `{ exit_code, error?, debug?, prepared? }`: on success the
+  `DebugSpec` and the opaque `prepared` token.
+- `collect { prepared }` → `{ cases }` (an array of `TestCaseResult`, empty
+  when the program wrote no results), or `refused` for a token this
+  connection does not hold (already collected, or of a closed connection);
+  mutating (it records the last results).
+- `result { id }` → `{ id, status?, duration?, message?, output?,
+  truncated?, errors }` — the node's last result (§19.15 "Tests"): `output`
+  its captured output (at most its last 256 KiB, `truncated` then true),
+  `errors` an array of `{ message, file?, line? }` (absolute,
+  `/`-separated paths). A node with no last result answers only `id` and an
+  empty `errors`; a stale id is `refused`.
+- Signal `results { seq, task_id?, cases }` — the per-case progress of a
+  running `run_cases` (any client's) and the cases a `collect` recorded
+  (`task_id` then absent): `cases` an array of `TestCaseResult`, each with
+  its current `status` (`queued`, `running`, `passed`, `failed`, `skipped`,
+  `errored`). Sent to every subscriber of `/tests`, batched (at most about
+  4 per second per run), never `initial`. It is a delta on top of
+  `view.Tests/1`: a client applies it to its copy of the view, and on a `seq`
+  gap (§19.12) or a new session generation it calls `view.Tests/1.get`,
+  whose state already includes every change `results` carried. A run's last
+  `results` precedes the view `update` that ends it.
+
+A `TestCaseResult` is `{ id, status, duration?, message? }` (`duration` in
+milliseconds, `message` the first failure line). `TestStatus` is the enum
+above; a client shows an unknown status as neutral.
 
 A per-file compile-command query (§8.4 `compile_command_for`) is not part of
 `LspConfig/1` (BACKLOG "Per-file compile command over the daemon").

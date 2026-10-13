@@ -3,7 +3,7 @@
   "version": 1,
   "status": "draft",
   "types_only": true,
-  "description": "Types shared by every core interface (spec 19.20): references, ids, the domain outcome union, the client environment, the launch and debug specs and the task meta. Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
+  "description": "Types shared by every core interface (spec 19.20): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
   "methods": {},
   "$defs": {
     "Id": {
@@ -155,6 +155,28 @@
         "iface": { "type": "string" },
         "v": { "type": "integer" },
         "method": { "type": "string" }
+      }
+    },
+    "TestNodeRef": {
+      "description": "A test node of loomworks.view.Tests/1, by its view id (spec 19.13 The tests view): opaque, scoped to its unit; stale once a re-discovery dropped the node, the active profile changed or the session generation is another.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/Id" } }
+    },
+    "TestStatus": {
+      "description": "A test node's status (spec 19.13, 19.20 Tests/1): queued or running while a run that selected it is in progress, else its last result. Clients show an unknown status as neutral.",
+      "enum": ["queued", "running", "passed", "failed", "skipped", "errored"]
+    },
+    "TestCaseResult": {
+      "description": "One case's status in a run, a collect or the results signal (spec 19.20 Tests/1).",
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": { "description": "The node's view id.", "$ref": "#/$defs/Id" },
+        "status": { "$ref": "#/$defs/TestStatus" },
+        "duration": { "description": "Milliseconds (a finished case).", "type": "integer", "minimum": 0 },
+        "message": { "description": "The first failure line (failed, errored).", "type": "string" }
       }
     }
   }
