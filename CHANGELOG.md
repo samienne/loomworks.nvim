@@ -67,6 +67,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   even if they had to wait for a build in progress. Building still configures
   only what needs it. (#196, #199)
 
+### Fixed
+
+- `lw test` no longer hangs for hours parsing a results file with a very
+  large failing test case (for example an assertion failing many thousands
+  of times in a loop). (#209)
+
 ## 0.1.43 - 2026-10-07
 
 `lw export` and `lw import` carry a workspace configuration to another
