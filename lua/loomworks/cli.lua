@@ -3032,6 +3032,9 @@ function M._test_plan(ws, profile, opts, deps)
   local extra = opts.extra or {}
 
   -- Foreign units: the batch step is never run on the host (invariant 19).
+  -- A unit whose skip note already says its saved targets are unsupported
+  -- gets no second "— ignored" note below.
+  local noted_unsupported = {}
   for _, u in ipairs(plan) do
     if u.batch_dropped and #u.entries > 0 then
       note(string.format("lw: note: %s: its registered tests cannot run on this host (%s) — "
@@ -3044,6 +3047,7 @@ function M._test_plan(ws, profile, opts, deps)
       if opts.sel == "discovered" then
         why = string.format("its discovered tests cannot run on this host (%s)", u.platform)
       elseif u.unsupported then
+        noted_unsupported[u] = true
         why = string.format("its registered tests cannot run on this host (%s) and its saved test "
           .. "targets are not supported by its module", u.platform)
       else
@@ -3066,7 +3070,7 @@ function M._test_plan(ws, profile, opts, deps)
     end
   end
   for _, u in ipairs(plan) do
-    if u.unsupported then
+    if u.unsupported and not noted_unsupported[u] then
       note("lw: note: " .. u.project.key .. ": saved test targets are not supported by its module (no build targets) — ignored")
     end
   end

@@ -661,6 +661,11 @@ describe("lw test plan (§16.16)", function()
         assert.is_nil(r.exit_code, r.stderr)
         assert.truthy(r.stderr:find("A: skipped", 1, true), r.stderr)
         assert.truthy(r.stderr:find("its saved test targets are not supported by its module", 1, true), r.stderr)
+        -- Exactly one note for A: the skip note already says the targets are
+        -- unsupported, so the generic "— ignored" note must not repeat it.
+        local _, n_a = r.stderr:gsub("lw: note: A:", "")
+        assert.are.equal(1, n_a, r.stderr)
+        assert.is_nil(r.stderr:find("ignored", 1, true), r.stderr)
         assert.is_nil(r.stderr:find("no saved test targets", 1, true), r.stderr)
         assert.is_nil(r.stderr:find("lw test-target add", 1, true), r.stderr)
     end)
