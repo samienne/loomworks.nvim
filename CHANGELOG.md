@@ -46,7 +46,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   unconfigured project or an unbuilt test executable fails the run before
   any test starts, listing each one; a build that may be stale
   (configuration changed, last build failed) gets a note. Works with
-  `--saved`, `--discovered` and `--target`. (#230)
+  `--saved`, `--discovered` and `--target`. (#230, #235)
 - Experimental, opt-in: the setting `runtime-mode` (`in-process`, the
   default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
   workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`
@@ -292,6 +292,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#226)
 - Test results: a failure, skip or error inside a testcase written on a
   single line of the results XML is no longer counted as passed. (#226)
+- Status page: the header shows the running loomworks version (e.g.
+  `0.1.44`, or `0.1.44+dev` in a source checkout) instead of a stale
+  `0.0.1-dev`. (#235)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or

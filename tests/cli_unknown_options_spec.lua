@@ -95,6 +95,21 @@ describe("unknown options", function()
       "--", "--gtest_filter=x"), "cmd_test")
   end)
 
+  -- Every option cmd_test parses must be in lw test's known-option table:
+  -- the unit tests call cmd_test directly, so a gap only shows on the real
+  -- command line (`lw test --no-build` was refused as unknown, spec §16.16).
+  it("lw test accepts every option its parser handles", function()
+    assert_reached(run(root, "test", "Dev", "--no-build"), "cmd_test")
+    assert_reached(run(root, "test", "--no-build", "--saved", "--junit", "o.xml"), "cmd_test")
+    assert_reached(run(root, "test", "--discovered", "--no-build"), "cmd_test")
+    assert_reached(run(root, "test", "Dev", "--list", "--json"), "cmd_test")
+    assert_reached(run(root, "test", "Dev", "--target", "t", "--cwd", "d", "--no-build"), "cmd_test")
+    assert_reached(run(root, "test", "--target", "t", "--working-dir", "d"), "cmd_test")
+    assert_reached(run(root, "test", "Dev", "--device", "S1", "--fresh", "--no-wait", "--timeout", "5",
+      "--query-timeout", "5", "--transfer-timeout", "5", "--log", "a=b"), "cmd_test")
+    assert_reached(run(root, "test", "Dev", "--no-build", "--", "--no-build", "--bogus"), "cmd_test")
+  end)
+
   it("global options are accepted anywhere", function()
     assert_reached(run(root, "--no-input", "build", "Dev", "--non-interactive", "--force"), "cmd_build")
     assert_reached(run(root, "build", "--dev", "--no-pin", "Dev"), "cmd_build")

@@ -84,7 +84,7 @@ M.COMMANDS = {
   }),
   build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v", "--break-locks" },
     valued = { "--target" }, eq = { "--target=", "--break-locks=" } }),
-  test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json" }, DEVICE_FLAGS),
+  test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json", "--no-build" }, DEVICE_FLAGS),
     valued = concat({ "--junit", "--target", "--cwd", "--working-dir" }, DEVICE_VALUED),
     eq = BREAK_EQ }),
   clean = spec({ flags = BREAK, eq = BREAK_EQ }),
