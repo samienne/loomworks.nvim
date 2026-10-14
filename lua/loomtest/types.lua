@@ -51,6 +51,7 @@
 --- @class loomtest.TestResult
 --- @field test_id string matches a TestNode id
 --- @field status string "passed"|"failed"|"skipped"|"errored"
+--- @field disabled boolean|nil a skipped test that was disabled (gtest DISABLED_, result="suppressed"), not run at all; a test that merely did not run is skipped without it
 --- @field message string|nil failure message or error output
 --- @field output string|nil full test output text
 --- @field errors loomtest.TestError[]|nil error locations

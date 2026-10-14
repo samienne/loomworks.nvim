@@ -534,6 +534,23 @@ describe("lw test plan (§16.16)", function()
         assert.truthy(r.ran[1]:match("^/bin/X %-%-gtest_output=xml:%S+ %-%-check %-%-entry$"), r.ran[1])
     end)
 
+    it("the summary line of a step with per-case results names its skipped and disabled counts", function()
+        local _, ppa = fake_unit("A", { saved = { "X", "Y" }, targets = { X = fake_target("X"), Y = fake_target("Y") } })
+        local orig = cli._run_test_executable
+        cli._run_test_executable = function(_, _, o)
+            local c = require("loomworks.remote.test_run").count(o.label == "X" and {
+                { status = "passed" }, { status = "skipped" }, { status = "skipped" },
+                { status = "skipped", disabled = true },
+            } or { { status = "passed" } })
+            return false, {}, c, false
+        end
+        local r = run_plan(fake_profile({ ppa }), {})
+        cli._run_test_executable = orig
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.truthy(r.stdout:find("A: X%s+passed, 2 skipped, 1 disabled\n"), r.stdout)
+        assert.truthy(r.stdout:find("A: Y%s+passed\n"), r.stdout)
+    end)
+
     it("a failed deploy fails its step without running the program; the others still run", function()
         local _, ppa = fake_unit("A", { saved = { "chk", "X" }, targets = { X = fake_target("X") },
             launch = { chk = { command = "/usr/bin/chk" } } })

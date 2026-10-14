@@ -442,10 +442,11 @@ function M.run(ws, profile, prepared, opts, host, done)
             label = name, header = st.project.key .. ": " .. name, saved = true,
             args = st.args, cwd = st.cwd, entry_working_dir = st.entry.working_dir,
             extra = extra, dev = opts.dev, junit_path = junit_for(st.label),
-        }, function(failed, reasons, _, exit_only, junit)
+        }, function(failed, reasons, c, exit_only, junit)
             if failed then n_failed = n_failed + 1 end
             summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
-                failed and ("FAILED (" .. table.concat(reasons or {}, ", ") .. ")") or "passed",
+                failed and ("FAILED (" .. table.concat(reasons or {}, ", ") .. ")")
+                    or ("passed" .. ((c and not exit_only) and require("loomworks.remote.test_run").not_run_suffix(c) or "")),
                 exit_only and "  (exit status only — no per-case results)" or "")
             record(st.label, not failed, failed and 1 or 0, junit)
             return next_step()
@@ -528,8 +529,8 @@ function M.exec_step(ws, lt, opts, host, cb)
         elseif exit_only then
             host.out(label .. ": passed (exit status 0; no per-case results)")
         else
-            host.out(string.format("%s: %d test%s passed%s", label, c.total - c.skipped,
-                (c.total - c.skipped) == 1 and "" or "s", c.skipped > 0 and (", " .. c.skipped .. " skipped") or ""))
+            host.out(string.format("%s: %d test%s passed%s", label, c.passed, c.passed == 1 and "" or "s",
+                test_run.not_run_suffix(c)))
         end
         local written
         if opts.junit_path then
