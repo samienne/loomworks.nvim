@@ -292,6 +292,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#226)
 - Test results: a failure, skip or error inside a testcase written on a
   single line of the results XML is no longer counted as passed. (#226)
+- Status page: the header shows the running loomworks version (e.g.
+  `0.1.44`, or `0.1.44+dev` in a source checkout) instead of a stale
+  `0.0.1-dev`. (#235)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
