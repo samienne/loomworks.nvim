@@ -2594,7 +2594,7 @@ lw.buf_project(bufnr)                       -- the buffer's project record: { ke
                                             --   tool_key?, state } } (longest prefix on a
                                             --   separator boundary), nil when none
 lw.view_header()                            -- { root, state, name?, active_profile?,
-                                            --   config_set?, diagnostics?, ... }
+                                            --   config_set?, diagnostics?, version?, ... }
 
 -- Buffer status (for statusline/winbar)
 lw.buf_status(bufnr)                        -- { project, configuration?, tool_key?, status?,

@@ -5,7 +5,7 @@
   "description": "Object /views (spec 19.13 Views, 19.20): get, and the update signal with the full state as initial.",
   "cases": [
     {
-      "name": "get reports the session and an unloaded model without loading it",
+      "name": "get reports the session, the running version and an unloaded model without loading it",
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/views", "iface": "loomworks.view.Header", "v": 1, "method": "get", "args": {} } },
         { "expect": {
@@ -15,6 +15,7 @@
               "pid": { "$var": "welcome.header.pid" },
               "lw_version": { "$var": "lw_version" },
               "session_generation": { "$var": "welcome.header.session_generation" },
+              "version": { "$type": "string" },
               "state": "unloaded",
               "name": { "$absent": true },
               "active_profile_id": { "$absent": true },

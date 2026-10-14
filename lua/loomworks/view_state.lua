@@ -27,6 +27,7 @@ local M = {}
 --- @field pid? integer daemon only
 --- @field lw_version? string daemon only
 --- @field session_generation? integer daemon only
+--- @field version? string the running loomworks version of the lw that built the view
 
 --- @class loomworks.ViewProjectActive
 --- @field configuration string
@@ -55,6 +56,7 @@ local M = {}
 --- @field root? string the workspace root (header; defaults to ws.root)
 --- @field session? { pid: integer, lw_version: string, session_generation: integer } daemon only
 --- @field id? fun(obj: table): string the opaque id of an entity (daemon only)
+--- @field version? string the running loomworks version (header; save_guard.version())
 
 --- The model fields every header carries (the welcome header's, §19.13
 --- "Header"): the loaded workspace's name and active profile, or its load
@@ -108,6 +110,7 @@ function M.header(ws, err, opts)
     h.root = opts.root or (ws and ws.root) or nil
     local s = opts.session
     if s then h.pid, h.lw_version, h.session_generation = s.pid, s.lw_version, s.session_generation end
+    h.version = opts.version
     if h.state == "loaded" then
         -- The view names the active profile and its configuration set only
         -- when the object resolves (live, not removed), so the daemon always
