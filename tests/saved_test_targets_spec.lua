@@ -555,6 +555,27 @@ describe("lw test plan (§16.16)", function()
         assert.truthy(r.stdout:find("A: Y%s+passed\n"), r.stdout)
     end)
 
+    it("the summary line of a failed step with per-case results keeps its counts", function()
+        local _, ppa = fake_unit("A", { saved = { "X", "Y" }, targets = { X = fake_target("X"), Y = fake_target("Y") } })
+        local orig = cli._run_test_executable
+        cli._run_test_executable = function(_, _, o)
+            if o.label == "X" then
+                local c = require("loomworks.remote.test_run").count({
+                    { status = "passed" }, { status = "passed" }, { status = "failed", test_id = "test:S.f" },
+                    { status = "skipped" }, { status = "skipped", disabled = true },
+                })
+                return true, { "exit status 1", "1 failed test" }, c, false
+            end
+            return true, { "exit status 3" }, require("loomworks.remote.test_run").count(nil), false
+        end
+        local r = run_plan(fake_profile({ ppa }), {})
+        cli._run_test_executable = orig
+        assert.equals(1, r.exit_code)
+        assert.truthy(r.stdout:find("A: X%s+FAILED %(exit status 1, 1 failed test, 2 passed, 1 skipped, 1 disabled%)\n"),
+            r.stdout)
+        assert.truthy(r.stdout:find("A: Y%s+FAILED %(exit status 3%)\n"), r.stdout)
+    end)
+
     it("a failed deploy fails its step without running the program; the others still run", function()
         local _, ppa = fake_unit("A", { saved = { "chk", "X" }, targets = { X = fake_target("X") },
             launch = { chk = { command = "/usr/bin/chk" } } })
@@ -1177,6 +1198,52 @@ describe("lw test-target (§16.9)", function()
         local l = capture(function() return cli._tt_list(root, nil, ws) end)
         assert.truthy(l.stdout:find("X1  --x  [launch]", 1, true), l.stdout)
         assert.truthy(l.stdout:find("BaseTests #2  --b", 1, true), l.stdout)
+    end)
+end)
+
+-- ===========================================================================
+describe("lw project show: saved test targets (§16.9)", function()
+    local function show(section)
+        local root = make_ws(section, "variant:default")
+        local r = capture(function() return cli.cmd_project_show(root, "App") end)
+        assert.equals(0, r.ret, r.stderr)
+        return r.stdout
+    end
+    -- The `tests` sub-line printed under configuration `name`.
+    local function cfg_tests(stdout, name)
+        return stdout:match("\n    " .. name .. " [^\n]*\n      tests  ([^\n]*)")
+    end
+
+    it("shows the project-wide list, and configurations inherit it", function()
+        local s = show({ tests = { "PW1", "PW2" },
+            configurations = { Rel = { inherits = "variant:default" } } })
+        assert.truthy(s:find("\n  tests           PW1, PW2  (project-wide)\n", 1, true), s)
+        assert.equals("PW1, PW2  (project-wide)", cfg_tests(s, "Rel"), s)
+    end)
+
+    it("shows a configuration's own list", function()
+        local s = show({ configurations = {
+            Tests = { inherits = "variant:default", tests = { "BaseTests", "X1" } } } })
+        assert.equals("BaseTests, X1  (own)", cfg_tests(s, "Tests"), s)
+    end)
+
+    it("shows an inherited list with its source", function()
+        local s = show({ configurations = {
+            Tests = { inherits = "variant:default", tests = { "BaseTests", "X1" } },
+            Rel = { inherits = "Tests" } } })
+        assert.equals("BaseTests, X1  (inherited from Tests)", cfg_tests(s, "Rel"), s)
+        -- No project-wide list: the project row still shows `none` + the add hint.
+        assert.truthy(s:find("\n  tests           none — add: lw test-target add <profile> App:<name>", 1, true), s)
+    end)
+
+    it("shows none and the add hint when no list exists anywhere", function()
+        local s = show({ configurations = { Rel = { inherits = "variant:default" } } })
+        assert.truthy(s:find("\n  tests           none — add: lw test-target add <profile> App:<name>"
+            .. " [--config <name> | --project-wide]\n", 1, true), s)
+        assert.equals("none", cfg_tests(s, "Rel"), s)
+        -- One hint for the project, none repeated per configuration.
+        local _, n = s:gsub("lw test%-target add", "")
+        assert.equals(1, n, s)
     end)
 end)
 

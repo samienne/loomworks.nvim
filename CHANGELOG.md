@@ -195,6 +195,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   deleted first. Its progress finishes only when those configures have run,
   even if they had to wait for a build in progress. Building still configures
   only what needs it. (#196, #198)
+- `lw project show` always prints the project's saved test targets row, with
+  `none` and the `lw test-target add` form when there is no project-wide list,
+  and prints each configuration's effective list with its source (for example
+  `inherited from Tests`). (#240)
 
 ### Fixed
 - `lw run --cwd` on a target that runs on a device is now a usage error
@@ -295,6 +299,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Status page: the header shows the running loomworks version (e.g.
   `0.1.44`, or `0.1.44+dev` in a source checkout) instead of a stale
   `0.0.1-dev`. (#235)
+- A failed `lw test` step now keeps its counts in the summary, e.g.
+  `FAILED (exit status 1, 1 failed test, 364 passed, 2 skipped)`, in the step line
+  and the per-profile summary, on a host or a device. Before, only the failure
+  reasons were shown. A step without per-case results keeps its line. (#240)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
