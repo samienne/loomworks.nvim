@@ -388,6 +388,23 @@ function CTestUnit:_find_exec_spec(test_id)
     return self._exec_specs[exe], exe
 end
 
+--- The results file of a structured run: `opts.output_path` (a per-run
+--- path, the daemon's `<root>/.nvim/tmp/lw-test-<hex>.xml`, spec §19.15
+--- "Tests"), else the build directory's fixed `.nvim/gtest_results.xml`.
+--- @param build_dir string
+--- @param opts table
+--- @return string
+local function results_path(build_dir, opts)
+    if type(opts.output_path) == "string" and opts.output_path ~= "" then return opts.output_path end
+    local nvim_dir = build_dir .. "/.nvim"
+    if not uv.fs_stat(nvim_dir) then
+        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    end
+    return nvim_dir .. "/gtest_results.xml"
+end
+
+--- @param test_id string
+--- @param opts? { gtest_filter?: string, output_path?: string }
 function CTestUnit:test_command(test_id, opts)
     opts = opts or {}
 
@@ -431,11 +448,7 @@ function CTestUnit:test_command(test_id, opts)
     end
 
     -- gtest XML output for per-test results and output capture
-    local nvim_dir = self._build_dir .. "/.nvim"
-    if not uv.fs_stat(nvim_dir) then
-        uv.fs_mkdir(nvim_dir, 493) -- 0755
-    end
-    local gtest_xml = nvim_dir .. "/gtest_results.xml"
+    local gtest_xml = results_path(self._build_dir, opts)
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
     return {
@@ -447,7 +460,7 @@ function CTestUnit:test_command(test_id, opts)
 end
 
 --- Construct command to run all tests.
---- @param opts? table { filter?: string }
+--- @param opts? table { filter?: string, output_path?: string }
 --- @return table { cmd, env, cwd, output_path }
 function CTestUnit:test_command_all(opts)
     opts = opts or {}
@@ -475,11 +488,7 @@ function CTestUnit:test_command_all(opts)
         env.GTEST_FILTER = opts.filter
     end
 
-    local nvim_dir = self._build_dir .. "/.nvim"
-    if not uv.fs_stat(nvim_dir) then
-        uv.fs_mkdir(nvim_dir, 493) -- 0755
-    end
-    local gtest_xml = nvim_dir .. "/gtest_results.xml"
+    local gtest_xml = results_path(self._build_dir, opts)
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
     return {

@@ -34,15 +34,18 @@ end
 --- @param callback fun(entries: table[]|nil)
 function TestUnit:discover_async(callback) end
 
---- Construct a command to run a specific test.
+--- Construct a command to run a specific test. `opts.output_path` names the
+--- results file the harness writes (a per-run path, spec §19.15 "Tests");
+--- without it the TestUnit picks its own (a fixed path in the build
+--- directory). `opts.gtest_filter` narrows a target or suite's run.
 --- @param test_id string
---- @param opts? table
+--- @param opts? { gtest_filter?: string, output_path?: string }
 --- @return table|nil { cmd, env, cwd, output_path, prepare?, test_id? } (`prepare` runs when the step executes; `false, err` fails it)
 function TestUnit:test_command(test_id, opts) end
 
 --- Construct a command to run all tests as structured, per-test output (editor
 --- UI): a framework harness that emits a machine-readable results file.
---- @param opts? table { filter?: string }
+--- @param opts? table { filter?: string, output_path?: string } (`output_path` as for test_command)
 --- @return table|nil { cmd, env, cwd, output_path }
 function TestUnit:test_command_all(opts) end
 

@@ -560,8 +560,10 @@ end
 --- to actually be a gtest binary — caller must confirm framework first.
 --- @param exe string
 --- @param filter? string GTEST_FILTER value
+--- @param output_path? string the results file (a per-run path, spec §19.15
+---   "Tests"); default the build directory's fixed `.nvim/gtest_results.xml`
 --- @return table|nil
-function MesonTestUnit:_build_gtest_run(exe, filter)
+function MesonTestUnit:_build_gtest_run(exe, filter, output_path)
     local spec = self._exec_specs[exe]
     if not spec then return nil end
 
@@ -572,11 +574,14 @@ function MesonTestUnit:_build_gtest_run(exe, filter)
         env.GTEST_FILTER = filter
     end
 
-    local nvim_dir = self._build_dir .. "/.nvim"
-    if not uv.fs_stat(nvim_dir) then
-        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    local xml = output_path
+    if type(xml) ~= "string" or xml == "" then
+        local nvim_dir = self._build_dir .. "/.nvim"
+        if not uv.fs_stat(nvim_dir) then
+            uv.fs_mkdir(nvim_dir, 493) -- 0755
+        end
+        xml = nvim_dir .. "/gtest_results.xml"
     end
-    local xml = nvim_dir .. "/gtest_results.xml"
     cmd[#cmd + 1] = "--gtest_output=xml:" .. xml
 
     local result = {
@@ -635,7 +640,7 @@ function MesonTestUnit:_framework_for(entry)
 end
 
 --- @param test_id string
---- @param opts? table { gtest_filter? }
+--- @param opts? table { gtest_filter?, output_path? }
 --- @return table|nil
 function MesonTestUnit:test_command(test_id, opts)
     opts = opts or {}
@@ -660,7 +665,7 @@ function MesonTestUnit:test_command(test_id, opts)
         elseif opts.gtest_filter then
             filter = opts.gtest_filter
         end
-        return self:_build_gtest_run(exe, filter)
+        return self:_build_gtest_run(exe, filter, opts.output_path)
     end
 
     -- Unknown framework — run the executable exactly as meson reported
@@ -668,7 +673,7 @@ function MesonTestUnit:test_command(test_id, opts)
     return self:_build_plain_run(exe)
 end
 
---- @param opts? table { filter? }
+--- @param opts? table { filter?, output_path? }
 --- @return table|nil
 function MesonTestUnit:test_command_all(opts)
     opts = opts or {}
@@ -685,7 +690,7 @@ function MesonTestUnit:test_command_all(opts)
     if not exe then return nil end
 
     if self:_framework_for(entry) == "gtest" then
-        return self:_build_gtest_run(exe, opts.filter)
+        return self:_build_gtest_run(exe, opts.filter, opts.output_path)
     end
     return self:_build_plain_run(exe)
 end
