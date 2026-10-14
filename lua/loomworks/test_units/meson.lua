@@ -335,7 +335,7 @@ function MesonTestUnit:discover_async(callback)
     end
     local self_ref = self
 
-    vim.system(cmd, { text = true, timeout = 10000 },
+    require("loomworks.test_unit").system(self, cmd, { text = true, timeout = 10000 },
         function(result)
             vim.schedule(function()
                 if result.code ~= 0 or not result.stdout then
@@ -458,7 +458,9 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
 
     local remaining = #targets
     for _, target in ipairs(targets) do
-        gtest.probe(target.executable, target.id, self:_probe_opts_for(target.executable), function(framework, test_list, diag)
+        local popts = self:_probe_opts_for(target.executable) or {}
+        popts.system = self._system
+        gtest.probe(target.executable, target.id, popts, function(framework, test_list, diag)
             self._framework_cache[target.executable] = framework or false
             if log then
                 log:debug("meson gtest probe %s: %s | %s",

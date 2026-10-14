@@ -258,7 +258,7 @@ function SavedTargetsTestUnit:discover_async(callback)
     if #todo == 0 then done(); return end
     local pending = #todo
     for _, e in ipairs(todo) do
-        gtest.probe(e.executable, e.id, function(fw, list)
+        gtest.probe(e.executable, e.id, { system = self._system }, function(fw, list)
             add_children(self, entries, e, fw, list)
             pending = pending - 1
             if pending == 0 then done() end

@@ -223,7 +223,8 @@ function CTestUnit:discover_async(callback)
     cmd[#cmd + 1] = "--show-only=json-v1"
     local self_ref = self
 
-    require("loomworks.exe").system(cmd, { text = true, timeout = 10000 },
+    local exe = require("loomworks.exe")
+    require("loomworks.test_unit").system(self, cmd, { text = true, timeout = 10000 },
         function(result)
             vim.schedule(function()
                 if result.code ~= 0 or not result.stdout then
@@ -244,7 +245,7 @@ function CTestUnit:discover_async(callback)
                     callback(entries)
                 end)
             end)
-        end
+        end, exe.system
     )
 end
 
@@ -293,7 +294,7 @@ function CTestUnit:_probe_frameworks(entries, callback)
 
     local pending = #targets
     for _, target in ipairs(targets) do
-        gtest.probe(target.executable, target.id, function(framework, test_list)
+        gtest.probe(target.executable, target.id, { system = self._system }, function(framework, test_list)
             self._framework_cache[target.executable] = framework or false
             if framework and test_list then
                 target.framework = framework
