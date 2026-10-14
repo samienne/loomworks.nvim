@@ -5,7 +5,7 @@
   "description": "Object /tests (spec 19.15, 19.20): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Step 5m (spec 19.15 Tests, 19.20 Tests/1) adds the editor's discover (part B1), run_cases, prepare_debug (task-streamed), collect and result (part B2) with their handlers; its results signal, which needs no handler, is declared here from part 0.",
   "methods": {
     "run": {
-      "description": "Build the profile, then run its registered tests (lw test [<profile>] [--junit <file>] [-- <args>]).",
+      "description": "Build the profile (unless no_build), then run its registered tests (lw test [<profile>] [--no-build] [--junit <file>] [-- <args>]).",
       "params": {
         "type": "object",
         "additionalProperties": false,
@@ -32,6 +32,10 @@
           "junit": {
             "description": "Write JUnit XML to this path.",
             "type": "string"
+          },
+          "no_build": {
+            "description": "Run against the existing build (--no-build, spec 16.16): nothing configured, built or deployed; the plan's no-build checks refuse an unconfigured unit or an unbuilt executable before any step.",
+            "type": "boolean"
           }
         }
       },

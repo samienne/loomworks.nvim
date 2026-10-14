@@ -342,6 +342,47 @@ describe("lw test through the workspace daemon (real processes)", function()
         assert.truthy(rd.stderr:find("saved test entry 'nope'", 1, true), rd.stderr)
     end)
 
+    it("--no-build is carried: nothing built, the same refusal and run as in-process (§16.16, §19.15)", function()
+        local tests = { "chk" }
+        local a, b = workspace(tests), workspace(tests)
+        local function both(args, extra, label)
+            local full = { "--no-input" }
+            vim.list_extend(full, args)
+            local ra = lw(a, { "--no-daemon", unpack(full) }, vim.tbl_extend("force", extra or {},
+                { LOOMWORKS_RUNTIME = "in-process" }))
+            local rb = lw(b, full, extra)
+            assert.equals(ra.code, rb.code, label .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
+            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), label)
+            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), label)
+            assert.truthy(rb.stderr:find(NOTICE, 1, true), label .. "\n" .. rb.stderr)  -- routed
+            assert.same(cache_of(a, env.data .. "/trust.key"), cache_of(b, env.data .. "/trust.key"), label)
+            return rb
+        end
+        -- Unconfigured: refused before any step, nothing configured or built.
+        local r = both({ "test", "dev", "--no-build" }, nil, "unconfigured")
+        assert.equals(1, r.code)
+        assert.falsy(r.stdout:find("step configure", 1, true), r.stdout)
+        assert.falsy(r.stdout:find("==> [test]", 1, true), r.stdout)
+        for _, s in ipairs({ "app: not configured on this machine", "lib: not configured on this machine",
+            "build first: lw build dev", "or run without --no-build" }) do
+            assert.truthy(r.stderr:find(s, 1, true), s .. "\n" .. r.stderr)
+        end
+        assert.is_nil(vim.uv.fs_stat(b .. "/out"), "the daemon configured or built")
+        -- Built once; then a build that would fail never runs under --no-build.
+        for _, root in ipairs({ a, b }) do
+            local rb = lw(root, { "--no-input", "--no-daemon", "build", "dev" }, { LOOMWORKS_RUNTIME = "in-process" })
+            assert.equals(0, rb.code, rb.stderr)
+        end
+        r = both({ "test", "dev", "--no-build", "--junit", "reports/nb.xml" }, { LW_TEST_FAIL = "build" }, "built")
+        assert.equals(0, r.code, r.stderr)
+        assert.falsy(r.stdout:find("building profile", 1, true), r.stdout)
+        assert.falsy(r.stdout:find("step build", 1, true), r.stdout)
+        assert.truthy(r.stdout:find("saved chk ARGS=", 1, true), r.stdout)
+        assert.truthy(r.stdout:find("TESTS OK: dev (3 steps)", 1, true), r.stdout)
+        assert.same(files_of(a .. "/reports"), files_of(b .. "/reports"))
+        assert.truthy(next(files_of(b .. "/reports")), "no JUnit file written")
+    end)
+
     it("--target and in-process mode stay in-process (--target says so in one line); an attached selection uses a live daemon", function()
         local root = workspace()
         local r = lw(root, { "--no-input", "test", "dev" })

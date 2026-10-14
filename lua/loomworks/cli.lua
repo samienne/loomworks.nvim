@@ -8622,7 +8622,7 @@ function M._reset_confirm(root, args, req, reply, ensured, opts)
 end
 
 --- The request a `lw test` argv routes as (spec §19.15): the same parse as
---- `cmd_test` — `{ profile?, junit?, extra }`, `junit` made absolute against
+--- `cmd_test` — `{ profile?, junit?, extra, no_build? }`, `junit` made absolute against
 --- this process's working directory as `cmd_test` does. Returns "target" for
 --- the named-executable form (`--target`, not carried in this step), or nil
 --- when `cmd_test` would refuse the arguments or they carry a form the daemon
@@ -8648,6 +8648,9 @@ function M._test_request(args)
       if not pre[i + 1] then return nil end
       req.junit = resolve_abs_out(pre[i + 1], user_cwd())
       i = i + 2
+    elseif a == "--no-build" then
+      req.no_build = true
+      i = i + 1
     elseif a:sub(1, 1) == "-" or req.profile then
       return nil
     else

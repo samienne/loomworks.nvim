@@ -490,9 +490,11 @@ function M.run(svc, ctx)
         -- Parse the units' targets before planning: a test step's run
         -- environment (sibling DLL dirs on Windows) derives from them.
         for _, pp in ipairs(profile:projects()) do build_run.ensure_unit_targets(ws, pp._config_unit) end
-        local topts = { junit = args.junit, extra = args.extra or {} }
+        local topts = { junit = args.junit, extra = args.extra or {}, no_build = args.no_build }
         local prepared, perr = test_plan.prepare(ws, profile, ctx.test_pre, topts)
         if not prepared then return finish(1, perr) end
+        -- (`no_build`: a possibly stale build's notes, §16.16.)
+        for _, n in ipairs(prepared.notes or {}) do task:line("note", n) end
         if #prepared.steps == 0 then
             release_all()
             task:line("out", "no tests to run for profile '" .. profile.key .. "'")
@@ -805,6 +807,10 @@ function M.run(svc, ctx)
             next_clean()
             return run
         end
+
+        -- `lw test --no-build` (§16.16 "Skipping the build"): no build steps;
+        -- the locks stay held across the plan's checks and its steps.
+        if testing and args.no_build then test_phase(); return run end
 
         local plan_err
         if cases then

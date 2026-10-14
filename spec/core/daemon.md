@@ -1898,7 +1898,7 @@ resolved with the same messages and exit codes as in-process (§16.9).
 `runtime-mode daemon` (`daemon/service.lua`, `daemon/runner.lua`,
 `daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
 `_delegate`), and for the plan form of `lw test` (`lw test [<profile>]
-[--junit <file>] [-- <args>]`, §16.16, saved test targets included — the
+[--no-build] [--junit <file>] [-- <args>]`, §16.16, saved test targets included — the
 plan shared with the in-process host in `test_plan.lua`; `lw test --target`,
 `--saved`, `--discovered` and `--list` stay in-process, see Routing), and for the preparation of `lw run` (§16.17; see Run;
 `run_prep.lua`, the client's `_finish_routed_run`; device runs stay
@@ -1965,7 +1965,8 @@ parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
 (§16.16: each unit's native runner, then its saved test targets) — has the
 same outcomes; `args` carries `profile`, `junit` (the `--junit` path, made
 absolute by the client against its working directory, as the in-process host
-does) and `extra` (the arguments after `--`, for the plan's steps). The plan's
+does), `extra` (the arguments after `--`, for the plan's steps) and
+`no_build` (`--no-build`). The plan's
 pre-build checks are the in-process ones, made before acceptance: their notes
 travel with the reply, and a refusal is `refused` with the in-process message
 and exit code (a foreign kit's registered tests with no saved test target,
@@ -2002,13 +2003,17 @@ them in the environment of `lw build`, which the step receives.
 For a test run it is the test plan of §16.16, the in-process host's own code
 (`test_plan.lua`) run with the task as its host: the build-directory locks
 taken as for a build and held across the build AND the test steps (a native
-runner may rebuild), the build steps above in their for-test form (a unit
+runner may rebuild), unless `no_build` the build steps above in their for-test form (a unit
 whose runner rebuilds itself is not built separately unless it has saved test
 targets; no steps → no `building profile:` line), the units' targets parsed,
 every saved entry resolved before the first step (a missing one fails the
-test run with the in-process message), then each step with its `==> [test]
+test run with the in-process message; under `no_build` also the §16.16
+"Skipping the build" checks — an unconfigured unit, an unbuilt executable,
+a self-rebuilding runner that cannot skip its rebuild — with the in-process
+lines and exit 1, the locks held across those checks and the steps, and its
+stale-build notes), then each step with its `==> [test]
 …` line — a native runner (`<project>: <runner>`), or a saved test target
-(its launch's deploy, its working directory, `${target_dir}`, the gtest
+(its launch's deploy unless `no_build`, its working directory, `${target_dir}`, the gtest
 results option, its one-line outcome) — every step run even after one
 failed, its JUnit file at the requested path (one per step when several; a
 warning line when none was written) with its `JUnit: <path>` line, and

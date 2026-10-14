@@ -36,6 +36,24 @@
       ]
     },
     {
+      "name": "run accepts no_build (a profile without tests ends as without it; the CLI parity is tests/daemon_test_cli_spec.lua); a non-boolean no_build is invalid",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "no_build": true, "command": "lw test" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" }, "profile_key": "dev" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
+            "result": { "exit_code": 0, "steps": [], "junit": [], "failed": { "$absent": true } }
+        }, "timeout_ms": 120000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "no_build": "yes" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
       "name": "discover runs as a task: a line per probed unit, the summary and its result; a current tree is probed again only with force",
       "fixture": "tests",
       "allow": [
