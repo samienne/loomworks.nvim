@@ -408,30 +408,39 @@ end
 --- Emit a signal of an interface version mounted on `object` to the
 --- connections subscribed to it (filtered by `accept(sub_args, sub)` when
 --- given; it is asked right before that subscription's frame is sent).
+--- `args` may be a function `(sub, seq) → args`: the arguments of each
+--- subscription's frame, given the frame's `seq` (a signal whose own `seq`
+--- argument is the frame's, gapless per object and connection, §19.12).
 --- @param object string
 --- @param iface string
 --- @param v integer
 --- @param name string
---- @param args table
+--- @param args table|fun(sub: loomworks.daemon.Subscription, seq: integer): table
 --- @param accept? fun(sub_args: table, sub: loomworks.daemon.Subscription): boolean
 --- @return integer delivered
 function Registry:emit(object, iface, v, name, args, accept)
     local e = self:resolve(object, iface, v)
     if not e then return 0 end
     local sdoc = e.doc.signals and e.doc.signals[name]
-    args = self:_shape(e, sdoc and sdoc.args, args)
-    if self.validate_out then
-        local ok, verr = self:_validate(e, sdoc and sdoc.args, args)
-        if not ok then
-            self:_log("signal %s/%d.%s does not match its schema: %s", iface, v, name, tostring(verr))
+    local function shaped(a)
+        a = self:_shape(e, sdoc and sdoc.args, a)
+        if self.validate_out then
+            local ok, verr = self:_validate(e, sdoc and sdoc.args, a)
+            if not ok then
+                self:_log("signal %s/%d.%s does not match its schema: %s", iface, v, name, tostring(verr))
+            end
         end
+        return a
     end
+    local build = type(args) == "function" and args or nil
+    if not build then args = shaped(args) end
     local n = 0
     for _, s in ipairs(subs_in_order(self.subs)) do
         if s.object == object and s.iface == iface and s.v == v and (not s.signals or s.signals[name])
             and not s.conn.closed and (not accept or accept(s.args, s)) then
+            local seq = self:_next_seq(s.conn, object)
             self.server:_send(s.conn,
-                envelope.signal(object, iface, v, name, args, s.id, self:_next_seq(s.conn, object)))
+                envelope.signal(object, iface, v, name, build and shaped(build(s, seq)) or args, s.id, seq))
             n = n + 1
         end
     end
