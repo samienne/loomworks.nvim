@@ -26,6 +26,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Added
+
+- `lw test --no-build` runs the tests against what is already built: nothing
+  is configured, built or deployed (meson runs `meson test --no-rebuild`). An
+  unconfigured project or an unbuilt test executable fails the run before
+  any test starts, listing each one; a build that may be stale
+  (configuration changed, last build failed) gets a note. Works with
+  `--saved`, `--discovered` and `--target`. (#228)
+
 ### Fixed
 
 - `lw test`: a disabled gtest test (`DISABLED_`) is no longer counted as
