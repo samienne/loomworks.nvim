@@ -443,7 +443,8 @@ configured build targets and its projects' launch configurations:
 The dotted configuration grammar (above) does not edit `tests`: `set` / `unset`
 of a `tests` param is rejected, naming the saved-test-target edit. A
 configuration's and a project's show views display the effective list with its
-source.
+source; a project's view also lists each configuration's effective list, and
+shows `none` with the add hint when it has none.
 
 A management host MAY also **set, replace or clear the description** (§1.10) of
 a project, a user configuration, a configuration set, a profile or a launch

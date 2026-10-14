@@ -1202,6 +1202,52 @@ describe("lw test-target (§16.9)", function()
 end)
 
 -- ===========================================================================
+describe("lw project show: saved test targets (§16.9)", function()
+    local function show(section)
+        local root = make_ws(section, "variant:default")
+        local r = capture(function() return cli.cmd_project_show(root, "App") end)
+        assert.equals(0, r.ret, r.stderr)
+        return r.stdout
+    end
+    -- The `tests` sub-line printed under configuration `name`.
+    local function cfg_tests(stdout, name)
+        return stdout:match("\n    " .. name .. " [^\n]*\n      tests  ([^\n]*)")
+    end
+
+    it("shows the project-wide list, and configurations inherit it", function()
+        local s = show({ tests = { "PW1", "PW2" },
+            configurations = { Rel = { inherits = "variant:default" } } })
+        assert.truthy(s:find("\n  tests           PW1, PW2  (project-wide)\n", 1, true), s)
+        assert.equals("PW1, PW2  (project-wide)", cfg_tests(s, "Rel"), s)
+    end)
+
+    it("shows a configuration's own list", function()
+        local s = show({ configurations = {
+            Tests = { inherits = "variant:default", tests = { "BaseTests", "X1" } } } })
+        assert.equals("BaseTests, X1  (own)", cfg_tests(s, "Tests"), s)
+    end)
+
+    it("shows an inherited list with its source", function()
+        local s = show({ configurations = {
+            Tests = { inherits = "variant:default", tests = { "BaseTests", "X1" } },
+            Rel = { inherits = "Tests" } } })
+        assert.equals("BaseTests, X1  (inherited from Tests)", cfg_tests(s, "Rel"), s)
+        -- No project-wide list: the project row still shows `none` + the add hint.
+        assert.truthy(s:find("\n  tests           none — add: lw test-target add <profile> App:<name>", 1, true), s)
+    end)
+
+    it("shows none and the add hint when no list exists anywhere", function()
+        local s = show({ configurations = { Rel = { inherits = "variant:default" } } })
+        assert.truthy(s:find("\n  tests           none — add: lw test-target add <profile> App:<name>"
+            .. " [--config <name> | --project-wide]\n", 1, true), s)
+        assert.equals("none", cfg_tests(s, "Rel"), s)
+        -- One hint for the project, none repeated per configuration.
+        local _, n = s:gsub("lw test%-target add", "")
+        assert.equals(1, n, s)
+    end)
+end)
+
+-- ===========================================================================
 describe("launch rename carries saved entries (§8.7)", function()
     it("renames every entry naming the launch, keeping args and position", function()
         local root = make_ws({ configurations = {
