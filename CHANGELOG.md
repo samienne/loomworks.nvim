@@ -26,6 +26,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Fixed
+
+- `lw test`: a disabled gtest test (`DISABLED_`) is no longer counted as
+  passed, and skipped (`GTEST_SKIP`) and disabled tests are counted apart
+  from passed ones, both in a test executable's result line and in the saved
+  test targets' summary, e.g. `1009 tests passed, 2 skipped, 1 disabled`.
+  (#225)
+
 ## 0.1.44 - 2026-10-14
 
 A configuration can now list saved test targets that plain `lw test` runs
