@@ -26,6 +26,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Fixed
+
+- A failed `lw test` step now keeps its counts in the summary, e.g.
+  `FAILED (exit status 1, 1 failed test, 364 passed, 2 skipped)`, in the step line
+  and the per-profile summary, on a host or a device. Before, only the failure
+  reasons were shown. A step without per-case results keeps its line. (#238)
+
 ## 0.1.45 - 2026-10-14
 
 `lw test --no-build` runs the tests against the existing build, for projects
