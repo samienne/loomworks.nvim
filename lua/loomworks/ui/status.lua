@@ -14,6 +14,13 @@ local M = {}
 -- Render function — assembles sections
 -- ---------------------------------------------------------------------------
 
+--- Header line: the running loomworks version the header view carries
+--- (`loomworks.view.Header/1` `version`, spec §19.13), "dev" when unknown.
+--- @param hdr loomworks.ViewHeader
+local function header_text(hdr)
+    return "loomworks.nvim " .. (hdr.version or "dev")
+end
+
 local function render_fn(tree)
     local lw = require("loomworks")
     local ws = lw.get_workspace()
@@ -24,7 +31,7 @@ local function render_fn(tree)
     if not ws then
         if hdr.state == "error" or hdr.state == "refused" then
             tree._level = 1
-            tree:leaf("loomworks.nvim " .. lw._version, "Title")
+            tree:leaf(header_text(hdr), "Title")
             tree:blank()
             tree:leaf("Failed to load workspace", "DiagnosticError")
             tree:leaf("Root: " .. tostring(hdr.root or ""), "Comment")
@@ -52,7 +59,7 @@ local function render_fn(tree)
 
     tree._level = 1
 
-    tree:leaf("loomworks.nvim " .. lw._version, "Title")
+    tree:leaf(header_text(hdr), "Title")
     tree:blank()
     if hdr.state == "loaded" then
         tree:leaf("Workspace: " .. tostring(hdr.name or ""), "Type")
@@ -134,6 +141,9 @@ end
 -- ---------------------------------------------------------------------------
 
 local tree = Tree.new(render_fn)
+
+--- Test seam: the page's render function.
+M._render_fn = render_fn
 
 local view = View.new({
     widget = tree,
