@@ -959,6 +959,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   editor build does. It moved only between configure and build steps, so
   `lw status`, the editor's progress and a late-joining editor showed 0% for
   the whole of an already configured build. (#136)
+- The test explorer shows the tests of every project in the active profile
+  again; when every project's tests were already discovered it showed only
+  the first project's tests. (#221)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
