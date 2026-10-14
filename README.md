@@ -1023,6 +1023,13 @@ inherits its list copies the inherited list there first, and says so.
 expanded, and `also_target: true` on a launch entry whose name is also an
 executable build target (the one it does not run).
 
+`lw config show <project> <config>` prints a configuration's effective list
+with its source. `lw project show <project>` prints the project-wide list and,
+under each configuration, that configuration's effective list with its source
+(`own`, `inherited from Tests`, `project-wide`); with no project-wide list it
+shows `none` and the `lw test-target add` form. Neither resolves the entries;
+`lw test --list` does.
+
 ### Progress notifications
 
 When fidget.nvim is installed, build/configure progress shows up
