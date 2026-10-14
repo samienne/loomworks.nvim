@@ -16,9 +16,11 @@ M.RESULTS_REL = ".loomworks/results"
 
 --- Summarise parsed results.
 --- @param results table[]|nil gtest.parse_xml_results output
---- @return { total: integer, failed: integer, errored: integer, skipped: integer, failed_ids: string[] }
+--- `skipped` excludes `disabled` (a disabled test is skipped too, but counted
+--- apart); `passed` is what is left.
+--- @return { total: integer, passed: integer, failed: integer, errored: integer, skipped: integer, disabled: integer, failed_ids: string[] }
 function M.count(results)
-    local c = { total = 0, failed = 0, errored = 0, skipped = 0, failed_ids = {} }
+    local c = { total = 0, passed = 0, failed = 0, errored = 0, skipped = 0, disabled = 0, failed_ids = {} }
     for _, r in ipairs(results or {}) do
         c.total = c.total + 1
         if r.status == "failed" then
@@ -27,11 +29,26 @@ function M.count(results)
         elseif r.status == "errored" then
             c.errored = c.errored + 1
             c.failed_ids[#c.failed_ids + 1] = (r.test_id or "?"):gsub("^test:", "")
+        elseif r.status == "skipped" and r.disabled then
+            c.disabled = c.disabled + 1
         elseif r.status == "skipped" then
             c.skipped = c.skipped + 1
+        else
+            c.passed = c.passed + 1
         end
     end
     return c
+end
+
+--- The not-passed, not-failed counts for a summary line, e.g.
+--- ", 2 skipped, 1 disabled" ("" when there are none).
+--- @param c table M.count output
+--- @return string
+function M.not_run_suffix(c)
+    local s = ""
+    if c.skipped > 0 then s = s .. ", " .. c.skipped .. " skipped" end
+    if c.disabled > 0 then s = s .. ", " .. c.disabled .. " disabled" end
+    return s
 end
 
 --- Judge an executable's outcome (spec §18.6).
@@ -72,7 +89,7 @@ function M.junit_xml(name, results)
     end
     local out = { '<?xml version="1.0" encoding="UTF-8"?>',
         string.format('<testsuites name="%s" tests="%d" failures="%d" errors="%d" skipped="%d">',
-            xml_escape(name), c.total, c.failed, c.errored, c.skipped) }
+            xml_escape(name), c.total, c.failed, c.errored, c.skipped + c.disabled) }
     for _, cls in ipairs(order) do
         local cases = by_class[cls]
         local f, e, sk = 0, 0, 0

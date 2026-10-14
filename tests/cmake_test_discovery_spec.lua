@@ -343,6 +343,102 @@ describe("gtest helper", function()
             end)
         end)
 
+        it("gtest native XML: a DISABLED test is skipped+disabled, a GTEST_SKIP is skipped (never passed)", function()
+            -- Real gtest output shapes (CRLF as written on Windows): a disabled
+            -- test is a self-closing testcase with status="notrun"
+            -- result="suppressed"; GTEST_SKIP has result="skipped" and, from
+            -- gtest 1.11, a <skipped> child (1.10 wrote an empty body).
+            local tmp = vim.fn.tempname() .. ".xml"
+            local f = io.open(tmp, "wb")
+            f:write(table.concat({
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<testsuites tests="5" failures="0" disabled="1" errors="0">',
+                '  <testsuite name="S" tests="5" failures="0" disabled="1" skipped="3" errors="0">',
+                '    <testcase name="ok" file="a.cpp" line="1" status="run" result="completed" time="0." classname="S" />',
+                '    <testcase name="DISABLED_off" file="a.cpp" line="2" status="notrun" result="suppressed" time="0." classname="S" />',
+                '    <testcase name="skip_new" file="a.cpp" line="3" status="run" result="skipped" time="0." classname="S">',
+                '      <skipped message="a.cpp:3&#x0A;why"><![CDATA[a.cpp:3',
+                'why]]></skipped>',
+                '    </testcase>',
+                '    <testcase name="skip_old" file="a.cpp" line="4" status="run" result="skipped" time="0." classname="S">',
+                '    </testcase>',
+                '    <testcase name="skip_inline" status="run" result="skipped" time="0." classname="S"></testcase>',
+                '  </testsuite>',
+                '</testsuites>',
+            }, "\r\n"))
+            f:close()
+            local results = gtest.parse_xml_results(tmp)
+            os.remove(tmp)
+            local by = {}
+            for _, r in ipairs(results) do by[r.test_id] = r end
+            assert.equals("passed", by["test:S.ok"].status)
+            assert.is_nil(by["test:S.ok"].disabled)
+            assert.equals("skipped", by["test:S.DISABLED_off"].status)
+            assert.is_true(by["test:S.DISABLED_off"].disabled)
+            for _, id in ipairs({ "test:S.skip_new", "test:S.skip_old", "test:S.skip_inline" }) do
+                assert.equals("skipped", by[id].status, id)
+                assert.is_nil(by[id].disabled, id)
+            end
+            local c = require("loomworks.remote.test_run").count(results)
+            assert.same({ 5, 3, 1 }, { c.total, c.skipped, c.disabled })
+        end)
+
+        it("ctest JUnit: a notrun test is skipped, and disabled only when gtest suppressed it", function()
+            -- ctest --output-junit writes status="notrun" for every NOT_RUN
+            -- test (SKIP_RETURN_CODE, DISABLED property, missing executable);
+            -- only gtest's result="suppressed" marks a DISABLED_ test.
+            local tmp = vim.fn.tempname() .. ".xml"
+            local f = io.open(tmp, "wb")
+            f:write(table.concat({
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<testsuite name="Linux" tests="3" failures="0" disabled="0" skipped="2" time="0.1">',
+                '    <testcase name="ok" classname="ok" time="0.1" status="run">',
+                '        <system-out>fine</system-out>',
+                '    </testcase>',
+                '    <testcase name="skip_rc" classname="skip_rc" time="0" status="notrun">',
+                '        <skipped message="SKIP_RETURN_CODE=77"/>',
+                '        <system-out>skipping</system-out>',
+                '    </testcase>',
+                '    <testcase name="noexe" classname="noexe" time="0" status="notrun"/>',
+                '</testsuite>',
+            }, "\n"))
+            f:close()
+            local results = gtest.parse_xml_results(tmp)
+            os.remove(tmp)
+            local by = {}
+            for _, r in ipairs(results) do by[r.test_id] = r end
+            assert.equals("passed", by["test:ok.ok"].status)
+            for _, id in ipairs({ "test:skip_rc.skip_rc", "test:noexe.noexe" }) do
+                assert.equals("skipped", by[id].status, id)
+                assert.is_nil(by[id].disabled, id)
+            end
+        end)
+
+        it("a failure, skip or error inside a one-line testcase is not counted as passed", function()
+            local tmp = vim.fn.tempname() .. ".xml"
+            local f = io.open(tmp, "wb")
+            f:write(table.concat({
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<testsuite name="S" tests="4">',
+                '<testcase name="ok" classname="S" time="0.5"></testcase>',
+                '<testcase name="bad" classname="S" time="0.1"><failure message="a.cpp:7&#x0A;boom">a.cpp:7 boom</failure></testcase>',
+                '<testcase name="sk" classname="S"><skipped/></testcase>',
+                '<testcase name="err" classname="S"><error message="crash">crash</error></testcase>',
+                '</testsuite>',
+            }, "\n"))
+            f:close()
+            local results = gtest.parse_xml_results(tmp)
+            os.remove(tmp)
+            local by = {}
+            for _, r in ipairs(results) do by[r.test_id] = r end
+            assert.equals("passed", by["test:S.ok"].status)
+            assert.equals("failed", by["test:S.bad"].status)
+            assert.equals("a.cpp:7 boom", by["test:S.bad"].message)
+            assert.equals("skipped", by["test:S.sk"].status)
+            assert.equals("errored", by["test:S.err"].status)
+            assert.equals(100, by["test:S.bad"].duration)
+        end)
+
         it("should return nil for missing file", function()
             local results = gtest.parse_xml_results("/nonexistent/path.xml")
             assert.is_nil(results)
