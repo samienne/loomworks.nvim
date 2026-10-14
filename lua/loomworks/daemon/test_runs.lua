@@ -420,7 +420,20 @@ local function accept(service, ctx, kind)
     ctx.task, ctx.ws, ctx.profile, ctx.units = task, ws, profile, units
     ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile.key,
         pid = service.server.pid, notes = ctx.notes })
-    local phase = M.phase(service, ctx, store, { recs = recs, covered = covered, idx = idx }, kind)
+    -- The task is accepted: from here a throw before the runner has the run
+    -- (which `ctx.run` would cancel) ends the task itself.
+    local pok, phase = pcall(M.phase, service, ctx, store, { recs = recs, covered = covered, idx = idx }, kind)
+    if not pok then
+        service.server:log("internal error in a test run: %s", tostring(phase))
+        -- (A `done` frame needs the task's `start` before it.)
+        local meta_units = {}
+        for _, u in ipairs(covered) do
+            meta_units[#meta_units + 1] = { project = u.project, configuration = u.configuration }
+        end
+        task:start({ name = profile.key, kind = kind, profile = profile.key, units = meta_units })
+        task:done(1, "internal error: " .. tostring(phase))
+        return
+    end
     -- The run is this request's before any of its work: with free
     -- directories, nothing to discover and no build, everything up to the
     -- steps' commands runs inside this segment, and a throw there must find
@@ -520,12 +533,22 @@ function M.phase(service, ctx, store, sel, kind)
 
     -- The run starts: its nodes, as the tree has them now, are queued (the
     -- view's `update`); `plan` adjusts that to the steps it resolves.
+    -- (A throw here has no run to end it yet: the marks are dropped before
+    -- it goes on to `accept`, which ends the task.)
     if kind == "test" then
-        local heads = sel.recs or M.run_all_recs(sel.idx, sel.covered)
-        for _, h in ipairs(heads) do
-            for _, n in ipairs(test_store.subtree(h)) do set_live(n, "queued") end
+        local ok, err = pcall(function()
+            local heads = sel.recs or M.run_all_recs(sel.idx, sel.covered)
+            for _, h in ipairs(heads) do
+                for _, n in ipairs(test_store.subtree(h)) do set_live(n, "queued") end
+            end
+            store:commit()
+        end)
+        if not ok then
+            for key in pairs(mine) do store.live[key] = nil end
+            pcall(store.commit, store)
+            batch.close()
+            error(err, 0)
         end
-        store:commit()
     end
 
     --- The discovery failures, as the task's error (nil: none).

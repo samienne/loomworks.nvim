@@ -797,16 +797,20 @@ function Service:_accept(ctx)
             force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true,
             jobs = a.jobs }
     end
-    local run = runner.run(self, {
+    -- The run is this request's before any of its work: the runner takes the
+    -- locks and plans inside this segment, and a throw there must find
+    -- `ctx.run` to cancel (its end frees the locks and sends `done`).
+    runner.run(self, {
         op = ctx.op, task = task, ws = ws, profile = profile, units = units, env = ctx.env, command = ctx.command,
         args = args, clean_steps = clean_steps, test_pre = test_pre,
+        on_run = function(run)
+            run.ctx = ctx
+            ctx.run = run
+            self.runs[run] = true
+        end,
     })
     self.server:log("%s %s (task %s) accepted", ctx.op, units and build_run.units_label(units) or profile.key,
         task.id)
-    if run and not run.finished then
-        run.ctx = ctx
-        self.runs[run] = true
-    end
 end
 
 --- The model segment that answers a `reset` (see the header): plan before

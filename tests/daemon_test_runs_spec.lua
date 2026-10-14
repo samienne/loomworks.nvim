@@ -475,22 +475,46 @@ describe("Tests/1 runs in the daemon (§19.15 Tests, §19.20 Tests/1)", function
         h.expect({ kind = "task", task_id = { ["$var"] = "next" }, phase = "done", exit_code = 0 }, 60000)
     end)
 
+    it("a throw after the accepted reply, before the run exists, ends its task and leaves no node queued", function()
+        h = open(root, key)
+        h.op(1, "configure")
+        local ids = h.discover()
+        local store = test_store.of(h.srv.service)
+        -- The run's first commit (its nodes marked queued) throws: after the
+        -- `accepted` reply, before the runner has a run to cancel.
+        store.commit = function(self)
+            store.commit = nil
+            getmetatable(self).__index.commit(self)
+            error("commit exploded")
+        end
+        h.send(call(2, TESTS.object, TESTS.iface, "run_cases", { select = { { id = ids["Math.Add"] } }, no_build = true }))
+        h.ok(2, { outcome = "accepted", task_id = { ["$bind"] = "boom" } })
+        local ok, err = pcall(h.expect, { kind = "task", task_id = { ["$var"] = "boom" }, phase = "done",
+            exit_code = 1, error = { ["$pattern"] = "commit exploded" } }, 15000)
+        store.commit = nil
+        assert.is_true(ok, "the task never ended: " .. tostring(err))
+        assert.is_nil(next(store.live), "the ended task left its nodes queued")
+        for _, c in pairs(store.committed) do assert.are_not.equal("queued", c.status) end
+        assert.is_nil(next(store.held))
+    end)
+
     it("run-all runs only the units it covered at acceptance, not one that became runnable since", function()
         h = open(root, key)
         h.op(1, "configure")
         local _, unit = h.discover()
-        -- The unit is not runnable when the run decides what it covers (and
-        -- runnable for every other caller, so its tree still has nodes).
-        local orig = unit.test_availability
-        unit.test_availability = function(self)
-            local src = debug.getinfo(2, "S").source
-            if src:find("test_runs", 1, true) then return "not configured" end
-            return orig(self)
+        local store = test_store.of(h.srv.service)
+        -- The unit is not runnable when the run is accepted, and runnable
+        -- again from the run's first commit (its queued marks) on: when the
+        -- run plans, the tree has the unit's nodes again.
+        unit.test_availability = function() return "not configured" end
+        store.commit = function(self)
+            store.commit, unit.test_availability = nil, nil
+            return getmetatable(self).__index.commit(self)
         end
         h.send(call(2, TESTS.object, TESTS.iface, "run_cases", { no_build = true }))
         h.ok(2, { outcome = "accepted", task_id = { ["$bind"] = "all" } })
         local ok, err = pcall(h.expect, { kind = "task", task_id = { ["$var"] = "all" }, phase = "done" }, 30000)
-        unit.test_availability = nil
+        store.commit, unit.test_availability = nil, nil
         assert.is_true(ok, tostring(err))
         local text = h.text(h.s.vars.all)
         assert.is_nil(text:find("Math.Add", 1, true), text)
