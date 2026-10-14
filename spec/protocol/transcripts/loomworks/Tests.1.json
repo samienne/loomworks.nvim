@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Tests",
   "version": 1,
-  "description": "Object /tests (spec 19.15, 19.20): run as a task-streamed method with its structured results.",
+  "description": "Object /tests (spec 19.15, 19.20): run as a task-streamed method with its structured results; the editor's run_cases, prepare_debug, collect and result: their refusals and argument checks (their runs over discovered tests: tests/daemon_test_runs_spec.lua).",
   "cases": [
     {
       "name": "run builds, finds no tests and ends with the structured results",
@@ -104,6 +104,61 @@
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$pattern": "^no active profile" }, "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "run_cases and prepare_debug refuse a node id that names no test before acceptance",
+      "fixture": "shell",
+      "allow": [{"kind": "model_change"}],
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {"select": [{"id": "nope"}]}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$pattern": "^no such test"}, "exit_code": 1}}},
+        {"send": {"kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "prepare_debug", "args": {"select": {"id": "nope"}, "no_build": true}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 2, "result": {"outcome": "refused", "message": {"$pattern": "^no such test"}, "exit_code": 1}}},
+        {"send": {"kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "result", "args": {"id": "nope"}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 3, "result": {"outcome": "refused", "message": {"$pattern": "^no such test"}, "exit_code": 1}}}
+      ]
+    },
+    {
+      "name": "run-all without an active profile is refused",
+      "fixture": "shell",
+      "allow": [{"kind": "model_change"}],
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$pattern": "^no active profile"}, "exit_code": 1}}}
+      ]
+    },
+    {
+      "name": "collect refuses a token this connection does not hold",
+      "fixture": "shell",
+      "allow": [{"kind": "model_change"}],
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "collect", "args": {"prepared": "pd-0-1"}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$type": "string"}, "exit_code": 1}}}
+      ]
+    },
+    {
+      "name": "malformed selections are invalid arguments",
+      "fixture": "shell",
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {"select": []}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 1, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "prepare_debug", "args": {"select": [{"id": "x"}]}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 2, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "prepare_debug", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 3, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 4, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {"select": [{"key": "x"}]}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 4, "error": {"code": "invalid_args"}}},
+        {"send": {"kind": "call", "req_id": 5, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "collect", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "error", "req_id": 5, "error": {"code": "invalid_args"}}}
+      ]
+    },
+    {
+      "name": "the results signal is subscribable",
+      "fixture": "shell",
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": {"object": "/tests", "iface": "loomworks.Tests", "v": 1, "signals": ["results"]}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"sub_id": {"$bind": "sub"}}}}
       ]
     }
   ]

@@ -2,7 +2,7 @@
   "interface": "loomworks.Tests",
   "version": 1,
   "status": "draft",
-  "description": "Object /tests (spec 19.15, 19.20): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Step 5m (spec 19.15 Tests, 19.20 Tests/1) adds the editor's discover, run_cases, prepare_debug (task-streamed), collect and result with their handlers (parts B1, B2); its results signal, which needs no handler, is declared here from part 0.",
+  "description": "Object /tests (spec 19.15, 19.20): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Step 5m (spec 19.15 Tests, 19.20 Tests/1) adds the editor's discover (part B1), run_cases, prepare_debug (task-streamed), collect and result (part B2) with their handlers; its results signal, which needs no handler, is declared here from part 0.",
   "methods": {
     "run": {
       "description": "Build the profile, then run its registered tests (lw test [<profile>] [--junit <file>] [-- <args>]).",
@@ -142,6 +142,268 @@
       },
       "needs_env": true,
       "mutates": true
+    },
+    "run_cases": {
+      "description": "Run test nodes of the active profile (spec 19.15 Tests): the build-directory locks of the selection's units (waiting behind another Tests/1 task of the same directory, failing fast against another process), unless no_build the build of the selection's targets, then one test step per program under its structured harness, each with its own results file, every step even after one failed. Its per-case progress is the results signal; its end the view update. A stale or non-runnable node is refused before acceptance.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "select": {
+            "description": "The nodes to run (runnable view nodes): a target node runs its program whole, a suite or test node with a filter. Absent: every runnable node of every discovered unit of the profile.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "loomworks.Common/1#/$defs/TestNodeRef"
+            }
+          },
+          "no_build": {
+            "description": "Skip the build.",
+            "type": "boolean"
+          },
+          "extra": {
+            "description": "Arguments appended to every test step's program.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The run's end: every case it reported, in report order, and their counts (a program whose exit status is its only result is one case).",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "$ref": "loomworks.Common/1#/$defs/TestCaseResult"
+              }
+            },
+            "counts": {
+              "type": "object",
+              "required": [
+                "passed",
+                "failed",
+                "skipped",
+                "errored"
+              ],
+              "properties": {
+                "passed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "errored": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "prepare_debug": {
+      "description": "Prepare debugging one test node (spec 19.15 Tests, 19.16 Tests): the locks and build of a run_cases of that node (released when the task ends), then the debug spec of the test step run_cases would have run (its program, arguments, filter and results option, working directory and environment) with the debug languages and adapters resolved, and a prepared token for collect. The client runs the program under its debugger.",
+      "params": {
+        "type": "object",
+        "required": [
+          "select"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "select": {
+            "description": "The one runnable node (an object, not an array).",
+            "$ref": "loomworks.Common/1#/$defs/TestNodeRef"
+          },
+          "no_build": {
+            "description": "Skip the build.",
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The preparation's end: on success the debug spec and the prepared token.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "debug": {
+              "$ref": "loomworks.Common/1#/$defs/DebugSpec"
+            },
+            "prepared": {
+              "description": "Opaque; the calling connection's, for collect.",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "collect": {
+      "description": "After a prepared test debug session: parse the results file its program wrote, record its cases as the nodes' last results (the results signal and the view update follow), remove the file and drop the token. Refused for a token this connection does not hold (already collected, or of a closed connection).",
+      "params": {
+        "type": "object",
+        "required": [
+          "prepared"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "prepared": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome",
+              "cases"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "ok"
+              },
+              "cases": {
+                "description": "The cases recorded (empty when the program wrote no results).",
+                "type": "array",
+                "items": {
+                  "$ref": "loomworks.Common/1#/$defs/TestCaseResult"
+                }
+              }
+            }
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "result": {
+      "description": "A node's last result in this daemon session with its output and error locations (spec 19.15 Tests). A node with no last result answers only id and an empty errors; a stale id is refused.",
+      "params": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "loomworks.Common/1#/$defs/Id"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "errors"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "loomworks.Common/1#/$defs/Id"
+              },
+              "status": {
+                "$ref": "loomworks.Common/1#/$defs/TestStatus"
+              },
+              "duration": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "message": {
+                "description": "The first failure line.",
+                "type": "string"
+              },
+              "output": {
+                "description": "Its captured output: at most its last 256 KiB.",
+                "type": "string"
+              },
+              "truncated": {
+                "description": "output was cut to its end.",
+                "type": "boolean"
+              },
+              "errors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "file": {
+                      "description": "Absolute, /-separated.",
+                      "type": "string"
+                    },
+                    "line": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true
     }
   },
   "signals": {

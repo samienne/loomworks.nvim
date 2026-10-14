@@ -8,8 +8,11 @@
 --- debug launch (`Launch/1.prepare_debug`, §19.15 "Debug"): the same steps,
 --- ending with the debug spec for the client's debugger instead — either
 --- preparation with `build_scope = "target"` building the launch flow's
---- units instead of the profile (§19.15 "Build scope of a launch") — or a
---- clean (`lw clean`,
+--- units instead of the profile (§19.15 "Build scope of a launch") — or an
+--- editor test run or test debug preparation (`op = "cases"`, `Tests/1`,
+--- §19.15 "Tests"): the units' locks after the Tests/1 queue (`ctx.cases.wait`),
+--- the build `ctx.cases.plan()` plans, then `ctx.cases.after_build`
+--- (loomworks.daemon.test_runs) — or a clean (`lw clean`,
 --- §19.15 "Clean"): the same locks, then each project's clean step — a module
 --- clean spawned like a build step, or a core-performed wipe
 --- (loomworks.build_run.wipe_step: the in-process build-directory deletion,
@@ -218,7 +221,7 @@ end
 
 --- @class loomworks.daemon.BuildRun
 --- @field task loomworks.daemon.Task
---- @field op "build"|"test"|"run"|"debug"|"clean"|"configure" the operation
+--- @field op "build"|"test"|"run"|"debug"|"clean"|"configure"|"cases" the operation
 --- @field cancelled boolean
 --- @field cancel_reason string|nil
 --- @field cancel_code integer|nil
@@ -256,16 +259,25 @@ end
 --- locks, gates and lines restricted to them, the lines naming the units
 --- (`<project>/<configuration>`), `meta.profile` absent.
 --- @param svc table the build service (with_model, host)
---- @param ctx table the request: { op?, env, args, command, task, ws, profile?, units?, clean_steps? }
+--- @param ctx table the request: { op?, env, args, command, task, ws, profile?, units?, clean_steps?, cases?,
+---   on_run? } — on_run(run) is called with the run before any of its work (a caller whose request is
+---   another table registers the run there, so a throw while starting cancels it)
+---   cases (op "cases"): { kind = "test"|"debug" (meta.kind), plan() → steps|nil, err; wait(dirs, fn, api);
+---   after_build(api); on_finish(code, err) } — `api` gives the run's task, ws, ctx, finish, stopped,
+---   current, spawn(step, on_exit, on_progress?, on_output?), ended_by_cancel and release_all
 --- @return loomworks.daemon.BuildRun
 function M.run(svc, ctx)
     local task, ws, profile, args = ctx.task, ctx.ws, ctx.profile, ctx.args or {}
     local units_scope = ctx.units
     local op = (ctx.op == "test" or ctx.op == "run" or ctx.op == "debug" or ctx.op == "clean"
-        or ctx.op == "configure") and ctx.op or "build"
+        or ctx.op == "configure" or ctx.op == "cases") and ctx.op or "build"
+    -- An editor test run or test debug preparation (`Tests/1.run_cases` /
+    -- `prepare_debug`, §19.15 "Tests"): `ctx.cases` plans its build and
+    -- runs what follows it (loomworks.daemon.test_runs).
+    local cases = op == "cases" and ctx.cases or nil
     -- What the lines name: the profile's key, or the units' names.
-    local label = units_scope and build_run.units_label(units_scope) or profile.key
-    local scope_line = units_scope and label or ("profile: " .. label)
+    local label = (units_scope and #units_scope > 0) and build_run.units_label(units_scope) or profile.key
+    local scope_line = (units_scope and #units_scope > 0) and label or ("profile: " .. label)
     local testing = op == "test"
     -- A debug launch is prepared as a run is (§19.15 "Debug").
     local debugging = op == "debug"
@@ -275,6 +287,7 @@ function M.run(svc, ctx)
     local build_lock = require("loomworks.build_lock")
     local run = { task = task, op = op, cancelled = false, held = {} }
     ctx.run = run
+    if ctx.on_run then ctx.on_run(run) end
 
     local function release_all()
         for _, h in ipairs(run.held) do build_lock.release(h) end
@@ -290,6 +303,7 @@ function M.run(svc, ctx)
         if run.finished then return end
         run.finished = true
         release_all()
+        if cases and cases.on_finish then pcall(cases.on_finish, code, err) end
         task:done(code, err, fields)
         if svc.on_run_done then svc:on_run_done(run) end
     end
@@ -333,7 +347,7 @@ function M.run(svc, ctx)
     --- `on_progress(fraction)`: the step's own progress, from its module's
     --- progress parser (`step.progress_tool`, `[N/M]` for ninja) over its
     --- standard output lines — as the editor's task path reads it.
-    local function spawn(step, on_exit, on_progress)
+    local function spawn(step, on_exit, on_progress, on_output)
         local spec, herr = build_run.spawn_spec(step, ws.root)
         if not spec then
             task:line("err", "lw: " .. tostring(herr) .. "\n")
@@ -358,6 +372,7 @@ function M.run(svc, ctx)
         child.obj = M.spawn({ cmd = spec.cmd, cwd = spec.cwd, env = env }, {
             output = function(stream, text)
                 task:output(stream, text)
+                if on_output then pcall(on_output, stream, text) end
                 if parse and stream == "stdout" and type(text) == "string" then pcall(scan, text) end
             end,
             done = function(code, signal)
@@ -390,7 +405,7 @@ function M.run(svc, ctx)
     local function progress(f)
         if band then f = band[1] + f * band[2] end
         peak = math.max(peak, f)
-        task:progress(testing and peak / 2 or peak)
+        task:progress((testing or cases) and peak / 2 or peak)
     end
 
     -- ---- the test phase (op == "test"), after the build steps -------------
@@ -599,6 +614,7 @@ function M.run(svc, ctx)
 
     -- ---- the build steps ---------------------------------------------------
     local steps, i = nil, 0
+    local case_api
     local next_step
     -- (Set by a target-scoped launch build: what follows a unit's steps.)
     local after_steps
@@ -627,6 +643,7 @@ function M.run(svc, ctx)
         i = i + 1
         if i > #steps then
             if testing then return test_phase() end
+            if cases then return cases.after_build(case_api) end
             release_all()
             -- A unit of a target-scoped launch build: on to the next phase.
             if after_steps then return after_steps() end
@@ -742,7 +759,8 @@ function M.run(svc, ctx)
             units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
         end
     end
-    task:start({ name = label, kind = op, profile = profile and profile.key or nil, units = units })
+    task:start({ name = label, kind = cases and cases.kind or op, profile = profile and profile.key or nil,
+        units = units })
     -- A test run's pre-build plan: the service's (its notes and refusal were
     -- the reply's, before acceptance), else checked here.
     if testing and not ctx.test_pre then
@@ -769,57 +787,68 @@ function M.run(svc, ctx)
         if not tok then finish(1, omsg or "clean refused: the workspace operation lock is held"); return run end
         run.op_tok = tok
     end
-    -- Locks first, exactly like the in-process with_build_dir_locks: every
-    -- build directory, canonical order, fail-fast. A test run holds them
-    -- across the build AND the test runs (a native runner may rebuild).
-    -- (A configure's locks are exclusive, as a clean's: operation `configure`.)
-    local lok, lmsg = take_locks(run, ws, task,
-        units_scope and build_run.unit_build_dirs(units_scope) or build_run.profile_build_dirs(profile),
-        (op == "clean" or op == "configure") and op or "build", ctx.command or ("lw " .. op))
-    if not lok then finish(1, lmsg); return run end
+    -- What an editor test run's own phase (after its build) runs with.
+    case_api = { run = run, task = task, ws = ws, ctx = ctx, finish = finish, stopped = stopped, current = current,
+        spawn = spawn, ended_by_cancel = ended_by_cancel, release_all = release_all }
+    local dirs = units_scope and build_run.unit_build_dirs(units_scope) or build_run.profile_build_dirs(profile)
+    local function locked()
+        -- Locks first, exactly like the in-process with_build_dir_locks: every
+        -- build directory, canonical order, fail-fast. A test run holds them
+        -- across the build AND the test runs (a native runner may rebuild).
+        -- (A configure's locks are exclusive, as a clean's: operation `configure`.)
+        local lok, lmsg = take_locks(run, ws, task, dirs,
+            (op == "clean" or op == "configure") and op or "build", ctx.command or ("lw " .. op))
+        if not lok then finish(1, lmsg); return run end
 
-    if op == "clean" then
-        task:line("out", "cleaning " .. scope_line)
-        next_clean()
-        return run
-    end
-
-    local plan_err
-    if testing then
-        -- The for-test build: a unit whose runner rebuilds itself is not
-        -- built separately unless it has saved test targets (`keep`); the
-        -- arguments after `--` are the test steps'.
-        steps, plan_err = build_run.plan(profile, { for_test = { keep = ctx.test_pre.keep } })
-    else
-        steps, plan_err = build_run.plan(profile, {
-            -- (A run's `extra` are the program's arguments, not the build's.)
-            extra_args = not running and args.extra or nil,
-            build_targets = args.targets,
-            reconfigure = args.reconfigure,
-            configure_only = op == "configure" or nil,
-            jobs = args.jobs,
-            units = units_scope,
-        })
-    end
-    if not steps then finish(1, plan_err); return run end
-    if #steps == 0 then
-        if testing then test_phase(); return run end
-        -- Nothing to build: a run goes on with what is there (as in-process).
-        if running then release_all(); prepare(); return run end
-        -- No configure step (a module without one): nothing to do, as the
-        -- editor's configure action does nothing for it.
-        if op == "configure" then
-            release_all()
-            task:line("out", "nothing to configure for " .. (units_scope and label or ("profile '" .. label .. "'")))
-            finish(0); return run
+        if op == "clean" then
+            task:line("out", "cleaning " .. scope_line)
+            next_clean()
+            return run
         end
-        finish(1, build_run.nothing_to_build_message(profile, units_scope and label or nil)); return run
+
+        local plan_err
+        if cases then
+            steps, plan_err = cases.plan()
+        elseif testing then
+            -- The for-test build: a unit whose runner rebuilds itself is not
+            -- built separately unless it has saved test targets (`keep`); the
+            -- arguments after `--` are the test steps'.
+            steps, plan_err = build_run.plan(profile, { for_test = { keep = ctx.test_pre.keep } })
+        else
+            steps, plan_err = build_run.plan(profile, {
+                -- (A run's `extra` are the program's arguments, not the build's.)
+                extra_args = not running and args.extra or nil,
+                build_targets = args.targets,
+                reconfigure = args.reconfigure,
+                configure_only = op == "configure" or nil,
+                jobs = args.jobs,
+                units = units_scope,
+            })
+        end
+        if not steps then finish(1, plan_err); return run end
+        if #steps == 0 then
+            if testing then test_phase(); return run end
+            if cases then cases.after_build(case_api); return run end
+            -- Nothing to build: a run goes on with what is there (as in-process).
+            if running then release_all(); prepare(); return run end
+            -- No configure step (a module without one): nothing to do, as the
+            -- editor's configure action does nothing for it.
+            if op == "configure" then
+                release_all()
+                task:line("out", "nothing to configure for " .. (units_scope and label or ("profile '" .. label .. "'")))
+                finish(0); return run
+            end
+            finish(1, build_run.nothing_to_build_message(profile, units_scope and label or nil)); return run
+        end
+        task:line(out_stream, (op == "configure" and "configuring " or "building ") .. scope_line)
+        -- The same trust notice as the in-process build (spec §17.10, §19.15).
+        local tn = build_run.trust_notice(ws, profile, units_scope)
+        if tn then task:line("note", tn) end
+        next_step()
     end
-    task:line(out_stream, (op == "configure" and "configuring " or "building ") .. scope_line)
-    -- The same trust notice as the in-process build (spec §17.10, §19.15).
-    local tn = build_run.trust_notice(ws, profile, units_scope)
-    if tn then task:line("note", tn) end
-    next_step()
+    -- An editor test run waits for the Tests/1 tasks of its directories
+    -- (FIFO, §19.15 "Tests") before it takes their locks.
+    if cases then cases.wait(dirs, locked, case_api) else locked() end
     return run
 end
 

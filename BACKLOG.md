@@ -61,6 +61,18 @@ request carries the answer). A standalone `lw configure` command was
 considered and not added: configuring stays a step of `lw build`
 (`--reconfigure` forces it).
 
+## Daemon Tests/1: a saved launch entry's deploy is synchronous
+
+In the daemon's editor test runs (`Tests/1.run_cases` / `prepare_debug`,
+step 5m B2, `daemon/test_runs.lua`), a saved test entry of kind `launch`
+deploys through its command's `prepare` hook (`saved_targets.lua`,
+`LaunchTarget:deploy_sync`), called synchronously before the step's program
+is spawned. While it copies, the daemon's event loop is blocked: other
+clients wait and a cancel takes effect only after the copies. Make it async
+like the `lw test` / launch deploy (`deploy_async`, the runner's
+`test_host.deploy`: each copy on the event loop, stopping between copies on a
+cancel), then remove this entry.
+
 ## Daemon follow-ups (after step 5e)
 
 - `lw daemon stop` on a daemon that is already retiring still triggers the

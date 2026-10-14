@@ -282,7 +282,8 @@ end
 --- steps are NOT run here: `prepare` runs them when the step executes (the
 --- runner calls it first; `false, err` fails the step, never drops it).
 --- @param test_id string
---- @param opts? { gtest_filter?: string }
+--- @param opts? { gtest_filter?: string, output_path?: string } `output_path`: the results file (a
+---   per-run path, spec §19.15 "Tests"); default a fixed one in the build directory
 --- @return table|nil { cmd, env, cwd, output_path, prepare?: fun(): boolean, string|nil, test_id: string }
 function SavedTargetsTestUnit:test_command(test_id, opts)
     opts = opts or {}
@@ -310,10 +311,13 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     local env = spec.env and vim.deepcopy(spec.env) or {}
     local output_path
     if top_e.framework == "gtest" then
-        local build_dir = self._config_unit:build_dir()
-        local dir = (build_dir or uv.os_tmpdir():gsub("\\", "/")) .. "/.nvim"
-        if not uv.fs_stat(dir) then uv.fs_mkdir(dir, 493) end
-        output_path = dir .. "/saved_" .. (top_e.id:gsub("[^%w%._%-]", "_")) .. "_results.xml"
+        output_path = opts.output_path
+        if type(output_path) ~= "string" or output_path == "" then
+            local build_dir = self._config_unit:build_dir()
+            local dir = (build_dir or uv.os_tmpdir():gsub("\\", "/")) .. "/.nvim"
+            if not uv.fs_stat(dir) then uv.fs_mkdir(dir, 493) end
+            output_path = dir .. "/saved_" .. (top_e.id:gsub("[^%w%._%-]", "_")) .. "_results.xml"
+        end
         self._suffix_by_output[output_path] = child_suffix(top_e)
         cmd[#cmd + 1] = "--gtest_output=xml:" .. output_path
         if e.parent then

@@ -14,7 +14,7 @@ local L = require("tests.lock_helpers")
 local trust = require("loomworks.trust")
 local build_lock = require("loomworks.build_lock")
 local test_discover = require("loomworks.daemon.test_discover")
-local tests_view = require("loomworks.daemon.tests_view")
+local test_store = require("loomworks.daemon.test_store")
 
 local runner = dofile(H.REPO .. "/scripts/conformance.lua")
 
@@ -156,6 +156,79 @@ describe("Tests/1.discover in the workspace daemon (§19.15 Tests)", function()
         assert.equals(7, #v.units[1].nodes)
     end)
 
+    it("waits in the Tests/1 queue behind another test task of the directory", function()
+        s = session()
+        s.build()
+        local store = test_store.of(s.service())
+        local e = store:acquire_dirs({ s.unit():build_dir() }, function() end)
+        assert.is_true(e.granted)
+        local task = s.discover()
+        local note = s.wait(function(m) return m.kind == "task" and m.task_id == task and m.phase == "line" end)
+        assert.equals("note", note.stream)
+        assert.truthy(note.text:find("^waiting for another test task"), note.text)
+        vim.wait(300)
+        store:release(e)
+        local f, lines = s.done(task)
+        assert.same({ exit_code = 0, tests = 3, failed = 0 }, f.result)
+        assert.equals("out: ==> [discover] app/Debug", lines[1])
+        assert.is_nil(next(store.held), "the discovery still holds its directory")
+    end)
+
+    it("a unit whose probe never calls back is that unit's error after the hang guard", function()
+        s = session()
+        s.build()
+        local unit = s.unit()
+        local tus
+        unit.discover_tests_async = function(self, _, o)
+            tus = self:test_units()
+            for _, tu in ipairs(tus) do tu._system = o.system end
+        end
+        local saved = test_discover.PROBE_TIMEOUT_MS
+        test_discover.PROBE_TIMEOUT_MS = 300
+        local ok, err = pcall(function()
+            local f, lines = s.done(s.discover())
+            assert.same({ exit_code = 0, tests = 0, failed = 1 }, f.result)
+            assert.truthy(lines[2]:find("^err: app/Debug: test discovery timed out"), vim.inspect(lines))
+            assert.is_true(#tus > 0)
+            for _, tu in ipairs(tus) do assert.is_nil(tu._system, "the hung probe left _system set") end
+            local v = s.view()
+            assert.equals("error", v.units[1].state)
+            assert.is_nil(v.discovering)
+            assert.is_false(build_lock.held_by_me(unit:build_dir()), "the hung probe kept the lock")
+            assert.is_nil(next(test_store.of(s.service()).held))
+        end)
+        test_discover.PROBE_TIMEOUT_MS = saved
+        unit.discover_tests_async = nil
+        assert(ok, err)
+        -- The next discovery probes it normally.
+        local f = s.done(s.discover())
+        assert.same({ exit_code = 0, tests = 3, failed = 0 }, f.result)
+    end)
+
+    it("a probe that throws leaves no _system on the unit's TestUnits and the task goes on", function()
+        s = session()
+        s.build()
+        local unit = s.unit()
+        local tus
+        unit.discover_tests_async = function(self, _, o)
+            tus = self:test_units()
+            for _, tu in ipairs(tus) do tu._system = o.system end
+            error("boom")
+        end
+        local ok, err = pcall(function()
+            local f, lines = s.done(s.discover())
+            assert.same({ exit_code = 0, tests = 0, failed = 1 }, f.result)
+            assert.truthy(lines[2]:find("test discovery failed: .*boom"), vim.inspect(lines))
+            for _, tu in ipairs(tus) do assert.is_nil(tu._system, "the throw left _system set") end
+            local v = s.view()
+            assert.equals("error", v.units[1].state)
+            assert.is_nil(v.discovering)
+            assert.is_false(build_lock.held_by_me(unit:build_dir()))
+        end)
+        unit.discover_tests_async = nil
+        assert(ok, err)
+    end)
+
     it("marks the view stale when a run covering its unit ends or another process changed the unit", function()
         s = session()
         s.build()
@@ -163,12 +236,20 @@ describe("Tests/1.discover in the workspace daemon (§19.15 Tests)", function()
         assert.is_false(s.view().stale)
         -- A run that ended (even one that changed nothing in the cache).
         local svc = s.service()
-        tests_view.on_run_done(svc, { op = "clean", ctx = { units = { s.unit() } } })
+        test_store.on_run_done(svc, { op = "clean", ctx = { units = { s.unit() } } })
         assert.is_true(s.view().stale)
         s.done(s.discover())
         assert.is_false(s.view().stale)
         -- A launch preparation without a build marks nothing.
-        tests_view.on_run_done(svc, { op = "run", ctx = { units = { s.unit() }, args = { no_build = true } } })
+        test_store.on_run_done(svc, { op = "run", ctx = { units = { s.unit() }, args = { no_build = true } } })
+        assert.is_false(s.view().stale)
+        -- An editor test run (run_cases / prepare_debug) marks the units it
+        -- built; one with no_build marks nothing.
+        test_store.on_run_done(svc, { op = "cases", ctx = { units = { s.unit() }, args = { no_build = true } } })
+        assert.is_false(s.view().stale)
+        test_store.on_run_done(svc, { op = "cases", ctx = { units = { s.unit() }, args = {} } })
+        assert.is_true(s.view().stale)
+        s.done(s.discover())
         assert.is_false(s.view().stale)
         -- Another process's build, read through the cache.
         s.unit().last_built = tostring(s.unit().last_built) .. "+1"
@@ -182,21 +263,32 @@ describe("Tests/1.discover in the workspace daemon (§19.15 Tests)", function()
         s.build()
         s.done(s.discover())
         local svc = s.service()
+        local store = test_store.of(svc)
         local nodes = s.view().units[1].nodes
         local add, math_suite = nodes[3], nodes[2]
         assert.equals("Add", add.name)
-        local hit = assert(tests_view.find_node(svc, add.id))
+        local by_id = store:index(svc.ws).by_id
+        local hit = assert(by_id[add.id])
         assert.equals(s.unit(), hit.unit)
         assert.equals("Math.Add", hit.entry.name)
-        local suite = assert(tests_view.find_node(svc, math_suite.id))
+        local suite = assert(by_id[math_suite.id])
         assert.is_nil(suite.entry)
-        assert.equals("suite", suite.node.kind)
-        assert.is_nil(tests_view.find_node(svc, "nope"))
-        tests_view.set_result(svc, hit.unit, hit.key, { status = "failed", duration = 12.4, message = "boom" })
+        assert.equals("suite", suite.kind)
+        assert.is_nil(by_id["nope"])
+        store:record(hit.key, { status = "failed", duration = 12.4, message = "boom" })
         local n = s.view().units[1].nodes[3]
         assert.same({ "failed", 12, "boom" }, { n.status, n.duration, n.message })
         -- A re-discovery keeps the node's id and its last result.
         s.done(s.discover({ force = true }))
+        n = s.view().units[1].nodes[3]
+        assert.equals(add.id, n.id)
+        assert.equals("failed", n.status)
+        -- So does a reload of the workspace (new unit objects): its tree is
+        -- pending until the next discovery, which finds the same ids and
+        -- last results.
+        svc:_unload()
+        s.done(s.discover())
+        assert.are_not.equal(hit.unit, s.unit())
         n = s.view().units[1].nodes[3]
         assert.equals(add.id, n.id)
         assert.equals("failed", n.status)

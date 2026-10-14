@@ -875,7 +875,7 @@ function Service:on_run_done(run)
     if run.deleting then self:_update_busy() end
     -- The tests view: the units the run covered may no longer match their
     -- discovered trees (§19.13 "The tests view", `stale`).
-    pcall(require("loomworks.daemon.tests_view").on_run_done, self, run)
+    pcall(require("loomworks.daemon.test_store").on_run_done, self, run)
 end
 
 --- Is the daemon's own background work running (§19.11)? The loaded model's
@@ -942,6 +942,8 @@ end
 --- afterwards, never inside the callback.
 --- @param conn table
 function Service:on_conn_closed(conn)
+    -- Its prepared test debug sessions are dropped (§19.15 "Tests").
+    pcall(require("loomworks.daemon.test_runs").on_conn_closed, self, conn)
     local mine = {}
     for run in pairs(self.runs) do
         if run.ctx.conn == conn then mine[#mine + 1] = run end
@@ -972,6 +974,7 @@ function Service:on_stopping(reason)
     local events = require("loomworks.events")
     for ev, fn in pairs(self._lsp_listeners or {}) do events.off(ev, fn) end
     self._lsp_listeners = nil
+    pcall(require("loomworks.daemon.test_runs").on_stopping, self)
     for run in pairs(self.runs) do
         if not run.finished then
             run.cancel("the workspace daemon stopped (" .. tostring(reason) .. ")", 1)

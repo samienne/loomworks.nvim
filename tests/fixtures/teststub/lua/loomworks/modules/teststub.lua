@@ -19,10 +19,15 @@
 ---              and a cancel at a probe); a target whose name is listed in
 ---              `fail_probe` exits 1 (no cases). Cases are `gtest` entries
 ---              under the target.
----   runs       `nvim -l <fixture>/run.lua <tests.json> <xml> <target> [<filter>]`
----              prints gtest-format progress and writes a gtest XML results
----              file; `tests.json` `"results": { "<Suite.Case>": "failed" | "skipped" }`
----              chooses outcomes (default passed).
+---   runs       `nvim -l <fixture>/run.lua <tests.json> <target> --gtest_output=xml:<xml>`
+---              with `GTEST_FILTER` (a case: its name; a target: the
+---              caller's `gtest_filter`, else every case) — gtest's own
+---              results option and filter, so the daemon's runs combine and
+---              debug it as a gtest program — prints gtest-format progress
+---              and writes a gtest XML results file; `tests.json`
+---              `"results": { "<Suite.Case>": "failed" | "skipped" }` chooses
+---              outcomes (default passed), `"failures": { "<Suite.Case>":
+---              "<rel file>:<line>" }` a failed case's location.
 
 local shell = require("loomworks.modules.shell")
 
@@ -117,44 +122,45 @@ function TestUnit:_entry(id)
     return nil
 end
 
---- The run command of a target (all its cases, or those `filter` selects).
-local function run_cmd(self, target, filter)
+--- The run command of a target (all its cases, or those the gtest filter
+--- `filter` selects), writing its results to `xml` (default
+--- `<build dir>/teststub-<target>.xml`).
+local function run_cmd(self, target, filter, xml)
     local _, path = self:_spec()
     local bd = self._config_unit:build_dir()
-    local xml = bd .. "/teststub-" .. target .. ".xml"
-    local cmd = { nvim(), "--headless", "-u", "NONE", "-l", fixture_dir() .. "/run.lua", path, xml, target }
-    if filter then cmd[#cmd + 1] = filter end
-    return { cmd = cmd, env = {}, cwd = bd, output_path = xml }
+    xml = xml or (bd .. "/teststub-" .. target .. ".xml")
+    local cmd = { nvim(), "--headless", "-u", "NONE", "-l", fixture_dir() .. "/run.lua", path, target,
+        "--gtest_output=xml:" .. xml }
+    return { cmd = cmd, env = { GTEST_FILTER = filter }, cwd = bd, output_path = xml }
 end
 
 --- @param test_id string
---- @param opts? table { output_path? }
+--- @param opts? table { output_path?, gtest_filter? }
 function TestUnit:test_command(test_id, opts)
+    opts = opts or {}
     local e = self:_entry(test_id)
     if not e then return nil end
     local spec
     if not e.parent then
-        spec = run_cmd(self, e.name)
+        spec = run_cmd(self, e.name, opts.gtest_filter, opts.output_path)
     else
         local t = self:_entry(e.parent)
         if not t then return nil end
-        spec = run_cmd(self, t.name, e.name)
-    end
-    if opts and opts.output_path then
-        spec.cmd[8] = opts.output_path
-        spec.output_path = opts.output_path
+        spec = run_cmd(self, t.name, opts.gtest_filter or e.name, opts.output_path)
     end
     spec.test_id = test_id
     return spec
 end
 
+--- @param opts? table { output_path?, filter? }
 function TestUnit:test_command_all(opts)
+    opts = opts or {}
     local first
     for _, e in ipairs(self._entries or {}) do
         if not e.parent then first = e; break end
     end
     if not first then return nil end
-    return self:test_command(first.id, opts)
+    return self:test_command(first.id, { output_path = opts.output_path, gtest_filter = opts.filter })
 end
 
 function TestUnit:run_command_all()

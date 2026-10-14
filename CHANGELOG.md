@@ -406,6 +406,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   unavailable). A project-level step also runs for the project's command
   launches, so a project-level destination using `${target_dir}` fails the
   deploy of a command launch. (#214)
+- Experimental daemon: the workspace daemon can run the editor's selected
+  tests (`Tests/1.run_cases`: build what the selection needs, then run each
+  test program with per-case progress and results) and prepare a test for
+  the debugger (`Tests/1.prepare_debug`, then `collect` reads the results
+  the program wrote), and keeps each test's last result and output for the
+  session. Running all tests runs every test program of the profile and
+  first discovers the projects whose tests were not discovered yet or are
+  out of date after a build; a second run of the same build directory waits
+  for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)
