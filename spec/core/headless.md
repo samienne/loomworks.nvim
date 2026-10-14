@@ -613,7 +613,8 @@ log), which is the stronger check where available.
 
 A headless **test** invocation resolves a profile and ensures it is configured
 and built (§16.4) — **skipping the build of any unit whose native batch runner
-rebuilds its own targets (§8.9.2), since that build would be redundant** — then
+rebuilds its own targets (§8.9.2), since that build would be redundant** —
+unless the invocation skips the build (below) — then
 runs each buildable unit's tests through the native batch runner
 (`run_command_all`, §8.9.2) — not the editor's structured per-test path.
 Configuration is still ensured for every unit: a self-rebuilding runner assumes
@@ -632,7 +633,7 @@ profile runs several. The runner maps both to its native mechanism; a runner
 that cannot emit JUnit reports that without failing the run.
 
 A headless test invocation MAY instead name one or more **test
-executables** (build targets). Each named target is built, then run directly —
+executables** (build targets). Each named target is built (unless the build is skipped, below), then run directly —
 not through the native batch runner — with its framework's machine-readable
 results option (§8.9), and its outcome is judged per §18.6 (exit status, parsed
 failures, missing results, crash reports). A named target runs in its
@@ -657,6 +658,49 @@ artifact on the host (§15 invariant 19): a profile whose kit is foreign and
 names no targets reports that its registered tests cannot run on this host
 (until the module can express them for a device, §18.6) instead of running them.
 
+**Skipping the build.** A headless test invocation MAY skip its build
+(`--no-build`) and run against what the profile's build directories already
+hold. It then configures, builds and deploys nothing: neither the profile
+build above nor a `launch` entry's deploy steps (as a run's `--no-build`
+skips its dependency build and deploy, §16.17). It applies to every form
+that runs steps — the full plan, the saved-only and discovered-only
+selectors, and named targets. Everything else is unchanged: the plan, the
+step order, the forwarded-argument and device-option checks, the JUnit
+labels, and the exit status (success iff every step succeeded; there is no
+build to fail). The plan report (below) never builds, so the option has no
+effect there.
+
+- **Self-rebuilding runners.** A batch step whose runner rebuilds its own
+  targets (`run_command_all_rebuilds`, §8.9.2) is given the runner's
+  no-rebuild option (`opts.no_rebuild`, e.g. `meson test --no-rebuild`). A
+  runner confirms it in the command it returns; a module whose rebuilding
+  runner has no such option does not confirm it and so cannot honour the
+  request: its batch step is refused before any step runs, naming the
+  unit. Such a runner is never left to rebuild silently.
+- **What must already exist.** Before the first step executes, alongside
+  the missing-entry check below, the invocation checks every unit it would
+  run: each unit with a batch step or an executable step must be configured
+  on this machine (§17.8); each named target, `target` entry and
+  target-backed `launch` entry must have an artifact that exists. Each
+  failing unit or program gets one line naming it (a project, an entry label
+  with its occurrence index, or a `--target` name). A unit configured here
+  whose build targets cannot be read (its build directory is missing or
+  unreadable) is reported as such, not as unconfigured. The invocation then
+  fails with exit 1 and runs no step; the error ends with the two ways
+  forward: `lw build <profile>` first, or run without `--no-build`. An
+  unconfigured unit is never configured or built implicitly. A command-type
+  `launch` entry needs neither check.
+- **Stale builds are noted, not refused.** Before the steps run, a unit
+  whose recorded state shows its build output may not match the current
+  configuration gets one note on standard error naming the project and the
+  reason, and the run continues. A unit qualifies when its configuration
+  changed since it was configured (§5.1), its project files changed, its
+  build directory is missing, or its last build failed. Only recorded state
+  is used: never a source scan or a build-tool up-to-date query.
+- **Locks.** The build-directory locks are held across the checks and the
+  test steps — named targets included, which without the option hold them
+  only for their build — so a concurrent build cannot change what runs.
+
 **Saved test targets.** A unit whose configuration has a non-empty saved list
 (§1.3.4) runs those entries **as well as** its native batch runner. The
 **plan** of a test invocation is an ordered list of steps:
@@ -673,7 +717,7 @@ names no targets reports that its registered tests cannot run on this host
 - The build covers the whole profile, as for named targets. A unit with an
   executable step in the plan is built even when its batch runner rebuilds
   its own targets (the skip above applies only to units with batch steps
-  alone).
+  alone). When the build is skipped, nothing is built (below).
 - Every step runs even when an earlier one failed. The invocation succeeds iff
   the build succeeded and every step succeeded. Each step announces itself
   before it runs (`<project>: <runner>` / `<project>: <name>`, followed by
@@ -687,8 +731,8 @@ names no targets reports that its registered tests cannot run on this host
 
 **Launch entries.** A `launch` entry runs its launch configuration through
 the run chain of §16.17, without its terminal attachment: the profile build
-(above) stands in for the run's dependency build, then the launch's
-**deploy** steps run (§8.8.4) — a failed deploy fails the step without
+(above) stands in for the run's dependency build, then — unless the build is
+skipped — the launch's **deploy** steps run (§8.8.4) — a failed deploy fails the step without
 running the program — then the program runs with the launch's resolved
 environment, in the entry's `working_dir` when it has one, else the launch's
 resolved working directory (§1.3.4 "Working directory", §8.7). A target-backed launch whose

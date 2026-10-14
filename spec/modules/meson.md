@@ -211,7 +211,9 @@ Implements the generic test interface (core §8.9) through a single
 meson code: core's saved-targets TestUnit uses `parse_targets` (introspect)
 and `Target:resolve_run_spec`. Because `meson test` rebuilds, a headless run
 normally skips the separate build of a meson unit; a unit with saved
-executables in the plan is built anyway (core §16.16).
+executables in the plan is built anyway (core §16.16). With the build
+skipped (core §16.16 "Skipping the build"), the batch command adds
+`--no-rebuild` and confirms it (`no_rebuild = true`).
 
 ### 8.1 MesonTestUnit
 
