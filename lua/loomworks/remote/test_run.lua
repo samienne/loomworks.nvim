@@ -51,6 +51,23 @@ function M.not_run_suffix(c)
     return s
 end
 
+--- The bracketed text of a failed step's summary line: its failure reasons, then
+--- its per-case counts when it has any -- "exit status 1, 1 failed test, 364
+--- passed, 2 skipped". The passed count is always named (even 0) once there
+--- are per-case results; skipped/disabled only when non-zero (as not_run_suffix).
+--- A step without per-case results (none parsed, no results file, exit status
+--- only) keeps just its reasons.
+--- @param reasons string[] M.judge reasons
+--- @param c table|nil M.count output
+--- @return string
+function M.failed_reasons(reasons, c)
+    local s = table.concat(reasons or {}, ", ")
+    if c and c.total > 0 then
+        s = s .. (s == "" and "" or ", ") .. c.passed .. " passed" .. M.not_run_suffix(c)
+    end
+    return s
+end
+
 --- Judge an executable's outcome (spec §18.6).
 --- @param o { status: integer|nil, results_requested: boolean, results: table[]|nil, results_missing: boolean, crashes?: integer, transport_error?: string }
 --- @return boolean failed, string[] reasons
