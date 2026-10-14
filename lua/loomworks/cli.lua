@@ -5256,7 +5256,8 @@ local function config_set_rows(ws, proj)
   return rows
 end
 
---- `lw project show <name>` — project detail: type, path, configurations, and
+--- `lw project show <name>` — project detail: type, path, saved test targets
+--- (project-wide and per configuration), configurations, and
 --- the configuration sets that map it.
 function M.cmd_project_show(root, name)
   if not name then die("usage: lw project show <name>") end
@@ -5267,8 +5268,15 @@ function M.cmd_project_show(root, name)
   M._describe_block(proj.description)
   out("  path            " .. (proj.path or "."))
   if proj._intent then out("  intent          " .. proj._intent) end
+  -- Saved test targets (§16.9): always a row; with no project-wide list it
+  -- shows `none` and the add hint, once for the whole view.
   local pw = proj.own_test_targets and proj:own_test_targets()
-  M._show_test_targets(pw and { entries = pw, source = proj, invalid = proj._tests and proj._tests.invalid } or nil, nil)
+  if pw then
+    M._show_test_targets({ entries = pw, source = proj, invalid = proj._tests and proj._tests.invalid }, nil)
+  else
+    out("  tests           none — add: lw test-target add <profile> " .. proj.key
+      .. ":<name> [--config <name> | --project-wide]")
+  end
 
   local cfgs = proj:get_configurations()
   table.sort(cfgs, function(a, b) return a.name < b.name end)
@@ -5282,6 +5290,8 @@ function M.cmd_project_show(root, name)
       local variant = c.module_config and c.module_config.variant
       out(string.format("    %-22s %-7s%s", c.name, kind,
         variant and ("  variant=" .. variant) or (c:is_abstract() and "  (abstract)" or "")))
+      local eff = c.test_targets and c:test_targets()
+      out("      tests  " .. (eff and M._test_targets_text(eff, c) or "none"))
     end
   end
 
@@ -5908,6 +5918,15 @@ end
 --- @param cfg loomworks.Configuration|nil the configuration shown (nil: project)
 function M._show_test_targets(eff, cfg)
   if not eff then return end
+  out("  tests           " .. M._test_targets_text(eff, cfg))
+end
+
+--- The text of a saved-test-targets row: the entries (or `none (explicit)`)
+--- and their source, e.g. `A, B  (inherited from Base)`.
+--- @param eff { entries: table[], source: table, invalid: boolean|nil }
+--- @param cfg loomworks.Configuration|nil the configuration shown (nil: project)
+--- @return string
+function M._test_targets_text(eff, cfg)
   local tt = require("loomworks.test_targets")
   local names = {}
   for _, e in ipairs(eff.entries) do
@@ -5915,8 +5934,8 @@ function M._show_test_targets(eff, cfg)
       .. (e.working_dir and (" (in " .. e.working_dir .. ")") or "")
   end
   if eff.invalid then names = { "invalid (not an array)" } end
-  out("  tests           " .. (#names > 0 and table.concat(names, ", ") or "none (explicit)") ..
-    "  (" .. tt.source_text(eff.source, cfg) .. ")")
+  return (#names > 0 and table.concat(names, ", ") or "none (explicit)") ..
+    "  (" .. tt.source_text(eff.source, cfg) .. ")"
 end
 
 --- Saved test targets (spec §1.3.4) are a list, edited with `lw test-target`
@@ -12298,8 +12317,9 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         set that references it; `lw publish` then rewrites loomworks.json.
   list  Show all projects: key, type, path.
   show <name>
-        Detail one project: type, path, its configurations, its variable
-        declarations, the sets that map it, and its intent.
+        Detail one project: type, path, its saved test targets (project-wide
+        and each configuration's effective list), its configurations, its
+        variable declarations, the sets that map it, and its intent.
   set <project> <variable> [<default>] [--type string|path]
         Declare (create-or-update) a project variable. --type defaults to
         `string`. Omit <default> to declare it BLANK — a variable with a type

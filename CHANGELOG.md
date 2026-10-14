@@ -195,6 +195,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   deleted first. Its progress finishes only when those configures have run,
   even if they had to wait for a build in progress. Building still configures
   only what needs it. (#196, #198)
+- `lw project show` always prints the project's saved test targets row, with
+  `none` and the `lw test-target add` form when there is no project-wide list,
+  and prints each configuration's effective list with its source (for example
+  `inherited from Tests`). (#240)
 
 ### Fixed
 - `lw run --cwd` on a target that runs on a device is now a usage error
