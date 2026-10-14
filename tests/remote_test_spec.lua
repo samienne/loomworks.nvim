@@ -34,6 +34,12 @@ local function gtest_xml(cases)
             lines[#lines + 1] = '    <testcase name="' .. c.name .. '" status="run" time="0.01" classname="Suite">'
             lines[#lines + 1] = '      <failure message="t.cpp:3&#x0A;boom" type=""><![CDATA[t.cpp:3\nboom]]></failure>'
             lines[#lines + 1] = '    </testcase>'
+        elseif c.disabled then
+            lines[#lines + 1] = '    <testcase name="' .. c.name .. '" status="notrun" result="suppressed" time="0" classname="Suite" />'
+        elseif c.skip then
+            lines[#lines + 1] = '    <testcase name="' .. c.name .. '" status="run" result="skipped" time="0" classname="Suite">'
+            lines[#lines + 1] = '      <skipped message="t.cpp:9&#x0A;"><![CDATA[t.cpp:9]]></skipped>'
+            lines[#lines + 1] = '    </testcase>'
         else
             lines[#lines + 1] = '    <testcase name="' .. c.name .. '" status="run" time="0.01" classname="Suite" />'
         end
@@ -317,6 +323,38 @@ describe("named test executables on the host", function()
         assert.equals("--x", seen[3])
         assert.truthy(res.stdout:find("Local: FAILED (1 failed test): Suite.b", 1, true))
     end)
+    it("the summary counts skipped and disabled gtest cases apart from passed ones", function()
+        local root = fx.mkroot()
+        fx.write_host_exe(root .. "/t/Local")
+        local gtest = require("loomworks.gtest")
+        local orig = gtest.probe_sync
+        gtest.probe_sync = function() return "gtest", {} end
+        local unit = fx.fake_unit({ build_dir = root })
+        local tgt = Target.new(unit, "Local", { type = "executable", artifact = "t/Local" })
+        local lt = {
+            _target = tgt, _config_unit = unit, _project = { key = "P" },
+            resolve_launch_spec = function(_, o)
+                local s = assert(tgt:resolve_run_spec())
+                return { cmd = s.cmd, args = vim.deepcopy(o.extra_args or {}), cwd = s.cwd, env = s.env }
+            end,
+        }
+        local res = capture(function()
+            return cli._test_targets({ root = root }, { key = "Host" }, { "Local" },
+                { dev = cli._new_device_opts() }, {
+                    build = function() end, resolve_target = function() return lt end,
+                    run_spec = function(step)
+                        local xml
+                        for _, a in ipairs(step.cmd) do xml = xml or a:match("^%-%-gtest_output=xml:(.+)$") end
+                        fx.write(xml, gtest_xml({ { name = "a" }, { name = "b" }, { name = "DISABLED_c", disabled = true },
+                            { name = "d", skip = true }, { name = "e", skip = true } }))
+                        return 0
+                    end,
+                })
+        end)
+        gtest.probe_sync = orig
+        require("loomworks.io").rm_rf(root)
+        assert.truthy(res.stdout:find("Local: 2 tests passed, 2 skipped, 1 disabled\n", 1, true), res.stdout)
+    end)
 end)
 
 describe("test_run helpers", function()
@@ -331,5 +369,18 @@ describe("test_run helpers", function()
     it("junit paths get a per-executable suffix when several run", function()
         assert.equals("/a/j.xml", test_run.junit_path("/a/j.xml", "X", false))
         assert.equals("/a/j-X_Y.xml", test_run.junit_path("/a/j.xml", "X/Y", true))
+    end)
+
+    it("junit_xml's top-level skipped count includes disabled cases, like its suites and cases", function()
+        local xml = test_run.junit_xml("X", {
+            { test_id = "test:S.a", status = "passed" },
+            { test_id = "test:S.b", status = "skipped" },
+            { test_id = "test:S.c", status = "skipped" },
+            { test_id = "test:S.DISABLED_d", status = "skipped", disabled = true },
+        })
+        assert.truthy(xml:find('<testsuites name="X" tests="4" failures="0" errors="0" skipped="3">', 1, true), xml)
+        assert.truthy(xml:find('<testsuite name="S" tests="4" failures="0" errors="0" skipped="3">', 1, true), xml)
+        local _, n = xml:gsub("<skipped/>", "")
+        assert.equals(3, n)
     end)
 end)

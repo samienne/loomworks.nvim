@@ -962,6 +962,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - The test explorer shows the tests of every project in the active profile
   again; when every project's tests were already discovered it showed only
   the first project's tests. (#221)
+- `lw test`: a disabled gtest test (`DISABLED_`) is no longer counted as
+  passed, and skipped (`GTEST_SKIP`) and disabled tests are counted apart
+  from passed ones, both in a test executable's result line and in the saved
+  test targets' summary, e.g. `1009 tests passed, 2 skipped, 1 disabled`.
+  (#227)
+- Test results: a failure, skip or error inside a testcase written on a
+  single line of the results XML is no longer counted as passed. (#227)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
