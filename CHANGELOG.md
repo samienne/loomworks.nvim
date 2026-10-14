@@ -33,6 +33,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   from passed ones, both in a test executable's result line and in the saved
   test targets' summary, e.g. `1009 tests passed, 2 skipped, 1 disabled`.
   (#225)
+- Test results: a failure, skip or error inside a testcase written on a
+  single line of the results XML is no longer counted as passed. (#225)
 
 ## 0.1.44 - 2026-10-14
 

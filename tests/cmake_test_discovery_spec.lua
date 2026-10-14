@@ -414,6 +414,31 @@ describe("gtest helper", function()
             end
         end)
 
+        it("a failure, skip or error inside a one-line testcase is not counted as passed", function()
+            local tmp = vim.fn.tempname() .. ".xml"
+            local f = io.open(tmp, "wb")
+            f:write(table.concat({
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                '<testsuite name="S" tests="4">',
+                '<testcase name="ok" classname="S" time="0.5"></testcase>',
+                '<testcase name="bad" classname="S" time="0.1"><failure message="a.cpp:7&#x0A;boom">a.cpp:7 boom</failure></testcase>',
+                '<testcase name="sk" classname="S"><skipped/></testcase>',
+                '<testcase name="err" classname="S"><error message="crash">crash</error></testcase>',
+                '</testsuite>',
+            }, "\n"))
+            f:close()
+            local results = gtest.parse_xml_results(tmp)
+            os.remove(tmp)
+            local by = {}
+            for _, r in ipairs(results) do by[r.test_id] = r end
+            assert.equals("passed", by["test:S.ok"].status)
+            assert.equals("failed", by["test:S.bad"].status)
+            assert.equals("a.cpp:7 boom", by["test:S.bad"].message)
+            assert.equals("skipped", by["test:S.sk"].status)
+            assert.equals("errored", by["test:S.err"].status)
+            assert.equals(100, by["test:S.bad"].duration)
+        end)
+
         it("should return nil for missing file", function()
             local results = gtest.parse_xml_results("/nonexistent/path.xml")
             assert.is_nil(results)
