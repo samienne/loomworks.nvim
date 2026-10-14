@@ -18,6 +18,11 @@
 --- committed write, and before the acknowledgement of a request answered
 --- inside its segment) and sends `update` to a subscription only when the
 --- view's state differs from the one last sent on it (`initial` included).
+--- The tests view compares its committed state (`{ committed = true }`,
+--- loomworks.daemon.test_store: node statuses as of a run's start and end
+--- and a collect), so a running run's per-case progress — which travels as
+--- `Tests/1.results` — never causes an `update`; what it sends is the
+--- current state.
 
 local view_state = require("loomworks.view_state")
 
@@ -61,18 +66,27 @@ function M.tests(service)
     return require("loomworks.daemon.tests_view").state(service)
 end
 
+--- The signature `check` compares for the tests view: its committed state's.
+--- @param service loomworks.daemon.BuildService
+--- @return string
+function M.tests_signature(service)
+    return view_state.signature(require("loomworks.daemon.tests_view").state(service, { committed = true }))
+end
+
 --- The handlers of a view: `get` and the `initial` state, which records its
---- signature on the subscription (the baseline of `check`).
+--- signature on the subscription (the baseline of `check`; `sig`: the
+--- view's own signature, else the state's).
 --- @param where { path: string, iface: string, v: integer }
 --- @param build fun(service: loomworks.daemon.BuildService): table
 --- @param service loomworks.daemon.BuildService
+--- @param sig? fun(service: loomworks.daemon.BuildService): string
 --- @return loomworks.daemon.InterfaceImpl
-local function impl(where, build, service)
+local function impl(where, build, service, sig)
     return {
         methods = { get = function() return build(service) end },
         initial = function(ctx, _, _, sub)
             local state = build(service)
-            if sub then sub.view_sig = view_state.signature(state) end
+            if sub then sub.view_sig = sig and sig(service) or view_state.signature(state) end
             local e = ctx.registry:resolve(where.path, where.iface, where.v)
             local sdoc = e and e.doc.signals and e.doc.signals.update
             return e and ctx.registry:_shape(e, sdoc and sdoc.args, state) or state
@@ -93,7 +107,7 @@ function M.projects_impl(service) return impl(M.PROJECTS, M.projects_index, serv
 --- The `loomworks.view.Tests/1` handlers.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
-function M.tests_impl(service) return impl(M.TESTS, M.tests, service) end
+function M.tests_impl(service) return impl(M.TESTS, M.tests, service, M.tests_signature) end
 
 --- The views and their handler factories, in mount order.
 M.MOUNTS = {
@@ -108,12 +122,22 @@ M.MOUNTS = {
 function M.check(service)
     local reg = service.server and service.server.interfaces
     if not reg then return end
-    for _, v in ipairs({ { M.HEADER, M.header }, { M.PROJECTS, M.projects_index }, { M.TESTS, M.tests } }) do
-        local where, build = v[1], v[2]
+    for _, v in ipairs({ { M.HEADER, M.header }, { M.PROJECTS, M.projects_index },
+        { M.TESTS, M.tests, M.tests_signature } }) do
+        local where, build, sig_of = v[1], v[2], v[3]
         if reg:has_subscribers(where.path, where.iface, where.v, "update") then
-            local state = build(service)
-            local sig = view_state.signature(state)
-            reg:emit(where.path, where.iface, where.v, "update", state, function(_, sub)
+            local state, sig
+            if sig_of then
+                sig = sig_of(service)
+            else
+                state = build(service)
+                sig = view_state.signature(state)
+            end
+            -- (The state is built once, for the first subscription sent to.)
+            reg:emit(where.path, where.iface, where.v, "update", function()
+                state = state or build(service)
+                return state
+            end, function(_, sub)
                 if sub.view_sig == sig then return false end
                 sub.view_sig = sig
                 return true

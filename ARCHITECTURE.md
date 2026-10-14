@@ -1810,13 +1810,39 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   probe program with `runner.spawn` in the client's environment, killable —
   under the unit's build-directory lock (waiting while this process holds
   it, `build_lock.held_by_me`; fail-fast against another process).
-  `daemon/tests_view.lua` (binary side) holds the session's test state on
-  the service (`_tests`: per-unit discovery records with a build
-  fingerprint and run mark, node-id anchors, last results; weak-keyed by
-  unit) and builds the view through `test_state.lua`; `stale` from the
-  records (a fingerprint or mark that moved, the profile not the last one
-  discovered), marks raised by `Service:on_run_done`. The stub module is
-  `tests/fixtures/teststub` (the conformance runner's `tests` fixture).
+  `daemon/tests_view.lua` (binary side) builds the view through
+  `test_state.lua` from `daemon/test_store.lua`, the one store of the
+  session's test state (below): the per-unit discovery records (weak-keyed
+  by unit) with a build fingerprint and run mark, `stale` from them (a
+  fingerprint or mark that moved, the profile not the last one discovered),
+  marks raised by `Service:on_run_done` (`test_store.on_run_done`). The stub
+  module is `tests/fixtures/teststub` (the conformance runner's `tests`
+  fixture; part B2's run specs use it too).
+  *(B2, as built:)* `daemon/test_runs.lua` (binary side) — `run_cases`,
+  `prepare_debug`, `collect`, `result` and the `results` signal: the
+  selection resolves (before acceptance; a build drops the units' cached
+  trees) to one test step per program — a target whole, its selected suites
+  and cases combined into one gtest filter where its TestUnit filters —
+  through `ConfigUnit:test_command_for` with a per-run `output_path`; the
+  task is a `daemon/runner.lua` run with `op = "cases"` and `ctx.cases`
+  hooks (`plan`: each unit's selected build targets, else the whole unit;
+  `wait`: the store's FIFO queue of Tests/1 tasks per build directory before
+  the fail-fast locks; `after_build`: the steps, or the debug spec;
+  `on_finish`), its step output scanned for gtest progress lines (batched
+  `results`, 250 ms), the results file authoritative at the step's end.
+  `daemon/test_store.lua` (binary side) — per service, the one store of
+  the session's test state: the discovery records, marks, `discovered` and
+  `discovering` (part B1; a record keeps its tree across a build's
+  invalidation until re-discovery), node ids (session ids per unit-scoped
+  local key) and last results (keyed by local key, so they survive a
+  reload), a run's live statuses and the `committed` copy the view's
+  `update` decision reads (`views.check` compares the state built with
+  `{ committed = true }`; `commit()` at a run's start and end and on a
+  collect), the node index (`index(ws)`, the view's numbering, also how a
+  view id resolves to its node), the FIFO build-directory queue of the
+  Tests/1 tasks, and the `prepare_debug` tokens (dropped with their results
+  file on collect, connection close and daemon stop). `Registry:emit` takes an args builder
+  `(sub, seq)` so `results.seq` is the frame's own per-connection `seq`.
 
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10

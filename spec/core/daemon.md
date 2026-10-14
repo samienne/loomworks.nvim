@@ -2185,20 +2185,39 @@ id) is refused as a stale reference (§19.20).
 - **Runs** (`Tests/1.run_cases`, task, `meta.kind = test`, `meta.units` the
   units of the selection). The selection's nodes are resolved first (a
   stale or non-runnable one refuses the call before acceptance with the
-  in-process message). Then, as the plan of `lw test` (above): the
-  build-directory locks of every selected unit taken up front in canonical
-  order and held across the build and the test steps — within the daemon
-  waiting in the build-directory operation queue (§5.3, FIFO) behind another
-  task of the same directory, so a second editor's run waits for the first;
-  a holder in another process fails fast (§19.3) — then, unless `no_build`,
-  the build of the selection's targets (each selected node's executable
-  target of its unit, as `{ project, target }` targets of `Build/1.build`; a
-  unit whose node has no single target, or run-all, builds the unit) with
-  the build-step sequence and its failure lines, then the test steps. A
-  test step runs one TestUnit's structured harness (§8.9.2 `test_command` /
-  `test_command_all`, the saved-targets TestUnit's entries as §8.9.4
-  run-all does), selected nodes of one executable combined into one
-  invocation where the TestUnit can filter them so, each step announced
+  in-process message). The units a run **covers** are its selected nodes'
+  units, or for run-all (no `select`) every unit of the profile with tests
+  to discover (not `not_configured`, `foreign` or `no_tests`). Then, as the
+  plan of `lw test` (above): the build-directory locks of every covered
+  unit taken up front in canonical order and held across the build and the
+  test steps — within the daemon waiting in the build-directory operation
+  queue (§5.3, FIFO) behind another task of the same directory, so a second
+  editor's run waits for the first, and then behind a build or other task
+  of this daemon holding one of them, as discovery waits; a holder in
+  another process fails fast (§19.3). Before its build, a run first
+  **discovers** each covered unit whose tree is not current (as
+  "Discovery" above: not discovered yet in this session, or a configure,
+  build, clean or reset of it ended since — its tree is then stale), as
+  `Tests/1.discover` probes it (its `==> [discover]` line and outcome, its
+  record and the view's `update`), so an undiscovered unit is never
+  silently skipped and a stale tree's nodes run as the unit now has them: a
+  selected node the re-discovery no longer has ends the task with the
+  stale-reference message, and a unit whose discovery fails runs nothing
+  (its failure line; the task then ends 1). A selected node that has no
+  test command, or that the re-discovery made non-runnable, ends the task
+  with its message (the refusal before acceptance covers only the stale or
+  `runnable = false` nodes known at acceptance). Then, unless `no_build`, the
+  build of the selection's targets (each selected node's executable target
+  of its unit, as `{ project, target }` targets of `Build/1.build`; a unit
+  whose node has no single target, or run-all, builds the unit) with the
+  build-step sequence and its failure lines, then the test steps. Run-all
+  runs **per top-level node**: one structured run of each runnable
+  top-level node of every covered unit (the node's `test_command`, as a
+  selected `target` node runs), never a TestUnit's `test_command_all`. A
+  test step runs one TestUnit's structured harness (§8.9.2 `test_command`
+  through the owning TestUnit, §8.9.4), selected nodes of one executable
+  combined into one invocation where the TestUnit can filter them so, each
+  step announced
   `==> [test] <project>: <name>` and spawned as a build step is (streamed,
   cancellable). Each step writes its results file to its **own** path,
   `<root>/.nvim/tmp/lw-test-<hex>.xml` (§16.40, removed once parsed; never a
@@ -4403,9 +4422,10 @@ message, before acceptance. All of them carry the caller's environment
 - `run_cases { select?, no_build?, extra? }` — task-streamed (`meta.kind =
   test`, `meta.units`), the outcomes of `build`. `select` (non-empty array of
   `TestNodeRef`, runnable nodes): a `target` node runs its executable whole,
-  a `suite` or `test` node with a filter; absent: every runnable node of
-  every unit of the profile (the editor's run-all). `no_build` skips the
-  build; `extra` are arguments appended to every test step's program.
+  a `suite` or `test` node with a filter; absent: every runnable top-level
+  node of every unit of the profile, each its own step, the units not
+  discovered yet (or stale) discovered first (the editor's run-all,
+  §19.15 "Tests"). `no_build` skips the build; `extra` are arguments appended to every test step's program.
   `done.result` `{ exit_code, error?, cases, counts }`: `cases` an array of
   `TestCaseResult` (every case the run reported, in report order), `counts`
   `{ passed, failed, skipped, errored }`.

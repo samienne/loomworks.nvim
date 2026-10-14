@@ -5,7 +5,9 @@
 ---   /tasks       loomworks.Tasks/1        list, cancel (started, ended)
 ---   /internal    lw.internal.Snapshot/1   get (same_build)
 ---   /build       loomworks.Build/1        build T, configure T, clean T, reset T
----   /tests       loomworks.Tests/1        run T, discover T (loomworks.daemon.test_discover)
+---   /tests       loomworks.Tests/1        run T, discover T, run_cases T, prepare_debug T, collect,
+---                                         result (results; loomworks.daemon.test_discover,
+---                                         loomworks.daemon.test_runs)
 ---   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
@@ -318,10 +320,13 @@ end
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.tests_impl(service)
-    return { methods = {
+    local methods = {
         run = operation(service, "test", M.TESTS, "run"),
         discover = require("loomworks.daemon.test_discover").handler(service, M.TESTS),
-    } }
+    }
+    -- The editor's runs, debug preparations and results (step 5m part B2).
+    for name, fn in pairs(require("loomworks.daemon.test_runs").methods(service)) do methods[name] = fn end
+    return { methods = methods }
 end
 
 --- The `loomworks.Launch/1` handlers.
