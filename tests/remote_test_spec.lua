@@ -185,9 +185,28 @@ describe("lw test --target on a device", function()
         local res = test({ "Runner" }, { junit = root .. "/j.xml" })
         assert.is_false(res.ok)
         assert.equals(1, res.exit_code)
-        assert.truthy(res.stdout:find("Runner: FAILED (1 failed test): Suite.b", 1, true))
+        assert.truthy(res.stdout:find("Runner: FAILED (1 failed test, 1 passed): Suite.b", 1, true), res.stdout)
         assert.truthy(res.stderr:find("1 of 1 test executable failed: Runner", 1, true))
         assert.truthy(fx.read(root .. "/j.xml"):find("<failure", 1, true))
+    end)
+
+    it("a failed step's summary keeps its passed, skipped and disabled counts", function()
+        xml_cases = { { name = "a" }, { name = "b", fail = true }, { name = "c" }, { name = "d", skip = true },
+            { name = "e", skip = true }, { name = "DISABLED_f", disabled = true } }
+        exit_code_of_run = 1
+        local res = test({ "Runner" })
+        assert.is_false(res.ok)
+        assert.truthy(res.stdout:find(
+            "Runner: FAILED (exit status 1, 1 failed test, 2 passed, 2 skipped, 1 disabled): Suite.b\n", 1, true),
+            res.stdout)
+    end)
+
+    it("a failed step without per-case results keeps its line (no counts)", function()
+        write_xml, exit_code_of_run = false, 1
+        local res = test({ "Runner" })
+        assert.is_false(res.ok)
+        assert.truthy(res.stdout:find("Runner: FAILED (exit status 1, no results file came back)\n", 1, true),
+            res.stdout)
     end)
 
     it("a non-zero exit fails", function()
@@ -321,7 +340,7 @@ describe("named test executables on the host", function()
         -- program, results option, then the forwarded args (spec §16.16)
         assert.truthy(seen[2]:match("^%-%-gtest_output=xml:"))
         assert.equals("--x", seen[3])
-        assert.truthy(res.stdout:find("Local: FAILED (1 failed test): Suite.b", 1, true))
+        assert.truthy(res.stdout:find("Local: FAILED (1 failed test, 1 passed): Suite.b", 1, true), res.stdout)
     end)
     it("the summary counts skipped and disabled gtest cases apart from passed ones", function()
         local root = fx.mkroot()
@@ -358,6 +377,17 @@ describe("named test executables on the host", function()
 end)
 
 describe("test_run helpers", function()
+    it("failed_reasons appends the per-case counts after the reasons, only when there are results", function()
+        local c = test_run.count({ { status = "passed" }, { status = "failed", test_id = "test:S.x" },
+            { status = "skipped" }, { status = "skipped", disabled = true } })
+        assert.equals("exit status 1, 1 failed test, 1 passed, 1 skipped, 1 disabled",
+            test_run.failed_reasons({ "exit status 1", "1 failed test" }, c))
+        assert.equals("1 failed test, 0 passed",
+            test_run.failed_reasons({ "1 failed test" }, test_run.count({ { status = "failed" } })))
+        assert.equals("exit status 1", test_run.failed_reasons({ "exit status 1" }, test_run.count(nil)))
+        assert.equals("exit status 1", test_run.failed_reasons({ "exit status 1" }, nil))
+    end)
+
     it("judge covers every failure source", function()
         assert.is_false((test_run.judge({ status = 0, results = { { status = "passed" } } })))
         assert.is_true((test_run.judge({ status = 0, results = { { status = "errored" } } })))
