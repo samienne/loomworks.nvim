@@ -268,13 +268,66 @@ end
 --- @field steps table[] the ordered steps { kind = "batch"|"exec", unit, project, label, entry?, lt?, args?, cwd? }
 --- @field batch_steps table<table, table[]> per unit, its planned native runner steps
 --- @field junit_for fun(label: string): string|nil the JUnit path of a step
+--- @field notes string[] stderr notes printed before the steps (`--no-build`: possibly stale builds)
+
+--- `lw test --no-build` (spec §16.16 "Skipping the build"): whether a build
+--- target's artifact exists. `t` is the target, `unit` its config unit.
+--- @return boolean built, string|nil path
+function M.artifact_built(unit, t)
+    local bd = unit and unit.build_dir and unit:build_dir()
+    local path = (bd and t and t.artifact) and require("loomworks.paths").artifact_path(bd, t.artifact) or nil
+    return (path and uv.fs_stat(path)) and true or false, path
+end
+
+--- The build target behind a launch target (a named target, or a
+--- target-backed launch), or nil for a command launch.
+function M.lt_build_target(lt)
+    return lt and (lt._target or lt._config_target) or nil
+end
+
+--- The failure of a `--no-build` invocation before any step runs (exit 1):
+--- `head` (the missing saved entries), one line per problem, then the two
+--- ways forward (§16.16).
+--- @return string
+function M.no_build_message(profile, problems, head)
+    local lines = {}
+    for _, p in ipairs(head or {}) do lines[#lines + 1] = p end
+    for _, p in ipairs(problems) do lines[#lines + 1] = p end
+    return "--no-build: cannot run the tests against the existing build:\n  " .. table.concat(lines, "\n  ")
+        .. "\n  build first: lw build " .. profile.key
+        .. "\n  or run without --no-build"
+end
+
+--- `--no-build`: one note per unit whose recorded state says its build may
+--- not match the current configuration (§16.16 "Stale builds are noted") —
+--- the build gate's reconfigure reasons, or a failed last build. Recorded
+--- state only: no source scan, no build-tool query.
+--- @return string[] notes
+function M.stale_notes(profile, units)
+    local notes = {}
+    for _, unit in ipairs(units) do
+        if unit.configured_here and unit:configured_here() then
+            local why = unit.configure_reason and unit:configure_reason(false, profile) or nil
+            if not why and unit.state_value == "failed_build" then why = "last build failed" end
+            if why then
+                notes[#notes + 1] = string.format("lw: note: %s: its build may be stale (%s) — --no-build runs it as it is",
+                    unit._project and unit._project.key or "?", why)
+            end
+        end
+    end
+    return notes
+end
 
 --- After the build (the units' targets parsed): resolve every saved entry —
 --- a missing one fails the invocation before any step runs — and plan the
 --- batch steps, their order and JUnit labels (spec §16.16). `opts = { junit?,
---- extra? }`; `deps.launch_target` (tests) replaces the launch-target
---- construction. Returns the steps (`steps` empty: no tests to run, and
---- nothing else was checked), or nil and the refusal.
+--- extra?, no_build? }`: `no_build` (`lw test --no-build`, §16.16 "Skipping
+--- the build") also refuses a unit not configured here, an executable not
+--- built and a self-rebuilding runner that cannot skip its rebuild — one
+--- line each, before any step — and notes a possibly stale build (`notes`).
+--- `deps` (tests): launch_target replaces the launch-target construction,
+--- artifact_built(unit, target) → built, path the artifact check. Returns the
+--- steps (`steps` empty: no tests to run), or nil and the refusal.
 --- @param pre loomworks.TestPlanPre
 --- @return loomworks.TestPlanSteps|nil, string|nil
 function M.prepare(ws, profile, pre, opts, deps)
@@ -285,6 +338,35 @@ function M.prepare(ws, profile, pre, opts, deps)
     local plan, n_batch = pre.plan, pre.n_batch
     local extra = opts.extra or {}
 
+    local no_build = opts.no_build and true or false
+    local artifact_built = deps.artifact_built or M.artifact_built
+
+    -- `--no-build`: what must already exist (§16.16 "Skipping the build"). A
+    -- unit with a batch step, or with an entry that needs its build targets,
+    -- must be configured here — one line per unit, never a configure.
+    local problems, unconfigured = {}, {}
+    local function configured_here(u) return u.unit.configured_here and u.unit:configured_here() end
+    local function not_configured(u)
+        if not unconfigured[u] then
+            unconfigured[u] = true
+            problems[#problems + 1] = u.project.key .. ": not configured on this machine"
+        end
+    end
+    -- Configured here, yet its build targets could not be read (its build
+    -- directory is missing, or the module's target introspection failed).
+    local function targets_unknown(u)
+        if not unconfigured[u] then
+            unconfigured[u] = true
+            problems[#problems + 1] = u.project.key
+                .. ": its build targets are unknown (build directory missing or unreadable)"
+        end
+    end
+    if no_build then
+        for _, u in ipairs(plan) do
+            if u.batch and not configured_here(u) then not_configured(u) end
+        end
+    end
+
     -- Resolve every saved entry before the first step runs (missing → fail):
     -- a launch configuration first, else an executable build target (§1.3.4).
     local missing = {}
@@ -294,6 +376,20 @@ function M.prepare(ws, profile, pre, opts, deps)
         local rctx = M.rctx(ws, u.unit, u.project, level)
         for _, e in ipairs(u.entries) do
             local r = test_targets.resolve_entry(e, rctx)
+            if no_build and r.state == "unknown" then
+                -- Its build targets are unknown: the unit is not configured here,
+                -- or it is but they could not be read.
+                if configured_here(u) then targets_unknown(u) else not_configured(u) end
+                r = { state = "skip" }
+            elseif no_build and r.state == "ok" and r.target then
+                -- A `target` entry or a target-backed launch: its artifact must
+                -- exist (a command launch needs no check).
+                local built, path = artifact_built(u.unit, r.target)
+                if not built then
+                    problems[#problems + 1] = string.format("saved test entry '%s' (%s): not built%s",
+                        test_targets.entry_label(e), level, path and (" (" .. path .. ")") or "")
+                end
+            end
             -- Args and working_dir expand in the entry's launch context, where
             -- `${target_dir}` is its build target's artifact directory (§8.7).
             local lctx = r.state == "ok"
@@ -309,7 +405,7 @@ function M.prepare(ws, profile, pre, opts, deps)
                 end
                 u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = r.kind, args = M.expand_args(e.args, lctx),
                     cwd = (M.resolve_working_dir(e.working_dir, lctx, ws.root)) }
-            else
+            elseif r.state ~= "skip" then
                 local why = r.reason or ("cannot be resolved (the build targets of " .. u.project.key .. " are unknown)")
                 if e.decl_invalid then why = "`tests` of " .. level .. " is not an array of saved test entries" end
                 missing[#missing + 1] = string.format(
@@ -319,14 +415,33 @@ function M.prepare(ws, profile, pre, opts, deps)
             end
         end
     end
-    if #missing > 0 then return nil, table.concat(missing, "\n  ") end
 
     -- Batch steps (after the build: a runner without a test set plans none).
+    -- Under --no-build a self-rebuilding runner that cannot skip its rebuild
+    -- is refused here, before any step runs (§8.9.2 `opts.no_rebuild`).
     local skip = {}
-    for _, u in ipairs(plan) do if not u.batch then skip[u.unit] = true end end
-    local probe = (n_batch > 0) and overseer.plan_profile_test(profile, { skip_units = skip }) or {}
+    for _, u in ipairs(plan) do if not u.batch or unconfigured[u] then skip[u.unit] = true end end
+    local probe = (n_batch > 0) and overseer.plan_profile_test(profile, { skip_units = skip,
+        no_rebuild = no_build or nil }) or {}
     local batch_count = {}
-    for _, st in ipairs(probe or {}) do batch_count[st.unit] = (batch_count[st.unit] or 0) + 1 end
+    for _, st in ipairs(probe or {}) do
+        batch_count[st.unit] = (batch_count[st.unit] or 0) + 1
+        if st.refused then
+            problems[#problems + 1] = string.format("%s: %s",
+                st.unit._project and st.unit._project.key or st.name, st.refused)
+        end
+    end
+    if #problems > 0 then return nil, M.no_build_message(profile, problems, missing) end
+    if #missing > 0 then return nil, table.concat(missing, "\n  ") end
+    -- `--no-build`: a possibly stale build is noted, never refused.
+    local notes = {}
+    if no_build then
+        local units = {}
+        for _, u in ipairs(plan) do
+            if batch_count[u.unit] or #u.exec > 0 then units[#units + 1] = u.unit end
+        end
+        notes = M.stale_notes(profile, units)
+    end
 
     -- The final ordered steps and their JUnit labels (§16.16).
     local steps, labels = {}, {}
@@ -342,7 +457,7 @@ function M.prepare(ws, profile, pre, opts, deps)
             labels[x.entry.name] = (labels[x.entry.name] or 0) + 1
         end
     end
-    local res = { steps = steps, batch_steps = {}, junit_for = function() return nil end }
+    local res = { steps = steps, batch_steps = {}, notes = notes, junit_for = function() return nil end }
     if #steps == 0 then return res end
     -- Same label twice: qualify the executable step with its project, then,
     -- when its name repeats in its list, with its occurrence index.
@@ -359,6 +474,7 @@ function M.prepare(ws, profile, pre, opts, deps)
     if n_batch > 0 then
         local planned = overseer.plan_profile_test(profile, {
             skip_units = skip, extra_args = (#extra > 0) and extra or nil, junit = opts.junit,
+            no_rebuild = no_build or nil,
             junit_dest_for = function(label) return res.junit_for(label) end,
         })
         for _, st in ipairs(planned or {}) do
@@ -377,7 +493,8 @@ end
 --- (<n> step[s])`. `done(code, err, results)`: `err` is the failure
 --- (`<k> of <n> test step[s] failed`, exit 1); `results = { steps = {{ name,
 --- exit_code, status }}, junit = { paths } }` (Tests/1.run's task result).
---- `opts = { extra?, dev? }`.
+--- `opts = { extra?, dev?, no_build? }` (`no_build`: each executable step
+--- skips its launch's deploy, §16.16).
 --- @param prepared loomworks.TestPlanSteps
 function M.run(ws, profile, prepared, opts, host, done)
     local test_targets = require("loomworks.test_targets")
@@ -441,7 +558,7 @@ function M.run(ws, profile, prepared, opts, host, done)
         return host.exec(st.lt, {
             label = name, header = st.project.key .. ": " .. name, saved = true,
             args = st.args, cwd = st.cwd, entry_working_dir = st.entry.working_dir,
-            extra = extra, dev = opts.dev, junit_path = junit_for(st.label),
+            extra = extra, dev = opts.dev, junit_path = junit_for(st.label), no_build = opts.no_build,
         }, function(failed, reasons, c, exit_only, junit)
             if failed then n_failed = n_failed + 1 end
             summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
@@ -468,11 +585,12 @@ end
 --- device). Prints the step header and its one-line outcome; writes JUnit to
 --- `opts.junit_path` when given.
 --- `opts = { label, header?, args?, extra?, dev, junit_path?, saved?, cwd?,
---- entry_working_dir?, cwd_override? }`: `cwd` is a saved entry's resolved
+--- entry_working_dir?, cwd_override?, no_build? }`: `cwd` is a saved entry's resolved
 --- working directory (absolute; it replaces the program's), `entry_working_dir`
 --- the entry's `working_dir` as written (a device step notes it is not used),
 --- `cwd_override` a named target's per-invocation `--cwd` (raw, expanded in
---- the target's launch context; refused for a device run). With
+--- the target's launch context; refused for a device run). `no_build`
+--- (`lw test --no-build`) skips a launch's deploy steps (§16.16). With
 --- `saved` (a saved entry's step) a refused or unresolvable run fails the step
 --- instead of the invocation, and a program without per-case results is
 --- judged on its exit status alone and written to JUnit as one test case.
@@ -572,7 +690,8 @@ function M.exec_step(ws, lt, opts, host, cb)
                 return conclude()
             end
             local hook, st = test_run.device_hook(f.name, tail)
-            return host.foreign(lt, f, { dev = opts.dev, no_build = cfg ~= nil, before_exec = hook }, function(outcome)
+            return host.foreign(lt, f, { dev = opts.dev, no_build = (cfg ~= nil) or opts.no_build or false,
+                before_exec = hook }, function(outcome)
                 results_requested = st.framework == "gtest"
                 local path = st.results_name and outcome.results[st.results_name]
                 results = path and gtest.parse_xml_results(path) or nil
@@ -635,8 +754,9 @@ function M.exec_step(ws, lt, opts, host, cb)
 
     -- A launch's deploy steps run before its program (§8.8.4): through the
     -- host when it has an asynchronous deploy (the workspace daemon, which
-    -- keeps its loop free and stops between copies on a cancel), else here.
-    if not reasons and cfg then
+    -- keeps its loop free and stops between copies on a cancel), else here —
+    -- unless the build is skipped, which skips deploy too (§16.16).
+    if not reasons and cfg and not opts.no_build then
         local function deployed(dok, derr)
             if not dok then
                 local msg = "deploy failed: " .. tostring(derr)
