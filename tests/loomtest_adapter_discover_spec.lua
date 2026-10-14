@@ -8,17 +8,17 @@
 local ConfigUnit = require("loomworks.config_unit")
 
 describe("loomtest adapter: discover_async over several units", function()
-    local lw = require("loomworks")
+    local test_state = require("loomworks.test_state")
     local loomtest = require("loomtest")
     local orig_active
 
     before_each(function()
-        orig_active = lw.get_active_profile
+        orig_active = test_state.active_profile
         loomtest.unregister_adapter("loomworks")
         loomtest.clear()
     end)
     after_each(function()
-        lw.get_active_profile = orig_active
+        test_state.active_profile = orig_active
         loomtest.unregister_adapter("loomworks")
         loomtest.clear()
     end)
@@ -49,7 +49,7 @@ describe("loomtest adapter: discover_async over several units", function()
     end
 
     local function register(units)
-        lw.get_active_profile = function()
+        test_state.active_profile = function()
             return { projects = function()
                 local pps = {}
                 for i, u in ipairs(units) do pps[i] = { _config_unit = u } end

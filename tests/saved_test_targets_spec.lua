@@ -1098,9 +1098,11 @@ end)
 -- ===========================================================================
 describe("loomtest adapter: owning-unit dispatch (§8.9.4)", function()
     local lw = require("loomworks")
-    local orig_active
-    before_each(function() orig_active = lw.get_active_profile end)
-    after_each(function() lw.get_active_profile = orig_active end)
+    -- (test_source reads the active profile from the model,
+    -- test_state.active_profile.)
+    local orig_ws
+    before_each(function() orig_ws = lw.get_workspace end)
+    after_each(function() lw.get_workspace = orig_ws end)
 
     local function unit_with(tus)
         return {
@@ -1124,9 +1126,8 @@ describe("loomtest adapter: owning-unit dispatch (§8.9.4)", function()
     it("run-all covers every TestUnit of every unit; run / parse go through the owner", function()
         local m1, s1, m2 = tu("target:A", true), tu("launch:S", false), tu("target:B", true)
         local u1, u2 = unit_with({ m1, s1 }), unit_with({ m2 })
-        lw.get_active_profile = function()
-            return { projects = function() return { { _config_unit = u1 }, { _config_unit = u2 } } end }
-        end
+        local profile = { projects = function() return { { _config_unit = u1 }, { _config_unit = u2 } } end }
+        lw.get_workspace = function() return { _active_profile = profile } end
         package.loaded["loomworks.loomtest_adapter"] = nil
         local adapter_mod = require("loomworks.loomtest_adapter")
         local captured

@@ -97,12 +97,16 @@ function M.split_case(name)
     return suite, case
 end
 
---- The live active profile (nil: none, or a removed one).
-local function active_profile(ws)
-    local ap = ws and ws._active_profile
+--- The live active profile of a workspace (nil: none, or a removed one) —
+--- the one source both the builder and loomworks/test_source.lua read.
+--- @param ws table|nil
+--- @return table|nil
+function M.active_profile(ws)
+    local ap = type(ws) == "table" and ws._active_profile or nil
     if ap and not ap._removed then return ap end
     return nil
 end
+local active_profile = M.active_profile
 
 --- `/`-separated path (nil passes through).
 local function slashes(p)
