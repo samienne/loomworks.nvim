@@ -107,7 +107,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for a project's deploy steps (not for a command launch's, where it is
   unavailable). A project-level step also runs for the project's command
   launches, so a project-level destination using `${target_dir}` fails the
-  deploy of a command launch. (#PRNUM)
+  deploy of a command launch. (#217)
 
 ### Changed
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)
@@ -212,13 +212,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   pinned copy (`lw-<version>-<asset>`). (#108)
 - `lw test` notes a project whose kit builds for a device and that has no
   saved test targets, instead of skipping it silently, and says how to
-  include it (`lw test-target add`). (#PRNUM)
+  include it (`lw test-target add`). (#217)
 - `lw run --cwd` and `lw test --target --cwd` on a module-declared device
   launch target are now a usage error (exit 2), as for a cross-built device
-  target. (#PRNUM)
+  target. (#217)
 - Test results keep at most 1 MiB of each test case's failure message and
   output; longer captures are cut at a line boundary and end with
-  `... [truncated: N more bytes]`. (#PRNUM)
+  `... [truncated: N more bytes]`. (#217)
 - Read-only commands (`lw status`, `lw profile list`, `lw export`,
   `lw import --dry-run`, `lw health`, ...) and the editor no longer rewrite a
   build cache written by an earlier loomworks (unsigned) when they load the
