@@ -400,6 +400,32 @@ describe("daemon build service (§19.15)", function()
         end
     end)
 
+    it("a throw after the build lock is taken ends the task and releases the lock", function()
+        local bd
+        local plan, locked = build_run.plan, nil
+        -- (Planning runs in the acceptance's segment, with the lock held.)
+        build_run.plan = function()
+            build_run.plan = plan
+            bd = srv.service.ws._profiles[1]:projects()[1]:build_dir()
+            locked = build_lock.read(bd) ~= nil
+            error("plan exploded")
+        end
+        local r = build(srv)
+        local ended = r.wait_done(15000)
+        build_run.plan = plan
+        assert.is_true(locked, "the stub did not run with the lock held")
+        assert.is_true(ended, "the task never ended: " .. vim.inspect({ r.reply, r.events }))
+        assert.is_true(r.done().exit_code ~= 0)
+        assert.truthy(tostring(r.done().error):find("plan exploded", 1, true), r.done().error)
+        assert.is_nil(build_lock.read(bd), "the ended task still holds its build lock")
+        r.conn:close()
+        -- The directory is usable again: the next build starts and ends.
+        local n = build(srv)
+        assert.is_true(n.wait_done())
+        assert.equals(0, n.done().exit_code)
+        n.conn:close()
+    end)
+
     it("two builds of one build directory: the second is refused naming the daemon", function()
         local pidfile = H.tmp() .. "/pid"
         local a = build(srv, { profile = "dev" }, { env = { LW_TEST_SLEEP = "60000", LW_TEST_PIDFILE = pidfile } })

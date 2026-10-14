@@ -669,8 +669,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 - Experimental daemon: an editor test run that hit an internal error right
-  after the daemon accepted it no longer hangs with its tests shown as queued:
-  the run ends with the error. (#229)
+  after the daemon accepted it no longer hangs with its tests shown as queued,
+  and a build that hit one after taking its build directory no longer keeps
+  that directory locked: the task ends with the error. (#229)
 - `lw run --cwd` on a target that runs on a device is now a usage error
   (exit 2) naming the target, like `lw test --target --cwd`, instead of
   exit 1. (#211)
