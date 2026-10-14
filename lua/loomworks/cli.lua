@@ -3020,7 +3020,7 @@ function M._run_test_executable(ws, lt, opts, deps)
   local exit_only = opts.saved and not results_requested and true or false
   local c = test_run.count(results)
   if failed then
-    out(string.format("%s: FAILED (%s)%s", label, table.concat(reasons, ", "),
+    out(string.format("%s: FAILED (%s)%s", label, test_run.failed_reasons(reasons, c),
       #c.failed_ids > 0 and (": " .. table.concat(c.failed_ids, ", ")) or ""))
   elseif exit_only then
     out(label .. ": passed (exit status 0; no per-case results)")
@@ -3610,7 +3610,7 @@ function M._test_plan(ws, profile, opts, deps)
         }, deps)
         if failed then n_failed = n_failed + 1 end
         summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
-          failed and ("FAILED (" .. table.concat(reasons, ", ") .. ")")
+          failed and ("FAILED (" .. require("loomworks.remote.test_run").failed_reasons(reasons, c) .. ")")
             or ("passed" .. ((c and not exit_only) and require("loomworks.remote.test_run").not_run_suffix(c) or "")),
           exit_only and "  (exit status only — no per-case results)" or "")
       end
