@@ -110,6 +110,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Test results keep at most 1 MiB of each test case's failure message and
   output; longer captures are cut at a line boundary and end with
   `... [truncated: N more bytes]`. (#214)
+- The test explorer shows the tests of every project in the active profile
+  again; when every project's tests were already discovered it showed only
+  the first project's tests. (#218)
 
 ## 0.1.43 - 2026-10-07
 
