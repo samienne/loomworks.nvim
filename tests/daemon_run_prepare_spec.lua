@@ -92,6 +92,20 @@ describe("daemon run preparation (§19.15 Run)", function()
         assert.is_false(deployed)
     end)
 
+    it("--cwd refuses a device target as a usage error (exit 2), before deploy", function()
+        local deployed = false
+        local lt = {
+            requires_device = function() return true end,
+            display_name = function() return "phone-app" end,
+            deploy_sync = function() deployed = true; return true end,
+        }
+        local done = prepare(lt, { cwd = "sub" })
+        assert.are.equal(2, done.code)
+        assert.are.equal("--cwd does not apply to a device run ('phone-app') — set the project's "
+            .. "device.working_dir instead", done.err)
+        assert.is_false(deployed)
+    end)
+
     it("--prefix with a local target prepares the launch", function()
         local lt = {
             requires_device = function() return false end,

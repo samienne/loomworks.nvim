@@ -623,6 +623,53 @@ describe("lw test plan (§16.16)", function()
         assert.truthy(r.stderr:find("A: its registered tests cannot run on this host (arm64)", 1, true))
     end)
 
+    it("foreign without saved targets, beside other steps, is skipped with a note naming it", function()
+        local _, ppa = fake_unit("A", { batch = true, foreign = true })
+        local _, ppb = fake_unit("B", { saved = { "X" }, targets = { X = fake_target("X") } })
+        local r = run_plan(fake_profile({ ppa, ppb }), {})
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.same({ "/bin/X" }, r.ran)
+        assert.truthy(r.stderr:find("A: skipped", 1, true), r.stderr)
+        assert.truthy(r.stderr:find("(arm64)", 1, true), r.stderr)
+        assert.truthy(r.stderr:find("lw test-target add", 1, true), r.stderr)
+        -- A foreign unit WITH saved entries gets the batch-dropped note, not this one.
+        local _, ppc = fake_unit("C", { batch = true, foreign = true, saved = { "X" },
+            targets = { X = fake_target("X") } })
+        local c = run_plan(fake_profile({ ppc }), {})
+        assert.is_nil(c.stderr:find("C: skipped", 1, true), c.stderr)
+    end)
+
+    it("foreign skip note under --discovered: no saved-target claim or advice", function()
+        -- A has saved targets, but --discovered leaves them out of the plan.
+        local _, ppa = fake_unit("A", { batch = true, foreign = true, saved = { "X" },
+            targets = { X = fake_target("X") } })
+        local _, ppb = fake_unit("B", { batch = true })
+        local r = run_plan(fake_profile({ ppa, ppb }), { sel = "discovered" })
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.truthy(r.stderr:find("A: skipped — its discovered tests cannot run on this host (arm64)", 1, true),
+            r.stderr)
+        assert.is_nil(r.stderr:find("no saved test targets", 1, true), r.stderr)
+        assert.is_nil(r.stderr:find("lw test-target add", 1, true), r.stderr)
+    end)
+
+    it("foreign skip note when its saved targets are unsupported: says so, no add advice", function()
+        local _, ppa = fake_unit("A", { batch = true, foreign = true, saved = { "X" },
+            targets = { X = fake_target("X") } })
+        ppa._config_unit._project._module.impl.parse_targets = nil
+        local _, ppb = fake_unit("B", { saved = { "Y" }, targets = { Y = fake_target("Y") } })
+        local r = run_plan(fake_profile({ ppa, ppb }), {})
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.truthy(r.stderr:find("A: skipped", 1, true), r.stderr)
+        assert.truthy(r.stderr:find("its saved test targets are not supported by its module", 1, true), r.stderr)
+        -- Exactly one note for A: the skip note already says the targets are
+        -- unsupported, so the generic "— ignored" note must not repeat it.
+        local _, n_a = r.stderr:gsub("lw: note: A:", "")
+        assert.are.equal(1, n_a, r.stderr)
+        assert.is_nil(r.stderr:find("ignored", 1, true), r.stderr)
+        assert.is_nil(r.stderr:find("no saved test targets", 1, true), r.stderr)
+        assert.is_nil(r.stderr:find("lw test-target add", 1, true), r.stderr)
+    end)
+
     it("foreign without saved targets is refused; device options need an executable step", function()
         local _, ppa = fake_unit("A", { batch = true, foreign = true })
         local r = run_plan(fake_profile({ ppa }), {})
@@ -1657,6 +1704,28 @@ describe("saved launch deploys: every runner path (§16.16, §8.8)", function()
         cli._foreign_of = orig_f
         assert.equals(2, d.exit_code)
         assert.truthy(d.stderr:find("--cwd does not apply to a device run ('T')", 1, true), d.stderr)
+        assert.equals(0, builds)
+        assert.equals(0, runs)
+    end)
+
+    it("lw test --target --cwd: a module-declared device launch target is a usage error before any build or run", function()
+        local builds, runs = 0, 0
+        local lts = { H = { name = "H" }, D = { name = "D" } }
+        for n, lt in pairs(lts) do
+            lt.is_valid = function() return true end
+            lt.deploy_sync = function() return true end
+            lt.requires_device = function() return n == "D" end
+            lt.resolve_launch_spec = function() return { cmd = "/bin/" .. lt.name, args = {}, cwd = "/proj" } end
+        end
+        local deps = { build = function() builds = builds + 1 end,
+            run_spec = function() runs = runs + 1; return 0 end,
+            resolve_target = function(_, _, name) return lts[name] end }
+        local d = capture(function()
+            return cli._test_targets({ root = "/root" }, { key = "P" }, { "H", "D" },
+                { extra = {}, dev = cli._new_device_opts(), cwd_override = "/x" }, deps)
+        end)
+        assert.equals(2, d.exit_code)
+        assert.truthy(d.stderr:find("--cwd does not apply to a device run ('D')", 1, true), d.stderr)
         assert.equals(0, builds)
         assert.equals(0, runs)
     end)

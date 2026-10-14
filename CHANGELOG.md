@@ -401,6 +401,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   targets up. (#208) With `runtime-mode daemon`, the workspace daemon runs
   the whole plan, saved targets included, with the same output; a plan that
   runs saved targets on a device stays in the `lw` process. (#212)
+- The deploy editor offers `${target_dir}` in its destination segment picker
+  for a project's deploy steps (not for a command launch's, where it is
+  unavailable). A project-level step also runs for the project's command
+  launches, so a project-level destination using `${target_dir}` fails the
+  deploy of a command launch. (#214)
 
 ### Changed
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)
@@ -682,6 +687,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   empty while it is being written. Where the file system has no hard links
   (e.g. FAT), a lock file is still created first and filled right after.
   (#180)
+- `lw test` notes a project whose kit builds for a device and that has no
+  saved test targets, instead of skipping it silently, and says how to
+  include it (`lw test-target add`). (#214)
+- `lw run --cwd` and `lw test --target --cwd` on a module-declared device
+  launch target are now a usage error (exit 2), as for a cross-built device
+  target. (#214)
+- Test results keep at most 1 MiB of each test case's failure message and
+  output; longer captures are cut at a line boundary and end with
+  `... [truncated: N more bytes]`. (#214)
 - The `unstable` update channel picks the highest release version instead of
   the most recently published one, so a full release published after a newer
   pre-release no longer moves `lw self-update` (and `lw release query

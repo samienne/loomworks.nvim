@@ -2034,7 +2034,9 @@ set by `--dry-run`), `quiet` (`--print` / `--dry-run`) and `prefix` (true when
 `--prefix` is given). The wrapper itself and the report format stay with the
 client and do not change what is prepared; `prefix` only lets the daemon
 refuse a device target, after the validity gate and before deploy, with the
-in-process `--prefix cannot wrap a device target …` line. The outcomes are those of `build`; it is also `declined` for a
+in-process `--prefix cannot wrap a device target …` line. Likewise a `cwd` for a device
+target (a module-declared one, §11.4) is refused there with the in-process
+`--cwd does not apply to a device run …` line and exit code 2. The outcomes are those of `build`; it is also `declined` for a
 profile with a foreign kit (see Routing). An accepted request runs as a task
 (`meta.kind = run`) that does, and prints, exactly what the in-process run
 does before its `running …` line, in the same order:
