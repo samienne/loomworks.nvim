@@ -502,18 +502,19 @@ describe("Tests/1 runs in the daemon (§19.15 Tests, §19.20 Tests/1)", function
         h = open(root, key)
         h.op(1, "configure")
         local _, unit = h.discover()
-        -- The unit is not runnable when the run decides what it covers (and
-        -- runnable for every other caller, so its tree still has nodes).
-        local orig = unit.test_availability
-        unit.test_availability = function(self)
-            local src = debug.getinfo(2, "S").source
-            if src:find("test_runs", 1, true) then return "not configured" end
-            return orig(self)
+        local store = test_store.of(h.srv.service)
+        -- The unit is not runnable when the run is accepted, and runnable
+        -- again from the run's first commit (its queued marks) on: when the
+        -- run plans, the tree has the unit's nodes again.
+        unit.test_availability = function() return "not configured" end
+        store.commit = function(self)
+            store.commit, unit.test_availability = nil, nil
+            return getmetatable(self).__index.commit(self)
         end
         h.send(call(2, TESTS.object, TESTS.iface, "run_cases", { no_build = true }))
         h.ok(2, { outcome = "accepted", task_id = { ["$bind"] = "all" } })
         local ok, err = pcall(h.expect, { kind = "task", task_id = { ["$var"] = "all" }, phase = "done" }, 30000)
-        unit.test_availability = nil
+        store.commit, unit.test_availability = nil, nil
         assert.is_true(ok, tostring(err))
         local text = h.text(h.s.vars.all)
         assert.is_nil(text:find("Math.Add", 1, true), text)
