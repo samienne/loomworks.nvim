@@ -26,6 +26,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+## 0.1.44 - 2026-10-14
+
+A configuration can now list saved test targets that plain `lw test` runs
+after the project's own tests, and clangd only uses a compile database
+configured on this machine, so it no longer guesses flags from stale ones.
+`lw test` no longer hangs on huge failure output, and the test explorer
+shows every project's tests again.
+
 ### Added
 
 - New lualine component `loomworks_lsp`: placed next to `lsp_status`, it
