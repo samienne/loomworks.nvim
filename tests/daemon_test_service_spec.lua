@@ -200,6 +200,51 @@ describe("daemon test run (§19.15, §16.16)", function()
         a.conn:close()
         assert.is_true(vim.wait(15000, function() return not srv.busy end, 20))
     end)
+
+    it("a failed step with per-case results keeps its counts in its line and the summary", function()
+        -- A gtest-probed build target (the probe lists a suite) whose program
+        -- (this nvim, which rejects the results option: exit status 1) leaves
+        -- a results file with one failure, two passes, a skip and a disabled
+        -- case (seam: housekeeping.tmp_path names the pre-written file).
+        local probe = H.tmp() .. "/probe.lua"
+        local f = assert(io.open(probe, "wb")); f:write('io.write("Suite.\\n  a\\n")'); f:close()
+        shell.parse_targets = function() return { t1 = { type = "executable", artifact = nv } } end
+        gtest.probe_argv = function() return { nv, "--headless", "-u", "NONE", "-l", probe } end
+        start({ tests = { "t1" } })
+        local xml = H.tmp() .. "/results.xml"
+        f = assert(io.open(xml, "wb"))
+        f:write(table.concat({ '<?xml version="1.0" encoding="UTF-8"?>', '<testsuites tests="5">',
+            '  <testsuite name="Suite">',
+            '    <testcase name="a" status="run" time="0.01" classname="Suite" />',
+            '    <testcase name="b" status="run" time="0.01" classname="Suite">',
+            '      <failure message="t.cpp:3" type=""><![CDATA[t.cpp:3]]></failure>',
+            '    </testcase>',
+            '    <testcase name="c" status="run" time="0.01" classname="Suite" />',
+            '    <testcase name="d" status="run" result="skipped" time="0" classname="Suite">',
+            '      <skipped message="t.cpp:9"><![CDATA[t.cpp:9]]></skipped>',
+            '    </testcase>',
+            '    <testcase name="DISABLED_e" status="notrun" result="suppressed" time="0" classname="Suite" />',
+            '  </testsuite>', '</testsuites>' }, "\n"))
+        f:close()
+        local hk = require("loomworks.housekeeping")
+        local orig = hk.tmp_path
+        hk.tmp_path = function(r, prefix, ext)
+            if prefix == "lw-test-" then return xml end
+            return orig(r, prefix, ext)
+        end
+        local r = request(srv, "test")
+        local done = r.wait_done()
+        hk.tmp_path = orig
+        assert.is_true(done)
+        local lines = r.text("line")
+        assert.equals(1, r.done().exit_code, lines .. "\n" .. tostring(r.done().error))
+        assert.truthy(lines:find("t1: FAILED (exit status 1, 1 failed test, 2 passed, 1 skipped, 1 disabled): Suite.b",
+            1, true), lines)
+        assert.truthy(lines:find("app: t1%s+FAILED %(exit status 1, 1 failed test, 2 passed, 1 skipped, 1 disabled%)"),
+            lines)
+        r.conn:close()
+        assert.is_true(vim.wait(15000, function() return not srv.busy end, 20))
+    end)
 end)
 
 describe("deploy copies asynchronously (the daemon's test step)", function()

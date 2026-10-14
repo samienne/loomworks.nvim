@@ -555,6 +555,27 @@ describe("lw test plan (§16.16)", function()
         assert.truthy(r.stdout:find("A: Y%s+passed\n"), r.stdout)
     end)
 
+    it("the summary line of a failed step with per-case results keeps its counts", function()
+        local _, ppa = fake_unit("A", { saved = { "X", "Y" }, targets = { X = fake_target("X"), Y = fake_target("Y") } })
+        local orig = cli._run_test_executable
+        cli._run_test_executable = function(_, _, o)
+            if o.label == "X" then
+                local c = require("loomworks.remote.test_run").count({
+                    { status = "passed" }, { status = "passed" }, { status = "failed", test_id = "test:S.f" },
+                    { status = "skipped" }, { status = "skipped", disabled = true },
+                })
+                return true, { "exit status 1", "1 failed test" }, c, false
+            end
+            return true, { "exit status 3" }, require("loomworks.remote.test_run").count(nil), false
+        end
+        local r = run_plan(fake_profile({ ppa }), {})
+        cli._run_test_executable = orig
+        assert.equals(1, r.exit_code)
+        assert.truthy(r.stdout:find("A: X%s+FAILED %(exit status 1, 1 failed test, 2 passed, 1 skipped, 1 disabled%)\n"),
+            r.stdout)
+        assert.truthy(r.stdout:find("A: Y%s+FAILED %(exit status 3%)\n"), r.stdout)
+    end)
+
     it("a failed deploy fails its step without running the program; the others still run", function()
         local _, ppa = fake_unit("A", { saved = { "chk", "X" }, targets = { X = fake_target("X") },
             launch = { chk = { command = "/usr/bin/chk" } } })

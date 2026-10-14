@@ -991,6 +991,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Status page: the header shows the running loomworks version (e.g.
   `0.1.44`, or `0.1.44+dev` in a source checkout) instead of a stale
   `0.0.1-dev`. (#236)
+- A failed `lw test` step now keeps its counts in the summary, e.g.
+  `FAILED (exit status 1, 1 failed test, 364 passed, 2 skipped)`, in the step line
+  and the per-profile summary, on a host or a device. Before, only the failure
+  reasons were shown. A step without per-case results keeps its line. (#241)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
