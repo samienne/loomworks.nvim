@@ -438,6 +438,65 @@ local function attr_status(attrs)
     return nil
 end
 
+--- Result of one testcase element with a body (`<testcase ...>...</testcase>`,
+--- on one line or many): its <failure>, <skipped> or <error> child, else
+--- its own status attributes, decide the status.
+--- @param text string the whole testcase element
+--- @return table|nil TestResult
+local function testcase_result(text)
+    local attrs = text:match("<testcase%s(.-[^/])>")
+    local body = text:match("<testcase[^>]*>(.-)</testcase>") or ""
+    if attrs then
+        local name = attrs:match('name="([^"]*)"')
+        local classname = attrs:match('classname="([^"]*)"')
+        local time_str = attrs:match('time="([^"]*)"')
+        if name then
+            local test_id = (classname and classname ~= "")
+                and ("test:" .. classname .. "." .. name)
+                or ("test:" .. name)
+
+            local status = "passed"
+            local message, errors, output, disabled
+            if body:match("<failure") then
+                status = "failed"
+                message = body:match("<failure[^>]*>(.-)<%/failure>")
+                    or body:match('<failure message="([^"]*)"')
+                message = M.cap_captured(strip_cdata(message))
+                if message then errors = parse_failure_locations(message) end
+            elseif body:match("<skipped") then
+                status = "skipped"
+                disabled = select(2, attr_status(attrs))
+            elseif body:match("<error") then
+                status = "errored"
+                message = body:match("<error[^>]*>(.-)<%/error>")
+                message = M.cap_captured(strip_cdata(message))
+            else
+                local st, dis = attr_status(attrs)
+                if st then status, disabled = st, dis end
+            end
+
+            local sys_out = strip_cdata(body:match("<system%-out>(.-)</system%-out>"))
+            local sys_err = strip_cdata(body:match("<system%-err>(.-)</system%-err>"))
+            if sys_out or sys_err then
+                local parts = {}
+                if sys_out and sys_out ~= "" then parts[#parts + 1] = sys_out end
+                if sys_err and sys_err ~= "" then
+                    parts[#parts + 1] = "--- stderr ---"
+                    parts[#parts + 1] = sys_err
+                end
+                output = M.cap_captured(table.concat(parts, "\n"))
+            end
+
+            return {
+                test_id = test_id, status = status, disabled = disabled,
+                message = message, output = output,
+                errors = errors,
+                duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
+            }
+        end
+    end
+end
+
 --- Parse gtest XML output into test results.
 --- Handles both gtest native XML (--gtest_output=xml) and ctest JUnit
 --- (--output-junit). Extracts per-test output from <system-out>/<system-err>,
@@ -469,57 +528,7 @@ function M.parse_xml_results(output_path)
             if line:match("</testcase>") then
                 local in_testcase = table.concat(tc_lines, "\n")
                 tc_lines = nil
-                local attrs = in_testcase:match("<testcase%s(.-[^/])>")
-                local body = in_testcase:match("<testcase[^>]*>(.-)</testcase>") or ""
-                if attrs then
-                    local name = attrs:match('name="([^"]*)"')
-                    local classname = attrs:match('classname="([^"]*)"')
-                    local time_str = attrs:match('time="([^"]*)"')
-                    if name then
-                        local test_id = (classname and classname ~= "")
-                            and ("test:" .. classname .. "." .. name)
-                            or ("test:" .. name)
-
-                        local status = "passed"
-                        local message, errors, output, disabled
-                        if body:match("<failure") then
-                            status = "failed"
-                            message = body:match("<failure[^>]*>(.-)<%/failure>")
-                                or body:match('<failure message="([^"]*)"')
-                            message = M.cap_captured(strip_cdata(message))
-                            if message then errors = parse_failure_locations(message) end
-                        elseif body:match("<skipped") then
-                            status = "skipped"
-                            disabled = select(2, attr_status(attrs))
-                        elseif body:match("<error") then
-                            status = "errored"
-                            message = body:match("<error[^>]*>(.-)<%/error>")
-                            message = M.cap_captured(strip_cdata(message))
-                        else
-                            local st, dis = attr_status(attrs)
-                            if st then status, disabled = st, dis end
-                        end
-
-                        local sys_out = strip_cdata(body:match("<system%-out>(.-)</system%-out>"))
-                        local sys_err = strip_cdata(body:match("<system%-err>(.-)</system%-err>"))
-                        if sys_out or sys_err then
-                            local parts = {}
-                            if sys_out and sys_out ~= "" then parts[#parts + 1] = sys_out end
-                            if sys_err and sys_err ~= "" then
-                                parts[#parts + 1] = "--- stderr ---"
-                                parts[#parts + 1] = sys_err
-                            end
-                            output = M.cap_captured(table.concat(parts, "\n"))
-                        end
-
-                        results[#results + 1] = {
-                            test_id = test_id, status = status, disabled = disabled,
-                            message = message, output = output,
-                            errors = errors,
-                            duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
-                        }
-                    end
-                end
+                results[#results + 1] = testcase_result(in_testcase)
             end
         elseif line:match("<testcase%s") then
             if line:match("/>%s*$") then
@@ -542,24 +551,9 @@ function M.parse_xml_results(output_path)
                     end
                 end
             elseif line:match("</testcase>") then
-                -- Single-line testcase with body (rare)
-                local attrs = line:match("<testcase%s(.-[^/])>")
-                local body = line:match("<testcase[^>]*>(.-)</testcase>") or ""
-                if attrs then
-                    local name = attrs:match('name="([^"]*)"')
-                    local classname = attrs:match('classname="([^"]*)"')
-                    local time_str = attrs:match('time="([^"]*)"')
-                    if name then
-                        local test_id = (classname and classname ~= "")
-                            and ("test:" .. classname .. "." .. name)
-                            or ("test:" .. name)
-                        local status, disabled = attr_status(attrs)
-                        results[#results + 1] = {
-                            test_id = test_id, status = status or "passed", disabled = disabled,
-                            duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
-                        }
-                    end
-                end
+                -- Single-line testcase with body (rare): judged like a
+                -- multi-line one, so a <failure> child counts
+                results[#results + 1] = testcase_result(line)
             else
                 -- Multi-line testcase (has children like <failure>, <system-out>)
                 tc_lines = { line }
