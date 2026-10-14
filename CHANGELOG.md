@@ -219,6 +219,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Test results keep at most 1 MiB of each test case's failure message and
   output; longer captures are cut at a line boundary and end with
   `... [truncated: N more bytes]`. (#217)
+- The test explorer shows the tests of every project in the active profile
+  again; when every project's tests were already discovered it showed only
+  the first project's tests. (#220)
 - Read-only commands (`lw status`, `lw profile list`, `lw export`,
   `lw import --dry-run`, `lw health`, ...) and the editor no longer rewrite a
   build cache written by an earlier loomworks (unsigned) when they load the
