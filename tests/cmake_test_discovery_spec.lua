@@ -259,6 +259,90 @@ describe("gtest helper", function()
             assert.is_true(elapsed < 10, ("parse took %.2f s (limit 10 s)"):format(elapsed))
         end)
 
+        it("caps a case's captured message and output at 1 MiB (line boundary + marker)", function()
+            assert.equals(1024 * 1024, gtest.MAX_CAPTURED_BYTES)
+            local line = string.rep("x", 79)      -- 80 bytes with its newline
+            local big = {}
+            for i = 1, 20000 do big[i] = line end   -- 1.6 MB, over the cap
+            local body = table.concat(big, "\n")
+            local tmp = vim.fn.tempname() .. ".xml"
+            local f = io.open(tmp, "w")
+            f:write(table.concat({
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                "<testsuites>",
+                '  <testsuite name="S" tests="2" failures="2">',
+                '    <testcase name="Big" classname="S" time="1">',
+                '      <failure message="m"><![CDATA[src/a.cpp:1',
+                body .. "]]></failure>",
+                "      <system-out><![CDATA[" .. body .. "]]></system-out>",
+                "    </testcase>",
+                '    <testcase name="Small" classname="S" time="1">',
+                '      <failure message="m"><![CDATA[src/a.cpp:2',
+                "Expected: 1]]></failure>",
+                "      <system-out>hello</system-out>",
+                "    </testcase>",
+                "  </testsuite>",
+                "</testsuites>",
+            }, "\n"))
+            f:close()
+            local results = gtest.parse_xml_results(tmp)
+            os.remove(tmp)
+            assert.equals(2, #results)
+            local full_msg = "src/a.cpp:1\n" .. body
+            for _, s in ipairs({ { results[1].message, #full_msg }, { results[1].output, #body } }) do
+                local text, total = s[1], s[2]
+                local kept, more = text:match("^(.-)%.%.%. %[truncated: (%d+) more bytes%]$")
+                assert.is_not_nil(kept, text:sub(-80))
+                assert.is_true(#kept <= gtest.MAX_CAPTURED_BYTES)
+                assert.equals("\n", kept:sub(-1))                    -- cut at a line boundary
+                assert.equals(total, #kept + tonumber(more))
+            end
+            -- Location parsing still works on the capped message.
+            assert.equals("src/a.cpp", results[1].errors[1].file)
+            -- Normal-sized captures are unchanged.
+            assert.equals("src/a.cpp:2\nExpected: 1", results[2].message)
+            assert.equals("hello", results[2].output)
+        end)
+
+        -- Run `fn` with the cap temporarily set to `cap` bytes.
+        local function with_cap(cap, fn)
+            local saved = gtest.MAX_CAPTURED_BYTES
+            gtest.MAX_CAPTURED_BYTES = cap
+            local ok, err = pcall(fn)
+            gtest.MAX_CAPTURED_BYTES = saved
+            if not ok then error(err, 0) end
+        end
+
+        it("caps one huge line with no newline quickly (hard cut + marker)", function()
+            with_cap(32 * 1024, function()
+                local text = string.rep("x", 40 * 1024)
+                local t0 = vim.uv.hrtime()
+                local capped = gtest.cap_captured(text)
+                local elapsed = (vim.uv.hrtime() - t0) / 1e9
+                assert.is_true(elapsed < 1, ("cap took %.2f s (limit 1 s)"):format(elapsed))
+                local kept, more = capped:match("^(.-)%.%.%. %[truncated: (%d+) more bytes%]$")
+                assert.is_not_nil(kept)
+                assert.equals(32 * 1024, #kept)
+                assert.equals(8 * 1024, tonumber(more))
+            end)
+        end)
+
+        it("does not split a UTF-8 character straddling a hard cut", function()
+            with_cap(10, function()
+                -- "é" (2 bytes) at bytes 10-11; "€" (3 bytes) at bytes 9-11.
+                for _, case in ipairs({
+                    { "abcdefghi" .. "é" .. "xyz", "abcdefghi" },
+                    { "abcdefgh" .. "€" .. "xyz", "abcdefgh" },
+                    { "abcdefghij" .. "é", "abcdefghij" },   -- char starts after the cap
+                }) do
+                    local capped = gtest.cap_captured(case[1])
+                    local kept, more = capped:match("^(.-)%.%.%. %[truncated: (%d+) more bytes%]$")
+                    assert.equals(case[2], kept)
+                    assert.equals(#case[1] - #kept, tonumber(more))
+                end
+            end)
+        end)
+
         it("should return nil for missing file", function()
             local results = gtest.parse_xml_results("/nonexistent/path.xml")
             assert.is_nil(results)

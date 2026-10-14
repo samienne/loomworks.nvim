@@ -2720,6 +2720,15 @@ function M._foreign_of(lt)
   return f
 end
 
+--- Whether a launch target runs on a device: a foreign build target (§18.1)
+--- or a module-declared device launch target (`requires_device()`).
+--- @param lt loomworks.LaunchTarget
+--- @return boolean
+function M._runs_on_device(lt)
+  if lt.requires_device and lt:requires_device() then return true end
+  return M._foreign_of(lt) ~= nil
+end
+
 --- Run a foreign build target on a device (spec §16.17, §18.5): deploy on the
 --- host → stage → execute remotely. Returns the invocation's exit status (the
 --- device program's; a lost status is a transport failure, EXIT_TRANSPORT).
@@ -2829,6 +2838,12 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
     die("--prefix cannot wrap a device target ('" .. lt:display_name() ..
       "') — a local wrapper does not apply to on-device execution.")
   end
+  -- Likewise a per-invocation working directory: a usage error (exit 2), as
+  -- for a foreign build target, before anything is deployed or run.
+  if opts.cwd_override and lt:requires_device() then
+    die("--cwd does not apply to a device run ('" .. lt:display_name()
+      .. "') — set the project's device.working_dir instead", 2)
+  end
 
   -- A foreign build target (spec §18.1) never runs here: it is routed to a
   -- device through its SDK's runner, or refused.
@@ -2917,7 +2932,7 @@ function M._run_test_executable(ws, lt, opts, deps)
     return { msg }
   end
 
-  if f and opts.cwd_override then
+  if opts.cwd_override and (f or (lt.requires_device and lt:requires_device())) then
     die("--cwd does not apply to a device run ('" .. label .. "') — set the project's device.working_dir instead", 2)
   end
   -- A device step takes its working directory from the `device` block, never
@@ -3054,7 +3069,7 @@ function M._test_targets(ws, profile, names, opts, deps)
   --- `--cwd` never applies to a device run (as for `lw run --cwd`): a usage
   --- error, refused before anything is built or run.
   local function check_cwd(name, lt)
-    if opts.cwd_override and lt and M._foreign_of(lt) then
+    if opts.cwd_override and lt and M._runs_on_device(lt) then
       die("--cwd does not apply to a device run ('" .. name .. "') — set the project's device.working_dir instead", 2)
     end
   end
@@ -3218,10 +3233,30 @@ function M._test_plan(ws, profile, opts, deps)
   local extra = opts.extra or {}
 
   -- Foreign units: the batch step is never run on the host (invariant 19).
+  -- A unit whose skip note already says its saved targets are unsupported
+  -- gets no second "— ignored" note below.
+  local noted_unsupported = {}
   for _, u in ipairs(plan) do
     if u.batch_dropped and #u.entries > 0 then
       note(string.format("lw: note: %s: its registered tests cannot run on this host (%s) — "
         .. "skipping its batch runner; its saved test targets run on a device", u.project.key, u.platform))
+    elseif u.batch_dropped and n_batch + n_exec > 0 then
+      -- Never skipped silently: name the unit, and how to include it only when
+      -- it truly has no saved entries (under --discovered they were not
+      -- planned; unsupported ones were cleared — neither is "none saved").
+      local why
+      if opts.sel == "discovered" then
+        why = string.format("its discovered tests cannot run on this host (%s)", u.platform)
+      elseif u.unsupported then
+        noted_unsupported[u] = true
+        why = string.format("its registered tests cannot run on this host (%s) and its saved test "
+          .. "targets are not supported by its module", u.platform)
+      else
+        why = string.format("its registered tests cannot run on this host (%s) and it has no saved test "
+          .. "targets; to run executables on a device: lw test-target add %s %s:<exe>",
+          u.platform, profile.key, u.project.key)
+      end
+      note(string.format("lw: note: %s: skipped — %s", u.project.key, why))
     end
   end
   if n_batch + n_exec == 0 then
@@ -3236,7 +3271,7 @@ function M._test_plan(ws, profile, opts, deps)
     end
   end
   for _, u in ipairs(plan) do
-    if u.unsupported then
+    if u.unsupported and not noted_unsupported[u] then
       note("lw: note: " .. u.project.key .. ": saved test targets are not supported by its module (no build targets) — ignored")
     end
   end

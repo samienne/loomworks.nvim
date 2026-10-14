@@ -862,7 +862,11 @@ the rest of the descriptor. A headless run (§16.17) may also override the
 working directory for a single invocation, and so may a headless test run that
 names targets (§16.16). Precedence: per-invocation override
 → descriptor `working_dir` → project directory. An override may be absolute or
-workspace-root-relative and is variable-expanded in the launch context.
+workspace-root-relative and is variable-expanded in the launch context. A
+per-invocation override never applies to a run on a device — a foreign build
+target (§18.1) or a module-declared device launch target (§11.4): it is a
+usage error, reported before anything is deployed or run (the device working
+directory comes from the project's `device` block, §18.9).
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.
@@ -1337,6 +1341,13 @@ way; this only governs the build.
 **`parse_results(output_path) → TestResult[]|nil`**
 
 Parse structured test output into results.
+
+A result keeps at most **1 MiB** of each captured text — its failure message
+and its captured output — so a results file inflated by an assertion failing
+in a loop cannot produce unbounded strings. A capture over the cap is cut at
+the last line boundary within it (exactly at the cap when there is none) and
+ends with a marker naming the dropped size (`... [truncated: N more bytes]`).
+Captures within the cap are unchanged.
 
 **`invalidate()`**
 
