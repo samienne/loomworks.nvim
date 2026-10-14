@@ -94,6 +94,54 @@
       },
       "needs_env": true,
       "mutates": true
+    },
+    "discover": {
+      "description": "Discover the tests of the active profile's units (spec 19.15 Tests) in the caller's environment, updating loomworks.view.Tests/1: each unit in project-key order, a unit with nothing to probe getting its view state and a unit whose tree is current not probed again unless force; a probe holds the unit's build-directory lock (behind a task of the daemon it waits; a holder in another process fails that unit, its state error). A unit's failure does not end the task; a cancel stops between units and at a probe's programs (the view stays stale). The view's update precedes done.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "description": "Probe units whose tree is current too.",
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The discovery's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "tests": {
+              "description": "The number of tests of the profile's units after discovery (the discovered entries no other entry is the parent of: cases, and targets without cases).",
+              "type": "integer",
+              "minimum": 0
+            },
+            "failed": {
+              "description": "The number of units whose discovery failed (their view state error).",
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
     }
   },
   "signals": {

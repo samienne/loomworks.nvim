@@ -1579,8 +1579,13 @@ function ConfigUnit._merge_test_entries(units, per_unit)
 end
 
 --- Discover tests asynchronously. Delegates to TestUnits.
+--- `opts.system` (the workspace daemon's discovery, spec §19.15 "Tests")
+--- replaces `vim.system` for every program the TestUnits spawn while
+--- discovering (`TestUnit._system`): the daemon spawns them in the client's
+--- environment and kills them on a cancel.
 --- @param callback fun(entries: table[]|nil)
-function ConfigUnit:discover_tests_async(callback)
+--- @param opts? { system?: fun(cmd: string[], opts: table, on_exit: fun(res: table)): table }
+function ConfigUnit:discover_tests_async(callback, opts)
     self:_check_saved_tests()
     if self._test_tree then
         callback(self._test_tree)
@@ -1593,10 +1598,13 @@ function ConfigUnit:discover_tests_async(callback)
         return
     end
 
+    local system = opts and opts.system or nil
     local per_unit = {}
     local pending = #units
     for i, tu in ipairs(units) do
+        tu._system = system
         tu:discover_async(function(entries)
+            tu._system = nil
             per_unit[i] = entries
             pending = pending - 1
             if pending == 0 then

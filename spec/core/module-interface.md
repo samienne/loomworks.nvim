@@ -1317,7 +1317,15 @@ Includes framework detection and source location mapping.
 **`discover_async(callback)`**
 
 Async version. Calls `callback(entries)` when done. Used during
-background cache population.
+background cache population. *(Step 5m.)* While the caller set
+`_system` on the TestUnit (`ConfigUnit:discover_tests_async(cb, { system })`:
+the workspace daemon's discovery, §19.15 "Tests"), every program the
+discovery runs is spawned through it (`TestUnit.system(tu, cmd, opts,
+on_exit)`, the `vim.system` signature and result shape; `gtest.probe`
+takes it as `opts.system`) instead of `vim.system`, so the daemon runs it in
+the client's environment and can kill it. A TestUnit that spawns directly
+still works, in the daemon's own environment and without being killed on a
+cancel.
 
 **`test_command(test_id, opts?) → RunSpec|nil`**
 

@@ -4,6 +4,7 @@
 ---
 ---   /views   loomworks.view.Header/1          get (update)
 ---   /views   loomworks.view.ProjectsIndex/1   get (update)
+---   /views   loomworks.view.Tests/1           get (update; loomworks.daemon.tests_view, step 5m)
 ---
 --- Each view has one method, `get` (its full state; never loads the
 --- workspace: an unloaded one is the unloaded state), and one signal,
@@ -24,6 +25,7 @@ local M = {}
 
 M.HEADER = { path = "/views", iface = "loomworks.view.Header", v = 1 }
 M.PROJECTS = { path = "/views", iface = "loomworks.view.ProjectsIndex", v = 1 }
+M.TESTS = { path = "/views", iface = "loomworks.view.Tests", v = 1 }
 
 --- The builder options of the daemon: its session fields and its ids.
 --- @param service loomworks.daemon.BuildService
@@ -49,6 +51,14 @@ end
 function M.projects_index(service)
     local ws = service:header_model()
     return view_state.projects_index(ws, opts(service))
+end
+
+--- `loomworks.view.Tests/1`'s state (§19.13 "The tests view"). Never loads,
+--- never discovers.
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.TestsView
+function M.tests(service)
+    return require("loomworks.daemon.tests_view").state(service)
 end
 
 --- The handlers of a view: `get` and the `initial` state, which records its
@@ -80,10 +90,16 @@ function M.header_impl(service) return impl(M.HEADER, M.header, service) end
 --- @return loomworks.daemon.InterfaceImpl
 function M.projects_impl(service) return impl(M.PROJECTS, M.projects_index, service) end
 
+--- The `loomworks.view.Tests/1` handlers.
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.daemon.InterfaceImpl
+function M.tests_impl(service) return impl(M.TESTS, M.tests, service) end
+
 --- The views and their handler factories, in mount order.
 M.MOUNTS = {
     { M.HEADER, M.header_impl },
     { M.PROJECTS, M.projects_impl },
+    { M.TESTS, M.tests_impl },
 }
 
 --- Send `update` to every subscription of a view whose state differs from
@@ -92,7 +108,7 @@ M.MOUNTS = {
 function M.check(service)
     local reg = service.server and service.server.interfaces
     if not reg then return end
-    for _, v in ipairs({ { M.HEADER, M.header }, { M.PROJECTS, M.projects_index } }) do
+    for _, v in ipairs({ { M.HEADER, M.header }, { M.PROJECTS, M.projects_index }, { M.TESTS, M.tests } }) do
         local where, build = v[1], v[2]
         if reg:has_subscribers(where.path, where.iface, where.v, "update") then
             local state = build(service)

@@ -113,7 +113,7 @@ function M.probe_argv(executable)
 end
 
 --- Build vim.system opts for a probe invocation.
---- @param opts? { env?: table<string, string>, cwd?: string }
+--- @param opts? { env?: table<string, string>, cwd?: string, system?: function }
 --- @return table
 local function probe_opts(opts)
     local o = { text = true, timeout = M.PROBE_TIMEOUT_MS }
@@ -162,7 +162,8 @@ end
 --- @param executable string absolute path to the test binary
 --- @param target_id string the target id for parenting discovered tests
 --- @param opts_or_cb table|fun(framework: string|nil, test_list: table[]|nil, diag: string|nil)
----        When a table: `{ env?, cwd? }`. When a function: legacy
+---        When a table: `{ env?, cwd?, system? }` (`system`: spawns the probe instead of
+---        `vim.system`, a discovery's `TestUnit._system`). When a function: legacy
 ---        signature `(executable, target_id, callback)`.
 --- @param callback? fun(framework: string|nil, test_list: table[]|nil, diag: string|nil)
 function M.probe(executable, target_id, opts_or_cb, callback)
@@ -178,7 +179,8 @@ function M.probe(executable, target_id, opts_or_cb, callback)
         vim.schedule(function() callback(nil, nil, foreign) end)
         return
     end
-    vim.system(
+    local system = opts and opts.system or vim.system
+    system(
         { executable, "--gtest_list_tests" },
         probe_opts(opts),
         function(result)

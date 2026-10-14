@@ -41,12 +41,12 @@ local function model(lw)
     return lw.get_workspace()
 end
 
---- The active profile, as the facade reports it.
+--- The active profile: the loaded model's, read as the view builder reads
+--- it (`test_state.active_profile`), so the adapters and the view never
+--- disagree on it.
 --- @return loomworks.Profile|nil
 local function profile()
-    local lw = facade()
-    if not lw or type(lw.get_active_profile) ~= "function" then return nil end
-    return lw.get_active_profile()
+    return test_state.active_profile(model(facade()))
 end
 
 --- Normalize a path for comparison: `/`-separated, no trailing `/`.

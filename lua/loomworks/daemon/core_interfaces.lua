@@ -5,13 +5,13 @@
 ---   /tasks       loomworks.Tasks/1        list, cancel (started, ended)
 ---   /internal    lw.internal.Snapshot/1   get (same_build)
 ---   /build       loomworks.Build/1        build T, configure T, clean T, reset T
----   /tests       loomworks.Tests/1        run T
+---   /tests       loomworks.Tests/1        run T, discover T (loomworks.daemon.test_discover)
 ---   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list
 ---   /profiles    loomworks.Profiles/1     compiler_cache
----   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1
+---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1, loomworks.view.Tests/1
 ---                                         get (update; loomworks.daemon.views)
 ---
 --- Each method adapts the handler the protocol-10 request kind already uses
@@ -318,7 +318,10 @@ end
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.tests_impl(service)
-    return { methods = { run = operation(service, "test", M.TESTS, "run") } }
+    return { methods = {
+        run = operation(service, "test", M.TESTS, "run"),
+        discover = require("loomworks.daemon.test_discover").handler(service, M.TESTS),
+    } }
 end
 
 --- The `loomworks.Launch/1` handlers.
@@ -511,6 +514,7 @@ function M.mount(registry, service)
         { M.LSP, M.lsp_impl },
         require("loomworks.daemon.views").MOUNTS[1],
         require("loomworks.daemon.views").MOUNTS[2],
+        require("loomworks.daemon.views").MOUNTS[3],
     }) do
         local where, make = m[1], m[2]
         local ok, err = registry:mount(where.path, "core", where.iface, where.v, make(service))

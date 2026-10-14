@@ -12,7 +12,7 @@
 ---                  "allow"?, "steps": [ ... ] } ] }
 ---
 --- A case runs on a fresh daemon of its `fixture` (a workspace the runner
---- prepares: `empty`, `shell`; see FIXTURES) over one connection. Unless
+--- prepares: `empty`, `shell`, `tests`; see FIXTURES) over one connection. Unless
 --- `handshake` is false, the runner first sends the default `hello` (with the
 --- case's `hello` fields over it) and expects `welcome`, bound as the
 --- variable `welcome`. Steps:
@@ -106,7 +106,16 @@ M.FORMAT = 1
 ---          configuration `hello` (an existing program, run with one
 ---          argument) and the compile database
 ---          `${build_dir}/compile_commands.json` (one clangd entry)
-M.FIXTURES = { empty = true, shell = true }
+---   tests  the `shell` fixture's project `app` (same commands, build
+---          directory and configuration set `dev`) as a project of the
+---          harness-only module `teststub` (tests/fixtures/teststub,
+---          on the daemon's runtime path; step 5m) with the targets
+---          `unit_a` (`Math.Add`, `Math.Sub` — which fails when run —
+---          at `app/math_test.cc` line 3) and `unit_b` (`Str.Upper`),
+---          and a trusted working copy with the profile `dev` active;
+---          a discovery probe sleeps `LW_TEST_DISCOVER_SLEEP` ms of the
+---          client environment
+M.FIXTURES = { empty = true, shell = true, tests = true }
 
 --- Default per-step timeout.
 M.TIMEOUT_MS = 30000

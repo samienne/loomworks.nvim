@@ -1801,6 +1801,22 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `opts.output_path`), replacing the fixed `<build>/.nvim/gtest_results.xml`
   in the daemon. The transcripts use a harness-only stub test module (tests
   only). The neotest adapter refuses in `daemon` mode with one notice.
+  *(B1, as built:)* `daemon/test_discover.lua` (binary side) is
+  `Tests/1.discover`: accepted in a model segment (`Service:live`, the
+  caller's environment), a run in `service.runs` (cancel, disconnect and
+  stop as a build's), per unit `ConfigUnit:discover_tests_async(cb,
+  { system })` — the `system` seam (`TestUnit._system`, `TestUnit.system`;
+  ctest, meson, saved targets and `gtest.probe` spawn through it) runs every
+  probe program with `runner.spawn` in the client's environment, killable —
+  under the unit's build-directory lock (waiting while this process holds
+  it, `build_lock.held_by_me`; fail-fast against another process).
+  `daemon/tests_view.lua` (binary side) holds the session's test state on
+  the service (`_tests`: per-unit discovery records with a build
+  fingerprint and run mark, node-id anchors, last results; weak-keyed by
+  unit) and builds the view through `test_state.lua`; `stale` from the
+  records (a fingerprint or mark that moved, the profile not the last one
+  discovered), marks raised by `Service:on_run_done`. The stub module is
+  `tests/fixtures/teststub` (the conformance runner's `tests` fixture).
 
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
