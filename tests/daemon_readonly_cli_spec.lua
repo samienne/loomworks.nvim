@@ -106,8 +106,9 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         return n
     end
 
-    --- A workspace with two shell projects (`app` described), a set `dev`
-    --- and a profile `dev`, authored in-process by lw itself.
+    --- A workspace with two shell projects (`app` described; app's Release
+    --- has its own saved test targets, §1.3.4), a set `dev` and a profile
+    --- `dev`, authored in-process by lw itself.
     local function workspace()
         local root = H.tmp()
         roots[#roots + 1] = root
@@ -121,8 +122,10 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
                 configure_cmd = cmd("configure"), build_cmd = cmd("build"),
                 configurations = { Debug = vim.empty_dict(), Release = vim.empty_dict() } } }
         end
+        local app = proj("app")
+        app.shell.configurations.Release = { tests = { "T1", "T2" } }
         write(root .. "/loomworks.json", vim.json.encode({
-            projects = { app = proj("app"), lib = proj("lib") },
+            projects = { app = app, lib = proj("lib") },
             configuration_sets = { dev = { app = "Debug", lib = "Debug" }, rel = { app = "Release", lib = "Release" } },
         }))
         for _, args in ipairs({ { "profile", "create", "dev" }, { "project", "describe", "app", "The application." } }) do
@@ -188,7 +191,14 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         assert.equals(nq + 1, queries(roots3[2], "profile_cache"), "the daemon ran no profile_cache query")
         r = parity(roots3, { "project", "list" })
         assert.truthy(r.stdout:find("The application.", 1, true), r.stdout)
-        parity(roots3, { "project", "show", "app" })
+        r = parity(roots3, { "project", "show", "app" })
+        -- Saved test targets (§16.9): the project row (none + the add hint)
+        -- and each configuration's effective list, read from the projection.
+        local shown = r.stdout:gsub("\r\n", "\n")
+        assert.truthy(shown:find("\n  tests           none — add: lw test-target add <profile> app:<name>", 1, true),
+            shown)
+        assert.truthy(shown:find("\n    Release [^\n]*\n      tests  T1, T2  %(own%)\n"), shown)
+        assert.truthy(shown:find("\n    Debug [^\n]*\n      tests  none\n"), shown)
         parity(roots3, { "project", "describe", "app" })
         parity(roots3, { "config", "list" })
         parity(roots3, { "config", "show", "app", "Release" })
