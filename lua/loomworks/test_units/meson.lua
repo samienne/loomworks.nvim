@@ -686,9 +686,11 @@ function MesonTestUnit:test_command_all(opts)
 end
 
 --- Native meson test run: authoritative exit code, streaming output.
---- `meson test -C <build_dir>` runs every declared test.
---- @param opts? table { filter?: string, extra_args?: string[], junit?: string, profile?: loomworks.Profile }
---- @return table|nil { cmd, env, cwd, junit_out }
+--- `meson test -C <build_dir>` runs every declared test. `opts.no_rebuild`
+--- (`lw test --no-build`, core §16.16) adds `--no-rebuild` and confirms it in
+--- the returned spec.
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string, profile?: loomworks.Profile, no_rebuild?: boolean }
+--- @return table|nil { cmd, env, cwd, junit_out, no_rebuild? }
 function MesonTestUnit:run_command_all(opts)
     opts = opts or {}
     local prefix = meson_prefix_for(self._config_unit)
@@ -700,6 +702,8 @@ function MesonTestUnit:run_command_all(opts)
     cmd[#cmd + 1] = "--print-errorlogs"
     cmd[#cmd + 1] = "-C"
     cmd[#cmd + 1] = self._build_dir
+    -- Run what is built, without meson's implicit rebuild (core §16.16).
+    if opts.no_rebuild then cmd[#cmd + 1] = "--no-rebuild" end
     if opts.filter then cmd[#cmd + 1] = opts.filter end  -- meson filters by test name
     -- Caller args (from `lw test -- …`, e.g. `--num-processes N`) go last.
     if opts.extra_args then vim.list_extend(cmd, opts.extra_args) end
@@ -722,6 +726,7 @@ function MesonTestUnit:run_command_all(opts)
         -- location under the build dir. Reported only when JUnit was requested,
         -- so the core copies it to the caller's path.
         junit_out = opts.junit and (self._build_dir .. "/meson-logs/testlog.junit.xml") or nil,
+        no_rebuild = opts.no_rebuild and true or nil,
     }
 end
 

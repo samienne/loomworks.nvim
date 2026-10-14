@@ -1259,8 +1259,12 @@ M._junit_dest_for = junit_dest_for  -- exported for tests
 --- `opts.skip_units` drops the listed units' batch steps (a foreign unit,
 --- §16.16); `opts.junit_dest_for(label)`, when given, assigns the JUnit path
 --- instead of the per-runner rule (the caller's whole-plan labelling).
+--- `opts.no_rebuild` (`lw test --no-build`, §16.16) is forwarded to each
+--- runner; a self-rebuilding runner whose spec does not confirm it
+--- (`no_rebuild = true`) yields a step with `refused` set (the reason) — the
+--- caller refuses it before any step runs, never letting it rebuild.
 --- @param profile loomworks.Profile
---- @param opts? table { extra_args?: string[], junit?: string, skip_units?: table<loomworks.ConfigUnit, boolean>, junit_dest_for?: fun(label: string, unit: loomworks.ConfigUnit): string|nil }
+--- @param opts? table { extra_args?: string[], junit?: string, no_rebuild?: boolean, skip_units?: table<loomworks.ConfigUnit, boolean>, junit_dest_for?: fun(label: string, unit: loomworks.ConfigUnit): string|nil }
 --- @return table[]|nil steps, integer units_seen
 function M.plan_profile_test(profile, opts)
     opts = opts or {}
@@ -1301,7 +1305,7 @@ function M.plan_profile_test(profile, opts)
         end
         local ok, spec = pcall(function()
             return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest,
-                profile = profile })
+                profile = profile, no_rebuild = opts.no_rebuild or nil })
         end)
         if not ok then
             -- A throwing runner is a bug, not "no tests" — surface it
@@ -1324,6 +1328,9 @@ function M.plan_profile_test(profile, opts)
                 env = spec.env,
                 junit_dest = junit_dest,
                 junit_out = spec.junit_out,
+                refused = (opts.no_rebuild and not spec.no_rebuild and r.tu.run_command_all_rebuilds
+                    and r.tu:run_command_all_rebuilds())
+                    and "its test runner rebuilds its targets and cannot skip that" or nil,
             }
         end
     end
