@@ -384,7 +384,10 @@ describe("lw test plan (§16.16)", function()
                 if not (opts.skip_units or {})[u] and u.batch_runner_test_units()[1] then
                     local label = u._project.key .. ":Debug"
                     steps[#steps + 1] = { unit = u, name = label, runner = "ctest", cmd = { "ctest", label },
-                        junit_dest = opts.junit_dest_for and opts.junit_dest_for(label, u) or nil }
+                        junit_dest = opts.junit_dest_for and opts.junit_dest_for(label, u) or nil,
+                        -- A self-rebuilding runner without a no-rebuild option (§8.9.2).
+                        refused = (opts.no_rebuild and u._cannot_skip_rebuild) and "cannot skip" or nil,
+                        no_rebuild = opts.no_rebuild }
                 end
             end
             return steps, #profile:projects()
@@ -415,9 +418,10 @@ describe("lw test plan (§16.16)", function()
         }
     end
 
-    local function run_plan(profile, opts, codes, ws, deploy_fail)
+    local function run_plan(profile, opts, codes, ws, deploy_fail, more)
         local ran, built, log = {}, nil, {}
-        local deps = {
+        local deps = more or {}
+        for k, v in pairs({
             build = function(_, _, keep) built = keep end,
             run_spec = function(step)
                 local line = table.concat(step.cmd, " ")
@@ -428,7 +432,7 @@ describe("lw test plan (§16.16)", function()
                 return (codes or {})[step.cmd[2] or step.cmd[1]] or 0
             end,
             launch_target = function(_, _, c) return fake_lt(c, log, deploy_fail) end,
-        }
+        }) do deps[k] = v end
         opts.extra = opts.extra or {}
         opts.dev = opts.dev or cli._new_device_opts()
         local r = capture(function() return cli._test_plan(ws or { root = "/" }, profile, opts, deps) end)
@@ -697,6 +701,267 @@ describe("lw test plan (§16.16)", function()
         dev.device = "SER1"
         local d = run_plan(fake_profile({ ppb }), { dev = dev })
         assert.equals(2, d.exit_code)
+    end)
+
+    describe("--no-build (§16.16 Skipping the build)", function()
+        local function all_built() return true, "/bd/x" end
+
+        it("builds and deploys nothing, asks runners not to rebuild, holds the locks", function()
+            local _, ppa = fake_unit("A", { batch = true, build_dir = "/bd",
+                saved = { "chk", "tool", "X" },
+                targets = { X = fake_target("X") },
+                launch = { chk = { target = "X" }, tool = { command = "/usr/bin/tool" } } })
+            local locked, in_lock, checked = {}, false, {}
+            local more = {
+                with_locks = function(p, action, fn)
+                    locked[#locked + 1] = p.key .. " " .. action
+                    in_lock = true; fn(); in_lock = false
+                end,
+                artifact_built = function(_, t) checked[#checked + 1] = t.id; return true, "/bd/" .. t.id end,
+            }
+            local r = run_plan(fake_profile({ ppa }), { no_build = true }, nil, nil, nil, more)
+            assert.is_nil(r.exit_code, r.stderr)
+            assert.is_nil(r.built)                                  -- deps.build never called
+            assert.same({ "Dev:kit build" }, locked)
+            assert.same({ "ctest A:Debug", "/bin/X", "/usr/bin/tool", "/bin/X" }, r.ran)
+            for _, l in ipairs(r.log) do assert.falsy(l:match("^deploy "), l) end  -- no deploy
+            assert.same({ "X", "X" }, checked)          -- target-backed launch + target; not the command
+            assert.truthy(r.stdout:find("TESTS OK", 1, true))
+        end)
+
+        it("forwards no_rebuild to the batch runners", function()
+            local seen
+            local stub = ov.plan_profile_test
+            ov.plan_profile_test = function(profile, opts)
+                if opts.junit_dest_for then seen = opts.no_rebuild end
+                return stub(profile, opts)
+            end
+            local _, ppa = fake_unit("A", { batch = true })
+            local r = run_plan(fake_profile({ ppa }), { no_build = true })
+            assert.is_nil(r.exit_code, r.stderr)
+            assert.is_true(seen)
+            r = run_plan(fake_profile({ ppa }), {})
+            assert.is_nil(seen)
+        end)
+
+        it("unconfigured units and unbuilt executables fail the whole run before any step", function()
+            local _, ppa = fake_unit("A", { batch = true, here = false })
+            local _, ppb = fake_unit("B", { batch = true, build_dir = "/nonexistent-lw-bd",
+                saved = { "X", { "X", "--2" }, "Y" }, targets = { X = fake_target("X"), Y = fake_target("Y") } })
+            -- Unconfigured, but only a command launch: needs neither check.
+            local _, ppc = fake_unit("C", { here = false, saved = { "tool" },
+                launch = { tool = { command = "/usr/bin/tool" } } })
+            -- Unconfigured with a target entry: one line for the unit.
+            local _, ppd = fake_unit("D", { here = false, saved = { "Z", "W" } })
+            local more = { artifact_built = function(_, t) return t.id == "Y", "/nonexistent-lw-bd/" .. t.id end }
+            local r = run_plan(fake_profile({ ppa, ppb, ppc, ppd }), { no_build = true }, nil, nil, nil, more)
+            assert.equals(1, r.exit_code)
+            assert.same({}, r.ran)
+            assert.is_nil(r.built)
+            local e = r.stderr
+            assert.truthy(e:find("A: not configured on this machine", 1, true), e)
+            assert.truthy(e:find("saved test entry 'X #1' (", 1, true), e)
+            assert.truthy(e:find("saved test entry 'X #2' (", 1, true), e)
+            assert.truthy(e:find("not built (/nonexistent-lw-bd/X)", 1, true), e)
+            assert.falsy(e:find("'Y'", 1, true), e)
+            assert.falsy(e:find("C: not configured", 1, true), e)
+            local _, n = e:gsub("D: not configured on this machine", "")
+            assert.equals(1, n)
+            assert.truthy(e:find("lw build Dev:kit", 1, true), e)
+            assert.truthy(e:find("without --no-build", 1, true), e)
+        end)
+
+        it("a self-rebuilding runner that cannot skip the rebuild is refused before any step", function()
+            local a, ppa = fake_unit("A", { batch = true })
+            a._cannot_skip_rebuild = true
+            local _, ppb = fake_unit("B", { batch = true })
+            local r = run_plan(fake_profile({ ppa, ppb }), { no_build = true })
+            assert.equals(1, r.exit_code)
+            assert.same({}, r.ran)
+            assert.truthy(r.stderr:find("A: cannot skip", 1, true), r.stderr)
+            -- Without --no-build it is not asked to skip anything.
+            r = run_plan(fake_profile({ ppa, ppb }), {})
+            assert.is_nil(r.exit_code, r.stderr)
+        end)
+
+        it("notes a possibly stale build from recorded state and runs anyway", function()
+            local a, ppa = fake_unit("A", { batch = true })
+            a.configure_reason = function(_, forced, p)
+                assert.is_false(forced); assert.equals("Dev:kit", p.key)
+                return "options changed (FOO changed)"
+            end
+            local b, ppb = fake_unit("B", { batch = true })
+            b.configure_reason = function() return nil end
+            b.state_value = "failed_build"
+            local c, ppc = fake_unit("C", { batch = true })
+            c.configure_reason = function() return nil end
+            c.state_value = "built"
+            local r = run_plan(fake_profile({ ppa, ppb, ppc }), { no_build = true }, nil, nil, nil,
+                { artifact_built = all_built })
+            assert.is_nil(r.exit_code, r.stderr)
+            assert.truthy(r.stderr:find("A: its build may be stale (options changed (FOO changed))", 1, true), r.stderr)
+            assert.truthy(r.stderr:find("B: its build may be stale (last build failed)", 1, true), r.stderr)
+            assert.falsy(r.stderr:find("C: ", 1, true), r.stderr)
+            assert.equals(3, #r.ran)
+        end)
+
+        it("--list accepts and ignores it", function()
+            local orig_report, orig_resolve = cli._test_plan_report, cli._resolve_profile_for_listing
+            local got
+            cli._resolve_profile_for_listing = function() return "P" end
+            cli._test_plan_report = function(_, p, sel, json) got = { p, sel, json }; return 0 end
+            local r = capture(function() return cli.cmd_test({}, { "test", "--list", "--no-build", "--saved" }) end)
+            cli._test_plan_report, cli._resolve_profile_for_listing = orig_report, orig_resolve
+            assert.is_nil(r.exit_code, r.stderr)
+            assert.same({ "P", "saved" }, { got[1], got[2] })
+        end)
+
+        it("named targets: nothing built, unbuilt ones fail before any runs, locks held", function()
+            local _, ppa = fake_unit("A", {})
+            local profile = fake_profile({ ppa })
+            local ran, built, locked = {}, false, 0
+            local function lt(name)
+                return { _config_unit = ppa._config_unit, is_valid = function() return true end,
+                    deploy_sync = function() error("no deploy") end,
+                    resolve_launch_spec = function() return { cmd = "/bin/" .. name, args = {}, cwd = "/" } end }
+            end
+            local function deps(built_set)
+                return {
+                    build = function() built = true end,
+                    with_locks = function(_, _, fn) locked = locked + 1; fn() end,
+                    resolve_target = function(_, _, name) return lt(name) end,
+                    artifact_built = function(l) local n = l.resolve_launch_spec().cmd:match("[^/]+$")
+                        return built_set[n] or false, "/bd/" .. n end,
+                    run_spec = function(step) ran[#ran + 1] = step.cmd[1]; return 0 end,
+                }
+            end
+            local opts = { extra = {}, dev = cli._new_device_opts(), no_build = true }
+            local r = capture(function()
+                return cli._test_targets({ root = "/" }, profile, { "T1", "T2" }, opts, deps({ T1 = true }))
+            end)
+            assert.equals(1, r.exit_code)
+            assert.same({}, ran)
+            assert.truthy(r.stderr:find("--target T2: not built (/bd/T2)", 1, true), r.stderr)
+            assert.falsy(r.stderr:find("T1:", 1, true), r.stderr)
+            r = capture(function()
+                return cli._test_targets({ root = "/" }, profile, { "T1", "T2" }, opts, deps({ T1 = true, T2 = true }))
+            end)
+            assert.is_nil(r.exit_code, r.stderr)
+            assert.same({ "/bin/T1", "/bin/T2" }, ran)
+            assert.is_false(built)
+            assert.equals(2, locked)
+        end)
+
+        it("a configured unit whose build targets are unknown is said so, not 'not configured'", function()
+            -- Configured here, but no build dir to read targets from.
+            local _, ppe = fake_unit("E", { saved = { "Z" } })
+            local _, ppd = fake_unit("D", { here = false, saved = { "W" } })
+            local r = run_plan(fake_profile({ ppe, ppd }), { no_build = true })
+            assert.equals(1, r.exit_code)
+            assert.same({}, r.ran)
+            local e = r.stderr
+            assert.truthy(e:find("E: its build targets are unknown (build directory missing or unreadable)", 1, true), e)
+            assert.falsy(e:find("E: not configured", 1, true), e)
+            assert.truthy(e:find("D: not configured on this machine", 1, true), e)
+            assert.truthy(e:find("lw build Dev:kit", 1, true), e)
+        end)
+
+        describe("named targets not found", function()
+            --- A: configured, has T1 (and Dup); B: configured, has Dup;
+            --- U: unconfigured cmake-like; S: unconfigured shim (no targets).
+            local function setup(with_unconfigured)
+                local _, ppa = fake_unit("A", { targets = {} })
+                local _, ppb = fake_unit("B", { targets = {} })
+                local pps = { ppa, ppb }
+                if with_unconfigured then
+                    local _, ppu = fake_unit("U", { here = false })
+                    local _, pps_ = fake_unit("S", { here = false })
+                    pps_._config_unit._project._module = { impl = {} }
+                    pps[#pps + 1] = ppu; pps[#pps + 1] = pps_
+                end
+                local profile = fake_profile(pps)
+                local pa, pb = ppa._config_unit._project, ppb._config_unit._project
+                local cands = {
+                    { kind = "target", project = pa, name = "T1" },
+                    { kind = "target", project = pa, name = "Dup" },
+                    { kind = "target", project = pb, name = "Dup" },
+                }
+                local ran = {}
+                local deps = {
+                    with_locks = function(_, _, fn) fn() end,
+                    candidates = function() return cands end,
+                    launch_target = function(_, _, c)
+                        return { _config_unit = ppa._config_unit, is_valid = function() return true end,
+                            resolve_launch_spec = function() return { cmd = "/bin/" .. c.name, args = {}, cwd = "/" } end }
+                    end,
+                    artifact_built = function() return true, "/bd/x" end,
+                    run_spec = function(step) ran[#ran + 1] = step.cmd[1]; return 0 end,
+                }
+                return profile, deps, ran
+            end
+            local function run(names, with_unconfigured)
+                local profile, deps, ran = setup(with_unconfigured)
+                local opts = { extra = {}, dev = cli._new_device_opts(), no_build = true }
+                local r = capture(function() return cli._test_targets({ root = "/" }, profile, names, opts, deps) end)
+                r.ran = ran
+                return r
+            end
+
+            it("an unfound name may belong to an unconfigured project that can have targets", function()
+                local r = run({ "T1", "Nope" }, true)
+                assert.equals(1, r.exit_code)
+                assert.same({}, r.ran)
+                assert.truthy(r.stderr:find(
+                    "--target Nope: not found — may belong to a project not configured on this machine (U)", 1, true),
+                    r.stderr)
+                assert.falsy(r.stderr:find("S)", 1, true), r.stderr)          -- the shim is not listed
+                assert.truthy(r.stderr:find("lw build Dev:kit", 1, true), r.stderr)
+            end)
+
+            it("with no such project, the usual not-found error", function()
+                local r = run({ "Nope" }, false)
+                assert.equals(1, r.exit_code)
+                assert.truthy(r.stderr:find("no executable target 'Nope' in profile 'Dev:kit'", 1, true), r.stderr)
+                assert.falsy(r.stderr:find("may belong", 1, true), r.stderr)
+            end)
+
+            it("an ambiguous name keeps the qualify message", function()
+                local r = run({ "Dup" }, true)
+                assert.equals(1, r.exit_code)
+                assert.same({}, r.ran)
+                assert.truthy(r.stderr:find("'Dup' is ambiguous", 1, true), r.stderr)
+                assert.truthy(r.stderr:find("qualify with <project>:<name>", 1, true), r.stderr)
+                assert.falsy(r.stderr:find("may belong", 1, true), r.stderr)
+            end)
+        end)
+
+        it("the early failure releases the real build-dir locks (exit hook)", function()
+            local build_lock = require("loomworks.build_lock")
+            local bd = vim.fn.tempname():gsub("\\", "/")
+            vim.fn.mkdir(bd, "p")
+            local _, ppa = fake_unit("A", { targets = {} })
+            ppa.build_dir = function() return bd end
+            local _, ppu = fake_unit("U", { here = false })
+            local profile = fake_profile({ ppa, ppu })
+            local held_during
+            local deps = {                                  -- no with_locks: the real one
+                candidates = function()
+                    return { { kind = "target", project = ppa._config_unit._project, name = "T1" } }
+                end,
+                launch_target = function() return { _config_unit = ppa._config_unit } end,
+                artifact_built = function() held_during = build_lock.read(bd) ~= nil; return true, bd .. "/T1" end,
+                run_spec = function() error("must not run") end,
+            }
+            local opts = { extra = {}, dev = cli._new_device_opts(), no_build = true }
+            local r = capture(function()
+                return cli._test_targets({ root = "/" }, profile, { "T1", "Nope" }, opts, deps)
+            end)
+            assert.equals(1, r.exit_code)
+            assert.truthy(r.stderr:find("--target Nope: not found", 1, true), r.stderr)
+            assert.is_true(held_during)
+            assert.is_nil(build_lock.read(bd))
+            vim.fn.delete(bd, "rf")
+        end)
     end)
 
     it("selectors are exclusive (usage error)", function()

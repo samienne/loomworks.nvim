@@ -40,8 +40,12 @@ function TestUnit:test_command_all(opts) end
 --- runner's own fixed location, which the caller copies to the request).
 --- `opts.profile` is the profile the run is for — its blank-variable fills
 --- resolve the configuration environment (nil = the active profile).
---- @param opts? table { filter?: string, extra_args?: string[], junit?: string, profile?: loomworks.Profile }
---- @return table|nil { cmd, env?, cwd?, junit_out?: string }
+--- `opts.no_rebuild` (`lw test --no-build`, spec §16.16) asks a runner that
+--- rebuilds its targets (`run_command_all_rebuilds`) not to; one that honours
+--- it returns `no_rebuild = true`, else its step is refused. A runner that
+--- does not rebuild ignores it.
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string, profile?: loomworks.Profile, no_rebuild?: boolean }
+--- @return table|nil { cmd, env?, cwd?, junit_out?: string, no_rebuild?: boolean }
 function TestUnit:run_command_all(opts) end
 
 --- Whether `run_command_all` rebuilds this unit's test targets before running
