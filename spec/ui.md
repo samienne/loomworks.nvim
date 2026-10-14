@@ -15,7 +15,9 @@ editor height). Window position and size can be configured via `setup()`
 options or overridden per `open()` call — the `win` table is passed
 directly to `Snacks.win`. The page contains these sections in order:
 
-1. **Header** — plugin version, workspace name, workspace root
+1. **Header** — plugin version (the running loomworks version, resolved
+   like `_meta.written_by`, §2; `dev` when unknown), workspace name,
+   workspace root
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
    health\``, shown only when the suggestion framework has one or more
