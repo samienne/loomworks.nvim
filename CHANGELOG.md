@@ -279,6 +279,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw worktree` (or `lw pull`), which wait longer; `lw worktree`, `lw worktree
   add` and `lw pull` likewise report a git that does not answer within 30 s as
   a timeout, not as "git is not available" or "not in a git repository". (#98)
+- `lw test`: a disabled gtest test (`DISABLED_`) is no longer counted as
+  passed, and skipped (`GTEST_SKIP`) and disabled tests are counted apart
+  from passed ones, both in a test executable's result line and in the saved
+  test targets' summary, e.g. `1009 tests passed, 2 skipped, 1 disabled`.
+  (#226)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or

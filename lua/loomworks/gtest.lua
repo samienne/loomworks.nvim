@@ -404,6 +404,20 @@ local function parse_failure_locations(text)
     return errors
 end
 
+--- Status a testcase's own attributes give it. gtest native XML reports a
+--- DISABLED_ test as not run with `result="suppressed"` (the only marker of
+--- a disabled test), a GTEST_SKIP as `result="skipped"` — with or without a
+--- `<skipped>` child (gtest before 1.11 wrote none). ctest's JUnit writes
+--- `status="notrun"` for any test it did not run (SKIP_RETURN_CODE, the
+--- DISABLED property, a missing executable): skipped, not disabled.
+--- @param attrs string the testcase's attribute text
+--- @return string|nil status "skipped" or nil, boolean|nil disabled
+local function attr_status(attrs)
+    if attrs:match('result="suppressed"') then return "skipped", true end
+    if attrs:match('result="skipped"') or attrs:match('status="notrun"') then return "skipped" end
+    return nil
+end
+
 --- Parse gtest XML output into test results.
 --- Handles both gtest native XML (--gtest_output=xml) and ctest JUnit
 --- (--output-junit). Extracts per-test output from <system-out>/<system-err>,
@@ -447,7 +461,7 @@ function M.parse_xml_results(output_path)
                             or ("test:" .. name)
 
                         local status = "passed"
-                        local message, errors, output
+                        local message, errors, output, disabled
                         if body:match("<failure") then
                             status = "failed"
                             message = body:match("<failure[^>]*>(.-)<%/failure>")
@@ -456,10 +470,14 @@ function M.parse_xml_results(output_path)
                             if message then errors = parse_failure_locations(message) end
                         elseif body:match("<skipped") then
                             status = "skipped"
+                            disabled = select(2, attr_status(attrs))
                         elseif body:match("<error") then
                             status = "errored"
                             message = body:match("<error[^>]*>(.-)<%/error>")
                             message = M.cap_captured(strip_cdata(message))
+                        else
+                            local st, dis = attr_status(attrs)
+                            if st then status, disabled = st, dis end
                         end
 
                         local sys_out = strip_cdata(body:match("<system%-out>(.-)</system%-out>"))
@@ -475,7 +493,7 @@ function M.parse_xml_results(output_path)
                         end
 
                         results[#results + 1] = {
-                            test_id = test_id, status = status,
+                            test_id = test_id, status = status, disabled = disabled,
                             message = message, output = output,
                             errors = errors,
                             duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
@@ -485,7 +503,8 @@ function M.parse_xml_results(output_path)
             end
         elseif line:match("<testcase%s") then
             if line:match("/>%s*$") then
-                -- Self-closing testcase (passing test, single line)
+                -- Self-closing testcase (single line): passed, or a test that
+                -- did not run (skipped or disabled), never counted as passed
                 local attrs = line:match("<testcase%s(.-)/>")
                 if attrs then
                     local name = attrs:match('name="([^"]*)"')
@@ -495,8 +514,9 @@ function M.parse_xml_results(output_path)
                         local test_id = (classname and classname ~= "")
                             and ("test:" .. classname .. "." .. name)
                             or ("test:" .. name)
+                        local status, disabled = attr_status(attrs)
                         results[#results + 1] = {
-                            test_id = test_id, status = "passed",
+                            test_id = test_id, status = status or "passed", disabled = disabled,
                             duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
                         }
                     end
@@ -513,8 +533,9 @@ function M.parse_xml_results(output_path)
                         local test_id = (classname and classname ~= "")
                             and ("test:" .. classname .. "." .. name)
                             or ("test:" .. name)
+                        local status, disabled = attr_status(attrs)
                         results[#results + 1] = {
-                            test_id = test_id, status = "passed",
+                            test_id = test_id, status = status or "passed", disabled = disabled,
                             duration = time_str and tonumber(time_str) and tonumber(time_str) * 1000 or nil,
                         }
                     end
