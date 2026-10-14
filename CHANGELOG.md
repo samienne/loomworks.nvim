@@ -26,6 +26,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+## 0.1.45 - 2026-10-14
+
+`lw test --no-build` runs the tests against the existing build, for projects
+whose build always redoes slow steps. Test summaries now count disabled and
+skipped gtest tests apart from passed ones. The status page header shows the
+real loomworks version.
+
 ### Added
 
 - `lw test --no-build` runs the tests against what is already built: nothing
@@ -33,7 +40,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   unconfigured project or an unbuilt test executable fails the run before
   any test starts, listing each one; a build that may be stale
   (configuration changed, last build failed) gets a note. Works with
-  `--saved`, `--discovered` and `--target`. (#228)
+  `--saved`, `--discovered` and `--target`. (#228, #234)
 
 ### Fixed
 
@@ -47,8 +54,6 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Status page: the header shows the running loomworks version (e.g.
   `0.1.44`, or `0.1.44+dev` in a source checkout) instead of a stale
   `0.0.1-dev`. (#232)
-- `lw test --no-build` is accepted by the `lw` command (it was rejected as an
-  unknown option). (#234)
 
 ## 0.1.44 - 2026-10-14
 
