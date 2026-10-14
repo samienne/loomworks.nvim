@@ -82,6 +82,17 @@ describe("meson test integration", function()
             assert.is_true(tu:run_command_all_rebuilds())
         end)
 
+        it("no_rebuild adds --no-rebuild and confirms it (lw test --no-build, spec §16.16)", function()
+            local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
+            local spec = tu:run_command_all({ no_rebuild = true, filter = "MyTest" })
+            assert.same(
+                { "/usr/bin/meson", "test", "--print-errorlogs", "-C", "/build/App/Debug",
+                  "--no-rebuild", "MyTest" },
+                spec.cmd)
+            assert.is_true(spec.no_rebuild)
+            assert.is_nil(tu:run_command_all().no_rebuild)
+        end)
+
         it("forwards extra_args after the base command (spec §16.16)", function()
             local tu = meson.create_test_unit(stub_config_unit("/build/App/Debug"))
             local spec = tu:run_command_all({ extra_args = { "--num-processes", "4" } })

@@ -1344,7 +1344,7 @@ emits a machine-readable results file. `opts.filter` for name filtering;
 `opts.output_path` as for `test_command`.
 Returns `{ cmd, env, cwd, output_path }` or nil.
 
-**`run_command_all(opts?) → { cmd, env?, cwd?, junit_out? }|nil`**
+**`run_command_all(opts?) → { cmd, env?, cwd?, junit_out?, no_rebuild? }|nil`**
 
 Construct the module's **native** "run all tests" command — the one whose
 **process exit status is authoritative** (0 iff every test passed), streaming
@@ -1356,6 +1356,11 @@ filtering; `opts.extra_args` appends caller-forwarded arguments (§16.16);
 `opts.junit` requests JUnit XML at that path. `junit_out` reports where the run
 actually writes JUnit — the requested path when the runner writes there
 directly, or the runner's fixed location for the caller to copy across.
+`opts.no_rebuild` asks a runner that rebuilds its targets not to: it runs what
+is built (§16.16 "Skipping the build"). A runner that honours it returns
+`no_rebuild = true` in its spec; a rebuilding runner whose spec does not
+confirm it cannot skip the rebuild, and the caller refuses its step rather
+than let it rebuild. A runner that does not rebuild ignores the option.
 
 **`run_command_all_rebuilds() → boolean`**
 

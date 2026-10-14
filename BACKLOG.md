@@ -897,6 +897,10 @@ Spec §1.3.4 / §16.16 ship v1 without these:
 - **Batch/saved de-duplication in headless runs** when a saved executable is
   also registered with the native runner (the editor tree already
   de-duplicates by executable).
+- **Add several entries in one `lw test-target add`.** One call cannot add
+  several entries of the same name with different args: a tester needed 34
+  calls, each rewriting `user.json` (and its `.bak`). Ideas: repeatable args
+  groups in one `add`, or add entries from a file.
 
 ## Plugin-based loomtest adapter discovery
 

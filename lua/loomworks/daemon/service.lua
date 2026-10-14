@@ -33,8 +33,8 @@
 ---     carry this request (interactive profile onboarding; a different
 ---     environment while another build runs). The client runs in-process.
 ---
---- **Request** `{ kind = "test", args = { profile?, junit?, extra? }, … }` —
---- the same outcomes; the plan checks (test_plan.precheck) refuse as in-process; "declined" when saved test targets would run on a device (§16.16).
+--- **Request** `{ kind = "test", args = { profile?, junit?, extra?, no_build? }, … }` —
+--- the same outcomes (`no_build`: `lw test --no-build`, nothing built, §16.16); the plan checks (test_plan.precheck) refuse as in-process; "declined" when saved test targets would run on a device (§16.16).
 ---
 --- **Request** `{ kind = "prepare_run", args = { profile?, target?, project?,
 --- kind?, cwd?, extra?, no_build?, quiet? }, … }` (§19.15 "Run") — the same
@@ -639,6 +639,7 @@ function Service:_on_operation(op, conn, msg, deliver, call)
         or (a.profile_id ~= nil and (type(a.profile_id) ~= "string" or a.profile ~= nil))
         or (a.project_id ~= nil and (type(a.project_id) ~= "string" or a.project ~= nil))
         or ((op == "run" or op == "debug") and not run_args_ok(a, op == "debug"))
+        or (op == "test" and a.no_build ~= nil and type(a.no_build) ~= "boolean")
         or (op == "reset" and not reset_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
@@ -782,7 +783,7 @@ function Service:_accept(ctx)
     local extra = (a.extra and #a.extra > 0) and a.extra or nil
     local args
     if ctx.op == "test" then
-        args = { extra = extra, junit = a.junit }
+        args = { extra = extra, junit = a.junit, no_build = a.no_build == true }
     elseif ctx.op == "clean" then
         args = {}
     elseif ctx.op == "configure" then
