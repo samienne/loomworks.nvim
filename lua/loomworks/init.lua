@@ -3,8 +3,6 @@
 
 local M = {}
 
-M._version = "0.0.1-dev"
-
 local Core = require("loomworks.core")
 local events = require("loomworks.events")
 
