@@ -87,7 +87,8 @@ local binary_toplevel = {
 local binary_daemon = {
     "auth", "calls", "client", "command", "connect", "core_interfaces", "descriptor", "discover", "endpoint", "ensure",
     "envscope", "handle", "inspect", "interfaces", "launch", "loopback", "paths", "relay", "rlock", "rlog",
-    "runner", "running", "runtime", "server", "service", "snapshot", "stdio", "tasks", "views",
+    "runner", "running", "runtime", "server", "service", "snapshot", "stdio", "tasks", "test_discover",
+    "tests_view", "views",
 }
 
 M.binary = {

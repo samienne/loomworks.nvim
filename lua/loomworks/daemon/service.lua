@@ -873,6 +873,9 @@ function Service:on_run_done(run)
     end
     -- A reset whose deletion outlived its task kept the server busy.
     if run.deleting then self:_update_busy() end
+    -- The tests view: the units the run covered may no longer match their
+    -- discovered trees (§19.13 "The tests view", `stale`).
+    pcall(require("loomworks.daemon.tests_view").on_run_done, self, run)
 end
 
 --- Is the daemon's own background work running (§19.11)? The loaded model's

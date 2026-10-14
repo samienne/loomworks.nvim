@@ -18,7 +18,7 @@
       "properties": {
         "name": { "type": "string" },
         "description": { "type": "string" },
-        "fixture": { "description": "The workspace the runner prepares (default empty).", "enum": ["empty", "shell"] },
+        "fixture": { "description": "The workspace the runner prepares (default empty).", "enum": ["empty", "shell", "tests"] },
         "hello": { "description": "Fields over the default hello of the handshake.", "type": "object" },
         "handshake": { "description": "false: the case sends its own hello (no automatic handshake).", "type": "boolean" },
         "allow": { "description": "Frames that may arrive unconsumed, any number of times.", "type": "array", "items": { "$ref": "#/$defs/Frame" } },

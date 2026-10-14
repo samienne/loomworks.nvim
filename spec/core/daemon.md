@@ -4042,8 +4042,8 @@ runtime is deferred until that module is actively developed.
        `stale` marking and the per-node last results, a harness-only stub
        test module for the transcripts (it ships only in tests: a static
        TestUnit discovering from JSON and running an `nvim -l` script that
-       prints gtest-format output and results), schemas and transcripts;
-       B2 — daemon side: `Tests/1.run_cases`, the `results` signal,
+       prints gtest-format output and results), schemas and transcripts
+       *(done once merged)*; B2 — daemon side: `Tests/1.run_cases`, the `results` signal,
        `Tests/1.result`, `Tests/1.prepare_debug` and `Tests/1.collect`, the
        per-run results file, schemas and transcripts (B1 and B2 independent
        after 0); C1 — editor side: the view in the view store, the test
@@ -4396,8 +4396,9 @@ message, before acceptance. All of them carry the caller's environment
 
 - `discover { force? }` — task-streamed (`meta.kind = discover`), the
   outcomes of `build`; `done.result` `{ exit_code, error?, tests, failed }`:
-  the number of test nodes of the profile's units after discovery and of
-  units whose discovery failed. `force` re-probes units whose tree is
+  the number of tests of the profile's units after discovery (their
+  discovered entries no other entry is the parent of: the cases, and the
+  targets without cases) and of units whose discovery failed. `force` re-probes units whose tree is
   current.
 - `run_cases { select?, no_build?, extra? }` — task-streamed (`meta.kind =
   test`, `meta.units`), the outcomes of `build`. `select` (non-empty array of
@@ -4511,7 +4512,9 @@ beside the interface's schema and checked by `meta/transcript.schema.json`, is
 `steps`) runs on a fresh daemon over one connection, on a workspace the
 runner prepares (`fixture`: `empty`, the default, or `shell`, a shell project
 `app` with configuration `Debug`, the configuration set and trusted profile
-`dev` and a launch configuration `hello`). Unless `handshake` is false the
+`dev` and a launch configuration `hello`, or `tests`, that project as one of
+the harness-only test module `teststub` with two test targets and `dev`
+active; step 5m). Unless `handshake` is false the
 runner sends `hello` (the case's `hello` fields over the default) and binds
 the `welcome` as the variable `welcome`; `lw_version`, `env` (the client
 environment to send) and `root` are bound before. A step is `send` (a frame

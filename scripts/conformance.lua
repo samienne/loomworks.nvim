@@ -110,11 +110,12 @@ function M.fixture(name, key_path)
         write(root .. "/loomworks.json", vim.json.encode({ projects = vim.empty_dict() }))
         return root
     end
-    assert(name == "shell", "unknown fixture " .. tostring(name))
+    assert(name == "shell" or name == "tests", "unknown fixture " .. tostring(name))
     vim.fn.mkdir(root .. "/app", "p")
     write(root .. "/step.lua", M.STEP)
     local nv = (vim.v.progpath:gsub("\\", "/"))
     local function cmd(kind) return { nv, "--headless", "-u", "NONE", "-l", root .. "/step.lua", kind } end
+    if name == "tests" then return M.tests_fixture(root, key_path, cmd) end
     local function app()
         return { path = "app", shell = {
             build_dir = "${workspace_root}/out/${variant}",
@@ -144,6 +145,60 @@ function M.fixture(name, key_path)
     if not signed then error(serr) end
     write(root .. "/.nvim/loomworks.user.json", signed)
     return root
+end
+
+--- The directory of the harness-only `teststub` module (step 5m): on the
+--- runtime path of a daemon running the `tests` fixture.
+M.TESTSTUB = M.REPO .. "/tests/fixtures/teststub"
+
+--- The tests of the `tests` fixture's project `app` (teststub's tests.json).
+M.TESTS_JSON = {
+    targets = {
+        { name = "unit_a", cases = { "Math.Add", "Math.Sub" }, file = "math_test.cc", line = 3 },
+        { name = "unit_b", cases = { "Str.Upper" } },
+    },
+    results = { ["Math.Sub"] = "failed" },
+}
+
+--- The `tests` fixture (see loomworks.proto.conformance FIXTURES): the
+--- `shell` fixture's project `app` as a `teststub` project with tests, the
+--- profile `dev` active.
+--- @param root string
+--- @param key_path string
+--- @param cmd fun(kind: string): string[]
+--- @return string root
+function M.tests_fixture(root, key_path, cmd)
+    local function app()
+        return { path = "app", teststub = {
+            build_dir = "${workspace_root}/out/${variant}",
+            configure_cmd = cmd("configure"), build_cmd = cmd("build"),
+            configurations = { Debug = vim.empty_dict() },
+        } }
+    end
+    write(root .. "/app/tests.json", vim.json.encode(M.TESTS_JSON))
+    write(root .. "/loomworks.json", vim.json.encode({
+        projects = { app = app() },
+        configuration_sets = { dev = { app = "Debug" } },
+    }))
+    local trust = require("loomworks.trust")
+    trust._set_key_path(key_path)
+    local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
+        projects = { app = app() }, active_profile = "dev" }
+    local signed, serr = trust.sign("user", trust.encode(user))
+    trust._set_key_path(nil)
+    if not signed then error(serr) end
+    write(root .. "/.nvim/loomworks.user.json", signed)
+    return root
+end
+
+--- Make the `teststub` module loadable in this process (the loopback
+--- transport's daemon runs here).
+function M.register_teststub()
+    local mods = require("loomworks.modules")
+    if not package.loaded["loomworks.modules.teststub"] then
+        package.loaded["loomworks.modules.teststub"] = dofile(M.TESTSTUB .. "/lua/loomworks/modules/teststub.lua")
+    end
+    mods.register("teststub", package.loaded["loomworks.modules.teststub"])
 end
 
 -- ---------------------------------------------------------------------------
@@ -220,20 +275,23 @@ function M.wire_env(vars)
 end
 
 --- The default command of the stdio transport: this checkout's `lw`
---- through this nvim.
+--- through this nvim (for the `tests` fixture with the harness-only
+--- `teststub` module on its runtime path; another `--lw` must provide it).
+--- @param fixture? string
 --- @return string[]
-function M.default_lw()
-    return { vim.v.progpath, "--headless", "-u", "NONE", "--cmd",
-        "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")", "-l", M.REPO .. "/lua/loomworks/cli.lua" }
+function M.default_lw(fixture)
+    local rtp = "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")"
+    if fixture == "tests" then rtp = rtp .. "; vim.opt.rtp:append(" .. string.format("%q", M.TESTSTUB) .. ")" end
+    return { vim.v.progpath, "--headless", "-u", "NONE", "--cmd", rtp, "-l", M.REPO .. "/lua/loomworks/cli.lua" }
 end
 
 --- Start a daemon on `root` over standard I/O. Returns the driver (with
 --- `close()` ending the daemon) and the variables of the case.
 --- @param root string
---- @param ctx { env: table, lw?: string[] }
+--- @param ctx { env: table, lw?: string[], fixture?: string }
 --- @return table driver
 function M.stdio_driver(root, ctx)
-    local argv = vim.deepcopy(ctx.lw or M.default_lw())
+    local argv = vim.deepcopy(ctx.lw or M.default_lw(ctx.fixture))
     -- The private runtime on standard I/O (gated, tests only, §19.10 "Tests"):
     -- without `--private`, `--stdio` is the relay to the shared daemon.
     for _, a in ipairs({ "daemon", "run", "--root", root, "--stdio", "--private" }) do argv[#argv + 1] = a end
@@ -301,13 +359,14 @@ function M.run_case(case, opts)
         if opts.transport == "stdio" then
             ctx_env = M.isolated_env()
             root = M.fixture(case.fixture, ctx_env.data .. "/trust.key")
-            d = M.stdio_driver(root, { env = ctx_env, lw = opts.lw })
+            d = M.stdio_driver(root, { env = ctx_env, lw = opts.lw, fixture = case.fixture })
         else
             local key = tmp() .. "/trust.key"
             trust._set_key_path(key)
             root = M.fixture(case.fixture, key)
             trust._set_key_path(key)
             ctx_env = { vars = uv.os_environ() }
+            if case.fixture == "tests" then M.register_teststub() end
             d = M.loopback_driver(root)
         end
         local vars = { lw_version = opts.lw_version or version.identity(), root = root,
