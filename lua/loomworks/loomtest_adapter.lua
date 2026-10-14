@@ -67,11 +67,22 @@ local function create_adapter()
 
             local all_nodes = {}
             local seen = {}
-            local pending = 0
             local units = test_source.units()
             if #units == 0 then
                 callback(nil)
                 return
+            end
+
+            -- Deliver ONE combined result (TestAdapter contract). A unit
+            -- with a cached tree calls back synchronously, so `pending`
+            -- starts at 1 (a sentinel for this loop) and is released after
+            -- it; otherwise each cached unit would drive it to 0 and fire.
+            local pending = 1
+            local function finish()
+                pending = pending - 1
+                if pending == 0 then
+                    callback(#all_nodes > 0 and all_nodes or nil)
+                end
             end
 
             for _, u in ipairs(units) do
@@ -85,15 +96,10 @@ local function create_adapter()
                             end
                         end
                     end
-                    pending = pending - 1
-                    if pending == 0 then
-                        callback(#all_nodes > 0 and all_nodes or nil)
-                    end
+                    finish()
                 end)
             end
-            if pending == 0 then
-                callback(nil)
-            end
+            finish()
         end,
 
         --- Build the test target before running tests.
