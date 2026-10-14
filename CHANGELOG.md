@@ -46,7 +46,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   unconfigured project or an unbuilt test executable fails the run before
   any test starts, listing each one; a build that may be stale
   (configuration changed, last build failed) gets a note. Works with
-  `--saved`, `--discovered` and `--target`. (#230)
+  `--saved`, `--discovered` and `--target`. (#230, #235)
 - Experimental, opt-in: the setting `runtime-mode` (`in-process`, the
   default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
   workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`
