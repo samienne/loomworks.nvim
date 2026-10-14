@@ -345,17 +345,58 @@ local function strip_cdata(text)
     return text:gsub("<!%[CDATA%[", ""):gsub("%]%]>", "")
 end
 
+--- The most a test case keeps of each captured text (its failure message, its
+--- output), in bytes (spec §8.9). An assertion failing in a loop can write a
+--- results file of hundreds of MB; past the cap a capture is cut, at a line
+--- boundary where one exists, and ends with a truncation marker.
+M.MAX_CAPTURED_BYTES = 1024 * 1024
+
+--- Cap a captured text at `MAX_CAPTURED_BYTES` (see above): the kept part ends
+--- at the last newline within the cap (or, when there is none, at the cap
+--- backed up to a UTF-8 character boundary), followed by
+--- "... [truncated: N more bytes]". Linear in the cap: a backward byte scan,
+--- never a pattern (an unanchored `.*\n` find is super-linear on one huge line).
+--- @param text string|nil
+--- @return string|nil
+function M.cap_captured(text)
+    local cap = M.MAX_CAPTURED_BYTES
+    if type(text) ~= "string" or #text <= cap then return text end
+    local byte = string.byte
+    -- The last newline within the cap.
+    local cut
+    for i = cap, 1, -1 do
+        if byte(text, i) == 10 then cut = i; break end
+    end
+    if not cut then
+        -- Hard cut: never split a multibyte character. Byte cap+1 is the first
+        -- one dropped; while it is a continuation byte (0x80-0xBF), the
+        -- character it belongs to started within the cap, so back up.
+        cut = cap
+        while cut > 0 do
+            local b = byte(text, cut + 1)
+            if b < 0x80 or b > 0xBF then break end
+            cut = cut - 1
+        end
+        -- Only continuation bytes up to the cap: not UTF-8, cut at the cap.
+        if cut == 0 then cut = cap end
+    end
+    return text:sub(1, cut) .. "... [truncated: " .. (#text - cut) .. " more bytes]"
+end
+
 --- Parse file:line from a gtest failure message.
 --- gtest embeds "path/to/file.cpp:42\nExpected..." in failure text.
 --- @param text string failure message text
 --- @return loomtest.TestError[]
 local function parse_failure_locations(text)
     local errors = {}
+    -- One string shared by every location (computed once: a capped message
+    -- can hold thousands of locations).
+    local message = text:match("^.-\n(.-)$") or text
     -- Match lines like "C:/path/file.cpp:42" or "path\file.cpp:42"
     -- Include : for drive letters (C:) but the final :digits is the line number
     for file, line in text:gmatch("([%w_/\\%.%-:]+%.[ch]pp?):(%d+)") do
         errors[#errors + 1] = {
-            message = text:match("^.-\n(.-)$") or text,
+            message = message,
             file = file:gsub("\\", "/"),
             line = tonumber(line),
         }
@@ -411,14 +452,14 @@ function M.parse_xml_results(output_path)
                             status = "failed"
                             message = body:match("<failure[^>]*>(.-)<%/failure>")
                                 or body:match('<failure message="([^"]*)"')
-                            message = strip_cdata(message)
+                            message = M.cap_captured(strip_cdata(message))
                             if message then errors = parse_failure_locations(message) end
                         elseif body:match("<skipped") then
                             status = "skipped"
                         elseif body:match("<error") then
                             status = "errored"
                             message = body:match("<error[^>]*>(.-)<%/error>")
-                            message = strip_cdata(message)
+                            message = M.cap_captured(strip_cdata(message))
                         end
 
                         local sys_out = strip_cdata(body:match("<system%-out>(.-)</system%-out>"))
@@ -430,7 +471,7 @@ function M.parse_xml_results(output_path)
                                 parts[#parts + 1] = "--- stderr ---"
                                 parts[#parts + 1] = sys_err
                             end
-                            output = table.concat(parts, "\n")
+                            output = M.cap_captured(table.concat(parts, "\n"))
                         end
 
                         results[#results + 1] = {

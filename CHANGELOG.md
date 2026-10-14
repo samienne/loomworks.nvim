@@ -49,6 +49,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw test --target`, which also takes `--cwd <dir>`). The status page shows
   a read-only `Tests:` line, and the test explorer and neotest pick the saved
   targets up. (#208)
+- The deploy editor offers `${target_dir}` in its destination segment picker
+  for a project's deploy steps (not for a command launch's, where it is
+  unavailable). A project-level step also runs for the project's command
+  launches, so a project-level destination using `${target_dir}` fails the
+  deploy of a command launch. (#214)
 
 ### Changed
 
@@ -96,6 +101,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - `lw test` no longer hangs for hours parsing a results file with a very
   large failing test case (for example an assertion failing many thousands
   of times in a loop). (#209)
+- `lw test` notes a project whose kit builds for a device and that has no
+  saved test targets, instead of skipping it silently, and says how to
+  include it (`lw test-target add`). (#214)
+- `lw run --cwd` and `lw test --target --cwd` on a module-declared device
+  launch target are now a usage error (exit 2), as for a cross-built device
+  target. (#214)
+- Test results keep at most 1 MiB of each test case's failure message and
+  output; longer captures are cut at a line boundary and end with
+  `... [truncated: N more bytes]`. (#214)
 
 ## 0.1.43 - 2026-10-07
 
