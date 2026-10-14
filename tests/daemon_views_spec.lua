@@ -151,6 +151,9 @@ describe("view_state (§19.13 Views, two sources one shape)", function()
         local n = view_state.header(nil, { message = "newer", refused = true }, { root = "/r" })
         assert.is_nil(n.trust)
         assert.same({ root = "/r", state = "unloaded" }, view_state.header(nil, nil, { root = "/r" }))
+        -- The builder's caller supplies the running version (§19.13 `version`).
+        assert.same({ root = "/r", state = "unloaded", version = "0.1.43" },
+            view_state.header(nil, nil, { root = "/r", version = "0.1.43" }))
     end)
 
     it("signs equal states equally whatever their construction order", function()
@@ -198,6 +201,9 @@ describe("daemon /views (§19.13 Views)", function()
         local h = subscribe(views.HEADER)
         local p = subscribe(views.PROJECTS)
         assert.equals("unloaded", h.initial.state)
+        -- The daemon's running version survives the schema's shaping.
+        assert.is_truthy(require("loomworks.save_guard").version())
+        assert.equals(require("loomworks.save_guard").version(), h.initial.version)
         assert.same({}, p.initial.projects)
         views.check(svc)
         assert.equals(0, #updates())

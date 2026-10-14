@@ -15,7 +15,9 @@ editor height). Window position and size can be configured via `setup()`
 options or overridden per `open()` call — the `win` table is passed
 directly to `Snacks.win`. The page contains these sections in order:
 
-1. **Header** — plugin version, workspace name, workspace root (from
+1. **Header** — plugin version (the running loomworks version, resolved
+   like `_meta.written_by`, §2: the view's `version`, so the daemon's
+   while subscribed; `dev` when unknown), workspace name, workspace root (from
    `loomworks.view.Header/1`, daemon.md §19.13 "Two sources, one shape":
    the daemon's while subscribed, shown as it is — `Workspace: not loaded in
    the workspace daemon` before the daemon loads it — otherwise built

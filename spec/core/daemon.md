@@ -1673,6 +1673,11 @@ unknown enum value as neutral.
     (`user`: the status page offers review & trust and discarding it) or the
     cache (`cache`: it offers resetting the build cache). Absent for a
     newer-schema or journal refusal.
+  - `version` (string, optional) — the running loomworks version of the
+    `lw` that built the view, resolved like `_meta.written_by` (§2): the
+    daemon's in the daemon's view, the editor's in one built in-process
+    (also `daemon` mode's `unloaded` header before the daemon's arrives);
+    absent when unknown. The status page's header shows it (spec/ui.md §1).
 
   `Workspace/1.header` is unchanged: `view.Header/1` is a separate interface
   and adds its fields only to itself.

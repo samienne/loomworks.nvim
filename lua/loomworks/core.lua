@@ -1128,7 +1128,10 @@ function Core:view_header()
     -- In `daemon` mode a view is never built from the editor's model
     -- (§19.13): with no daemon table (not connected yet, the connection
     -- lost, the view not offered) the workspace shows unloaded.
-    if ws and ws._daemon_observer then return { root = ws.root, state = "unloaded" } end
+    -- `version` is the running loomworks version, not model state: the
+    -- editor's own while it has no daemon table.
+    local version = require("loomworks.save_guard").version()
+    if ws and ws._daemon_observer then return { root = ws.root, state = "unloaded", version = version } end
     local e = not ws and self._setup_error or nil
     local err
     if e then
@@ -1136,7 +1139,8 @@ function Core:view_header()
         err = { message = e.message, refused = (e.trust or e.newer or e.journal) and true or nil,
             trust = (kind == "user" or kind == "cache") and kind or nil }
     end
-    return require("loomworks.view_state").header(ws, err, { root = (ws and ws.root) or (e and e.root) or nil })
+    return require("loomworks.view_state").header(ws, err,
+        { root = (ws and ws.root) or (e and e.root) or nil, version = version })
 end
 
 --- `loomworks.view.ProjectsIndex/1`'s state built from the in-process model

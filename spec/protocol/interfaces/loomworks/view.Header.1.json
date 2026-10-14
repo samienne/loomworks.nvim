@@ -45,7 +45,8 @@
         },
         "pid": { "description": "The daemon's process id (absent in-process).", "type": "integer" },
         "lw_version": { "description": "The daemon's lw_version (absent in-process).", "type": "string" },
-        "session_generation": { "description": "The daemon's session generation (absent in-process).", "type": "integer" }
+        "session_generation": { "description": "The daemon's session generation (absent in-process).", "type": "integer" },
+        "version": { "description": "The running loomworks version of the lw that built the view (the daemon's, or the editor's in-process), resolved like _meta.written_by (spec 2); absent when unknown. The status page's header shows it.", "type": "string" }
       }
     }
   }

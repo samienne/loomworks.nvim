@@ -39,7 +39,8 @@ local function opts(service)
     local srv = service.server
     return { root = srv.root,
         session = { pid = srv.pid, lw_version = srv.identity, session_generation = srv.generation },
-        id = function(obj) return service.ids:id(obj) end }
+        id = function(obj) return service.ids:id(obj) end,
+        version = require("loomworks.save_guard").version() }
 end
 
 --- `loomworks.view.Header/1`'s state. Never loads.
