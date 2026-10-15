@@ -26,6 +26,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Changed
+
+- `lw project show` lists a configuration's saved test targets only when it
+  has some; the project row still always shows. (#242)
+
 ## 0.1.46 - 2026-10-14
 
 `lw project show` lists each configuration's saved test targets. A failed
