@@ -1047,6 +1047,14 @@ git only adds a small bounded delay. A git that does not answer within the bound
 is reported as having timed out (pointing at the git-required command that checks
 with a longer bound), never as git being unavailable or as "not a linked worktree".
 
+When the workspace's repository has linked worktrees, the overview lists them in
+a short worktrees section: each worktree's path, branch (or detached/bare), the
+main and current markers, and whether loomworks is initialised there, as the
+worktree listing (§16.26) reports them, capped like the other sections with a
+pointer to the full listing. With no linked worktrees the section is omitted.
+When git is missing or times out the section is omitted; the overview does not
+fail.
+
 A workspace can resolve in a linked worktree from the committed published
 snapshot alone, with no working copy and therefore no profiles (§16.25). When
 the overview finds **no profiles** and the invocation sits in a linked git
@@ -1055,8 +1063,8 @@ offers to **pull** (§16.25) before offering to create a profile. The test is th
 working copy's presence only — the overview never reads, parses or verifies the
 main checkout's files (pull does, §16.25, and reports "nothing to pull" when
 there is nothing). The detection is the same best-effort, time-bounded one as
-above and runs only in the no-profiles case, so a workspace with profiles pays
-no git cost.
+above and runs only in the no-profiles case, so a workspace with profiles never
+runs it.
 
 The overview ends with a **command footer**: one line naming the common
 everyday commands (building, running, testing, cleaning, resetting, health,

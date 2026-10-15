@@ -1847,7 +1847,8 @@ Commands that create
 something end with the next step (`lw init` names `lw project add`,
 `lw profile create` names `lw build <profile>`), and empty lists name the
 command that fills them. In a fresh git worktree with no profiles, status
-offers `lw pull` to copy the main checkout's. Every
+offers `lw pull` to copy the main checkout's. When the repository has linked
+worktrees, status lists them too (as `lw worktree` does, capped at six). Every
 command has detail under `lw help <command>` (or `lw <command> --help`); a
 sub-command's own section under `lw help <command> <sub>` (or
 `lw <command> <sub> --help`, e.g. `lw profile query --help`). An option a
