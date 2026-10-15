@@ -26,8 +26,10 @@ directly to `Snacks.win`. The page contains these sections in order:
    on disconnect"), and one
    `Runtime` line, the header's last line (above Diagnostics, never further
    down the page): the runtime mode, the source that selected it (core
-   §19.1: `default`, or — until step 6b — `setup` for the deprecated
-   `in-process` editor, with its deprecation note), and in `daemon` mode the
+   §19.1: `default`, or — until step 6b — `setup` when set in `setup()`:
+   an explicit `runtime.mode = "daemon"` shows `daemon (setup)`, the
+   deprecated `in-process` editor `in-process (setup)` with its deprecation
+   note), and in `daemon` mode the
    observer's current state or note (core §19.16), e.g. `Runtime:   daemon
    (default) — observing daemon pid 4242`, `Runtime:   daemon (default) —
    no lw host binary (LOOMWORKS_LW: not set; binary.path setting: not set;

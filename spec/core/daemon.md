@@ -62,15 +62,16 @@ shared even in CI); `CI=true` in the environment; the host setting
 (§19.10) — also the launch step itself failing with an error. Otherwise the command runs shared. An invalid configured value is
 reported and ignored (falls through to the next source).
 
-The editor has one mode: it is a client of the workspace daemon (§19.16). It
-never loads the workspace or runs an operation itself. `LOOMWORKS_RUNTIME`,
-`LOOMWORKS_NO_DAEMON`, `CI`, lw's `runtime-mode` setting and the former setup
-option `runtime.mode` do not apply to the editor; a setup value `runtime.mode`
-is reported once as ignored. *(Transition, until step 6b: `daemon` is the
-editor's default; `runtime.mode = "in-process"` still selects the in-process
-editor, with a deprecation note on the Runtime line.)*
+From step 6b the editor has one mode: it is a client of the workspace daemon
+(§19.16). It never loads the workspace or runs an operation itself.
+`LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON`, `CI`, lw's `runtime-mode` setting
+and the former setup option `runtime.mode` do not apply to the editor; from
+6b a setup value `runtime.mode` is reported once as ignored. *(Transition,
+until step 6b: `daemon` is the editor's default, and of `runtime.mode` only
+`"in-process"` is honoured — it selects the deprecated in-process editor, with
+a deprecation note on the Runtime line.)*
 
-**During the transition** the setting `runtime-mode` takes `in-process` (the
+**During the transition**, for the CLI, the setting `runtime-mode` takes `in-process` (the
 default) or `daemon`, with `LOOMWORKS_RUNTIME` as the environment override. In
 `in-process` mode no daemon is launched or used. In `daemon` mode every
 workspace command ensures the daemon is running (launching it if absent)
@@ -2771,12 +2772,14 @@ binary ("Host binary" below): with none the editor spawns no relay and runs
 **degraded**: the status page shows the workspace unloaded with the reason,
 language servers it manages are withheld ("LSP configuration" below),
 operations are refused with that reason ("Availability" below), and nothing
-of the workspace is loaded or run in the editor; it does not observe a
-daemon another client started. Its tasks are
+of the workspace is loaded or run in the editor — until steps 5n and 5o the
+transitional model ("Editor operations" below: the status page's body
+sections, the configuration mutations) applies while degraded too; it does
+not observe a daemon another client started. Its tasks are
 owned by its connection, so an editor that quits or crashes leaves no task
 running; the daemon itself outlives it under §19.11. Operations move from the
 editor to commands in the order of §19.19. When the shared daemon cannot be
-started, the editor reports it and runs degraded (step 6b); there is no
+started, the editor reports it and runs degraded (step 5s); there is no
 private-daemon fallback. The editor never runs the daemon code inside its own
 process (the earlier design D8, superseded), nor a child daemon of its own
 (the earlier step 5p, dropped).
@@ -2883,7 +2886,7 @@ degraded ("End state").
 
   | Status | Note | Follow-up |
   |--|--|--|
-  | 10 | could not start the workspace daemon; the editor runs degraded (step 6b) | one no-launch relay, then wait |
+  | 10 | could not start the workspace daemon; the editor runs degraded (step 5s) | one no-launch relay, then wait |
   | 11 | the workspace daemon is not responding | one no-launch relay, then wait |
   | 12 | the daemon belongs to another loomworks data dir, or is not a loomworks daemon | wait |
   | 13 | the workspace daemon runs on another host | wait |
@@ -3048,7 +3051,8 @@ owner"):
 Test runs and discovery go through `Tests/1` (step 5m, "Tests" below).
 Device-target launches (build → deploy → install → launch, §11) stay in the
 editor until `Devices/1` (step 5n); they are the only operation the editor
-still runs itself, and only while connected (a disconnected editor refuses
+still runs itself, apart from the transitional configuration mutations below
+(its deletions among them, until step 5o; §19.15), and only while connected (a disconnected editor refuses
 them with the Runtime status like any other operation).
 
 *(Transition, until steps 5n and 5o.)* In `daemon` mode the status page's
@@ -3324,8 +3328,8 @@ or debug session's final phase (running, debugging) keeps its own entry.
 **Step 4: the observer.** In `daemon` mode (§19.1), each
 workspace the editor loads gets an **observer**. It watches the task streams
 and model changes of operations started elsewhere (a `lw build` in a
-terminal). It runs none of the editor's own operations, which stay on the
-in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mode nothing below happens.
+terminal). It runs none of the editor's own operations; where those run is
+"Editor operations" and "Availability" above. In `in-process` mode nothing below happens.
 
 - **Host binary.** The observer selects the host binary it launches the
   daemon from; first match wins:
@@ -4116,7 +4120,10 @@ runtime is deferred until that module is actively developed.
        status page's body sections and the model's mutations stay on the
        editor's in-process model until 5n (reads) and 5o (writes), marked
        transitional (§19.16 "Editor operations"); device-target launches
-       stay in the editor until `Devices/1` (5n).
+       stay in the editor until `Devices/1` (5n). The editor no longer reads
+       `LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON` or `CI` for its mode, so a
+       headless editor under `CI=true` (this repo's test suite included)
+       defaults to `daemon`.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
