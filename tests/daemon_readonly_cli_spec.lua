@@ -195,7 +195,7 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         -- Saved test targets (§16.9): the project row (none + the add hint)
         -- and each non-empty configuration list, read from the projection.
         local shown = r.stdout:gsub("\r\n", "\n")
-        assert.truthy(shown:find("\n  tests           none — add: lw test-target add <profile> app:<name>", 1, true),
+        assert.truthy(shown:find("\n  tests           none project-wide — add: lw test-target add <profile> app:<name>", 1, true),
             shown)
         assert.truthy(shown:find("\n    Release [^\n]*\n      tests  T1, T2  %(own%)\n"), shown)
         -- Debug has no list, so it gets no `tests` line at all.

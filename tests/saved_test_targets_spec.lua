@@ -1253,13 +1253,13 @@ describe("lw project show: saved test targets (§16.9)", function()
             Tests = { inherits = "variant:default", tests = { "BaseTests", "X1" } },
             Rel = { inherits = "Tests" } } })
         assert.equals("BaseTests, X1  (inherited from Tests)", cfg_tests(s, "Rel"), s)
-        -- No project-wide list: the project row still shows `none` + the add hint.
-        assert.truthy(s:find("\n  tests           none — add: lw test-target add <profile> App:<name>", 1, true), s)
+        -- No project-wide list: the project row still shows `none project-wide` + the add hint.
+        assert.truthy(s:find("\n  tests           none project-wide — add: lw test-target add <profile> App:<name>", 1, true), s)
     end)
 
-    it("shows none and the add hint when no list exists anywhere", function()
+    it("shows none project-wide and the add hint when no list exists anywhere", function()
         local s = show({ configurations = { Rel = { inherits = "variant:default" } } })
-        assert.truthy(s:find("\n  tests           none — add: lw test-target add <profile> App:<name>"
+        assert.truthy(s:find("\n  tests           none project-wide — add: lw test-target add <profile> App:<name>"
             .. " [--config <name> | --project-wide]\n", 1, true), s)
         -- A configuration with an empty effective list shows no `tests` line.
         assert.is_nil(cfg_tests(s, "Rel"), s)
