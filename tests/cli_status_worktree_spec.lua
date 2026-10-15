@@ -444,3 +444,113 @@ describe("lw status overview palette", function()
             "  create a profile · lw profile create <set> <tool>\n", 1, true))
     end)
 end)
+
+-- `lw status` overview, worktrees section (§16.18): the repository's worktrees
+-- with the same rows `lw worktree` prints, capped like the other sections, and
+-- omitted when there are no linked worktrees or git cannot answer.
+describe("lw status overview worktrees section", function()
+    local function capture_status(fn)
+        local buf = {}
+        local rw = io.write
+        io.write = function(...) for _, s in ipairs({ ... }) do buf[#buf + 1] = s end end
+        local ok, err = pcall(fn)
+        io.write = rw
+        if not ok then error(err, 0) end
+        return table.concat(buf)
+    end
+
+    local root
+    before_each(function()
+        root = vim.fn.tempname():gsub("\\", "/")
+        vim.fn.mkdir(root .. "/App", "p")
+        local t = assert(io.open(root .. "/App/tsconfig.json", "w")); t:write("{}"); t:close()
+        local f = assert(io.open(root .. "/loomworks.json", "w"))
+        f:write(vim.json.encode({ projects = { App = { typescript = vim.empty_dict() } } })); f:close()
+    end)
+    after_each(function() vim.fn.delete(root, "rf") end)
+
+    -- Porcelain listing: main = root, then `n` linked worktrees on branches.
+    local function listing(n)
+        local parts = { "worktree " .. root .. "\nHEAD aaaaaaaaaa\nbranch refs/heads/master\n" }
+        for i = 1, n do
+            parts[#parts + 1] = "worktree /wt/l" .. i .. "\nHEAD bbbbbbbbbb\nbranch refs/heads/feat/" .. i .. "\n"
+        end
+        return table.concat(parts, "\n")
+    end
+
+    local function status(git, stat)
+        return capture_status(function()
+            cli.cmd_status(root, { can_pull = false, worktree_git = git, worktree_stat = stat })
+        end)
+    end
+
+    -- Only the main worktree and /wt/l1 carry a workspace.
+    local function stat_some(p)
+        if p == root .. "/loomworks.json" or p == "/wt/l1/.nvim/loomworks.user.json" then
+            return { type = "file" }
+        end
+        return nil
+    end
+
+    it("lists linked worktrees after Projects with markers, branch and init state", function()
+        local list = listing(2) .. "\nworktree /wt/det\nHEAD 1234567890abc\ndetached\n"
+        local out = status(fake_git({ version = true, toplevel = root, list = list }), stat_some)
+        local sec = out:find("\nWorktrees (4)\n", 1, true)
+        assert.is_truthy(sec, out)
+        assert.is_true(out:find("\nProjects (", 1, true) < sec)
+        assert.is_true(sec < out:find("Common: ", 1, true))
+        -- Rows are exactly `lw worktree`'s rows.
+        local records = { { path = root, branch = "master" },
+            { path = "/wt/l1", branch = "feat/1" }, { path = "/wt/l2", branch = "feat/2" },
+            { path = "/wt/det", detached = true, head = "1234567890abc" } }
+        local rows = cli._worktree_rows(records, root, stat_some)
+        local plain = function(s) return s end
+        for _, row in ipairs(rows) do
+            assert.is_truthy(out:find(cli._worktree_row(row, plain) .. "\n", 1, true), out)
+        end
+        local main_line = cli._worktree_row(rows[1], plain)
+        assert.is_truthy(main_line:find("^  %* "), main_line)
+        assert.is_truthy(main_line:find("main", 1, true))
+        assert.is_truthy(main_line:find("[master]", 1, true))
+        assert.is_truthy(main_line:find("workspace$"))
+        assert.is_truthy(cli._worktree_row(rows[2], plain):find("  workspace$"))
+        assert.is_truthy(cli._worktree_row(rows[3], plain):find("no workspace$"))
+        assert.is_truthy(cli._worktree_row(rows[4], plain):find("[detached 1234567]", 1, true))
+        assert.is_nil(out:find("lw worktree add", 1, true), out)
+        assert.is_false(has_escape(out))
+    end)
+
+    it("is omitted when only the main worktree exists", function()
+        local out = status(fake_git({ version = true, toplevel = root, list = listing(0) }), always_stat)
+        assert.is_nil(out:find("Worktrees (", 1, true), out)
+        assert.is_truthy(out:find("Common: ", 1, true))
+    end)
+
+    it("is omitted when git is missing", function()
+        local out = status(fake_git({ version = false }), always_stat)
+        assert.is_nil(out:find("Worktrees (", 1, true), out)
+        assert.is_truthy(out:find("Common: ", 1, true))
+    end)
+
+    it("is omitted when a git probe times out", function()
+        for _, probe in ipairs({ "--version", "rev-parse", "worktree" }) do
+            local out = status(fake_git({ version = true, toplevel = root, list = listing(2), timeout = probe }),
+                always_stat)
+            assert.is_nil(out:find("Worktrees (", 1, true), probe .. "\n" .. out)
+            assert.is_truthy(out:find("Common: ", 1, true))
+        end
+    end)
+
+    it("is omitted outside a git repository", function()
+        local out = status(fake_git({ version = true, toplevel = nil }), always_stat)
+        assert.is_nil(out:find("Worktrees (", 1, true), out)
+    end)
+
+    it("caps at six rows with a +K more pointer to `lw worktree`", function()
+        local out = status(fake_git({ version = true, toplevel = root, list = listing(8) }), never_stat)
+        assert.is_truthy(out:find("\nWorktrees (9)\n", 1, true), out)
+        assert.is_truthy(out:find("  +3 more · lw worktree\n", 1, true), out)
+        assert.is_truthy(out:find("/wt/l5 ", 1, true))
+        assert.is_nil(out:find("/wt/l6 ", 1, true))
+    end)
+end)
