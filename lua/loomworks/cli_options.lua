@@ -59,9 +59,6 @@ local function concat(...)
   return r
 end
 
--- Sub-commands that take the workspace operation lock (spec §19.3).
-local OPLOCK = spec({ flags = BREAK, eq = BREAK_EQ })
-
 -- `-m <para>` on item-creating verbs (M._extract_create_paras, §16.35).
 local CREATE = spec({ valued = { "-m", "--message" }, eq = { "-m=", "--message=" } })
 local CREATE_PROFILE = spec({ flags = { "--activate", "-a" }, valued = { "-m", "--message" },
@@ -89,23 +86,23 @@ M.COMMANDS = {
     eq = BREAK_EQ }),
   clean = spec({ flags = BREAK, eq = BREAK_EQ }),
   reset = spec({ flags = { "--all", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
-  unlock = spec({ flags = { "--all", "--force", "--workspace" }, valued = { "--device" } }),
+  unlock = spec({ flags = { "--all", "--force" }, valued = { "--device" } }),
   profiles = NONE,
-  publish = spec({ flags = BREAK, eq = BREAK_EQ }),
+  publish = NONE,
   -- `lw export` / `lw import` (§16.39). A lone `-` is an operand (stdout/stdin).
   export = spec({ flags = { "--published", "--no-profiles" }, valued = { "-o", "--output" },
     eq = { "--output=" } }),
-  import = spec({ flags = { "-y", "--yes", "-n", "--dry-run", "--take-name", "--break-locks" }, eq = BREAK_EQ }),
+  import = spec({ flags = { "-y", "--yes", "-n", "--dry-run", "--take-name" } }),
   status = spec({ flags = { "--check", "--cache-stats" } }),
   -- `--force` / `--refresh` predate health re-checking everything; kept as no-ops.
   -- Positional words are health areas (§16.36).
   health = spec({ flags = { "--json", "--verbose", "-v", "--all", "--force", "--refresh" } }),
   init = spec({ valued = { "--name" } }),
   tools = spec({ flags = { "--cached" } }),
-  trust = spec({ flags = { "-y", "--yes", "--discard", "--break-locks" }, eq = BREAK_EQ }),
-  nuke = spec({ flags = { "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
-  migrate = spec({ flags = { "--check", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
-  pull = spec({ flags = { "--dry-run", "-n", "--break-locks" }, eq = BREAK_EQ }),
+  trust = spec({ flags = { "-y", "--yes", "--discard" } }),
+  nuke = spec({ flags = { "-y", "--yes" } }),
+  migrate = spec({ flags = { "--check", "-y", "--yes" } }),
+  pull = spec({ flags = { "--dry-run", "-n" } }),
   ["release-notes"] = spec({ flags = { "--all", "--json" }, valued = { "--since", "-n" },
     eq = { "--since=", "-n=" } }),
   -- Topic / shell names only; their own parsers report anything else.
@@ -145,7 +142,7 @@ M.COMMANDS = {
   profile = {
     subs = {
       list = NONE, show = NONE, select = spec({ flags = { "--none" } }),
-      create = CREATE_PROFILE, remove = OPLOCK, publish = OPLOCK, query = NONE,
+      create = CREATE_PROFILE, remove = NONE, publish = NONE, query = NONE,
       -- `[<profile>] <project> <variable> <value>`: the value may start with '-'.
       set = spec({ free_after = 2 }), unset = NONE, describe = DESCRIBE,
     },
@@ -154,8 +151,8 @@ M.COMMANDS = {
   },
   project = {
     subs = {
-      list = NONE, show = NONE, add = CREATE, remove = NONE, rename = OPLOCK, unset = NONE,
-      publish = OPLOCK, describe = DESCRIBE,
+      list = NONE, show = NONE, add = CREATE, remove = NONE, rename = NONE, unset = NONE,
+      publish = NONE, describe = DESCRIBE,
       -- `<project> <variable> [<default>] [--type T]`: the default may start with '-'.
       set = spec({ valued = { "--type" }, eq = { "--type=" }, free_after = 2 }),
     },
@@ -164,8 +161,8 @@ M.COMMANDS = {
   },
   config = {
     subs = {
-      list = NONE, show = NONE, get = NONE, add = CREATE, unset = NONE, rename = OPLOCK,
-      remove = NONE, publish = OPLOCK, describe = DESCRIBE,
+      list = NONE, show = NONE, get = NONE, add = CREATE, unset = NONE, rename = NONE,
+      remove = NONE, publish = NONE, describe = DESCRIBE,
       -- `<project> <config> <param> <value>`: the value may start with '-' (-O2).
       set = spec({ free_after = 3 }),
     },
@@ -174,8 +171,8 @@ M.COMMANDS = {
   },
   configset = {
     subs = {
-      list = NONE, show = NONE, create = CREATE, map = NONE, unmap = NONE, rename = OPLOCK,
-      remove = NONE, publish = OPLOCK, describe = DESCRIBE,
+      list = NONE, show = NONE, create = CREATE, map = NONE, unmap = NONE, rename = NONE,
+      remove = NONE, publish = NONE, describe = DESCRIBE,
     },
     aliases = { add = "create", mv = "rename", rm = "remove" },
     default = NONE,
