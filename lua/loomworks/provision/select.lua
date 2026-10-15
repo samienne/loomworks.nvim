@@ -74,7 +74,7 @@ M.LABELS = {
 
 --- The note when nothing resolved and no details are known (an injected
 --- resolver returned nil).
-M.NONE_NOTE = "no lw host binary found (LOOMWORKS_LW, binary.path, PATH, plugin-managed lw) — running in-process"
+M.NONE_NOTE = "no lw host binary found (LOOMWORKS_LW, binary.path, PATH, plugin-managed lw) — running degraded"
 
 local function is_win() return package.config:sub(1, 1) == "\\" end
 
@@ -295,7 +295,7 @@ function M.resolve(root, opts)
             else
                 add(source, "refused", p, bad)
                 sel.note = string.format("%s names %s, which is %s — no lw host binary "
-                    .. "(an explicit lw is never replaced by another); running in-process", M.LABELS[source], p, bad)
+                    .. "(an explicit lw is never replaced by another); running degraded", M.LABELS[source], p, bad)
             end
         else
             add(source, "absent", nil, "not set")
@@ -369,15 +369,15 @@ function M.none_note(sel)
     if sel.download then
         local d = sel.download
         return "the plugin-managed lw v" .. tostring(d.version) .. " (" .. tostring(d.asset)
-            .. (d.unreadable and ") could not be read — running in-process"
-                or d.corrupt and ") is corrupt — running in-process" or ") is not installed yet — running in-process")
+            .. (d.unreadable and ") could not be read — running degraded"
+                or d.corrupt and ") is corrupt — running degraded" or ") is not installed yet — running degraded")
     end
     local parts = {}
     for _, c in ipairs(sel.candidates or {}) do
         parts[#parts + 1] = c.label .. ": " .. tostring(c.reason or c.verdict)
     end
     if #parts == 0 then return M.NONE_NOTE end
-    return "no lw host binary (" .. table.concat(parts, "; ") .. ") — running in-process"
+    return "no lw host binary (" .. table.concat(parts, "; ") .. ") — running degraded"
 end
 
 --- One line naming the chosen binary and why (the Runtime line while it

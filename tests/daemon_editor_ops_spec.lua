@@ -3,11 +3,11 @@
 -- the overseer entry points in both runtime modes, against an observer
 -- whose connection is a recording fake (no daemon): what is sent, and what
 -- each outcome does — accepted (one owned task, ended by its `done`),
--- declined (in-process, one notification), a method the daemon lacks
--- (in-process, a Runtime-line note), refused (fails, nothing in-process),
--- the connection lost after `accepted` (fails, never re-run in-process) —
--- plus cancellation (`Tasks/1.cancel`) and a clean's pre-emption of the
--- editor's own build.
+-- declined (fails, one notification), a method the daemon lacks (refused
+-- with its Runtime-line note), refused (fails, nothing in-process), the
+-- connection lost after `accepted` (fails, never re-run in-process), not
+-- carried (refused with the observer's note, step 5s) — plus cancellation
+-- (`Tasks/1.cancel`) and a clean's pre-emption of the editor's own build.
 
 local observer = require("loomworks.daemon.observer")
 local editor_ops = require("loomworks.daemon.editor_ops")
@@ -90,7 +90,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
     it("in-process mode: nothing is routed, the entry points run in-process as before", function()
         assert.is_nil(observer.current())
         assert.is_nil(editor_ops.carrier("build", ws))
-        assert.is_false(editor_ops.daemon_mode())
+        assert.is_false((editor_ops.daemon_of(ws)))
         local f = require("loomworks.overseer").run_profile_action(profile, "build")
         assert.is_nil(f.routed)
         assert.is_true(vim.wait(5000, function() return #created > 0 end, 10))
@@ -99,7 +99,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
 
     it("a profile build is a Build/1.build the editor owns; its `done` ends the operation", function()
         obs = fake_observer()
-        assert.is_true(editor_ops.daemon_mode())
+        assert.is_true((editor_ops.daemon_of(ws)))
         local f = require("loomworks.overseer").run_profile_action(profile, "build", { parallel_jobs = 1 })
         assert.is_true(f.routed)
         local st = watch(f)
@@ -167,32 +167,49 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         assert.same({ editor_ops.unit_ref(unit) }, sent[1].args.units)
     end)
 
-    it("declined: in-process, with the reason as one notification", function()
+    --- The notifications so far that contain `s`.
+    local function notified(s)
+        local n = 0
+        for _, x in ipairs(notes) do if x.msg:find(s, 1, true) then n = n + 1 end end
+        return n
+    end
+
+    it("declined: fails with the reason as one notification line; nothing in-process", function()
         obs = fake_observer()
         local f = require("loomworks.overseer").run_profile_action(profile, "build")
+        local st = watch(f)
         sent[1].cb({ outcome = "declined", reason = "another environment" }, nil)
-        assert.is_true(vim.wait(5000, function() return #created > 0 end, 10))
-        local hit
-        for _, n in ipairs(notes) do
-            if n.msg:find("declined the build (another environment)", 1, true) then hit = true end
-        end
-        assert.is_true(hit)
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("the workspace daemon declined the build (another environment)", st.err)
+        assert.equals(1, #notes)
+        assert.equals(1, notified("declined the build (another environment)"))
+        assert.is_nil(notes[1].msg:find("\n", 1, true))
         assert.is_true(f.routed)
+        vim.wait(100)
+        assert.equals(0, #created)
     end)
 
-    it("a method the daemon lacks: in-process, one Runtime-line note, not called again", function()
+    it("a method the daemon lacks: refused with its Runtime-line note, not called again", function()
         obs = fake_observer()
-        require("loomworks.overseer").run_profile_action(profile, "configure")
+        local st = watch(require("loomworks.overseer").run_profile_action(profile, "configure"))
         sent[1].cb(nil, { code = "unknown_method", message = "no configure" })
-        assert.is_true(vim.wait(5000, function() return #created > 0 end, 10))
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
         assert.is_false(obs:can_call("configure"))
         assert.is_true(obs:can_call("build"))
-        assert.truthy((obs.note or ""):find("operations: daemon offers no loomworks.Build/1.configure", 1, true))
-        for _, n in ipairs(notes) do assert.is_nil(n.msg:find("configure", 1, true)) end
-        -- The next configure runs in-process at once.
+        local note = "operations: daemon offers no loomworks.Build/1.configure (no configure)"
+        assert.truthy((obs.note or ""):find(note, 1, true), obs.note)
+        assert.equals("configure: " .. note, st.err)
+        assert.equals(1, notified("configure: " .. note))
+        -- The next configure is refused at once, nothing sent or run.
         local before = #sent
-        assert.is_nil(require("loomworks.overseer").run_profile_action(profile, "configure").routed)
+        local f = require("loomworks.overseer").run_profile_action(profile, "configure")
+        assert.is_true(f.routed)
+        st = watch(f)
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("configure: " .. note, st.err)
         assert.equals(before, #sent)
+        vim.wait(100)
+        assert.equals(0, #created)
     end)
 
     it("refused: the operation fails with the refusal's message; nothing in-process", function()
@@ -227,12 +244,51 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         assert.equals(0, #created)
     end)
 
-    it("not carried (no Tasks/1, so no cancel): in-process, nothing sent", function()
+    it("not carried (no Tasks/1, so no cancel): refused with the feature's note, nothing sent or run", function()
         obs = fake_observer({ operations = "available" })
+        obs._why = { tasks = "tasks: daemon offers no loomworks.Tasks" }
         assert.is_nil(editor_ops.carrier("build", ws))
-        assert.is_nil(require("loomworks.overseer").run_profile_action(profile, "build").routed)
+        local f = require("loomworks.overseer").run_profile_action(profile, "build")
+        assert.is_true(f.routed)
+        local st = watch(f)
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("build: tasks: daemon offers no loomworks.Tasks", st.err)
+        assert.equals(1, notified("loomworks: build: tasks: daemon offers no loomworks.Tasks"))
         assert.same({}, sent)
-        assert.is_true(vim.wait(5000, function() return #created > 0 end, 10))
+        vim.wait(100)
+        assert.equals(0, #created)
+    end)
+
+    it("no connection: every operation is refused with the observer's note (step 5s)", function()
+        obs = fake_observer()
+        obs.state, obs.note = "waiting", "waiting for the workspace daemon (connecting)"
+        local ov = require("loomworks.overseer")
+        local st = watch(ov.run_profile_action(profile, "build"))
+        local st2 = watch(ov.run_configuration_action(unit, "configure"))
+        local st3 = watch(unit:clean())
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil and st2.err ~= nil and st3.err ~= nil end, 10))
+        assert.equals("build: waiting for the workspace daemon (connecting)", st.err)
+        assert.equals("configure: waiting for the workspace daemon (connecting)", st2.err)
+        assert.equals("clean: waiting for the workspace daemon (connecting)", st3.err)
+        assert.equals(3, #notes)
+        -- The connection lost: the disconnect note.
+        obs.state, obs.note, obs._lost = "waiting", nil, true
+        local st4 = watch(ov.run_profile_action(profile, "build"))
+        assert.is_true(vim.wait(2000, function() return st4.err ~= nil end, 10))
+        assert.equals("build: " .. observer.LOST_NOTE, st4.err)
+        assert.same({}, sent)
+        vim.wait(100)
+        assert.equals(0, #created)
+    end)
+
+    it("a daemon-mode workspace whose observer stopped refuses, never runs in-process", function()
+        ws._runtime_selection = { mode = "daemon", source = "default", daemon = true }
+        local st = watch(require("loomworks.overseer").run_profile_action(profile, "build"))
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("build: the workspace is no longer loaded", st.err)
+        vim.wait(100)
+        assert.equals(0, #created)
+        ws._runtime_selection = nil
     end)
 
     it("cancel sends Tasks/1.cancel for an owned task only, and waits for its end", function()
@@ -395,22 +451,22 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         assert.same({}, sent)
     end)
 
-    it("the action's own progress entry is not shown for a routed operation", function()
+    it("the action's own progress entry is shown only in in-process mode", function()
         local fidget = require("loomworks.fidget")
         local made = {}
         local orig = fidget.start_action
         fidget.start_action = function(title) made[#made + 1] = title; return { title = title } end
         local ok, err = pcall(function()
             -- In-process mode: unchanged.
-            fidget.start_op_action("Building p", "build")
+            fidget.start_op_action("Building p")
             obs = fake_observer()
-            assert.is_nil(fidget.start_op_action("Building p", "build"))
-            -- Daemon mode, not carried: the title says so.
+            assert.is_nil(fidget.start_op_action("Building p"))
+            -- Daemon mode, not carried: refused, so no entry either.
             obs._feat.operations = nil
-            fidget.start_op_action("Building p", "build")
+            assert.is_nil(fidget.start_op_action("Building p"))
         end)
         fidget.start_action = orig
         assert.is_true(ok, tostring(err))
-        assert.same({ "Building p", "Building p (in-process)" }, made)
+        assert.same({ "Building p" }, made)
     end)
 end)

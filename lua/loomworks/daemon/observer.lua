@@ -6,7 +6,8 @@
 --- `Workspace:teardown`). From step 5k it also carries the editor's builds,
 --- configures and module cleans as interface calls whose tasks the editor
 --- owns (`start_owned`, `cancel_owned`; the routing is
---- loomworks.daemon.editor_ops); everything else stays in-process. It
+--- loomworks.daemon.editor_ops); an operation it cannot carry is refused
+--- (`refusal`, §19.16 "Availability", step 5s), never run in-process. It
 ---
 ---   * connects ONLY through the `--stdio` relay (loomworks.daemon.
 ---     client.relay, §19.16 "Through the relay", step 5i PR G1): before each
@@ -24,14 +25,14 @@
 ---     `--retiring`). It reads none of lw's internal files to
 ---     connect, launch or follow a daemon (only `_prune`'s in-use check reads
 ---     the handle, read-only). With no host binary it spawns nothing and
----     stays in-process;
+---     runs degraded;
 ---   * judges `welcome.daemon` (transport range overlapping ours, schemas not
 ---     newer; the host version may differ) as `client = "editor"`, `role =
 ---     "observer"`, and pings it every KEEPALIVE_MS (§19.11); a `welcome`
 ---     without `via` (an older pin's attached `--stdio`) is observed without
 ---     that check and never retired. An incompatible daemon it does not
 ---     observe (including one it declines to retire) has its relay closed;
----     the editor stays in-process and follows a successor through one
+---     the editor runs degraded and follows a successor through one
 ---     `--no-launch --skip-instance <id>` relay naming that daemon (step 5i
 ---     PR G2, `_skip`), or — the daemon's start time unknown, so it cannot
 ---     be named — spawns no relay until an explicit connect;
@@ -110,8 +111,9 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
 --- @field _owned table<any, loomworks.daemon.OwnedCall> the editor's own tasks by daemon task id, from the call's `accepted` until they end (step 5k)
---- @field _degraded table<string, boolean>|nil Build/1, Launch/1 and DebugConfig/1 methods this connection's daemon lacks (or a parameter of): their operations run in-process
+--- @field _degraded table<string, boolean>|nil Build/1, Launch/1 and DebugConfig/1 methods this connection's daemon lacks (or a parameter of): their operations are refused
 --- @field _method_notes string[]|nil the Runtime-line notes of those methods
+--- @field _method_why table<string, string>|nil each of those methods' note (an operation's refusal)
 --- @field _debug_adapters { languages: table[]|nil }|nil `DebugConfig/1.adapters` as last read on this connection (step 5k C2; `languages` nil: that read failed or was declined)
 --- @field _debug_fetch fun(records: table[]|nil)[]|nil an `adapters` read in flight: its waiters (with_debug_adapters)
 --- @field _debug_again boolean|nil a model change arrived during that read: read again after it
@@ -149,7 +151,7 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _channel_force boolean|nil an explicit connect asked for a channel check that could not run yet (the selection undecided, or a check in flight: it runs right after that one)
 --- @field opts table the attach options (test seams, see `attach`)
 --- @field keepalive_ms integer keepalive ping interval
---- @field warning string|nil an invalid runtime-mode value that was ignored (shown on the Runtime line)
+--- @field warning string|nil an invalid setup runtime.mode value that was ignored (shown on the Runtime line)
 local Observer = {}
 Observer.__index = Observer
 
@@ -287,8 +289,7 @@ end
 --- mode: nothing happens).
 --- opts (tests inject):
 ---   configured  the setup option `runtime.mode`
----   getenv      replaces os.getenv for the selection and LOOMWORKS_LW
----   settings_file / read_setting  lw's settings file (loomworks.daemon.runtime.read_setting)
+---   getenv      replaces os.getenv for LOOMWORKS_LW
 ---   binary      the setup option `binary` (loomworks.provision.BinarySetting)
 ---   resolve     fun(root, opts) → binary|nil, source, selection (loomworks.provision.binsel.resolve)
 ---   relay       fun(opts, cb) → relay|nil, err (loomworks.daemon.client.relay.connect: spawns the relay)
@@ -318,10 +319,8 @@ function M.attach(ws, opts)
     opts = opts or {}
     if not ws or ws._torn_down then return nil end
     local runtime = require("loomworks.daemon.runtime")
-    -- Selected afresh on every load (lw's setting may have changed); kept on
-    -- the workspace for the Runtime line, in-process mode included.
-    local sel = runtime.editor_select({ configured = opts.configured, getenv = opts.getenv,
-        settings_file = opts.settings_file, read_setting = opts.read_setting })
+    -- Kept on the workspace for the Runtime line, in-process mode included.
+    local sel = runtime.editor_select({ configured = opts.configured })
     ws._runtime_selection = sel
     if not sel.daemon then return nil end
     if ws._daemon_observer then return ws._daemon_observer end
@@ -483,7 +482,7 @@ function M.mismatch_note(ch, what, binary)
     end
     local lw = "lw v" .. tostring(ch.lw_version) .. (binary and (" at " .. binary) or "")
     return string.format("the workspace daemon runs %s (%s), which does not match this plugin (v%s, %s): "
-        .. "update the plugin, or pin or install a matching lw — not observing it; running in-process",
+        .. "update the plugin, or pin or install a matching lw — not observing it; running degraded",
         lw, theirs, version.identity(), ours)
 end
 
@@ -493,7 +492,7 @@ end
 --- `_probe`, then here again with `probed` set, so a binary whose verdict
 --- could not be cached is used as unknown rather than probed again); a
 --- wanted plugin-managed lw is downloaded first. With no host binary no
---- relay is spawned: the editor stays in-process.
+--- relay is spawned: the editor runs degraded.
 --- want: { form, instance? (retiring, skip), answer? (spawned for a status 10/11),
 ---         prefix? (the note it follows) }
 --- @param want table
@@ -587,7 +586,7 @@ function Observer:_probe(path)
 end
 
 --- Download the plugin-managed lw the selection wants (spec §19.16, step
---- 5h.3), then spawn the relay that was wanted (`_want`). A failure is one note and leaves the editor in-process; it is not
+--- 5h.3), then spawn the relay that was wanted (`_want`). A failure is one note and leaves the editor degraded; it is not
 --- retried until `:LoomworksDaemon connect`.
 --- @param sel loomworks.provision.Selection
 function Observer:_download(sel)
@@ -610,7 +609,7 @@ function Observer:_download(sel)
         if self.state == "stopped" then return end
         if not path then
             self._download_failed = want.sha256
-            self._download_note = "could not install " .. what .. ": " .. tostring(err) .. " — running in-process"
+            self._download_note = "could not install " .. what .. ": " .. tostring(err) .. " — running degraded"
             return self:_set("no-binary", self._download_note)
         end
         self:_prune(want)
@@ -621,7 +620,7 @@ function Observer:_download(sel)
     end)
     local url = type(st) == "table" and st.url or fetch.url(want, fopts)
     if self._downloading then
-        self:_set("downloading", "downloading " .. what .. " from " .. tostring(url) .. " — running in-process meanwhile")
+        self:_set("downloading", "downloading " .. what .. " from " .. tostring(url) .. " — degraded meanwhile")
     end
 end
 
@@ -855,7 +854,7 @@ function M.exit_note(code, form, root)
     if code == 16 then return "the retiring daemon has exited and no other is live" end
     if code == 3 then
         return "the pinned lw predates the shared-daemon relay and another runtime holds this workspace; "
-            .. "running in-process — update the pin"
+            .. "running degraded — update the pin"
     end
     if code == 2 and form ~= "ordinary" then
         local v = M.pinned_version(root)
@@ -960,7 +959,7 @@ end
 --- follow-up — one no-launch relay after a 10 / 11 (not in answer to one
 --- that was itself such an answer), a retiring (or no-launch) relay after a
 --- 14, the episode's one ordinary relay after a 16; otherwise wait: stay
---- in-process with the note until an explicit `:LoomworksDaemon connect`.
+--- degraded with the note until an explicit `:LoomworksDaemon connect`.
 --- @param token table
 --- @param err string|nil "exit" or "protocol"
 --- @param info loomworks.daemon.RelayExit|nil
@@ -1008,12 +1007,12 @@ end
 
 --- Follow past an incompatible daemon the editor does not observe (spec
 --- §19.16 "Skipping an incompatible daemon", step 5i PR G2): its relay is
---- already closed; the editor stays in-process and spawns one `--no-launch
+--- already closed; the editor runs degraded and spawns one `--no-launch
 --- --skip-instance <pid>:<start_time>` relay naming it from
 --- `welcome.daemon`, which never connects to it, launches nothing and
 --- connects to a successor once one is live (judged afresh). A daemon whose
 --- start time is unknown cannot be named (§19.5): no relay is spawned, and
---- the editor stays in-process for the session until an explicit
+--- the editor runs degraded for the session until an explicit
 --- `:LoomworksDaemon connect`. Nothing is retried on a timer.
 --- @param target table the daemon { pid, start_time, exe } (`welcome.daemon`)
 --- @param note string the incompatible-daemon note
@@ -1079,7 +1078,7 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
                         self:_drop_retire()
                         if self.state ~= "stopped" then
                             self:_skip(target, R.note(ch, inc, binary, "its connection closed — not observing it; "
-                                .. "running in-process"))
+                                .. "running degraded"))
                         end
                     end
                 end)
@@ -1097,7 +1096,7 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
         end
         self:_drop_retire()
         return self:_skip(target, R.note(ch, inc, binary, "not observing it (" .. why .. "); " .. advice
-            .. " — running in-process"))
+            .. " — running degraded"))
     end
     -- The editor retires a daemon only over a relay connection
     -- (`welcome.via = "relay"`, §19.16 "Through the relay"); a `welcome`
@@ -1240,7 +1239,7 @@ function Observer:_retire_unanswered(wait, what)
     end
     self:_drop_retire()
     return self:_skip(wait.target, require("loomworks.daemon.editor_retire").note(wait.ch, wait.inc,
-        wait.target.exe or self._binary, "not observing it (" .. tail .. ") — running in-process"))
+        wait.target.exe or self._binary, "not observing it (" .. tail .. ") — running degraded"))
 end
 
 --- Retire the idle incompatible daemon: record the guard, send `retire`
@@ -1276,7 +1275,7 @@ function Observer:_retire_now()
             pcall(wait.conn.close, wait.conn)
         end
         return self:_skip(target, R.note(ch, wait.inc, binary, "not observing it; " .. tail
-            .. " — running in-process"))
+            .. " — running degraded"))
     end
     -- No reply within a re-check tick: a failure (a late reply is ignored).
     local t = uv.new_timer()
@@ -1366,7 +1365,7 @@ function Observer:_connected_note()
             end
         end
     end
-    -- A method an older daemon lacks (step 5k): its operations run in-process.
+    -- A method an older daemon lacks (step 5k): its operations are refused.
     for _, n in ipairs(self._method_notes or {}) do notes[#notes + 1] = n end
     -- The task runner cannot list daemon tasks (step 5k C1b, §19.16).
     if self.runner_note then notes[#notes + 1] = self.runner_note end
@@ -1428,7 +1427,7 @@ end
 --- @param done fun()
 function Observer:_subscribe(conn, done)
     self._feat, self._why, self._sub_only = {}, {}, nil
-    self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
+    self._degraded, self._method_notes, self._method_why, self._lsp_get_why = nil, nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
@@ -1469,12 +1468,13 @@ function Observer:_ensure_subscriptions(conn, objects, done)
             local _ = st
         elseif want.call_only then
             -- Called, not subscribed to (step 5k): offered at our version
-            -- or not; missing, the operations run in-process.
+            -- or not; missing, its operations are refused (§19.16
+            -- "Availability").
             if vim.tbl_contains(offered, want.v) then
                 self._feat[f], self._why[f] = "available", nil
             else
                 self._feat[f] = #offered > 0 and "missing" or nil
-                self._why[f] = M.feature_note(want, offered) .. " — " .. (want.unavailable or "running them in-process")
+                self._why[f] = M.feature_note(want, offered) .. (want.unavailable and (" — " .. want.unavailable) or "")
             end
         elseif vim.tbl_contains(offered, want.v) and st ~= "gave_up" then
             self._feat[f] = "pending"
@@ -1726,7 +1726,7 @@ function Observer:_on_closed(c)
     -- `lost` change) and their buffers are held.
     self._lost = true
     self._feat, self._why, self._sub_only = nil, nil, nil
-    self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
+    self._degraded, self._method_notes, self._method_why, self._lsp_get_why = nil, nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
@@ -1900,11 +1900,11 @@ end
 
 --- Transport error codes of a call after which nothing ran because the
 --- daemon lacks the method or a parameter (§19.16 "Availability": the
---- feature is degraded, a Runtime-line note, the operation in-process).
+--- feature is degraded, a Runtime-line note, the operation refused).
 M.DEGRADED_CODES = { unknown_object = true, unknown_interface = true, unknown_method = true,
     unsupported_version = true, invalid_args = true }
 --- Codes after which nothing ran and the daemon declines this request
---- (§19.20 "The CLI's calls"): in-process, the reason as one notification.
+--- (§19.20 "The CLI's calls"): fails, the reason as one notification.
 M.DECLINED_CODES = { same_build_required = true, stopping = true, retiring = true }
 
 --- The interface table of each method the editor calls (step 5k): the
@@ -2021,8 +2021,31 @@ function Observer:can_call(method)
     return not (self._degraded and self._degraded[method])
 end
 
+--- Why `method` cannot be carried now (§19.16 "Availability"): the
+--- observer's Runtime-line note that refuses its operation — the method's
+--- or its feature's note while connected (e.g. `operations: daemon offers
+--- no loomworks.Build/1.configure (…)`), otherwise the observer's state or
+--- note (waiting, no host binary, disconnected, …).
+--- @param method string
+--- @return string
+function Observer:refusal(method)
+    if self.state == "connected" and self.conn and not self.conn.closed and not self._lost then
+        if self.incompat_note then return self.incompat_note end
+        local why = self._method_why and self._method_why[method]
+        if why then return why end
+        local want = METHOD_IFACE[method]
+        why = want and self._why and self._why[want.feature]
+        if why then return why end
+        why = want and want.tasks and self._why and self._why[M.TASKS.feature]
+        if why then return why end
+        return self.feature_note or self.note or "the workspace daemon cannot carry it now"
+    end
+    if self._lost then return M.LOST_NOTE end
+    return self.note or self.state
+end
+
 --- Note a method the daemon lacks (or a parameter of it): its operations
---- run in-process from now on, on this connection (§19.16 "Availability").
+--- are refused from now on, on this connection (§19.16 "Availability").
 --- @param method string
 --- @param err table the call's error
 function Observer:_degrade(method, err)
@@ -2040,11 +2063,13 @@ function Observer:_degrade(method, err)
         end
         return self:_lsp_changed()
     end
+    local note = string.format("%s: daemon offers no %s/%d.%s (%s)", want.label or want.feature, want.iface,
+        want.v, WIRE[method] or method, tostring(err and (err.message or err.code) or "?"))
+    if want.unavailable then note = note .. " — " .. want.unavailable end
     self._method_notes = self._method_notes or {}
-    self._method_notes[#self._method_notes + 1] = string.format(
-        "%s: daemon offers no %s/%d.%s (%s) — %s", want.label or want.feature, want.iface,
-        want.v, WIRE[method] or method, tostring(err and (err.message or err.code) or "?"),
-        want.unavailable or "running them in-process")
+    self._method_notes[#self._method_notes + 1] = note
+    self._method_why = self._method_why or {}
+    self._method_why[method] = note
     self:_connected_note()
 end
 
@@ -2066,10 +2091,10 @@ end
 ---                                      `done`, or the connection lost:
 ---                                      `reason`);
 ---   { outcome = "refused", message }   fails as in-process would;
----   { outcome = "declined", reason }   nothing ran: run it in-process;
+---   { outcome = "declined", reason }   nothing ran: fails with the reason;
 ---   { outcome = "degraded", reason }   nothing ran (the daemon lacks the
----                                      method or a parameter): noted, run
----                                      it in-process;
+---                                      method or a parameter): noted, the
+---                                      operation refused;
 ---   { outcome = "failed", reason }     it may have started (an internal
 ---                                      error, the connection lost before
 ---                                      the reply): never re-run.
@@ -2590,12 +2615,11 @@ end
 
 --- The status page's Runtime line (spec/ui.md §1.1, core §19.1, §19.16): the
 --- mode, the source that selected it and, in `daemon` mode, the observer's
---- state or note. nil when no mode was selected yet, or when the default
---- picked `in-process` with nothing to report. `warn` is true while a
+--- state or note; the deprecated in-process editor with its deprecation
+--- note. nil when no mode was selected yet. `warn` is true while a
 --- `daemon`-mode observer is not connected (a version mismatch, no host
 --- binary, waiting), while a lost connection keeps the workspace unloaded,
---- while the LSP configuration is unavailable, and for an ignored value or
---- unreadable settings file.
+--- while the LSP configuration is unavailable, and for an ignored value.
 --- @param ws loomworks.Workspace|nil
 --- @return string|nil text, boolean warn
 function M.runtime_line(ws)
@@ -2608,12 +2632,9 @@ function M.runtime_line(ws)
         return head .. " — " .. obs:runtime_line(), obs.state ~= "connected" or obs._lost == true or lsp_warn
     end
     local parts = {}
-    if sel.reason then parts[#parts + 1] = sel.reason end
+    if sel.deprecated then parts[#parts + 1] = require("loomworks.daemon.runtime").DEPRECATED_NOTE end
     if sel.warning then parts[#parts + 1] = sel.warning end
-    if #parts == 0 then
-        if sel.source == "default" and sel.mode ~= "daemon" then return nil, false end
-        return head, false
-    end
+    if #parts == 0 then return head, false end
     return head .. " — " .. table.concat(parts, "; "), sel.warning ~= nil
 end
 

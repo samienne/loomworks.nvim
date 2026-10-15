@@ -295,8 +295,9 @@ describe("the observer (§19.16)", function()
         end
     end
 
-    it("does nothing in in-process mode", function()
-        assert.is_nil(observer.attach(ws, { getenv = function() return nil end }))
+    it("does nothing in the (deprecated) in-process mode", function()
+        assert.is_nil(observer.attach(ws, { configured = "in-process" }))
+        assert.is_true(ws._runtime_selection.deprecated)
         assert.is_nil(ws._daemon_observer)
         assert.same({}, ws:get_daemon_tasks())
     end)
@@ -367,9 +368,9 @@ describe("the observer (§19.16)", function()
             .. "statusline: daemon offers no loomworks.view.Header, editor needs /1; "
             .. "project index: daemon offers no loomworks.view.ProjectsIndex, editor needs /1; "
             .. "tests: daemon offers no loomworks.view.Tests, editor needs /1; "
-            .. "operations: daemon offers no loomworks.Build, editor needs /1 — running them in-process; "
-            .. "launch: daemon offers no loomworks.Launch, editor needs /1 — running them in-process; "
-            .. "debug adapters: daemon offers no loomworks.DebugConfig, editor needs /1 — running them in-process; "
+            .. "operations: daemon offers no loomworks.Build, editor needs /1; "
+            .. "launch: daemon offers no loomworks.Launch, editor needs /1; "
+            .. "debug adapters: daemon offers no loomworks.DebugConfig, editor needs /1; "
             .. "tests: daemon offers no loomworks.Tests, editor needs /1 — tests unavailable",
             obs.feature_note)
         -- The LSP configuration is never run in-process: its own note
@@ -777,34 +778,15 @@ describe("the observer (§19.16)", function()
         owner_client:close()
     end)
 
-    it("a remote task never blocks an editor build or launch (the build-dir locks do)", function()
+    it("a daemon without /build: the editor's builds are refused, never run in-process (step 5s)", function()
         local profile = ws:get_profiles()[1]
         local pp = profile:projects()[1]
         local unit = pp._config_unit
-        -- Build it for real first, so the editor's build is a plain build
-        -- (no configure in front of it).
-        local cli = require("loomworks.cli")
-        local orig_write = io.write
-        io.write = function() end
-        local ok, err = pcall(cli.cmd_build, ws, { "build", profile.key })
-        io.write = orig_write
-        assert.is_true(ok, tostring(err))
-        assert.equals("built", unit:state())
-        assert.is_nil(unit:configure_reason(false, profile))
-        -- (No /build: the editor's build stays in-process, step 5k.)
         s = new_server(root, nil, { build = false })
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        local owner_client = assert(client.session(s.srv.address))
-        local owner
-        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
-        local t = tasks_mod.new(s.srv):create(owner)
-        t:start({ name = "dev", kind = "build", profile = profile.key, units = {
-            { project = pp:project_key(), configuration = pp:config_key() } } })
-        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
-        -- Shown building, yet nothing the editor runs is gated on it.
-        assert.equals("building", unit:state())
-        assert.equals("built", unit:local_state())
+        assert.is_true(vim.wait(5000, function() return obs._why and obs._why.operations ~= nil end, 10),
+            obs:runtime_line())
         local created = {}
         local orig_overseer = package.loaded["overseer"]
         package.loaded["overseer"] = {
@@ -814,32 +796,27 @@ describe("the observer (§19.16)", function()
                     stop = function() end, is_complete = function() return false end }
             end,
         }
-        local settled = nil
+        local orig_notify = vim.notify
+        local notes = {}
+        vim.notify = function(m) notes[#notes + 1] = m end
+        local settled, single
         local okc, cerr = pcall(function()
             require("loomworks.overseer").run_profile_action(profile, "build")
-                :next(function() settled = "resolved" end, function(e) settled = "rejected: " .. tostring(e) end)
-            -- The build starts (it meets the build-dir lock (§16.6) of a
-            -- real `lw build`); it is not skipped and resolved as done.
-            assert.is_true(vim.wait(5000, function() return #created > 0 end, 10),
-                "editor build was skipped: " .. tostring(settled))
-            assert.is_nil(settled)
-        end)
-        -- A single build task is not rejected because of the remote task either.
-        local single = nil
-        local oks, serr = pcall(function()
-            local f = require("loomworks.overseer").launch_single_task({
+                :next(function() settled = "resolved" end, function(e) settled = tostring(e) end)
+            -- A single build task naming no target cannot be carried either.
+            require("loomworks.overseer").launch_single_task({
                 name = "single", builder = function() return { cmd = { vim.v.progpath, "--version" } } end,
                 loomworks = { unit = unit, action = "build" },
-            }, unit)
-            f:next(function() single = "resolved" end, function(e) single = "rejected: " .. tostring(e) end)
-            vim.wait(200, function() return single ~= nil end, 10)
-            assert.is_nil(single)
+            }, unit):next(function() single = "resolved" end, function(e) single = tostring(e) end)
+            vim.wait(2000, function() return settled ~= nil and single ~= nil end, 10)
         end)
+        vim.notify = orig_notify
         package.loaded["overseer"] = orig_overseer
         assert.is_true(okc, tostring(cerr))
-        assert.is_true(oks, tostring(serr))
-        t:done(0)
-        owner_client:close()
+        assert.equals("build: operations: daemon offers no loomworks.Build, editor needs /1", settled)
+        assert.equals("build: operations: daemon offers no loomworks.Build, editor needs /1", single)
+        assert.equals(2, #notes)
+        assert.same({}, created)
     end)
 
     it("a task both broadcast (`start`) and listed in the join-late status reply is adopted once", function()
@@ -1353,7 +1330,7 @@ describe("the observer (§19.16)", function()
             relay = function() error("must not spawn a relay") end })
         assert.is_true(vim.wait(2000, function() return obs.state == "no-binary" end, 10), obs:runtime_line())
         assert.truthy(obs:runtime_line():find("could not install the plugin-managed lw v0.1.50", 1, true))
-        assert.truthy(obs:runtime_line():find("running in-process", 1, true))
+        assert.truthy(obs:runtime_line():find("running degraded", 1, true))
         vim.wait(200) -- nothing retries by itself
         assert.equals(1, fetches)
         obs:start(false)
