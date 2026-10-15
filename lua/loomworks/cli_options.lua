@@ -44,13 +44,8 @@ end
 local NONE = spec({})
 local PERMISSIVE = spec({ permissive = true })
 
--- Device options (DEV.parse_device_opt, spec §16.34) on run / test, plus
--- `--break-locks[=now]` (spec §19.5), accepted by every command that takes a
--- build-directory or device lock and stripped by the dispatcher after this
--- check (loomworks.lock_break).
-local DEVICE_FLAGS = { "--fresh", "--no-wait", "--break-locks" }
-local BREAK = { "--break-locks" }
-local BREAK_EQ = { "--break-locks=" }
+-- Device options (DEV.parse_device_opt, spec §16.34) on run / test.
+local DEVICE_FLAGS = { "--fresh", "--no-wait" }
 local DEVICE_VALUED = { "--device", "--timeout", "--query-timeout", "--transfer-timeout", "--log" }
 
 local function concat(...)
@@ -77,16 +72,15 @@ M.COMMANDS = {
   run = spec({
     flags = concat({ "--target", "--launch", "--print", "--dry-run", "--no-build" }, DEVICE_FLAGS),
     valued = concat({ "--project", "--cwd", "--working-dir", "--prefix" }, DEVICE_VALUED),
-    eq = { "--print=", "--dry-run=", "--break-locks=" },
+    eq = { "--print=", "--dry-run=" },
   }),
-  build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v", "--break-locks" },
-    valued = { "--target" }, eq = { "--target=", "--break-locks=" } }),
+  build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v" }, valued = { "--target" },
+    eq = { "--target=" } }),
   test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json", "--no-build" }, DEVICE_FLAGS),
-    valued = concat({ "--junit", "--target", "--cwd", "--working-dir" }, DEVICE_VALUED),
-    eq = BREAK_EQ }),
-  clean = spec({ flags = BREAK, eq = BREAK_EQ }),
-  reset = spec({ flags = { "--all", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
-  unlock = spec({ flags = { "--all", "--force" }, valued = { "--device" } }),
+    valued = concat({ "--junit", "--target", "--cwd", "--working-dir" }, DEVICE_VALUED) }),
+  clean = NONE,
+  reset = spec({ flags = { "--all", "-y", "--yes" } }),
+  unlock = spec({ flags = { "--all" }, valued = { "--device" } }),
   profiles = NONE,
   publish = NONE,
   -- `lw export` / `lw import` (§16.39). A lone `-` is an operand (stdout/stdin).
@@ -132,8 +126,7 @@ M.COMMANDS = {
     subs = {
       list = spec({ flags = { "--json" }, valued = { "--query-timeout" } }),
       select = spec({ flags = { "--clear" } }),
-      clean = spec({ flags = { "--no-wait", "--break-locks" }, valued = { "--device", "--query-timeout" },
-        eq = BREAK_EQ }),
+      clean = spec({ flags = { "--no-wait" }, valued = { "--device", "--query-timeout" } }),
     },
     aliases = { ls = "list" },
     default = NONE,

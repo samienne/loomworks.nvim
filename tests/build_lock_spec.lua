@@ -40,27 +40,15 @@ describe("build_lock", function()
         assert.is_nil(bl.read(dir))
     end)
 
-    it("reclaims a crashed holder's lock; a stale but living holder is hung, not reclaimed", function()
+    it("reclaims a stale (crashed-holder) lock", function()
         local h = assert(bl.acquire(dir, "build"))
-        -- A living holder (this process) that stopped heartbeating: hung (§19.5).
+        -- Simulate a crash: stop the heartbeat and age the mtime past the window.
         h.timer:stop(); h.timer:close(); h.timer = nil
         local old = os.time() - (bl.STALE_SECONDS + 60)
-        local path = dir .. ".loomworks-lock"
-        uv.fs_utime(path, old, old)
+        uv.fs_utime(dir .. ".loomworks-lock", old, old)
         assert.is_true(bl.read(dir).stale)
-        local none, reason, info = bl.acquire(dir, "build")
-        assert.is_nil(none)
-        assert.equals("hung", info.state)
-        -- (this test process records itself as an editor holder: the editor
-        -- message, which never suggests killing it)
-        assert.is_truthy(reason:find("held by nvim", 1, true), reason)
 
-        -- A crashed holder: the recorded process no longer exists.
-        local rec = vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
-        rec.pid = 4194300
-        local f = assert(io.open(path, "wb")); f:write(vim.json.encode(rec)); f:close()
-        local h2 = assert(bl.acquire(dir, "build")) -- reclaims the dead holder's lock
-        assert.equals("dead", h2.reclaimed.state)
+        local h2 = assert(bl.acquire(dir, "build")) -- reclaims the stale lock
         assert.is_false(bl.read(dir).stale)
         bl.release(h2)
     end)
