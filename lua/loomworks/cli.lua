@@ -5097,7 +5097,7 @@ function M.cmd_project_show(root, name)
   if pw then
     M._show_test_targets({ entries = pw, source = proj, invalid = proj._tests and proj._tests.invalid }, nil)
   else
-    out("  tests           none — add: lw test-target add <profile> " .. proj.key
+    out("  tests           none project-wide — add: lw test-target add <profile> " .. proj.key
       .. ":<name> [--config <name> | --project-wide]")
   end
 

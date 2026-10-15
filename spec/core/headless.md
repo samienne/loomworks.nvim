@@ -443,9 +443,9 @@ configured build targets and its projects' launch configurations:
 The dotted configuration grammar (above) does not edit `tests`: `set` / `unset`
 of a `tests` param is rejected, naming the saved-test-target edit. A
 configuration's and a project's show views display the effective list with its
-source. A project's view always shows the project's row, with `none` and the add
-hint when it has none, and shows a configuration's `tests` line only when that
-configuration's effective list is non-empty or invalid.
+source. A project's view always shows the project's row, with `none project-wide`
+and the add hint when it has none, and shows a configuration's `tests` line only
+when that configuration's effective list is non-empty or invalid.
 
 `lw project show` without a name shows the workspace's project when it has exactly one. With several, it lists the projects and the `lw project show <name>` form, and exits 2 (usage). With none, it says so and exits 2.
 
