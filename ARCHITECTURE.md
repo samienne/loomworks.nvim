@@ -598,9 +598,12 @@ re-cut onto master step by step; this section is expanded as each step lands.
 **Step 2 (lifetime, opt-in `runtime-mode daemon`)** lives in
 `lua/loomworks/daemon/`:
 
-- `runtime.lua` — resolves the mode (`LOOMWORKS_RUNTIME` > setting
-  `runtime-mode` / editor option `runtime.mode` > `in-process`); never
-  launches anything.
+- `runtime.lua` — resolves the mode: the CLI's (`LOOMWORKS_RUNTIME` >
+  setting `runtime-mode` > `in-process`; `select` adds `--no-daemon`,
+  `LOOMWORKS_NO_DAEMON`, `CI`) and the editor's (`editor_select`, step 5s:
+  `daemon` by default, setup `runtime.mode = "in-process"` the deprecated
+  in-process editor with `deprecated = true`, nothing from the environment
+  or lw's setting); never launches anything.
 - `paths.lua` — the runtime lock / handle paths under `.nvim/`, the per-user
   state directory (`<data dir>/daemon`) and the root hash naming per-user
   files.
@@ -911,20 +914,26 @@ re-cut onto master step by step; this section is expanded as each step lands.
   entry points `run_profile_action`, `run_configuration_action` and
   `launch_single_task` (a module target's build: `Target:build` puts the
   target in `task_def.loomworks.target_id`) ask `overseer.route(method,
-  scope, opts, fallback)` first, and `Profile:clean` / `ConfigUnit:clean` ask
+  scope, opts)` first, and `Profile:clean` / `ConfigUnit:clean` ask
   the workspace's `_operation_router` (set by `observer.attach`, cleared by
   `stop`; nil in in-process mode, so the domain stays free of the editor),
   which goes to `overseer.route_clean`. Both wrap `editor_ops.run` /
-  `editor_ops.clean` (callbacks only, `{ resolve, reject, fallback }`) in a
-  Future; not routed → the caller's in-process body, unchanged
-  (`in_process_*` locals, `_clean_in_process`). `run` asks the current
-  observer (`observer.current()`) whether it carries the method
-  (`Observer:can_call`: connected through interfaces, `operations` =
-  Build/1 offered, Tasks/1 subscribed, the method not degraded, no
-  incompatibility), waits for pending deletions, asks the artifact-conflict
-  question for configured units (its Yes → `force`), then
-  `Observer:start_owned`. Outcomes: `declined` → in-process + one WARN
-  notify; `degraded` (unknown_method, invalid_args, …) → in-process, the
+  `editor_ops.clean` (callbacks only, `{ resolve, reject }`) in a
+  Future; not routed — only in the deprecated `in-process` mode
+  (`editor_ops.daemon_of(ws)`: no observer, `ws._runtime_selection` not
+  `daemon`) → the caller's in-process body, unchanged (`in_process_*`
+  locals, `_clean_in_process`). In `daemon` mode nothing runs in-process
+  (step 5s, §19.16 "Availability"): `run` asks the workspace's observer
+  whether it carries the method (`Observer:can_call`: connected through
+  interfaces, `operations` = Build/1 offered, Tasks/1 subscribed, the
+  method not degraded, no incompatibility); not carried →
+  `editor_ops.refuse` (one WARN notify `<verb>: <note>`, the note from
+  `Observer:refusal(method)` — the method's `_method_why`, the feature's
+  `_why`, else the observer's state note — then `reject(msg, true)`). It
+  waits for pending deletions, asks the artifact-conflict question for
+  configured units (its Yes → `force`), then `Observer:start_owned`.
+  Outcomes: `declined` → reject + one WARN notify; `degraded`
+  (unknown_method, invalid_args, …) → refused as not carried, the
   observer's `_method_notes`; `refused` → reject + ERROR notify; accepted →
   the owned task's `done` resolves (exit 0) or rejects; a disconnect or an
   internal error rejects and is never re-run. `clean` returns at once when
@@ -936,11 +945,15 @@ re-cut onto master step by step; this section is expanded as each step lands.
   table behind `_icall` (with `vim.fn.environ()` at call time), `_owned`
   (registered in the reply's own callback, before the `start` frame),
   `_owned_ended` from `done` / `_end_tasks`, `owns_tasks()` counted busy in
-  `_check_retire`. `fidget.start_op_action(title, method)` shows no wrapper
-  for a routed operation and suffixes `(in-process)` in daemon mode, as do
-  the in-process operation / task entries.
+  `_check_retire`. `fidget.start_op_action(title)` shows no wrapper in
+  daemon mode (the routed task's entry is its one entry; a refused
+  operation has none). `launch_single_task` without a target id refuses in
+  daemon mode too.
   Launches (step 5k C2): `session_tracker.start_run` asks
-  `editor_ops.can_prepare(mode, target)` for a non-device target (a debug
+  `editor_ops.prepares(target)` (daemon mode) for a non-device target; a
+  device target's chain runs in the editor unless
+  `editor_ops.device_launch_refusal(target)` (daemon mode, not connected)
+  refuses it (a debug
   without nvim-dap prepares a launch, as `LaunchTarget:debug` falls back);
   a debug first checks `LaunchTarget:primary_debug_adapter(resolve)` against
   nvim-dap (`debug.adapter_installed` / `adapter_hint`, before the
@@ -966,9 +979,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
   post-build deploy (no build), so its launch is refused as in-process.
   `start_prepared` stops a program still running first, and an error
   starting the program fails its progress entry and is notified (the
-  observer's `_owned_ended` also notifies any `on_done` error). `fallback` runs the
-  in-process chain (`start_run_in_process`, title via
-  `fidget.start_in_process_action`). `editor_ops.NO_RESTART` makes the
+  observer's `_owned_ended` also notifies any `on_done` error). A
+  preparation not carried, declined or degraded is refused (no program,
+  never the in-process chain). `editor_ops.NO_RESTART` makes the
   task-runner restart of a preparation fail (`rerun`). Observer side:
   `M.LAUNCH` (feature `launch`) and `M.DEBUG` (feature `debug adapters`,
   no task: `can_call` needs Tasks/1 only for `tasks` tables), their
@@ -980,10 +993,11 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `daemon_debug_adapters` for the status page; a failed or declined read
   is cached as `languages = nil` until the next `changed` or reconnect, so
   renders do not resend it) or, not carried / not read yet / that read
-  failed, `debug_config.adapter_records(ws)`; `editor_ops.set_debug_adapter`
-  sends `set_adapter` (`Observer:request`, a plain call) or runs
-  `Workspace:set_debug_adapter` in-process (also on `declined` /
-  degraded). In-process debug resolves one spec for run and debug
+  failed, nil and why — the section shows `unavailable — <why>`;
+  `editor_ops.set_debug_adapter` sends `set_adapter` (`Observer:request`, a
+  plain call) and fails (one ERROR notify) when not carried, `declined` or
+  degraded. Only the `in-process` mode reads `debug_config.adapter_records`
+  and runs `Workspace:set_debug_adapter`. In-process debug resolves one spec for run and debug
   (`run_prep.resolve_debug` → `debug_spec` over `resolve_launch_spec`,
   §8.9.6).
 - `daemon/task_runner.lua` — the task-runner bridge (spec §19.16 "Tasks in
