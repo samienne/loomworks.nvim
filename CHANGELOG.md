@@ -30,6 +30,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 - `lw project show` lists a configuration's saved test targets only when it
   has some; the project row still always shows. (#242)
+- `lw project show` without a name shows the only project, or lists the
+  projects when there are several. (#247)
 
 ## 0.1.46 - 2026-10-14
 
