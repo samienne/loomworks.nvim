@@ -26,6 +26,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Changed
+
+- `lw project show`: the project's tests row reads `none project-wide` instead of
+  `none` when the project has no project-wide saved test targets, so it no longer
+  looks like there are no tests when a configuration has its own (#252).
+
 ## 0.1.47 - 2026-10-15
 
 `lw project show` without a name shows the only project, and lists a
