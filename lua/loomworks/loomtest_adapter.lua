@@ -87,6 +87,16 @@ local _inflight = false
 --- The adapter re-renders loomtest itself (M._render): that is not loomtest
 --- asking for the tree, so it neither discovers nor counts as the first ask.
 local _rendering = false
+--- The view's `stale` as the last re-render saw it (nil: no view seen yet):
+--- a re-render discovers on the turn to stale only, never on its level.
+local _last_stale = nil
+--- The view turned stale while the editor's discovery was in flight: looked
+--- at again once that discovery succeeds.
+local _stale_meanwhile = false
+--- The editor's last discovery was cancelled, failed or refused: no automatic
+--- discovery until the view turns stale again, the explorer opens or a
+--- refresh forces one.
+local _held = false
 
 --- The daemon's tests view as loomtest nodes, or nil (none to show).
 --- @param view loomworks.TestsView
@@ -136,18 +146,35 @@ end
 --- Discovery): `force` on the explorer's refresh, else only while it is
 --- `stale`; never while a discovery runs (another client's included — its
 --- `update` is waited for), while one the editor sent is in flight, or while
---- the tests are blocked.
+--- the tests are blocked. An automatic one (not `force`) is held off after
+--- the editor's last discovery was cancelled, failed or refused.
 --- @param force boolean
 function M._discover(force)
-    if _inflight then return end
+    if force then _held = false end
+    if _inflight or (not force and _held) then return end
     local st = test_source.daemon_status()
     if st and st.blocked then return end
     local view = test_source.daemon_view()
     if type(view) ~= "table" or view.discovering ~= nil then return end
     if not force and view.stale ~= true then return end
-    _inflight = true
-    local sent = test_source.daemon_discover(force, function() _inflight = false end)
+    _inflight, _stale_meanwhile = true, false
+    local sent = test_source.daemon_discover(force, function(ok)
+        _inflight = false
+        _held = not ok
+        -- A turn to stale it held off: one more look, after a success only.
+        local again = ok and _stale_meanwhile
+        _stale_meanwhile = false
+        if again and explorer_open() then M._discover(false) end
+    end)
     if not sent then _inflight = false end
+end
+
+--- Debugging a test through the daemon is not available yet (step 5m C2).
+--- @return nil
+local function refuse_debug()
+    vim.notify("loomtest: debugging tests through the workspace daemon is not available yet",
+        vim.log.levels.ERROR)
+    return nil
 end
 
 --- The daemon form of the adapter.
@@ -190,8 +217,10 @@ local function create_daemon_adapter()
             vim.schedule(function() M._render() end)
             return nil
         end,
-        run = function() return nil end,
-        run_suite = function() return nil end,
+        -- With `start` given, loomtest asks for a run spec only to debug:
+        -- refused as a run is, with loomtest's run-failure notice.
+        run = refuse_debug,
+        run_suite = refuse_debug,
         run_all = function() return nil end,
         parse_results = function() return nil end,
 
@@ -208,12 +237,20 @@ function M._render()
     if not ok then return end
     if not _adapter or _adapter._form ~= "daemon" then M.register() end
     local view = test_source.daemon_view()
-    if type(view) ~= "table" then _asked = false end
+    if type(view) ~= "table" then _asked, _last_stale, _held = false, nil, false end
     local st = test_source.daemon_status()
     local inline = require("loomtest.inline")
     if (st and st.blocked) or type(view) ~= "table" then inline.clear_all() end
-    -- The view turned stale while the explorer is open: discover.
-    if type(view) == "table" and view.stale == true and explorer_open() then M._discover(false) end
+    -- The view turned stale while the explorer is open: discover, once per
+    -- turn (one in flight looks again when it ends).
+    if type(view) == "table" then
+        local turned = view.stale == true and _last_stale ~= true
+        _last_stale = view.stale == true
+        if turned and explorer_open() then
+            _held = false
+            if _inflight then _stale_meanwhile = true else M._discover(false) end
+        end
+    end
     _rendering = true
     local ok_d, err = pcall(loomtest.discover, function()
         inline.update_all()
@@ -470,6 +507,7 @@ end
 --- Test seam: forget the daemon form's state.
 function M._reset()
     _adapter, _asked, _inflight, _rendering = nil, false, false, false
+    _last_stale, _stale_meanwhile, _held = nil, false, false
 end
 
 --- Set up event listeners for automatic registration.
@@ -522,7 +560,10 @@ function M.setup()
         pattern = "loomtest",
         group = vim.api.nvim_create_augroup("loomworks_loomtest_daemon", { clear = true }),
         callback = function()
-            if test_source.mode() == "daemon" then M._discover(false) end
+            if test_source.mode() == "daemon" then
+                _held = false
+                M._discover(false)
+            end
         end,
     })
 

@@ -391,6 +391,124 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             discover_now()
             assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 1 end, 10))
         end)
+
+        describe("with the explorer open, discovers on the turn to stale only", function()
+            local explorer = require("loomtest.explorer")
+            local orig_is_open
+            before_each(function()
+                orig_is_open = explorer.is_open
+                explorer.is_open = function() return true end
+            end)
+            after_each(function() explorer.is_open = orig_is_open end)
+
+            --- An observer whose discover replies `reply` (default: accepted,
+            --- task 9), the adapter set up on a fresh (not stale) view.
+            local function open_on_fresh_view(reply)
+                local obs, calls = fake_obs(function(m)
+                    if m == "discover" then return reply or { outcome = "accepted", task_id = 9 } end
+                end)
+                adapter_mod.setup()
+                adapter_mod.register()
+                obs:_set_view("tests", tview())
+                assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3") ~= nil end, 10))
+                return obs, calls
+            end
+
+            --- Later view and runtime updates, still stale: each re-renders.
+            local function more_updates(obs)
+                obs:_set_view("tests", tview({ stale = true }))
+                vim.wait(50)
+                obs:_emit("daemon_runtime_changed", obs)
+                vim.wait(50)
+                obs:_set_view("tests", tview({ stale = true }))
+                vim.wait(50)
+            end
+
+            it("the turn to stale discovers exactly once", function()
+                local obs, calls = open_on_fresh_view()
+                vim.wait(50)
+                assert.equals(0, #discover_calls(calls))
+                obs:_set_view("tests", tview({ stale = true }))
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 1 end, 10))
+                more_updates(obs)
+                assert.equals(1, #discover_calls(calls))
+                -- It succeeds, the view stays stale: not again until it turns.
+                obs:_on_message({ kind = "task", task_id = 9, phase = "done", exit_code = 0 })
+                more_updates(obs)
+                assert.equals(1, #discover_calls(calls))
+                obs:_set_view("tests", tview())
+                vim.wait(50)
+                obs:_set_view("tests", tview({ stale = true }))
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 2 end, 10))
+            end)
+
+            it("a cancelled discovery is not sent again", function()
+                local obs, calls = open_on_fresh_view()
+                obs:_set_view("tests", tview({ stale = true }))
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 1 end, 10))
+                obs:_on_message({ kind = "task", task_id = 9, phase = "done", exit_code = 130,
+                    error = "test discovery stopped: cancelled" })
+                more_updates(obs)
+                discover_now()
+                vim.wait(50)
+                assert.equals(1, #discover_calls(calls))
+            end)
+
+            it("a failed discovery is not retried", function()
+                local obs, calls = open_on_fresh_view()
+                obs:_set_view("tests", tview({ stale = true }))
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 1 end, 10))
+                obs:_on_message({ kind = "task", task_id = 9, phase = "done", exit_code = 1 })
+                more_updates(obs)
+                assert.equals(1, #discover_calls(calls))
+            end)
+
+            it("a refused discovery is not repeated on later updates", function()
+                local obs, calls = open_on_fresh_view({ outcome = "refused", message = "not now" })
+                obs:_set_view("tests", tview({ stale = true }))
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 1 end, 10))
+                more_updates(obs)
+                assert.equals(1, #discover_calls(calls))
+                local warned = 0
+                for _, n in ipairs(notes) do if n.msg == "loomworks: not now" then warned = warned + 1 end end
+                assert.equals(1, warned)
+                -- A refresh still forces one.
+                loomtest.refresh()
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 2 end, 10))
+                assert.same({ force = true }, discover_calls(calls)[2].args)
+            end)
+
+            it("a turn to stale during a discovery is looked at when it succeeds", function()
+                local obs, calls = open_on_fresh_view()
+                obs:_set_view("tests", tview({ stale = true }))
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 1 end, 10))
+                obs:_set_view("tests", tview())
+                vim.wait(50)
+                obs:_set_view("tests", tview({ stale = true }))
+                vim.wait(50)
+                assert.equals(1, #discover_calls(calls))
+                obs:_on_message({ kind = "task", task_id = 9, phase = "done", exit_code = 0 })
+                assert.is_true(vim.wait(1000, function() return #discover_calls(calls) == 2 end, 10))
+                vim.wait(50)
+                assert.equals(2, #discover_calls(calls))
+            end)
+        end)
+
+        it("debug is refused as not available yet, never in-process", function()
+            local obs = fake_obs()
+            views.set(obs, "tests", tview())
+            adapter_mod.register()
+            loomtest.discover()
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3") ~= nil end, 10))
+            loomtest.debug("n3")
+            loomtest.debug("n1")
+            local refused = 0
+            for _, n in ipairs(notes) do
+                if n.msg == "loomtest: debugging tests through the workspace daemon is not available yet"
+                    and n.level == vim.log.levels.ERROR then refused = refused + 1 end
+            end
+            assert.equals(2, refused)
+        end)
     end)
 
     describe("neotest (not available in daemon mode)", function()
