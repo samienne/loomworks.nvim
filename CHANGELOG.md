@@ -682,6 +682,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   projects when there are several. (#247)
 
 ### Fixed
+- `lw test`: the end-of-run summary names a failed step's failing tests, like
+  the step's own line (at most 10, then `and K more`). (#248)
 - Experimental daemon: an editor test run that hit an internal error right
   after the daemon accepted it no longer hangs with its tests shown as queued,
   and a build that hit one after taking its build directory no longer keeps

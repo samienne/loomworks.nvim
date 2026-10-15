@@ -68,6 +68,24 @@ function M.failed_reasons(reasons, c)
     return s
 end
 
+--- The failing test names of a failed step's summary line (spec §16.16), in
+--- result order: at most `cap` names, then ", and K more" for the rest. ""
+--- when there are none.
+--- @param c table|nil M.count output
+--- @param cap integer
+--- @return string
+function M.failed_names(c, cap)
+    local ids = c and c.failed_ids or {}
+    local shown = {}
+    for i = 1, math.min(#ids, cap) do shown[i] = ids[i] end
+    local s = table.concat(shown, ", ")
+    if #ids > cap then s = s .. ", and " .. (#ids - cap) .. " more" end
+    return s
+end
+
+--- How many failing test names a failed step's line lists (spec §16.16).
+M.FAILED_NAMES_CAP = 10
+
 --- Judge an executable's outcome (spec §18.6).
 --- @param o { status: integer|nil, results_requested: boolean, results: table[]|nil, results_missing: boolean, crashes?: integer, transport_error?: string }
 --- @return boolean failed, string[] reasons

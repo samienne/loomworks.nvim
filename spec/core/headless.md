@@ -790,7 +790,12 @@ effect there.
   ` #<occurrence index>` — a space, then `#` — on every occurrence of a name
   that repeats in its list, the first included, e.g. `App: RenderTests #1`,
   `App: RenderTests #2`), and after the last step a summary prints one line
-  per step with its outcome, labelled the same way.
+  per step with its outcome, labelled the same way. A failed step's line, both
+  when it finishes and in the summary, gives its failure reasons, then its
+  per-case counts when it has per-case results (passed always,
+  skipped/disabled when non-zero), then `: ` and the failing test names in
+  result order. At most 10 names are listed; any beyond that are replaced by
+  `, and K more`.
 - A saved executable that the batch runner also registers runs in both steps:
   the batch runner is opaque, so the plan does not de-duplicate it (the
   `--saved` / `--discovered` selectors below avoid it).
