@@ -16,9 +16,7 @@ local proc = require("loomworks.proc")
 local uv = vim.uv or vim.loop
 
 local REPO = (uv.cwd():gsub("\\", "/"))
--- Run from a copy named `…/loomworks/cli.lua`, so it is recognised as an lw
--- process (lock_break.verify_identity) — see tests/lock_helpers.lua.
-local HELPER = require("tests.lock_helpers").HELPER
+local HELPER = REPO .. "/tests/fixtures/lock_holder.lua"
 
 local spawned = {}
 
