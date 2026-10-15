@@ -571,9 +571,24 @@ describe("lw test plan (§16.16)", function()
         local r = run_plan(fake_profile({ ppa }), {})
         cli._run_test_executable = orig
         assert.equals(1, r.exit_code)
-        assert.truthy(r.stdout:find("A: X%s+FAILED %(exit status 1, 1 failed test, 2 passed, 1 skipped, 1 disabled%)\n"),
+        assert.truthy(r.stdout:find("A: X%s+FAILED %(exit status 1, 1 failed test, 2 passed, 1 skipped, 1 disabled%): S%.f\n"),
             r.stdout)
         assert.truthy(r.stdout:find("A: Y%s+FAILED %(exit status 3%)\n"), r.stdout)
+    end)
+
+    it("the summary line of a failed step names at most 10 failing tests, then 'and K more'", function()
+        local _, ppa = fake_unit("A", { saved = { "X" }, targets = { X = fake_target("X") } })
+        local orig = cli._run_test_executable
+        cli._run_test_executable = function()
+            local results = {}
+            for i = 1, 12 do results[i] = { status = "failed", test_id = "test:S.t" .. i } end
+            return true, { "exit status 1", "12 failed tests" }, require("loomworks.remote.test_run").count(results), false
+        end
+        local r = run_plan(fake_profile({ ppa }), {})
+        cli._run_test_executable = orig
+        assert.equals(1, r.exit_code)
+        assert.truthy(r.stdout:find("A: X%s+FAILED %(exit status 1, 12 failed tests, 0 passed%): "
+            .. "S%.t1, S%.t2, S%.t3, S%.t4, S%.t5, S%.t6, S%.t7, S%.t8, S%.t9, S%.t10, and 2 more\n"), r.stdout)
     end)
 
     it("a failed deploy fails its step without running the program; the others still run", function()

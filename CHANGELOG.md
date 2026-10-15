@@ -33,6 +33,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - `lw project show` without a name shows the only project, or lists the
   projects when there are several. (#247)
 
+### Fixed
+
+- `lw test`: the end-of-run summary names a failed step's failing tests, like
+  the step's own line (at most 10, then `and K more`). (#248)
+
 ## 0.1.46 - 2026-10-14
 
 `lw project show` lists each configuration's saved test targets. A failed
