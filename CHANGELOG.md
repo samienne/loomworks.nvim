@@ -26,6 +26,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+## 0.1.47 - 2026-10-15
+
+`lw project show` without a name shows the only project, and lists a
+configuration's saved test targets only when it has some. The end-of-run
+`lw test` summary names the failing tests.
+
 ### Changed
 
 - `lw project show` lists a configuration's saved test targets only when it
