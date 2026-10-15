@@ -445,7 +445,7 @@ of a `tests` param is rejected, naming the saved-test-target edit. A
 configuration's and a project's show views display the effective list with its
 source. A project's view always shows the project's row, with `none` and the add
 hint when it has none, and shows a configuration's `tests` line only when that
-configuration's effective list is non-empty.
+configuration's effective list is non-empty or invalid.
 
 A management host MAY also **set, replace or clear the description** (§1.10) of
 a project, a user configuration, a configuration set, a profile or a launch
