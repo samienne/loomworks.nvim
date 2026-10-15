@@ -37,7 +37,9 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
 (`daemon/runtime.lua`), and the editor's selection with lw's `runtime-mode`
 setting and the source on its Runtime line (`runtime.editor_select`,
-`observer.runtime_line`); the loopback transport and the attached server
+`observer.runtime_line`) — the editor's `daemon` default and
+deprecated `in-process` mode below are step 5s, plan, its single mode step
+6b; the loopback transport and the attached server
 (`daemon/loopback.lua`, `Server:start_attached` / `Server:adopt`,
 `client.loopback_session`, `command.start_attached`) and the CLI's attached
 routing of step 5e (`cli._attached_selected`, `cli._delegate_attached`)
@@ -60,16 +62,13 @@ shared even in CI); `CI=true` in the environment; the host setting
 (§19.10) — also the launch step itself failing with an error. Otherwise the command runs shared. An invalid configured value is
 reported and ignored (falls through to the next source).
 
-The editor selects its mode in this precedence: the environment
-(`LOOMWORKS_RUNTIME`, then `LOOMWORKS_NO_DAEMON` and `CI` as above); its setup
-option `runtime.mode`; lw's own setting `runtime-mode`, read from the per-user
-settings file `lw settings` writes (§16.40, `<config>/config.json`); and the
-`in-process` default. The editor reads that file on each workspace load, never
-writes it, and treats a missing file or key as absent; an unreadable file or an
-invalid value is the observer's note (§19.16) and falls through to the default.
-`no-daemon` selects `in-process` in the editor. The status page's Runtime line
-names the source that decided (spec/ui.md §1.1). The editor runs attached
-inside its own process when it has no host binary (§19.16).
+The editor has one mode: it is a client of the workspace daemon (§19.16). It
+never loads the workspace or runs an operation itself. `LOOMWORKS_RUNTIME`,
+`LOOMWORKS_NO_DAEMON`, `CI`, lw's `runtime-mode` setting and the former setup
+option `runtime.mode` do not apply to the editor; a setup value `runtime.mode`
+is reported once as ignored. *(Transition, until step 6b: `daemon` is the
+editor's default; `runtime.mode = "in-process"` still selects the in-process
+editor, with a deprecation note on the Runtime line.)*
 
 **During the transition** the setting `runtime-mode` takes `in-process` (the
 default) or `daemon`, with `LOOMWORKS_RUNTIME` as the environment override. In
@@ -2725,7 +2724,8 @@ the daemon's operations as with any other process:
   module cleans and launch preparations (§19.16 "Editor operations"); its
   deletions (delete a profile, a configuration, an orphaned build directory)
   stay here until step 5o (`Maintenance/1.execute_deletion`), and its
-  device-target launches with no step planned. Its test discovery, test runs
+  device-target launches until `Devices/1` (step 5n, §19.16 "Editor
+  operations"). Its test discovery, test runs
   and test debug preparations move to `Tests/1` in step 5m (§19.16 "Tests").
 
 ### 19.16 The editor as a client
@@ -2744,7 +2744,8 @@ local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
 below): the subscription to `/tasks` and `/workspace` is implemented, step
-5g.3 (`daemon/observer.lua` `_subscribe`); the views
+5g.3 (`daemon/observer.lua` `_subscribe`); no editor fallbacks
+("Availability"), step 5s, plan; the views
 and operations steps 5j–5o (§19.19) — "Editor operations" below (step 5k)
 specified, part 0, plan; the connection through the `--stdio`
 relay, step 5i PR G: its spec (PR G0) *done*; the relay transport and
@@ -2766,9 +2767,12 @@ a keepalive (§19.11). Only diagnostics may still read them, read-only:
 handle, the runtime lock and the daemon logs to describe what they find;
 nothing they read decides whether, when or to what the editor connects, and
 they never write, remove or lock anything there. The relay needs a host
-binary ("Host binary" below): with none the editor spawns no relay, stays
-in-process (except its language servers, which are withheld: "LSP
-configuration" below), and does not observe a daemon another client started. Its tasks are
+binary ("Host binary" below): with none the editor spawns no relay and runs
+**degraded**: the status page shows the workspace unloaded with the reason,
+language servers it manages are withheld ("LSP configuration" below),
+operations are refused with that reason ("Availability" below), and nothing
+of the workspace is loaded or run in the editor; it does not observe a
+daemon another client started. Its tasks are
 owned by its connection, so an editor that quits or crashes leaves no task
 running; the daemon itself outlives it under §19.11. Operations move from the
 editor to commands in the order of §19.19. When the shared daemon cannot be
@@ -2801,8 +2805,8 @@ the selection may be cached for the session) and runs one of these forms of
 - **skip** (`--no-launch --skip-instance <pid>:<start_time>`, §19.10 "Skip
   an instance"): "Skipping an incompatible daemon" below.
 
-With no host binary the editor spawns no relay of any form and stays
-in-process ("End state").
+With no host binary the editor spawns no relay of any form and runs
+degraded ("End state").
 
 - **The relay process.** The editor spawns a relay hidden (no console window
   on Windows) and **not detached**, with plain pipes for its standard input,
@@ -2873,7 +2877,7 @@ in-process ("End state").
   from its exit status (§19.10 "Relay exit status") to a Runtime-line note,
   with the relay's `lw: ...` standard-error line as detail (never the
   status-14 `retiring` line), and a follow-up. "Wait"
-  means: the editor stays in-process with that note and spawns no further
+  means: the editor stays degraded with that note and spawns no further
   relay until an explicit `:LoomworksDaemon connect` (or a workspace
   reload).
 
@@ -2885,7 +2889,7 @@ in-process ("End state").
   | 13 | the workspace daemon runs on another host | wait |
   | 14 | a retiring daemon is still busy | a retiring relay, or a no-launch relay ("Following a stopped or retiring daemon" below) |
   | 16 | the retiring daemon has exited and no other is live | the retirement episode's one ordinary relay, else wait |
-  | 3 | the pinned `lw` predates the shared-daemon relay and another runtime holds this workspace (an older pin's attached `--stdio`, §19.10 "Compatibility"); running in-process — update the pin | wait |
+  | 3 | the pinned `lw` predates the shared-daemon relay and another runtime holds this workspace (an older pin's attached `--stdio`, §19.10 "Compatibility"); running degraded — update the pin | wait |
   | 1 | an internal error — or, for a repository pinned before 0.1.43-beta.15, the pin redirect's refusal (§16.23 "A pin older than the command"), whose standard-error line names the pinned version and the release that introduced the command; the note shows that line | wait |
   | 2 | an internal error (usage) — or, when the relay was spawned with `--no-launch`, `--skip-instance` or `--retiring`, the pinned `lw <version>` does not support the editor relay flags (update the pin), naming the pinned version | wait |
   | 15 | an internal error (protocol) | wait |
@@ -2942,7 +2946,7 @@ in-process ("End state").
   relay of either form would connect straight back to it. So when the editor
   does not observe an incompatible daemon — "Incompatible daemon" below,
   including once it declines to retire one it held a connection to ("Retiring
-  an incompatible daemon") — it closes that relay, stays in-process, and
+  an incompatible daemon") — it closes that relay, stays degraded, and
   spawns one `lw daemon run --root <root> --stdio --no-launch
   --skip-instance <pid>:<start_time>` naming that daemon from
   `welcome.daemon` (§19.10 "Skip an instance"). That relay never connects to
@@ -2955,7 +2959,7 @@ in-process ("End state").
   A daemon whose start time is unknown (`welcome.daemon` without
   `start_time`) cannot be named with `--skip-instance` (an instance id needs
   both, §19.5). When the editor finds such a daemon incompatible it closes
-  that relay and stays in-process for the session; it spawns no skip relay,
+  that relay and stays degraded for the session; it spawns no skip relay,
   and retries only on `:LoomworksDaemon connect`.
 
 **Interface client.** *(Step 5g.3: discovery through `Root.describe` with
@@ -2978,8 +2982,8 @@ in `daemon` mode shown unavailable instead, never built in-process). Step 5k
 adds `operations` (`loomworks.Build/1` with `configure`, `units`, `jobs` and
 qualified targets), `launch` (`loomworks.Launch/1` with `prepare_debug` and
 `build_scope`), `debug adapters` (`loomworks.DebugConfig/1`) and, in `tasks`,
-`Tasks/1.cancel` and `list`; a degraded one runs in-process ("Editor
-operations" below). Step 5l adds `lsp configuration`
+`Tasks/1.cancel` and `list`; a degraded one refuses its operations, never
+running them in-process ("Availability" below). Step 5l adds `lsp configuration`
 (`loomworks.LspConfig/1`); when it is degraded the language servers are
 withheld, never configured in-process ("LSP configuration" below). Step 5m
 adds `tests` (`loomworks.Tests/1` with `discover`, `run_cases`,
@@ -3038,14 +3042,25 @@ owner"):
   only from the daemon;
 - the debug adapters section reads and writes `DebugConfig/1` (`adapters`,
   `known_languages`, `set_adapter`) and re-reads it on `Workspace/1`
-  `changed`.
+  `changed`; while it is not carried the section is unavailable and its
+  writes fail, as any operation is refused ("Availability" below).
 
-Every other operation stays in-process in 5k: the deletions (a profile, a
-configuration, an orphaned build directory — step 5o, keeping one reviewed
-deletion path, §4.6), test runs and discovery (step 5m, "Tests" below),
-device-target launches (build → deploy → install → launch, §11), and model commands such as
-materializing a profile from a configuration set (step 5o; the build that
-follows it is routed). A confirmation the editor shows before an operation
+Test runs and discovery go through `Tests/1` (step 5m, "Tests" below).
+Device-target launches (build → deploy → install → launch, §11) stay in the
+editor until `Devices/1` (step 5n); they are the only operation the editor
+still runs itself, and only while connected (a disconnected editor refuses
+them with the Runtime status like any other operation).
+
+*(Transition, until steps 5n and 5o.)* In `daemon` mode the status page's
+body sections and the model's mutations — editing the configuration, the
+deletions (a profile, a configuration, an orphaned build directory; step 5o
+keeps one reviewed deletion path, §4.6) and model commands such as
+materializing a profile from a configuration set (the build that follows it
+is routed) — still work on the editor's in-process model. They are
+transitional, not fallbacks: the reads move to the daemon's views in step 5n
+(`view.Workspace/1`), the writes to its command methods in step 5o.
+
+A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the
 artifact-conflict question of a build (§5.9) for the units whose artifacts
 are known then (configured ones), its Yes sent as `force` — a conflict found
@@ -3055,8 +3070,9 @@ carries the editor process's whole environment **at call time**, under the
 rules of §19.15 "Environment" — what an in-process task of the editor
 inherits.
 
-**Availability.** The editor routes an operation only when it can be
-carried; otherwise it runs it in-process, as before 5k. It is carried
+**Availability.** *(Step 5s, plan; before it the editor ran an operation it
+could not carry in-process.)* The editor routes an operation only when it
+can be carried; otherwise it refuses it. It is carried
 while connected through interfaces to a compatible daemon that offers
 `loomworks.Build/1` and `loomworks.Tasks/1` (its `cancel`: an operation the
 editor could not cancel is not routed) and has not shown the method
@@ -3066,12 +3082,14 @@ missing on this connection:
   a daemon found incompatible — the editor never routes to one, including
   one with older schemas it only observes), or a feature degraded (its
   interface or method missing — an older daemon's `unknown_method`, or
-  `invalid_args` for a parameter it lacks, means nothing ran): in-process,
-  with the observer's one Runtime-line note (e.g. `operations: daemon offers
-  no loomworks.Build/1.configure — running them in-process`), no popup. The
-  operation's progress title says `(in-process)`;
+  `invalid_args` for a parameter it lacks, means nothing ran): the operation
+  is **not run**. It is refused at once with the observer's Runtime-line
+  note as its message (e.g. `build: waiting for the workspace daemon
+  (connecting)`, `operations: daemon offers no
+  loomworks.Build/1.configure`); the action stays offered so the message is
+  visible;
 - `declined` (a foreign kit, trust, another environment while a build runs):
-  in-process, with the reason as one notification line;
+  the operation fails with the reason as one notification line;
 - `refused`: the operation fails with the refusal's message, as the
   in-process operation would have refused it;
 - the connection lost **after** `accepted`: the operation fails ("the
@@ -3080,9 +3098,12 @@ missing on this connection:
   An `internal` error from a call is handled as by the CLI (§19.20 "The CLI's
   calls"): the operation fails and is not re-run.
 
-There is no separate opt-out: `runtime.mode = "in-process"` (§19.1) keeps
-every operation in-process. An in-process fallback may run beside a daemon
-task; the cross-process build-directory locks (§16.6) serialize them.
+There is no in-process fallback and no opt-out; the editor never runs
+workspace logic itself beyond the device-target launches and the
+transitional model of "Editor operations" above. *(Transition, until step 6b: the deprecated
+`runtime.mode = "in-process"` editor of §19.1 runs every operation
+in-process, never routing; the cross-process build-directory locks (§16.6)
+serialize its operations with a daemon's.)*
 
 **LSP configuration.** *(Step 5l, plan: part 0 this spec; A the
 host-neutral builder of the state, in-process only; B the daemon side,
@@ -3274,10 +3295,9 @@ the units' states come from `meta.units` (Running state below).
   restart sends the call again, and whose output is the task's frames written
   to a terminal buffer, so colours and the task runner's own output actions
   (opening the output in the quickfix list) work as for a local task.
-  Unlike Editor operations, a restart that is declined, degraded or cannot
+  As for Editor operations, a restart that is declined, degraded or cannot
   be carried fails the task-runner task with the reason and never runs
-  in-process (the overseer task follows exactly one daemon task); the
-  editor's own command still takes the in-process path. A degraded restart
+  in-process (the overseer task follows exactly one daemon task). A degraded restart
   still sets the Runtime-line note, as any degraded call does. The task of
   a launch's preparation (`prepare_run`, `prepare_debug`) is not sent
   again: its program is started by the editor's launch after the call,
@@ -3301,8 +3321,7 @@ entry — the remote-task entry of UI below, with no origin marker — and the
 editor's own progress wrapper is not shown for a routed operation; a launch's
 or debug session's final phase (running, debugging) keeps its own entry.
 
-**Step 4: the observer.** In `daemon` mode (selected as in §19.1: the
-environment, the setup option `runtime.mode`, then lw's `runtime-mode` setting), each
+**Step 4: the observer.** In `daemon` mode (§19.1), each
 workspace the editor loads gets an **observer**. It watches the task streams
 and model changes of operations started elsewhere (a `lw build` in a
 terminal). It runs none of the editor's own operations, which stay on the
@@ -3434,7 +3453,7 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   why), or — with `binary.channel` set — a newer compatible release of that
   channel ("Channel upgrades" below; step 5h.5). When the selection reaches a wanted managed `lw` that is not
   installed, that decides the search: in daemon mode the observer downloads it
-  — asynchronously, the editor stays in-process meanwhile and the Runtime note
+  — asynchronously, the editor is degraded meanwhile and the Runtime note
   says it is downloading, from where — then launches from it (or connects to a
   daemon that appeared meanwhile). The editor's data directory and
   `loomworks/` under it may be links (followed); `loomworks/lw/` and the slots
@@ -3446,7 +3465,7 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   the rename is retried briefly while the new file is held, e.g. by an
   antivirus scan). A failure (network, missing asset, hash mismatch) removes
   the temporary file, installs nothing and is one note naming the binary and
-  why (running in-process); it is not retried until `:LoomworksDaemon
+  why (running degraded); it is not retried until `:LoomworksDaemon
   connect`. Requests for one hash share one download; a slot another editor
   filled meanwhile is kept. `:LoomworksDaemon connect` while a download runs
   aborts it (curl is stopped, the temporary file removed) and starts over;
@@ -3609,7 +3628,7 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   explicit user action.
 
   With none, the status page shows one inline note naming each source and
-  why it gave nothing (no host binary: running in-process); while the
+  why it gave nothing (no host binary: running degraded); while the
   observer launches, its note names the binary and its source.
   `:LoomworksDaemon status` and `:checkhealth loomworks` list every source
   with its verdict. The editor never launches a daemon from its own plugin
@@ -3618,7 +3637,7 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
   step 5e do not include the editor). Until step 5i PR G1 it still watches
   for a daemon another client starts and observes that one. From PR G1 it
   does not: the editor follows daemons only through relays, which need a
-  host binary, so with none it spawns no relay, stays in-process, and does
+  host binary, so with none it spawns no relay, runs degraded, and does
   not observe a daemon another client started ("End state").
 - **Launch.** The observer launches `<binary> daemon run --root <root>`
   (§19.10: detached, no inherited handles, the state directory as working
@@ -3760,14 +3779,14 @@ in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mo
 
 A version mismatch the editor cannot repair by restarting (its plugin code and
 the resolved binary differ in protocol or schemas) is shown inline. The editor
-keeps running in-process. The note is never silent: it stays on the Runtime
+runs degraded. The note is never silent: it stays on the Runtime
 line (warning highlight) for as long as the mismatch lasts, naming both sides'
 protocol (or schema) and versions, the binary's path when known (the
 daemon's handle `exe`, §19.6, whoever started it; an older daemon's handle may
 not name one), and the remedy (update
-the plugin, or pin or install a matching lw), e.g. `Runtime:   daemon (lw
-setting) — lw v0.1.44 (protocol 7) does not match this plugin (protocol 6):
-update the plugin or the pin — running in-process`. *(Step 5g.3.)*
+the plugin, or pin or install a matching lw), e.g. `Runtime:   daemon
+(default) — lw v0.1.44 (protocol 7) does not match this plugin (protocol 6):
+update the plugin or the pin — running degraded`. *(Step 5g.3.)*
 From protocol 11 this whole-daemon note applies only to a transport mismatch;
 a missing interface version is the per-feature note of "Interface client".
 
@@ -4089,6 +4108,15 @@ runtime is deferred until that module is actively developed.
        restarts, and a daemon-mode neotest (positions and results from the
        view, runs through a CLI relay such as `lw test --select <id>…`,
        designed with `lw test --list`).
+     - **5s — No editor fallbacks** (§19.16 "Availability"; before 5n): in
+       `daemon` mode an operation the daemon cannot carry is refused, never
+       run in-process; the debug-adapter section and its writes fail
+       likewise. The `daemon` editor mode becomes the default, with
+       `in-process` deprecated for one beta cycle (§19.1), then 6b. The
+       status page's body sections and the model's mutations stay on the
+       editor's in-process model until 5n (reads) and 5o (writes), marked
+       transitional (§19.16 "Editor operations"); device-target launches
+       stay in the editor until `Devices/1` (5n).
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
@@ -4100,12 +4128,17 @@ runtime is deferred until that module is actively developed.
      aliases are deleted once no client in this repository sends a v0 kind
      and the deprecation window (§19.20) has passed since the first stable
      release containing 5g.3.
-6. **Default flips** to the binary path for the CLI and the editor (the shared
-   daemon; degraded when it cannot be started), after the criteria in DAEMON.md; the
-   in-process editor stays one beta cycle behind `runtime.mode =
-   "in-process"`, with a deprecation note.
+6. **Default flips** to the binary path for the CLI (the shared daemon;
+   degraded when it cannot be started), after the criteria in DAEMON.md. The
+   editor's default flipped in 5s, after which the in-process editor stays
+   one beta cycle behind `runtime.mode = "in-process"`, with a deprecation
+   note.
    - **6b** — the in-process editor is removed (its LSP path with it, §19.16
-     "LSP configuration"); with no host binary the editor runs degraded.
+     "LSP configuration"), and in `daemon` mode the editor no longer scans
+     tools or targets nor writes the cache; with no host binary the editor
+     runs degraded. It follows 5s's deprecation beta and 5n–5o, and does not
+     wait for the CLI's default flip (the CLI's in-process mode is a
+     separate decision).
    - **6c** — the binary's Lua moves to its own tree (mechanical); the
      protocol schemas and transcripts become the cross-repository contract,
      in a separate protocol repository pinned by both sides (§19.20).

@@ -26,23 +26,24 @@ directly to `Snacks.win`. The page contains these sections in order:
    on disconnect"), and one
    `Runtime` line, the header's last line (above Diagnostics, never further
    down the page): the runtime mode, the source that selected it (core
-   §19.1: `env`, `setup`, `lw setting`, `default`), and in `daemon` mode the
+   §19.1: `default`, or — until step 6b — `setup` for the deprecated
+   `in-process` editor, with its deprecation note), and in `daemon` mode the
    observer's current state or note (core §19.16), e.g. `Runtime:   daemon
-   (lw setting) — observing daemon pid 4242`, `Runtime:   daemon (setup) —
+   (default) — observing daemon pid 4242`, `Runtime:   daemon (default) —
    no lw host binary (LOOMWORKS_LW: not set; binary.path setting: not set;
    lw on PATH: no lw on the search path; plugin-managed lw: none wanted
-   (the plugin carries no pin yet)) — running in-process`, `Runtime:   daemon
-   (setup) — downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from
-   https://… — running in-process meanwhile`, `Runtime:   daemon (env) — the workspace daemon
+   (the plugin carries no pin yet)) — running degraded`, `Runtime:   daemon
+   (default) — downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from
+   https://… — degraded meanwhile`, `Runtime:   daemon (default) — the workspace daemon
    disconnected — workspace unloaded, waiting for it` (core §19.16
-   "Unloaded on disconnect"; warning highlight), `Runtime:   in-process (lw setting)`. A
-   note that leaves the editor running in-process although `daemon` was
-   selected (a version mismatch, no host binary, a failed download) uses the
-   warning highlight. *(Step 5k, plan:)* a degraded operations feature is the
-   same note, e.g. `operations: daemon offers no loomworks.Build/1.configure
-   — running them in-process` (core §19.16 "Editor operations"), and an
-   operation that ran in-process although `daemon` was selected says
-   `(in-process)` in its progress title. *(Step 5l:)* the language servers
+   "Unloaded on disconnect"; warning highlight), `Runtime:   in-process
+   (setup) — deprecated: the in-process editor will be removed`. A
+   note that leaves the editor degraded (a version mismatch, no host binary,
+   a failed download) uses the warning highlight. *(Step 5s, plan:)* a
+   degraded operations feature is the same note, e.g. `operations: daemon
+   offers no loomworks.Build/1.configure`, and an operation is refused with
+   the current note as its message, never run in-process (core §19.16
+   "Availability"). *(Step 5l:)* the language servers
    are never configured in-process in `daemon` mode (core §19.16 "LSP
    configuration"): while the editor waits for the daemon the note is
    `lsp configuration: waiting for the workspace daemon — language servers
@@ -54,7 +55,7 @@ directly to `Snacks.win`. The page contains these sections in order:
    "Tests"): a degraded tests feature is the note `tests: daemon offers no
    loomworks.view.Tests/1 — tests unavailable` in the warning highlight, and
    the test explorer's header shows the same status (LOOMTEST.md §4.2).
-   Absent only when `in-process` was selected by the default.
+   Always shown.
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
    health\``, shown only when the suggestion framework has one or more
