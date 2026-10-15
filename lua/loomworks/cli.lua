@@ -4662,13 +4662,19 @@ function M.cmd_project_rename(root, old_name, new_name)
   return 0
 end
 
+--- The workspace's projects, sorted by key.
+function M._sorted_projects(ws)
+  local sorted = {}
+  for _, p in ipairs(ws._projects or {}) do sorted[#sorted + 1] = p end
+  table.sort(sorted, function(a, b) return a.key < b.key end)
+  return sorted
+end
+
 --- `lw project [list]` — list the workspace's projects.
 function M.cmd_project_list(root)
   local ws = read_workspace(root, false)
-  local sorted = {}
-  for _, p in ipairs(ws._projects or {}) do sorted[#sorted + 1] = p end
+  local sorted = M._sorted_projects(ws)
   if #sorted == 0 then out("(no projects)"); return 0 end
-  table.sort(sorted, function(a, b) return a.key < b.key end)
   for _, p in ipairs(sorted) do
     local t = p.type or (p._module and p._module.id) or "?"
     local row = string.format("  %-20s %-10s %s", p.key, t, p.path or ".")
@@ -4689,13 +4695,28 @@ local function config_set_rows(ws, proj)
   return rows
 end
 
---- `lw project show <name>` — project detail: type, path, saved test targets
+--- `lw project show [<name>]` — project detail: type, path, saved test targets
 --- (project-wide and per configuration), configurations, and
---- the configuration sets that map it.
+--- the configuration sets that map it. Without a name (§16.9) it shows the
+--- workspace's only project; with several it lists them and the named form,
+--- and with none it says so — both usage errors (exit 2).
 function M.cmd_project_show(root, name)
-  if not name then die("usage: lw project show <name>") end
   local ws = read_workspace(root, false)
-  local proj = resolve_project(ws, name)
+  local proj
+  if name then
+    proj = resolve_project(ws, name)
+  else
+    local projects = M._sorted_projects(ws)
+    if #projects == 0 then
+      die("no projects in this workspace — add one: lw project add <path>", 2)
+    end
+    if #projects > 1 then
+      local rows = {}
+      for _, p in ipairs(projects) do rows[#rows + 1] = "  " .. p.key end
+      die("several projects — name one: lw project show <name>\n" .. table.concat(rows, "\n"), 2)
+    end
+    proj = projects[1]
+  end
   local t = proj.type or (proj._module and proj._module.id) or "?"
   out(string.format("%s  (%s)", proj.key, t))
   M._describe_block(proj.description)
@@ -13151,10 +13172,12 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         Rename a project's key. Updates every profile mapping and configuration
         set that references it; `lw publish` then rewrites loomworks.json.
   list  Show all projects: key, type, path.
-  show <name>
+  show [<name>]
         Detail one project: type, path, its saved test targets (project-wide
         and each configuration's effective list), its configurations, its
         variable declarations, the sets that map it, and its intent.
+        Without <name> it shows the only project; with several it lists them
+        and exits 2.
   set <project> <variable> [<default>] [--type string|path]
         Declare (create-or-update) a project variable. --type defaults to
         `string`. Omit <default> to declare it BLANK — a variable with a type
@@ -13450,7 +13473,7 @@ substrings for determinism.
 Read-only — safe any time (no writes to user.json / loomworks.json):
   lw                              status + active profile
   lw workspace                    print the workspace name
-  lw project list | show <name>   lw profile list   lw tools [--cached]
+  lw project list | show [<name>] lw profile list   lw tools [--cached]
   lw config list|show|get         lw configset list|show
   lw profile query <profile> <project> <field>   (build-dir | config | state | tool | cache | variables[.<name>])
   lw build <profile> [-- args]    builds; read-only toward config (writes only

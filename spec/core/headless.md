@@ -508,6 +508,8 @@ source. A project's view always shows the project's row, with `none` and the add
 hint when it has none, and shows a configuration's `tests` line only when that
 configuration's effective list is non-empty or invalid.
 
+`lw project show` without a name shows the workspace's project when it has exactly one. With several, it lists the projects and the `lw project show <name>` form, and exits 2 (usage). With none, it says so and exits 2.
+
 A management host MAY also **set, replace or clear the description** (§1.10) of
 a project, a user configuration, a configuration set, a profile or a launch
 configuration (§16.35).
