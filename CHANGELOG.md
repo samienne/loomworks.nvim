@@ -47,6 +47,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   any test starts, listing each one; a build that may be stale
   (configuration changed, last build failed) gets a note. Works with
   `--saved`, `--discovered` and `--target`. (#233)
+- Experimental daemon: in daemon mode the loomtest explorer shows the tests
+  the workspace daemon discovered (its tree, each unit's state and the last
+  results, kept across reconnects); discovery runs in the daemon as a task
+  the editor owns, when the tree is stale and on refresh. While the daemon
+  is unavailable or the workspace unloaded the explorer header says so and
+  refresh and runs are refused; nothing is discovered in Neovim. Running
+  tests from the explorer in daemon mode is not available yet. The neotest
+  adapter is not available in daemon mode (one notice). In-process mode is
+  unchanged. (#251)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor

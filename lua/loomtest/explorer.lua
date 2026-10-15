@@ -209,10 +209,15 @@ local function build_tree()
     local highlights = {}
     local line_data = {}
 
+    -- An adapter's status replaces the description, in its level's
+    -- highlight (LOOMTEST.md §4.2).
     local adapter = loomtest.adapters()[1]
-    local desc = adapter and adapter.description() or "Tests"
+    local status = loomtest.status()
+    local desc = status and status.text or (adapter and adapter.description()) or "Tests"
+    local STATUS_HL = { info = "DiagnosticInfo", warn = "DiagnosticWarn", error = "DiagnosticError" }
     lines[#lines + 1] = " " .. desc
-    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines], hl_group = "Title" }
+    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines],
+        hl_group = status and (STATUS_HL[status.level] or "DiagnosticWarn") or "Title" }
 
     local counts = { passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0, pending = 0 }
     local total = 0

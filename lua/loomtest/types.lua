@@ -17,6 +17,12 @@
 --- @field get_cursor_test fun(bufnr: number, line: number): string|nil
 --- @field ensure_built? fun(test_ids: string[], callback: fun(ok: boolean)) optional: build test targets before running
 --- @field start? fun(selection: string[]|nil, opts: { no_build: boolean }, sink: loomtest.RunSink): loomtest.RunHandle|nil optional: an adapter-executed run (LOOMTEST.md §3) — when present loomtest calls it for every run (selection nil = run all) instead of run / run_suite / run_all / ensure_built / parse_results
+--- @field status? fun(): loomtest.AdapterStatus|nil optional: the explorer header's status (LOOMTEST.md §4.2), replacing the description; `blocked` refuses run, debug and refresh with its text
+
+--- @class loomtest.AdapterStatus
+--- @field text string e.g. "tests: waiting for the workspace daemon"
+--- @field level string "info" | "warn" | "error"
+--- @field blocked boolean run, debug and refresh are refused with `text`
 
 --- An adapter-executed run's report channel (LOOMTEST.md §3).
 --- @class loomtest.RunSink

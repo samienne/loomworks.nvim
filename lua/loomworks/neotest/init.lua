@@ -4,10 +4,32 @@
 --- Registered as a single adapter — delegates to the active profile's
 --- ConfigUnits for discovery and execution, reading them only through
 --- loomworks/test_source.lua (never the workspace model).
+---
+--- Not available in `daemon` mode (daemon.md §19.16 "Tests" Neotest, step
+--- 5m): it finds no root and discovers nothing there, and the first time
+--- neotest asks it for anything in a session it says so once.
 
 local test_source = require("loomworks.test_source")
 
 local adapter = { name = "loomworks" }
+
+local DAEMON_NOTICE = "loomworks: neotest is not available with the workspace daemon — use the loomtest explorer"
+local _daemon_noticed = false
+
+--- In `daemon` mode: say so once per session (scheduled — neotest calls the
+--- adapter from nio coroutines) and return true; the caller answers nothing.
+--- @return boolean
+local function daemon_mode()
+    if test_source.mode() ~= "daemon" then return false end
+    if not _daemon_noticed then
+        _daemon_noticed = true
+        vim.schedule(function() vim.notify(DAEMON_NOTICE, vim.log.levels.INFO) end)
+    end
+    return true
+end
+
+--- Test seam: the notice is shown again on the next ask.
+function adapter._reset_daemon_notice() _daemon_noticed = false end
 
 --- Normalize a path: forward slashes, no trailing slash (for comparison).
 --- @param p string
@@ -37,6 +59,7 @@ local _cached_native_root = nil
 
 function adapter.root(dir)
     local ok, result = pcall(function()
+        if daemon_mode() then return nil end
         local root = test_source.root()
         if not root then return nil end
 
@@ -64,6 +87,7 @@ end
 --- @return boolean true to search inside
 function adapter.filter_dir(name, rel_path, root)
     local ok, result = pcall(function()
+        if daemon_mode() then return false end
         if not root or not rel_path then return false end
 
         local dir_set = get_test_dir_set()
@@ -152,6 +176,7 @@ end
 --- @return boolean
 function adapter.is_test_file(file_path)
     local ok, result = pcall(function()
+        if daemon_mode() then return false end
         local file_set = get_test_file_set()
         if next(file_set) then
             return file_set[norm(file_path):lower()] or false
@@ -333,6 +358,7 @@ setup_events()
 --- @param path string absolute file or directory path
 --- @return table|nil neotest.Tree
 function adapter.discover_positions(path)
+    if daemon_mode() then return nil end
     -- pcall: neotest calls this in a nio coroutine where unhandled
     -- errors cause permanent hangs instead of error messages.
     -- Deduplicate: neotest may call discover_positions for the same file
@@ -523,6 +549,7 @@ end
 --- @param args table neotest.RunArgs { tree, extra_args?, strategy? }
 --- @return table|nil neotest.RunSpec
 function adapter.build_spec(args)
+    if daemon_mode() then return nil end
     local tree = args.tree
     local pos = tree:data()
 
@@ -636,6 +663,7 @@ end
 --- @param tree table neotest.Tree
 --- @return table<string, neotest.Result>
 function adapter.results(spec, result, tree)
+    if daemon_mode() then return {} end
     local results = {}
     local ctx = spec.context or {}
 

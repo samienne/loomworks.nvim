@@ -217,8 +217,22 @@ M.LSP = {
     object = "/lsp", iface = "loomworks.LspConfig", v = 1, feature = "lsp configuration",
     methods = { "get", "set_option" }, signals = { "changed" }, callable = true,
 }
-M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS }
-M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.BUILD, M.LAUNCH, M.DEBUG, M.LSP }
+-- The tests (step 5m C1, §19.13 "The tests view", §19.16 "Tests"): the
+-- view backs the test explorer; `discover` is a task the editor owns. One
+-- feature `tests` on the Runtime line (`label`), two entries here since one
+-- is subscribed to and the other only called. Never in-process: a missing
+-- one makes the tests unavailable (`unavailable`), not run in the editor.
+M.VIEW_TESTS = {
+    object = "/views", iface = "loomworks.view.Tests", v = 1, feature = "tests view", label = "tests",
+    methods = { "get" }, signals = { "update" }, view = "tests",
+}
+M.TESTS = {
+    object = "/tests", iface = "loomworks.Tests", v = 1, feature = "tests", label = "tests",
+    methods = { "discover" }, signals = {}, call_only = true, tasks = true, unavailable = "tests unavailable",
+}
+M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS }
+M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.BUILD, M.LAUNCH, M.DEBUG,
+    M.LSP, M.TESTS }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -250,8 +264,9 @@ end
 --- @param why? string
 --- @return string
 function M.feature_note(want, offered, why)
+    local label = want.label or want.feature
     if why then
-        return string.format("%s: %s/%d refused (%s)", want.feature, want.iface, want.v, tostring(why))
+        return string.format("%s: %s/%d refused (%s)", label, want.iface, want.v, tostring(why))
     end
     local theirs
     if #offered == 0 then
@@ -261,7 +276,7 @@ function M.feature_note(want, offered, why)
         for i, v in ipairs(offered) do vs[i] = "/" .. tostring(v) end
         theirs = "daemon offers " .. want.iface .. table.concat(vs, ",")
     end
-    return string.format("%s: %s, editor needs /%d", want.feature, theirs, want.v)
+    return string.format("%s: %s, editor needs /%d", label, theirs, want.v)
 end
 
 --- Attach an observer to a freshly loaded workspace when the runtime mode
@@ -1456,7 +1471,7 @@ function Observer:_ensure_subscriptions(conn, objects, done)
                 self._feat[f], self._why[f] = "available", nil
             else
                 self._feat[f] = #offered > 0 and "missing" or nil
-                self._why[f] = M.feature_note(want, offered) .. " — running them in-process"
+                self._why[f] = M.feature_note(want, offered) .. " — " .. (want.unavailable or "running them in-process")
             end
         elseif vim.tbl_contains(offered, want.v) and st ~= "gave_up" then
             self._feat[f] = "pending"
@@ -1838,6 +1853,7 @@ local METHOD_IFACE = {
     adapters = M.DEBUG, set_adapter = M.DEBUG,
     get = M.LSP, set_option = M.LSP,
     cancel = M.TASKS,
+    discover = M.TESTS,
 }
 
 --- The calls the editor makes (step 5k), each naming its method literally
@@ -1874,6 +1890,9 @@ local CALLS = {
     cancel = function(conn, args, cb, env)
         conn:call(M.TASKS.object, M.TASKS.iface, M.TASKS.v, "cancel", args, cb, env)
     end,
+    discover = function(conn, args, cb, env)
+        conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "discover", args, cb, env)
+    end,
 }
 
 --- An interface call of CALLS on the observed connection; every call but
@@ -1881,7 +1900,7 @@ local CALLS = {
 --- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -1942,8 +1961,9 @@ function Observer:_degrade(method, err)
     end
     self._method_notes = self._method_notes or {}
     self._method_notes[#self._method_notes + 1] = string.format(
-        "%s: daemon offers no %s/%d.%s (%s) — running them in-process", want.feature, want.iface,
-        want.v, method, tostring(err and (err.message or err.code) or "?"))
+        "%s: daemon offers no %s/%d.%s (%s) — %s", want.label or want.feature, want.iface,
+        want.v, method, tostring(err and (err.message or err.code) or "?"),
+        want.unavailable or "running them in-process")
     self:_connected_note()
 end
 
@@ -2318,6 +2338,49 @@ function Observer:lsp_note()
             .. (d.why == "disconnected" and "stopped, held" or "held"), false
     end
     return "lsp configuration: " .. d.note .. " — language servers withheld", true
+end
+
+--- Where the tests stand with this observer (§19.16 "Tests" Unavailable or
+--- unloaded, LOOMTEST.md §4.2, §13.1): the test explorer's header status, or
+--- nil while the daemon's tests view is in use with nothing to say. A
+--- `blocked` status empties the tree and refuses discovery, runs and debug
+--- with its text; nothing is ever done in-process instead.
+--- @return { text: string, level: "info"|"warn"|"error", blocked: boolean }|nil
+function Observer:tests_status()
+    local function blocked(text, level) return { text = "tests: " .. text, level = level or "warn", blocked = true } end
+    if self.state == "no-binary" then return blocked("no lw host binary") end
+    if self._lost then return blocked("the workspace daemon disconnected — waiting for it") end
+    if self.state ~= "connected" or self.mode == nil then return blocked("waiting for the workspace daemon", "info") end
+    if self.mode ~= "interfaces" then
+        return blocked("the workspace daemon offers no loomworks.view.Tests/1 (protocol 10)")
+    end
+    if self.incompat_note or self._retire then return blocked("the workspace daemon is incompatible") end
+    local feat, why = self._feat or {}, self._why or {}
+    for _, want in ipairs({ M.VIEW_TESTS, M.TESTS }) do
+        local f = feat[want.feature]
+        if f ~= "subscribed" and f ~= "available" and f ~= "pending" then
+            local note = why[want.feature]
+            -- Not settled yet (no note either): the describe is in flight.
+            if f == nil and not note then return blocked("waiting for the workspace daemon", "info") end
+            note = note and (note:gsub(" — tests unavailable$", "")) or M.feature_note(want, {})
+            return blocked((note:gsub("^tests: ", "")))
+        end
+    end
+    if self._degraded and self._degraded.discover then
+        return blocked("the workspace daemon offers no loomworks.Tests/1.discover")
+    end
+    if feat[M.TASKS.feature] ~= "subscribed" then
+        return blocked("the workspace daemon offers no loomworks.Tasks/1 (needed to own a discovery)")
+    end
+    local view = views.daemon_state(self, "tests")
+    if type(view) ~= "table" then return blocked("waiting for the workspace daemon", "info") end
+    local st = view.state
+    if st == "unloaded" then return blocked("workspace unloaded", "info") end
+    if st == "error" then return blocked("the workspace daemon's load of the workspace failed", "error") end
+    if st == "refused" then return blocked("the workspace daemon's load of the workspace was refused", "error") end
+    if st ~= "loaded" then return blocked("workspace " .. tostring(st)) end
+    if view.discovering ~= nil then return { text = "tests: discovering…", level = "info", blocked = false } end
+    return nil
 end
 
 --- The LSP state or where it stands may have changed: the LSP layer re-reads

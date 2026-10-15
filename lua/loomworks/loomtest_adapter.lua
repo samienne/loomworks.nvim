@@ -1,9 +1,19 @@
 --- loomworks/loomtest_adapter.lua — loomtest adapter for loomworks.
 ---
---- Bridges loomworks ConfigUnit/TestUnit to the loomtest TestAdapter
---- interface, reading them only through loomworks/test_source.lua (never the
---- workspace model). Registers on workspace load, re-registers on profile
---- switch.
+--- Bridges loomworks tests to the loomtest TestAdapter interface, reading
+--- them only through loomworks/test_source.lua (never the workspace model).
+--- Registers on workspace load, re-registers on profile switch. One form per
+--- runtime mode (LOOMTEST.md §13, §13.1):
+---
+---   * `in-process`: the RunSpec adapter over ConfigUnit/TestUnit (discovery,
+---     commands, results parsing, `ensure_built`), unchanged until step 6b;
+---   * `daemon` (step 5m C1): the tree, unit states and last results come
+---     only from the daemon's `loomworks.view.Tests/1`; discovery is
+---     `Tests/1.discover`, sent when the view is `stale` on the first ask or
+---     while the explorer is open, and forced by the explorer's refresh;
+---     `status` reports where the daemon's tests stand (blocked: the tree
+---     empty, nothing done in-process). Runs and debug through `Tests/1`
+---     arrive in step 5m C2.
 
 local test_source = require("loomworks.test_source")
 
@@ -30,7 +40,204 @@ local function to_node(e)
     }
 end
 
---- Create the adapter from the current active profile.
+--- The test at or above the cursor line in the buffer's file (client UI over
+--- loomtest's nodes, both forms).
+--- @param bufnr number
+--- @param line number
+--- @return string|nil
+local function cursor_test(bufnr, line)
+    local buf_path = vim.api.nvim_buf_get_name(bufnr)
+    if buf_path == "" then return nil end
+
+    local norm_path = buf_path:gsub("\\", "/"):lower()
+    local loomtest = require("loomtest")
+
+    -- Find test at or above cursor line in the same file
+    local best_id = nil
+    local best_line = 0
+    for _, node in ipairs(loomtest.nodes()) do
+        if node.file and node.file:gsub("\\", "/"):lower() == norm_path
+            and node.line and node.line <= line and node.line > best_line
+            and node.type == "test" then
+            best_id = node.id
+            best_line = node.line
+        end
+    end
+    return best_id
+end
+
+-- ---------------------------------------------------------------------------
+-- The daemon form (step 5m C1, LOOMTEST.md §13.1)
+-- ---------------------------------------------------------------------------
+
+--- The view's node kinds and statuses loomtest shows as given; any other is
+--- shown neutral (a plain node, no status).
+local KINDS = { target = true, suite = true, test = true }
+local STATUSES = { passed = true, failed = true, skipped = true, errored = true, queued = true, running = true }
+
+--- A unit's one node when it has no tree (§13.1): its label by state; the
+--- view's message for `not_configured`, `foreign` and `error`.
+local UNIT_LABELS = { no_tests = "no tests", pending = "not discovered yet" }
+
+--- Whether the adapter asked for the tree since the daemon's view arrived
+--- (its first ask discovers a `stale` view, §19.16 "Tests" Discovery).
+local _asked = false
+--- A `Tests/1.discover` the editor sent is in flight (single flight).
+local _inflight = false
+--- The adapter re-renders loomtest itself (M._render): that is not loomtest
+--- asking for the tree, so it neither discovers nor counts as the first ask.
+local _rendering = false
+
+--- The daemon's tests view as loomtest nodes, or nil (none to show).
+--- @param view loomworks.TestsView
+--- @return loomtest.TestNode[]|nil
+function M._view_nodes(view)
+    local out = {}
+    for _, u in ipairs(type(view.units) == "table" and view.units or {}) do
+        if u.state == "ok" then
+            for _, n in ipairs(type(u.nodes) == "table" and u.nodes or {}) do
+                local kind = KINDS[n.kind] and n.kind or (n.parent and "test" or "target")
+                out[#out + 1] = {
+                    id = n.id,
+                    name = n.name,
+                    type = kind,
+                    parent = n.parent,
+                    file = n.file,
+                    line = n.line,
+                    runnable = n.runnable == true,
+                    status = STATUSES[n.status] and n.status or nil,
+                    message = n.message,
+                    duration = n.duration,
+                }
+            end
+        else
+            local label = UNIT_LABELS[u.state] or u.message or tostring(u.state)
+            out[#out + 1] = {
+                id = "unit:" .. tostring(u.id or (tostring(u.project) .. "/" .. tostring(u.configuration))),
+                name = string.format("%s (%s): %s", tostring(u.project), tostring(u.configuration), label),
+                type = "target",
+                runnable = false,
+                status = u.state == "error" and "errored" or nil,
+                message = u.message,
+            }
+        end
+    end
+    return #out > 0 and out or nil
+end
+
+--- Whether the test explorer is open.
+--- @return boolean
+local function explorer_open()
+    local ok, explorer = pcall(require, "loomtest.explorer")
+    return ok and explorer.is_open() or false
+end
+
+--- Send `Tests/1.discover` when the view needs it (§19.16 "Tests"
+--- Discovery): `force` on the explorer's refresh, else only while it is
+--- `stale`; never while a discovery runs (another client's included — its
+--- `update` is waited for), while one the editor sent is in flight, or while
+--- the tests are blocked.
+--- @param force boolean
+function M._discover(force)
+    if _inflight then return end
+    local st = test_source.daemon_status()
+    if st and st.blocked then return end
+    local view = test_source.daemon_view()
+    if type(view) ~= "table" or view.discovering ~= nil then return end
+    if not force and view.stale ~= true then return end
+    _inflight = true
+    local sent = test_source.daemon_discover(force, function() _inflight = false end)
+    if not sent then _inflight = false end
+end
+
+--- The daemon form of the adapter.
+--- @return loomtest.TestAdapter
+local function create_daemon_adapter()
+    local function nodes()
+        local st = test_source.daemon_status()
+        local view = test_source.daemon_view()
+        if (st and st.blocked) or type(view) ~= "table" then return nil end
+        if not _rendering then
+            -- The first ask, or the explorer open: a stale view is discovered.
+            if view.stale == true and (not _asked or explorer_open()) then M._discover(false) end
+            _asked = true
+        end
+        return M._view_nodes(view)
+    end
+    return {
+        name = "loomworks",
+        _form = "daemon",
+
+        description = function()
+            local view = test_source.daemon_view()
+            return type(view) == "table" and view.profile or nil
+        end,
+
+        status = function()
+            return test_source.daemon_status()
+        end,
+
+        discover = function() return nodes() end,
+        discover_async = function(callback) callback(nodes()) end,
+
+        -- The explorer's refresh: a forced discovery.
+        invalidate = function() M._discover(true) end,
+
+        -- Runs through `Tests/1.run_cases` arrive in step 5m C2; until then a
+        -- run is refused here and never run in-process.
+        start = function(_, _, sink)
+            sink.done(false, "running tests through the workspace daemon is not available yet")
+            vim.schedule(function() M._render() end)
+            return nil
+        end,
+        run = function() return nil end,
+        run_suite = function() return nil end,
+        run_all = function() return nil end,
+        parse_results = function() return nil end,
+
+        get_cursor_test = cursor_test,
+    }
+end
+
+--- Re-render loomtest from the daemon's view (an `update`, a cleared view,
+--- the observer's state changed): the tree, its signs and inline marks;
+--- cleared when there is nothing to show.
+function M._render()
+    if test_source.mode() ~= "daemon" then return end
+    local ok, loomtest = pcall(require, "loomtest")
+    if not ok then return end
+    if not _adapter or _adapter._form ~= "daemon" then M.register() end
+    local view = test_source.daemon_view()
+    if type(view) ~= "table" then _asked = false end
+    local st = test_source.daemon_status()
+    local inline = require("loomtest.inline")
+    if (st and st.blocked) or type(view) ~= "table" then inline.clear_all() end
+    -- The view turned stale while the explorer is open: discover.
+    if type(view) == "table" and view.stale == true and explorer_open() then M._discover(false) end
+    _rendering = true
+    local ok_d, err = pcall(loomtest.discover, function()
+        inline.update_all()
+    end)
+    _rendering = false
+    if not ok_d then error(err) end
+end
+
+local _render_pending = false
+--- Coalesce re-renders: one per event-loop turn.
+local function schedule_render()
+    if _render_pending then return end
+    _render_pending = true
+    vim.schedule(function()
+        _render_pending = false
+        M._render()
+    end)
+end
+
+-- ---------------------------------------------------------------------------
+-- The in-process form (runtime.mode = "in-process", until step 6b)
+-- ---------------------------------------------------------------------------
+
+--- Create the in-process adapter from the current active profile.
 --- @return loomtest.TestAdapter
 local function create_adapter()
     return {
@@ -204,26 +411,7 @@ local function create_adapter()
             test_source.invalidate()
         end,
 
-        get_cursor_test = function(bufnr, line)
-            local buf_path = vim.api.nvim_buf_get_name(bufnr)
-            if buf_path == "" then return nil end
-
-            local norm_path = buf_path:gsub("\\", "/"):lower()
-            local loomtest = require("loomtest")
-
-            -- Find test at or above cursor line in the same file
-            local best_id = nil
-            local best_line = 0
-            for _, node in ipairs(loomtest.nodes()) do
-                if node.file and node.file:gsub("\\", "/"):lower() == norm_path
-                    and node.line and node.line <= line and node.line > best_line
-                    and node.type == "test" then
-                    best_id = node.id
-                    best_line = node.line
-                end
-            end
-            return best_id
-        end,
+        get_cursor_test = cursor_test,
     }
 end
 
@@ -269,14 +457,19 @@ function M._find_test_unit(test_id)
     return test_source.find_test_unit(test_id)
 end
 
---- Register the loomworks adapter with loomtest.
---- Called on workspace load and profile switch.
+--- Register the loomworks adapter with loomtest, in the form of the current
+--- runtime mode. Called on workspace load and profile switch.
 function M.register()
     local ok, loomtest = pcall(require, "loomtest")
     if not ok then return end
 
-    _adapter = create_adapter()
+    _adapter = test_source.mode() == "daemon" and create_daemon_adapter() or create_adapter()
     loomtest.register_adapter(_adapter)
+end
+
+--- Test seam: forget the daemon form's state.
+function M._reset()
+    _adapter, _asked, _inflight, _rendering = nil, false, false, false
 end
 
 --- Set up event listeners for automatic registration.
@@ -291,6 +484,9 @@ function M.setup()
 
     lw.on("active_set_changed", function()
         vim.defer_fn(function()
+            -- Daemon mode: the view follows the profile itself (it turns
+            -- stale); nothing is invalidated in-process.
+            if test_source.mode() == "daemon" then return M._render() end
             M.register()
             local ok, loomtest = pcall(require, "loomtest")
             if ok then
@@ -308,13 +504,29 @@ function M.setup()
     -- finishes, workspace emits `tests_invalidated`; re-running
     -- discovery then picks up the binary and probes it properly.
     lw.on("tests_invalidated", function()
+        if test_source.mode() == "daemon" then return end
         vim.defer_fn(function()
             local ok, loomtest = pcall(require, "loomtest")
             if ok then loomtest.refresh() end
         end, 100)
     end)
 
-    if test_source.ready() then
+    -- Daemon mode (§19.16 "Tests"): the tree follows the daemon's view and
+    -- where it stands; opening the explorer discovers a stale view.
+    lw.on("daemon_view_changed", function(d)
+        if type(d) == "table" and d.view ~= nil and d.view ~= "tests" then return end
+        schedule_render()
+    end)
+    lw.on("daemon_runtime_changed", function() schedule_render() end)
+    vim.api.nvim_create_autocmd("FileType", {
+        pattern = "loomtest",
+        group = vim.api.nvim_create_augroup("loomworks_loomtest_daemon", { clear = true }),
+        callback = function()
+            if test_source.mode() == "daemon" then M._discover(false) end
+        end,
+    })
+
+    if test_source.mode() == "daemon" or test_source.ready() then
         M.register()
     end
 end

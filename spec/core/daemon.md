@@ -4079,7 +4079,8 @@ runtime is deferred until that module is actively developed.
        source's daemon form, the explorer's header, tree, signs and inline
        marks on it, the `stale` → `discover` trigger, the unavailable and
        unloaded handling, no in-process discovery in `daemon` mode, the
-       neotest refusal; C2 — editor side: runs through `run_cases` (owned
+       neotest refusal *(done once merged)*;
+       C2 — editor side: runs through `run_cases` (owned
        overseer rows, cancel, live status from `results`), debug through
        `prepare_debug` → the debug seam → `collect`, `ensure_built` unused in
        `daemon` mode, the reach-in counts lowered, a real-daemon end-to-end
