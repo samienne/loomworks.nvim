@@ -311,9 +311,9 @@ describe("the observer (§19.16)", function()
         local subs = {}
         for _, sub in ipairs(s.srv.interfaces:subscriptions_of(sc)) do subs[#subs + 1] = sub.object .. " " .. sub.iface end
         table.sort(subs)
-        assert.same({ "/lsp loomworks.LspConfig", "/tasks loomworks.Tasks", "/views loomworks.view.Header",
-            "/views loomworks.view.ProjectsIndex", "/views loomworks.view.Tests", "/workspace loomworks.Workspace" },
-            subs)
+        assert.same({ "/lsp loomworks.LspConfig", "/tasks loomworks.Tasks", "/tests loomworks.Tests",
+            "/views loomworks.view.Header", "/views loomworks.view.ProjectsIndex", "/views loomworks.view.Tests",
+            "/workspace loomworks.Workspace" }, subs)
         -- A task another client owns reaches it through the subscription,
         -- with the opaque string id of transport 11.
         local owner_client = assert(client.session(s.srv.address))
@@ -409,7 +409,7 @@ describe("the observer (§19.16)", function()
             conn.welcome.objects = { { path = "/", interfaces = { { name = "loomworks.Root", versions = { 1 } } } } }
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/tasks", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
         assert.is_nil(obs.feature_note)
     end)
 
@@ -423,7 +423,7 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/tasks", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
     end)
 
     it("falls back to welcome.objects when describe never answers (bounded)", function()
@@ -436,7 +436,7 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/tasks", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
     end)
 
     it("subscribes when /tasks and /workspace appear later (objects_changed); the note clears", function()
@@ -444,7 +444,7 @@ describe("the observer (§19.16)", function()
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
         mount_views(s.srv)
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 6 end, 10))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 7 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
         assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
@@ -463,13 +463,13 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/lsp", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
         assert.truthy((obs.feature_note or ""):find("tasks: loomworks.Tasks/1 refused (busy)", 1, true))
         assert(s.srv:registry():mount("/other", "core", "loomworks.Tasks", 1, { methods = {
             list = function() return { tasks = {} } end,
             cancel = function() return { outcome = "ok" } end,
         } }))
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 6 end, 10))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 7 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
     end)
 

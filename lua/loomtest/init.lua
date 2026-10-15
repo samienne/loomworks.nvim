@@ -21,6 +21,10 @@ local _nodes = {}
 --- @type loomtest.TestNode[]
 local _node_list = {}
 
+--- In-flight `result` reads, by node id.
+--- @type table<string, fun(node: loomtest.TestNode|nil)[]>
+local _loading = {}
+
 --- Default configuration.
 local DEFAULT_CONFIG = {
     position = "right",
@@ -241,6 +245,7 @@ end
 function M.clear()
     _node_list = {}
     _nodes = {}
+    _loading = {}
 end
 
 -- ---------------------------------------------------------------------------
@@ -414,6 +419,14 @@ function M.debug(test_id, node_type, opts)
         ntype = "suite"
     end
 
+    -- An adapter's own debug form (§3, §13.1): one node, prepared,
+    -- debugged and collected by the adapter.
+    if adapter.debug_start then
+        local ids = ntype == "test" and { test_id } or M.descendant_tests(test_id)
+        if #ids == 0 then ids[1] = test_id end
+        return require("loomtest.runner").start_debug(adapter, test_id, ids)
+    end
+
     local spec
     local ids = {}
 
@@ -533,6 +546,17 @@ function M.debug_file()
     local adapter = _adapters[1]
     if not adapter then return end
 
+    -- An adapter's own debug form debugs one node (§13.1): a file's single
+    -- test, never several at once.
+    if adapter.debug_start then
+        if #file_ids > 1 then
+            vim.notify("loomtest: this adapter debugs one test at a time — debug the test at the cursor",
+                vim.log.levels.INFO)
+            return
+        end
+        return require("loomtest.runner").start_debug(adapter, file_ids[1], file_ids)
+    end
+
     local spec = adapter.run_all({ file = buf_path })
     if not spec then return end
 
@@ -574,6 +598,40 @@ function M.run_file()
     require("loomtest.runner").execute(adapter, spec, file_ids)
 end
 
+--- A node's output and error locations (§8), then `cb(node)` (nil: no such
+--- node). An adapter with `result` (§3) keeps them: they are read from it
+--- when shown, once per node until its status changes or the tree is
+--- replaced (a failed read counts, so a redraw never asks again); other
+--- adapters' nodes carry them already and `cb` runs at once.
+--- @param id string
+--- @param cb fun(node: loomtest.TestNode|nil)
+function M.load_result(id, cb)
+    local node = _nodes[id]
+    if not node then return cb(nil) end
+    local adapter = M.find_adapter(id)
+    if not (adapter and adapter.result) or node._result_loaded then return cb(node) end
+    if _loading[id] then
+        table.insert(_loading[id], cb)
+        return
+    end
+    _loading[id] = { cb }
+    adapter.result(id, function(r)
+        local waiters = _loading[id] or {}
+        _loading[id] = nil
+        -- The tree may have been replaced meanwhile: the node by its id now.
+        local cur = _nodes[id]
+        if cur then
+            cur._result_loaded = true
+            if type(r) == "table" then
+                cur._output = r.output
+                cur._errors = r.errors
+                if r.message and not cur.message then cur.message = r.message end
+            end
+        end
+        for _, w in ipairs(waiters) do w(cur) end
+    end)
+end
+
 --- Toggle explorer panel.
 function M.toggle()
     require("loomtest.explorer").toggle()
@@ -597,21 +655,21 @@ function M.show_output()
         if test_id then break end
     end
 
-    if test_id then
-        local node = _nodes[test_id]
-        if node and (node._output or node.message) then
-            local output = node._output or node.message or ""
-            if node.message and node._output and node.message ~= node._output then
-                output = node.message .. "\n\n--- stdout/stderr ---\n" .. node._output
+    if test_id and _nodes[test_id] then
+        M.load_result(test_id, function(node)
+            if not node then return end
+            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
+            if node._output or node.message then
+                local output = node._output or node.message or ""
+                if node.message and node._output and node.message ~= node._output then
+                    output = node.message .. "\n\n--- stdout/stderr ---\n" .. node._output
+                end
+                explorer._show_output_float(title, output, node._errors or {})
+            else
+                explorer._show_output_float(title, "No output captured.", {})
             end
-            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
-            explorer._show_output_float(title, output, node._errors or {})
-            return
-        elseif node then
-            local title = node.name .. " (" .. (node.status or "unknown") .. ")"
-            explorer._show_output_float(title, "No output captured.", {})
-            return
-        end
+        end)
+        return
     end
 
     vim.notify("loomtest: no test found on this line", vim.log.levels.INFO)

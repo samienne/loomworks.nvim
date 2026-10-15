@@ -74,6 +74,19 @@ function M.update_buf(bufnr)
     -- This integrates with <leader>d, [d/]d, and diagnostic UI.
     local diagnostics = {}
     if show_error then
+        -- A failed node's error locations an adapter keeps (§3 `result`):
+        -- read when its file is shown, then this buffer is drawn again.
+        for _, node in ipairs(loomtest.nodes()) do
+            if (node.status == "failed" or node.status == "errored") and not node._result_loaded
+                and node.file and node.file:gsub("\\", "/"):lower() == norm_path then
+                local adapter = loomtest.find_adapter(node.id)
+                if adapter and adapter.result then
+                    loomtest.load_result(node.id, function()
+                        if vim.api.nvim_buf_is_valid(bufnr) then M.update_buf(bufnr) end
+                    end)
+                end
+            end
+        end
         for _, node in ipairs(loomtest.nodes()) do
             if node._errors and node.file
                 and node.file:gsub("\\", "/"):lower() == norm_path then

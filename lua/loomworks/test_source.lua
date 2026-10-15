@@ -13,7 +13,9 @@
 ---     `Tests/1.discover` call the editor owns (`daemon_discover`). Nothing is
 ---     discovered, parsed or run from the editor's model: the in-process
 ---     discovery entry points below refuse in this mode (no fallback). Runs
----     and debug through `Tests/1` arrive in step 5m C2.
+---     (`daemon_run`), debug preparations and their results
+---     (`daemon_prepare_debug`, `daemon_collect`) and a node's output
+---     (`daemon_result`) are `Tests/1` calls too (step 5m C2).
 ---   * `in-process` mode (transition, until step 6b): the editor's own model,
 ---     reached through the `loomworks` facade — ConfigUnit discovery, the
 ---     TestUnits' RunSpecs and results parsing, as the adapters did
@@ -110,6 +112,55 @@ function M.daemon_discover(force, cb)
         resolve = function() cb(true) end,
         reject = function(err) cb(false, err) end,
     })
+end
+
+--- Run test nodes (`Tests/1.run_cases`, an owned task; step 5m C2): `select`
+--- the nodes' view ids, nil for run-all. False when it cannot be carried
+--- now (nothing is run in-process instead); otherwise true and its handle
+--- (`cancel`), ending through `k` (loomworks.daemon.editor_ops.run_tests).
+--- @param select string[]|nil
+--- @param opts { no_build?: boolean }|nil
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) }
+--- @return boolean sent
+--- @return { cancel: fun(self) }|nil handle
+function M.daemon_run(select, opts, k)
+    local obs = observer()
+    if not obs then return false end
+    return require("loomworks.daemon.editor_ops").run_tests(obs.ws, select, opts, k)
+end
+
+--- Prepare debugging one node (`Tests/1.prepare_debug`, an owned task; step
+--- 5m C2): as daemon_run, resolving with `{ debug, prepared }`.
+--- @param id string
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string) }
+--- @return boolean sent
+--- @return { cancel: fun(self) }|nil handle
+function M.daemon_prepare_debug(id, k)
+    local obs = observer()
+    if not obs then return false end
+    return require("loomworks.daemon.editor_ops").prepare_test_debug(obs.ws, id, k)
+end
+
+--- `Tests/1.collect { prepared }` after a prepared debug session: `cb(cases
+--- |nil, err)`. False when not carried now.
+--- @param prepared string
+--- @param cb fun(cases: table[]|nil, err: string|nil)
+--- @return boolean sent
+function M.daemon_collect(prepared, cb)
+    local obs = observer()
+    if not obs then return false end
+    return require("loomworks.daemon.editor_ops").collect_tests(obs.ws, prepared, cb)
+end
+
+--- A node's last result with its output and error locations
+--- (`Tests/1.result { id }`): `cb(result|nil, err)`. False when not carried.
+--- @param id string
+--- @param cb fun(result: table|nil, err: string|nil)
+--- @return boolean sent
+function M.daemon_result(id, cb)
+    local obs = observer()
+    if not obs then return false end
+    return require("loomworks.daemon.editor_ops").test_result(obs.ws, id, cb)
 end
 
 --- The active profile: the loaded model's, read as the view builder reads

@@ -43,13 +43,14 @@
 local M = {}
 
 local VERB = { build = "build", configure = "configure", clean = "clean",
-    prepare_run = "launch", prepare_debug = "debug launch", discover = "test discovery" }
+    prepare_run = "launch", prepare_debug = "debug launch", discover = "test discovery",
+    run_cases = "test run", prepare_test_debug = "test debug preparation" }
 
 --- The calls whose task-runner restart is not sent again (§19.16 "Tasks in
 --- the task runner", step 5k C2): a launch's preparation ends in a program
 --- the editor starts after the call, which a restart of the task alone
 --- would never start.
-M.NO_RESTART = { prepare_run = true, prepare_debug = true }
+M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true }
 
 --- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil), fallback: fun() }
 
@@ -57,7 +58,7 @@ M.NO_RESTART = { prepare_run = true, prepare_debug = true }
 --- workspace's own observer carries its operations: a step chained from a
 --- workspace the editor has since swapped away from is never sent to another
 --- workspace's daemon.
---- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"
 --- @param ws loomworks.Workspace|nil
 --- @return loomworks.daemon.Observer|nil
 function M.carrier(method, ws)
@@ -374,6 +375,149 @@ function M.discover_tests(ws, opts, k)
         end,
     })
     return true
+end
+
+--- Why an owned test call did not run (step 5m C2): its reply's outcome as
+--- one line — never a fallback, the tests are not run in-process.
+--- @param verb string
+--- @param r table the reply (`refused`, `declined`, `degraded`, `failed`)
+--- @return string
+local function test_refusal(verb, r)
+    if r.outcome == "refused" then return tostring(r.message) end
+    if r.outcome == "declined" then
+        return "the workspace daemon declined the " .. verb .. " (" .. tostring(r.reason) .. ")"
+    elseif r.outcome == "degraded" then
+        return "the workspace daemon cannot carry the " .. verb .. " (" .. tostring(r.reason) .. ")"
+    end
+    return "the " .. verb .. " failed: " .. tostring(r.reason)
+end
+
+--- An owned `Tests/1` task (`run_cases`, `prepare_test_debug`) of the
+--- workspace `ws`'s daemon (step 5m C2, §19.16 "Tests" Runs, Debug): one
+--- overseer row the editor owns. False when it cannot be carried now — the
+--- caller refuses with the tests' status; nothing runs in-process. Otherwise
+--- true and a handle whose `cancel` stops it (`Tasks/1.cancel` once
+--- accepted; nothing more reaches `k` then), and it ends through `k`:
+--- `k.resolve(done, err)` with the task result once it ended with a
+--- `done` frame — `err` nil after exit 0, else why it failed; the caller
+--- reads its result either way — or
+--- `k.reject(message)` (not accepted: refused, declined, degraded, failed;
+--- or the task ended without `done`: the connection lost). Nothing is
+--- notified here.
+--- @param method "run_cases"|"prepare_test_debug"
+--- @param ws loomworks.Workspace|nil
+--- @param args table
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) } (`accepted` once the reply accepted it)
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed only)
+local function owned_test_call(method, ws, args, k)
+    local obs = M.carrier(method, ws)
+    if not obs then return false end
+    local verb = VERB[method]
+    local p = {}
+    function p.cancel(self)
+        if self.cancelled then return end
+        self.cancelled = true
+        if self.task_id ~= nil then obs:cancel_owned_id(self.task_id) end
+    end
+    local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
+    local resolve, reject = live(k.resolve), live(k.reject)
+    obs:start_owned(method, args, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then
+                p.task_id = r.task_id
+                if p.cancelled then return obs:cancel_owned_id(r.task_id) end
+                if k.accepted then k.accepted(r.task_id) end
+                return
+            end
+            reject(test_refusal(verb, r))
+        end,
+        on_done = function(task, reason, done)
+            if reason or type(done) ~= "table" then return reject(failure(verb, task, reason)) end
+            resolve(done, failure(verb, task, nil))
+        end,
+    })
+    return true, p
+end
+
+--- Run test nodes through the daemon (step 5m C2, §19.16 "Tests" Runs): one
+--- `Tests/1.run_cases` the editor owns (`select` the nodes' view ids, none
+--- for run-all; `no_build`). Ends through `k` as owned_test_call: a run
+--- that ran (its result carries `cases`, failed tests included) resolves.
+--- @param ws loomworks.Workspace|nil
+--- @param select string[]|nil
+--- @param opts { no_build?: boolean }|nil
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle
+function M.run_tests(ws, select, opts, k)
+    local args = {}
+    if select and #select > 0 then
+        args.select = {}
+        for i, id in ipairs(select) do args.select[i] = { id = id } end
+    end
+    if opts and opts.no_build then args.no_build = true end
+    return owned_test_call("run_cases", ws, args, k)
+end
+
+--- Prepare debugging one test node through the daemon (step 5m C2, §19.16
+--- "Tests" Debug): one `Tests/1.prepare_debug` the editor owns (`select` one
+--- node, an object), resolving with its result (`debug`, `prepared`) or the
+--- failure's `error` as owned_test_call ends.
+--- @param ws loomworks.Workspace|nil
+--- @param id string the node's view id
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle
+function M.prepare_test_debug(ws, id, k)
+    return owned_test_call("prepare_test_debug", ws, { select = { id = id } }, k)
+end
+
+--- A plain `Tests/1` call (`collect`, `result`) of `ws`'s daemon: `cb(result,
+--- err)` once on the main loop — the reply (a `refused` / `declined` one as
+--- the daemon sent it, `err` its message), or nil and why. False when not
+--- carried now (`cb` is not called).
+--- @param method "collect"|"result"
+--- @param ws loomworks.Workspace|nil
+--- @param args table
+--- @param cb fun(result: table|nil, err: string|nil)
+--- @return boolean sent
+local function test_request(method, ws, args, cb)
+    local obs = M.carrier(method, ws)
+    if not obs then return false end
+    obs:request(method, args, function(r)
+        if r.outcome ~= "ok" then return cb(nil, tostring(r.reason)) end
+        local res = type(r.result) == "table" and r.result or {}
+        if res.outcome == "refused" then return cb(nil, tostring(res.message)) end
+        if res.outcome == "declined" then return cb(nil, tostring(res.reason)) end
+        cb(res, nil)
+    end)
+    return true
+end
+
+--- After a prepared test debug session (or instead of one: the adapter was
+--- not installed): `Tests/1.collect { prepared }` — the daemon reads the
+--- results the program wrote, records them and drops the token
+--- (§19.16 "Tests" Debug). `cb(cases|nil, err)`.
+--- @param ws loomworks.Workspace|nil
+--- @param prepared string
+--- @param cb fun(cases: table[]|nil, err: string|nil)
+--- @return boolean sent
+function M.collect_tests(ws, prepared, cb)
+    return test_request("collect", ws, { prepared = prepared }, function(res, err)
+        if not res then return cb(nil, err) end
+        cb(type(res.cases) == "table" and res.cases or {}, nil)
+    end)
+end
+
+--- A node's last result with its output and error locations
+--- (`Tests/1.result { id }`, §19.16 "Tests" Output). `cb(result|nil, err)`.
+--- @param ws loomworks.Workspace|nil
+--- @param id string
+--- @param cb fun(result: table|nil, err: string|nil)
+--- @return boolean sent
+function M.test_result(ws, id, cb)
+    return test_request("result", ws, { id = id }, cb)
 end
 
 --- A module clean through the daemon (Profile:clean / ConfigUnit:clean, via

@@ -588,27 +588,31 @@ function M.open()
             pcall(vim.api.nvim_win_set_cursor, target_win, { node.line, 0 })
         end,
         e = function()
-            -- Jump to first error location
-            local node = node_at_cursor()
-            if not node or not node._errors or #node._errors == 0 then return end
-            local err = node._errors[1]
-            if not err.file or not err.line then return end
-            local target_win = nil
-            for _, w in ipairs(vim.api.nvim_list_wins()) do
-                local buf = vim.api.nvim_win_get_buf(w)
-                if buf ~= _bufnr and vim.bo[buf].buftype == "" then
-                    target_win = w
-                    break
+            -- Jump to first error location (read from the adapter when it
+            -- keeps them, §8.3)
+            local at = node_at_cursor()
+            if not at then return end
+            loomtest.load_result(at.id, function(node)
+                if not node or not node._errors or #node._errors == 0 then return end
+                local err = node._errors[1]
+                if not err.file or not err.line then return end
+                local target_win = nil
+                for _, w in ipairs(vim.api.nvim_list_wins()) do
+                    local buf = vim.api.nvim_win_get_buf(w)
+                    if buf ~= _bufnr and vim.bo[buf].buftype == "" then
+                        target_win = w
+                        break
+                    end
                 end
-            end
-            if not target_win then
-                vim.cmd("wincmd p")
-                target_win = vim.api.nvim_get_current_win()
-            else
-                vim.api.nvim_set_current_win(target_win)
-            end
-            vim.cmd("edit " .. vim.fn.fnameescape(err.file))
-            pcall(vim.api.nvim_win_set_cursor, target_win, { err.line, 0 })
+                if not target_win then
+                    vim.cmd("wincmd p")
+                    target_win = vim.api.nvim_get_current_win()
+                else
+                    vim.api.nvim_set_current_win(target_win)
+                end
+                vim.cmd("edit " .. vim.fn.fnameescape(err.file))
+                pcall(vim.api.nvim_win_set_cursor, target_win, { err.line, 0 })
+            end)
         end,
         o = function()
             local node = node_at_cursor()
@@ -780,12 +784,18 @@ function M.show_output()
 
     local node = loomtest.get_node(_selected_id)
 
-    -- For suite/target nodes, find a failed child
+    -- For suite/target nodes, find a failed child (an adapter-supplied tree:
+    -- by its parents, never by id text, §3.1)
     if not node or (not node._output and not node.message and node.type ~= "test") then
+        local below = nil
+        if loomtest.has_given_suites() then
+            below = {}
+            for _, id in ipairs(loomtest.descendant_tests(_selected_id)) do below[id] = true end
+        end
         for _, n in ipairs(loomtest.nodes()) do
             if n.type == "test" and n.status == "failed"
                 and (n._output or n.message)
-                and n.id:find(_selected_id, 1, true) then
+                and (below and below[n.id] or (not below and n.id:find(_selected_id, 1, true))) then
                 node = n; break
             end
         end
@@ -796,6 +806,17 @@ function M.show_output()
         return
     end
 
+    -- Its output and error locations, read from the adapter when it keeps
+    -- them (§3, §8).
+    if not loomtest.get_node(node.id) then return M._show_node_output(node) end
+    loomtest.load_result(node.id, function(loaded)
+        if loaded then M._show_node_output(loaded) end
+    end)
+end
+
+--- The output float of one node.
+--- @param node loomtest.TestNode
+function M._show_node_output(node)
     -- For tests with no output/message (e.g. passed tests)
     if not node._output and not node.message then
         local title = node.name .. " (" .. (node.status or "unknown") .. ")"

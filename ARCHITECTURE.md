@@ -1762,7 +1762,7 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   refuse a run or debug launch, and `lw.launch_target` / `debug_target`
   offer no target picker then. The in-process source remains only for `runtime.mode =
   "in-process"`, removed with the in-process editor (step 6b).
-- *(Step 5m, parts A, B1, B2 and C1 implemented, C2 planned; spec §19.13 "The tests
+- *(Step 5m, parts A, B1, B2, C1 and C2 implemented; spec §19.13 "The tests
   view", §19.15 "Tests", §19.16 "Tests", §19.20 `Tests/1`, LOOMTEST.md §3,
   §13.1.)* *(A, as built:)* `test_state.state(ws, opts)` takes the hooks the
   daemon fills — `id` (profile / unit ids), `node_id(unit, local_key)` (the
@@ -1861,6 +1861,23 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   re-render on `daemon_view_changed` / `daemon_runtime_changed`; its
   `start` refuses until C2. The neotest adapter finds no root in `daemon`
   mode and says so once.
+  *(C2, as built:)* `TESTS` is subscribed (`callable`, for `results`) and
+  carries `run_cases`, `prepare_debug`, `collect` and `result`; Launch/1 and
+  Tests/1 both have a `prepare_debug`, so the observer's call names are
+  keyed by call (`prepare_test_debug` → wire `prepare_debug`, `WIRE`).
+  `Observer:_test_results` keeps the `/tests` `seq` (re-`get` of the tests
+  view on a gap), writes each case into the held view and emits
+  `daemon_test_results`. `editor_ops` gains `run_tests` /
+  `prepare_test_debug` (owned tasks with a cancel handle, never a fallback,
+  nothing notified there), `collect_tests` and `test_result` (plain calls);
+  `test_source` their daemon wrappers. The adapter's daemon form implements
+  `start` (one `run_cases`; its own run's `results` feed the sink, other
+  runs' go to `runner.apply_status`), `debug_start` (`prepare_debug` → the
+  installed check → `debug.run` → `collect` on termination, or at once) and
+  `result`; loomtest gains `runner.apply_status`, `runner.start_debug` and
+  `load_result` (the explorer's `o` / `e`, `show_output` and the inline
+  error detail read an adapter's `result` when shown, once per status).
+  `ensure_built` and the RunSpec calls are never reached in `daemon` mode.
 
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
