@@ -990,7 +990,6 @@ end
 --- the in-memory state is then reconciled to the merged cache.
 --- @return boolean ok
 function Workspace:_save_cache()
-    if self._torn_down then return false end
     local deps = self._core._deps
     local cache = self:_serialize_cache()
     -- Compute loomworks_hash from serialized config content
@@ -1952,116 +1951,10 @@ function Workspace:_acquire_file_lock(dir, action)
         entry.refs = entry.refs + 1
         return true
     end
-    local build_lock = require("loomworks.op_lock").locks(self._core._deps, self.root).build
-    local handle, err = build_lock.acquire(dir, action,
-        { what = "build directory " .. self:_display_build_dir(dir), command = "lw build",
-          unlock = self:_display_build_dir(dir) })
+    local handle, err = require("loomworks.build_lock").acquire(dir, action)
     if not handle then return false, err end
-    self._build_dir_file_locks[dir] = { handle = handle, refs = 1, build = build_lock }
-    if handle.reclaimed then
-        local line = self:_recover_interrupted_build_dir(dir, handle.reclaimed)
-        if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
-    end
+    self._build_dir_file_locks[dir] = { handle = handle, refs = 1 }
     return true
-end
-
---- A build directory as messages name it: relative to the workspace root when
---- it lies under it, else as given.
---- @param dir string
---- @return string
-function Workspace:_display_build_dir(dir)
-    local d = tostring(dir):gsub("\\", "/")
-    -- A normalized (case-folded) path is shown in its recorded casing.
-    local norm = self._core and self._core._deps and self._core._deps.normalize
-    if norm then
-        local key = norm(d)
-        for _, unit in pairs(self._config_units or {}) do
-            local v = unit.build_dir_value
-            if v and norm(v) == key then d = tostring(v):gsub("\\", "/"); break end
-        end
-    end
-    local root = tostring(self.root or ""):gsub("\\", "/"):gsub("/+$", "")
-    local nd, nr = d, root
-    if vim.fn.has("win32") == 1 then nd, nr = d:lower(), root:lower() end
-    if nr ~= "" and nd:sub(1, #nr + 1) == nr .. "/" then return d:sub(#root + 2) end
-    -- The same directory spelled differently (8.3 short vs long name on
-    -- Windows): relative by the canonical forms, shown with `d`'s own tail.
-    if nr ~= "" and self._canonicalize_boundary_path then
-        local cd, cr = self:_canonicalize_boundary_path(d), self:_canonicalize_boundary_path(root)
-        if cd:sub(1, #cr + 1) == cr .. "/" then
-            local n = select(2, cd:sub(#cr + 2):gsub("[^/]+", ""))
-            local segs = {}
-            for s in d:gmatch("[^/]+") do segs[#segs + 1] = s end
-            if n > 0 and n <= #segs then return table.concat(segs, "/", #segs - n + 1) end
-        end
-    end
-    return d
-end
-
---- Recover the state of a build directory whose lock was reclaimed from a
---- dead or killed holder (spec §19.5 step 5), by the step its lock record
---- names: `configure` — the units read `unconfigured` (a half-written
---- configure cannot be trusted; the directory is kept); `build` — units that
---- read built read not built (`configured`, the configure record kept, no
---- forced reconfigure); any other operation (clean, reset, delete, nuke) —
---- unchanged: a deletion already recorded `unknown` (§5.7). Persists the cache
---- and returns the line to report, or nil when nothing was recorded there.
---- @param dir string the build directory (any form)
---- @param reclaimed table the reclaimed lock record
---- @return string|nil line
-function Workspace:_recover_interrupted_build_dir(dir, reclaimed)
-    local lock_record = require("loomworks.lock_record")
-    local op = lock_record.operation_of(reclaimed)
-    -- Canonical form on both sides: a lock path and a cached build_dir may
-    -- spell one directory differently (8.3 short vs long name on Windows).
-    local canon_cache = {}
-    local function norm(p)
-        if canon_cache[p] == nil then canon_cache[p] = self:_canonicalize_boundary_path(p) end
-        return canon_cache[p]
-    end
-    local key = norm(dir)
-    local who = string.format("%s (pid %s)", lock_record.holder_text(reclaimed),
-        tostring(reclaimed.pid or "?"))
-    local shown = self:_display_build_dir(dir)
-    if op ~= "configure" and op ~= "build" then
-        return string.format("reclaimed %s from %s, which had stopped", shown, who)
-    end
-    local changed = false
-    local function apply(obj, state_field)
-        local st = obj[state_field]
-        if op == "configure" then
-            if st ~= nil and st ~= "unconfigured" and st ~= "unknown" then
-                obj[state_field] = nil
-                obj.last_configured = nil
-                obj.last_built = nil
-                changed = true
-            end
-        elseif st == "built" or st == "failed_build" then
-            obj[state_field] = "configured"
-            obj.last_built = nil
-            changed = true
-        end
-    end
-    local seen_bd = {}
-    for _, unit in pairs(self._config_units or {}) do
-        local bdv = unit.build_dir_value or (unit._build_dir and unit._build_dir.path)
-        if bdv and norm(bdv) == key then
-            apply(unit, "state_value")
-            if unit._build_dir then seen_bd[unit._build_dir] = true; apply(unit._build_dir, "state") end
-        end
-    end
-    for _, bd in pairs(self._build_dirs or {}) do
-        if not seen_bd[bd] and bd.path and norm(bd.path) == key then apply(bd, "state") end
-    end
-    local result = op == "configure" and "unconfigured" or "not built"
-    if changed then
-        self:_save_cache()
-        pcall(self._core._deps.events.emit, "active_set_changed", self._active_set)
-    end
-    local line = string.format("reclaimed %s from %s, interrupted during %s — %s", shown, who, op,
-        changed and ("its state now reads " .. result) or "no build state to recover")
-    pcall(self._core._deps.log.info, self._core._deps.log, "%s", line)
-    return line
 end
 
 --- Release one reference to the cross-process file lock; frees it at zero refs.
@@ -2072,7 +1965,7 @@ function Workspace:_release_file_lock(dir)
     if not entry then return end
     entry.refs = entry.refs - 1
     if entry.refs <= 0 then
-        (entry.build or require("loomworks.build_lock")).release(entry.handle)
+        require("loomworks.build_lock").release(entry.handle)
         locks[dir] = nil
     end
 end
@@ -3679,7 +3572,7 @@ end
 --- @param build_dir_key string
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
-function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done)
+function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
     local future_mod = require("loomworks.future")
     local bd = self:find_build_dir(build_dir_key)
     if bd then
@@ -4206,10 +4099,6 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         return out
     end
     local f = self:stop_tasks_then(task_ids):next(function()
-        -- The `unknown` marks must reach the disk before any tree is removed
-        -- (§5.7): never staged in an open transaction (spec §19.4).
-        assert(not require("loomworks.txn").active(),
-            "loomworks: a deletion's cache write ran inside a transaction")
         ws:_mark_cache_unknown(items)
         ws:_save_cache()
 
@@ -4299,7 +4188,7 @@ end
 --- @param opts? { deactivate_profile?: loomworks.Profile }
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
-function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
+function Workspace:execute_deletion(plan, opts, on_done)
     local future_mod = require("loomworks.future")
     opts = opts or {}
 
@@ -4307,27 +4196,15 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         opts.deactivate_profile:deactivate()
     end
 
-    -- The working copy and the cache commit together (spec §19.4); the build
-    -- trees are removed afterwards under the §5.7 crash rule.
-    local t = self:_txn_begin("delete")
-    local ok_s, serr = pcall(function()
-        if plan.profile then
-            local profile = plan.profile
-            profile._removed = true
-            for i, p in ipairs(self._profiles) do
-                if p == profile then table.remove(self._profiles, i); break end
-            end
-            self:_save_user()
+    if plan.profile then
+        local profile = plan.profile
+        profile._removed = true
+        for i, p in ipairs(self._profiles) do
+            if p == profile then table.remove(self._profiles, i); break end
         end
-        self:_save_cache()
-    end)
-    if not ok_s then self:_txn_abort(t); error(serr, 0) end
-    if not self:_txn_finish(t) then
-        -- The working copy / cache commit failed (reported): remove no tree
-        -- while the cache may still claim it.
-        if on_done then on_done() end
-        return require("loomworks.future").resolved(false)
+        self:_save_user()
     end
+    self:_save_cache()
 
     local actionable = {}
     local clean_units = {}
@@ -4376,7 +4253,7 @@ end
 --- removed. Returns a Future that resolves after both phases complete.
 --- @param on_done? function called when the whole reset is complete
 --- @return loomworks.Future
-function Workspace:_reset_all_unlocked(on_done)
+function Workspace:reset_all(on_done)
     local future_mod = require("loomworks.future")
 
     -- Phase 1: every referenced unit with a build dir → one batched reset plan.
@@ -4414,241 +4291,6 @@ function Workspace:_reset_all_unlocked(on_done)
     return self:execute_deletion({ items = items }, nil):next(function()
         return delete_orphans(1)
     end)
-end
-
--- ===========================================================================
--- Workspace operation lock (spec §19.3)
--- ===========================================================================
-
---- Acquire the workspace operation lock O for `operation` (re-entrant in this
---- process). On refusal the host is told (`deps.on_lock_refused` — the CLI
---- dies there — else an error notification) and nil + message is returned.
---- A reclaimed dead holder's lock is reported.
---- @param operation string
---- @return table|nil token, string|nil message
-function Workspace:_op_lock(operation)
-    local deps = self._core._deps
-    local op_lock = require("loomworks.op_lock").locks(deps, self.root).op
-    local tok, msg = op_lock.acquire(self.root, operation)
-    if not tok then
-        if deps.on_lock_refused then deps.on_lock_refused(msg) end
-        deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
-        return nil, msg
-    end
-    if tok.reclaimed and op_lock.reclaimed_line then
-        local line = op_lock.reclaimed_line(tok.reclaimed)
-        deps.notify("loomworks: " .. line, vim.log.levels.WARN)
-        pcall(deps.log.info, deps.log, "%s", line)
-    end
-    if tok.recovered then
-        deps.notify("loomworks: " .. tok.recovered, vim.log.levels.WARN)
-        pcall(deps.log.info, deps.log, "%s", tok.recovered)
-    end
-    self._op_tokens = self._op_tokens or {}
-    self._op_tokens[tok] = true
-    return tok
-end
-
---- Is the working copy on disk still the one this workspace last read or
---- wrote (spec §2.7)? An operation that planned its change before taking the
---- workspace operation lock checks this under the lock, before writing.
---- @return boolean
-function Workspace:_working_copy_fresh()
-    local base = self._disk_baseline and self._disk_baseline.user
-    if not base then return true end
-    local disk = self:_read_disk(user_mod.filepath(self.root))
-    return disk == false or disk == base.text
-end
-
---- Begin a transaction (spec §19.4) for `operation`: the workspace-file writes
---- until `_txn_finish` are staged and commit together. A no-op (nil) with
---- fake or inert locks (tests on a fake root, `op_lock.locks`).
---- @param operation string
---- @return table|nil txn
-function Workspace:_txn_begin(operation)
-    if require("loomworks.op_lock").locks(self._core._deps, self.root).fake then return nil end
-    return require("loomworks.txn").begin(self.root, operation)
-end
-
---- Commit a transaction from `_txn_begin`. Returns true, or false + err
---- (reported as an error notification).
---- @param t table|nil
---- @return boolean ok, string|nil err
-function Workspace:_txn_finish(t)
-    if not t then return true end
-    local ok, err = require("loomworks.txn").finish(t)
-    if not ok then
-        self._core._deps.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
-    end
-    return ok, err
-end
-
---- Abandon a transaction from `_txn_begin` (its staged files are removed).
---- @param t table|nil
-function Workspace:_txn_abort(t)
-    if t then require("loomworks.txn").abort(t) end
-end
-
---- Release a token from `_op_lock`.
---- @param tok table|nil
-function Workspace:_op_unlock(tok)
-    if self._op_tokens then self._op_tokens[tok] = nil end
-    require("loomworks.op_lock").locks(self._core._deps, self.root).op.release(tok)
-end
-
---- Take the build-directory locks of the directories a deletion will remove
---- (spec §19.3: after O, in canonical order) as COUNTED references in this
---- workspace's file-lock table (`_acquire_file_lock`): an editor task that
---- holds the same directory (and is cancelled by the deletion) releases only
---- its own reference, and two deletions of one directory each hold one, so
---- the lockfile stays until the last of them ends. A lock this process holds
---- outside the table — the CLI's `lw reset`, which keeps it until the
---- deletion has completed — is left to its holder. Returns the normalized
---- directories referenced (release with `_release_file_lock`), or nil + the
---- refusal message (nothing held).
---- @param dirs string[] validated build directories
---- @param operation string
---- @return string[]|nil refs, string|nil message
-function Workspace:_deletion_build_locks(dirs, operation)
-    local build_lock = require("loomworks.op_lock").locks(self._core._deps, self.root).build
-    local lock_break = require("loomworks.lock_break")
-    local norm = self._core._deps.normalize
-    local keyed, seen = {}, {}
-    for _, d in ipairs(dirs) do
-        local k = norm(d)
-        if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
-    end
-    table.sort(keyed, function(a, b) return a.k < b.k end)
-    self._build_dir_file_locks = self._build_dir_file_locks or {}
-    local refs = {}
-    local function undo()
-        for _, k in ipairs(refs) do self:_release_file_lock(k) end
-    end
-    for _, e in ipairs(keyed) do
-        local entry = self._build_dir_file_locks[e.k]
-        if entry then
-            entry.refs = entry.refs + 1
-            refs[#refs + 1] = e.k
-        elseif not build_lock.held_by_me(e.d) then
-            local shown = self:_display_build_dir(e.d)
-            local ctx = { what = shown, command = lock_break.command, unlock = shown,
-                prefix = "cannot " .. operation .. ": " }
-            local h, msg = lock_break.acquire(function()
-                local hh, _, info = build_lock.acquire(e.d, operation, ctx)
-                return hh, info
-            end, ctx)
-            if not h then
-                undo()
-                return nil, msg
-            end
-            self._build_dir_file_locks[e.k] = { handle = h, refs = 1, build = build_lock }
-            refs[#refs + 1] = e.k
-            if h.reclaimed then
-                local line = self:_recover_interrupted_build_dir(e.d, h.reclaimed)
-                if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
-            end
-        end
-    end
-    return refs
-end
-
---- Run `start()` (-> Future) holding O and the build locks of `dirs`; both are
---- released when the future settles. A refused lock calls `on_done` and
---- resolves false without running anything.
---- @param operation string
---- @param dirs string[]
---- @param start fun(): loomworks.Future
---- @param on_done? function
---- @return loomworks.Future
-function Workspace:_locked_deletion(operation, dirs, start, on_done)
-    local future_mod = require("loomworks.future")
-    local tok = self:_op_lock(operation)
-    if not tok then
-        if on_done then on_done() end
-        return future_mod.resolved(false)
-    end
-    local held, msg = self:_deletion_build_locks(dirs, operation)
-    if not held then
-        self:_op_unlock(tok)
-        local deps = self._core._deps
-        if deps.on_lock_refused then deps.on_lock_refused(msg) end
-        deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
-        if on_done then on_done() end
-        return future_mod.resolved(false)
-    end
-    local function release()
-        for _, k in ipairs(held) do self:_release_file_lock(k) end
-        held = {}
-        self:_op_unlock(tok)
-    end
-    local ok, f = pcall(start)
-    if not ok then release(); error(f, 0) end
-    self._deletions = self._deletions or {}
-    self._deletions[f] = true
-    local function settle()
-        if self._deletions then self._deletions[f] = nil end
-        release()
-    end
-    f:next(settle):catch(settle)
-    return f
-end
-
---- The validated build directories a deletion plan removes (clean / reset
---- items with a directory under the workspace root).
---- @param items table[]|nil
---- @return string[]
-function Workspace:_deletion_dirs(items)
-    local dirs = {}
-    local norm = self._core._deps.normalize
-    local safe_prefix = norm(self.root)
-    for _, item in ipairs(items or {}) do
-        if item.build_dir and (item.disposition == "clean" or item.disposition == "reset")
-                and self:_validate_build_dir(norm(item.build_dir), safe_prefix) then
-            dirs[#dirs + 1] = item.build_dir
-        end
-    end
-    return dirs
-end
-
---- Execute a deletion plan holding the workspace operation lock and the
---- build-directory locks of the directories it removes (spec §19.3); see
---- `_execute_deletion_unlocked`.
---- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
---- @param on_done? function
---- @return loomworks.Future
-function Workspace:execute_deletion(plan, opts, on_done)
-    return self:_locked_deletion("delete", self:_deletion_dirs(plan and plan.items), function()
-        return self:_execute_deletion_unlocked(plan, opts, on_done)
-    end, on_done)
-end
-
---- Hard-reset every build directory (see `_reset_all_unlocked`) holding the
---- workspace operation lock across both phases (spec §16.30, §19.3); each
---- phase takes its directories' build locks itself.
---- @param on_done? function
---- @return loomworks.Future
-function Workspace:reset_all(on_done)
-    return self:_locked_deletion("reset", {}, function()
-        return self:_reset_all_unlocked(on_done)
-    end, on_done)
-end
-
---- Delete an orphaned build directory (see `_delete_orphaned_build_dir_unlocked`)
---- holding the workspace operation lock and its build-directory lock.
---- @param build_dir_key string
---- @param on_done? function
---- @return loomworks.Future
-function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
-    local norm = self._core._deps.normalize
-    local bd = self:find_build_dir(build_dir_key)
-    local dirs = {}
-    if bd and bd.path and self:_validate_build_dir(norm(bd.path), norm(self.root)) then
-        dirs[1] = bd.path
-    end
-    return self:_locked_deletion("delete", dirs, function()
-        return self:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done)
-    end, on_done)
 end
 
 -- ===========================================================================
@@ -7182,10 +6824,6 @@ function Workspace:_set_profile_variables_raw(profile_key, dict)
 end
 
 --- The message of a refused stale working-copy save (spec §2.7).
---- How long `teardown` waits for an in-flight deletion to finish removing
---- its trees before it releases the deletion's locks anyway.
-M.TEARDOWN_WAIT_MS = 30000
-
 M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on disk"
     .. " (another lw or editor) — reloaded it; your last change was not saved, redo it"
 
@@ -7217,7 +6855,6 @@ end
 --- working-copy mutations are cross-item (renames, cascade, self-containment).
 --- @return boolean ok, string|nil err
 function Workspace:_save_user()
-    if self._torn_down then return false, "the workspace was unloaded" end
     local deps = self._core._deps
     local path = user_mod.filepath(self.root)
     -- A refused working copy loaded as absent for an import (spec §16.39) is
@@ -8134,15 +7771,6 @@ end
 --- @return loomworks.Future resolves once tasks are confirmed stopped
 function Workspace:teardown()
     self:_stop_tracking()
-    -- A deletion still removing its trees keeps its locks until it ends: wait
-    -- for it (bounded, `TEARDOWN_WAIT_MS`) before the locks below are
-    -- released, so no other process enters a directory being removed.
-    if self._deletions and next(self._deletions) then
-        vim.wait(M.TEARDOWN_WAIT_MS, function() return next(self._deletions) == nil end, 20)
-    end
-    -- A torn-down workspace writes nothing again (a late task callback must
-    -- not resurrect state, e.g. a cache a nuke just removed).
-    self._torn_down = true
 
     local events = self._core._deps.events
     for _, entry in ipairs(self._event_handlers) do
@@ -8164,16 +7792,10 @@ function Workspace:teardown()
     if self._build_dir_file_locks then
         local build_lock = require("loomworks.build_lock")
         for _, entry in pairs(self._build_dir_file_locks) do
-            (entry.build or build_lock).release(entry.handle)
+            build_lock.release(entry.handle)
         end
         self._build_dir_file_locks = {}
     end
-    -- A multi-file operation whose future never settled (a deletion stuck in
-    -- its removal) must not keep the workspace operation lock (spec §19.3).
-    for tok in pairs(self._op_tokens or {}) do
-        pcall(require("loomworks.op_lock").locks(self._core._deps, self.root).op.release, tok)
-    end
-    self._op_tokens = {}
     self._status_cursor_row = nil
 
     return self:stop_tasks_then(task_ids)
@@ -8308,21 +7930,6 @@ function Workspace:reload_config()
     local paths = M.paths(self.root)
     local content = self._core._deps.io.read_file(paths.config)
     self:_on_file_changed(paths.config, content)
-end
-
--- Multi-file operations run holding the workspace operation lock (§19.3).
-do
-    local op_lock = require("loomworks.op_lock")
-    local function self_ws(ws) return ws end
-    op_lock.guard(Workspace, "publish", "publish", self_ws)
-    op_lock.guard(Workspace, "publish_one", "publish", self_ws)
-    op_lock.guard(Workspace, "commit_import", "import", self_ws)
-    op_lock.guard(Workspace, "rename_project", "rename", self_ws)
-    op_lock.guard(Workspace, "rename_configuration_set", "rename", self_ws)
-    op_lock.guard(Workspace, "remove_profile", "remove", self_ws)
-    -- Profile keys renamed into the cache and the working copy.
-    op_lock.guard(Workspace, "upgrade_profiles_for_tool", "rename", self_ws)
-    op_lock.guard(Workspace, "downgrade_profiles_from_tool", "rename", self_ws)
 end
 
 M.Workspace = Workspace

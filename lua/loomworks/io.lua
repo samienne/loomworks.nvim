@@ -6,12 +6,6 @@ local uv = vim.uv or vim.loop
 --- @param path string
 --- @return string|nil content, string|nil err
 function M.read_file(path)
-    -- Inside a transaction (loomworks.txn, spec §19.4) a staged workspace file
-    -- reads as its staged bytes.
-    if M._txn_hook then
-        local hit, data = M._txn_hook.read(path)
-        if hit then return data, nil end
-    end
     local fd, err = uv.fs_open(path, "r", 438) -- 0666
     if not fd then return nil, err end
     local stat, stat_err = uv.fs_fstat(fd)
@@ -25,84 +19,8 @@ function M.read_file(path)
     return data, nil
 end
 
---- The exclusive create (O_CREAT|O_EXCL; tests inject failures here).
---- @return integer|nil fd, string|nil err, string|nil code
-function M._open_exclusive(path, mode)
-    return uv.fs_open(path, "wx", mode)
-end
-
---- Bounded retry of an exclusive create that a lingering handle blocks.
-M.CREATE_RETRIES = 5
-M.CREATE_RETRY_MS = 50
-
---- Create `path` EXCLUSIVELY (O_CREAT|O_EXCL: never through an existing file,
---- a hard link to another file, or a symbolic link — whose target is never
---- opened) and write `data` to it, flushed. Returns true, or false + error +
---- the error code ("EEXIST" when something already has that name).
---- @param path string
---- @param data string
---- @param mode? integer
---- @return boolean ok, string|nil err, string|nil code
-function M.write_exclusive(path, data, mode)
-    -- A leftover at that name held open by an antivirus scanner or indexer
-    -- stays "delete pending" after unlink on Windows, and the exclusive create
-    -- fails with EPERM/EACCES until the last handle closes: retried briefly
-    -- (the timing of write_file_atomic's rename retry). EEXIST is an answer
-    -- (callers choose another name or clear it), never retried here.
-    local ok, err, code
-    for i = 1, M.CREATE_RETRIES do
-        ok, err, code = M._create_once(path, data, mode)
-        if ok or (code ~= "EPERM" and code ~= "EACCES") then break end
-        if i < M.CREATE_RETRIES then uv.sleep(M.CREATE_RETRY_MS) end
-    end
-    return ok, err, code
-end
-
---- One exclusive create + flushed write (no retry).
---- @return boolean ok, string|nil err, string|nil code
-function M._create_once(path, data, mode)
-    local fd, err, code = M._open_exclusive(path, mode or 438)
-    if not fd then return false, err, code end
-    local _, werr = uv.fs_write(fd, data, 0)
-    pcall(uv.fs_fsync, fd)
-    uv.fs_close(fd)
-    if werr then
-        pcall(uv.fs_unlink, path)
-        return false, werr
-    end
-    return true
-end
-
---- Write a temporary file at a FIXED name (`<target>.tmp`, the name crash
---- recovery and stray-file cleanup know): whatever sits at that name first
---- is removed — a leftover of a crashed write, or a link someone planted in a
---- shared `.nvim/` (unlinking a link removes only the link, never its
---- target) — then the file is created exclusively. A directory there is left
---- alone (the create then fails).
---- @param tmp string
---- @param data string
---- @param mode? integer
---- @return boolean ok, string|nil err
-function M.write_fresh(tmp, data, mode)
-    -- Retried briefly (Windows): a leftover held open by an antivirus scanner
-    -- or indexer lingers "delete pending" after the unlink, so the create
-    -- fails (EEXIST/EPERM/EACCES) until its last handle closes. Each attempt
-    -- clears the name again (a non-directory only; never following a link)
-    -- and creates exclusively. The final failure is returned as before.
-    local ok, err, code
-    for i = 1, M.CREATE_RETRIES do
-        local st = uv.fs_lstat(tmp)
-        if st and st.type ~= "directory" then pcall(uv.fs_unlink, tmp) end
-        ok, err, code = M._create_once(tmp, data, mode)
-        if ok or (code ~= "EEXIST" and code ~= "EPERM" and code ~= "EACCES") then break end
-        if st and st.type == "directory" then break end
-        if i < M.CREATE_RETRIES then uv.sleep(M.CREATE_RETRY_MS) end
-    end
-    return ok, err
-end
-
 --- Write data to path atomically:
----   1. Write to path..".tmp" (created exclusively, M.write_fresh)
+---   1. Write to path..".tmp"
 ---   2. fsync the fd
 ---   3. If path exists, rename path -> path..".bak" (unless `opts.backup` is
 ---      false: an export written for the user leaves no `.bak` beside it)
@@ -112,16 +30,20 @@ end
 --- @param opts? { backup: boolean|nil }
 --- @return boolean ok, string|nil err
 function M.write_file_atomic(path, data, opts)
-    -- Inside a transaction (loomworks.txn, spec §19.4) a workspace file is
-    -- staged to `<path>.txn-<id>`; the commit replaces the target.
-    if M._txn_hook then
-        local handled, ok, err = M._txn_hook.write(path, data, opts)
-        if handled then return ok, err end
-    end
     local tmp = path .. ".tmp"
 
-    local okw, werr = M.write_fresh(tmp, data, 438)
-    if not okw then return false, "write tmp: " .. tostring(werr or "unknown") end
+    local fd, err = uv.fs_open(tmp, "w", 438)
+    if not fd then return false, "open tmp: " .. (err or "unknown") end
+
+    local _, write_err = uv.fs_write(fd, data, 0)
+    if write_err then
+        uv.fs_close(fd)
+        uv.fs_unlink(tmp)
+        return false, "write: " .. write_err
+    end
+
+    uv.fs_fsync(fd)
+    uv.fs_close(fd)
 
     if uv.fs_stat(path) and not (opts and opts.backup == false) then
         uv.fs_rename(path, path .. ".bak")

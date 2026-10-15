@@ -26,68 +26,69 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
-### Upgrade notes
-- A build-directory or device lock whose holder is still running but has
-  stopped heartbeating ("hung") is no longer taken over after about 20 s: the
-  command stops and names the recovery command, `--break-locks`. Scripts that
-  relied on waiting out such a lock must pass `--break-locks`. `lw unlock
-  <profile>` no longer removes the lock of a running holder; add `--force`. (#99)
-- Scripts or CI that run `lw update` must switch to `lw bootstrap upgrade`
-  (move a repository's pin) or `lw self-update` (update lw itself); `lw update`
-  now fails with exit code 2. (#89)
-- An unknown command (`lw frobnicate`) now exits 2, not 1, like every other
-  usage error; scripts that test for exit code 1 must accept 2. `lw --check`
-  (and any other option in place of a command) is an unknown option: use
-  `lw status --check`. (#90)
+### Changed
+
+- `lw project show` lists a configuration's saved test targets only when it
+  has some; the project row still always shows. (#242)
+
+## 0.1.46 - 2026-10-14
+
+`lw project show` lists each configuration's saved test targets. A failed
+test step's summary keeps its passed, skipped and disabled counts.
+
+### Changed
+
+- `lw project show` always prints the project's saved test targets row, with
+  `none` and the `lw test-target add` form when there is no project-wide list,
+  and prints each configuration's effective list with its source (for example
+  `inherited from Tests`). (#237)
+
+### Fixed
+
+- A failed `lw test` step now keeps its counts in the summary, e.g.
+  `FAILED (exit status 1, 1 failed test, 364 passed, 2 skipped)`, in the step line
+  and the per-profile summary, on a host or a device. Before, only the failure
+  reasons were shown. A step without per-case results keeps its line. (#238)
+
+## 0.1.45 - 2026-10-14
+
+`lw test --no-build` runs the tests against the existing build, for projects
+whose build always redoes slow steps. Test summaries now count disabled and
+skipped gtest tests apart from passed ones. The status page header shows the
+real loomworks version.
 
 ### Added
+
 - `lw test --no-build` runs the tests against what is already built: nothing
   is configured, built or deployed (meson runs `meson test --no-rebuild`). An
   unconfigured project or an unbuilt test executable fails the run before
   any test starts, listing each one; a build that may be stale
   (configuration changed, last build failed) gets a note. Works with
-  `--saved`, `--discovered` and `--target`. (#230, #235)
-- Experimental, opt-in: the setting `runtime-mode` (`in-process`, the
-  default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
-  workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`
-  show the mode and any daemon from its files; neither ever starts one. (#105)
-- Experimental: `lw daemon run | stop | kill | restart` manage the workspace
-  daemon. Its endpoint is restricted to your user and every connection must
-  prove this machine's key; `stop` never kills, `stop --force` and `kill`
-  recover a hung daemon. (#106)
-- Experimental: with `runtime-mode daemon`, every workspace command keeps the
-  workspace daemon running (it only answers status requests for now; nothing
-  runs through it yet). `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true`
-  never start it; it exits after `daemon-idle-timeout` (default 1h) without
-  clients, or when the workspace is removed. Kills and forced unlocks are now
-  recorded in a per-workspace runtime log under the lw data directory. (#107)
-- Operations that change several workspace files at once (publish, import,
-  pull, cache-propagating renames, profile removal, reset, nuke,
-  `lw trust --discard`, and the editor's delete / reset / nuke) take a
-  workspace operation lock: a second one fails at once with `workspace busy`
-  instead of interleaving its writes. `lw unlock --workspace` clears it when
-  its holder is gone. (#100)
-- `--break-locks` (and `--break-locks=now`) on `lw build`, `clean`, `reset`,
-  `run`, `test` and `lw device clean` (and, with the workspace operation lock,
-  `nuke`, `publish`, `import`, `pull`, `migrate`, `trust`, `project` /
-  `config` / `configset` `rename` and `publish`, `profile publish` and
-  `profile remove`) recovers a stuck lock: it asks the
-  holder to stop, waits about 5 s (`=now` skips the wait), kills its process
-  tree, recovers the interrupted step's state and runs. It never touches a
-  process on another host or an editor, and works under `--no-input`. (#99)
-- `lw unlock --force <profile | build dir>` removes a lock record without
-  stopping its holder, with a loud warning; `lw unlock` also takes a build
-  directory path. (#99)
-- `lw export` prints the whole workspace configuration as a `loomworks.json`
-  (local items included, machine-local settings never) without writing
-  anything; `--published` prints exactly what `lw publish` would write,
-  `--no-profiles` leaves profiles out, `-o <file>` writes a file. (#93)
-- `lw import <file>` (or `-` for stdin) replaces the working configuration with
-  an export from another machine: it shows what changes and the program
-  settings it will trust, asks (`--yes` to skip, `--dry-run` to only look),
-  keeps this machine's own settings, publishes nothing, deletes no build
-  directories, and saves the previous working copy as a timestamped `.bak`.
-  (#93)
+  `--saved`, `--discovered` and `--target`. (#228, #234)
+
+### Fixed
+
+- `lw test`: a disabled gtest test (`DISABLED_`) is no longer counted as
+  passed, and skipped (`GTEST_SKIP`) and disabled tests are counted apart
+  from passed ones, both in a test executable's result line and in the saved
+  test targets' summary, e.g. `1009 tests passed, 2 skipped, 1 disabled`.
+  (#225)
+- Test results: a failure, skip or error inside a testcase written on a
+  single line of the results XML is no longer counted as passed. (#225)
+- Status page: the header shows the running loomworks version (e.g.
+  `0.1.44`, or `0.1.44+dev` in a source checkout) instead of a stale
+  `0.0.1-dev`. (#232)
+
+## 0.1.44 - 2026-10-14
+
+A configuration can now list saved test targets that plain `lw test` runs
+after the project's own tests, and clangd only uses a compile database
+configured on this machine, so it no longer guesses flags from stale ones.
+`lw test` no longer hangs on huge failure output, and the test explorer
+shows every project's tests again.
+
+### Added
+
 - New lualine component `loomworks_lsp`: placed next to `lsp_status`, it
   shows `(unconfigured)`, `(no db)` or `(ws error)` in red when loomworks
   withholds clangd for the buffer. `buf_status()` gains an `lsp` field and
@@ -113,57 +114,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for a project's deploy steps (not for a command launch's, where it is
   unavailable). A project-level step also runs for the project's command
   launches, so a project-level destination using `${target_dir}` fails the
-  deploy of a command launch. (#217)
+  deploy of a command launch. (#214)
 
 ### Changed
+
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)
   first, before the entry's arguments and the arguments forwarded after
   `--`: program, results option, args. Before, the results option came
   last. (#208)
-- `lw import`: an item the working copy already has keeps its intent (local or
-  local+shared); only new items take theirs from `loomworks.json`. Exporting
-  and importing on the same workspace no longer turns shared items local.
-  `--shared` and `--local` still override. (#102)
-- `lw import` keeps the workspace's own name instead of taking the exported
-  one; the summary shows the export's name when it differs, and the new
-  `--take-name` option adopts it. (#104)
-- `lw import` replaces a working copy that is not signed by this machine (for
-  example one written by an older `lw` in a worktree) instead of refusing:
-  `--dry-run` always works, and a confirmed import replaces the file unread,
-  keeping a backup and none of its settings. (#102)
-- A lock left by a process that crashed or was killed is taken over at once
-  (it used to wait about 20 s), and the interrupted step is recovered: a killed
-  configure leaves its configuration unconfigured, a killed build step leaves
-  it configured. Every lock now records the holder's process start time, so a
-  reused process id is never mistaken for the holder. (#99)
-- The working copy and the build cache record the loomworks version that wrote
-  them. A file whose format is newer than the running loomworks understands is
-  never rewritten: the workspace is not loaded and the message asks you to
-  update loomworks (it no longer offers to reset the cache or delete the
-  working copy). A file from a newer loomworks with the same format loads with
-  a one-time warning. (#94)
-- A save that finds the working copy changed on disk by another `lw` or the
-  editor since it was read writes nothing, reloads the file and reports that
-  the change must be redone (an error in the editor; `lw` exits with 1). (#94)
-- `lw status` ends with the everyday commands (build, run, test, clean,
-  reset, health, pull, worktree add, publish) and points at `lw help`; outside
-  a workspace it points at `lw help` too. (#90)
-- A fresh git worktree with no profiles is told that `lw pull` copies the
-  main checkout's profiles. (#90)
-- Next-step hints: `lw init` names `lw project add`; `project add` and
-  `config add` name the `lw configset create`/`map` and `lw config list`
-  commands; `configset create` and `profile create` hints name `lw tools`;
-  `profile create` names `lw build <profile>` and `lw profile select`;
-  an empty `lw profile list` names `lw profile create`; `lw worktree` names
-  `lw worktree add`; `lw install` ends with `lw init` / `lw help`. (#90)
-- `lw profile show` names a non-active profile in its hints (they used to
-  act on the active one), adds `lw test` and `lw reset`, and offers
-  `lw profile describe` when the profile has no description. (#90)
-- `lw help` lists every command and sub-command (`unlock`, `profile set`,
-  `launch rename`, ...), indexes the help topics, and the help topics document
-  every accepted option (`run --working-dir`, `launch add --cwd`,
-  `device clean --no-wait`, `profile create -a`, `-v`/`--version`, the
-  `release-notes` setting, ...). (#90)
 - Inside a workspace, clangd only gets a compile database from the active
   configuration as configured on this machine. A stale
   `compile_commands.json` in a build directory that is not configured here
@@ -194,46 +152,113 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   of skipping them; one in an unknown state still has to be cleaned or
   deleted first. Its progress finishes only when those configures have run,
   even if they had to wait for a build in progress. Building still configures
-  only what needs it. (#196, #198)
-- `lw project show` always prints the project's saved test targets row, with
-  `none` and the `lw test-target add` form when there is no project-wide list,
-  and prints each configuration's effective list with its source (for example
-  `inherited from Tests`). (#240)
-- `lw project show` lists a configuration's saved test targets only when it
-  has some; the project row still always shows. (#242)
+  only what needs it. (#196, #199)
 
 ### Fixed
+
 - `lw run --cwd` on a target that runs on a device is now a usage error
   (exit 2) naming the target, like `lw test --target --cwd`, instead of
   exit 1. (#211)
 - `lw test` no longer hangs for hours parsing a results file with a very
   large failing test case (for example an assertion failing many thousands
   of times in a loop). (#209)
-- On macOS and Linux, a workspace daemon started from one environment (a
-  desktop terminal) is now usable from another (ssh, cron, `sudo -u`, a
-  container shell) whose `TMPDIR` / `XDG_RUNTIME_DIR` differ, instead of being
-  refused as an "untrusted handle". The socket is accepted wherever it is when
-  it is the workspace's own socket, owned by you, in a private (0700) directory
-  owned by you. (#108)
-- On Windows, saving a file no longer fails when a leftover temporary file is
-  briefly held open by an antivirus scanner or indexer: the save retries for a
-  moment. (#108)
-- `--break-locks` and `lw daemon stop --force` recognise an lw holder more
-  strictly: a `luvi` process counts only when it runs the loomworks app, and an
-  `lw-*` binary only when it is a release download (`lw-linux-x86_64`, ...) or a
-  pinned copy (`lw-<version>-<asset>`). (#108)
 - `lw test` notes a project whose kit builds for a device and that has no
   saved test targets, instead of skipping it silently, and says how to
-  include it (`lw test-target add`). (#217)
+  include it (`lw test-target add`). (#214)
 - `lw run --cwd` and `lw test --target --cwd` on a module-declared device
   launch target are now a usage error (exit 2), as for a cross-built device
-  target. (#217)
+  target. (#214)
 - Test results keep at most 1 MiB of each test case's failure message and
   output; longer captures are cut at a line boundary and end with
-  `... [truncated: N more bytes]`. (#217)
+  `... [truncated: N more bytes]`. (#214)
 - The test explorer shows the tests of every project in the active profile
   again; when every project's tests were already discovered it showed only
-  the first project's tests. (#220)
+  the first project's tests. (#218)
+
+## 0.1.43 - 2026-10-07
+
+`lw export` and `lw import` carry a workspace configuration to another
+machine, `lw` and the editor no longer overwrite each other's saves, and the
+CLI's help, hints and exit codes are complete and consistent. `lw update` is
+gone (use `lw bootstrap upgrade` or `lw self-update`), and an unknown command
+now exits 2.
+
+### Upgrade notes
+- Scripts or CI that run `lw update` must switch to `lw bootstrap upgrade`
+  (move a repository's pin) or `lw self-update` (update lw itself); `lw update`
+  now fails with exit code 2. (#89)
+- An unknown command (`lw frobnicate`) now exits 2, not 1, like every other
+  usage error; scripts that test for exit code 1 must accept 2. `lw --check`
+  (and any other option in place of a command) is an unknown option: use
+  `lw status --check`. (#90)
+
+### Added
+- `lw export` prints the whole workspace configuration as a `loomworks.json`
+  (local items included, machine-local settings never) without writing
+  anything; `--published` prints exactly what `lw publish` would write,
+  `--no-profiles` leaves profiles out, `-o <file>` writes a file. (#93)
+- `lw import <file>` (or `-` for stdin) replaces the working configuration with
+  an export from another machine: it shows what changes and the program
+  settings it will trust, asks (`--yes` to skip, `--dry-run` to only look),
+  keeps this machine's own settings, publishes nothing, deletes no build
+  directories, and saves the previous working copy as a timestamped `.bak`.
+  (#93)
+
+### Changed
+- `lw import`: an item the working copy already has keeps its intent (local or
+  local+shared); only new items take theirs from `loomworks.json`. Exporting
+  and importing on the same workspace no longer turns shared items local.
+  `--shared` and `--local` still override. (#102)
+- `lw import` keeps the workspace's own name instead of taking the exported
+  one; the summary shows the export's name when it differs, and the new
+  `--take-name` option adopts it. (#104)
+- `lw import` replaces a working copy that is not signed by this machine (for
+  example one written by an older `lw` in a worktree) instead of refusing:
+  `--dry-run` always works, and a confirmed import replaces the file unread,
+  keeping a backup and none of its settings. (#102)
+- The working copy and the build cache record the loomworks version that wrote
+  them. A file whose format is newer than the running loomworks understands is
+  never rewritten: the workspace is not loaded and the message asks you to
+  update loomworks (it no longer offers to reset the cache or delete the
+  working copy). A file from a newer loomworks with the same format loads with
+  a one-time warning. (#94)
+- A save that finds the working copy changed on disk by another `lw` or the
+  editor since it was read writes nothing, reloads the file and reports that
+  the change must be redone (an error in the editor; `lw` exits with 1). (#94)
+- `lw status` ends with the everyday commands (build, run, test, clean,
+  reset, health, pull, worktree add, publish) and points at `lw help`; outside
+  a workspace it points at `lw help` too. (#90)
+- A fresh git worktree with no profiles is told that `lw pull` copies the
+  main checkout's profiles. (#90)
+- Next-step hints: `lw init` names `lw project add`; `project add` and
+  `config add` name the `lw configset create`/`map` and `lw config list`
+  commands; `configset create` and `profile create` hints name `lw tools`;
+  `profile create` names `lw build <profile>` and `lw profile select`;
+  an empty `lw profile list` names `lw profile create`; `lw worktree` names
+  `lw worktree add`; `lw install` ends with `lw init` / `lw help`. (#90)
+- `lw profile show` names a non-active profile in its hints (they used to
+  act on the active one), adds `lw test` and `lw reset`, and offers
+  `lw profile describe` when the profile has no description. (#90)
+- `lw help` lists every command and sub-command (`unlock`, `profile set`,
+  `launch rename`, ...), indexes the help topics, and the help topics document
+  every accepted option (`run --working-dir`, `launch add --cwd`,
+  `device clean --no-wait`, `profile create -a`, `-v`/`--version`, the
+  `release-notes` setting, ...). (#90)
+
+### Fixed
+- The `unstable` update channel picks the highest release version instead of
+  the most recently published one, so a full release published after a newer
+  pre-release no longer moves `lw self-update` back down to it. (#165)
+- A program argument that looks like a global option (`--dev`, `--no-pin`,
+  `--no-input`, `--local`, ...) is passed to the program again instead of
+  being taken by lw: after `--`, and after `lw launch add`'s command (or
+  `--from-target <t>`). Before, e.g. `lw launch set App demo -- --dev` failed
+  with "development source requested but no directory is configured" (that
+  error now hints to put such a flag after `--`). On `lw launch set` and the
+  set-value commands (`lw config|project|profile|settings set`) `--` is the
+  escape: every token after it is an argument or the value, verbatim. A
+  program's `--help` (`lw launch add app x node --help`) is stored, not
+  answered. (#164)
 - Read-only commands (`lw status`, `lw profile list`, `lw export`,
   `lw import --dry-run`, `lw health`, ...) and the editor no longer rewrite a
   build cache written by an earlier loomworks (unsigned) when they load the
@@ -252,15 +277,6 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   nothing about it and the closing "no active profile" hint read as if the
   import had cleared one. The summary now says `active profile: none
   (unchanged)` and the hint says none was active before. (#103)
-- A publish, rename, import or profile removal that is killed half-way no
-  longer leaves `loomworks.json`, the working copy and the build cache
-  disagreeing: the files are committed together through a journal, and the
-  next command completes an interrupted commit (or, if a file was changed
-  since, refuses the workspace until `lw unlock --journal`). (#101)
-- `lw nuke` (and the editor's nuke) no longer deletes a build directory while
-  a build runs in it: it takes every build directory's lock first and refuses
-  naming the build. The editor's delete and reset take the build-directory
-  locks too, so they refuse while a CLI build uses the directory. (#100)
 - A build recorded by `lw build` while the editor was open could be lost: the
   editor's next save of the build cache overwrote it. Saves now merge with the
   cache on disk, keeping the other process's build records. (#94)
@@ -291,20 +307,6 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw worktree` (or `lw pull`), which wait longer; `lw worktree`, `lw worktree
   add` and `lw pull` likewise report a git that does not answer within 30 s as
   a timeout, not as "git is not available" or "not in a git repository". (#98)
-- `lw test`: a disabled gtest test (`DISABLED_`) is no longer counted as
-  passed, and skipped (`GTEST_SKIP`) and disabled tests are counted apart
-  from passed ones, both in a test executable's result line and in the saved
-  test targets' summary, e.g. `1009 tests passed, 2 skipped, 1 disabled`.
-  (#226)
-- Test results: a failure, skip or error inside a testcase written on a
-  single line of the results XML is no longer counted as passed. (#226)
-- Status page: the header shows the running loomworks version (e.g.
-  `0.1.44`, or `0.1.44+dev` in a source checkout) instead of a stale
-  `0.0.1-dev`. (#235)
-- A failed `lw test` step now keeps its counts in the summary, e.g.
-  `FAILED (exit status 1, 1 failed test, 364 passed, 2 skipped)`, in the step line
-  and the per-profile summary, on a host or a device. Before, only the failure
-  reasons were shown. A step without per-case results keeps its line. (#240)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or

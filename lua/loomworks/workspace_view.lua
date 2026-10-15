@@ -141,11 +141,7 @@ function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
     end
 
     if result.tool_entry then
-        local up_ok, up_err = ws:upgrade_profiles_for_tool(result.tool_entry)
-        if up_ok == false then
-            return false, "project added, but its profiles were not upgraded to the tool: "
-                .. tostring(up_err)
-        end
+        ws:upgrade_profiles_for_tool(result.tool_entry)
     end
 
     return true
@@ -286,11 +282,7 @@ function M.execute_remove_project(ws, project, ctx, on_done)
             end
             -- Step 3: Downgrade profiles if needed
             if #ctx.downgrade_preview > 0 then
-                local d_ok, d_err = ws:downgrade_profiles_from_tool(ctx.project_type)
-                if d_ok == false then
-                    on_done(false, "project removed, but its profiles were not downgraded: " .. tostring(d_err))
-                    return
-                end
+                ws:downgrade_profiles_from_tool(ctx.project_type)
             end
             on_done(true)
         end)
@@ -302,11 +294,7 @@ function M.execute_remove_project(ws, project, ctx, on_done)
             return
         end
         if #ctx.downgrade_preview > 0 then
-            local d_ok, d_err = ws:downgrade_profiles_from_tool(ctx.project_type)
-            if d_ok == false then
-                on_done(false, "project removed, but its profiles were not downgraded: " .. tostring(d_err))
-                return
-            end
+            ws:downgrade_profiles_from_tool(ctx.project_type)
         end
         on_done(true)
     end

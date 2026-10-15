@@ -918,163 +918,6 @@ do
   eq(("x__LW_EXIT_n.1=3"):match(vim.pesc("__LW_EXIT_n.1") .. "=(%d+)$"), "3", "vim.pesc output is a literal pattern")
 end
 
-print("loomworks.proc / lock records — process identity under luvi (spec §19.5)")
-do
-  -- The start-time probe, tree kill and suspend run under the luvi host on the
-  -- CI's Linux and Windows runners (the nvim suite covers Windows under nvim).
-  local vim = require("loomworks.shim")
-  local proc = require("loomworks.proc")
-  local lock_record = require("loomworks.lock_record")
-  local win = package.config:sub(1, 1) == "\\"
-  local native = win and "win" or (proc._os == "Linux" and "linux" or "mac")
-  local st = proc.self_start_time()
-  ok(type(st) == "string" and proc.method_of(st) == native, "self start time via the native method  (" .. tostring(st) .. ")")
-  eq(proc.start_time(4194300), false, "a missing process is gone")
-  local cmd, args
-  if win then cmd, args = "cmd.exe", { "/c", "ping -n 30 127.0.0.1 >nul" }
-  else cmd, args = "/bin/sh", { "-c", "sleep 30 & sleep 30; true" } end
-  local handle, pid = uv.spawn(cmd, { args = args }, function() end)
-  ok(handle ~= nil, "spawned a helper process tree")
-  if handle then
-    vim.wait(400)
-    local cst = proc.start_time(pid)
-    ok(type(cst) == "string" and cst ~= st, "child start time differs from ours")
-    local kids = proc.descendants(pid)
-    ok(#kids >= 1, "the helper's children are enumerated  (" .. #kids .. ")")
-    ok(proc._suspend(pid), "suspend the helper")
-    eq(proc.alive(pid, cst), true, "a suspended process is alive (same start time)")
-    -- a lock held by the suspended helper with a stale heartbeat is hung
-    local tmp = uv.os_tmpdir() .. "/lw-proc-" .. tostring(uv.hrtime())
-    local lockp = tmp .. ".lock"
-    local f = assert(io.open(lockp, "wb"))
-    f:write(vim.json.encode({ pid = pid, host = lock_record.this_host(), start_time = cst,
-      lock_nonce = "n", kind = "lw", operation = "build", started_at = os.time() }))
-    f:close()
-    uv.fs_utime(lockp, os.time() - 100, os.time() - 100)
-    local info = lock_record.read(lockp, 20)
-    eq(lock_record.classify(info), "hung", "suspended holder + stale heartbeat = hung")
-    -- a reused pid (start time differs) is dead, and is never signalled
-    local gone_fake = proc.kill_tree(pid, native .. ":0")
-    ok(gone_fake and proc.alive(pid, cst) == true, "a mismatched start time never signals the process")
-    local gone, kerr = proc.kill_tree(pid, cst)
-    ok(gone, "kill_tree stops the suspended holder  (" .. tostring(kerr) .. ")")
-    eq(lock_record.classify(info), "dead", "the killed holder is dead")
-    local all_gone = vim.wait(5000, function()
-      for _, k in ipairs(kids) do if proc.alive(k.pid, k.start) == true then return false end end
-      return true
-    end, 50)
-    ok(all_gone, "the holder's children were killed too")
-    ok(lock_record.reclaim(lockp, info) and uv.fs_stat(lockp) == nil, "nonce-matched reclaim removes the record")
-  end
-end
-
-print("loomworks.lock_break / proc — descendants verified, ancestors spared, POSIX ask path (spec §19.5)")
-do
-  local vim = require("loomworks.shim")
-  local proc = require("loomworks.proc")
-  local lock_break = require("loomworks.lock_break")
-  local win = package.config:sub(1, 1) == "\\"
-  local native = win and "win" or (proc._os == "Linux" and "linux" or "mac")
-  local function spawn(cmd, args)
-    local h, pid = uv.spawn(cmd, { args = args }, function() end)
-    assert(h, "spawn " .. cmd)
-    return pid
-  end
-  local function sleeper(secs)
-    if win then return spawn("cmd.exe", { "/c", "ping -n " .. (secs + 1) .. " 127.0.0.1 >nul" }) end
-    return spawn("/bin/sh", { "-c", "sleep " .. secs })
-  end
-  local function gone(pid, st)
-    return vim.wait(5000, function() return proc.alive(pid, st) ~= true end, 50)
-  end
-
-  -- A descendant recorded earlier whose id now names another process (its
-  -- start time differs) is never signalled.
-  local holder, other = sleeper(30), sleeper(30)
-  vim.wait(300)
-  local hst, ost = proc.start_time(holder), proc.start_time(other)
-  local ok_k = proc.kill_tree(holder, hst, { { pid = other, start = native .. ":0" } })
-  ok(ok_k and proc.alive(other, ost) == true, "a reused descendant id (start time differs) is not killed")
-  proc.kill_tree(other, ost)
-
-  -- This process and its ancestors are never a descendant to kill.
-  local anc = proc.ancestors()
-  local me = uv.os_getpid()
-  ok(anc[me] == true, "ancestors() includes this process")
-  local parent = uv.os_getppid and uv.os_getppid() or nil
-  if parent then
-    ok(anc[parent] == true, "ancestors() includes the parent")
-    local listed = false
-    for _, d in ipairs(proc.descendants(parent)) do if d.pid == me then listed = true end end
-    ok(not listed, "descendants of the parent never list this process")
-    local okb, why = lock_break.can_break({ pid = parent, host = require("loomworks.lock_record").this_host(),
-      start_time = proc.start_time(parent), kind = "lw", state = "hung", age = 99 }, { what = "x" })
-    ok(not okb and why:find("started it", 1, true) ~= nil, "--break-locks refuses an ancestor holder")
-  end
-
-  -- The holder's command line is read and checked (§19.5): this luvi run is
-  -- an lw host; a plain shell is not, and is never killed.
-  local me_args = proc.cmdline(me, proc.self_start_time())
-  ok(type(me_args) == "table" and #me_args > 0, "proc.cmdline reads this process's command line")
-  -- This run is `luvi tests/standalone`: a luvi running another app is not an
-  -- lw host; the same luvi running the loomworks app (`lua/`) is.
-  ok(not proc.is_lw(me_args), "a luvi running another app is not an lw process  ("
-    .. table.concat(me_args or {}, " ") .. ")")
-  ok(proc.is_lw({ me_args and me_args[1] or "luvi", root .. "/lua", "--", "build" }),
-    "a luvi running the loomworks app counts as an lw process")
-  ok(proc.is_lw({ me_args and me_args[1] or "luvi", "../../../lua", "--", "help" }),
-    "a luvi running the loomworks app by a relative path counts as an lw process")
-  do
-    local stranger = sleeper(30)
-    vim.wait(300)
-    local sst = proc.start_time(stranger)
-    local okb, why = lock_break.can_break({ pid = stranger, host = require("loomworks.lock_record").this_host(),
-      start_time = sst, kind = "lw", state = "hung", age = 99 }, { what = "x" })
-    ok(not okb and tostring(why):find("not one", 1, true) ~= nil,
-      "--break-locks refuses a holder that is not an lw process  (" .. tostring(why) .. ")")
-    ok(proc.alive(stranger, sst) == true, "the stranger was not signalled")
-    proc.kill_tree(stranger, sst)
-  end
-
-  if not win then
-    -- POSIX ask path (§19.5 step 1): SIGINT, wait, then kill the snapshot.
-    -- The stand-in holders are shells, not lw processes: the identity check
-    -- (tested above) is bypassed for this part only.
-    local saved_verify = lock_break.verify_identity
-    lock_break.verify_identity = function() return true end
-    local saved = lock_break.ASK_MS
-    lock_break.ASK_MS = 800
-    local lines = {}
-    local function info_of(pid)
-      return { pid = pid, host = require("loomworks.lock_record").this_host(),
-        start_time = proc.start_time(pid), kind = "lw", state = "live", age = 1 }
-    end
-    -- (a) a holder that ignores the interrupt is killed after the wait
-    local stubborn = spawn("/bin/sh", { "-c", "trap '' INT; sleep 30" })
-    vim.wait(300)
-    local i1 = info_of(stubborn)
-    local t0 = uv.hrtime()
-    local okb = lock_break.break_holder(i1, { what = "t" }, { mode = "ask", report = function(l) lines[#lines + 1] = l end })
-    local waited = (uv.hrtime() - t0) / 1e6
-    ok(okb and gone(stubborn, i1.start_time), "ask: a holder ignoring SIGINT is killed")
-    ok(waited >= 700, "ask: the kill comes only after the wait  (" .. math.floor(waited) .. " ms)")
-    ok(table.concat(lines, "\n"):find("asked", 1, true) ~= nil, "ask: the interrupt is reported")
-    -- (b) a holder that exits on the interrupt but leaves a child: the child
-    -- (in the snapshot taken before asking) is killed too
-    local leaver = spawn("/bin/sh", { "-c", "sleep 30 & wait" })
-    vim.wait(300)
-    local i2 = info_of(leaver)
-    local kids = proc.descendants(leaver)
-    ok(#kids >= 1, "ask: the holder's child is in the snapshot")
-    local okb2 = lock_break.break_holder(i2, { what = "t" }, { mode = "ask", report = function() end })
-    local all = okb2 and gone(leaver, i2.start_time)
-    for _, k in ipairs(kids) do all = all and gone(k.pid, k.start) end
-    ok(all, "ask: the holder and the child it left are gone")
-    lock_break.ASK_MS = saved
-    lock_break.verify_identity = saved_verify
-  end
-end
-
 -- A throwaway git repository for tests of pin management's git steps. Its
 -- config pins the Windows-like behaviour (no file-mode tracking) so the
 -- index-only exec-bit path runs on every platform, and no autocrlf noise.
@@ -1151,6 +994,57 @@ do
   end
   ok(not pin.is_redirect_command("publish"), "publish is not a redirect command")
   ok(not pin.is_redirect_command("bootstrap"), "bootstrap is not a redirect command")
+  -- Host flags are lw's own only before `--` and outside a program's args
+  -- (spec §16.7). On `launch set` / set-value commands `--` is the escape.
+  local function peel(...)
+    local fwd, f = pin.peel_host_flags({ ... })
+    return table.concat(fwd, " "), f
+  end
+  local p1, f1 = peel("--no-input", "launch", "set", "App", "demo", "--dev", "--x", "D:\\src\\x")
+  ok(f1.dev and f1.dev_in_args and p1 == "--no-input launch set App demo --x D:\\src\\x",
+    "peel: launch set's --dev before -- is lw's (with the hint)  (" .. p1 .. ")")
+  ok(pin.dev_unconfigured_message(true):find("after `--`", 1, true) ~= nil
+    and pin.dev_unconfigured_message(false):find("after `--`", 1, true) == nil,
+    "dev_unconfigured_message: the put-it-after-`--` hint only for a --dev after the command")
+  local p1b, f1b = peel("launch", "set", "P", "t", "--", "--dev", "--x", "y")
+  ok(not f1b.dev and p1b == "launch set P t -- --dev --x y", "peel: launch set -- --dev kept")
+  local p2, f2 = peel("--no-input", "launch", "set", "App", "demo", "--", "--dev")
+  ok(not f2.dev and p2:find("-- --dev", 1, true) ~= nil, "peel: launch set -- --dev kept")
+  local p3, f3 = peel("--no-input", "launch", "add", "App", "ed", "Editor.exe", "--", "--dev")
+  ok(not f3.dev and p3:find("-- --dev", 1, true) ~= nil, "peel: launch add … -- --dev kept")
+  local p4, f4 = peel("launch", "add", "App", "ed", "Editor.exe", "--dev=x", "--no-pin")
+  ok(not f4.dev and not f4.no_pin and p4:find("--dev=x --no-pin", 1, true) ~= nil,
+    "peel: launch add's program args after the command are kept")
+  local _, f4b = peel("launch", "add", "App", "ed", "--from-target", "t", "--dev")
+  ok(not f4b.dev, "peel: launch add --from-target <t> args are kept")
+  local p5, f5 = peel("run", "demo", "--", "--dev", "--no-pin")
+  ok(not f5.dev and not f5.no_pin and p5 == "run demo -- --dev --no-pin", "peel: run -- --dev kept")
+  local p6, f6 = peel("--dev", "build", "--no-pin", "Dev", "--dev=/src/lua", "--", "-j4")
+  ok(f6.dev and f6.dev_in_args and f6.dev_path == "/src/lua" and f6.no_pin and p6 == "build Dev -- -j4",
+    "peel: host flags among a command's own args still apply  (" .. p6 .. ")")
+  local p7, f7 = peel("launch", "add", "App", "ed", "--no-pin", "node", "-x")
+  ok(f7.no_pin and p7 == "launch add App ed node -x", "peel: before launch add's command it is lw's")
+  eq(pin.own_end({ "--no-input", "run", "x", "--", "y" }), 4, "own_end: at --")
+  eq(pin.own_end({ "build", "Dev" }), 3, "own_end: none")
+  local p8, f8 = peel("config", "set", "App", "Debug", "options.X", "--", "--dev")
+  ok(not f8.dev and p8 == "config set App Debug options.X -- --dev", "peel: a set-value after -- is kept")
+  local _, f8b = peel("config", "set", "App", "Debug", "options.X", "--dev")
+  ok(f8b.dev and f8b.dev_in_args, "peel: a set-value --dev before -- is lw's")
+  local _, f8c = peel("--dev", "build")
+  ok(f8c.dev and not f8c.dev_in_args, "peel: a leading --dev is not in the args")
+  local p8d, f8d = peel("launch", "add", "app", "dev", "npm", "run", "dev", "--", "--port", "3000", "--dev")
+  ok(not f8d.dev and p8d == "launch add app dev npm run dev -- --port 3000 --dev",
+    "peel: launch add's -- after the command is a program arg")
+  eq(pin.own_end({ "launch", "set", "app", "run", "--env", "K=V", "--no-input" }), 8,
+    "own_end: launch set's trailing --no-input is lw's")
+  eq(pin.own_end({ "launch", "add", "app", "x", "node", "--help" }), 6,
+    "own_end: a launch add program's --help is the program's")
+  local _, f9 = peel("config", "set", "--dev", "App", "Debug", "options.X", "v")
+  ok(f9.dev, "peel: before the value operand it is lw's")
+  local _, f10 = peel("project", "set", "App", "--type", "string", "V", "--", "--no-pin")
+  ok(not f10.no_pin, "peel: project set --type <t> <name> -- <value>")
+  local _, f10b = peel("project", "set", "App", "V", "x", "--no-pin")
+  ok(f10b.no_pin, "peel: project set's trailing --no-pin is lw's")
 end
 
 print("boot.update — versioned_base URL shapes")
@@ -2902,8 +2796,26 @@ do
   local saved = update.RELEASES_API_URL
   update.RELEASES_API_URL = api  -- bare path -> download.fetch reads it locally
   local ver, e = update.resolve_unstable_version()
-  eq(ver, "0.2.0-beta.1",
-    "newest NON-draft (pre-release included, draft skipped)" .. (e and (" — " .. e) or ""))
+  eq(ver, "0.2.0",
+    "highest NON-draft version (draft skipped; a pre-release orders below its release)"
+    .. (e and (" — " .. e) or ""))
+
+  -- Publish order is NOT version order: a stable v0.1.43 cut after the
+  -- v0.1.44-beta.1 pre-release sits first in the API list, yet unstable must
+  -- still pick the highest version (§16.29) — never move users DOWN. A higher
+  -- draft is still ignored.
+  put(api, '[{"draft":false,"prerelease":false,"tag_name":"v0.1.43"},'
+    .. '{"draft":true,"prerelease":true,"tag_name":"v0.1.45-beta.1"},'
+    .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.44-beta.1"},'
+    .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.43-beta.16"}]')
+  local hv, he = update.resolve_unstable_version()
+  eq(hv, "0.1.44-beta.1",
+    "unstable picks the highest version, not the first listed" .. (he and (" — " .. he) or ""))
+  -- An unsafe tag anywhere in the list still fails the whole query.
+  put(api, '[{"draft":false,"tag_name":"v0.1.44"},{"draft":false,"tag_name":"v../../evil"}]')
+  local uv, ue = update.resolve_unstable_version()
+  ok(uv == nil and type(ue) == "string" and ue:find("unsafe", 1, true) ~= nil,
+    "an unsafe tag later in the list still fails the query")
 
   put(api, '[{"draft":false,"tag_name":"v../../evil"}]')
   local bad, be = update.resolve_unstable_version()

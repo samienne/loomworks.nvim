@@ -147,10 +147,7 @@ local function make_ws(config_overrides, user_overrides, cache_overrides, opts)
     local mock_core = {
         _deps = {
             merge = merge,
-            -- Never write the fake `/root` (C:\root on Windows): no real cache
-            -- save, no real lockfiles.
-            cache = setmetatable({ save = function() return true end }, { __index = cache_mod }),
-            locks = require("loomworks.op_lock").INERT,
+            cache = cache_mod,
             events = {
                 emit = function(event, ev_data)
                     events_log[#events_log + 1] = { event = event, data = ev_data }

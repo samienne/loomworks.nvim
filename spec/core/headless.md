@@ -185,25 +185,8 @@ mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
 editor and the CLI share this lock, so neither operates on a directory the other
 holds — in particular a reset (§16.30) cannot remove a directory the other is
 building, and a build cannot enter a directory a reset is removing. Acquisition
-is **fail-fast** (the loser reports the holder and declines rather than waiting).
-The lockfile holds the common lock record of §19.5 (holder process id, host,
-process start time, nonce, holder kind, operation — rewritten from `configure`
-to `build` as the holder moves between steps — and start time), and the holder
-heartbeats its mtime. A **dead** holder's lock (same host, no process with that
-id and start time) is reclaimed at once, and the interrupted step's state is
-recovered (§19.5 step 5); a lock on another host, or one whose record has no
-start time (an older version), is reclaimed after the heartbeat window as
-before. A same-host holder that is **alive but stale** is **hung** and is **not**
-reclaimed automatically (it could resume and write): the refusal names it with
-the recovery command, and `--break-locks` on the command recovers it (§19.5).
-`lw unlock <profile> | <build dir> | --all` removes a lock whose holder is gone
-(dead, or stale where it cannot be checked), recovering its state as on any
-reclaim, and refuses a live or hung holder's lock naming it (exit 1);
-`lw unlock --force …` removes the record whatever the holder's state, without
-stopping it, after warning that it may still be running and writing. A build
-directory argument is a path (it contains a separator), relative to the
-workspace root or absolute, and must lie under the root; only the lockfile
-`<dir>.loomworks-lock` itself, a regular file, is removed. The CLI also releases
+is **fail-fast** (the loser reports the holder and declines rather than waiting). A stale lock is reclaimed automatically after
+the heartbeat window; `lw unlock` clears one immediately. The CLI also releases
 its build locks on interrupt as well as on normal exit, so an interrupted
 (Ctrl-C'd) build does not leave a lock for the stale-reclaim window. An
 **interrupt** is any of: SIGINT (Ctrl-C), SIGTERM, SIGHUP (a terminal hangup)
@@ -264,7 +247,17 @@ install a global bundle. Answering help never fetches anything.
 option and points at `lw help <command>`, and nothing runs — a mistyped option
 never falls through to a build or a launch. The global options (non-interactive
 control, create intent, source selection, pin bypass) are known to every
-command. The check stops at `--`: what follows belongs to a program or native
+command, and are recognised before the command and among its own arguments,
+up to the first `--` — never after it. After a launch configuration's command
+(or `--from-target <target>`) when one is added, every token is the program's,
+verbatim, a global option or a `--` included; only a `--` before the command
+ends lw's options there. When a launch configuration's arguments are edited and
+on the set-value commands (a configuration parameter, a project variable's
+default, a profile fill, a setting), a global option before `--` is lw's own
+and `--` is the escape: every token after it is an argument or the value,
+verbatim. When a global option taken that way selects a development source that
+is not configured, the error adds a hint to put the token after `--`. A
+`--help` / `-h` is help only within the same bound. The check stops at `--`: what follows belongs to a program or native
 tool and is passed through untouched. It also stops where a command's grammar
 hands the rest of the line to someone else or takes a value that may itself
 start with `-`: the program arguments after a launch configuration's command
@@ -1983,9 +1976,7 @@ uses — reset introduces no private channel:
   reset removes nothing and exits non-zero, naming the holder — it can never
   rm a directory a build is using. Conversely, once reset holds the lock, the
   editor's build of that directory fails to acquire and declines, so neither
-  side deletes or writes a directory the other is operating on. Before the
-  build locks, reset takes the workspace operation lock (§19.3), so it never
-  interleaves with a publish, import, rename or another reset or nuke.
+  side deletes or writes a directory the other is operating on.
 - *Reload to unconfigured.* Reset's cache rewrite is an ordinary external change
   to the cache file; the editor's file reconciliation observes it and remerges,
   so the reset units surface as `unconfigured` without any manual reload. No

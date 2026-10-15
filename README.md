@@ -895,9 +895,7 @@ re-listed — gone twice in a row ends the run. `--timeout <s>` limits the
 program itself (exit 124). Ctrl-C stops the program on the device too.
 
 **Sharing a device.** One run at a time per device on this machine: a second
-run waits (printing who holds it); `--no-wait` fails instead. A holder that
-hangs is reported instead of waited for (`--break-locks` stops it, see
-[Stuck locks](#stuck-locks)). `lw unlock
+run waits (printing who holds it); `--no-wait` fails instead. `lw unlock
 --device <serial>` clears a stuck lock; `LOOMWORKS_DEVICE_LOCK_DIR` moves the
 lock directory (e.g. to one shared by several users of a lab machine). If a run
 was killed so hard it could not clean up (e.g. `taskkill /F`), its program may
@@ -1723,7 +1721,7 @@ outside a workspace.
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset` \| `describe`. `describe <profile> [text/flags]` prints or sets the profile's [description](#descriptions) (the profile is required, never defaulted). `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `select <profile>` sets the active profile without a terminal (scriptable), `select --none` clears it; bare `select` is an interactive picker. `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchain installations: `types` \| `detect` \| `list` \| `add` \| `remove`. `add <type> <path>` declares an installation detection can't find; `add <type>` (no path) declares the one the provider detects — several → a picker, or under `--no-input` an error listing each as the explicit command. `detect [<type>]` lists what each provider finds on this host (read-only, no workspace needed) |
-| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. `--break-locks[=now]` recovers a [stuck lock](#stuck-locks) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)`; `-v`/`--verbose` also prints each step's full command line and directory (for an MSVC kit, the cmake command run inside vcvarsall). Every configure/build command line is written to `.nvim/loomworks.log` (shared by the editor and every `lw` invocation: appended to, never truncated; rotated to `loomworks.log.1` past 1 MB, one old file kept) |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)`; `-v`/`--verbose` also prints each step's full command line and directory (for an MSVC kit, the cmake command run inside vcvarsall). Every configure/build command line is written to `.nvim/loomworks.log` (shared by the editor and every `lw` invocation: appended to, never truncated; rotated to `loomworks.log.1` past 1 MB, one old file kept) |
 | `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`), with the compile databases loomworks generated from them under `.nvim/cache/`, and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
@@ -1734,7 +1732,7 @@ outside a workspace.
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
 | `lw launch <sub>` | `list` \| `add` \| `set` \| `show` \| `remove` \| `rename` \| `describe` launch configurations (`--cwd` and `--working-dir` are aliases on `add`/`set`, as on `lw run` / `lw target set`). `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` takes `--description <para>`; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
-| `lw unlock <profile> \| <build dir> \| --workspace \| --journal \| --all [--force] \| --device <serial>` | `--journal` discards a commit journal that cannot be completed. Clear a build-directory lock (or, `--workspace`, the workspace operation lock) whose holder is gone (killed, crashed); a running or hung holder's lock is refused unless `--force`, which removes the record WITHOUT stopping the holder (it may still be writing). `--all` covers every build directory and the operation lock. `--device <serial>` clears a device lock. See [Stuck locks](#stuck-locks) |
+| `lw unlock <profile> \| --all \| --device <serial>` | Clear a stale build-directory lock, or a device lock |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw export [--published] [--no-profiles] [-o <file>]` | Print the whole configuration as a `loomworks.json` (local items too) without writing anything; `--published` = exactly what `lw publish` would write |
 | `lw import <file>\|- [--dry-run] [-y] [--take-name]` | Replace the working configuration with an export (from another machine), after a review; keeps machine-local settings and the workspace name (`--take-name` adopts the export's), backs up the old working copy |
@@ -1744,8 +1742,7 @@ outside a workspace.
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw health [<area>...] [--all]` | List the workspace's advisory items in full (never fails) — only what this workspace uses; `--all` for everything, areas (`lw`, `workspace`, `toolchains`, `cache`, `sdks`, `editor`, `launcher`, `submodules`) to narrow it (see [Scope and areas](#scope-and-areas)). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, required items first, the unused ones only with `--all`; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <sub>` | `list` \| `get` \| `set` \| `unset`: get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, `runtime-mode`, `daemon-idle-timeout`, …) |
-| `lw daemon [status] \| stop [--force] \| kill \| restart [--force] \| run` | **Experimental, opt-in.** The workspace daemon (one long-lived `lw` per workspace, spec §19): `status` shows the runtime mode (`runtime-mode` setting: `in-process` (default) \| `daemon`; `LOOMWORKS_RUNTIME` wins) and the daemon (never starts one; `lw status` shows the same on its `Runtime` row); `stop` asks it to exit and never kills (`--force` kills a daemon that does not stop within ~5 s, `kill` without asking); `restart` = stop + start; `run` serves in the foreground. Never touches a daemon on another host In `runtime-mode daemon` every workspace command keeps it running (starting it in the background when absent; `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true` never start one — Jenkins and Azure Pipelines do not set `CI`: set `LOOMWORKS_NO_DAEMON=1` there; `trust`, `nuke`, `unlock` and the commands that need no workspace never start one either; the daemon keeps the environment of the command that started it); it exits after `daemon-idle-timeout` (default 1h) without clients, or when the workspace is removed; nothing is routed through it yet |
+| `lw settings <sub>` | `list` \| `get` \| `set` \| `unset`: get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, …) |
 | `lw release-notes [<version> \| --since <v> \| --all \| -n <N>] [--json]` | What changed in each release, offline, from the notes the running release carries (see "Release notes" under [Standalone `lw` runner](#standalone-lw-runner)) |
 | `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
@@ -1849,46 +1846,6 @@ A new `<branch>` is created (from `<start-point>`, else main's `HEAD`); an
 existing one is checked out. It requires git and is non-destructive: it never
 overwrites, and if the auto-pull fails after the worktree is created the worktree
 is kept (run `lw pull` inside it by hand) and the exit is non-zero.
-
-### Stuck locks
-
-`lw build`, `clean`, `reset`, `run` and `test` lock each build directory they
-use (and a device for a remote run), so the editor and other `lw` processes
-never work in the same directory at once. Operations that change several
-workspace files at once (publish, import, pull, renames, profile removal,
-reset, nuke, `trust --discard`, and the editor's delete / reset / nuke) also
-take one workspace operation lock, so two of them never interleave; a second
-one fails at once with `workspace busy: publish (pid 4242 on HOST, 3s) — retry
-when it finishes`. `lw nuke` takes the lock of every build directory it
-removes, so it refuses while a build runs instead of deleting under it. A lock
-names its holder: process id, host and process start time.
-
-- **A holder that crashed or was killed** is noticed at once: the next command
-  takes over its lock and says what was interrupted. A configure that was
-  killed leaves its configuration `unconfigured` (it reconfigures); a build
-  step that was killed leaves it configured (the build tool decides what to
-  rebuild).
-- **A holder that hangs** (alive, no heartbeat for ~20 s) is not taken over —
-  it could wake up and keep writing. The command stops and prints the fix:
-  `lw: build/debug is locked by a hung lw build (pid 4242, no heartbeat for 2m) — recover with: lw build --break-locks`.
-- **`--break-locks`** (on every command that takes these locks: build, clean,
-  reset, run, test, nuke, publish, import, pull, migrate, `trust`, the
-  `rename` and `publish` sub-commands of project / config / configset, profile
-  `publish` and `remove`, device clean) stops
-  the holder: it asks it to stop (POSIX), waits about 5 s, then kills its
-  process tree, recovers the state as above, and runs. `--break-locks=now`
-  skips the wait. It also works under `--no-input` (CI). It never touches a
-  process on another host (shared drive) or an editor, and never a holder whose
-  start time it cannot check (an older loomworks): for those,
-  `lw unlock --force <build dir>` removes the lock record without stopping
-  anything. Every kill and forced unlock is printed and written to
-  `.nvim/loomworks.log`.
-- **A multi-file change that was interrupted** (a publish or rename killed
-  half-way) is completed by the next command that touches the workspace,
-  which says so: `completed an interrupted publish (pid 4242 crashed) - ...`.
-  If it cannot be completed safely (a file was changed since by something
-  that ignores the commit journal), the workspace is refused until you run
-  `lw unlock --journal` (the files then stay as they are).
 
 ### Installing modules
 

@@ -31,11 +31,8 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 
 ### 19.1 Runtime modes
 
-*Status: master for the transition values — the host setting `runtime-mode`
-(`in-process` | `daemon`), `LOOMWORKS_RUNTIME`, the editor option
-`runtime.mode` (informational until §19.19 step 4) — and the selection of
-attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
-(`daemon/runtime.lua`); the end-state values future.*
+*Status: future (the `runtime-mode` setting and `LOOMWORKS_RUNTIME` exist on
+#88 with values `in-process|daemon|auto`; re-cut).*
 
 A command runs its operation in one of two ways:
 
@@ -69,10 +66,9 @@ of `no-daemon`.
 
 ### 19.2 One runtime per workspace: the runtime lock
 
-*Status: master for daemons (`daemon/rlock.lua`, the §19.5 record plus
-`mode`, `command`, `host_version`; held by `daemon/server.lua` for its
-lifetime, a held lock makes `lw daemon run` exit with status 3, a replaced
-record makes the daemon exit 1); attached runs future.*
+*Status: #88 (`daemon/lock.lua`, `.nvim/loomworks.daemon.lock`, held by the
+daemon for its lifetime); re-cut (attached runs, holder record, lost-lock
+exit).*
 
 The **runtime lock** `<root>/.nvim/loomworks.daemon.lock` designates the one
 runtime of a workspace. It uses the build-directory lock primitive (§16.6): an
@@ -109,11 +105,10 @@ exception after the transition is a **version-bypass run** (§19.9).
 
 ### 19.3 Operation locks
 
-*Status: master — build-directory locks (§16.6), device locks (§18.7),
-per-file save locks (§2.7) and the workspace operation lock, all with the
-§19.5 record; the lock order R → O → B → D → F (R does not exist yet, §19.2);
-`lw nuke` and the editor's deletions taking build locks. This is step 1 of
-§19.19 and comes before any lifetime work.*
+*Status: master for build-directory locks (§16.6), device locks (§18.7) and
+per-file save locks (§2.7); future for the workspace operation lock, the lock
+order, and `lw nuke` taking build locks. This is step 1 of §19.19 and comes
+before any lifetime work.*
 
 Every **mutating operation**, on any path (in-process, attached, daemon),
 acquires **all** the locks it needs **before its first side effect**, in the
@@ -146,8 +141,7 @@ that needs a lock it did not take up front (for example a remote run that
 discovers it must rebuild) first releases every lock of a later class.
 
 The **workspace operation lock** O is the O_EXCL + heartbeat primitive with the
-common lock record of §19.5 (`{ pid, host, start_time, lock_nonce, kind,
-operation, started_at }`). It is taken by every
+record `{ pid, host, operation, started_at, nonce }`. It is taken by every
 operation that writes more than one of the three workspace files, or that
 removes a workspace file or a build tree as part of a larger change:
 
@@ -175,51 +169,13 @@ lw: cannot nuke: a build is running in build/debug (pid 4242) — wait for it, o
 ```
 
 The CLI exits 1 (the build-directory lock's existing exit codes are
-unchanged); the editor shows an error notification. `lw unlock --workspace`
-(and `lw unlock --all`, §16.6) also clears an O lock whose holder is gone, and
-`--force` one whose holder runs; dead and hung holders of every class are
-handled by §19.5 (`--break-locks`, accepted by every command above).
-
-O is re-entrant within one process: an operation that holds it (the CLI's
-`lw reset`, which takes O and then every build lock before the workspace's
-deletion runs) may call another operation that takes it; the lockfile goes
-with the outermost holder. Likewise a deletion skips the build locks its own
-process already holds.
-
-**Which build locks nuke and deletions take.** A deletion (profile delete or
-reset, orphan delete, `lw reset`) takes the build lock of every build
-directory its plan removes, after O, as a counted reference within its
-process: an editor task on the same directory that the deletion cancels
-releases only its own reference, so the lock stays until the removal ends.
-`lw nuke` removes the whole `.nvim/build/`; it takes the lock of every
-directory under it that has a lockfile (`<dir>.loomworks-lock`, found by a
-depth-bounded, link-free scan — a lockfile marks a directory some process uses
-or used) and of every build directory of the loaded workspace there. Holding
-them, it removes the build and health caches first (so nothing claims a
-configured or built tree from then on), then renames `.nvim/build` to
-`.nvim/build.nuke-<hex>` in one step and removes that tree, keeping its event
-loop running so O keeps heartbeating. A build that starts once the locks are
-gone creates a fresh `.nvim/build`, never a directory inside the tree being
-removed. A tree left aside by a nuke that crashed (a real directory directly
-in `.nvim/` named exactly `build.nuke-<hex>`) is removed by the next nuke.
-Where the rename is impossible (a file in the tree held open on Windows), nuke
-refuses after removing the caches, leaving the tree: removing it in place
-would let a build that starts once the locks go write into a tree being
-deleted. The editor's nuke first stops its own tasks and unloads its
-workspace (which then writes nothing), so its own build neither keeps writing
-into the tree nor recreates the cache; the operation lock is held until the
-removal has really ended.
-
-A build lock that a task of the same process already holds is taken by a
-deletion as a counted reference, not acquired again, so the editor's deletion
-— which takes O while its own task may hold the directory's build lock — never
-waits on itself and cannot deadlock (every cross-process acquisition is
-fail-fast). `Workspace:teardown` lets an in-flight deletion finish (bounded)
-before it releases that deletion's locks.
+unchanged); the editor shows an error notification. `lw unlock` (§16.6) also
+clears a stale O lock; dead and hung holders of every class are handled by
+§19.5 (`--break-locks`).
 
 ### 19.4 Crash-consistent multi-file commits
 
-*Status: master (step 1 of §19.19).*
+*Status: future (step 1 of §19.19).*
 
 A multi-file operation commits its file changes with a **journal**, so that a
 crash at any point leaves either the old state, the new state, or a marked
@@ -266,38 +222,13 @@ lw: completed an interrupted publish (pid 4242 crashed) — .nvim/loomworks.user
 An entry whose target matches neither hash (another writer that ignores
 journals changed it) or whose staged file is missing is left untouched; the
 workspace is then **refused** (as a §15 invariant 11 refusal) with the journal
-named and the remedy to discard it (`lw unlock --journal`). Nuke is not a
-remedy: it acquires O, which completes or refuses the journal first, and it
-resets only build state — the journal also covers `loomworks.json` and the
-working copy.
+named and the remedies to discard it (`lw unlock --journal`) or reset.
 
 **Validation.** A journal is data from disk: it is honoured only when every
 entry names one of the three workspace files in `.nvim/` and the staged files
 match `<file>.txn-<hex id>` beside them; anything else refuses the workspace
 as above. Rolling forward never bypasses trust — the renamed files are verified
 on load as any file is (§17.4).
-
-**Implementation notes (master).** The operations that hold O commit through a
-transaction: every write of one of the three files during it is staged (and
-reads of a staged file in that process see the staged bytes), and the
-transaction commits when the operation returns. The F locks of all three
-files are held from the transaction's start to its end (they are held for
-milliseconds: the operations are synchronous). A commit that touched one file
-needs no journal — the rename is the commit point. Before the commit point the
-holder checks that the O lockfile still carries its own record (fencing): a
-holder whose O was reclaimed while it was suspended, or removed with
-`lw unlock --force`, has lost authority — its staged files are removed and
-nothing is written. An operation that reports failure commits none of its
-staged writes, and a deletion whose working-copy / cache commit fails removes
-no build tree. An ordinary save's
-`.bak` copy is kept: step 4 renames the target to `<file>.bak` before renaming
-the staged file over it, so a crash between the two leaves the target absent,
-which recovery completes like a target with the old content. Recovery runs
-when a process loads the workspace (the editor and every `lw` command) and
-whenever a process acquires O; stray staged files (`<file>.txn-<hex>`, regular
-files beside the three targets, and the journal's `.tmp`) are removed only by
-an O holder. `lw unlock --journal` takes O without completing the journal and
-removes exactly the journal and those stray files.
 
 **Build trees.** Removing build directories (nuke, reset, deletion) is not
 journalled; it keeps the existing crash rule — cache entries are marked
@@ -311,13 +242,9 @@ commit. This is the same class of residual race as §2.7 "Remaining race".
 
 ### 19.5 Recovery from dead and hung holders
 
-*Status: master for build-directory, device and file-save locks (B, D, F): the
-record, the classification, the state recovery, `--break-locks` and
-`lw unlock --force`; the operation lock O (step 1 of §19.19); the runtime
-lock R (`lw daemon stop --force` / `kill`, `daemon/command.lua`; in `daemon`
-mode a workspace command given `--break-locks` recovers a hung daemon the same
-way before relaunching it). Kills and forced unlocks are recorded in the
-runtime log (§19.10).*
+*Status: future, except the stale-heartbeat reclaim of build-directory and
+device locks (§16.6, §18.7) and `lw unlock` (master). Lands with step 1 of
+§19.19 for the operation locks and with step 2 for the runtime.*
 
 A crashed or killed process must never leave a workspace stuck, and a hung one
 must be recoverable with one command. These rules apply uniformly to every lock
@@ -327,13 +254,7 @@ of §19.3 (R, O, B, D, F) and to the handle file and socket (§19.6–§19.7).
 holder's **process start time** (as reported by the operating system; it
 distinguishes a reused process id), a random nonce, the holder kind (`lw`,
 `daemon`, or `editor`), the operation, and a start timestamp; its modification
-time is the heartbeat. As JSON: `{ pid, host, start_time, lock_nonce, kind,
-operation, started_at }`, plus `action` (a copy of `operation` that older
-versions read) and the class's own fields. The nonce is `lock_nonce`, not
-`nonce`: device-lock records already use `nonce` for their running program
-(§18.7). `start_time` is opaque and carries its method (`win:`, `linux:`,
-`mac:`); a value written by a method the reader cannot use is judged by
-heartbeat alone. A holder that holds a build-directory lock across
+time is the heartbeat. A holder that holds a build-directory lock across
 several steps rewrites the record's operation when it moves from configure to
 build, so recovery knows which step was interrupted. A record without a start time (written by an older
 version) is judged by heartbeat alone.
@@ -371,21 +292,8 @@ let go within the wait:
    works across versions); a non-daemon `lw` holder is sent the interrupt it
    handles (§16.6) where the platform allows signalling it. Wait a bounded time
    (about 5 s). `--break-locks=now` skips this step.
-2. **Kill** — only once the process the record names is verified to be such
-   a holder: its command line (Windows: the process's command line; Linux:
-   `/proc/<pid>/cmdline`; macOS: `KERN_PROCARGS2`) is an `lw` host — the `lw`
-   binary, a release host under its download name (`lw-linux-x86_64`, …) or a
-   pinned copy `lw-<version>-<asset>` (§16.24); `luvi` running the loomworks
-   app (a source directory named `lua` or `lua-<version>`, which when given as
-   an absolute path must hold `loomworks/cli.lua` — a `luvi` running any other
-   app is not an `lw` host); or the nvim-hosted
-   `nvim … -l …/loomworks/cli.lua` — and, for a daemon holder,
-   `lw … daemon run` (for this workspace when it names one with `--root`).
-   A record is data from a shared directory: one naming an unrelated process
-   of the user is refused (the process is never signalled), as is a holder
-   whose command line cannot be read; the remedy is to remove the record
-   without stopping anything. Then kill the holder's process tree — the
-   daemon's process group, or the holder and its enumerated descendants (on Windows a forced tree
+2. **Kill** the holder's process tree — the daemon's process group, or the
+   holder and its enumerated descendants (on Windows a forced tree
    termination).
 3. **Verify** that no process with the holder's id and start time remains;
    otherwise fail and name the process.
@@ -437,20 +345,6 @@ dangerous things.
   on that host are judged by heartbeat alone (a dead holder is then reclaimed
   only after the heartbeat window, and a hung one is indistinguishable from a
   dead one).
-- A process tree is enumerated by parent process id. On Windows that reaches
-  native children only: a grandchild started through an MSYS/Cygwin shell
-  (for example `sleep` under Git's `sh`) has no Windows parent link to the
-  holder and survives the kill.
-- A holder is identified by host name, process id and start time. Processes
-  in different PID namespaces that report the same host name (containers
-  sharing a hostname, or sharing a checkout over a bind mount) are not told
-  apart: a holder in another namespace looks dead (its id is unknown here) or,
-  if the id is taken, like a different process — its lock is reclaimed. Give
-  such containers distinct host names, or do not share one checkout between
-  them.
-- `--break-locks` never signals the calling process or any of its ancestors;
-  descendants are signalled only while they are still the process seen in the
-  snapshot (same id and start time).
 
 **Required tests.**
 
@@ -473,15 +367,11 @@ dangerous things.
 
 ### 19.6 Discovery: the handle file and the Runtime row
 
-*Status: master — the handle (`daemon/handle.lua`, written and heartbeated
-by `daemon/server.lua`), the Runtime row and `lw daemon status`.*
+*Status: #88 (`daemon/handle.lua`); re-cut (fields).*
 
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
-endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
-schemas = { user, cache }, session_generation, started_at, clients, busy,
-idle_since, lock_nonce }` (`start_time` is the daemon's process start time of
-§19.5, `lock_nonce` its runtime-lock record's nonce). A development build's
-`lw_version` is its source fingerprint (§19.9). It
+endpoint: `{ pid, host, os, endpoint, protocol, lw_version, schemas = { user,
+cache }, session_generation, started_at, clients, busy, idle_since }`. It
 refreshes the file's modification time on its heartbeat and rewrites it when
 `clients`/`busy` change. Liveness is judged by the heartbeat, never by probing
 the pid (§16.6). The handle is **discovery only**: the runtime lock (§19.2)
@@ -500,18 +390,12 @@ Runtime   attached: lw build (pid 4242)
 Runtime   no daemon (starts on the next command)
 Runtime   in-process
 Runtime   stale daemon handle (pid 4242, 3h ago) — lw daemon stop clears it
-Runtime   daemon pid 4242 is not responding (no heartbeat for 2m) — lw daemon stop --force
-Runtime   daemon pid 4242 (starting)
-Runtime   unreadable daemon handle — lw daemon stop clears it
 ```
-
-`no daemon (starts on the next command)` is shown in `daemon` mode,
-`in-process` in `in-process` mode, when neither the runtime lock nor a handle
-exists.
 
 ### 19.7 Endpoint and access control
 
-*Status: master (`daemon/endpoint.lua`; the DACL through LuaJIT FFI).*
+*Status: #88 for the POSIX socket directory and a default-security named pipe;
+future for the Windows DACL.*
 
 The endpoint is a trust boundary — a peer that can issue commands can run
 builds, i.e. execute code as the owner — so it is restricted by the operating
@@ -530,25 +414,11 @@ system **and** gated by authentication (§19.8).
   `SYSTEM` only and an explicit deny for the `NETWORK` SID. A daemon that cannot
   apply the DACL does not serve and exits with an error.
 
-Clients read the address from the handle, and use it only when it is an
-address a daemon of this workspace binds — on Windows exactly the pipe name
-above; on POSIX one of the per-user socket paths of the client's own
-environment, or — since the daemon binds the first path of the environment
-that launched it, which a client from ssh, cron, `sudo -u` or a container may
-not share — any `<dir>/<root hash>.sock` named for this workspace where `dir`
-is a real directory (not a link) owned by the caller with mode `0700` and the
-file is a socket owned by the caller, whatever the current environment. A
-socket is removed only under the same conditions. Any other address (a
-remote `\\host\pipe\…`, another user's socket) marks the handle as
-untrusted: nothing is connected to, and the command says so. The handle sits
-in a `.nvim/` other local users may be able to write; connecting to a remote
-pipe would hand the user's credentials to that host.
+Clients never compute the address; they read it from the handle.
 
 ### 19.8 Wire protocol and authentication
 
-*Status: master for framing, authentication and the frozen control subset
-(`daemon/protocol.lua`, `daemon/auth.lua`, `daemon/server.lua`,
-`daemon/client.lua`; protocol version 2); broadcasts #88.*
+*Status: framing, request/reply and broadcasts #88; authentication future.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
 and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
@@ -583,11 +453,7 @@ other.
 
 ### 19.9 Version handshake
 
-*Status: master (`daemon/version.lua`, `daemon/ensure.lua`), applied by every
-workspace command in `daemon` mode. During the transition a version-bypass
-run is the in-process path, and a daemon with newer schemas is reported in
-one line and not used — the command itself still runs in-process, where the
-file-level checks of §2.7 apply.*
+*Status: future (#88 negotiates a protocol range; re-cut).*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -618,16 +484,8 @@ it; the client refuses with the update message of §2.7 "Reading a newer file".
 
 ### 19.10 Launch
 
-*Status: master (`daemon/launch.lua`, `daemon/ensure.lua`,
-`daemon/rlog.lua`). In `daemon` mode the workspace commands launch — the
-commands that need no workspace (`status`, `health`, `pull`, `worktree`,
-`settings`, `help`, `daemon …`) and the recovery commands (`trust`, `nuke`,
-`unlock`) never do; the `Runtime` row says the daemon "starts on the next
-command". The ensure step of a command waits about a second per step at most
-(connect + handshake, `ping`), and for a daemon still starting at most about
-a second, once, before running without it. A `lw daemon run` that finds the runtime lock
-held exits with status 3, which the launching client reads as "another daemon
-won".*
+*Status: #88 has a minimal launch (`cli._spawn_daemon_if_possible`); re-cut to
+the recipe below.*
 
 A client that finds no live daemon (no handle, a stale handle, or a lock whose
 holder is gone) launches `<own executable> daemon run --root <root>`:
@@ -656,10 +514,8 @@ exit, all clients connect to the winner.
 
 ### 19.11 Lifetime
 
-*Status: master (`daemon/server.lua`, `daemon/command.lua`). A `lw` command
-connects for a moment (handshake, `ping`) and leaves; the keepalive rule
-applies to every authenticated connection. A `retire`d daemon exits when its
-last authenticated client disconnects (there are no tasks in step 2).*
+*Status: #88 for idle exit (10 min) and `lw daemon status|stop`; future for the
+rest.*
 
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a
