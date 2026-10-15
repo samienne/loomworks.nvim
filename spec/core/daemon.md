@@ -4084,8 +4084,8 @@ runtime is deferred until that module is actively developed.
        C2 — editor side: runs through `run_cases` (owned
        overseer rows, cancel, live status from `results`), debug through
        `prepare_debug` → the debug seam → `collect`, `ensure_built` unused in
-       `daemon` mode, the reach-in counts lowered, a real-daemon end-to-end
-       check *(done once merged)*; D *(optional, later)* — last results persisted across daemon
+       `daemon` mode, the test output and error locations from `result`, a
+       real-daemon end-to-end check *(done once merged)*; D *(optional, later)* — last results persisted across daemon
        restarts, and a daemon-mode neotest (positions and results from the
        view, runs through a CLI relay such as `lw test --select <id>…`,
        designed with `lw test --list`).
