@@ -247,6 +247,39 @@ end
 -- Actions
 -- ---------------------------------------------------------------------------
 
+--- The adapters' header status (LOOMTEST.md §3, §4.2): the first adapter
+--- reporting one, as `{ text, level, blocked }`, or nil.
+--- @return loomtest.AdapterStatus|nil
+function M.status()
+    for _, adapter in ipairs(_adapters) do
+        if adapter.status then
+            local ok, st = pcall(adapter.status)
+            if ok and type(st) == "table" and type(st.text) == "string" then return st end
+        end
+    end
+    return nil
+end
+
+--- The text a `blocked` adapter status refuses actions with (§4.2), or nil.
+--- @return string|nil text, string|nil level
+function M.blocked()
+    local st = M.status()
+    if st and st.blocked then return st.text, st.level end
+    return nil, nil
+end
+
+local LEVELS = { info = vim.log.levels.INFO, warn = vim.log.levels.WARN, error = vim.log.levels.ERROR }
+
+--- While an adapter's status is `blocked` (§4.2), say so as one
+--- notification line and return true: run, debug and refresh do nothing.
+--- @return boolean refused
+local function refused()
+    local text, level = M.blocked()
+    if not text then return false end
+    vim.notify(text, LEVELS[level] or vim.log.levels.WARN)
+    return true
+end
+
 --- Discover tests from all adapters.
 --- @param callback? fun() called when discovery completes
 function M.discover(callback)
@@ -282,6 +315,7 @@ end
 --- Refresh: invalidate all adapters and re-discover.
 --- Resets all state including run timestamps.
 function M.refresh()
+    if refused() then return end
     for _, adapter in ipairs(_adapters) do
         adapter.invalidate()
     end
@@ -307,6 +341,7 @@ end
 --- @param opts? table { skip_build?: boolean }
 function M.run(test_id, node_type, opts)
     opts = opts or {}
+    if refused() then return end
     local adapter = M.find_adapter(test_id)
     if not adapter then return end
 
@@ -368,6 +403,7 @@ end
 --- @param opts? table
 function M.debug(test_id, node_type, opts)
     opts = opts or {}
+    if refused() then return end
     local adapter = M.find_adapter(test_id)
     if not adapter then return end
 
@@ -412,6 +448,7 @@ end
 --- Run all tests.
 --- @param opts? table { skip_build?: boolean }
 function M.run_all(opts)
+    if refused() then return end
     local adapter = _adapters[1]
     if not adapter then return end
 
@@ -474,6 +511,7 @@ end
 
 --- Debug all tests in the current file.
 function M.debug_file()
+    if refused() then return end
     local bufnr = vim.api.nvim_get_current_buf()
     local buf_path = vim.api.nvim_buf_get_name(bufnr)
     if buf_path == "" then return end
@@ -503,6 +541,7 @@ end
 
 --- Run all tests in the current file.
 function M.run_file()
+    if refused() then return end
     local bufnr = vim.api.nvim_get_current_buf()
     local buf_path = vim.api.nvim_buf_get_name(bufnr)
     if buf_path == "" then return end

@@ -209,8 +209,11 @@ return {
     -- 12 -> 14: step 5l part C adds two CALLS, each naming its method
     -- literally: conn:call(M.LSP.object, M.LSP.iface, ...) for get /
     -- set_option — the versioned table LspConfig/1.
+    -- 14 -> 15: step 5m C1 adds one CALL naming its method literally:
+    -- conn:call(M.TESTS.object, M.TESTS.iface, ...) for discover — the
+    -- versioned table Tests/1 (the tests view's `get` goes through M.VIEWS).
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 14,
+        ["lua/loomworks/daemon/observer.lua"] = 15,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

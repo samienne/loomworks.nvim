@@ -19,7 +19,12 @@
 
 local M = {}
 
---- @alias loomworks.ViewName "header"|"projects"
+--- @alias loomworks.ViewName "header"|"projects"|"tests"
+
+--- `tests` (`loomworks.view.Tests/1`, step 5m C1) is held here only as the
+--- daemon's table: it has no in-process builder (in `in-process` mode the
+--- test adapters read loomworks.test_source's in-process form, and in
+--- `daemon` mode it is never built from the model, §19.13).
 
 --- Per view: the daemon's table and the observer that holds it.
 --- @type table<string, { owner: table, state: table }>

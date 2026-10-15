@@ -1762,7 +1762,7 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   refuse a run or debug launch, and `lw.launch_target` / `debug_target`
   offer no target picker then. The in-process source remains only for `runtime.mode =
   "in-process"`, removed with the in-process editor (step 6b).
-- *(Step 5m, part A implemented, the rest planned; spec §19.13 "The tests
+- *(Step 5m, parts A, B1, B2 and C1 implemented, C2 planned; spec §19.13 "The tests
   view", §19.15 "Tests", §19.16 "Tests", §19.20 `Tests/1`, LOOMTEST.md §3,
   §13.1.)* *(A, as built:)* `test_state.state(ws, opts)` takes the hooks the
   daemon fills — `id` (profile / unit ids), `node_id(unit, local_key)` (the
@@ -1843,6 +1843,24 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   Tests/1 tasks, and the `prepare_debug` tokens (dropped with their results
   file on collect, connection close and daemon stop). `Registry:emit` takes an args builder
   `(sub, seq)` so `results.seq` is the frame's own per-connection `seq`.
+  *(C1, as built:)* the observer declares `VIEW_TESTS` (`/views`
+  `loomworks.view.Tests/1`, subscribed, into the view store as `tests` — no
+  in-process builder) and `TESTS` (`/tests` `loomworks.Tests/1`, call-only,
+  `discover` so far), both on the Runtime line as feature `tests` (`label`),
+  a missing one noted `tests unavailable`, never run in-process;
+  `Observer:tests_status()` is where the tests stand (blocked while no
+  binary, disconnected, waiting, unloaded, `error`/`refused`, an interface
+  missing; `discovering…` otherwise). `editor_ops.discover_tests` sends the
+  owned `discover` (no fallback). `test_source` gains its daemon form
+  (`mode`, `daemon_view`, `daemon_status`, `daemon_discover`) and refuses
+  its in-process discovery entry points in `daemon` mode. loomtest gains
+  the adapter `status` capability (header text, `blocked` refuses run,
+  debug and refresh). The loomworks adapter registers its daemon form in
+  `daemon` mode: nodes from the view (unit placeholders per state),
+  discovery on a stale first ask / open explorer / forced refresh, and a
+  re-render on `daemon_view_changed` / `daemon_runtime_changed`; its
+  `start` refuses until C2. The neotest adapter finds no root in `daemon`
+  mode and says so once.
 
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
@@ -3468,7 +3486,7 @@ loomworks.nvim/
 │   │   ├── lsp_config.lua             LSP configuration state builder (memo, db_state, db_rev, options, readiness)
 │   │   ├── lsp_source.lua             Where the LSP layer reads that state (the daemon's or in-process)
 │   │   ├── test_state.lua             Tests view state builder (`view.Tests/1`: unit states, explicit suites, unit-scoped ids)
-│   │   ├── test_source.lua            Where the loomtest / neotest adapters read tests (in-process today)
+│   │   ├── test_source.lua            Where the loomtest / neotest adapters read tests (the daemon's view or in-process)
 │   │   ├── integrations/
 │   │   │   ├── lsp/
 │   │   │   │   ├── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)

@@ -43,7 +43,7 @@
 local M = {}
 
 local VERB = { build = "build", configure = "configure", clean = "clean",
-    prepare_run = "launch", prepare_debug = "debug launch" }
+    prepare_run = "launch", prepare_debug = "debug launch", discover = "test discovery" }
 
 --- The calls whose task-runner restart is not sent again (§19.16 "Tasks in
 --- the task runner", step 5k C2): a launch's preparation ends in a program
@@ -335,6 +335,45 @@ function M.prepare(mode, target, k)
         send()
     end
     return true, p
+end
+
+--- The discovery of the active profile's tests through the daemon (step 5m
+--- C1, §19.16 "Tests" Discovery): one `Tests/1.discover` the editor owns
+--- (one overseer row, cancellable), carrying its environment. False when it
+--- cannot be carried now — the caller shows the tests' status; there is
+--- **no** in-process fallback, so a `declined`, a degraded method, a refusal
+--- and a failure all end through `k.reject` with one notification line. The
+--- tree itself arrives as the view's `update` (it precedes `done`).
+--- @param ws loomworks.Workspace|nil
+--- @param opts? { force?: boolean }
+--- @param k { resolve: fun(done: table), reject: fun(err: any) }
+--- @return boolean routed
+function M.discover_tests(ws, opts, k)
+    local obs = M.carrier("discover", ws)
+    if not obs then return false end
+    local args = {}
+    if opts and opts.force then args.force = true end
+    obs:start_owned("discover", args, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then return end
+            local why
+            if r.outcome == "refused" then
+                why = tostring(r.message)
+            elseif r.outcome == "declined" then
+                why = "the workspace daemon declined the test discovery (" .. tostring(r.reason) .. ")"
+            else
+                why = "the test discovery failed: " .. tostring(r.reason)
+            end
+            vim.notify("loomworks: " .. why, vim.log.levels.WARN)
+            k.reject(why)
+        end,
+        on_done = function(task, reason, done)
+            local err = failure(VERB.discover, task, reason)
+            if err then return k.reject(err) end
+            k.resolve(type(done) == "table" and done or {})
+        end,
+    })
+    return true
 end
 
 --- A module clean through the daemon (Profile:clean / ConfigUnit:clean, via
