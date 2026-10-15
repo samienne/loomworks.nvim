@@ -384,6 +384,21 @@ describe("test_run helpers", function()
         assert.equals("exit status 1", test_run.failed_reasons({ "exit status 1" }, nil))
     end)
 
+    it("failed_names lists the failing tests in order, at most cap, then 'and K more'", function()
+        local function ids(n)
+            local r = {}
+            for i = 1, n do r[i] = { status = "failed", test_id = "test:S.t" .. i } end
+            return test_run.count(r)
+        end
+        assert.equals("", test_run.failed_names(ids(0), 10))
+        assert.equals("", test_run.failed_names(nil, 10))
+        assert.equals("S.t1", test_run.failed_names(ids(1), 10))
+        assert.equals("S.t1, S.t2, S.t3, S.t4, S.t5, S.t6, S.t7, S.t8, S.t9, S.t10",
+            test_run.failed_names(ids(10), 10))
+        assert.equals("S.t1, S.t2, S.t3, S.t4, S.t5, S.t6, S.t7, S.t8, S.t9, S.t10, and 2 more",
+            test_run.failed_names(ids(12), 10))
+    end)
+
     it("judge covers every failure source", function()
         assert.is_false((test_run.judge({ status = 0, results = { { status = "passed" } } })))
         assert.is_true((test_run.judge({ status = 0, results = { { status = "errored" } } })))

@@ -2819,8 +2819,9 @@ function M._run_test_executable(ws, lt, opts, deps)
   local exit_only = opts.saved and not results_requested and true or false
   local c = test_run.count(results)
   if failed then
+    local names = test_run.failed_names(c, test_run.FAILED_NAMES_CAP)
     out(string.format("%s: FAILED (%s)%s", label, test_run.failed_reasons(reasons, c),
-      #c.failed_ids > 0 and (": " .. table.concat(c.failed_ids, ", ")) or ""))
+      names ~= "" and (": " .. names) or ""))
   elseif exit_only then
     out(label .. ": passed (exit status 0; no per-case results)")
   else
@@ -3408,9 +3409,11 @@ function M._test_plan(ws, profile, opts, deps)
           extra = extra, dev = opts.dev, junit_path = junit_for(st.label), no_build = no_build,
         }, deps)
         if failed then n_failed = n_failed + 1 end
+        local test_run = require("loomworks.remote.test_run")
+        local names = failed and test_run.failed_names(c, test_run.FAILED_NAMES_CAP) or ""
         summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
-          failed and ("FAILED (" .. require("loomworks.remote.test_run").failed_reasons(reasons, c) .. ")")
-            or ("passed" .. ((c and not exit_only) and require("loomworks.remote.test_run").not_run_suffix(c) or "")),
+          failed and ("FAILED (" .. test_run.failed_reasons(reasons, c) .. ")" .. (names ~= "" and (": " .. names) or ""))
+            or ("passed" .. ((c and not exit_only) and test_run.not_run_suffix(c) or "")),
           exit_only and "  (exit status only — no per-case results)" or "")
       end
     end
