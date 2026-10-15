@@ -199,6 +199,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `none` and the `lw test-target add` form when there is no project-wide list,
   and prints each configuration's effective list with its source (for example
   `inherited from Tests`). (#240)
+- `lw project show` lists a configuration's saved test targets only when it
+  has some; the project row still always shows. (#242)
 
 ### Fixed
 - `lw run --cwd` on a target that runs on a device is now a usage error
