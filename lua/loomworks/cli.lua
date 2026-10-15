@@ -9859,6 +9859,11 @@ function M.cmd_status(root, opts)
       .. inline_markers(pal, grouped.by_project[p.key])
   end, "lw project list", "add a project · lw project add <path> [type]")
 
+  -- Linked worktrees of this repository (§16.18); omitted when there are none
+  -- or git cannot answer.
+  M._status_worktrees(root, pal, painter(stdout_supports_color()), MAX,
+    { git = opts.worktree_git, stat = opts.worktree_stat })
+
   out("")
   for _, l in ipairs(M._status_footer(pal)) do out(l) end
 
@@ -11017,6 +11022,58 @@ local function worktree_branch_label(r)
   return label
 end
 
+--- Plain display rows for `_worktree_list` records (`records`, current
+--- toplevel `top`): `{ current, path, main, branch, inited }` per worktree, plus
+--- the shared `pathw`/`branchw` column widths stamped on each row. Widths come
+--- from visible text, never color escapes. Shared by `lw worktree` and the
+--- `lw status` worktrees section (§16.18) so both render identical rows.
+function M._worktree_rows(records, top, stat)
+  local rows, pathw, branchw = {}, 0, 0
+  for i, r in ipairs(records) do
+    local row = {
+      current = norm_cmp(r.path) == norm_cmp(top),
+      path = r.path,
+      main = (i == 1) and "main" or "",
+      branch = worktree_branch_label(r),
+      inited = stat_has_workspace(stat, r.path) and true or false,
+    }
+    if #row.path > pathw then pathw = #row.path end
+    if #row.branch > branchw then branchw = #row.branch end
+    rows[#rows + 1] = row
+  end
+  for _, row in ipairs(rows) do row.pathw, row.branchw = pathw, branchw end
+  return rows
+end
+
+--- One rendered worktree row (from `_worktree_rows`). Color-safe: the current
+--- marker is a fixed-width 1 char and the status is the last column, so
+--- wrapping either in escapes never shifts a column.
+function M._worktree_row(row, paint)
+  local function padr(s, w) return s .. string.rep(" ", math.max(0, w - #s)) end
+  local cur = row.current and paint("*") or " "
+  local status = row.inited and paint("workspace") or "no workspace"
+  return "  " .. cur .. " " .. padr(row.path, row.pathw) ..
+    "  " .. padr(row.main, 4) ..
+    "  " .. padr(row.branch, row.branchw) ..
+    "  " .. status
+end
+
+--- The `lw status` worktrees section (§16.18): every worktree of the
+--- workspace's repository, rows as `lw worktree` prints them, capped at `max`
+--- with a pointer to `lw worktree`. Omitted when there are no linked worktrees,
+--- or when git is missing, times out, or `root` is not in a repo — status never
+--- fails over it. Best-effort probes on the status hint's short budget.
+--- `opts.git`/`opts.stat` inject for tests.
+function M._status_worktrees(root, pal, paint, max, opts)
+  opts = opts or {}
+  local ok, records, top = pcall(M._worktree_list, { dir = root, git = opts.git })
+  if not ok or not records or #records < 2 then return end
+  local rows = M._worktree_rows(records, top, opts.stat or uv.fs_stat)
+  status_section(pal, "Worktrees", rows, max, function(row)
+    return M._worktree_row(row, paint)
+  end, "lw worktree", {})
+end
+
 --- `lw worktree [list]` — list every git worktree of the current repo, its
 --- branch, whether it is the main / current worktree, and whether loomworks is
 --- initialised there (a workspace file present). Read-only; runs before the
@@ -11054,37 +11111,9 @@ function M.cmd_worktree(args, opts)
     die("not in a git repository — run `lw worktree` inside a git worktree")
   end
 
-  -- Build plain rows first so the column widths are computed from visible text,
-  -- never from color escapes.
-  local rows = {}
-  for i, r in ipairs(records) do
-    rows[#rows + 1] = {
-      current = norm_cmp(r.path) == norm_cmp(top),
-      path = r.path,
-      main = (i == 1) and "main" or "",
-      branch = worktree_branch_label(r),
-      inited = stat_has_workspace(stat, r.path) and true or false,
-    }
-  end
-
-  local pathw, branchw = 0, 0
-  for _, row in ipairs(rows) do
-    if #row.path > pathw then pathw = #row.path end
-    if #row.branch > branchw then branchw = #row.branch end
-  end
-  local function padr(s, w) return s .. string.rep(" ", math.max(0, w - #s)) end
-
+  local rows = M._worktree_rows(records, top, stat)
   out(string.format("%d worktree%s", #rows, #rows == 1 and "" or "s"))
-  for _, row in ipairs(rows) do
-    -- Color-safe: the current marker is a fixed-width 1 char and the status is
-    -- the last column, so wrapping either in escapes never shifts a column.
-    local cur = row.current and paint("*") or " "
-    local status = row.inited and paint("workspace") or "no workspace"
-    out("  " .. cur .. " " .. padr(row.path, pathw) ..
-      "  " .. padr(row.main, 4) ..
-      "  " .. padr(row.branch, branchw) ..
-      "  " .. status)
-  end
+  for _, row in ipairs(rows) do out(M._worktree_row(row, paint)) end
   -- `worktree add` is everyday (spec §16.38): name it under the listing.
   out("")
   out("  " .. paint_help(status_palette(color), "new worktree with this config · lw worktree add <branch>"))

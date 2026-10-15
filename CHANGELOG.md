@@ -41,6 +41,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw status` lists the repository's linked git worktrees in a short `Worktrees`
+  section (path, branch, main and current markers, whether loomworks is set up
+  there), capped like the other sections with a pointer to `lw worktree`. It is
+  left out when there are no linked worktrees or git does not answer. (#255)
 - `lw test --no-build` runs the tests against what is already built: nothing
   is configured, built or deployed (meson runs `meson test --no-rebuild`). An
   unconfigured project or an unbuilt test executable fails the run before
