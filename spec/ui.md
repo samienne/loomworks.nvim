@@ -31,7 +31,7 @@ directly to `Snacks.win`. The page contains these sections in order:
    deprecated `in-process` editor `in-process (setup)` with its deprecation
    note), and in `daemon` mode the
    observer's current state or note (core §19.16), e.g. `Runtime:   daemon
-   (default) — observing daemon pid 4242`, `Runtime:   daemon (default) —
+   (default) — observing the workspace daemon (pid 4242)`, `Runtime:   daemon (default) —
    no lw host binary (LOOMWORKS_LW: not set; binary.path setting: not set;
    lw on PATH: no lw on the search path; plugin-managed lw: none wanted
    (the plugin carries no pin yet)) — running degraded`, `Runtime:   daemon
@@ -45,7 +45,12 @@ directly to `Snacks.win`. The page contains these sections in order:
    degraded operations feature is the same note, e.g. `operations: daemon
    offers no loomworks.Build/1.configure`, and an operation is refused with
    the current note as its message, never run in-process (core §19.16
-   "Availability"). *(Step 5l:)* the language servers
+   "Availability"). While connected, an operation the daemon does not carry
+   names its own reason instead of the line: that feature's note, `the
+   workspace daemon is too old to carry it (it offers no interfaces)`, `the
+   workspace daemon is still connecting (loomworks.Build/1 pending)`, `the
+   workspace daemon is disconnecting (it is being retired)`, else `the
+   workspace daemon cannot carry it`. *(Step 5l:)* the language servers
    are never configured in-process in `daemon` mode (core §19.16 "LSP
    configuration"): while the editor waits for the daemon the note is
    `lsp configuration: waiting for the workspace daemon — language servers
@@ -82,6 +87,18 @@ directly to `Snacks.win`. The page contains these sections in order:
    workspace daemon, and held build-dir locks (hidden when all empty). Placed at the bottom because it's the
    runtime-state diagnostic surface — only interesting when something
    is wrong.
+
+Between Projects and Tasks the page also shows the LSP, **Debug Adapters**
+and SDK sections. The Debug Adapters section lists the adapter of each
+language of the workspace's modules (Enter picks another). In `daemon` mode
+its mapping is the daemon's `DebugConfig/1.adapters` (core §19.16 "Editor
+operations"); while it has none the section is one line in the warning
+highlight, `unavailable — <why>`: the refusal note while `DebugConfig/1` is
+not carried (the `debug adapters` feature's note, or the observer's state
+while not connected — the Runtime line's reasons above), `reading them from the workspace daemon` while the first read is in
+flight, `the workspace daemon did not answer DebugConfig/1.adapters` after a
+failed or declined read (the section re-renders when the read ends), or `the
+workspace is no longer loaded`.
 
 Sections are separated by blank lines. Each section has a title line.
 

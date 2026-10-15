@@ -6,22 +6,22 @@
 --- is connected to a compatible daemon that carries the method, a build, a
 --- configure or a module clean — of a profile or of configuration units, a
 --- module target's build included — is sent as a `loomworks.Build/1` call
---- whose task the editor owns, instead of running in-process. The entry
---- points (overseer.run_profile_action, run_configuration_action,
---- launch_single_task; the clean of Profile / ConfigUnit through the
---- workspace's `_operation_router`) ask `overseer.route` / `route_clean`,
---- which wrap `M.run` / `M.clean` in a Future: not routed → they run
---- in-process exactly as before — in `in-process` mode always (no observer),
---- and in `daemon` mode while the operation cannot be carried (§19.16
---- "Availability"). This module keeps no Future of its own: it ends an
---- operation through its continuation `k` ({ resolve, reject, fallback }).
+--- whose task the editor owns. The entry points (overseer.run_profile_action,
+--- run_configuration_action, launch_single_task; the clean of Profile /
+--- ConfigUnit through the workspace's `_operation_router`) ask
+--- `overseer.route` / `route_clean`, which wrap `M.run` / `M.clean` in a
+--- Future: not routed — only in the deprecated `in-process` mode (no
+--- observer) — they run in-process. In `daemon` mode an operation is never
+--- run in-process (§19.16 "Availability", step 5s): one the daemon cannot
+--- carry is refused. This module keeps no Future of its own: it ends an
+--- operation through its continuation `k` ({ resolve, reject }).
 ---
 --- The availability rule (§19.16):
 ---   not carried now (no connection, a feature or method degraded)
----                     → not routed: in-process; the observer's Runtime-line
----                       note
----   `declined`        → in-process, the reason as one notification line
----   degraded on call  → in-process; the observer notes the method
+---                     → refused: the observer's Runtime-line note as one
+---                       notification line
+---   `declined`        → fails, the reason as one notification line
+---   degraded on call  → refused; the observer notes the method
 ---   `refused`         → the operation fails with the refusal's message
 ---   accepted          → one owned task; the operation ends with it: exit 0
 ---                       resolves, anything else rejects; the connection lost
@@ -38,7 +38,8 @@
 --- `build_scope = "target"`, M.prepare) under the same rule; the session
 --- tracker then starts the returned program itself. The debug adapters
 --- section reads and writes `loomworks.DebugConfig/1` (M.debug_adapters,
---- M.set_debug_adapter), in-process while that is not carried.
+--- M.set_debug_adapter); while that is not carried the section is
+--- unavailable and its writes fail.
 
 local M = {}
 
@@ -52,7 +53,7 @@ local VERB = { build = "build", configure = "configure", clean = "clean",
 --- would never start.
 M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true }
 
---- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil), fallback: fun() }
+--- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil) }
 
 --- The observer of `ws` when it carries `method` now, or nil. Only the
 --- workspace's own observer carries its operations: a step chained from a
@@ -67,11 +68,45 @@ function M.carrier(method, ws)
     return nil
 end
 
---- Is the editor in `daemon` mode (an observer attached)? Its in-process
---- operations then say so in their progress title (§19.16 "Availability").
---- @return boolean
-function M.daemon_mode()
-    return require("loomworks.daemon.observer").current() ~= nil
+--- Is `ws` run in `daemon` mode — its operations then never run
+--- in-process (§19.16 "Availability") — and its observer. False in the
+--- deprecated `in-process` mode. A workspace selected for `daemon` whose
+--- observer has stopped (swapped away) still counts: `obs` is then nil and
+--- its operations are refused.
+--- @param ws loomworks.Workspace|nil
+--- @return boolean daemon, loomworks.daemon.Observer|nil obs
+function M.daemon_of(ws)
+    local obs = require("loomworks.daemon.observer").of(ws)
+    if obs then return true, obs end
+    local sel = ws and ws._runtime_selection
+    return sel ~= nil and sel.daemon == true, nil
+end
+
+--- Refuse an operation the daemon cannot carry now (§19.16 "Availability"):
+--- the observer's Runtime-line note as one notification line, then
+--- `k.reject(message, true)`. Nothing runs in-process.
+--- @param method string
+--- @param obs loomworks.daemon.Observer|nil
+--- @param k { reject: fun(err: any, notified: boolean|nil) }
+function M.refuse(method, obs, k)
+    local why = obs and obs.state ~= "stopped" and obs:refusal(method) or "the workspace is no longer loaded"
+    local msg = (VERB[method] or method) .. ": " .. why
+    vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+    k.reject(msg, true)
+end
+
+--- In `daemon` mode, the refusal of a build of `ws` the daemon cannot carry
+--- now (M.refuse's message, notified), or nil — carried, or the `in-process`
+--- mode. A launch target's build asks it first, so that nothing of it (its
+--- pre-build deploy) runs in the editor when its build would be refused.
+--- @param ws loomworks.Workspace|nil
+--- @return string|nil
+function M.build_refusal(ws)
+    local daemon, obs = M.daemon_of(ws)
+    if not daemon or M.carrier("build", ws) then return nil end
+    local msg
+    M.refuse("build", obs, { reject = function(m) msg = m end })
+    return msg
 end
 
 --- A configuration unit as a `units` item (§19.15: by project key and
@@ -148,22 +183,24 @@ local function ask_conflict(ws, units, cb)
 end
 
 --- The reply of an owned call, under the availability rule (see the
---- header): accepted → its `on_done` follows; declined → in-process with
---- the reason as one notification; degraded → in-process (noted by the
---- observer); refused → fails with its message; anything else fails (both
---- notified here: `k.reject(message, true)`).
---- @param verb string
+--- header): accepted → its `on_done` follows; declined → fails with the
+--- reason as one notification; degraded → refused with the observer's note
+--- of the method; refused → fails with its message; anything else fails
+--- (all notified here: `k.reject(message, true)`).
+--- @param method string
+--- @param obs loomworks.daemon.Observer
 --- @param k loomworks.daemon.OpContinuation
 --- @return fun(r: table)
-local function on_reply(verb, k)
+local function on_reply(method, obs, k)
+    local verb = VERB[method] or method
     return function(r)
         if r.outcome == "accepted" then return end
         if r.outcome == "declined" then
-            vim.notify(string.format("loomworks: the workspace daemon declined the %s (%s) — running it "
-                .. "in-process", verb, tostring(r.reason)), vim.log.levels.WARN)
-            return k.fallback()
+            local msg = string.format("the workspace daemon declined the %s (%s)", verb, tostring(r.reason))
+            vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+            return k.reject(msg, true)
         elseif r.outcome == "degraded" then
-            return k.fallback()
+            return M.refuse(method, obs, k)
         elseif r.outcome == "refused" then
             vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.ERROR)
             return k.reject(r.message, true)
@@ -186,30 +223,36 @@ local function failure(verb, task, reason)
         or (verb .. " failed")
 end
 
---- Run an operation through the daemon when it can be carried (see the
---- header). False when it is not routed — the caller runs it in-process.
---- Otherwise true, and the operation ends through `k`: `k.resolve(true)`,
---- `k.reject(message)`, or `k.fallback()` (run it in-process after all: a
---- `declined`, a method found missing, the connection gone before the call).
+--- Run an operation through the daemon (see the header). False only in
+--- the `in-process` mode — the caller runs it in-process. Otherwise true,
+--- and the operation ends through `k`: `k.resolve(true)` or
+--- `k.reject(message, notified)` — refused at once when the daemon cannot
+--- carry it now, never run in-process.
 --- @param method "build"|"configure"|"clean"
 --- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
 --- @param opts? { jobs?: integer, force?: boolean, targets?: table[] }
 --- @param k loomworks.daemon.OpContinuation
 --- @return boolean routed
 function M.run(method, scope, opts, k)
-    local obs = M.carrier(method, M.scope_workspace(scope))
-    if not obs then return false end
+    local ws = M.scope_workspace(scope)
+    local daemon, mode_obs = M.daemon_of(ws)
+    if not daemon then return false end
+    local obs = M.carrier(method, ws)
+    if not obs then
+        M.refuse(method, mode_obs, k)
+        return true
+    end
     opts = opts or {}
     local verb = VERB[method] or method
 
     local function send(force)
         -- Still carried? (A deletion waited for, or a question asked, may
-        -- have outlived the connection: nothing ran yet, so in-process.)
-        if not obs:can_call(method) then return k.fallback() end
+        -- have outlived the connection: nothing ran yet — refused.)
+        if not obs:can_call(method) then return M.refuse(method, obs, k) end
         local args = M.args(scope, { jobs = opts.jobs, force = opts.force or force, targets = opts.targets })
         obs:start_owned(method, args, {
             units = scope_units(scope),
-            on_reply = on_reply(verb, k),
+            on_reply = on_reply(method, obs, k),
             on_done = function(task, reason)
                 local err = failure(verb, task, reason)
                 if err then return k.reject(err) end
@@ -261,24 +304,38 @@ function M.launch_args(target)
     return a
 end
 
---- Would a launch's preparation (`mode` "launch" | "debug") be routed now?
---- (The editor checks the debug adapter before the call, §8.9.6.)
---- @param mode "launch"|"debug"
+--- Is a launch's preparation the daemon's — `daemon` mode, carried or
+--- refused (M.prepare) — rather than the in-process chain's (the
+--- `in-process` mode)? (The editor checks the debug adapter before the
+--- call, §8.9.6.)
 --- @param target loomworks.LaunchTarget
 --- @return boolean
-function M.can_prepare(mode, target)
-    local method = mode == "debug" and "prepare_debug" or "prepare_run"
-    return M.carrier(method, M.scope_workspace({ profile = target._profile })) ~= nil
+function M.prepares(target)
+    return (M.daemon_of(M.scope_workspace({ profile = target._profile })))
+end
+
+--- Why the editor refuses now a launch it runs itself — a device target's
+--- (§19.16 "Editor operations": only while connected) — in `daemon` mode:
+--- not connected, the observer's Runtime-line note; nil while connected,
+--- and always in the `in-process` mode.
+--- @param target loomworks.LaunchTarget
+--- @return string|nil
+function M.device_launch_refusal(target)
+    local daemon, obs = M.daemon_of(M.scope_workspace({ profile = target._profile }))
+    if not daemon then return nil end
+    if obs and obs.state == "connected" and obs.conn and not obs.conn.closed and not obs._lost then return nil end
+    return "launch: " .. (obs and obs.state ~= "stopped" and obs:refusal("build") or "the workspace is no longer loaded")
 end
 
 --- Prepare a run (`mode` "launch") or debug launch of a non-device launch
 --- target through the daemon (`Launch/1.prepare_run` / `prepare_debug`,
 --- §19.16 "Editor operations"), under the availability rule of the header.
---- False when not routed — the caller runs the in-process chain. Otherwise
---- true, and it ends through `k`: `k.resolve(done)` with the task result
---- (`launch`, or `device = true` for a foreign artifact; `debug`) once the
---- preparation ended with exit 0 — the caller then starts the program — or
---- `k.reject(message)` (no program is started), or `k.fallback()`.
+--- False only in the `in-process` mode — the caller runs the in-process
+--- chain. Otherwise true, and it ends through `k`: `k.resolve(done)` with
+--- the task result (`launch`, or `device = true` for a foreign artifact;
+--- `debug`) once the preparation ended with exit 0 — the caller then starts
+--- the program — or `k.reject(message, notified)` (refused when the daemon
+--- cannot carry it now; no program is started).
 --- The second return value cancels the preparation (a stop, or a second
 --- launch replacing it, while it runs): nothing more reaches `k`, so no
 --- program is started — a call not yet sent is never sent, one not yet
@@ -286,13 +343,19 @@ end
 --- (`Tasks/1.cancel` of the owned task, Observer:cancel_owned_id).
 --- @param mode "launch"|"debug"
 --- @param target loomworks.LaunchTarget
---- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil), fallback: fun() }
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
---- @return loomworks.daemon.Preparation|nil preparation (routed only)
+--- @return loomworks.daemon.Preparation|nil preparation (routed, not refused at once)
 function M.prepare(mode, target, k)
     local method = mode == "debug" and "prepare_debug" or "prepare_run"
-    local obs = M.carrier(method, M.scope_workspace({ profile = target._profile }))
-    if not obs then return false end
+    local ws = M.scope_workspace({ profile = target._profile })
+    local daemon, mode_obs = M.daemon_of(ws)
+    if not daemon then return false end
+    local obs = M.carrier(method, ws)
+    if not obs then
+        M.refuse(method, mode_obs, k)
+        return true
+    end
     local verb = VERB[method]
     --- @class loomworks.daemon.Preparation
     --- @field cancelled boolean|nil cancelled: nothing more reaches its continuation
@@ -307,11 +370,11 @@ function M.prepare(mode, target, k)
     -- Every outcome is dropped once cancelled (a refusal or failure is not
     -- notified either: the user stopped it).
     local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
-    local kk = { resolve = live(k.resolve), reject = live(k.reject), fallback = live(k.fallback) }
-    local reply = on_reply(verb, kk)
+    local kk = { resolve = live(k.resolve), reject = live(k.reject) }
+    local reply = on_reply(method, obs, kk)
     local function send()
         if p.cancelled then return end
-        if not obs:can_call(method) then return kk.fallback() end
+        if not obs:can_call(method) then return M.refuse(method, obs, kk) end
         obs:start_owned(method, M.launch_args(target), {
             on_reply = function(r)
                 if r.outcome == "accepted" then
@@ -521,8 +584,9 @@ function M.test_result(ws, id, cb)
 end
 
 --- A module clean through the daemon (Profile:clean / ConfigUnit:clean, via
---- the workspace's `_operation_router` and overseer.route_clean). False when
---- not routed; otherwise it ends through `k` as `M.run`. Before the call, the
+--- the workspace's `_operation_router` and overseer.route_clean). False only
+--- in the `in-process` mode; otherwise it ends through `k` as `M.run` —
+--- refused at once when the daemon cannot carry it now. Before the call, the
 --- editor's own tasks on the same units are cancelled (`Tasks/1.cancel`,
 --- waiting for their end, §19.15 "The editor as owner") — accepted ones whose
 --- task has not started yet included — and, as the in-process clean
@@ -534,8 +598,14 @@ end
 --- @param k loomworks.daemon.OpContinuation
 --- @return boolean routed
 function M.clean(scope, k)
-    local obs = M.carrier("clean", M.scope_workspace(scope))
-    if not obs then return false end
+    local scope_ws = M.scope_workspace(scope)
+    local daemon, mode_obs = M.daemon_of(scope_ws)
+    if not daemon then return false end
+    local obs = M.carrier("clean", scope_ws)
+    if not obs then
+        M.refuse("clean", mode_obs, k)
+        return true
+    end
     local overseer = require("loomworks.overseer")
     local units = scope_units(scope)
     local steps
@@ -554,8 +624,9 @@ function M.clean(scope, k)
             if mine[u] then pending[#pending + 1] = call.id; break end
         end
     end
-    -- An in-process operation chain on these units (a fallback build after a
-    -- declined call or a disconnect) stops here, not after the clean (D5).
+    -- An in-process operation chain on these units (a device launch's, the
+    -- one operation the editor still runs itself) stops here, not after the
+    -- clean (D5).
     if ws and ws.cancel_conflicting_operations then ws:cancel_conflicting_operations(units) end
     local items = {}
     for _, u in ipairs(units) do items[#items + 1] = { unit = u } end
@@ -564,9 +635,7 @@ function M.clean(scope, k)
     for task_id in pairs(running) do local_ids[#local_ids + 1] = task_id end
 
     local function start()
-        local function send()
-            if not M.run("clean", scope, {}, k) then k.fallback() end
-        end
+        local function send() M.run("clean", scope, {}, k) end
         if #local_ids == 0 or not (ws and ws.stop_tasks_then) then return send() end
         ws:stop_tasks_then(local_ids):next(send, function(e) k.reject(e) end)
     end
@@ -649,17 +718,24 @@ function M.cancel_for_profile(profile)
     return n
 end
 
---- The debug adapters section's records (§19.16 "Editor operations"):
---- `DebugConfig/1.adapters` while carried and read on this connection,
---- otherwise the in-process mapping (debug_config.adapter_records — the same
---- working copy) — also while the first read is in flight.
+--- The debug adapters section's records (§19.16 "Editor operations"): in
+--- `daemon` mode `DebugConfig/1.adapters` as read on this connection —
+--- nil and why while it is not carried (the section is unavailable), and
+--- while its first read is in flight or after it failed; never the
+--- in-process mapping. In the `in-process` mode the working copy's
+--- (debug_config.adapter_records).
 --- @param ws loomworks.Workspace
---- @return { language: string, adapter?: string, default?: string, known: string[], overridden: boolean }[]
+--- @return { language: string, adapter?: string, default?: string, known: string[], overridden: boolean }[]|nil records
+--- @return string|nil why
 function M.debug_adapters(ws)
-    local obs = require("loomworks.daemon.observer").of(ws)
-    local records = obs and obs.state ~= "stopped" and obs:debug_adapters() or nil
+    local daemon, obs = M.daemon_of(ws)
+    if not daemon then return require("loomworks.debug_config").adapter_records(ws) end
+    if not (obs and obs.state ~= "stopped") then return nil, "the workspace is no longer loaded" end
+    if not obs:can_call("adapters") then return nil, obs:refusal("adapters") end
+    local records = obs:debug_adapters()
     if records then return records end
-    return require("loomworks.debug_config").adapter_records(ws)
+    if obs._debug_fetch then return nil, "reading them from the workspace daemon" end
+    return nil, "the workspace daemon did not answer DebugConfig/1.adapters"
 end
 
 --- The language → adapter mapping a debug launch the daemon prepares is
@@ -667,12 +743,13 @@ end
 --- the daemon's own (`DebugConfig/1.adapters`, the cached read, else a read
 --- now) while it is carried — the in-process copy lags a `set_adapter` made
 --- through the daemon until its file change arrives. `cb(resolve)` on the
---- main loop, `resolve(language)` → adapter|nil; `cb(nil)` — the in-process
---- mapping — when DebugConfig/1 is not carried, or its read failed or was
---- declined. A language the daemon's records do not name resolves
---- in-process.
+--- main loop, `resolve(language)` → adapter|nil, named (the records name
+--- the language); `cb(nil)` when DebugConfig/1 is not carried, or its read
+--- failed or was declined: no check before the call (debug.run checks the
+--- prepared adapter). Never the editor's in-process mapping — a language the
+--- daemon's records do not name resolves to nil, not named (unchecked too).
 --- @param target loomworks.LaunchTarget the launch (its profile's workspace)
---- @param cb fun(resolve: (fun(language: string): string|nil)|nil)
+--- @param cb fun(resolve: (fun(language: string): string|nil, boolean)|nil)
 function M.debug_adapter_resolver(target, cb)
     local ws = M.scope_workspace({ profile = target._profile })
     local obs = ws and require("loomworks.daemon.observer").of(ws)
@@ -685,45 +762,44 @@ function M.debug_adapter_resolver(target, cb)
         end
         cb(function(language)
             local r = by[language]
-            if r then return type(r.adapter) == "string" and r.adapter or nil end
-            return require("loomworks.debug_config").resolve_adapter(ws, language)
+            if not r then return nil, false end
+            return type(r.adapter) == "string" and r.adapter or nil, true
         end)
     end)
 end
 
 --- Set a language's debug adapter (`adapter` nil: back to the default) in
---- the working copy: `DebugConfig/1.set_adapter` while carried (a
---- `refused` notified as the in-process refusal; `declined` or degraded →
---- in-process), otherwise `Workspace:set_debug_adapter` in-process.
---- `cb(ok, err)` on the main loop.
+--- the working copy: in `daemon` mode **only** `DebugConfig/1.set_adapter`
+--- — not carried, degraded, `declined`, `refused` or failed, the write
+--- fails with why as one notification line and nothing is written
+--- (§19.16 "Availability"); in the `in-process` mode
+--- `Workspace:set_debug_adapter`. `cb(ok, err)` on the main loop.
 --- @param ws loomworks.Workspace
 --- @param language string
 --- @param adapter string|nil
 --- @param cb? fun(ok: boolean, err: string|nil)
 function M.set_debug_adapter(ws, language, adapter, cb)
     cb = cb or function() end
-    local function in_process()
-        local ok, err = ws:set_debug_adapter(language, adapter)
-        if not ok then
-            vim.notify("loomworks: debug adapter not saved: " .. tostring(err), vim.log.levels.ERROR)
-        end
-        cb(ok, err)
+    local function fail(err)
+        vim.notify("loomworks: debug adapter not saved: " .. tostring(err), vim.log.levels.ERROR)
+        cb(false, err)
     end
-    local obs = require("loomworks.daemon.observer").of(ws)
-    if not (obs and obs.state ~= "stopped" and obs:can_call("set_adapter")) then return in_process() end
+    local daemon, obs = M.daemon_of(ws)
+    if not daemon then
+        local ok, err = ws:set_debug_adapter(language, adapter)
+        if not ok then return fail(err) end
+        return cb(ok, err)
+    end
+    if not (obs and obs.state ~= "stopped") then return fail("the workspace is no longer loaded") end
+    if not obs:can_call("set_adapter") then return fail(obs:refusal("set_adapter")) end
     obs:request("set_adapter", { language = language, adapter = adapter }, function(r)
-        if r.outcome == "degraded" then return in_process() end
+        if r.outcome == "degraded" then return fail(obs:refusal("set_adapter")) end
         local res = type(r.result) == "table" and r.result or {}
         if r.outcome == "ok" and res.outcome == "declined" then
-            vim.notify("loomworks: the workspace daemon declined the debug adapter change ("
-                .. tostring(res.reason) .. ") — saving it in-process", vim.log.levels.WARN)
-            return in_process()
+            return fail("the workspace daemon declined it (" .. tostring(res.reason) .. ")")
         end
         local err = r.outcome ~= "ok" and r.reason or (res.outcome ~= "ok" and (res.message or res.outcome)) or nil
-        if err then
-            vim.notify("loomworks: debug adapter not saved: " .. tostring(err), vim.log.levels.ERROR)
-            return cb(false, err)
-        end
+        if err then return fail(err) end
         obs:_refetch_debug_adapters()
         cb(true)
     end)
@@ -784,7 +860,7 @@ end
 --- The router a daemon-mode workspace carries (`ws._operation_router`): the
 --- domain objects' cleans ask it, with no dependency on the editor.
 M.router = {
-    clean = function(scope, fallback) return require("loomworks.overseer").route_clean(scope, fallback) end,
+    clean = function(scope) return require("loomworks.overseer").route_clean(scope) end,
 }
 
 return M

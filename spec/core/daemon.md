@@ -3031,7 +3031,10 @@ owner"):
   or hands the returned `debug` to its debugger (its adapter-specific shape
   and the installed-adapter check, made before the call, stay in the editor,
   §8.9.6; the adapter checked is the one the daemon's mapping names,
-  `DebugConfig/1.adapters`, while it is carried). A run that ends with
+  `DebugConfig/1.adapters`, while it is carried — never the editor's own
+  mapping: while it is not carried, its read failed, or it does not name the
+  language, nothing is checked before the call and the debugger checks the
+  prepared adapter). A run that ends with
   `device = true` continues in the editor as its in-process launch does from
   the post-build deploy, without building again ("Build scope of a launch"
   above). The program is the editor's, never the daemon's; stopping a run or

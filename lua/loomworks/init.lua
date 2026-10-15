@@ -112,10 +112,10 @@ function M.setup(opts)
     end
     if opts and type(opts.runtime) == "table" then
         M._runtime_mode_config = opts.runtime.mode
-        -- Report an invalid setup value once, at setup (lw's setting is read,
-        -- and its problems shown on the Runtime line, on each workspace load).
-        local _, _, warning = require("loomworks.daemon.runtime").resolve(M._runtime_mode_config,
-            { what = "runtime.mode" })
+        -- Report an invalid setup value once, at setup (the Runtime line
+        -- shows it too).
+        local warning = require("loomworks.daemon.runtime").editor_select({
+            configured = M._runtime_mode_config }).warning
         if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
     end
     if opts and opts.binary ~= nil then
@@ -124,9 +124,10 @@ function M.setup(opts)
         M._binary_config = setting
         if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
     end
-    -- In `daemon` runtime mode every loaded workspace observes the workspace
-    -- daemon (spec §19.16). Only the editor attaches (the CLI never calls
-    -- setup); in `in-process` mode `attach` does nothing.
+    -- In `daemon` runtime mode (the default, spec §19.1) every loaded
+    -- workspace observes the workspace daemon (spec §19.16). Only the editor
+    -- attaches (the CLI never calls setup); in the deprecated `in-process`
+    -- mode `attach` does nothing.
     if not M._observer_hooked then
         M._observer_hooked = true
         events.on("workspace_changed", function(ws)
@@ -209,12 +210,11 @@ function M.host_binary_selection()
     return sel
 end
 
---- The effective runtime mode (spec §19.1): the environment
---- (`LOOMWORKS_RUNTIME`, then `LOOMWORKS_NO_DAEMON` and `CI`) > the setup
---- option `runtime.mode` > lw's `runtime-mode` setting > `in-process`, and the
---- source that decided. In `daemon` mode the editor observes the workspace
---- daemon (spec §19.16) while running its own operations in-process. Invalid
---- values are ignored (the Runtime line reports them).
+--- The editor's runtime mode (spec §19.1, step 5s) and the source that
+--- decided: `daemon` by default; the setup option `runtime.mode =
+--- "in-process"` selects the deprecated in-process editor. The environment
+--- and lw's `runtime-mode` setting do not apply to the editor. In `daemon`
+--- mode the editor is a client of the workspace daemon (spec §19.16).
 --- @return string mode, loomworks.daemon.RuntimeSource source
 function M.runtime_mode()
     local sel = require("loomworks.daemon.runtime").editor_select({ configured = M._runtime_mode_config })
@@ -246,7 +246,7 @@ function M.daemon_connect()
     local observer = require("loomworks.daemon.observer")
     local obs = observer.of(ws) or observer.attach(ws, { configured = M._runtime_mode_config,
         binary = M._binary_config })
-    if not obs then return false, "the runtime mode is in-process (LOOMWORKS_RUNTIME, runtime.mode, lw settings runtime-mode)" end
+    if not obs then return false, "the runtime mode is in-process (setup option runtime.mode)" end
     obs:start(true)
     return true
 end
@@ -708,7 +708,7 @@ function M.build_target()
 
     local function do_build(target)
         local fidget = require("loomworks.fidget")
-        local handle = fidget.start_op_action("Building " .. target:display_name(), "build")
+        local handle = fidget.start_op_action("Building " .. target:display_name())
         fidget.report(handle, "building...")
         target:build()
             :next(function() fidget.finish(handle, "built") end)

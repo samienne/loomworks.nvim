@@ -3,9 +3,10 @@
 --- Shows current debug adapter selection per language of the workspace's
 --- modules. Allows picking from known adapters via Enter action.
 ---
---- The mapping comes from loomworks.daemon.editor_ops: `DebugConfig/1` while
---- the workspace daemon carries it (step 5k C2, spec §19.16 "Editor
---- operations"), else the in-process working copy. Whether an adapter is
+--- The mapping comes from loomworks.daemon.editor_ops: in `daemon` mode
+--- `DebugConfig/1` (step 5k C2, spec §19.16 "Editor operations"), the
+--- section unavailable while it is not carried (step 5s, "Availability");
+--- in the `in-process` mode the working copy. Whether an adapter is
 --- installed is always nvim-dap's answer, here.
 
 local debug_mod = require("loomworks.debug")
@@ -35,14 +36,21 @@ return function(tree, ctx)
     table.sort(languages)
 
     local ops = require("loomworks.daemon.editor_ops")
+    local records, why = ops.debug_adapters(ws)
     local by_lang = {}
-    for _, r in ipairs(ops.debug_adapters(ws)) do
+    for _, r in ipairs(records or {}) do
         if type(r) == "table" and r.language then by_lang[r.language] = r end
     end
 
     tree:blank()
     tree:leaf("Debug Adapters", "Title")
     tree:blank()
+
+    if not records then
+        tree:leaf("unavailable — " .. tostring(why), "DiagnosticWarn")
+        tree:blank()
+        return
+    end
 
     for _, lang in ipairs(languages) do
         local rec = by_lang[lang] or {}

@@ -211,6 +211,15 @@ function LaunchTarget:build(on_complete)
         return future_mod.rejected(abs_err)
     end
 
+    -- `daemon` mode: a build the daemon cannot carry now is refused before
+    -- anything runs — its dependencies' builds or its pre-build deploy in
+    -- the editor (spec §19.16 "Availability").
+    local refused = require("loomworks.daemon.editor_ops").build_refusal(self._workspace)
+    if refused then
+        if on_complete then on_complete(false) end
+        return future_mod.rejected(refused)
+    end
+
     local function build_self()
         if self._target then
             return self._target:build()

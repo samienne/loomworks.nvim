@@ -80,7 +80,7 @@ describe("host binary order (§19.16)", function()
         assert.is_nil(bin)
         assert.equals("no lw host binary (LOOMWORKS_LW: not set; binary.path setting: not set; "
             .. "lw on PATH: no lw on the search path; plugin-managed lw: " .. managed.NOT_YET
-            .. ") — running in-process", sel.note)
+            .. ") — running degraded", sel.note)
         assert.equals(binsel.NONE_NOTE, binsel.none_note(nil))
     end)
 

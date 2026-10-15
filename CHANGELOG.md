@@ -27,6 +27,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 ## Unreleased
 
 ### Upgrade notes
+- The editor now uses the workspace daemon by default: builds, configures,
+  cleans, launch preparations and tests run there. An operation the daemon
+  cannot take (not connected yet, no `lw` found, an older daemon) or declines
+  is refused with the reason in one notification line, the same note the
+  status page's `Runtime:` line shows; it no longer runs in the editor
+  instead. The editor ignores `LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON`, `CI`
+  and `lw`'s `runtime-mode` setting. `setup({ runtime = { mode = "in-process" } })`
+  keeps the old in-process editor for now; it is deprecated and will be
+  removed. A disconnected editor also refuses device-target launches, and
+  the status page's Debug Adapters section shows `unavailable` with the
+  reason when the daemon does not offer the adapter mapping. (#258)
 - A build-directory or device lock whose holder is still running but has
   stopped heartbeating ("hung") is no longer taken over after about 20 s: the
   command stops and names the recovery command, `--break-locks`. Scripts that

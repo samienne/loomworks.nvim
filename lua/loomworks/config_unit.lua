@@ -1169,12 +1169,13 @@ end
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function ConfigUnit:clean(on_done)
-    -- In `daemon` mode the clean may be a daemon call whose task the editor
-    -- owns (spec §19.16 "Editor operations"): the workspace's router (set by
-    -- the editor, loomworks.daemon.editor_ops) pre-empts and sends it, or
-    -- returns nil — then in-process, as always without a router.
+    -- In `daemon` mode the clean is a daemon call whose task the editor owns
+    -- (spec §19.16 "Editor operations"): the workspace's router (set by the
+    -- editor, loomworks.daemon.editor_ops) pre-empts and sends it, refused
+    -- when the daemon cannot carry it ("Availability"); without a router
+    -- (the `in-process` mode) in-process.
     local router = self._workspace._operation_router
-    local routed = router and router.clean({ units = { self } }, function() return self:_clean_in_process() end)
+    local routed = router and router.clean({ units = { self } })
     local f = routed or self:_clean_in_process()
     if on_done then
         f:next(function() on_done() end)

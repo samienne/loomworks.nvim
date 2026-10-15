@@ -362,8 +362,8 @@ node. A saved entry runs in its own working directory (specification §1.3.4
 
 ### 13.1 Daemon mode
 
-*(Step 5m; specification daemon.md §19.16 "Tests".)* With `runtime.mode =
-"daemon"` the adapter computes nothing about tests: the tree (units, explicit
+*(Step 5m; specification daemon.md §19.16 "Tests".)* In the editor's
+`daemon` runtime mode (the default since step 5s) the adapter computes nothing about tests: the tree (units, explicit
 suites, unit-scoped opaque ids, `source`), the unit states and the last
 results come only from the daemon's `loomworks.view.Tests/1`, and its live
 statuses from `Tests/1` `results`. It implements `start`, `debug_start`,
@@ -397,7 +397,7 @@ statuses from `Tests/1` `results`. It implements `start`, `debug_start`,
   the view restores the tree and the daemon's last results (kept in the
   daemon's memory for its session).
 
-In `in-process` mode the adapter is the RunSpec adapter above, unchanged,
+In the deprecated `in-process` mode (`runtime.mode = "in-process"`) the adapter is the RunSpec adapter above, unchanged,
 until step 6b.
 
 ## 14. Future Considerations

@@ -639,7 +639,7 @@ end
 ---     stale saves handled (diagnostics/tests).
 --- @field _event_handlers { event: string, handler: function }[]
 --- @field _daemon_observer loomworks.daemon.Observer|nil the editor's observer of the workspace daemon (spec §19.16), daemon runtime mode only
---- @field _operation_router { clean: fun(scope: table, fallback: fun(): loomworks.Future): loomworks.Future|nil }|nil set by the editor in daemon runtime mode (loomworks.daemon.editor_ops.router, step 5k): Profile:clean / ConfigUnit:clean ask it first; nil → in-process
+--- @field _operation_router { clean: fun(scope: table): loomworks.Future|nil }|nil set by the editor in daemon runtime mode (loomworks.daemon.editor_ops.router, step 5k): Profile:clean / ConfigUnit:clean ask it first (refused when the daemon cannot carry it, step 5s); nil → in-process
 --- @field _runtime_selection loomworks.daemon.EditorSelection|nil the editor's runtime mode and its source, chosen on load (spec §19.1); the status page's Runtime line
 ---     event-bus subscriptions recorded for teardown. Mirrors the same
 ---     pattern on View. Populated only via `Workspace:on`, walked in

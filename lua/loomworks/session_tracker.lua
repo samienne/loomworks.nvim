@@ -8,10 +8,12 @@
 --- In `daemon` runtime mode (step 5k C2, spec §19.16 "Editor operations")
 --- the build and deploy of a non-device target's launch are the workspace
 --- daemon's preparation (`Launch/1.prepare_run` / `prepare_debug` through
---- loomworks.daemon.editor_ops) while it carries them; the program is still
---- started here, from the returned spec. Otherwise — in-process mode, a
---- device target, a preparation the daemon does not carry or declines —
---- the in-process chain below runs as before.
+--- loomworks.daemon.editor_ops); the program is still started here, from
+--- the returned spec. A preparation the daemon cannot carry or declines is
+--- refused, never run in-process (step 5s, "Availability"). A device
+--- target's launch runs the chain below in the editor, in `daemon` mode
+--- only while connected; in the deprecated `in-process` mode every launch
+--- does.
 
 local Future = require("loomworks.future")
 
@@ -366,15 +368,7 @@ local function start_run_in_process(target, mode, from_deploy)
     local fidget = require("loomworks.fidget")
     local multi = mode == "debug" and target:is_multi_adapter()
     local label = mode == "debug" and "Debugging " or "Launching "
-    -- A launch the daemon could have prepared says `(in-process)` in daemon
-    -- mode (§19.16 "Availability"); a device target's never routes, and one
-    -- continued after the daemon's preparation was built there.
-    local handle
-    if target:requires_device() or from_deploy then
-        handle = fidget.start_action(label .. target:display_name())
-    else
-        handle = fidget.start_in_process_action(label .. target:display_name())
-    end
+    local handle = fidget.start_action(label .. target:display_name())
 
     local chain
     if not from_deploy and target:is_buildable() then
@@ -604,22 +598,33 @@ local function start_prepared(target, mode, done)
     end
 end
 
---- The build → deploy → launch/debug chain: prepared by the workspace daemon
---- when it carries it (spec §19.16 "Editor operations"), else in-process.
+--- The build → deploy → launch/debug chain: in `daemon` mode prepared by the
+--- workspace daemon (spec §19.16 "Editor operations") — refused when it
+--- cannot carry it ("Availability") — and a device target's run in the
+--- editor only while connected; in the `in-process` mode in-process.
 --- A debug without nvim-dap launches (as LaunchTarget:debug does); a debug
 --- whose launching adapter is not installed stops here with the install
 --- hint, before the preparation (§8.9.6: the client's check) - the adapter
 --- the daemon's `DebugConfig/1` mapping names while it is carried
---- (editor_ops.debug_adapter_resolver). While the daemon prepares, the
+--- (editor_ops.debug_adapter_resolver; not carried, or a language it does
+--- not name: not checked here — debug.run checks the prepared adapter).
+--- While the daemon prepares, the
 --- launch is `_preparing`: a stop cancels it, a second launch asks first.
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
 local function start_run(target, mode)
-    if target:requires_device() then return start_run_in_process(target, mode) end
     local ops = require("loomworks.daemon.editor_ops")
+    if target:requires_device() then
+        local refusal = ops.device_launch_refusal(target)
+        if refusal then
+            vim.notify("loomworks: " .. refusal, vim.log.levels.WARN)
+            return
+        end
+        return start_run_in_process(target, mode)
+    end
     local debug_mod = require("loomworks.debug")
     local prep = (mode == "debug" and debug_mod.available()) and "debug" or "launch"
-    if not ops.can_prepare(prep, target) then return start_run_in_process(target, mode) end
+    if not ops.prepares(target) then return start_run_in_process(target, mode) end
 
     --- @type loomworks.PreparingRun
     local token = { target = target, mode = mode }
@@ -634,30 +639,35 @@ local function start_run(target, mode)
         if _preparing ~= token then return end
         local routed, preparation = ops.prepare(prep, target, {
             resolve = function(done) if settle() then start_prepared(target, prep, done) end end,
-            -- Refused, failed, or the connection lost after `accepted`: no
-            -- program is started (never re-run in-process). A refusal or a
-            -- failed call was already notified.
+            -- Refused (not carried, declined, degraded, refused), failed, or
+            -- the connection lost after `accepted`: no program is started
+            -- (never run in-process). A refusal or a failed call was already
+            -- notified.
             reject = function(err, notified)
                 if not settle() then return end
                 if not notified then
                     vim.notify("loomworks: " .. tostring(err or "the launch failed"), vim.log.levels.ERROR)
                 end
             end,
-            fallback = function() if settle() then start_run_in_process(target, mode) end end,
         })
         if not routed then
             if settle() then start_run_in_process(target, mode) end
             return
         end
         token.preparation = preparation
-        -- Settled or cancelled before `prepare` returned (a fallback at
-        -- once): nothing more of it may run.
+        -- Settled or cancelled before `prepare` returned (refused at once):
+        -- nothing more of it may run.
         if _preparing ~= token and preparation then preparation:cancel() end
     end
     if prep ~= "debug" then return send() end
     ops.debug_adapter_resolver(target, function(resolve)
         if _preparing ~= token then return end
+        -- No daemon mapping (DebugConfig/1 not carried, or its read failed),
+        -- or a language it does not name: unchecked here — never the
+        -- editor's own mapping; debug.run checks the prepared adapter.
+        if not resolve then return send() end
         local adapter, language = target:primary_debug_adapter(resolve)
+        if not select(2, resolve(language)) then return send() end
         if not debug_mod.adapter_installed(adapter) then
             settle()
             debug_mod.adapter_hint(adapter, language)

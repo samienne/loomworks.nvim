@@ -1059,13 +1059,9 @@ require("loomworks").setup({
 
 Clipping appends a `…` so it's visually obvious the line was cut.
 
-**Builds started from a terminal (experimental).** With
-`lw settings set runtime-mode daemon`, `setup({ runtime = { mode = "daemon" } })`
-or `LOOMWORKS_RUNTIME=daemon` (the environment wins over the setup option, which
-wins over `lw`'s setting; `LOOMWORKS_NO_DAEMON=1` and `CI=true` keep the editor
-in-process) the editor connects to the workspace daemon (`lw daemon`, see the `lw`
-command table) and shows the builds it runs — e.g. `lw build` in a
-terminal — like its own: the same fidget popup, the profile's progress and
+**The workspace daemon (experimental).** By default the editor connects to
+the workspace daemon (`lw daemon`, see the `lw` command table) and shows the
+builds it runs — e.g. `lw build` in a terminal — like its own: the same fidget popup, the profile's progress and
 timer and its units `building` on the status page and in the statusline, and
 normal rows in the status page's Tasks section ending in a dim `lw` (or
 `editor`) marker, whose Enter shows the output (it cannot cancel them: they
@@ -1074,15 +1070,25 @@ editor connects are picked up too. The editor's own builds, configures and
 module cleans (of a profile, of one configuration, a target's build, the
 clean of a rebuild) run in the daemon too, as tasks the editor owns: they
 show the same way without a marker, with one progress entry each, Cancel
-stops them there, and quitting Neovim cancels them. When the daemon cannot
-carry one (not connected, an older daemon) it runs in the editor as before,
-its progress title saying "(in-process)"; tests, launches, debug sessions
-and deletions still run in the editor. It connects through `lw daemon run --stdio` from the `lw` it finds
+stops them there, and quitting Neovim cancels them. Run and debug launches
+are prepared (built and resolved) there too, the program then started by the
+editor, and tests run there. When the daemon cannot carry an operation (not
+connected yet, no `lw` found, an older daemon that lacks it) or declines it,
+the operation is refused with the reason in one notification line — the same
+note the status page's `Runtime:` line shows — and never run in the editor
+instead. Launches of device targets, and editing the configuration
+(deletions included), still run in the editor; a device launch only while
+connected. `setup({ runtime = { mode = "in-process" } })` keeps the old
+in-process editor, which runs everything itself; it is deprecated and will be
+removed. The editor ignores `LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON`, `CI`
+and `lw`'s `runtime-mode` setting (those choose the mode of `lw` commands
+only). It connects through `lw daemon run --stdio` from the `lw` it finds
 (the same shared daemon the `lw` commands use), which starts the daemon when
 you open the workspace or run `:LoomworksDaemon connect` and none is running;
 it never restarts one you stopped with `lw daemon stop`, but picks up one a
-terminal `lw` starts later. With no `lw` found it stays in-process and does
-not watch for a daemon. It looks, in this order, at `LOOMWORKS_LW`,
+terminal `lw` starts later. With no `lw` found it runs degraded (operations
+refused, the workspace shown unloaded with the reason) and does not watch for
+a daemon. It looks, in this order, at `LOOMWORKS_LW`,
 `setup({ binary = { path = "/path/to/lw" } })` (a relative path is taken
 against Neovim's current directory; a path that names no file, or on Windows
 no `.exe`, stops the search with a note), `lw` in an absolute `PATH` entry
@@ -1105,13 +1111,13 @@ the same version (say, a repository pin keeps starting it), is left alone
 with a note. One whose only problem is older file formats stays observed
 (its tasks show as usual) until it is retired, and for the session when the
 editor will not retire it. Any other daemon it leaves alone (or cannot
-use at all) is not connected to again: the editor keeps working in-process
-and picks up the next daemon that is started for the workspace (say, after
+use at all) is not connected to again: the editor runs degraded and picks
+up the next daemon that is started for the workspace (say, after
 you stop the old one with `lw daemon stop` and a terminal `lw` starts a new
 one), without starting one itself. When the plugin wants
 its own `lw` and it is not there yet, the editor downloads the official
-release binary in the background (it keeps working in-process meanwhile; the
-status page says so), checks its SHA-256 against the one the plugin carries,
+release binary in the background (it runs degraded meanwhile; the status
+page says so), checks its SHA-256 against the one the plugin carries,
 and starts the daemon from it; a failed download is one note and is retried by
 `:LoomworksDaemon connect`. `binary = { download = false }` turns downloads
 off; `binary = { release_url = "/path/to/mirror" }` (or `LOOMWORKS_RELEASE_URL`)
@@ -1140,8 +1146,9 @@ not by the editor. `binary = { source = "/path/to/lua" }` (or `true` for this
 plugin's tree) is for plugin development only: it runs the chosen `lw` with
 that Lua source. `:LoomworksDaemon status` and `:checkhealth loomworks` list
 every place it looked and why each was or was not used. The status page's `Runtime:` line (the header's last line)
-names the mode and what chose it (`env`, `setup`, `lw setting`, `default`) and
-says what it is doing; a daemon of another version it cannot follow is named
+names the mode and what chose it (`default`, or `setup`; the deprecated
+in-process editor shows `in-process (setup) — deprecated: the in-process
+editor will be removed`) and says what it is doing; a daemon of another version it cannot follow is named
 there in the warning colour, with the fix.
 
 If a fidget popup gets stuck spinning after every overseer task has
@@ -1378,7 +1385,7 @@ automatically from your system.
 | `:LoomworksTrust` | Review a working copy not signed by this machine: trust (re-sign), discard, or cancel |
 | `:LoomworksCompileCommand [file]` | Show the compile command loomworks' owned clangd database uses for a file (default: current buffer) |
 | `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
-| `:LoomworksDaemon [status\|connect]` | **Experimental** (`runtime = { mode = "daemon" }`): show the editor's connection to the workspace daemon, or connect (starting the daemon when none runs) |
+| `:LoomworksDaemon [status\|connect]` | **Experimental** (the default `daemon` runtime mode): show the editor's connection to the workspace daemon, or connect (starting the daemon when none runs) |
 
 ## Standalone `lw` runner
 

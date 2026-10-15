@@ -1657,30 +1657,27 @@ end
 
 --- The Future of a routed operation, ended through its continuation (see
 --- loomworks.daemon.editor_ops).
---- @param fallback fun(): loomworks.Future the in-process operation
 --- @return loomworks.Future f, loomworks.daemon.OpContinuation k
-local function routed_future(fallback)
+local function routed_future()
     local future_mod = require("loomworks.future")
     local f = future_mod.Future.new()
     local k = {
         resolve = function(v) f:_resolve(v) end,
         reject = function(e) f:_reject(e) end,
-        fallback = function() fallback():next(function(v) f:_resolve(v) end, function(e) f:_reject(e) end) end,
     }
     return f, k
 end
 
 --- An editor operation as a daemon call (spec §19.16 "Editor operations"):
---- its Future, or nil when it is not routed (in-process mode, or the daemon
---- cannot carry it now) — the caller then runs it in-process. `fallback` is
---- the in-process operation, run when the daemon declines the call.
+--- its Future — refused when the daemon cannot carry it now, never run
+--- in-process ("Availability") — or nil in the deprecated `in-process` mode,
+--- where the caller runs it in-process.
 --- @param method "build"|"configure"|"clean"
 --- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
 --- @param opts? table { jobs?, force?, targets? }
---- @param fallback fun(): loomworks.Future
 --- @return loomworks.Future|nil
-function M.route(method, scope, opts, fallback)
-    local f, k = routed_future(fallback)
+function M.route(method, scope, opts)
+    local f, k = routed_future()
     if not require("loomworks.daemon.editor_ops").run(method, scope, opts, k) then return nil end
     f.routed = true
     return f
@@ -1688,12 +1685,11 @@ end
 
 --- A module clean as a daemon call (Profile:clean / ConfigUnit:clean through
 --- the workspace's `_operation_router`; loomworks.daemon.editor_ops.clean):
---- its Future, or nil when not routed.
+--- its Future, or nil in the `in-process` mode.
 --- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
---- @param fallback fun(): loomworks.Future the in-process clean
 --- @return loomworks.Future|nil
-function M.route_clean(scope, fallback)
-    local f, k = routed_future(fallback)
+function M.route_clean(scope)
+    local f, k = routed_future()
     if not require("loomworks.daemon.editor_ops").clean(scope, k) then return nil end
     f.routed = true
     return f
@@ -1702,21 +1698,18 @@ end
 local in_process_configuration_action
 
 --- Run a build or configure of one configuration unit. Returns a Future.
---- In `daemon` mode, while the daemon carries it, it is a `Build/1` call
---- with `units` whose task the editor owns (spec §19.16 "Editor
---- operations", loomworks.daemon.editor_ops); otherwise in-process.
+--- In `daemon` mode it is a `Build/1` call with `units` whose task the
+--- editor owns (spec §19.16 "Editor operations", loomworks.daemon.editor_ops),
+--- refused when the daemon cannot carry it; in-process mode in-process.
 --- @param unit loomworks.ConfigUnit
 --- @param action "build"|"configure"
 --- @param on_complete? fun(success: boolean) legacy callback (deprecated)
 --- @param opts? { parallel_jobs?: integer, force?: boolean }
 --- @return loomworks.Future
 function M.run_configuration_action(unit, action, on_complete, opts)
-    local function in_process()
-        return in_process_configuration_action(unit, action, nil, opts)
-    end
     local routed = (action == "build" or action == "configure") and unit
         and M.route(action, { units = { unit } },
-            { jobs = opts and opts.parallel_jobs, force = opts and opts.force }, in_process)
+            { jobs = opts and opts.parallel_jobs, force = opts and opts.force })
     if not routed then return in_process_configuration_action(unit, action, on_complete, opts) end
     if on_complete then
         routed:next(function() on_complete(true) end)
@@ -2225,13 +2218,27 @@ local in_process_single_task
 function M.launch_single_task(task_def, unit, on_complete)
     -- A module target's build (Target:build names it, `target_id`): in
     -- `daemon` mode a `Build/1.build` of the unit with that project-qualified
-    -- target when the daemon carries it (spec §19.16 "Editor operations").
+    -- target, refused when the daemon cannot carry it (spec §19.16 "Editor
+    -- operations", "Availability"). A task that names no target cannot be
+    -- carried: refused in `daemon` mode too, never run in-process.
     local target_id = task_def and task_def.loomworks and task_def.loomworks.target_id
     local p = unit and unit._project
     local routed = target_id and p and M.route("build", { units = { unit } },
-        { targets = { { project = p.key, target = target_id } } },
-        function() return in_process_single_task(task_def, unit) end)
-    if not routed then return in_process_single_task(task_def, unit, on_complete) end
+        { targets = { { project = p.key, target = target_id } } })
+    if not routed then
+        local ops = require("loomworks.daemon.editor_ops")
+        local daemon, obs = ops.daemon_of(unit and ops.scope_workspace({ units = { unit } }))
+        if not daemon then return in_process_single_task(task_def, unit, on_complete) end
+        local f, k = routed_future()
+        if target_id and p then
+            ops.refuse("build", obs, k)
+        else
+            local msg = "build: a task naming no target cannot be sent to the workspace daemon"
+            vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+            k.reject(msg, true)
+        end
+        routed = f
+    end
     if on_complete then
         routed:next(function() on_complete(true) end)
               :catch(function() on_complete(false) end)
@@ -2297,17 +2304,14 @@ local in_process_profile_action
 --- @param opts? table { parallel_jobs?: integer }
 --- @return loomworks.Future
 function M.run_profile_action(profile, action, opts)
-    -- In `daemon` mode, while the daemon carries it: a `Build/1` call of the
-    -- profile whose task the editor owns (spec §19.16 "Editor operations",
-    -- loomworks.daemon.editor_ops). An explicit configure runs every unit
-    -- either way: there per §19.15, in-process per §5.1.
-    local function in_process()
-        return in_process_profile_action(profile, action, opts)
-    end
+    -- In `daemon` mode a `Build/1` call of the profile whose task the editor
+    -- owns, refused when the daemon cannot carry it (spec §19.16 "Editor
+    -- operations", loomworks.daemon.editor_ops). An explicit configure runs
+    -- every unit either way: there per §19.15, in-process per §5.1.
     local routed = (action == "build" or action == "configure")
         and M.route(action, { profile = profile },
-            { jobs = opts and opts.parallel_jobs, force = opts and opts.force }, in_process)
-    return routed or in_process()
+            { jobs = opts and opts.parallel_jobs, force = opts and opts.force })
+    return routed or in_process_profile_action(profile, action, opts)
 end
 
 --- The in-process profile build / configure (run_profile_action).

@@ -4,10 +4,11 @@
 -- `DebugConfig/1` (§19.20): against an observer whose connection is a
 -- recording fake (no daemon). A non-device launch is a
 -- `Launch/1.prepare_run` / `prepare_debug` the editor owns; its `done`
--- starts the program here (task runner / nvim-dap); declined or degraded →
--- the in-process chain; refused, failed, or the connection lost after
--- `accepted` → no program, never re-run in-process. A preparation's
--- task-runner restart is not sent again.
+-- starts the program here (task runner / nvim-dap); not carried, declined,
+-- degraded, refused, failed, or the connection lost after `accepted` → no
+-- program, never run in-process (step 5s). A device target's launch stays in
+-- the editor, only while connected. A preparation's task-runner restart is
+-- not sent again.
 
 local observer = require("loomworks.daemon.observer")
 local editor_ops = require("loomworks.daemon.editor_ops")
@@ -231,34 +232,113 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.equals(0, #created)
     end)
 
-    it("declined: the in-process chain, the reason as one notification, `(in-process)` title", function()
+    --- How many notifications contain `text`.
+    local function count(text)
+        local n = 0
+        for _, x in ipairs(notes) do if x.msg:find(text, 1, true) then n = n + 1 end end
+        return n
+    end
+
+    it("declined: the reason as one notification line, no program, nothing in-process", function()
         obs = fake_observer()
         require("loomworks.session_tracker").start(lt("run"), "launch")
         sent[1].cb({ outcome = "declined", reason = "another environment" }, nil)
-        assert.is_true(in_process_chain())
-        assert.is_true(noted("declined the launch (another environment)"))
-        assert.equals("Launching app: run (in-process)", titles[1])
+        assert.is_true(vim.wait(2000, function() return noted("declined the launch (another environment)") end, 10))
+        vim.wait(100)
+        assert.equals(1, count("declined the launch"))
+        assert.equals(1, #sent)
+        assert.same({}, launched)
+        assert.equals(0, #created)
+        assert.same({}, titles)
     end)
 
-    it("a daemon without prepare_run: in-process, one Runtime-line note, not called again", function()
+    it("a daemon without prepare_run: refused with its Runtime-line note, not called again", function()
         obs = fake_observer()
         require("loomworks.session_tracker").start(lt("run"), "launch")
         sent[1].cb(nil, { code = "unknown_method", message = "no prepare_run" })
-        assert.is_true(in_process_chain())
+        local note = "launch: daemon offers no loomworks.Launch/1.prepare_run (no prepare_run)"
+        assert.is_true(vim.wait(2000, function() return noted("launch: " .. note) end, 10))
         assert.is_false(obs:can_call("prepare_run"))
         assert.is_true(obs:can_call("prepare_debug"))
         assert.is_true(obs:can_call("build"))
-        assert.truthy((obs.note or ""):find("launch: daemon offers no loomworks.Launch/1.prepare_run", 1, true))
-        assert.is_false(editor_ops.can_prepare("launch", lt("run")))
+        assert.truthy((obs.note or ""):find(note, 1, true))
+        -- The next launch is refused at once.
+        require("loomworks.session_tracker").start(lt("run"), "launch")
+        vim.wait(100)
+        assert.equals(2, count("launch: " .. note))
+        assert.equals(1, #sent)
+        assert.same({}, launched)
+        assert.equals(0, #created)
     end)
 
-    it("no Launch/1 offered: not routed (in-process), builds still are", function()
+    it("no Launch/1 offered: refused with the feature's note, nothing built or run", function()
         obs = fake_observer({ operations = "available", tasks = "subscribed" })
-        assert.is_false(editor_ops.can_prepare("launch", lt("run")))
+        obs._why = { launch = "launch: daemon offers no loomworks.Launch" }
+        assert.is_true(editor_ops.prepares(lt("run")))
         assert.is_true(obs:can_call("build"))
         require("loomworks.session_tracker").start(lt("run"), "launch")
+        vim.wait(100)
+        assert.equals(1, count("loomworks: launch: launch: daemon offers no loomworks.Launch"))
+        assert.same({}, sent)
+        assert.same({}, launched)
+        assert.equals(0, #created)
+    end)
+
+    it("no connection: a launch is refused with the observer's note", function()
+        obs = fake_observer()
+        obs.state, obs.note = "no-binary", "no lw host binary (…) — running degraded"
+        require("loomworks.session_tracker").start(lt("run"), "launch")
+        require("loomworks.session_tracker").start(lt("run"), "debug")
+        vim.wait(100)
+        assert.equals(1, count("loomworks: launch: no lw host binary (…) — running degraded"))
+        assert.equals(1, count("loomworks: debug launch: no lw host binary (…) — running degraded"))
+        assert.same({}, sent)
+        assert.same({}, launched)
+        assert.same({}, dap_runs)
+        assert.equals(0, #created)
+    end)
+
+    it("a device target's launch stays in the editor while connected", function()
+        obs = fake_observer()
+        local t = lt("run")
+        t.requires_device = function() return true end
+        require("loomworks.session_tracker").start(t, "launch")
+        -- The editor's chain, its build routed (Build/1.build), no preparation.
         assert.is_true(in_process_chain())
         assert.equals("build", sent[1].method)
+    end)
+
+    it("a disconnected editor refuses a device target's launch with the Runtime status", function()
+        obs = fake_observer()
+        obs.state, obs.note = "waiting", "waiting for the workspace daemon (connecting)"
+        local t = lt("run")
+        t.requires_device = function() return true end
+        require("loomworks.session_tracker").start(t, "launch")
+        vim.wait(100)
+        assert.equals(1, count("loomworks: launch: waiting for the workspace daemon (connecting)"))
+        assert.same({}, sent)
+        assert.same({}, launched)
+        assert.equals(0, #created)
+        assert.same({}, titles)
+    end)
+
+    it("a disconnected editor refuses a target's build before its pre-build deploy", function()
+        obs = fake_observer()
+        obs.state, obs.note = "waiting", "waiting for the workspace daemon (connecting)"
+        local t = lt("run")
+        local deployed = 0
+        t._deploy_phase = function()
+            deployed = deployed + 1
+            return require("loomworks.future").resolved(true)
+        end
+        local err
+        t:build():catch(function(e) err = e end)
+        assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
+        assert.equals("build: waiting for the workspace daemon (connecting)", err)
+        assert.equals(1, count("loomworks: build: waiting for the workspace daemon (connecting)"))
+        assert.equals(0, deployed)
+        assert.same({}, sent)
+        assert.equals(0, #created)
     end)
 
     it("the connection lost after `accepted`: no program, never re-run in-process", function()
@@ -470,6 +550,26 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.is_true(noted("not configured. Install via :Mason"))
     end)
 
+    it("DebugConfig/1 not carried: no adapter check from the editor's mapping; the daemon prepares", function()
+        obs = fake_observer({ operations = "available", launch = "available", tasks = "subscribed" })
+        require("loomworks.debug").adapter_installed = function() return false end
+        require("loomworks.session_tracker").start(lt("run"), "debug")
+        assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+        assert.equals("prepare_debug", sent[1].method)
+        assert.is_false(noted("not configured"))
+    end)
+
+    it("a language the daemon's records do not name is not resolved from the editor's mapping", function()
+        obs = fake_observer()
+        obs._debug_adapters = { languages = { { language = "c++", adapter = "codelldb" } } }
+        require("loomworks.debug").adapter_installed = function(a) return a == "codelldb" end
+        -- `multi` launches typescript first: the daemon's records do not name it.
+        require("loomworks.session_tracker").start(lt("multi"), "debug")
+        assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+        assert.equals("prepare_debug", sent[1].method)
+        assert.is_false(noted("not configured"))
+    end)
+
     it("a failed `adapters` read is remembered: not sent again until `changed`", function()
         obs = fake_observer()
         assert.is_nil(obs:debug_adapters())
@@ -479,7 +579,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.is_nil(obs:debug_adapters())
         assert.is_nil(obs:debug_adapters())
         assert.equals(1, #sent)
-        -- A debug then resolves in-process (the c++ default).
+        -- A debug is then sent unchecked (debug.run checks the prepared adapter).
         require("loomworks.session_tracker").start(lt("run"), "debug")
         assert.equals(2, #sent)
         assert.equals("prepare_debug", sent[2].method)
@@ -548,10 +648,12 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.same({}, sent)
     end)
 
-    it("carried: read from `adapters` (in-process until the first read), re-read on `changed`", function()
+    it("carried: read from `adapters` (never the in-process mapping), re-read on `changed`", function()
         connect()
-        -- The first read is in flight: the in-process mapping meanwhile.
-        assert.same(require("loomworks.debug_config").adapter_records(ws), editor_ops.debug_adapters(ws))
+        -- The first read is in flight: nothing meanwhile, and why.
+        local recs, why = editor_ops.debug_adapters(ws)
+        assert.is_nil(recs)
+        assert.equals("reading them from the workspace daemon", why)
         assert.equals(1, #sent)
         assert.same({ "/debug", "loomworks.DebugConfig", "adapters" }, { sent[1].object, sent[1].iface, sent[1].method })
         editor_ops.debug_adapters(ws)
@@ -589,15 +691,75 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.equals("adapters", sent[3].method)
     end)
 
-    it("a daemon without DebugConfig/1.set_adapter: in-process, noted", function()
+    it("a daemon without DebugConfig/1.set_adapter: the write fails, noted; nothing in-process", function()
         connect()
+        local orig = vim.notify
+        local notes = {}
+        vim.notify = function(m) notes[#notes + 1] = m end
+        local before = require("loomworks.debug_config").resolve_adapter(ws, "c++")
         local res
-        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok) res = ok end)
+        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
         sent[1].cb(nil, { code = "unknown_method", message = "no set_adapter" })
         assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
-        assert.is_true(res)
-        assert.equals("cppdbg", require("loomworks.debug_config").resolve_adapter(ws, "c++"))
+        local note = "debug adapters: daemon offers no loomworks.DebugConfig/1.set_adapter (no set_adapter)"
+        assert.same({ false, note }, res)
+        assert.equals(before, require("loomworks.debug_config").resolve_adapter(ws, "c++"))
         assert.is_false(obs:can_call("set_adapter"))
-        assert.truthy((obs.note or ""):find("debug adapters: daemon offers no loomworks.DebugConfig/1.set_adapter", 1, true))
+        assert.truthy((obs.note or ""):find(note, 1, true))
+        -- The next write fails at once, nothing sent.
+        res = nil
+        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
+        vim.notify = orig
+        assert.same({ false, note }, res)
+        assert.equals(1, #sent)
+        assert.equals(2, #notes)
+        assert.truthy(notes[2]:find("debug adapter not saved: " .. note, 1, true))
+    end)
+
+    it("a failed or declined `adapters` read re-renders the section with why", function()
+        connect()
+        assert.is_nil(editor_ops.debug_adapters(ws))
+        sent[1].cb(nil, { code = "internal", message = "boom" })
+        assert.is_true(vim.wait(2000, function() return #emitted > 0 end, 10))
+        assert.equals("daemon_debug_adapters", emitted[1])
+        local recs, why = editor_ops.debug_adapters(ws)
+        assert.is_nil(recs)
+        assert.equals("the workspace daemon did not answer DebugConfig/1.adapters", why)
+        obs:_refetch_debug_adapters()
+        sent[2].cb({ outcome = "declined", reason = "trust" }, nil)
+        assert.is_true(vim.wait(2000, function() return #emitted > 1 end, 10))
+        assert.equals("daemon_debug_adapters", emitted[2])
+    end)
+
+    it("not carried: the section is unavailable with the observer's note; writes fail", function()
+        connect({})
+        obs._why = { ["debug adapters"] = "debug adapters: daemon offers no loomworks.DebugConfig" }
+        local recs, why = editor_ops.debug_adapters(ws)
+        assert.is_nil(recs)
+        assert.equals("debug adapters: daemon offers no loomworks.DebugConfig", why)
+        local orig = vim.notify
+        local notes = {}
+        vim.notify = function(m) notes[#notes + 1] = m end
+        local res
+        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
+        -- Declined, too: fails with the reason.
+        obs._feat = { ["debug adapters"] = "available" }
+        local res2
+        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res2 = { ok, err } end)
+        sent[#sent].cb({ outcome = "declined", reason = "trust" }, nil)
+        assert.is_true(vim.wait(2000, function() return res2 ~= nil end, 10))
+        vim.notify = orig
+        assert.same({ false, "debug adapters: daemon offers no loomworks.DebugConfig" }, res)
+        assert.same({ false, "the workspace daemon declined it (trust)" }, res2)
+        assert.equals(2, #notes)
+        -- The status page's section says so.
+        local Tree = require("loomworks.ui.tree")
+        local tree = Tree.new(function(t)
+            require("loomworks.ui.sections.debug")(t, { lw = require("loomworks") })
+        end)
+        obs._feat = {}
+        local lines = tree:render()
+        assert.truthy(table.concat(lines, "\n"):find(
+            "unavailable — debug adapters: daemon offers no loomworks.DebugConfig", 1, true), table.concat(lines, "\n"))
     end)
 end)
