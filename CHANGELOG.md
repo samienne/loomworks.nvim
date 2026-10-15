@@ -35,7 +35,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   instead. The editor ignores `LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON`, `CI`
   and `lw`'s `runtime-mode` setting. `setup({ runtime = { mode = "in-process" } })`
   keeps the old in-process editor for now; it is deprecated and will be
-  removed. (#PR)
+  removed. (#258)
 - A build-directory or device lock whose holder is still running but has
   stopped heartbeating ("hung") is no longer taken over after about 20 s: the
   command stops and names the recovery command, `--break-locks`. Scripts that
