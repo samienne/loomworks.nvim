@@ -178,6 +178,22 @@
         {"send": {"kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": {"object": "/tests", "iface": "loomworks.Tests", "v": 1, "signals": ["results"]}}},
         {"expect": {"kind": "ok", "req_id": 1, "result": {"sub_id": {"$bind": "sub"}}}}
       ]
+    },
+    {
+      "name": "a subscriber receives a run's per-case results, with its task, before the run ends",
+      "fixture": "tests",
+      "allow": [{"kind": "task"}, {"kind": "model_change"}, {"kind": "signal", "object": "/tests", "name": "results"}],
+      "steps": [
+        {"send": {"kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": {"object": "/tests", "iface": "loomworks.Tests", "v": 1}}},
+        {"expect": {"kind": "ok", "req_id": 1, "result": {"sub_id": {"$bind": "sub"}, "seq": {"$type": "integer"}}}},
+        {"send": {"kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": {"profile": {"key": "dev"}}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 2, "result": {"outcome": "accepted", "task_id": {"$bind": "b"}}}},
+        {"expect": {"kind": "task", "task_id": {"$var": "b"}, "phase": "done", "exit_code": 0}, "timeout_ms": 120000},
+        {"send": {"kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {}, "env": {"$var": "env"}}},
+        {"expect": {"kind": "ok", "req_id": 3, "result": {"outcome": "accepted", "task_id": {"$bind": "r"}}}},
+        {"expect": {"kind": "signal", "object": "/tests", "iface": "loomworks.Tests", "v": 1, "name": "results", "sub_id": {"$var": "sub"}, "args": {"seq": {"$type": "integer"}, "task_id": {"$var": "r"}, "cases": {"$type": "array"}}}, "timeout_ms": 120000},
+        {"expect": {"kind": "task", "task_id": {"$var": "r"}, "phase": "done", "exit_code": 1, "result": {"cases": {"$contains": [{"id": {"$type": "string"}, "status": "failed"}]}}}, "timeout_ms": 120000}
+      ]
     }
   ]
 }

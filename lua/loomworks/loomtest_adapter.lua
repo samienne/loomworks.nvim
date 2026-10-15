@@ -7,13 +7,15 @@
 ---
 ---   * `in-process`: the RunSpec adapter over ConfigUnit/TestUnit (discovery,
 ---     commands, results parsing, `ensure_built`), unchanged until step 6b;
----   * `daemon` (step 5m C1): the tree, unit states and last results come
----     only from the daemon's `loomworks.view.Tests/1`; discovery is
+---   * `daemon` (step 5m C1, C2): the tree, unit states and last results
+---     come only from the daemon's `loomworks.view.Tests/1`, a run's live
+---     statuses from `Tests/1` `results` (any client's run); discovery is
 ---     `Tests/1.discover`, sent when the view is `stale` on the first ask or
 ---     while the explorer is open, and forced by the explorer's refresh;
----     `status` reports where the daemon's tests stand (blocked: the tree
----     empty, nothing done in-process). Runs and debug through `Tests/1`
----     arrive in step 5m C2.
+---     `start` is one `Tests/1.run_cases`, `debug_start` a
+---     `Tests/1.prepare_debug` → the debugger → `Tests/1.collect`, and
+---     `result` reads `Tests/1.result`; `status` reports where the daemon's
+---     tests stand (blocked: the tree empty, nothing done in-process).
 
 local test_source = require("loomworks.test_source")
 
@@ -97,6 +99,11 @@ local _stale_meanwhile = false
 --- discovery until the view turns stale again, the explorer opens or a
 --- refresh forces one.
 local _held = false
+--- The editor's test run in progress (step 5m C2): loomtest's sink and the
+--- owned call's handle (its `task_id` once accepted), so the run's own
+--- `results` feed its sink (progress) and other runs' only the nodes.
+--- @type { sink: loomtest.RunSink, handle: table|nil }|nil
+local _run = nil
 
 --- The daemon's tests view as loomtest nodes, or nil (none to show).
 --- @param view loomworks.TestsView
@@ -169,12 +176,176 @@ function M._discover(force)
     if not sent then _inflight = false end
 end
 
---- Debugging a test through the daemon is not available yet (step 5m C2).
---- @return nil
-local function refuse_debug()
-    vim.notify("loomtest: debugging tests through the workspace daemon is not available yet",
-        vim.log.levels.ERROR)
-    return nil
+--- Why a `Tests/1` call cannot be sent now: the tests' blocked status, else
+--- a fixed line (never run in-process instead).
+--- @param what string e.g. "run tests"
+--- @return string
+local function not_carried(what)
+    local st = test_source.daemon_status()
+    if st and st.blocked then return st.text end
+    return "the workspace daemon cannot " .. what .. " now"
+end
+
+--- `TestCaseResult`s (the run's result, `results`, a `collect`) as sink
+--- updates; an unknown status is shown neutral.
+--- @param cases table[]|nil
+--- @return { id: string, status: string|nil, duration: number|nil, message: string|nil }[]
+function M._updates(cases)
+    local out = {}
+    for _, c in ipairs(type(cases) == "table" and cases or {}) do
+        if type(c) == "table" and type(c.id) == "string" then
+            out[#out + 1] = { id = c.id, status = STATUSES[c.status] and c.status or nil,
+                duration = tonumber(c.duration), message = type(c.message) == "string" and c.message or nil }
+        end
+    end
+    return out
+end
+
+--- Run nodes through the daemon (§19.16 "Tests" Runs, LOOMTEST.md §13.1):
+--- one `Tests/1.run_cases` the editor owns (its overseer row's stop cancels
+--- it). A run that ran ends well — its failed tests are the tree's, its end
+--- the view's `update` — anything else ends the sink with why.
+--- @param selection string[]|nil
+--- @param opts { no_build: boolean }|nil
+--- @param sink loomtest.RunSink
+--- @return loomtest.RunHandle|nil
+local function start_run(selection, opts, sink)
+    local run = { sink = sink }
+    local function settle()
+        if _run == run then _run = nil end
+    end
+    local sent, handle = test_source.daemon_run(selection, { no_build = opts and opts.no_build or nil }, {
+        resolve = function(done, err)
+            settle()
+            if type(done.cases) == "table" then
+                sink.status(M._updates(done.cases))
+                return sink.done(true)
+            end
+            sink.done(false, err or done.error or "the test run failed")
+        end,
+        reject = function(err)
+            settle()
+            sink.done(false, err)
+        end,
+    })
+    if not sent then
+        sink.done(false, not_carried("run tests"))
+        vim.schedule(function() M._render() end)
+        return nil
+    end
+    run.handle = handle
+    _run = run
+    return {
+        cancel = function()
+            settle()
+            if handle then handle:cancel() end
+            sink.done(true)
+        end,
+    }
+end
+
+--- Debug one node through the daemon (§19.16 "Tests" Debug, LOOMTEST.md
+--- §13.1): `Tests/1.prepare_debug` (an owned task building what its run
+--- would), then the returned `debug` spec handed to the editor's debugger,
+--- and `Tests/1.collect { prepared }` once the session ends. No language or
+--- adapter is assumed: the adapter comes with the spec, so its installed
+--- check is made here, after `done`; a missing one shows the install hint,
+--- starts nothing and collects at once (dropping the token and its file).
+--- @param test_id string
+--- @param sink loomtest.RunSink
+--- @return loomtest.RunHandle|nil
+local function start_debug(test_id, sink)
+    local function collect(token, after)
+        local sent = type(token) == "string" and test_source.daemon_collect(token, function(cases)
+            if cases then sink.status(M._updates(cases)) end
+            after()
+        end)
+        if not sent then after() end
+    end
+    local function launch(done)
+        local d, token = done.debug, done.prepared
+        local debug_mod = require("loomworks.debug")
+        local primary = type(d) == "table" and type(d.adapters) == "table" and d.adapters[1] or nil
+        if type(primary) ~= "table" or type(d.program) ~= "string" then
+            return collect(token, function()
+                sink.done(false, "the workspace daemon returned no debug launch")
+            end)
+        end
+        if not debug_mod.adapter_installed(primary.adapter) then
+            debug_mod.adapter_hint(primary.adapter, primary.language or d.language)
+            return collect(token, function() sink.done(false) end)
+        end
+        local env = type(d.env) == "table" and next(d.env) and d.env or nil
+        local name = type(d.name) == "string" and d.name or "Debug test"
+        -- The one nvim-dap start of a prepared test (the program is the
+        -- editor's, §19.16 "Tests" Debug): the launch and any attach.
+        local function dap_start(spec, cbs) return debug_mod.run(spec, cbs) end
+        local callbacks = {
+            on_terminated = function()
+                collect(token, function() sink.done(true) end)
+            end,
+        }
+        -- The other debug languages attach to the program's process
+        -- (§8.9.6 "Multi-adapter debugging").
+        if #d.adapters > 1 then
+            callbacks.on_pid = function(pid)
+                for i = 2, #d.adapters do
+                    local a = d.adapters[i]
+                    if type(a) == "table" and a.adapter then
+                        dap_start({ adapter = a.adapter, request = "attach", attach_pid = pid,
+                            program = d.program, cwd = d.cwd, name = name .. " (" .. a.adapter .. ")" })
+                    end
+                end
+            end
+        end
+        local started = dap_start({ name = name, program = d.program, args = d.args or {}, cwd = d.cwd,
+            env = env, adapter = primary.adapter }, callbacks)
+        if not started then
+            collect(token, function() sink.done(false, "the debugger did not start") end)
+        end
+    end
+    local sent, handle = test_source.daemon_prepare_debug(test_id, {
+        resolve = function(done, err)
+            if err then
+                return collect(done.prepared, function() sink.done(false, err) end)
+            end
+            launch(done)
+        end,
+        reject = function(err) sink.done(false, err) end,
+    })
+    if not sent then
+        sink.done(false, not_carried("debug tests"))
+        return nil
+    end
+    return {
+        cancel = function()
+            if handle then handle:cancel() end
+            sink.done(true)
+        end,
+    }
+end
+
+--- A node's output and error locations (`Tests/1.result`, §19.16 "Tests"
+--- Output) as a loomtest result; nil when it cannot be read.
+--- @param test_id string
+--- @param callback fun(r: loomtest.TestResult|nil)
+local function read_result(test_id, callback)
+    local sent = test_source.daemon_result(test_id, function(r)
+        if type(r) ~= "table" then return callback(nil) end
+        local errors = {}
+        for _, e in ipairs(type(r.errors) == "table" and r.errors or {}) do
+            if type(e) == "table" then
+                errors[#errors + 1] = { message = tostring(e.message or ""),
+                    file = type(e.file) == "string" and e.file or nil, line = tonumber(e.line) }
+            end
+        end
+        local output = type(r.output) == "string" and r.output or nil
+        if output and r.truncated then output = "[… earlier output cut]\n" .. output end
+        callback({ test_id = test_id, status = STATUSES[r.status] and r.status or nil,
+            message = type(r.message) == "string" and r.message or nil, output = output, errors = errors,
+            duration = tonumber(r.duration) })
+    end)
+    if not sent then callback(nil) end
 end
 
 --- The daemon form of the adapter.
@@ -210,17 +381,13 @@ local function create_daemon_adapter()
         -- The explorer's refresh: a forced discovery.
         invalidate = function() M._discover(true) end,
 
-        -- Runs through `Tests/1.run_cases` arrive in step 5m C2; until then a
-        -- run is refused here and never run in-process.
-        start = function(_, _, sink)
-            sink.done(false, "running tests through the workspace daemon is not available yet")
-            vim.schedule(function() M._render() end)
-            return nil
-        end,
-        -- With `start` given, loomtest asks for a run spec only to debug:
-        -- refused as a run is, with loomtest's run-failure notice.
-        run = refuse_debug,
-        run_suite = refuse_debug,
+        -- Runs, debug and output through `Tests/1` (step 5m C2); with `start`
+        -- and `debug_start` given loomtest never asks for a RunSpec.
+        start = start_run,
+        debug_start = start_debug,
+        result = read_result,
+        run = function() return nil end,
+        run_suite = function() return nil end,
         run_all = function() return nil end,
         parse_results = function() return nil end,
 
@@ -507,7 +674,7 @@ end
 --- Test seam: forget the daemon form's state.
 function M._reset()
     _adapter, _asked, _inflight, _rendering = nil, false, false, false
-    _last_stale, _stale_meanwhile, _held = nil, false, false
+    _last_stale, _stale_meanwhile, _held, _run = nil, false, false, nil
 end
 
 --- Set up event listeners for automatic registration.
@@ -556,6 +723,18 @@ function M.setup()
         schedule_render()
     end)
     lw.on("daemon_runtime_changed", function() schedule_render() end)
+    -- A run's per-case progress (§19.16 "Tests" Runs): the editor's own run
+    -- feeds its sink (progress), another client's run or a collect only the
+    -- nodes.
+    lw.on("daemon_test_results", function(d)
+        if test_source.mode() ~= "daemon" or type(d) ~= "table" then return end
+        local updates = M._updates(d.cases)
+        local run = _run
+        if run and d.task_id ~= nil and run.handle and run.handle.task_id == d.task_id then
+            return run.sink.status(updates)
+        end
+        require("loomtest.runner").apply_status(updates)
+    end)
     vim.api.nvim_create_autocmd("FileType", {
         pattern = "loomtest",
         group = vim.api.nvim_create_augroup("loomworks_loomtest_daemon", { clear = true }),

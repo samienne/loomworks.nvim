@@ -62,7 +62,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
         local obs = setmetatable({
             ws = ws, root = ws.root, state = "connected", mode = "interfaces", conn = conn,
             daemon = { pid = 1 }, seq = 0, _tasks = {}, _order = {}, _owned = {},
-            _feat = feat or { [observer.VIEW_TESTS.feature] = "subscribed", [observer.TESTS.feature] = "available",
+            _feat = feat or { [observer.VIEW_TESTS.feature] = "subscribed", [observer.TESTS.feature] = "subscribed",
                 [observer.TASKS.feature] = "subscribed" },
             _why = {},
             opts = { environ = function() return { PATH = "/x" } end },
@@ -112,7 +112,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
     end
 
     describe("observer descriptors and the view store", function()
-        it("declares the tests view on /views and Tests/1 discover as an owned call", function()
+        it("declares the tests view on /views and Tests/1 on /tests, subscribed for `results`", function()
             assert.equals("/views", observer.VIEW_TESTS.object)
             assert.equals("loomworks.view.Tests", observer.VIEW_TESTS.iface)
             assert.equals("tests", observer.VIEW_TESTS.view)
@@ -120,8 +120,10 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             assert.is_true(vim.tbl_contains(observer.FEATURES, observer.VIEW_TESTS))
             assert.equals("/tests", observer.TESTS.object)
             assert.equals("loomworks.Tests", observer.TESTS.iface)
-            assert.same({ "discover" }, observer.TESTS.methods)
-            assert.is_true(observer.TESTS.call_only and observer.TESTS.tasks)
+            assert.same({ "discover", "run_cases", "prepare_debug", "collect", "result" }, observer.TESTS.methods)
+            assert.same({ "results" }, observer.TESTS.signals)
+            assert.is_true(observer.TESTS.callable and observer.TESTS.tasks)
+            assert.is_nil(observer.TESTS.call_only)
             assert.is_true(vim.tbl_contains(observer.FEATURES, observer.TESTS))
             assert.are_not.equal(observer.VIEW_TESTS.feature, observer.TESTS.feature)
         end)
@@ -143,7 +145,8 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             obs:_ensure_subscriptions(obs.conn, objects, function() done = true end)
             assert.is_true(vim.wait(1000, function() return done end, 10))
             assert.equals("subscribed", obs._feat[observer.VIEW_TESTS.feature])
-            assert.equals("available", obs._feat[observer.TESTS.feature])
+            assert.equals("subscribed", obs._feat[observer.TESTS.feature])
+            assert.equals(1, obs._tests_seq)
             assert.equals("pr1", views.daemon_state(obs, "tests").profile_id)
 
             obs:_on_message({ kind = "signal", object = "/views", iface = "loomworks.view.Tests", v = 1,
@@ -494,20 +497,244 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             end)
         end)
 
-        it("debug is refused as not available yet, never in-process", function()
-            local obs = fake_obs()
-            views.set(obs, "tests", tview())
-            adapter_mod.register()
-            loomtest.discover()
-            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3") ~= nil end, 10))
-            loomtest.debug("n3")
-            loomtest.debug("n1")
-            local refused = 0
-            for _, n in ipairs(notes) do
-                if n.msg == "loomtest: debugging tests through the workspace daemon is not available yet"
-                    and n.level == vim.log.levels.ERROR then refused = refused + 1 end
+    end)
+
+    describe("runs, debug and output through Tests/1 (step 5m C2, §19.16 Tests)", function()
+        local dbg = require("loomworks.debug")
+        local runner = require("loomtest.runner")
+        local orig_installed, orig_run, orig_hint
+        local dap_runs, hints
+
+        before_each(function()
+            orig_installed, orig_run, orig_hint = dbg.adapter_installed, dbg.run, dbg.adapter_hint
+            dap_runs, hints = {}, {}
+            dbg.adapter_installed = function(a) return a == "codelldb" end
+            dbg.run = function(spec, cb)
+                dap_runs[#dap_runs + 1] = { spec = spec, cb = cb }
+                return true
             end
-            assert.equals(2, refused)
+            dbg.adapter_hint = function(a, l) hints[#hints + 1] = { adapter = a, language = l } end
+        end)
+        after_each(function()
+            dbg.adapter_installed, dbg.run, dbg.adapter_hint = orig_installed, orig_run, orig_hint
+        end)
+
+        local function calls_of(calls, method, object)
+            local out = {}
+            for _, c in ipairs(calls) do
+                if c.method == method and (not object or c.object == object) then out[#out + 1] = c end
+            end
+            return out
+        end
+
+        local function errors()
+            local out = {}
+            for _, n in ipairs(notes) do
+                if n.level == vim.log.levels.ERROR then out[#out + 1] = n.msg end
+            end
+            return out
+        end
+
+        --- The adapter set up on a fresh view; the fake answers `answer`.
+        local function on_view(answer, view)
+            local obs, calls = fake_obs(answer)
+            obs._tests_seq = 1
+            adapter_mod.setup()
+            adapter_mod.register()
+            obs:_set_view("tests", view or tview())
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3") ~= nil end, 10))
+            return obs, calls
+        end
+
+        local function results(obs, seq, task_id, cases)
+            obs:_on_message({ kind = "signal", object = "/tests", iface = "loomworks.Tests", v = 1,
+                name = "results", args = { seq = seq, task_id = task_id, cases = cases } })
+        end
+
+        it("a run is one owned run_cases; its results move the nodes; nothing runs in-process", function()
+            local obs, calls = on_view(function(m)
+                if m == "run_cases" then return { outcome = "accepted", task_id = 11 } end
+            end)
+            local spec_asked = 0
+            local a = loomtest.adapters()[1]
+            local orig = a.run
+            a.run = function(...) spec_asked = spec_asked + 1; return orig(...) end
+            loomtest.run("n2")
+            local rc = calls_of(calls, "run_cases")
+            assert.equals(1, #rc)
+            assert.equals("/tests", rc[1].object)
+            assert.equals("loomworks.Tests", rc[1].iface)
+            assert.same({ select = { { id = "n2" } } }, rc[1].args)
+            assert.is_table(rc[1].env)
+            vim.wait(50)
+            results(obs, 2, 11, { { id = "n3", status = "running" } })
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3").status == "running" end, 10))
+            -- The held view carries the delta (a re-render shows it).
+            assert.equals("running", views.daemon_state(obs, "tests").units[1].nodes[3].status)
+            results(obs, 3, 11, { { id = "n3", status = "passed", duration = 5 } })
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3").status == "passed" end, 10))
+            obs:_on_message({ kind = "task", task_id = 11, phase = "done", exit_code = 0,
+                result = { cases = { { id = "n3", status = "passed", duration = 5 } },
+                    counts = { passed = 1, failed = 0, skipped = 0, errored = 0 } } })
+            vim.wait(50)
+            assert.equals("passed", loomtest.get_node("n3").status)
+            assert.same({}, errors())
+            assert.equals(0, spec_asked)
+        end)
+
+        it("failed tests end the run quietly; a run that ran no tests fails with its error", function()
+            local n = 20
+            local obs, calls = on_view(function(m)
+                if m == "run_cases" then
+                    n = n + 1
+                    return { outcome = "accepted", task_id = n }
+                end
+            end)
+            loomtest.run("n3")
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 21, phase = "done", exit_code = 1,
+                error = "1 of 1 tests failed", result = { cases = { { id = "n3", status = "failed", message = "x" } } } })
+            vim.wait(50)
+            assert.equals("failed", loomtest.get_node("n3").status)
+            assert.same({}, errors())
+            loomtest.run("n3")
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 22, phase = "done", exit_code = 1, error = "build failed" })
+            assert.is_true(vim.wait(1000, function() return #errors() == 1 end, 10))
+            assert.equals("loomtest: build failed", errors()[1])
+            assert.equals(2, #calls_of(calls, "run_cases"))
+        end)
+
+        it("run-all selects nothing, no-build sends no_build; a refusal says why once", function()
+            local _, calls = on_view(function(m)
+                if m == "run_cases" then return { outcome = "refused", message = "the node is stale" } end
+            end)
+            loomtest.run_all_no_build()
+            local rc = calls_of(calls, "run_cases")
+            assert.same({ no_build = true }, rc[1].args)
+            assert.is_true(vim.wait(1000, function() return #errors() == 1 end, 10))
+            assert.equals("loomtest: the node is stale", errors()[1])
+        end)
+
+        it("stopping the run cancels its task", function()
+            local _, calls = on_view(function(m)
+                if m == "run_cases" then return { outcome = "accepted", task_id = 31 } end
+            end)
+            loomtest.run("n1")
+            vim.wait(50)
+            assert.is_true(runner.cancel())
+            local c = calls_of(calls, "cancel")
+            assert.equals(1, #c)
+            assert.same({ task_id = 31 }, c[1].args)
+        end)
+
+        it("another client's results move the nodes; a seq gap re-gets the tests view", function()
+            local obs, calls = on_view(function(m)
+                if m == "get" then return tview({ stale = true }) end
+            end)
+            results(obs, 2, 99, { { id = "n3", status = "running" } })
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3").status == "running" end, 10))
+            assert.equals(0, #calls_of(calls, "get"))
+            results(obs, 5, 99, { { id = "n3", status = "passed" } })
+            assert.is_true(vim.wait(1000, function() return #calls_of(calls, "get", "/views") == 1 end, 10))
+            assert.is_true(vim.wait(1000, function() return views.daemon_state(obs, "tests").stale == true end, 10))
+        end)
+
+        it("debug: prepare_debug, the returned spec to the debugger, collect when it ends", function()
+            local obs, calls = on_view(function(m)
+                if m == "prepare_debug" then return { outcome = "accepted", task_id = 41 } end
+                if m == "collect" then return { outcome = "ok", cases = { { id = "n3", status = "passed" } } } end
+            end)
+            loomtest.debug("n3")
+            local pd = calls_of(calls, "prepare_debug")
+            assert.equals(1, #pd)
+            assert.equals("/tests", pd[1].object)
+            assert.same({ select = { id = "n3" } }, pd[1].args)
+            assert.is_table(pd[1].env)
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 41, phase = "done", exit_code = 0, result = {
+                debug = { program = "/b/a_test", args = { "--gtest_filter=Math.Add" }, cwd = "/b",
+                    language = "c++", adapters = { { language = "c++", adapter = "codelldb" } } },
+                prepared = "tok" } })
+            assert.is_true(vim.wait(1000, function() return #dap_runs == 1 end, 10))
+            local s = dap_runs[1].spec
+            assert.equals("codelldb", s.adapter)
+            assert.equals("/b/a_test", s.program)
+            assert.same({ "--gtest_filter=Math.Add" }, s.args)
+            assert.equals("/b", s.cwd)
+            assert.equals(0, #calls_of(calls, "collect"))
+            dap_runs[1].cb.on_terminated()
+            local col = calls_of(calls, "collect")
+            assert.equals(1, #col)
+            assert.same({ prepared = "tok" }, col[1].args)
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3").status == "passed" end, 10))
+            assert.same({}, errors())
+        end)
+
+        it("debug with an adapter that is not installed: the hint, no session, collect at once", function()
+            local obs, calls = on_view(function(m)
+                if m == "prepare_debug" then return { outcome = "accepted", task_id = 42 } end
+                if m == "collect" then return { outcome = "ok", cases = {} } end
+            end)
+            loomtest.debug("n3")
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 42, phase = "done", exit_code = 0, result = {
+                debug = { program = "/b/a_test", args = {}, cwd = "/b", language = "c++",
+                    adapters = { { language = "c++", adapter = "gdb" } } }, prepared = "tok2" } })
+            assert.is_true(vim.wait(1000, function() return #calls_of(calls, "collect") == 1 end, 10))
+            assert.same({ prepared = "tok2" }, calls_of(calls, "collect")[1].args)
+            assert.equals(0, #dap_runs)
+            assert.same({ { adapter = "gdb", language = "c++" } }, hints)
+        end)
+
+        it("the test prepare_debug never collides with Launch/1's", function()
+            local obs, calls = fake_obs(function() return { outcome = "accepted", task_id = 1 } end)
+            obs._feat[observer.LAUNCH.feature] = "available"
+            obs:start_owned("prepare_debug", {}, { on_reply = function() end, on_done = function() end })
+            obs:start_owned("prepare_test_debug", {}, { on_reply = function() end, on_done = function() end })
+            assert.equals("/launch", calls[1].object)
+            assert.equals("/tests", calls[2].object)
+            assert.equals("prepare_debug", calls[2].method)
+            assert.is_true(obs:can_call("prepare_test_debug"))
+            obs:_degrade("prepare_test_debug", { code = "unknown_method" })
+            assert.matches("loomworks%.Tests/1%.prepare_debug", obs._method_notes[1])
+            assert.matches("tests unavailable$", obs._method_notes[1])
+            assert.is_false(obs:can_call("prepare_test_debug"))
+            assert.is_true(obs:can_call("prepare_debug"))
+        end)
+
+        it("output and error locations are read with result when shown, once", function()
+            local file = root .. "/a_test.cpp"
+            local view = tview()
+            view.units[1].nodes[3].file = file
+            local _, calls = on_view(function(m, args)
+                if m == "result" then
+                    return { id = args.id, status = "failed", message = "boom", output = "the output",
+                        errors = { { message = "Expected 2", file = file, line = 4 } } }
+                end
+            end, view)
+            local got
+            loomtest.load_result("n3", function(node) got = node end)
+            assert.is_true(vim.wait(1000, function() return got ~= nil end, 10))
+            assert.same({ id = "n3" }, calls_of(calls, "result")[1].args)
+            assert.equals("the output", got._output)
+            assert.equals(4, got._errors[1].line)
+            loomtest.load_result("n3", function() end)
+            assert.equals(1, #calls_of(calls, "result"))
+            -- Inline: a failed node's error detail in its file's buffer.
+            loomtest.get_node("n3")._result_loaded = nil
+            local buf = vim.api.nvim_create_buf(true, false)
+            vim.api.nvim_buf_set_name(buf, file)
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "", "", "", "", "", "" })
+            require("loomtest.inline").update_buf(buf)
+            assert.is_true(vim.wait(1000, function()
+                for _, d in ipairs(vim.diagnostic.get(buf)) do
+                    if d.lnum == 3 and d.message == "Expected 2" then return true end
+                end
+                return false
+            end, 10))
+            assert.equals(2, #calls_of(calls, "result"))
+            vim.api.nvim_buf_delete(buf, { force = true })
         end)
     end)
 

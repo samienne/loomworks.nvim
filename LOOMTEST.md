@@ -287,6 +287,11 @@ for non-test lines. In explorer, delegates to selected node.
 error data. Closes the float and opens in a non-explorer window.
 `e` in the explorer jumps to first error location.
 
+For an adapter with `result` (§3) the output, message and error locations
+are read from it when shown — the output window, `e`, and the inline marks
+and diagnostics of a failed node whose file is shown (§7) — once per node
+until its status changes or the tree is replaced.
+
 ## 9. Source Navigation
 
 ### 9.1 Explorer → source (`i` key)
@@ -382,6 +387,8 @@ statuses from `Tests/1` `results`. It implements `start`, `debug_start`,
   the task's `done` (the adapter is known only from the returned spec) and
   before `debug.run()`; a missing adapter shows the install hint, starts no
   session and calls `Tests/1.collect` at once to drop the prepared token.
+  `debug_start` takes one node, so debugging a file's tests debugs its one
+  test; a file with several says to debug the test at the cursor.
 - **Output**: `o`, `e`, inline marks and diagnostics of failed nodes read
   `Tests/1.result { id }`.
 - **Status**: unloaded, disconnected, `error`/`refused`, or the interfaces

@@ -3241,11 +3241,12 @@ editor's — rendering, navigation, the cursor's test, the output window.
   disconnect" below, the view cleared then), while it is `error` or
   `refused`, and while the feature is degraded (no host binary, an
   incompatible daemon, `loomworks.Tests/1` or `loomworks.view.Tests/1`
-  missing or at another version), the explorer's header shows that status
-  (e.g. `tests: waiting for the workspace daemon`, `tests: daemon offers no
-  loomworks.view.Tests/1`), its tree is empty, and discovery, runs and debug
-  are refused with that status as one notification line — **never** done
-  in-process. Gutter signs and inline marks are cleared with the tree. On
+  missing or at another version, a daemon that offers no
+  `loomworks.Tasks/1` (needed to own a discovery)), the explorer's header
+  shows that status (e.g. `tests: waiting for the workspace daemon`,
+  `tests: daemon offers no loomworks.view.Tests/1`), its tree is empty, and
+  discovery, runs and debug are refused with that status as one notification
+  line — **never** done in-process. Gutter signs and inline marks are cleared with the tree. On
   reconnect the subscription's `initial` restores the tree and the daemon's
   last results; a discovery, run or preparation the editor owned past
   `accepted` fails with the connection ("Editor operations" above) and is
@@ -4084,7 +4085,7 @@ runtime is deferred until that module is actively developed.
        overseer rows, cancel, live status from `results`), debug through
        `prepare_debug` → the debug seam → `collect`, `ensure_built` unused in
        `daemon` mode, the reach-in counts lowered, a real-daemon end-to-end
-       check; D *(optional, later)* — last results persisted across daemon
+       check *(done once merged)*; D *(optional, later)* — last results persisted across daemon
        restarts, and a daemon-mode neotest (positions and results from the
        view, runs through a CLI relay such as `lw test --select <id>…`,
        designed with `lw test --list`).

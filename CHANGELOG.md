@@ -52,10 +52,18 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   results, kept across reconnects); discovery runs in the daemon as a task
   the editor owns, when the tree is stale and on refresh. While the daemon
   is unavailable or the workspace unloaded the explorer header says so and
-  refresh and runs are refused; nothing is discovered in Neovim. Running
-  tests from the explorer in daemon mode is not available yet. The neotest
+  refresh and runs are refused; nothing is discovered in Neovim. The neotest
   adapter is not available in daemon mode (one notice). In-process mode is
   unchanged. (#251)
+- Experimental daemon: in daemon mode running and debugging tests from the
+  loomtest explorer goes through the workspace daemon. A run (a test, suite,
+  target, file or all) is one task the editor owns, with its build, shown as
+  one overseer entry whose stop cancels it; the explorer, gutter signs and
+  inline marks follow its per-case progress (another editor's runs too).
+  Debugging a test builds it in the daemon and starts the debugger with the
+  adapter the daemon resolved; its results are recorded when the session
+  ends. A test's output, its first-error jump and the inline error detail
+  are read from the daemon when shown. (#254)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor

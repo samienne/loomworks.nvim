@@ -217,18 +217,21 @@ M.LSP = {
     object = "/lsp", iface = "loomworks.LspConfig", v = 1, feature = "lsp configuration",
     methods = { "get", "set_option" }, signals = { "changed" }, callable = true,
 }
--- The tests (step 5m C1, §19.13 "The tests view", §19.16 "Tests"): the
--- view backs the test explorer; `discover` is a task the editor owns. One
--- feature `tests` on the Runtime line (`label`), two entries here since one
--- is subscribed to and the other only called. Never in-process: a missing
--- one makes the tests unavailable (`unavailable`), not run in the editor.
+-- The tests (step 5m C1/C2, §19.13 "The tests view", §19.16 "Tests"): the
+-- view backs the test explorer; `discover`, `run_cases` and `prepare_debug`
+-- are tasks the editor owns, `collect` and `result` plain calls, and `/tests`
+-- is subscribed to for a run's per-case `results` (C2). One feature `tests`
+-- on the Runtime line (`label`), two entries here since each is its own
+-- subscription. Never in-process: a missing one makes the tests unavailable
+-- (`unavailable`), not run in the editor.
 M.VIEW_TESTS = {
     object = "/views", iface = "loomworks.view.Tests", v = 1, feature = "tests view", label = "tests",
     methods = { "get" }, signals = { "update" }, view = "tests",
 }
 M.TESTS = {
     object = "/tests", iface = "loomworks.Tests", v = 1, feature = "tests", label = "tests",
-    methods = { "discover" }, signals = {}, call_only = true, tasks = true, unavailable = "tests unavailable",
+    methods = { "discover", "run_cases", "prepare_debug", "collect", "result" }, signals = { "results" },
+    callable = true, tasks = true, unavailable = "tests unavailable",
 }
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS }
 M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.BUILD, M.LAUNCH, M.DEBUG,
@@ -1428,7 +1431,7 @@ function Observer:_subscribe(conn, done)
     self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
-    self._view_seq = nil
+    self._view_seq, self._tests_seq = nil, nil
     self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
     if not (type(conn.transport) == "number" and conn.transport >= 11) or type(welcome_objects) ~= "table"
@@ -1490,6 +1493,11 @@ function Observer:_ensure_subscriptions(conn, objects, done)
                             self._feat[f] = "subscribed"
                             self._why[f] = nil
                             if want.view then self:_view_subscribed(want, result) end
+                            -- `/tests` `results` (step 5m C2): its own `seq`
+                            -- baseline (per object and connection, §19.12).
+                            if want == M.TESTS and type(result) == "table" then
+                                self._tests_seq = tonumber(result.seq)
+                            end
                         end
                         settle()
                     end)
@@ -1498,11 +1506,11 @@ function Observer:_ensure_subscriptions(conn, objects, done)
             -- Offered at other versions only.
             if st ~= "refused" and st ~= "gave_up" then
                 self._feat[f] = "missing"
-                self._why[f] = M.feature_note(want, offered)
+                self._why[f] = M.feature_note(want, offered) .. (want.unavailable and (" — " .. want.unavailable) or "")
             end
         elseif st ~= "refused" and st ~= "gave_up" then
             self._feat[f] = nil
-            self._why[f] = M.feature_note(want, offered)
+            self._why[f] = M.feature_note(want, offered) .. (want.unavailable and (" — " .. want.unavailable) or "")
         end
     end
     settle()
@@ -1568,12 +1576,14 @@ function Observer:_view_update(want, msg)
     if gap then self:_refetch_views() end
 end
 
---- Fetch every subscribed view again (`get`, its full state) after a gap.
-function Observer:_refetch_views()
+--- Fetch every subscribed view (or only `only`) again (`get`, its full
+--- state) after a gap.
+--- @param only? table one of M.VIEWS
+function Observer:_refetch_views(only)
     local conn = self.conn
     if not conn or type(conn.call) ~= "function" then return end
     for _, want in ipairs(M.VIEWS) do
-        if self._feat and self._feat[want.feature] == "subscribed" then
+        if (not only or want == only) and self._feat and self._feat[want.feature] == "subscribed" then
             conn:call(want.object, want.iface, want.v, "get", {}, function(state, err)
                 vim.schedule(function()
                     if self.state == "stopped" or self.conn ~= conn or err or type(state) ~= "table" then return end
@@ -1582,6 +1592,40 @@ function Observer:_refetch_views()
             end)
         end
     end
+end
+
+--- `Tests/1` `results` (step 5m C2, §19.20; §19.16 "Tests" Runs): a run's
+--- per-case progress — any client's — or the cases a `collect` recorded, as
+--- a delta on top of the tests view. The cases are written into the held
+--- view (so a re-render shows them) and passed on as `daemon_test_results`
+--- for the explorer, signs and inline marks; a `seq` gap re-gets the tests
+--- view (its state includes every change a lost `results` carried).
+--- @param args table `{ seq, task_id?, cases }`
+function Observer:_test_results(args)
+    local st = self._feat and self._feat[M.TESTS.feature]
+    if st ~= "subscribed" and st ~= "pending" then return end
+    local seq = tonumber(args.seq)
+    local gap = seq ~= nil and self._tests_seq ~= nil and seq > self._tests_seq + 1
+    if seq and seq > (self._tests_seq or 0) then self._tests_seq = seq end
+    local cases = {}
+    for _, c in ipairs(type(args.cases) == "table" and args.cases or {}) do
+        if type(c) == "table" and type(c.id) == "string" then cases[#cases + 1] = c end
+    end
+    local view = views.daemon_state(self, "tests")
+    if #cases > 0 and type(view) == "table" then
+        local by_id = {}
+        for _, u in ipairs(type(view.units) == "table" and view.units or {}) do
+            for _, n in ipairs(type(u.nodes) == "table" and u.nodes or {}) do
+                if type(n) == "table" and n.id ~= nil then by_id[n.id] = n end
+            end
+        end
+        for _, c in ipairs(cases) do
+            local n = by_id[c.id]
+            if n then n.status, n.duration, n.message = c.status, c.duration, c.message end
+        end
+    end
+    if #cases > 0 then self:_emit("daemon_test_results", { task_id = args.task_id, cases = cases }) end
+    if gap then self:_refetch_views(M.VIEW_TESTS) end
 end
 
 --- Joining late (spec §19.16): ask `status` and adopt every task in its
@@ -1668,7 +1712,7 @@ function Observer:_on_closed(c)
     self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
-    self._view_seq = nil
+    self._view_seq, self._tests_seq = nil, nil
     self:_clear_views()
     self:_lsp_changed()
     self:_stop_timer("_keepalive")
@@ -1714,6 +1758,8 @@ function Observer:_on_message(msg)
         elseif msg.object == M.LSP.object and msg.iface == M.LSP.iface and msg.name == "changed" then
             -- Thin (§19.20): read the state again with the editor's environment.
             return self:_fetch_lsp()
+        elseif msg.object == M.TESTS.object and msg.iface == M.TESTS.iface and msg.name == "results" then
+            return self:_test_results(args)
         elseif msg.name == "update" then
             for _, want in ipairs(M.VIEWS) do
                 if msg.object == want.object and msg.iface == want.iface and msg.v == want.v then
@@ -1853,8 +1899,14 @@ local METHOD_IFACE = {
     adapters = M.DEBUG, set_adapter = M.DEBUG,
     get = M.LSP, set_option = M.LSP,
     cancel = M.TASKS,
-    discover = M.TESTS,
+    discover = M.TESTS, run_cases = M.TESTS, prepare_test_debug = M.TESTS, collect = M.TESTS, result = M.TESTS,
 }
+
+--- The wire method of a call whose editor-side name differs (step 5m C2):
+--- Launch/1 and Tests/1 both have a `prepare_debug`, so the test one is the
+--- call `prepare_test_debug` here — METHOD_IFACE, CALLS and the degraded
+--- methods are keyed by the call's name, the daemon is sent `prepare_debug`.
+local WIRE = { prepare_test_debug = "prepare_debug" }
 
 --- The calls the editor makes (step 5k), each naming its method literally
 --- (the guard checks them against the `methods` of M.BUILD, M.LAUNCH,
@@ -1893,6 +1945,18 @@ local CALLS = {
     discover = function(conn, args, cb, env)
         conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "discover", args, cb, env)
     end,
+    run_cases = function(conn, args, cb, env)
+        conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "run_cases", args, cb, env)
+    end,
+    prepare_test_debug = function(conn, args, cb, env)
+        conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "prepare_debug", args, cb, env)
+    end,
+    collect = function(conn, args, cb, env)
+        conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "collect", args, cb, env)
+    end,
+    result = function(conn, args, cb, env)
+        conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "result", args, cb, env)
+    end,
 }
 
 --- An interface call of CALLS on the observed connection; every call but
@@ -1900,7 +1964,7 @@ local CALLS = {
 --- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -1962,7 +2026,7 @@ function Observer:_degrade(method, err)
     self._method_notes = self._method_notes or {}
     self._method_notes[#self._method_notes + 1] = string.format(
         "%s: daemon offers no %s/%d.%s (%s) — %s", want.label or want.feature, want.iface,
-        want.v, method, tostring(err and (err.message or err.code) or "?"),
+        want.v, WIRE[method] or method, tostring(err and (err.message or err.code) or "?"),
         want.unavailable or "running them in-process")
     self:_connected_note()
 end
@@ -1992,7 +2056,7 @@ end
 ---   { outcome = "failed", reason }     it may have started (an internal
 ---                                      error, the connection lost before
 ---                                      the reply): never re-run.
---- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"
 --- @param args table the call's arguments (§19.15)
 --- `h.units`: the call's configuration units (a clean pre-empts the task by
 --- them before its `start` arrives).
@@ -2078,7 +2142,7 @@ M.VALUE_CHECKED = { set_option = true }
 ---   { outcome = "invalid", reason }   `invalid_args` of a VALUE_CHECKED method
 ---   { outcome = "degraded", reason }  the daemon lacks the method (noted)
 ---   { outcome = "failed", reason }    any other error
---- @param method "adapters"|"set_adapter"|"get"|"set_option"
+--- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"
 --- @param args table
 --- @param cb fun(r: table)
 function Observer:request(method, args, cb)
@@ -2554,7 +2618,7 @@ function Observer:stop()
     local c = self.conn
     self.conn = nil
     if c then c.on_close = nil; c:close() end
-    self._view_seq = nil
+    self._view_seq, self._tests_seq = nil, nil
     self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end

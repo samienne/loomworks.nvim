@@ -188,6 +188,12 @@ return {
         -- 5 -> 4: step 5k C2 — LaunchTarget:debug resolves one spec for
         -- run and debug (§8.9.6): one nvim-dap start, not one per kind.
         ["lua/loomworks/launch_target.lua"] = 4,
+        -- 0 -> 1: step 5m C2 — the debugger start of a test debug the daemon
+        -- prepared (Tests/1.prepare_debug; the program is the editor's,
+        -- §19.16 "Tests" Debug): one nvim-dap start for the launch and its
+        -- attaches, as session_tracker's for a prepared launch. Nothing is
+        -- built or run in-process for it.
+        ["lua/loomworks/loomtest_adapter.lua"] = 1,
         ["lua/loomworks/profile.lua"] = 3,
         ["lua/loomworks/session_tracker.lua"] = 5,
         ["lua/loomworks/target.lua"] = 3,
@@ -212,8 +218,12 @@ return {
     -- 14 -> 15: step 5m C1 adds one CALL naming its method literally:
     -- conn:call(M.TESTS.object, M.TESTS.iface, ...) for discover — the
     -- versioned table Tests/1 (the tests view's `get` goes through M.VIEWS).
+    -- 15 -> 19: step 5m C2 adds four CALLS naming their methods literally:
+    -- conn:call(M.TESTS.object, M.TESTS.iface, ...) for run_cases,
+    -- prepare_debug (the call `prepare_test_debug`), collect and result —
+    -- the versioned table Tests/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 15,
+        ["lua/loomworks/daemon/observer.lua"] = 19,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core
