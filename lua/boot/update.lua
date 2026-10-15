@@ -118,8 +118,9 @@ function M.newer_bundle_note(installed, target)
 end
 
 --- Resolve the newest release version for the `unstable` channel (§16.29) by
---- querying the releases API. The newest NON-DRAFT entry wins — pre-releases are
---- INCLUDED (that is what `unstable` means). Returns the version (leading `v`
+--- querying the releases API. The highest-versioned NON-DRAFT entry wins (by
+--- version, never list order; a pre-release ranks below its release) —
+--- pre-releases are INCLUDED (that is what `unstable` means). Returns the version (leading `v`
 --- stripped) or nil, err.
 ---
 --- SECURITY: the tag is network-derived, so it is validated with
@@ -141,7 +142,12 @@ function M.resolve_unstable_version(fetch_limits)
   if type(releases) ~= "table" then
     return nil, "releases API: " .. (derr or "unexpected response")
   end
-  -- The API returns releases newest-first; take the newest that is not a draft.
+  -- The API lists releases in PUBLISH order, not version order (a stable
+  -- release cut after a newer pre-release is listed first), so take the
+  -- HIGHEST non-draft version by the §16.29 ordering (a pre-release ranks
+  -- below its release). Every candidate tag is validated first: one unsafe
+  -- tag fails the whole query.
+  local best
   for _, rel in ipairs(releases) do
     if type(rel) == "table" and rel.draft ~= true and type(rel.tag_name) == "string" then
       local ver = (rel.tag_name:gsub("^v", ""))
@@ -149,9 +155,10 @@ function M.resolve_unstable_version(fetch_limits)
         return nil, "releases API returned an unsafe version '" ..
           tostring(rel.tag_name) .. "'"
       end
-      return ver
+      if not best or paths.version_gt(ver, best) then best = ver end
     end
   end
+  if best then return best end
   return nil, "no releases found on the unstable channel"
 end
 

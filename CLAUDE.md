@@ -203,10 +203,9 @@ directory safety before merging:
    strictly under the area's realpath, and on Windows no segment ending in
    `.` or a space). Nuke removes the whole area via `Core:_nuke_lsp_db_areas`
    / `check_area` (exact direct child of `.nvim/cache`); a failed area check
-   aborts the entire nuke (checked before the nuke's locks; the area is
-   removed with the caches, under those locks, before the tree move-aside).
-   The mirror path is recomputed from the validated build dir, never read
-   from the cache; failure is a warning only.
+   aborts the entire nuke. The mirror path is recomputed from the validated
+   build dir, never read from the cache; failure is a
+   warning only.
 
 ## Implementation Notes
 

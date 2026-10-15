@@ -388,12 +388,6 @@ workspace marker present, every path under `root/.nvim/`) plus rules 3 and
 5 above; in place of rule 4 the target must be exactly the direct child
 `<root>/.nvim/cache/<lsp_database_root>` (a valid single segment). Nothing else under
 `<root>/.nvim/cache/` (e.g. pinned launcher binaries, §16.24) is touched.
-The area check runs before any lock is taken (a failed check aborts the
-nuke with nothing deleted); the area itself is removed together with the
-build caches, under the nuke's operation and build locks (§19.3) and before
-the build tree is moved aside. A nuke that then refuses because the tree
-cannot be moved aside has removed the area like the caches: harmless,
-derived data regenerated on the next configure.
 
 ### 4.7 Cleaning
 
