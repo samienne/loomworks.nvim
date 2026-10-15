@@ -201,6 +201,12 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         -- Debug has no list, so it gets no `tests` line at all.
         assert.truthy(shown:find("\n    Debug [^\n]*\n"), shown)
         assert.falsy(shown:find("\n      tests  none", 1, true), shown)
+        -- The bare form (§16.9) with several projects lists them and the named
+        -- form (exit 2), the same over the projection.
+        local bare = parity(roots3, { "project", "show" })
+        assert.equals(2, bare.code, bare.stderr)
+        assert.truthy(bare.stderr:find("several projects", 1, true), bare.stderr)
+        assert.truthy(bare.stderr:find("  app", 1, true) and bare.stderr:find("  lib", 1, true), bare.stderr)
         parity(roots3, { "project", "describe", "app" })
         parity(roots3, { "config", "list" })
         parity(roots3, { "config", "show", "app", "Release" })

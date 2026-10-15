@@ -508,6 +508,8 @@ source. A project's view always shows the project's row, with `none` and the add
 hint when it has none, and shows a configuration's `tests` line only when that
 configuration's effective list is non-empty or invalid.
 
+`lw project show` without a name shows the workspace's project when it has exactly one. With several, it lists the projects and the `lw project show <name>` form, and exits 2 (usage). With none, it says so and exits 2.
+
 A management host MAY also **set, replace or clear the description** (§1.10) of
 a project, a user configuration, a configuration set, a profile or a launch
 configuration (§16.35).
@@ -788,7 +790,12 @@ effect there.
   ` #<occurrence index>` — a space, then `#` — on every occurrence of a name
   that repeats in its list, the first included, e.g. `App: RenderTests #1`,
   `App: RenderTests #2`), and after the last step a summary prints one line
-  per step with its outcome, labelled the same way.
+  per step with its outcome, labelled the same way. A failed step's line, both
+  when it finishes and in the summary, gives its failure reasons, then its
+  per-case counts when it has per-case results (passed always,
+  skipped/disabled when non-zero), then `: ` and the failing test names in
+  result order. At most 10 names are listed; any beyond that are replaced by
+  `, and K more`.
 - A saved executable that the batch runner also registers runs in both steps:
   the batch runner is opaque, so the plan does not de-duplicate it (the
   `--saved` / `--discovered` selectors below avoid it).
