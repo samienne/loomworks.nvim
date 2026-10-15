@@ -376,6 +376,29 @@ describe("Tests/1 runs in the daemon (§19.15 Tests, §19.20 Tests/1)", function
         h.results()
     end)
 
+    it("a run whose unit's discovery failed names it in the result's discovery_error (review of #254)", function()
+        h = open(root, key)
+        h.subscribe(1)
+        h.op(2, "configure")
+        local unit = h.srv.service.ws._active_profile:projects()[1]._config_unit
+        unit.discover_tests_async = function() error("boom") end
+        local ok, err = pcall(function()
+            h.send(call(3, TESTS.object, TESTS.iface, "run_cases", vim.empty_dict()))
+            h.ok(3, { outcome = "accepted", task_id = { ["$bind"] = "run" } })
+            local done = h.expect({ kind = "task", task_id = { ["$var"] = "run" }, phase = "done", exit_code = 1 },
+                120000)
+            assert.equals(0, #done.result.cases)
+            assert.is_string(done.result.discovery_error)
+            assert.truthy(done.result.discovery_error:find("test discovery failed", 1, true),
+                done.result.discovery_error)
+            assert.equals(done.result.discovery_error, done.result.error)
+        end)
+        unit.discover_tests_async = nil
+        h.drain()
+        h.results()
+        assert(ok, err)
+    end)
+
     it("a stale tree's node runs after the run re-discovers its unit (a build dropped its entries)", function()
         h = open(root, key)
         h.subscribe(1)

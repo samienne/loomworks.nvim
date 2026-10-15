@@ -811,6 +811,8 @@ function M.phase(service, ctx, store, sel, kind)
             local bad = counts.failed + counts.errored
             -- (A covered unit whose discovery failed ran nothing: the run fails.)
             local derr = disc_error()
+            -- (The reply names it, so a client tells it from failed tests.)
+            result.discovery_error = derr
             if n == 0 then
                 if derr then return api.finish(1, derr, { result = result }) end
                 api.task:line("out", "no tests to run for profile '" .. ctx.profile.key .. "'")

@@ -203,19 +203,23 @@ function M._updates(cases)
     return out
 end
 
---- Whether a run's end is only its failed tests (§19.15 "Tests": the summary
---- `<k> of <n> tests failed`, nothing else wrong — no failed discovery):
---- such an end is quiet, its failures the tree's.
---- @param cases table[]
+--- Whether a run's end is only its failed tests (§19.16 "Tests" `run_cases`:
+--- no error, or no `discovery_error` and at least one case failed or
+--- errored): such an end is quiet, its failures the tree's.
+--- @param done table the run's result (`cases`, `counts`, `discovery_error`)
 --- @param err string|nil the task's error
 --- @return boolean
-local function only_failed_tests(cases, err)
+local function only_failed_tests(done, err)
     if err == nil then return true end
-    local bad = 0
-    for _, c in ipairs(cases) do
-        if type(c) == "table" and (c.status == "failed" or c.status == "errored") then bad = bad + 1 end
+    if done.discovery_error ~= nil then return false end
+    local counts = type(done.counts) == "table" and done.counts or nil
+    if counts then
+        return (tonumber(counts.failed) or 0) + (tonumber(counts.errored) or 0) > 0
     end
-    return bad > 0 and err == (bad .. " of " .. #cases .. " tests failed")
+    for _, c in ipairs(type(done.cases) == "table" and done.cases or {}) do
+        if type(c) == "table" and (c.status == "failed" or c.status == "errored") then return true end
+    end
+    return false
 end
 
 --- Run nodes through the daemon (§19.16 "Tests" Runs, LOOMTEST.md §13.1):
@@ -253,7 +257,7 @@ local function start_run(selection, opts, sink)
             settle()
             if type(done.cases) == "table" then
                 sink.status(M._updates(done.cases))
-                if only_failed_tests(done.cases, err) then return sink.done(true) end
+                if only_failed_tests(done, err) then return sink.done(true) end
                 return sink.done(false, err)
             end
             sink.done(false, err or done.error or "the test run failed")

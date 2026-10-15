@@ -226,6 +226,10 @@
                   "minimum": 0
                 }
               }
+            },
+            "discovery_error": {
+              "description": "Present when a covered unit's discovery failed: why.",
+              "type": "string"
             }
           }
         }

@@ -4440,7 +4440,8 @@ message, before acceptance. All of them carry the caller's environment
   §19.15 "Tests"). `no_build` skips the build; `extra` are arguments appended to every test step's program.
   `done.result` `{ exit_code, error?, cases, counts }`: `cases` an array of
   `TestCaseResult` (every case the run reported, in report order), `counts`
-  `{ passed, failed, skipped, errored }`.
+  `{ passed, failed, skipped, errored }`. The run's result carries
+  `discovery_error` when a covered unit's discovery failed.
 - `prepare_debug { select, no_build? }` — task-streamed (`meta.kind =
   debug`), the outcomes of `build`; `select` a single `TestNodeRef` object
   (one runnable node; not an array, unlike `run_cases`).

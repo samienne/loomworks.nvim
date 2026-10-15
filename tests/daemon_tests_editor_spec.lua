@@ -615,7 +615,8 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             vim.wait(50)
             obs:_on_message({ kind = "task", task_id = 51, phase = "done", exit_code = 1,
                 error = "discovery of b failed", result = { cases = { { id = "n3", status = "passed" } },
-                    counts = { passed = 1, failed = 0, skipped = 0, errored = 0 } } })
+                    counts = { passed = 1, failed = 0, skipped = 0, errored = 0 },
+                    discovery_error = "discovery of b failed" } })
             assert.is_true(vim.wait(1000, function() return #errors() == 1 end, 10))
             assert.equals("loomtest: discovery of b failed", errors()[1])
             assert.equals("passed", loomtest.get_node("n3").status)
@@ -623,10 +624,20 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             vim.wait(50)
             obs:_on_message({ kind = "task", task_id = 52, phase = "done", exit_code = 1,
                 error = "1 of 1 tests failed; discovery of b failed",
-                result = { cases = { { id = "n3", status = "failed" } } } })
+                result = { cases = { { id = "n3", status = "failed" } },
+                    discovery_error = "discovery of b failed" } })
             assert.is_true(vim.wait(1000, function() return #errors() == 2 end, 10))
             assert.equals("loomtest: 1 of 1 tests failed; discovery of b failed", errors()[2])
             assert.equals("failed", loomtest.get_node("n3").status)
+            -- The field decides, never the message text: failed cases and no
+            -- discovery_error end quietly whatever the error says.
+            loomtest.run("n3")
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 53, phase = "done", exit_code = 1,
+                error = "some other wording", result = { cases = { { id = "n3", status = "errored" } },
+                    counts = { passed = 0, failed = 0, skipped = 0, errored = 1 } } })
+            vim.wait(100)
+            assert.equals(2, #errors())
         end)
 
         it("results before the run's accepted reply feed its own sink (review of #254)", function()
