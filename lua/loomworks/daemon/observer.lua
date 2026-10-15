@@ -2021,16 +2021,23 @@ function Observer:can_call(method)
     return not (self._degraded and self._degraded[method])
 end
 
---- Why `method` cannot be carried now (§19.16 "Availability"): the
---- observer's Runtime-line note that refuses its operation — the method's
---- or its feature's note while connected (e.g. `operations: daemon offers
---- no loomworks.Build/1.configure (…)`), otherwise the observer's state or
---- note (waiting, no host binary, disconnected, …).
+--- Why `method` cannot be carried now (§19.16 "Availability"): while
+--- connected, the specific reason — the incompatibility note, a daemon being
+--- retired ("disconnecting"), an older daemon observed through broadcasts
+--- only ("too old"), the method's or its feature's note (e.g. `operations:
+--- daemon offers no loomworks.Build/1.configure (…)`), or a feature still
+--- pending just after connect ("still connecting") — else "the workspace
+--- daemon cannot carry it"; never the Runtime line itself. Not connected:
+--- the observer's state or note (waiting, no host binary, disconnected, …).
 --- @param method string
 --- @return string
 function Observer:refusal(method)
     if self.state == "connected" and self.conn and not self.conn.closed and not self._lost then
         if self.incompat_note then return self.incompat_note end
+        if self._retire then return "the workspace daemon is disconnecting (it is being retired)" end
+        if self.mode ~= "interfaces" then
+            return "the workspace daemon is too old to carry it (it offers no interfaces)"
+        end
         local why = self._method_why and self._method_why[method]
         if why then return why end
         local want = METHOD_IFACE[method]
@@ -2038,7 +2045,13 @@ function Observer:refusal(method)
         if why then return why end
         why = want and want.tasks and self._why and self._why[M.TASKS.feature]
         if why then return why end
-        return self.feature_note or self.note or "the workspace daemon cannot carry it now"
+        local feat = self._feat or {}
+        for _, w in ipairs({ want, want and want.tasks and M.TASKS or nil }) do
+            if not self._feat or feat[w.feature] == "pending" then
+                return string.format("the workspace daemon is still connecting (%s/%d pending)", w.iface, w.v)
+            end
+        end
+        return "the workspace daemon cannot carry it"
     end
     if self._lost then return M.LOST_NOTE end
     return self.note or self.state
@@ -2213,8 +2226,8 @@ end
 --- The workspace's debug-adapter records as `DebugConfig/1.adapters` last
 --- returned them (`{ language, adapter?, default?, known, overridden }[]`),
 --- or nil: not carried, not read yet on this connection — a first read is
---- started then, and its records re-render the status page
---- (`daemon_debug_adapters`) — or the last read failed or was declined
+--- started then, and its end (records, failed or declined) re-renders the
+--- status page (`daemon_debug_adapters`) — or the last read failed or was declined
 --- (remembered until the next `Workspace/1` `changed` or a reconnect, so a
 --- render does not send it again).
 --- @return table[]|nil
@@ -2270,7 +2283,9 @@ function Observer:_fetch_debug_adapters()
                 waiters = {}
             end
         end
-        if records then self:_emit("daemon_debug_adapters", {}) end
+        -- Read, failed or declined: the section re-renders (its records, or
+        -- why it has none).
+        self:_emit("daemon_debug_adapters", {})
         flush(records)
     end)
 end
@@ -2661,7 +2676,9 @@ function Observer:stop()
     self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end
     if M._current == self then M._current = nil end
-    if self.ws and self.ws._operation_router then self.ws._operation_router = nil end
+    -- The router stays: a daemon-mode workspace's cleans are refused like
+    -- its builds, never run in-process (editor_ops.daemon_of reads the
+    -- workspace's selection; in the `in-process` mode it routes nothing).
     self._lsp_read, self._lsp_fetch, self._lsp_again, self._lost = nil, nil, nil, nil
 end
 

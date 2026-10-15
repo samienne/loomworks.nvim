@@ -814,7 +814,7 @@ describe("the observer (§19.16)", function()
         package.loaded["overseer"] = orig_overseer
         assert.is_true(okc, tostring(cerr))
         assert.equals("build: operations: daemon offers no loomworks.Build, editor needs /1", settled)
-        assert.equals("build: operations: daemon offers no loomworks.Build, editor needs /1", single)
+        assert.equals("build: a task naming no target cannot be sent to the workspace daemon", single)
         assert.equals(2, #notes)
         assert.same({}, created)
     end)

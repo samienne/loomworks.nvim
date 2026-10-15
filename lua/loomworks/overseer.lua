@@ -2230,7 +2230,13 @@ function M.launch_single_task(task_def, unit, on_complete)
         local daemon, obs = ops.daemon_of(unit and ops.scope_workspace({ units = { unit } }))
         if not daemon then return in_process_single_task(task_def, unit, on_complete) end
         local f, k = routed_future()
-        ops.refuse("build", obs, k)
+        if target_id and p then
+            ops.refuse("build", obs, k)
+        else
+            local msg = "build: a task naming no target cannot be sent to the workspace daemon"
+            vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+            k.reject(msg, true)
+        end
         routed = f
     end
     if on_complete then

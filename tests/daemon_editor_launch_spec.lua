@@ -322,6 +322,25 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.same({}, titles)
     end)
 
+    it("a disconnected editor refuses a target's build before its pre-build deploy", function()
+        obs = fake_observer()
+        obs.state, obs.note = "waiting", "waiting for the workspace daemon (connecting)"
+        local t = lt("run")
+        local deployed = 0
+        t._deploy_phase = function()
+            deployed = deployed + 1
+            return require("loomworks.future").resolved(true)
+        end
+        local err
+        t:build():catch(function(e) err = e end)
+        assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
+        assert.equals("build: waiting for the workspace daemon (connecting)", err)
+        assert.equals(1, count("loomworks: build: waiting for the workspace daemon (connecting)"))
+        assert.equals(0, deployed)
+        assert.same({}, sent)
+        assert.equals(0, #created)
+    end)
+
     it("the connection lost after `accepted`: no program, never re-run in-process", function()
         obs = fake_observer()
         require("loomworks.session_tracker").start(lt("run"), "launch")
@@ -531,6 +550,26 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.is_true(noted("not configured. Install via :Mason"))
     end)
 
+    it("DebugConfig/1 not carried: no adapter check from the editor's mapping; the daemon prepares", function()
+        obs = fake_observer({ operations = "available", launch = "available", tasks = "subscribed" })
+        require("loomworks.debug").adapter_installed = function() return false end
+        require("loomworks.session_tracker").start(lt("run"), "debug")
+        assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+        assert.equals("prepare_debug", sent[1].method)
+        assert.is_false(noted("not configured"))
+    end)
+
+    it("a language the daemon's records do not name is not resolved from the editor's mapping", function()
+        obs = fake_observer()
+        obs._debug_adapters = { languages = { { language = "c++", adapter = "codelldb" } } }
+        require("loomworks.debug").adapter_installed = function(a) return a == "codelldb" end
+        -- `multi` launches typescript first: the daemon's records do not name it.
+        require("loomworks.session_tracker").start(lt("multi"), "debug")
+        assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+        assert.equals("prepare_debug", sent[1].method)
+        assert.is_false(noted("not configured"))
+    end)
+
     it("a failed `adapters` read is remembered: not sent again until `changed`", function()
         obs = fake_observer()
         assert.is_nil(obs:debug_adapters())
@@ -540,7 +579,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.is_nil(obs:debug_adapters())
         assert.is_nil(obs:debug_adapters())
         assert.equals(1, #sent)
-        -- A debug then resolves in-process (the c++ default).
+        -- A debug is then sent unchecked (debug.run checks the prepared adapter).
         require("loomworks.session_tracker").start(lt("run"), "debug")
         assert.equals(2, #sent)
         assert.equals("prepare_debug", sent[2].method)
@@ -675,6 +714,21 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.equals(1, #sent)
         assert.equals(2, #notes)
         assert.truthy(notes[2]:find("debug adapter not saved: " .. note, 1, true))
+    end)
+
+    it("a failed or declined `adapters` read re-renders the section with why", function()
+        connect()
+        assert.is_nil(editor_ops.debug_adapters(ws))
+        sent[1].cb(nil, { code = "internal", message = "boom" })
+        assert.is_true(vim.wait(2000, function() return #emitted > 0 end, 10))
+        assert.equals("daemon_debug_adapters", emitted[1])
+        local recs, why = editor_ops.debug_adapters(ws)
+        assert.is_nil(recs)
+        assert.equals("the workspace daemon did not answer DebugConfig/1.adapters", why)
+        obs:_refetch_debug_adapters()
+        sent[2].cb({ outcome = "declined", reason = "trust" }, nil)
+        assert.is_true(vim.wait(2000, function() return #emitted > 1 end, 10))
+        assert.equals("daemon_debug_adapters", emitted[2])
     end)
 
     it("not carried: the section is unavailable with the observer's note; writes fail", function()

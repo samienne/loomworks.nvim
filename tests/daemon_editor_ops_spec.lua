@@ -291,6 +291,60 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         ws._runtime_selection = nil
     end)
 
+    it("connected but not carrying it: a specific reason, never the Runtime line", function()
+        obs = fake_observer()
+        obs.note = "build: observing the workspace daemon (pid 4242)"
+        -- An older (protocol-10) daemon: observed through broadcasts only.
+        obs.mode = "v0"
+        assert.equals("the workspace daemon is too old to carry it (it offers no interfaces)",
+            obs:refusal("build"))
+        local st = watch(require("loomworks.overseer").run_profile_action(profile, "build"))
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("build: the workspace daemon is too old to carry it (it offers no interfaces)", st.err)
+        -- A feature still pending just after connect.
+        obs.mode = "interfaces"
+        obs._feat = { operations = "available", tasks = "pending" }
+        assert.equals("the workspace daemon is still connecting (loomworks.Tasks/1 pending)", obs:refusal("build"))
+        obs._feat = { operations = "pending", tasks = "subscribed" }
+        assert.equals("the workspace daemon is still connecting (loomworks.Build/1 pending)", obs:refusal("build"))
+        -- Being retired.
+        obs._feat = { operations = "available", tasks = "subscribed" }
+        obs._retire = { conn = obs.conn }
+        assert.equals("the workspace daemon is disconnecting (it is being retired)", obs:refusal("build"))
+        obs._retire = nil
+        -- Anything else: the generic reason, not the note.
+        obs._degraded = { build = true }
+        assert.equals("the workspace daemon cannot carry it", obs:refusal("build"))
+        assert.same({}, sent)
+    end)
+
+    it("an observer stopped in daemon mode: a clean is refused like a build, never in-process", function()
+        ws._runtime_selection = { mode = "daemon", source = "default", daemon = true }
+        obs = fake_observer()
+        obs:stop()
+        obs = nil
+        local st = watch(unit:clean())
+        local st2 = watch(profile:clean())
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil and st2.err ~= nil end, 10))
+        assert.equals("clean: the workspace is no longer loaded", st.err)
+        assert.equals("clean: the workspace is no longer loaded", st2.err)
+        vim.wait(100)
+        assert.equals(0, #created)
+        ws._runtime_selection = nil
+    end)
+
+    it("a task naming no target is refused in daemon mode with its own reason", function()
+        obs = fake_observer()
+        local td = { name = "t", builder = function() return { cmd = { "x" } } end, loomworks = { action = "build" } }
+        local st = watch(require("loomworks.overseer").launch_single_task(td, unit))
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("build: a task naming no target cannot be sent to the workspace daemon", st.err)
+        assert.equals(1, notified("loomworks: build: a task naming no target cannot be sent to the workspace daemon"))
+        assert.same({}, sent)
+        vim.wait(100)
+        assert.equals(0, #created)
+    end)
+
     it("cancel sends Tasks/1.cancel for an owned task only, and waits for its end", function()
         obs = fake_observer()
         require("loomworks.overseer").run_profile_action(profile, "build")

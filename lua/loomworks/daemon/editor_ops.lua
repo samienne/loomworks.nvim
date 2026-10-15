@@ -95,6 +95,20 @@ function M.refuse(method, obs, k)
     k.reject(msg, true)
 end
 
+--- In `daemon` mode, the refusal of a build of `ws` the daemon cannot carry
+--- now (M.refuse's message, notified), or nil — carried, or the `in-process`
+--- mode. A launch target's build asks it first, so that nothing of it (its
+--- pre-build deploy) runs in the editor when its build would be refused.
+--- @param ws loomworks.Workspace|nil
+--- @return string|nil
+function M.build_refusal(ws)
+    local daemon, obs = M.daemon_of(ws)
+    if not daemon or M.carrier("build", ws) then return nil end
+    local msg
+    M.refuse("build", obs, { reject = function(m) msg = m end })
+    return msg
+end
+
 --- A configuration unit as a `units` item (§19.15: by project key and
 --- configuration-unit key).
 --- @param unit loomworks.ConfigUnit
@@ -729,12 +743,13 @@ end
 --- the daemon's own (`DebugConfig/1.adapters`, the cached read, else a read
 --- now) while it is carried — the in-process copy lags a `set_adapter` made
 --- through the daemon until its file change arrives. `cb(resolve)` on the
---- main loop, `resolve(language)` → adapter|nil; `cb(nil)` — the in-process
---- mapping — when DebugConfig/1 is not carried, or its read failed or was
---- declined. A language the daemon's records do not name resolves
---- in-process.
+--- main loop, `resolve(language)` → adapter|nil, named (the records name
+--- the language); `cb(nil)` when DebugConfig/1 is not carried, or its read
+--- failed or was declined: no check before the call (debug.run checks the
+--- prepared adapter). Never the editor's in-process mapping — a language the
+--- daemon's records do not name resolves to nil, not named (unchecked too).
 --- @param target loomworks.LaunchTarget the launch (its profile's workspace)
---- @param cb fun(resolve: (fun(language: string): string|nil)|nil)
+--- @param cb fun(resolve: (fun(language: string): string|nil, boolean)|nil)
 function M.debug_adapter_resolver(target, cb)
     local ws = M.scope_workspace({ profile = target._profile })
     local obs = ws and require("loomworks.daemon.observer").of(ws)
@@ -747,8 +762,8 @@ function M.debug_adapter_resolver(target, cb)
         end
         cb(function(language)
             local r = by[language]
-            if r then return type(r.adapter) == "string" and r.adapter or nil end
-            return require("loomworks.debug_config").resolve_adapter(ws, language)
+            if not r then return nil, false end
+            return type(r.adapter) == "string" and r.adapter or nil, true
         end)
     end)
 end

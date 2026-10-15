@@ -606,7 +606,9 @@ end
 --- whose launching adapter is not installed stops here with the install
 --- hint, before the preparation (§8.9.6: the client's check) - the adapter
 --- the daemon's `DebugConfig/1` mapping names while it is carried
---- (editor_ops.debug_adapter_resolver). While the daemon prepares, the
+--- (editor_ops.debug_adapter_resolver; not carried, or a language it does
+--- not name: not checked here — debug.run checks the prepared adapter).
+--- While the daemon prepares, the
 --- launch is `_preparing`: a stop cancels it, a second launch asks first.
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
@@ -660,7 +662,12 @@ local function start_run(target, mode)
     if prep ~= "debug" then return send() end
     ops.debug_adapter_resolver(target, function(resolve)
         if _preparing ~= token then return end
+        -- No daemon mapping (DebugConfig/1 not carried, or its read failed),
+        -- or a language it does not name: unchecked here — never the
+        -- editor's own mapping; debug.run checks the prepared adapter.
+        if not resolve then return send() end
         local adapter, language = target:primary_debug_adapter(resolve)
+        if not select(2, resolve(language)) then return send() end
         if not debug_mod.adapter_installed(adapter) then
             settle()
             debug_mod.adapter_hint(adapter, language)
