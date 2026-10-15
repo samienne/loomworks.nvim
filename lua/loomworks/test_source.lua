@@ -120,7 +120,7 @@ end
 --- (`cancel`), ending through `k` (loomworks.daemon.editor_ops.run_tests).
 --- @param select string[]|nil
 --- @param opts { no_build?: boolean }|nil
---- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string) }
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) }
 --- @return boolean sent
 --- @return { cancel: fun(self) }|nil handle
 function M.daemon_run(select, opts, k)

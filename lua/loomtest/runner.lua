@@ -602,12 +602,14 @@ function M.start_debug(adapter, test_id, test_ids)
     end
     redraw()
     local finished = false
+    local handle
     --- @type loomtest.RunSink
     local sink = {
         status = function(updates) M.apply_status(updates) end,
         done = function(ok, err)
             if finished then return end
             finished = true
+            if _active_handle == handle then _active_handle = nil end
             for _, id in ipairs(test_ids) do
                 local node = loomtest.get_node(id)
                 if node and (node.status == "pending" or node.status == "queued" or node.status == "running") then
@@ -623,7 +625,10 @@ function M.start_debug(adapter, test_id, test_ids)
             redraw()
         end,
     }
-    return adapter.debug_start(test_id, sink)
+    handle = adapter.debug_start(test_id, sink)
+    -- Its stop (`cancel`) is the run's, as a run's is.
+    if not finished then _active_handle = handle end
+    return handle
 end
 
 --- Cancel the running adapter-executed run, if any.

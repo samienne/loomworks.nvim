@@ -46,6 +46,8 @@ end
 --- Launch or attach a debug session via nvim-dap.
 --- @param spec { program: string, args?: string[], cwd?: string, env?: table<string, string>, adapter: string, name?: string, extra?: table, request?: string, attach_pid?: number }
 --- @param callbacks? { on_terminated?: fun(), on_pid?: fun(pid: number) }
+--- @return boolean started
+--- @return { stop: fun() }|nil control `stop` ends the run's session (on_terminated then fires)
 function M.run(spec, callbacks)
     local ok, dap = pcall(require, "dap")
     if not ok then return false end
@@ -101,15 +103,56 @@ function M.run(spec, callbacks)
         end
     end
 
+    -- `on_terminated` follows the one session this run starts: the first
+    -- new top-level session under this config's name (nvim-dap's
+    -- `on_session`; one already running is never ours), ended by that
+    -- session's `on_close` — a `terminated`, a disconnect or an adapter
+    -- failure alike — never by another session's end. It fires once.
+    local ctl = { stop = function() end }
     if callbacks and callbacks.on_terminated then
-        local key = "loomworks-session-" .. tostring(os.clock())
-        local function cleanup()
-            dap.listeners.before.event_terminated[key] = nil
-            dap.listeners.before.event_exited[key] = nil
-            callbacks.on_terminated()
+        local key = "loomworks-session-" .. tostring(os.clock()) .. "-" .. tostring(math.random(1e9))
+        local known = {}
+        for id in pairs(dap.sessions() or {}) do known[id] = true end
+        local bound, ended, stopping = nil, false, false
+        local function finish()
+            if ended then return end
+            ended = true
+            dap.listeners.on_session[key] = nil
+            vim.schedule(callbacks.on_terminated)
         end
-        dap.listeners.before.event_terminated[key] = cleanup
-        dap.listeners.before.event_exited[key] = cleanup
+        local function disconnect(s)
+            pcall(s.disconnect, s, { terminateDebuggee = true })
+        end
+        local function ours(s)
+            return not bound and type(s) == "table" and s.parent == nil and not known[s.id]
+                and type(s.config) == "table" and s.config.name == config.name
+        end
+        dap.listeners.on_session[key] = function(_, s)
+            if not ours(s) then return end
+            bound = s
+            dap.listeners.on_session[key] = nil
+            if stopping then return disconnect(s) end
+            if s.closed then return finish() end
+            s.on_close[key] = function() finish() end
+        end
+        -- Stop: the live session is disconnected (its close ends the run);
+        -- none started yet ends it at once, and one starting late is
+        -- disconnected as it binds.
+        ctl.stop = function()
+            if bound then
+                if not bound.closed then disconnect(bound) end
+                return
+            end
+            if stopping then return end
+            stopping = true
+            finish()
+            dap.listeners.on_session[key] = function(_, s)
+                if not ours(s) then return end
+                bound = s
+                dap.listeners.on_session[key] = nil
+                disconnect(s)
+            end
+        end
     end
 
     -- Capture PID after session initializes (for multi-adapter attach).
@@ -162,7 +205,7 @@ function M.run(spec, callbacks)
     end
 
     dap.run(config)
-    return true
+    return true, ctl
 end
 
 return M

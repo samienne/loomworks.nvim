@@ -510,8 +510,9 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             dap_runs, hints = {}, {}
             dbg.adapter_installed = function(a) return a == "codelldb" end
             dbg.run = function(spec, cb)
-                dap_runs[#dap_runs + 1] = { spec = spec, cb = cb }
-                return true
+                local r = { spec = spec, cb = cb, stopped = 0 }
+                dap_runs[#dap_runs + 1] = r
+                return true, { stop = function() r.stopped = r.stopped + 1; cb.on_terminated() end }
             end
             dbg.adapter_hint = function(a, l) hints[#hints + 1] = { adapter = a, language = l } end
         end)
@@ -605,6 +606,71 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             assert.equals(2, #calls_of(calls, "run_cases"))
         end)
 
+        it("a run whose discovery failed reports it, its cases still applied (review of #254)", function()
+            local n = 50
+            local obs = on_view(function(m)
+                if m == "run_cases" then n = n + 1; return { outcome = "accepted", task_id = n } end
+            end)
+            loomtest.run("n3")
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 51, phase = "done", exit_code = 1,
+                error = "discovery of b failed", result = { cases = { { id = "n3", status = "passed" } },
+                    counts = { passed = 1, failed = 0, skipped = 0, errored = 0 } } })
+            assert.is_true(vim.wait(1000, function() return #errors() == 1 end, 10))
+            assert.equals("loomtest: discovery of b failed", errors()[1])
+            assert.equals("passed", loomtest.get_node("n3").status)
+            loomtest.run("n3")
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 52, phase = "done", exit_code = 1,
+                error = "1 of 1 tests failed; discovery of b failed",
+                result = { cases = { { id = "n3", status = "failed" } } } })
+            assert.is_true(vim.wait(1000, function() return #errors() == 2 end, 10))
+            assert.equals("loomtest: 1 of 1 tests failed; discovery of b failed", errors()[2])
+            assert.equals("failed", loomtest.get_node("n3").status)
+        end)
+
+        it("results before the run's accepted reply feed its own sink (review of #254)", function()
+            local saved = package.loaded["fidget.progress"]
+            local made = {}
+            package.loaded["fidget.progress"] = { handle = { create = function()
+                local h = { finish = function() end }
+                made[#made + 1] = h
+                return h
+            end } }
+            local ok, e = pcall(function()
+                local obs, calls = on_view(function() end)
+                loomtest.run("n3")
+                assert.equals(1, #made)
+                assert.equals("building...", made[1].message)
+                results(obs, 2, 61, { { id = "n3", status = "running" } })
+                vim.wait(50)
+                local rc = calls_of(calls, "run_cases")
+                rc[1].cb({ outcome = "accepted", task_id = 61 })
+                assert.is_true(vim.wait(1000, function() return made[1].message ~= "building..." end, 10))
+                assert.equals("running", loomtest.get_node("n3").status)
+                assert.is_true(runner.cancel())
+            end)
+            package.loaded["fidget.progress"] = saved
+            assert(ok, e)
+        end)
+
+        it("a results signal at or below the subscription's seq is dropped (review of #254)", function()
+            local obs = on_view(function() end)
+            obs._feat[observer.TESTS.feature] = "pending"
+            obs._tests_seq = nil
+            results(obs, 4, 99, { { id = "n3", status = "running" } })
+            results(obs, 6, 99, { { id = "n1", status = "passed" } })
+            vim.wait(50)
+            assert.equals("failed", loomtest.get_node("n3").status)
+            obs._feat[observer.TESTS.feature] = "subscribed"
+            obs:_tests_subscribed({ seq = 5 })
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n1").status == "passed" end, 10))
+            results(obs, 6, 99, { { id = "n3", status = "skipped" } })
+            vim.wait(50)
+            assert.equals("failed", loomtest.get_node("n3").status)
+            assert.equals(6, obs._tests_seq)
+        end)
+
         it("run-all selects nothing, no-build sends no_build; a refusal says why once", function()
             local _, calls = on_view(function(m)
                 if m == "run_cases" then return { outcome = "refused", message = "the node is stale" } end
@@ -685,6 +751,29 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             assert.same({ prepared = "tok2" }, calls_of(calls, "collect")[1].args)
             assert.equals(0, #dap_runs)
             assert.same({ { adapter = "gdb", language = "c++" } }, hints)
+        end)
+
+        it("stopping a debug cancels its prepare, or after it stops the session, which collects", function()
+            local obs, calls = on_view(function(m)
+                if m == "prepare_debug" then return { outcome = "accepted", task_id = 43 } end
+                if m == "collect" then return { outcome = "ok", cases = { { id = "n3", status = "passed" } } } end
+            end)
+            loomtest.debug("n3")
+            vim.wait(50)
+            assert.is_true(runner.cancel())
+            assert.same({ task_id = 43 }, calls_of(calls, "cancel")[1].args)
+            assert.is_false(runner.cancel())
+            loomtest.debug("n3")
+            vim.wait(50)
+            obs:_on_message({ kind = "task", task_id = 43, phase = "done", exit_code = 0, result = {
+                debug = { program = "/b/a_test", args = {}, cwd = "/b", language = "c++",
+                    adapters = { { language = "c++", adapter = "codelldb" } } }, prepared = "tok3" } })
+            assert.is_true(vim.wait(1000, function() return #dap_runs == 1 end, 10))
+            assert.is_true(runner.cancel())
+            assert.equals(1, dap_runs[1].stopped)
+            assert.is_true(vim.wait(1000, function() return #calls_of(calls, "collect") == 1 end, 10))
+            assert.same({ prepared = "tok3" }, calls_of(calls, "collect")[1].args)
+            assert.is_true(vim.wait(1000, function() return loomtest.get_node("n3").status == "passed" end, 10))
         end)
 
         it("the test prepare_debug never collides with Launch/1's", function()

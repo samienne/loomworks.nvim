@@ -1431,7 +1431,7 @@ function Observer:_subscribe(conn, done)
     self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
-    self._view_seq, self._tests_seq = nil, nil
+    self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
     if not (type(conn.transport) == "number" and conn.transport >= 11) or type(welcome_objects) ~= "table"
@@ -1495,9 +1495,7 @@ function Observer:_ensure_subscriptions(conn, objects, done)
                             if want.view then self:_view_subscribed(want, result) end
                             -- `/tests` `results` (step 5m C2): its own `seq`
                             -- baseline (per object and connection, §19.12).
-                            if want == M.TESTS and type(result) == "table" then
-                                self._tests_seq = tonumber(result.seq)
-                            end
+                            if want == M.TESTS then self:_tests_subscribed(result) end
                         end
                         settle()
                     end)
@@ -1604,7 +1602,15 @@ end
 function Observer:_test_results(args)
     local st = self._feat and self._feat[M.TESTS.feature]
     if st ~= "subscribed" and st ~= "pending" then return end
+    -- Before the subscription's baseline is known: held until it is.
+    if st == "pending" then
+        self._tests_early = self._tests_early or {}
+        self._tests_early[#self._tests_early + 1] = args
+        return
+    end
     local seq = tonumber(args.seq)
+    -- At or below the baseline: already in the state the view was read at.
+    if seq and self._tests_seq and seq <= self._tests_seq then return end
     local gap = seq ~= nil and self._tests_seq ~= nil and seq > self._tests_seq + 1
     if seq and seq > (self._tests_seq or 0) then self._tests_seq = seq end
     local cases = {}
@@ -1626,6 +1632,17 @@ function Observer:_test_results(args)
     end
     if #cases > 0 then self:_emit("daemon_test_results", { task_id = args.task_id, cases = cases }) end
     if gap then self:_refetch_views(M.VIEW_TESTS) end
+end
+
+--- The `/tests` subscription answered (step 5m C2): its `seq` is the
+--- `results` baseline (per object and connection, §19.12), and the
+--- `results` held while it was pending are applied past it.
+--- @param result table|nil the subscribe reply's result
+function Observer:_tests_subscribed(result)
+    self._tests_seq = type(result) == "table" and tonumber(result.seq) or nil
+    local early = self._tests_early
+    self._tests_early = nil
+    for _, args in ipairs(early or {}) do self:_test_results(args) end
 end
 
 --- Joining late (spec §19.16): ask `status` and adopt every task in its
@@ -1712,7 +1729,7 @@ function Observer:_on_closed(c)
     self._degraded, self._method_notes, self._lsp_get_why = nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
-    self._view_seq, self._tests_seq = nil, nil
+    self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self:_clear_views()
     self:_lsp_changed()
     self:_stop_timer("_keepalive")
@@ -2618,7 +2635,7 @@ function Observer:stop()
     local c = self.conn
     self.conn = nil
     if c then c.on_close = nil; c:close() end
-    self._view_seq, self._tests_seq = nil, nil
+    self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end

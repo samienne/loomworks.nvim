@@ -407,7 +407,7 @@ end
 --- @param method "run_cases"|"prepare_test_debug"
 --- @param ws loomworks.Workspace|nil
 --- @param args table
---- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string) }
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) } (`accepted` once the reply accepted it)
 --- @return boolean routed
 --- @return loomworks.daemon.Preparation|nil handle (routed only)
 local function owned_test_call(method, ws, args, k)
@@ -426,7 +426,8 @@ local function owned_test_call(method, ws, args, k)
         on_reply = function(r)
             if r.outcome == "accepted" then
                 p.task_id = r.task_id
-                if p.cancelled then obs:cancel_owned_id(r.task_id) end
+                if p.cancelled then return obs:cancel_owned_id(r.task_id) end
+                if k.accepted then k.accepted(r.task_id) end
                 return
             end
             reject(test_refusal(verb, r))
@@ -446,7 +447,7 @@ end
 --- @param ws loomworks.Workspace|nil
 --- @param select string[]|nil
 --- @param opts { no_build?: boolean }|nil
---- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string) }
+--- @param k { resolve: fun(done: table, err: string|nil), reject: fun(err: string), accepted?: fun(task_id: any) }
 --- @return boolean routed
 --- @return loomworks.daemon.Preparation|nil handle
 function M.run_tests(ws, select, opts, k)

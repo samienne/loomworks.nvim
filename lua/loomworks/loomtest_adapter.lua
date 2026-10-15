@@ -102,7 +102,9 @@ local _held = false
 --- The editor's test run in progress (step 5m C2): loomtest's sink and the
 --- owned call's handle (its `task_id` once accepted), so the run's own
 --- `results` feed its sink (progress) and other runs' only the nodes.
---- @type { sink: loomtest.RunSink, handle: table|nil }|nil
+--- `results` arriving before its `accepted` reply wait in `early` until the
+--- reply says whose they are.
+--- @type { sink: loomtest.RunSink, handle: table|nil, early: table[]|nil }|nil
 local _run = nil
 
 --- The daemon's tests view as loomtest nodes, or nil (none to show).
@@ -201,25 +203,58 @@ function M._updates(cases)
     return out
 end
 
+--- Whether a run's end is only its failed tests (§19.15 "Tests": the summary
+--- `<k> of <n> tests failed`, nothing else wrong — no failed discovery):
+--- such an end is quiet, its failures the tree's.
+--- @param cases table[]
+--- @param err string|nil the task's error
+--- @return boolean
+local function only_failed_tests(cases, err)
+    if err == nil then return true end
+    local bad = 0
+    for _, c in ipairs(cases) do
+        if type(c) == "table" and (c.status == "failed" or c.status == "errored") then bad = bad + 1 end
+    end
+    return bad > 0 and err == (bad .. " of " .. #cases .. " tests failed")
+end
+
 --- Run nodes through the daemon (§19.16 "Tests" Runs, LOOMTEST.md §13.1):
 --- one `Tests/1.run_cases` the editor owns (its overseer row's stop cancels
---- it). A run that ran ends well — its failed tests are the tree's, its end
---- the view's `update` — anything else ends the sink with why.
+--- it). A run that ran shows its cases; it ends well when only its tests
+--- failed — its failed tests are the tree's, its end the view's `update` —
+--- anything else (a failed discovery included) ends the sink with why.
 --- @param selection string[]|nil
 --- @param opts { no_build: boolean }|nil
 --- @param sink loomtest.RunSink
 --- @return loomtest.RunHandle|nil
 local function start_run(selection, opts, sink)
-    local run = { sink = sink }
+    local run = { sink = sink, early = {} }
+    -- `results` that came before the reply: the run's to its sink, the
+    -- rest to the nodes.
+    local function flush()
+        local early = run.early
+        run.early = nil
+        for _, d in ipairs(early or {}) do
+            local updates = M._updates(d.cases)
+            if run.handle and d.task_id ~= nil and run.handle.task_id == d.task_id then
+                sink.status(updates)
+            else
+                require("loomtest.runner").apply_status(updates)
+            end
+        end
+    end
     local function settle()
+        flush()
         if _run == run then _run = nil end
     end
     local sent, handle = test_source.daemon_run(selection, { no_build = opts and opts.no_build or nil }, {
+        accepted = flush,
         resolve = function(done, err)
             settle()
             if type(done.cases) == "table" then
                 sink.status(M._updates(done.cases))
-                return sink.done(true)
+                if only_failed_tests(done.cases, err) then return sink.done(true) end
+                return sink.done(false, err)
             end
             sink.done(false, err or done.error or "the test run failed")
         end,
@@ -234,6 +269,7 @@ local function start_run(selection, opts, sink)
         return nil
     end
     run.handle = handle
+    if handle and handle.task_id ~= nil then run.early = nil end
     _run = run
     return {
         cancel = function()
@@ -255,6 +291,8 @@ end
 --- @param sink loomtest.RunSink
 --- @return loomtest.RunHandle|nil
 local function start_debug(test_id, sink)
+    -- The started session's control (`stop`), once the debugger runs.
+    local session
     local function collect(token, after)
         local sent = type(token) == "string" and test_source.daemon_collect(token, function(cases)
             if cases then sink.status(M._updates(cases)) end
@@ -298,8 +336,9 @@ local function start_debug(test_id, sink)
                 end
             end
         end
-        local started = dap_start({ name = name, program = d.program, args = d.args or {}, cwd = d.cwd,
+        local started, ctl = dap_start({ name = name, program = d.program, args = d.args or {}, cwd = d.cwd,
             env = env, adapter = primary.adapter }, callbacks)
+        session = started and ctl or nil
         if not started then
             collect(token, function() sink.done(false, "the debugger did not start") end)
         end
@@ -317,9 +356,15 @@ local function start_debug(test_id, sink)
         sink.done(false, not_carried("debug tests"))
         return nil
     end
+    -- Stopping it: the preparation cancelled, or once the debugger runs its
+    -- session stopped — whose end then collects.
     return {
         cancel = function()
-            if handle then handle:cancel() end
+            if session then
+                session.stop()
+            elseif handle then
+                handle:cancel()
+            end
             sink.done(true)
         end,
     }
@@ -728,8 +773,12 @@ function M.setup()
     -- nodes.
     lw.on("daemon_test_results", function(d)
         if test_source.mode() ~= "daemon" or type(d) ~= "table" then return end
-        local updates = M._updates(d.cases)
         local run = _run
+        if run and run.early then
+            run.early[#run.early + 1] = d
+            return
+        end
+        local updates = M._updates(d.cases)
         if run and d.task_id ~= nil and run.handle and run.handle.task_id == d.task_id then
             return run.sink.status(updates)
         end
