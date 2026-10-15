@@ -959,9 +959,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   nvim-dap (`debug.adapter_installed` / `adapter_hint`, before the
   preparation), `resolve` the daemon's mapping from
   `editor_ops.debug_adapter_resolver` (`Observer:with_debug_adapters`: the
-  cached `DebugConfig/1.adapters`, else after a read; in-process
-  `debug_config.resolve_adapter` only when it is not carried or the read
-  failed). While the call runs the tracker holds `_preparing` (a
+  cached `DebugConfig/1.adapters`, else after a read; never the in-process
+  `debug_config.resolve_adapter`: not carried, a failed read, or a language
+  the records do not name skips the check — `debug.run` checks the prepared
+  adapter). While the call runs the tracker holds `_preparing` (a
   `PreparingRun` with the `editor_ops.prepare` handle): `stop()` cancels it
   (`Preparation:cancel`: drops every later outcome, `cancel_owned_id` once
   accepted), and a second `start` asks before replacing it.
