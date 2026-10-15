@@ -1032,8 +1032,9 @@ executable build target (the one it does not run).
 
 `lw config show <project> <config>` prints a configuration's effective list
 with its source. `lw project show <project>` prints the project-wide list and,
-under each configuration, that configuration's effective list with its source
-(`own`, `inherited from Tests`, `project-wide`); with no project-wide list it
+under each configuration that has saved test targets, that configuration's
+effective list with its source (`own`, `inherited from Tests`, `project-wide`);
+a configuration whose list is empty gets no line. With no project-wide list it
 shows `none` and the `lw test-target add` form. Neither resolves the entries;
 `lw test --list` does.
 

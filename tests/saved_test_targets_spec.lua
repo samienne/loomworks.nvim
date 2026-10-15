@@ -1246,10 +1246,21 @@ describe("lw project show: saved test targets (§16.9)", function()
         local s = show({ configurations = { Rel = { inherits = "variant:default" } } })
         assert.truthy(s:find("\n  tests           none — add: lw test-target add <profile> App:<name>"
             .. " [--config <name> | --project-wide]\n", 1, true), s)
-        assert.equals("none", cfg_tests(s, "Rel"), s)
+        -- A configuration with an empty effective list shows no `tests` line.
+        assert.is_nil(cfg_tests(s, "Rel"), s)
+        assert.falsy(s:find("\n      tests  ", 1, true), s)
         -- One hint for the project, none repeated per configuration.
         local _, n = s:gsub("lw test%-target add", "")
         assert.equals(1, n, s)
+    end)
+
+    it("hides an explicit empty list on a configuration", function()
+        local s = show({ configurations = {
+            Tests = { inherits = "variant:default", tests = { "BaseTests" } },
+            Rel = { inherits = "Tests", tests = {} } } })
+        assert.equals("BaseTests  (own)", cfg_tests(s, "Tests"), s)
+        assert.is_nil(cfg_tests(s, "Rel"), s)
+        assert.falsy(s:find("none (explicit)", 1, true), s)
     end)
 end)
 

@@ -4723,8 +4723,12 @@ function M.cmd_project_show(root, name)
       local variant = c.module_config and c.module_config.variant
       out(string.format("    %-22s %-7s%s", c.name, kind,
         variant and ("  variant=" .. variant) or (c:is_abstract() and "  (abstract)" or "")))
+      -- Only a non-empty effective list gets a line (§16.9); `none` and an
+      -- explicit `[]` are left to the project row and `lw config show`.
       local eff = c.test_targets and c:test_targets()
-      out("      tests  " .. (eff and M._test_targets_text(eff, c) or "none"))
+      if eff and (eff.invalid or #eff.entries > 0) then
+        out("      tests  " .. M._test_targets_text(eff, c))
+      end
     end
   end
 
