@@ -432,6 +432,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- `lw project show`: the project's tests row reads `none project-wide` instead of
+  `none` when the project has no project-wide saved test targets, so it no longer
+  looks like there are no tests when a configuration has its own. (#252)
 - `lw test --target` now passes the results option (e.g. `--gtest_output`)
   first, before the entry's arguments and the arguments forwarded after
   `--`: program, results option, args. Before, the results option came
