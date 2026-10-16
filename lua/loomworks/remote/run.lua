@@ -242,7 +242,7 @@ M.LEFTOVER_REPORT_AGE = 86400
 --- @param runner loomworks.Runner
 --- @param serial string
 --- @param leftover { pid: integer, nonce: string, program: string, started_at: integer|nil }
---- @param o { backend?: table, timeout?: number, note: fun(s: string), now?: integer }
+--- @param o { backend?: table, timeout?: number, note: fun(s: string, role?: string), now?: integer }
 --- @return "stopped"|"gone"|"unknown"|"failed"|"unsupported"
 function M.reap_leftover(runner, serial, leftover, o)
     local name = leftover.program:match("([^/]+)$") or leftover.program
@@ -250,34 +250,34 @@ function M.reap_leftover(runner, serial, leftover, o)
     local from = " from an interrupted run on " .. serial
     if not runner.reap then
         o.note("warning: an interrupted run may have left " .. what .. " running on " .. serial
-            .. "; this device runner cannot stop it")
+            .. "; this device runner cannot stop it", "warn")
         return "unsupported"
     end
     local ok, spec, parse = pcall(runner.reap, serial,
         { pid = leftover.pid, nonce = leftover.nonce, program = leftover.program })
     if not ok or type(spec) ~= "table" or type(parse) ~= "function" then
         o.note("warning: could not stop leftover " .. what .. from .. ": "
-            .. tostring(not ok and spec or "device runner reap returned no command"))
+            .. tostring(not ok and spec or "device runner reap returned no command"), "warn")
         return "failed"
     end
     local job, fail = spec_exec.run(spec, { label = "stop leftover " .. name, timeout = o.timeout,
         backend = o.backend })
     if fail then
-        o.note("warning: could not stop leftover " .. what .. from .. ": " .. fail)
+        o.note("warning: could not stop leftover " .. what .. from .. ": " .. fail, "warn")
         return "failed"
     end
     local pok, outcome = pcall(parse, job.lines)
     if pok and outcome == "stopped" then
-        o.note("stopped leftover " .. what .. from)
+        o.note("stopped leftover " .. what .. from, "ok")
         return "stopped"
     elseif pok and outcome == "gone" then
         local age = leftover.started_at and ((o.now or os.time()) - leftover.started_at) or nil
         if age and age < M.LEFTOVER_REPORT_AGE then
-            o.note("leftover " .. what .. from .. " had already exited")
+            o.note("leftover " .. what .. from .. " had already exited", "plain")
         end
         return "gone"
     end
-    o.note("warning: could not tell whether leftover " .. what .. from .. " was stopped")
+    o.note("warning: could not tell whether leftover " .. what .. from .. " was stopped", "warn")
     return "unknown"
 end
 
@@ -290,7 +290,7 @@ end
 --- @param runner loomworks.Runner
 --- @param serial string
 --- @param lock table device lock handle
---- @param o { backend?: table, timeout?: number, note: fun(s: string), now?: integer }
+--- @param o { backend?: table, timeout?: number, note: fun(s: string, role?: string), now?: integer }
 function M.reap_on_acquire(runner, serial, lock, o)
     local device_lock = require("loomworks.remote.device_lock")
     local outcomes = {}
@@ -326,6 +326,8 @@ end
 ---                    (device_rel is relative to the staging root)
 ---   extra_args_fn    fun(plan) → string[] appended to argv (e.g. results option)
 ---   backend, liveness_ms, write_out, write_err, note, on_cleanup
+---   (`note(s, role)`: `role` is the line's highlighting role, spec §16.7 —
+---   phase, ok, warn or plain; a caller that does not color ignores it)
 --- @param o table
 --- @return loomworks.RemoteRunResult|nil result, string|nil err (setup failure: nothing ran)
 function M.execute(o)
@@ -358,7 +360,7 @@ function M.execute(o)
     local device_lock = require("loomworks.remote.device_lock")
     local lock, lock_err = device_lock.acquire(serial, {
         wait = not o.no_wait, action = "run", workspace = o.ws.name,
-        on_wait = function(msg) note(msg) end,
+        on_wait = function(msg) note(msg, "plain") end,
     })
     if not lock then return nil, lock_err end
 
@@ -408,15 +410,15 @@ function M.execute(o)
             if out_f then pcall(out_f.flush, out_f) end
             if dev_f then pcall(dev_f.flush, dev_f) end
             if how == "stopped" then
-                note("interrupted — stopped " .. plan.name .. " on " .. serial)
+                note("interrupted — stopped " .. plan.name .. " on " .. serial, "warn")
             elseif how == "sent" then
                 note("interrupted — asked " .. serial .. " to stop " .. plan.name
-                    .. " (the stop may not have completed)")
+                    .. " (the stop may not have completed)", "warn")
             else
                 note("interrupted — the connection to " .. serial .. " was closed; " .. plan.name
-                    .. " may still be running there (the stop may not have completed)")
+                    .. " may still be running there (the stop may not have completed)", "warn")
             end
-            if result.run_dir then note("run folder: " .. result.run_dir) end
+            if result.run_dir then note("run folder: " .. result.run_dir, "plain") end
         end
         if log_job and not log_job.done then log_job:kill("cancel") end
         if live_job and not live_job.done then live_job:kill("cancel") end
@@ -426,7 +428,7 @@ function M.execute(o)
         if state and state.pid and state.status == nil and not stop_done and plan.nonce then
             if device_lock.save_leftover(serial, { pid = state.pid, nonce = plan.nonce, program = plan.program }) then
                 note(plan.name .. " (pid " .. tostring(state.pid) .. ") may still be running on " .. serial
-                    .. "; the next run on this device stops it")
+                    .. "; the next run on this device stops it", "warn")
             end
         end
         device_lock.release(lock)
@@ -475,7 +477,7 @@ function M.execute(o)
     by_serial[plan.root] = record
     o.ws._device_sync[serial] = by_serial
     if o.ws._save_cache then pcall(o.ws._save_cache, o.ws) end
-    note(staging.summary(serial, report))
+    note(staging.summary(serial, report), "plain")
 
     -- Optional pre-execution step (spec §18.6 framework detection): the
     -- caller may probe the staged program (same cwd / env / loader path) and
@@ -575,7 +577,7 @@ function M.execute(o)
     local req = { argv = plan.argv, cwd = plan.cwd, env = plan.env, library_dirs = plan.library_dirs,
         nonce = plan.nonce }
     if session and not runner.parse_pid then start_log(nil) end
-    if not runner.parse_pid then note("running " .. plan.name .. " on " .. serial) end
+    if not runner.parse_pid then note("running " .. plan.name .. " on " .. serial, "phase") end
     local combined = runner.combined_output
     local err
     exec_job, state = t:start_exec(req, {
@@ -584,7 +586,7 @@ function M.execute(o)
             -- Recorded so a run that loses its cleanup leaves the next run a
             -- program to reap (§18.7).
             device_lock.set_program(lock, { pid = pid, nonce = plan.nonce, program = plan.program })
-            note("running " .. plan.name .. " on " .. serial .. " (pid " .. tostring(pid) .. ")")
+            note("running " .. plan.name .. " on " .. serial .. " (pid " .. tostring(pid) .. ")", "phase")
             start_log(pid)
         end,
         on_output = function(stream, line)
@@ -655,7 +657,7 @@ function M.execute(o)
         if state.pid and state.status == nil and not exec_job.cancelled then
             if terminate(t.timeouts.query) == "stopped" then
                 note("the connection to " .. serial .. " was lost; stopped " .. plan.name
-                    .. " (pid " .. tostring(state.pid) .. ") there")
+                    .. " (pid " .. tostring(state.pid) .. ") there", "warn")
             end
             -- (not stopped: cleanup keeps it in the leftover file and says so)
         end
@@ -772,30 +774,31 @@ end
 --- Print the post-run summary (spec §18.5 steps 5–7, §18.13 show policy).
 --- `extra_failed` marks a failure the caller judged (e.g. failed tests).
 --- @param result loomworks.RemoteRunResult
---- @param write fun(s: string) summary writer (stderr)
+--- @param write fun(s: string, role?: string) summary writer (stderr); `role` is
+---   the line's highlighting role (spec §16.7), nil for relayed device log lines
 --- @param extra_failed? boolean
 function M.report(result, write, extra_failed)
     local failed = result.failed or extra_failed
     if failed and result.show and result.show.log == "on_failure" and #(result.log_tail or {}) > 0 then
-        write("--- device log (last " .. #result.log_tail .. " lines) ---")
+        write("--- device log (last " .. #result.log_tail .. " lines) ---", "plain")
         for _, l in ipairs(result.log_tail) do write(l) end
-        write("---")
+        write("---", "plain")
     end
-    for _, w in ipairs(result.warnings) do write("lw: warning: " .. w) end
+    for _, w in ipairs(result.warnings) do write("lw: warning: " .. w, "warn") end
     if result.transport_error then
-        write("lw: device/transport failure — no exit status was recovered: " .. result.transport_error)
+        write("lw: device/transport failure — no exit status was recovered: " .. result.transport_error, "fail")
     elseif result.timed_out then
-        write("lw: the program exceeded the execution timeout and was stopped")
+        write("lw: the program exceeded the execution timeout and was stopped", "fail")
     elseif result.signal then
-        write(string.format("lw: the program was terminated by signal %d (status %d)", result.signal, result.status))
+        write(string.format("lw: the program was terminated by signal %d (status %d)", result.signal, result.status), "fail")
     elseif result.status and result.status ~= 0 then
-        write("lw: the program exited with status " .. result.status)
+        write("lw: the program exited with status " .. result.status, "fail")
     end
-    for _, c in ipairs(result.crashes) do write("lw: crash report: " .. c) end
+    for _, c in ipairs(result.crashes) do write("lw: crash report: " .. c, "fail") end
     if #result.crashes > 0 and result.status == 0 then
-        write("lw: the run fails because the device recorded a crash")
+        write("lw: the run fails because the device recorded a crash", "fail")
     end
-    for _, name in ipairs(result.missing_results) do write("lw: result file did not come back: " .. name) end
+    for _, name in ipairs(result.missing_results) do write("lw: result file did not come back: " .. name, "warn") end
     if result.run_dir then
         local extra = false
         local h = uv().fs_scandir(result.run_dir)
@@ -804,7 +807,7 @@ function M.report(result, write, extra_failed)
             if not n then break end
             if n ~= "output.log" then extra = true end
         end
-        if extra or failed then write("lw: run folder: " .. result.run_dir) end
+        if extra or failed then write("lw: run folder: " .. result.run_dir, "plain") end
     end
 end
 

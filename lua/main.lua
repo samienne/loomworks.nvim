@@ -549,7 +549,8 @@ do
     io.stderr:write("loomworks " .. p.version .. " (pinned)\n")
     uv.os_setenv("LOOMWORKS_PINNED", p.version)
     uv.os_setenv("LW_ROOT", getenv("LW_ROOT") or uv.cwd())
-    local code = require("boot.exe").run_in_place(bin, forwarded)
+    -- A pinned lw that predates the color options would reject them (§16.23).
+    local code = require("boot.exe").run_in_place(bin, pin.redirect_args(forwarded, p.version))
     if not code then
       io.stderr:write("lw: cannot exec pinned lw at " .. bin .. "\n")
       exit(1)
