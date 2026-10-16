@@ -73,6 +73,21 @@ like the `lw test` / launch deploy (`deploy_async`, the runner's
 `test_host.deploy`: each copy on the event loop, stopping between copies on a
 cancel), then remove this entry.
 
+## Editor tests view: apply a run's `done` cases to the held view
+
+The editor's `resolve` (`loomtest_adapter.lua`) puts a run's `done.result.cases`
+on the loomtest nodes but never into the held tests view, which only `results`
+signals update (`observer.lua`). A re-render of the tree from the view between
+`done` and the view's `update` therefore shows the cases' previous status for a
+moment. The daemon sends every case as `results` before `done` (spec
+daemon.md:2295-2297, :4602), so this is a brief flicker at most, never a lasting
+wrong status. Found while deflaking `daemon_tests_editor_spec` (#266); the
+user chose to fix it later. Test-first: a `done` frame carrying cases with no
+`results` before it, then an explicit `M._render()`, then assert the case's
+status. Needs spec wording first (§19.16 "Tests" Runs), proposed: "The editor
+also applies its own run's `done.result.cases` to its held tests view, so a
+re-render before the view's `update` keeps them."
+
 ## Daemon follow-ups (after step 5e)
 
 - `lw daemon stop` on a daemon that is already retiring still triggers the
