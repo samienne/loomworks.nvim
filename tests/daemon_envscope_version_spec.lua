@@ -52,6 +52,21 @@ describe("envscope.with on Windows", function()
         local got = envscope.with(env, function() return uv.os_getenv("NoDefaultCurrentDirectoryInExePath") end)
         assert.equals("1", got)
     end)
+
+    it("client_view: a whole environment read in that scope loses what the scope added; overrides stay", function()
+        if not WIN then return pending("Windows only") end
+        local client = { PATH = "C:\\bin", FOO = "x", EMPTY = "" }
+        -- A whole environment (every non-empty client variable) read in the scope.
+        local whole = { Path = "C:\\rt;C:\\bin", FOO = "x", NODEFAULTCURRENTDIRECTORYINEXEPATH = "1" }
+        assert.same({ Path = "C:\\rt;C:\\bin", FOO = "x" }, envscope.client_view(whole, client))
+        -- A step's own overrides (not the whole environment): as they are.
+        local over = { NoDefaultCurrentDirectoryInExePath = "1", BAR = "y" }
+        assert.equals(over, envscope.client_view(over, client))
+        -- The client sets it: the scope added nothing.
+        local client2 = { PATH = "C:\\bin", FOO = "x", NoDefaultCurrentDirectoryInExePath = "1" }
+        assert.equals(whole, envscope.client_view(whole, client2))
+        assert.is_nil(envscope.client_view(nil, client))
+    end)
 end)
 
 describe("version.identity of a development source", function()

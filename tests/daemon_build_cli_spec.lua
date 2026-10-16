@@ -137,7 +137,7 @@ describe("lw build through the workspace daemon (real processes)", function()
     end)
 
     it("--color=always: each line the same text and role both ways — the same bytes (§19.17)", function()
-        local a, b = workspace(), workspace()
+        local roots3 = { workspace(), workspace(), workspace() }
         local cases = {
             { { "--color=always", "build", "dev" } },
             { { "--color=always", "build", "dev", "-v" } },
@@ -147,16 +147,45 @@ describe("lw build through the workspace daemon (real processes)", function()
         for _, c in ipairs(cases) do
             local args = { "--no-input" }
             vim.list_extend(args, c[1])
-            local ra = lw(a, args, vim.tbl_extend("force", c[2] or {}, { LOOMWORKS_RUNTIME = "in-process" }))
-            local rb = lw(b, args, c[2])
+            -- In-process, through the daemon and attached (§19.1, §19.17).
+            local ra = H.three_way({ roots = roots3, args = args, extra = c[2], lw = lw, norm = norm, env = env,
+                keep_daemon = true, state = function(root) return cache_of(root, env.data .. "/trust.key") end })
             local what = table.concat(c[1], " ")
-            assert.equals(ra.code, rb.code, what .. "\n" .. rb.stderr)
             -- Painted: the lead line and the step header carry their roles.
             assert.truthy(ra.stdout:find("\27[1mbuilding profile: dev\27[0m", 1, true), what .. "\n" .. ra.stdout)
             assert.truthy(ra.stdout:find("\27[1;36m==>\27[0m", 1, true), what .. "\n" .. ra.stdout)
-            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
-            assert.equals(H.parity_text(norm(ra.stderr, a)), H.parity_text(norm(rb.stderr, b)), what)
-            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
+        end
+    end)
+
+    it("-v with a module environment: the env line against the client's environment, the same bytes both ways (§19.17)", function()
+        local roots3 = { workspace(), workspace(), workspace() }
+        for _, root in ipairs(roots3) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end
+        -- The client does not set NoDefaultCurrentDirectoryInExePath (in any
+        -- spelling; the suite's runner may), so its env line shows it.
+        for k in pairs(vim.deepcopy(env.vars)) do
+            if k:lower() == "nodefaultcurrentdirectoryinexepath" then env.vars[k] = nil end
+        end
+        local cases = {
+            { { "--color=always", "build", "dev", "-v" }, { LW_V_CLIENT = "one" } },
+            { { "build", "dev", "-v", "--reconfigure" }, { LW_V_CLIENT = "two" } },
+            { { "--color=always", "build", "dev", "--verbose" }, { LW_V_CLIENT = "three", LW_TEST_FAIL = "build" } },
+        }
+        for _, c in ipairs(cases) do
+            local args = { "--no-input" }
+            vim.list_extend(args, c[1])
+            c[2].NoDefaultCurrentDirectoryInExePath = false
+            -- In-process, through the daemon and attached (§19.1, §19.17).
+            local ra = H.three_way({ roots = roots3, args = args, extra = c[2], lw = lw, norm = norm, env = env,
+                keep_daemon = true, state = function(root) return cache_of(root, env.data .. "/trust.key") end })
+            local what = table.concat(c[1], " ")
+            -- The overrides only: the addition to PATH, never the client's own values.
+            local plain = ra.stdout:gsub("\27%[[%d;]*m", "")
+            local line = plain:match("\n(    env: [^\n]*)\n")
+            assert.truthy(line, what .. "\n" .. plain)
+            assert.truthy(line:find("LW_V_ADD=added value", 1, true), line)
+            assert.truthy(line:find("lw-verbose/bin" .. (H.is_win and ";" or ":") .. "$PATH", 1, true), line)
+            assert.truthy(line:find("NoDefaultCurrentDirectoryInExePath=1", 1, true), line)
+            assert.is_nil(line:find("LW_V_CLIENT", 1, true), line)
         end
     end)
 

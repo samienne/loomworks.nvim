@@ -59,6 +59,9 @@ io.stderr:write("saved stderr " .. name .. string.char(10))
 if os.getenv("LW_TEST_FAIL_SAVED") == name then os.exit(3) end
 ]]
 
+--- The toolchain runtime directory `lwtestmod` reports (never created).
+local RUNTIME_DIR = H.is_win and "C:/lw-runtime/bin" or "/lw-runtime/bin"
+
 --- The test-only module: the shell module plus a native batch runner.
 local function module_source(runner)
     return ([[
@@ -73,14 +76,19 @@ function TU:run_command_all(opts)
     local cmd = { vim.v.progpath, "--headless", "-u", "NONE", "-l", %q, opts.junit or "",
         self._config_unit._project.key }
     vim.list_extend(cmd, opts.extra_args or {})
-    return { cmd = cmd, junit_out = opts.junit }
+    local sep = package.config:sub(1, 1) == "\\" and ";" or ":"
+    return { cmd = cmd, junit_out = opts.junit,
+        env = { LW_V_RUNNER = "1", PATH = "/lw-runner/bin" .. sep .. (os.getenv("PATH") or "") } }
 end
 function TU:run_command_all_rebuilds() return false end
 function M.create_test_unit(unit) return setmetatable({ _config_unit = unit }, TU) end
--- (No build targets: saved test targets name launch configurations.)
-function M.parse_targets() return {} end
+-- One executable build target, `tprog` (this nvim), for a target-backed
+-- saved test target; its toolchain runtime directory makes the step's
+-- environment a full one on Windows (ConfigUnit:run_env, runenv.compose).
+function M.parse_targets() return { tprog = { type = "executable", artifact = %q } } end
+function M.runtime_path() return { %q } end
 return M
-]]):format(runner)
+]]):format(runner, (vim.v.progpath:gsub("\\", "/")), RUNTIME_DIR)
 end
 
 --- `s` with every spelling of `root` replaced (see daemon_build_cli_spec).
@@ -148,8 +156,9 @@ describe("lw test through the workspace daemon (real processes)", function()
     --- A workspace with two `lwtestmod` projects (app, lib) and a profile
     --- `dev` (app=Debug, lib=Debug), created by lw itself. `saved`: app's
     --- saved test targets (§1.3.4) — launch configurations `chk` and `chk2`
-    --- running the SAVED program — as its project-wide `tests` list.
-    local function workspace(saved)
+    --- running the SAVED program — as its project-wide `tests` list;
+    --- `launch_extra`: fields added to both launch configurations.
+    local function workspace(saved, launch_extra)
         local root = H.tmp()
         roots[#roots + 1] = root
         vim.fn.mkdir(root .. "/app", "p")
@@ -178,10 +187,14 @@ describe("lw test through the workspace daemon (real processes)", function()
             local prog = root .. "/saved.lua"
             write(prog, SAVED)
             local function launch(name)
-                return { command = nv, args = { "--headless", "-u", "NONE", "-l", prog, name } }
+                local l = { command = nv, args = { "--headless", "-u", "NONE", "-l", prog, name } }
+                for k, v in pairs(launch_extra or {}) do l[k] = vim.deepcopy(v) end
+                return l
             end
             local app = project("app")
-            app.launch = { chk = launch("chk"), chk2 = launch("chk2") }
+            -- (`tchk`: target-backed — the build target `tprog` runs SAVED.)
+            app.launch = { chk = launch("chk"), chk2 = launch("chk2"),
+                tchk = { target = "tprog", args = { "--headless", "-u", "NONE", "-l", prog, "tchk" } } }
             app.lwtestmod.tests = saved
             local upath = root .. "/.nvim/loomworks.user.json"
             trust._set_key_path(env.data .. "/trust.key")
@@ -247,7 +260,8 @@ describe("lw test through the workspace daemon (real processes)", function()
         for _, c in ipairs(cases) do
             local args = { "--no-input" }
             vim.list_extend(args, c[1])
-            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
+            -- The plain in-process host (`--no-daemon` runs attached, §19.1).
+            local ra = lw(a, args, vim.tbl_extend("force", c[2] or {}, { LOOMWORKS_RUNTIME = "in-process" }))
             local rb = lw(b, args, c[2])
             local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2] or {})
             assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
@@ -265,7 +279,9 @@ describe("lw test through the workspace daemon (real processes)", function()
         -- working directory on both paths (the daemon's cwd is the root).
         do
             local args = { "--no-input", "test", "dev", "--junit", "sub-reports/s.xml" }
-            local ra = H.lw({ "--no-daemon", unpack(args) }, { env = env, cwd = a .. "/app" })
+            local ea = { vars = vim.deepcopy(env.vars), data = env.data, config = env.config }
+            ea.vars.LOOMWORKS_RUNTIME = "in-process"
+            local ra = H.lw(args, { env = ea, cwd = a .. "/app" })
             local rb = H.lw(args, { env = env, cwd = b .. "/app" })
             assert.equals(ra.code, rb.code, ra.stderr .. "\n---\n" .. rb.stderr)
             assert.truthy(rb.stderr:find(NOTICE, 1, true), rb.stderr)
@@ -289,7 +305,7 @@ describe("lw test through the workspace daemon (real processes)", function()
     end)
 
     it("--color=always: each line the same text and role both ways — the same bytes (§19.17)", function()
-        local a, b = workspace(), workspace()
+        local roots3 = { workspace(), workspace(), workspace() }
         local cases = {
             { { "--color=always", "test", "dev" } },
             { { "--color=always", "test", "dev" }, { LW_TEST_FAIL_UNIT = "app" } },
@@ -299,20 +315,85 @@ describe("lw test through the workspace daemon (real processes)", function()
         for _, c in ipairs(cases) do
             local args = { "--no-input" }
             vim.list_extend(args, c[1])
-            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
-            local rb = lw(b, args, c[2])
+            -- In-process, through the daemon and attached (§19.1, §19.17).
+            local ra = H.three_way({ roots = roots3, args = args, extra = c[2], lw = lw, norm = norm, env = env,
+                keep_daemon = true, state = function(root)
+                    return { cache = cache_of(root, env.data .. "/trust.key"), reports = files_of(root .. "/reports") }
+                end })
             local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2] or {})
-            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
-            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
-            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
-            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
             assert.truthy(ra.stdout:find("\27[1mbuilding profile: dev\27[0m", 1, true), what .. "\n" .. ra.stdout)
         end
         -- The test phase is painted too: its step headers and the outcome.
-        local ok = lw(b, { "--no-input", "--color=always", "test", "dev" })
+        local ok = lw(roots3[2],{ "--no-input", "--color=always", "test", "dev" })
         assert.equals(0, ok.code, ok.stderr)
         assert.truthy(ok.stdout:find("\27[1;36m==>\27[0m\27[1m [test] app: nvim\27[0m", 1, true), ok.stdout)
         assert.truthy(ok.stdout:find("\27[32mTESTS OK: dev (2 steps)\27[0m", 1, true), ok.stdout)
+    end)
+
+    it("-v (and --color=always): each runner and program command, env lines against the client's environment, deploy steps — the same bytes both ways (§19.17)", function()
+        local tests = { "chk", { "chk2", "--x" } }
+        local extra = { env = { LW_V_SAVED = "s" },
+            deploy = { ["deployed/saved.lua"] = { project = "app", path = "${workspace_root}/saved.lua" } } }
+        local roots3 = { workspace(tests, extra), workspace(tests, extra), workspace(tests, extra) }
+        for _, root in ipairs(roots3) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end
+        local cases = {
+            { { "--color=always", "test", "dev", "-v" }, { LW_V_CLIENT = "one" } },
+            { { "test", "dev", "--verbose" }, { LW_V_CLIENT = "two" } },
+            { { "--color=always", "test", "dev", "-v" }, { LW_V_CLIENT = "three", LW_TEST_FAIL_UNIT = "app" } },
+            { { "test", "dev", "-v", "--no-build" }, { LW_V_CLIENT = "four" } },
+        }
+        for _, c in ipairs(cases) do
+            local args = { "--no-input" }
+            vim.list_extend(args, c[1])
+            c[2].NoDefaultCurrentDirectoryInExePath = false
+            c[2].NODEFAULTCURRENTDIRECTORYINEXEPATH = false
+            -- In-process, through the daemon and attached (§19.1, §19.17).
+            local ra = H.three_way({ roots = roots3, args = args, extra = c[2], lw = lw, norm = norm, env = env,
+                keep_daemon = true, state = function(root)
+                    -- (The deploy records: keyed by the absolute destination, with its source's mtime.)
+                    local cache = cache_of(root, env.data .. "/trust.key")
+                    local deployed = cache and vim.tbl_count(cache.deploy_state or {})
+                    if cache then cache.deploy_state = nil end
+                    return { cache = cache, deployed = deployed }
+                end })
+            local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2])
+            local out = norm(ra.stdout, roots3[1]):gsub("\27%[[%d;]*m", "")
+            -- The runner's command and env line (its PATH addition, over the client's PATH).
+            assert.truthy(out:find("    env: LW_V_RUNNER=1 ", 1, true), what .. "\n" .. out)
+            assert.truthy(out:find("/lw-runner/bin" .. (H.is_win and ";" or ":") .. "$PATH", 1, true), what .. "\n" .. out)
+            assert.is_nil(out:find("LW_V_CLIENT", 1, true), out)
+            if c[2].LW_TEST_FAIL_UNIT == nil then
+                -- A saved target: its deploy step (none with --no-build), then its program's command and env.
+                local deployed = out:find("    copy <ROOT>/saved.lua -> ", 1, true) or out:find("    up to date ", 1, true)
+                assert.equals(not vim.tbl_contains(c[1], "--no-build"), deployed ~= nil, what .. "\n" .. out)
+                assert.truthy(out:find("    env: LW_V_SAVED=s", 1, true), what .. "\n" .. out)
+            end
+        end
+    end)
+
+    it("-v, a target-backed saved test target (a full environment on Windows): the env line shows nothing the daemon itself added — the same bytes in-process, through the daemon and attached (§19.15 \"Roles and verbose\")", function()
+        local roots3 = { workspace({ "tchk" }), workspace({ "tchk" }), workspace({ "tchk" }) }
+        for _, form in ipairs({ { "test", "dev", "-v" }, { "--color=always", "test", "dev", "--verbose" } }) do
+            local args = { "--no-input" }
+            vim.list_extend(args, form)
+            -- The client lacks NoDefaultCurrentDirectoryInExePath (a dev-source
+            -- or editor-hosted client; the released lw sets it at startup): on
+            -- Windows the daemon's environment scope adds it (envscope.with),
+            -- and the step's full environment (ConfigUnit:run_env) is read in it.
+            local ra = H.three_way({ roots = roots3, args = args, lw = lw, norm = norm, env = env, keep_daemon = true,
+                extra = { NoDefaultCurrentDirectoryInExePath = false, NODEFAULTCURRENTDIRECTORYINEXEPATH = false },
+                state = function(root) return cache_of(root, env.data .. "/trust.key") end })
+            local what = table.concat(form, " ")
+            assert.equals(0, ra.code, what .. "\n" .. ra.stdout .. ra.stderr)
+            local out = norm(ra.stdout, roots3[1]):gsub("\27%[[%d;]*m", "")
+            assert.truthy(out:find("saved tchk", 1, true), what .. "\n" .. out)
+            assert.is_nil(out:lower():find("nodefaultcurrentdirectoryinexepath", 1, true), what .. "\n" .. out)
+            if H.is_win then
+                -- (Its only addition: the toolchain runtime directory.)
+                local want = "    env: " .. require("loomworks.term").format_argv({ "PATH=" .. RUNTIME_DIR .. ";$PATH" })
+                assert.truthy(out:find(want .. "\n", 1, true), what .. "\n" .. out)
+            end
+        end
     end)
 
     it("saved test targets: the daemon runs the whole plan, as in-process (§16.16, §19.15)", function()

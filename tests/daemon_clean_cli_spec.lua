@@ -157,7 +157,8 @@ describe("lw clean through the workspace daemon (real processes)", function()
     local function parity(a, b, args, extra, tags_a, tags_b, expect_routed)
         local full = { "--no-input" }
         vim.list_extend(full, args)
-        local ra = lw(a, { "--no-daemon", unpack(full) }, extra)
+        -- The plain in-process host (`--no-daemon` runs attached, §19.1).
+        local ra = lw(a, full, vim.tbl_extend("force", extra or {}, { LOOMWORKS_RUNTIME = "in-process" }))
         local rb = lw(b, full, extra)
         local what = table.concat(args, " ") .. " " .. vim.inspect(extra or {})
         tags_a = tags_a or { ["<ROOT>"] = a }
@@ -201,18 +202,57 @@ describe("lw clean through the workspace daemon (real processes)", function()
         assert.truthy(m.stderr:find("lw: no profile specified", 1, true), m.stderr)
     end)
 
+    --- Run `args` in-process, through the daemon and attached on `roots3`
+    --- (§19.1, §19.17); returns the in-process result.
+    local function parity3(roots3, args, extra)
+        local full = { "--no-input" }
+        vim.list_extend(full, args)
+        return H.three_way({ roots = roots3, args = full, extra = extra, lw = lw, env = env, keep_daemon = true,
+            norm = function(s, root) return norm(s, { ["<ROOT>"] = root }) end,
+            state = function(root) return { cache = cache_of(root, env.data .. "/trust.key"), out = tree_of(root .. "/out") } end })
+    end
+
     it("--color=always: each line the same text and role both ways — the same bytes (§19.17)", function()
-        local a, b = workspace(), workspace()
-        build(a); build(b)
-        local f = parity(a, b, { "--color=always", "clean", "dev" }, { LW_TEST_FAIL = "clean" }, nil, nil, true)
+        local roots3 = { workspace(), workspace(), workspace() }
+        for _, root in ipairs(roots3) do build(root) end
+        local f = parity3(roots3, { "--color=always", "clean", "dev" }, { LW_TEST_FAIL = "clean" })
         assert.equals(3, f.code)
         assert.truthy(f.stderr:find("\27[31mlw: clean failed (exit 3)", 1, true), f.stderr)
-        local ok = parity(a, b, { "--color=always", "clean", "dev" }, nil, nil, nil, true)
+        local ok = parity3(roots3, { "--color=always", "clean", "dev" })
         assert.equals(0, ok.code, ok.stderr)
         -- Painted by role: the lead, each step header, the outcome.
         assert.truthy(ok.stdout:find("\27[1mcleaning profile: dev\27[0m", 1, true), ok.stdout)
         assert.truthy(ok.stdout:find("\27[1;36m==>\27[0m\27[1m [clean] lib: clean Debug\27[0m", 1, true), ok.stdout)
         assert.truthy(ok.stdout:find("\27[32mCLEAN OK: dev\27[0m", 1, true), ok.stdout)
+    end)
+
+    it("-v (and --color=always): each clean command, its env line against the client's environment and the wipe, the same bytes both ways (§19.17)", function()
+        local roots3 = { workspace(), workspace(), workspace() }
+        for _, root in ipairs(roots3) do
+            H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV)
+            build(root)
+        end
+        local function vars(t)
+            t.NoDefaultCurrentDirectoryInExePath = false
+            t.NODEFAULTCURRENTDIRECTORYINEXEPATH = false
+            return t
+        end
+        local f = parity3(roots3, { "--color=always", "clean", "dev", "-v" },
+            vars({ LW_TEST_FAIL = "clean", LW_V_CLIENT = "one" }))
+        assert.equals(3, f.code)
+        local ok = parity3(roots3, { "clean", "dev", "--verbose" }, vars({ LW_V_CLIENT = "two" }))
+        assert.equals(0, ok.code, ok.stderr)
+        local out = norm(ok.stdout, { ["<ROOT>"] = roots3[1] })
+        -- The module clean's command, its directory and env overrides; the wipe's directory.
+        assert.truthy(out:find("==> [clean] app: clean Debug\n    $ ", 1, true), out)
+        assert.truthy(out:find("\n    (in <ROOT>/app)\n    env: ", 1, true), out)
+        assert.truthy(out:find("lw-verbose/bin" .. (H.is_win and ";" or ":") .. "$PATH", 1, true), out)
+        assert.is_nil(out:find("LW_V_CLIENT", 1, true), out)
+        assert.truthy(out:find("==> [clean] lib: clean Debug\n    remove <ROOT>/out/lib/Debug\n", 1, true), out)
+        for _, root in ipairs(roots3) do build(root) end
+        local c = parity3(roots3, { "--color=always", "clean", "dev", "-v" }, vars({ LW_V_CLIENT = "three" }))
+        assert.equals(0, c.code, c.stderr)
+        assert.truthy(c.stdout:find("\27[2m    remove ", 1, true), c.stdout)
     end)
 
     it("an unsafe wipe path: refused with the in-process line, nothing removed, both ways", function()

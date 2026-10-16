@@ -219,11 +219,12 @@ end
 --- Both hosts print it (in-process and through the daemon, §19.15), so a
 --- build never silently runs without an environment or command the shared
 --- file names. Counts workspace-level entries and those of the profile's
---- projects.
+--- projects. Its highlighting role (§16.7, `warn`) is returned beside it.
 --- @param ws table workspace
 --- @param profile table|nil
 --- @param units? table[] configuration units: their projects instead of the profile's
 --- @return string|nil line
+--- @return string|nil role `warn` (with a line)
 function M.trust_notice(ws, profile, units)
     if not (ws and ws.ignored_program_settings) then return nil end
     local keys = {}
@@ -235,7 +236,30 @@ function M.trust_notice(ws, profile, units)
     if n == 0 then return nil end
     return string.format("lw: %d program setting%s in loomworks.json ignored — only your local config "
         .. "may name programs or environment (`lw status` lists %s; lw help trust)",
-        n, n == 1 and "" or "s", n == 1 and "it" or "them")
+        n, n == 1 and "" or "s", n == 1 and "it" or "them"), "warn"
+end
+
+local LEAD_VERB = { build = "building", clean = "cleaning", configure = "configuring" }
+
+--- An operation's lead line (§16.4), printed before its steps by both hosts
+--- (in-process and through the daemon, §19.15), and its highlighting role
+--- (§16.7): `building <scope>`, `cleaning <scope>`, `configuring <scope>`.
+--- @param op "build"|"clean"|"configure"
+--- @param scope string `profile: <key>`, or the units' names (`units_label`)
+--- @return string line
+--- @return string role `lead`
+function M.lead_line(op, scope)
+    return LEAD_VERB[op] .. " " .. scope, "lead"
+end
+
+--- An operation's success line, printed by both hosts, and its highlighting
+--- role (§16.7): `BUILD OK: <label>`, `CLEAN OK: <label>`, `CONFIGURE OK: <label>`.
+--- @param op "build"|"clean"|"configure"
+--- @param label string the profile key, the units' names or a launch target's name
+--- @return string line
+--- @return string role `ok`
+function M.ok_line(op, label)
+    return op:upper() .. " OK: " .. label, "ok"
 end
 
 --- Whether `cmd` runs a batch file through cmd.exe: the program the build
@@ -669,15 +693,16 @@ end
 --- The status lines announcing a step (§16.4): `==> [kind] name`, WHY a
 --- configure runs (the gate's reason + the module's full / in-place choice),
 --- and with `verbose` the command line + cwd (`command_lines`) — plus, with
---- `env`, the env overrides line, computed against THIS process's environment:
---- the in-process host passes it; the daemon's runner does not (its steps run
---- in the requesting client's environment, not the daemon's). Also writes the
---- command line to the workspace log (always, §16.4). Each line's
+--- `env`, the env overrides line (`env_line`): `true` computes it against THIS
+--- process's environment (the in-process host); a table is the environment
+--- the step inherits — the daemon's runner passes the one the requesting
+--- client sent (spec §19.15 "Roles and verbose"), never its own. Also writes
+--- the command line to the workspace log (always, §16.4). Each line's
 --- highlighting role (§16.7) is returned alongside it: `phase` for the
 --- header, `reason`, `command`.
 --- @param ws loomworks.Workspace
 --- @param step table
---- @param opts? { verbose?: boolean, env?: boolean }
+--- @param opts? { verbose?: boolean, env?: boolean|table<string, string> }
 --- @return string[] lines (no trailing newlines)
 --- @return string[] roles parallel to `lines` (loomworks.cli_color roles)
 function M.step_lines(ws, step, opts)
@@ -695,7 +720,7 @@ function M.step_lines(ws, step, opts)
     local cwd = step.cwd or ws.root
     overseer.log_task_command(ws, step.name, step, cwd)
     if opts.verbose then
-        for _, l in ipairs(M.command_lines(step, cwd, { env = opts.env == true })) do
+        for _, l in ipairs(M.command_lines(step, cwd, { env = opts.env or false })) do
             lines[#lines + 1] = l
             roles[#roles + 1] = "command"
         end
@@ -709,15 +734,19 @@ end
 --- `    (in <cwd>)` when a working directory is given, then
 --- `    env: <NAME>=<value> …` for the environment overrides the step adds
 --- (`spec.env`, names sorted; `env_line`) — never the inherited environment,
---- which is this process's. `opts.env = false` leaves the env line out.
+--- which is this process's, or `opts.env` when it is a table (the
+--- environment the step inherits: a daemon's requesting client's).
+--- `opts.env = false` leaves the env line out.
 --- @param spec { cmd?: string[], display_cmd?: string[], env?: table<string, string> }
 --- @param cwd? string
---- @param opts? { env?: boolean }
+--- @param opts? { env?: boolean|table<string, string> }
 --- @return string[]
 function M.command_lines(spec, cwd, opts)
     local lines = { "    $ " .. require("loomworks.overseer").command_text(spec) }
     if cwd then lines[#lines + 1] = "    (in " .. tostring(cwd) .. ")" end
-    local env = not (opts and opts.env == false) and M.env_line(spec.env) or nil
+    local inherited = opts and opts.env
+    local env = inherited ~= false
+        and M.env_line(spec.env, type(inherited) == "table" and inherited or nil) or nil
     if env then lines[#lines + 1] = env end
     return lines
 end
@@ -728,21 +757,42 @@ end
 --- equals the inherited one is left out, and a value that extends the
 --- inherited one (`<added><sep><inherited>` or `<inherited><sep><added>`, sep
 --- the platform path separator) shows the added part with the inherited part
---- as `$NAME`. Display only — the env that runs is untouched.
+--- as `$NAME`. Display only — the env that runs is untouched. The inherited
+--- environment is this process's, or `inherited` when given (the daemon: the
+--- requesting client's, before the daemon's own adjustments, spec §19.15
+--- "Roles and verbose") — then only that table, never this process's.
 --- @param env table<string, string>|nil
+--- @param inherited_env? table<string, string>
 --- @return string|nil
-function M.env_line(env)
+function M.env_line(env, inherited_env)
     if type(env) ~= "table" or not next(env) then return nil end
     local exe = require("loomworks.exe")
     local sep = exe.is_windows and ";" or ":"
+    -- This process's environment as a table (libuv's view, which sees
+    -- in-process changes): an inherited empty value is a value (equal: hidden).
+    if type(inherited_env) ~= "table" then
+        local uv = vim.uv or vim.loop
+        local ok, cur = pcall(uv.os_environ)
+        inherited_env = ok and type(cur) == "table" and cur or {}
+    end
+    -- (Case-insensitive on Windows, as the process env lookup is; the
+    -- exact-case spelling first when the table holds two, `Path` and `PATH`.)
+    local by_key = {}
+    for k, v in pairs(inherited_env) do
+        by_key[exe.is_windows and tostring(k):upper() or tostring(k)] = tostring(v)
+    end
+    local function lookup(k)
+        local exact = inherited_env[k]
+        if exact ~= nil then return tostring(exact) end
+        return by_key[exe.is_windows and k:upper() or k]
+    end
     local names = {}
     for k in pairs(env) do names[#names + 1] = tostring(k) end
     table.sort(names)
     local parts = {}
     for _, k in ipairs(names) do
         local v = tostring(env[k])
-        -- The process env lookup is case-insensitive on Windows.
-        local inherited = exe.getenv(k)
+        local inherited = lookup(k)
         if v ~= inherited then
             if inherited then
                 local n = #inherited

@@ -33,11 +33,11 @@
 ---     carry this request (interactive profile onboarding; a different
 ---     environment while another build runs). The client runs in-process.
 ---
---- **Request** `{ kind = "test", args = { profile?, junit?, extra?, no_build? }, … }` —
+--- **Request** `{ kind = "test", args = { profile?, junit?, extra?, no_build?, verbose? }, … }` —
 --- the same outcomes (`no_build`: `lw test --no-build`, nothing built, §16.16); the plan checks (test_plan.precheck) refuse as in-process; "declined" when saved test targets would run on a device (§16.16).
 ---
 --- **Request** `{ kind = "prepare_run", args = { profile?, target?, project?,
---- kind?, cwd?, extra?, no_build?, quiet? }, … }` (§19.15 "Run") — the same
+--- kind?, cwd?, extra?, no_build?, quiet?, verbose? }, … }` (§19.15 "Run") — the same
 --- outcomes; also "declined" for a profile one of whose units builds with a
 --- foreign kit (device runs stay in the client). The task builds, selects,
 --- deploys and resolves the launch; its `done` carries the resolved `launch`
@@ -45,7 +45,7 @@
 ---
 --- **`Launch/1.prepare_debug`** (§19.15 "Debug"; an interface method only,
 --- no protocol-10 alias) — the args of `prepare_run` minus `quiet` /
---- `prefix`, the same outcomes, never "declined" for a foreign kit: a device
+--- `prefix` / `verbose`, the same outcomes, never "declined" for a foreign kit: a device
 --- or foreign target ends its task nonzero instead. Its `done.result` carries
 --- the debug spec. Both preparations take `build_scope` ("profile", the
 --- default, or "target": the launch flow's units instead of the profile,
@@ -58,7 +58,7 @@
 --- target scope's phases up to the launch target's own unit and resolves no
 --- launch; a device target ends it nonzero before the build.
 ---
---- **Request** `{ kind = "clean", args = { profile? }, … }` (§19.15 "Clean")
+--- **Request** `{ kind = "clean", args = { profile?, verbose? }, … }` (§19.15 "Clean")
 --- — the same outcomes; also "refused" with the in-process `nothing to clean
 --- …` line when the profile has no configured build directory to clean,
 --- decided after resolution and before any lock (as in-process).
@@ -71,6 +71,10 @@
 --- ids; one that does not resolve is "refused") instead of a profile —
 --- `profile_key` and `meta.profile` absent. **`jobs`** on build: the build
 --- tool's parallelism. **`targets`** items may be `{ project, target }`.
+--- **`verbose`** (`-v`) on build, clean, test and `prepare_run`: the task also
+--- streams the command lines of §16.4 *Verbose* (role `command`), their env
+--- line against the client's environment (`ctx.env`, before the daemon's own
+--- adjustments; §19.15 "Roles and verbose").
 ---
 --- **Request** `{ kind = "reset", args = { profile?, all?, yes?, plan? }, … }`
 --- (§19.15 "Reset") — the outcomes of `build`, plus "confirm" (`lines`,
@@ -667,6 +671,10 @@ function Service:_on_operation(op, conn, msg, deliver, call)
         or (a.project_id ~= nil and (type(a.project_id) ~= "string" or a.project ~= nil))
         or ((op == "run" or op == "debug" or op == "target_build") and not run_args_ok(a, op, deliver ~= nil))
         or (op == "test" and a.no_build ~= nil and type(a.no_build) ~= "boolean")
+        -- (`verbose` only where its API defines it: build, clean, test,
+        -- prepare_run — not reset, configure, prepare_debug or Launch/1.build.)
+        or (a.verbose ~= nil and (type(a.verbose) ~= "boolean"
+            or not (op == "build" or op == "clean" or op == "test" or op == "run")))
         or (op == "reset" and not reset_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
@@ -810,9 +818,9 @@ function Service:_accept(ctx)
     local extra = (a.extra and #a.extra > 0) and a.extra or nil
     local args
     if ctx.op == "test" then
-        args = { extra = extra, junit = a.junit, no_build = a.no_build == true }
+        args = { extra = extra, junit = a.junit, no_build = a.no_build == true, verbose = a.verbose == true }
     elseif ctx.op == "clean" then
-        args = {}
+        args = { verbose = a.verbose == true }
     elseif ctx.op == "configure" then
         args = { reconfigure = a.reconfigure == true }
     elseif launching then
@@ -820,7 +828,9 @@ function Service:_accept(ctx)
         -- (`force`: the artifact-conflict question's answer, §5.9.)
         args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
             no_build = a.no_build == true, build_scope = a.build_scope, force = a.force == true }
-        if ctx.op == "run" then args.quiet, args.prefix = a.quiet == true, a.prefix == true end
+        if ctx.op == "run" then
+            args.quiet, args.prefix, args.verbose = a.quiet == true, a.prefix == true, a.verbose == true
+        end
         -- A launch target's build is the target scope's build phases (§19.15
         -- "Build of a launch target").
         if ctx.op == "target_build" then args.build_scope = "target" end

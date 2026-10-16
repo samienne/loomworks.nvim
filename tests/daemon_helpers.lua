@@ -302,6 +302,51 @@ function M.alive(pid, start)
     return type(start) == "string" and proc.alive(pid, start) == true
 end
 
+--- The module environment of the `-v` parity cases (spec §16.4 *Verbose*,
+--- §19.15 "Roles and verbose"): a new variable, PATH extended (shown as
+--- `$PATH` plus the addition), LW_V_CLIENT equal to the client's (never
+--- shown; each case sends another value) and, as on Windows the daemon's
+--- scope adds it, NoDefaultCurrentDirectoryInExePath (shown: the client
+--- does not set it).
+M.VERBOSE_ENV = {
+    LW_V_ADD = "added value",
+    PATH = (M.is_win and "C:/lw-verbose/bin;" or "/lw-verbose/bin:") .. "${PATH}",
+    LW_V_CLIENT = "${LW_V_CLIENT}",
+    NoDefaultCurrentDirectoryInExePath = "1",
+}
+
+--- Give every project of `root` the module environment `vars` (`<module>.env`,
+--- a working-copy-only field, spec §17.10): each project's definition (the
+--- working copy's, else loomworks.json's) is written into the signed working
+--- copy with it. The profile must exist (`lw profile create`).
+--- @param root string
+--- @param key_path string the environment's trust key (`env.data .. "/trust.key"`)
+--- @param vars table<string, string>
+function M.add_module_env(root, key_path, vars)
+    local trust = require("loomworks.trust")
+    local function rd(path)
+        local f = assert(io.open(path, "rb")); local t = f:read("*a"); f:close(); return t
+    end
+    local upath = root .. "/.nvim/loomworks.user.json"
+    local cfg = vim.json.decode(rd(root .. "/loomworks.json"))
+    trust._set_key_path(key_path)
+    local status, body = trust.verify("user", rd(upath))
+    if status ~= "valid" then trust._set_key_path(nil); error("working copy: " .. tostring(status)) end
+    local user = vim.json.decode(body)
+    user.projects = user.projects or {}
+    for name, proj in pairs(cfg.projects or {}) do
+        local p = user.projects[name] or proj
+        for k, v in pairs(p) do
+            if type(v) == "table" and k ~= "launch" and k ~= "configurations" then v.env = vars end
+        end
+        user.projects[name] = p
+    end
+    local signed, serr = trust.sign("user", trust.encode(user))
+    trust._set_key_path(nil)
+    if not signed then error(serr) end
+    local f = assert(io.open(upath, "wb")); f:write(signed); f:close()
+end
+
 --- `s` (stdout or stderr, root already replaced) comparable across the three
 --- runtimes: CRLF as LF, the daemon's delegation line dropped, pids and
 --- durations masked.
@@ -320,13 +365,16 @@ end
 --- mode: launched by the run itself), `[3]` attached (`--no-daemon` in daemon
 --- mode, no daemon running) — with the same exit code, output
 --- (`o.norm(s, root)` then `parity_text`) and state (`o.state(root)`). The
---- daemon is stopped afterwards. Returns the in-process result.
---- @param o { roots: string[], args: string[], lw: function, norm: function, state: function, env: table, extra?: table, stdin?: string, routed?: boolean }
---- @return table
+--- in-process run is the plain host, never the attached runtime: the daemon's
+--- environment scope must not hide a divergence (§19.17). The daemon is
+--- stopped afterwards unless `o.keep_daemon` (a loop of cases on the same
+--- roots). Returns the in-process, daemon and attached results.
+--- @param o { roots: string[], args: string[], lw: function, norm: function, state: function, env: table, extra?: table, stdin?: string, routed?: boolean, keep_daemon?: boolean }
+--- @return table ra, table rb, table rc
 function M.three_way(o)
     local function with(t) return vim.tbl_extend("force", o.extra or {}, t) end
     local a, b, c = o.roots[1], o.roots[2], o.roots[3]
-    local what = table.concat(o.args, " ")
+    local what = table.concat(o.args, " ") .. " " .. vim.inspect(o.extra or {})
     local ra = o.lw(a, o.args, with({ LOOMWORKS_RUNTIME = "in-process" }), o.stdin)
     local rb = o.lw(b, o.args, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
     local rc = o.lw(c, { "--no-daemon", unpack(o.args) }, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
@@ -345,7 +393,7 @@ function M.three_way(o)
         -- ... and no daemon was involved (§19.1 rule c).
         assert(not rc.stderr:find("through the workspace daemon", 1, true), what .. ": daemon line\n" .. rc.stderr)
     end
-    M.stop_daemon(b, o.env)
+    if not o.keep_daemon then M.stop_daemon(b, o.env) end
     local ea = M.parity_text(o.norm(ra.stdout, a))
     local fa = M.parity_text(o.norm(ra.stderr, a))
     for _, x in ipairs({ { rb, b, "daemon" }, { rc, c, "attached" } }) do
@@ -356,7 +404,7 @@ function M.three_way(o)
         assert.same(o.state(a), o.state(root), how)
     end
     assert.is_nil(uv.fs_stat(c .. "/.nvim/loomworks.daemon.lock"), what .. ": R not released")
-    return ra
+    return ra, rb, rc
 end
 
 return M

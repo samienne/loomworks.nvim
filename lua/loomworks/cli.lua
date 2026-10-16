@@ -1183,10 +1183,10 @@ local function run_build_steps(profile, ws, opts)
   -- so a machine consumer like `lw run --print` captures only its report.
   local quiet = opts.quiet or false
   local log = quiet and note or out
-  log("building profile: " .. profile.key, "lead")
+  log(build_run.lead_line("build", "profile: " .. profile.key))
   -- Ignored loomworks.json program settings (spec §17.10): one line, stderr.
-  local tn = build_run.trust_notice(ws, profile)
-  if tn then note(tn, "warn") end
+  local tn, tn_role = build_run.trust_notice(ws, profile)
+  if tn then note(tn, tn_role) end
   for _, step in ipairs(steps) do
     -- Conflict gate + full-reconfigure reset. `--force` and `--no-input`
     -- alike just refuse with exit 1; force is the only bypass, never a prompt.
@@ -1329,7 +1329,7 @@ function M.cmd_build(ws, args)
     die("nothing to build for profile '" .. profile.key ..
       "' — no buildable projects (unavailable module or unresolved tool?)")
   end
-  out("BUILD OK: " .. profile.key, "ok")
+  out(require("loomworks.build_run").ok_line("build", profile.key))
   return 0
 end
 
@@ -1342,7 +1342,7 @@ local RESET_TIMEOUT_MS = 120000
 -- before declaring the removal failed. Instant on a healthy filesystem.
 local RESET_VERIFY_MS = 30000
 
---- `lw clean [profile]` — run each project's build-system clean (e.g.
+--- `lw clean [profile] [-v|--verbose]` — run each project's build-system clean (e.g.
 --- `meson compile --clean`, `cmake --build --target clean`) on the profile's
 --- configured build dirs. Removes build artifacts but keeps the configuration
 --- (a later build reconfigures only if stale). Dies on any failure. The plan,
@@ -1350,6 +1350,7 @@ local RESET_VERIFY_MS = 30000
 --- the workspace daemon (spec §19.15 "Clean"). With `-v` each clean step
 --- prints its command (or the directory a core-performed wipe removes) under
 --- its header (§16.4 *Verbose*).
+--- @param ws loomworks.Workspace
 --- @param args string[] the command line from the command word on
 function M.cmd_clean(ws, args)
   local build_run = require("loomworks.build_run")
@@ -1368,7 +1369,7 @@ function M.cmd_clean(ws, args)
   end
   local groups = build_run.wipe_groups(ws, steps)
   with_build_locks(profile, "clean", function()
-    out("cleaning profile: " .. profile.key, "lead")
+    out(build_run.lead_line("clean", "profile: " .. profile.key))
     for _, step in ipairs(steps) do
       out(build_run.clean_step_line(step))
       if step.wipe_build_dir then
@@ -1397,7 +1398,7 @@ function M.cmd_clean(ws, args)
     end
   end)
   if op_tok then require("loomworks.op_lock").release(op_tok) end
-  out("CLEAN OK: " .. profile.key, "ok")
+  out(build_run.ok_line("clean", profile.key))
   return 0
 end
 
@@ -1505,7 +1506,7 @@ function M.cmd_reset(ws, args, opts)
   -- A mirror left behind is a warning, not a reset failure (spec §16.30):
   -- it was kept as shared, refused by a safety check, or failed to delete.
   for _, line in ipairs(reset_plan.mirror_warnings(plan)) do out(line, "warn") end
-  out(reset_plan.ok_line(plan), "ok")
+  out(reset_plan.ok_line(plan))
   return 0
 end
 
@@ -8516,8 +8517,9 @@ end
 M.ROUTED_COMMANDS = { build = true, test = true, run = true, clean = true, reset = true }
 
 --- Would argv `args` be routed to the daemon, for the ensure step's bound
---- (§19.10)? A routed command, except `lw test --target` and a `lw run` with a
---- device option (they stay in-process, §19.15), which get the plain
+--- (§19.10)? A routed command — `-v` included, which the requests carry
+--- (§19.15 "Roles and verbose") — except `lw test --target` and a `lw run`
+--- with a device option (they stay in-process, §19.15), which get the plain
 --- non-routed ensure.
 --- @param args string[]
 --- @return boolean
@@ -8626,15 +8628,15 @@ function M._build_request(args)
 end
 
 --- The request a `lw clean` argv routes as (spec §19.15 "Clean"): the same
---- parse as `cmd_clean` (`_parse_clean_args`) — `{ profile? }` — or nil when
---- `cmd_clean` would refuse the arguments (it then reports them) or `-v` is
---- given (the request carries no verbose: `cmd_clean` prints it in-process).
+--- parse as `cmd_clean` (`_parse_clean_args`) — `{ profile?, verbose? }`
+--- (`verbose` only with `-v`) — or nil when `cmd_clean` would refuse the
+--- arguments (it then reports them).
 --- @param args string[] argv, args[1] == "clean"
 --- @return table|nil
 function M._clean_request(args)
   local ok, profile, verbose = pcall(M._parse_clean_args, args, function() error("refused", 0) end)
-  if not ok or verbose then return nil end
-  return { profile = profile }
+  if not ok then return nil end
+  return { profile = profile, verbose = verbose or nil }
 end
 
 --- `lw clean`'s arguments: an optional profile (or config-set) and
@@ -8718,12 +8720,12 @@ function M._reset_confirm(root, args, req, reply, ensured, opts)
 end
 
 --- The request a `lw test` argv routes as (spec §19.15): the same parse as
---- `cmd_test` — `{ profile?, junit?, extra, no_build? }`, `junit` made absolute against
+--- `cmd_test` — `{ profile?, junit?, extra, no_build?, verbose? }`, `junit` made absolute against
 --- this process's working directory as `cmd_test` does. Returns "target" for
 --- the named-executable form (`--target`, not carried in this step), or nil
 --- when `cmd_test` would refuse the arguments or they carry a form the daemon
---- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options,
---- `-v`: `cmd_test` runs or reports them in-process).
+--- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options:
+--- `cmd_test` runs or reports them in-process).
 --- @param args string[] argv, args[1] == "test"
 --- @return table|"target"|nil
 function M._test_request(args)
@@ -8747,6 +8749,9 @@ function M._test_request(args)
     elseif a == "--no-build" then
       req.no_build = true
       i = i + 1
+    elseif a == "-v" or a == "--verbose" then
+      req.verbose = true
+      i = i + 1
     elseif a:sub(1, 1) == "-" or req.profile then
       return nil
     else
@@ -8762,8 +8767,7 @@ end
 --- cwd?, extra, no_build, quiet }` — and, second, what stays with this client
 --- (the parsed run: wrapper, report format). "device" when a device option is
 --- given (a device run stays in-process); nil when `cmd_run` would refuse the
---- arguments (it then reports them) or `-v` is given (the request carries no
---- verbose: `cmd_run` prints it in-process). `cwd` is sent as given: the launch
+--- arguments (it then reports them). `verbose` only with `-v`. `cwd` is sent as given: the launch
 --- resolves it as in-process (variables expanded, relative to the workspace
 --- root).
 --- @param args string[] argv, args[1] == "run"
@@ -8776,7 +8780,7 @@ function M._run_request(args)
   end
   local ok, r = pcall(M._parse_run_args, args, function() error("refused", 0) end,
     function() return false end)
-  if not ok or type(r) ~= "table" or r.verbose then return nil end
+  if not ok or type(r) ~= "table" then return nil end
   local pos = r.positionals
   local req = {
     extra = r.extra_args, no_build = r.no_build, quiet = r.print_mode ~= nil,
@@ -8784,6 +8788,7 @@ function M._run_request(args)
     -- (Only whether a wrapper is given: it refuses a device target before
     -- any deploy, as in-process; the wrapper itself stays here.)
     prefix = (r.prefix_tokens and #r.prefix_tokens > 0) or nil,
+    verbose = r.verbose or nil,
   }
   -- The §16.17 operand grammar (`_run_selection`): one operand is a target.
   if #pos >= 2 then req.profile, req.target = pos[1], pos[2] else req.target = pos[1] end

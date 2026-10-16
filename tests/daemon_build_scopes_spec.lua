@@ -322,4 +322,28 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
             conn:close()
         end
     end)
+
+    it("verbose only where its API defines it (build, clean, test, prepare_run) and only a boolean", function()
+        start()
+        for _, req in ipairs({
+            { kind = "reset", args = { profile = "dev", verbose = true }, command = "lw reset" },
+            { kind = "build", args = { profile = "dev", verbose = "yes" }, command = "lw build" },
+            { kind = "clean", args = { profile = "dev", verbose = 1 }, command = "lw clean" },
+        }) do
+            local reply
+            local conn = client.session(srv.address, {})
+            req.interactive, req.env = false, envscope.capture()
+            conn:request(req, function(r, e) reply = r or { error = e } end)
+            assert.is_true(vim.wait(60000, function() return reply ~= nil end, 10))
+            assert.equals("declined", reply.outcome, vim.inspect({ req.kind, req.args, reply }))
+            assert.equals("malformed request", reply.reason)
+            conn:close()
+        end
+        -- (configure: a Build/1 method only, whose params have no `verbose`.)
+        local r = call(srv, "configure", { profile = { key = "dev" }, verbose = false })
+        assert.is_true(r.wait_reply())
+        assert.is_nil(r.reply, vim.inspect(r.reply))
+        assert.equals("invalid_args", (r.err or {}).code, vim.inspect(r.err))
+        r.conn:close()
+    end)
 end)

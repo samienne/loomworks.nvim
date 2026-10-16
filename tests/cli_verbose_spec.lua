@@ -125,6 +125,17 @@ describe("verbose lines", function()
       assert.is_nil(build_run.env_line({ PATH = path }))
     end)
 
+    it("leaves out an inherited empty value, which is a value (a whole run environment copies it)", function()
+      local uv = vim.uv or vim.loop
+      uv.os_setenv("LW_VERBOSE_EMPTY", "")
+      -- (Where the platform keeps an empty variable at all.)
+      if uv.os_environ().LW_VERBOSE_EMPTY == "" then
+        assert.is_nil(build_run.env_line({ LW_VERBOSE_EMPTY = "" }))
+      end
+      uv.os_unsetenv("LW_VERBOSE_EMPTY")
+      assert.equals("    env: LW_VERBOSE_EMPTY=", build_run.env_line({ LW_VERBOSE_EMPTY = "" }))
+    end)
+
     it("shows a value that extends the inherited one as the added part plus $NAME", function()
       local path = assert(exe.getenv("PATH"))
       assert.equals(line("PATH=/opt/gcc/bin" .. SEP .. "$PATH"),
@@ -491,10 +502,12 @@ describe("lw run -v on a device: device commands", function()
 end)
 
 -- ---------------------------------------------------------------------------
--- The in-process path on the daemon line (spec §19.15): the shared line
--- producer leaves the env line to the in-process host, the test plan's
--- in-process host prints its commands, and `-v` keeps a clean / run / test
--- in this process (their daemon requests carry no verbose).
+-- The two hosts of the daemon line (spec §19.15 "Roles and verbose"): the
+-- shared line producer computes the env line against this process's
+-- environment (the in-process host) or the one it is given (the daemon: the
+-- requesting client's), the test plan's in-process host prints its
+-- commands, and a clean / run / test with `-v` is routed, its request
+-- carrying `verbose`.
 -- ---------------------------------------------------------------------------
 
 describe("-v on the in-process host of the daemon line", function()
@@ -505,6 +518,47 @@ describe("-v on the in-process host of the daemon line", function()
     local with_env, roles = build_run.step_lines({ root = "/ws" }, step, { verbose = true, env = true })
     assert.same({ "==> [build] App", "    $ make", "    (in /b)", "    env: LW_VERBOSE_SPEC=1" }, with_env)
     assert.same({ "phase", "command", "command", "command" }, roles)
+  end)
+
+  it("the env line against a given inherited environment, never this process's", function()
+    local SEP = require("loomworks.exe").is_windows and ";" or ":"
+    -- This process has LW_VERBOSE_SPEC_P unset; the client's has it.
+    assert.is_nil(vim.env.LW_VERBOSE_SPEC_P)
+    local client = { LW_VERBOSE_SPEC_P = "/c/bin", LW_VERBOSE_SPEC_SAME = "x", PATH = "/client/path" }
+    local step = { kind = "build", name = "App", cmd = { "make" }, cwd = "/b", env = {
+      LW_VERBOSE_SPEC_P = "/add" .. SEP .. "/c/bin", LW_VERBOSE_SPEC_SAME = "x", PATH = "/client/path",
+      LW_VERBOSE_SPEC_NEW = "1" } }
+    local lines = build_run.step_lines({ root = "/ws" }, step, { verbose = true, env = client })
+    assert.same({ "==> [build] App", "    $ make", "    (in /b)",
+      "    env: " .. require("loomworks.term").format_argv({ "LW_VERBOSE_SPEC_NEW=1",
+        "LW_VERBOSE_SPEC_P=/add" .. SEP .. "$LW_VERBOSE_SPEC_P" }) }, lines)
+    -- This process's PATH is not the baseline: the client's PATH unchanged is no override.
+    assert.is_nil(build_run.env_line({ PATH = "/client/path" }, client))
+    assert.equals("    env: PATH=/client/path", build_run.env_line({ PATH = "/client/path" }, {}))
+    if require("loomworks.exe").is_windows then
+      assert.is_nil(build_run.env_line({ Path = "/client/path" }, client))
+    end
+  end)
+
+  it("two spellings of one variable inherited (Path and PATH): the exact-case one is the baseline", function()
+    local SEP = require("loomworks.exe").is_windows and ";" or ":"
+    local function line(arg) return "    env: " .. require("loomworks.term").format_argv({ arg }) end
+    local client = { Path = "/p/lower", PATH = "/p/upper" }
+    -- Whichever order the table yields them in.
+    assert.is_nil(build_run.env_line({ PATH = "/p/upper" }, client))
+    assert.is_nil(build_run.env_line({ Path = "/p/lower" }, client))
+    assert.equals(line("PATH=/x" .. SEP .. "$PATH"), build_run.env_line({ PATH = "/x" .. SEP .. "/p/upper" }, client))
+    assert.equals(line("Path=/x" .. SEP .. "$Path"), build_run.env_line({ Path = "/x" .. SEP .. "/p/lower" }, client))
+  end)
+
+  it("the lead and success lines carry their roles from one place (both hosts)", function()
+    assert.same({ "building profile: p", "lead" }, { build_run.lead_line("build", "profile: p") })
+    assert.same({ "cleaning a (Debug)", "lead" }, { build_run.lead_line("clean", "a (Debug)") })
+    assert.same({ "configuring profile: p", "lead" }, { build_run.lead_line("configure", "profile: p") })
+    assert.same({ "BUILD OK: p", "ok" }, { build_run.ok_line("build", "p") })
+    assert.same({ "CLEAN OK: p", "ok" }, { build_run.ok_line("clean", "p") })
+    assert.same({ "CONFIGURE OK: p", "ok" }, { build_run.ok_line("configure", "p") })
+    assert.same({ "RESET OK: p", "ok" }, { require("loomworks.reset_plan").ok_line({ label = "p" }) })
   end)
 
   it("the test host prints a runner's command lines before it runs, only with -v", function()
@@ -533,12 +587,19 @@ describe("-v on the in-process host of the daemon line", function()
     assert.is_function(seen.on_step)
   end)
 
-  it("a clean, run or test with -v is not routed (it prints in this process)", function()
-    assert.is_nil(cli._clean_request({ "clean", "p", "-v" }))
+  it("a clean, run or test with -v is routed, its request carrying verbose", function()
+    assert.same({ profile = "p", verbose = true }, cli._clean_request({ "clean", "p", "-v" }))
+    assert.same({ verbose = true }, cli._clean_request({ "clean", "--verbose" }))
     assert.is_nil(cli._clean_request({ "clean", "p", "q" }))
     assert.same({ profile = "p" }, cli._clean_request({ "clean", "p" }))
-    assert.is_nil((cli._run_request({ "run", "--verbose" })))
-    assert.is_table((cli._run_request({ "run", "app" })))
-    assert.is_nil(cli._test_request({ "test", "-v" }))
+    assert.is_true((cli._run_request({ "run", "--verbose" })).verbose)
+    assert.is_nil((cli._run_request({ "run", "app" })).verbose)
+    assert.same({ extra = {}, verbose = true }, cli._test_request({ "test", "-v" }))
+    assert.same({ extra = { "-v" }, profile = "dev", verbose = true },
+      cli._test_request({ "test", "dev", "--verbose", "--", "-v" }))
+    assert.is_nil(cli._test_request({ "test", "dev" }).verbose)
+    for _, a in ipairs({ { "clean", "-v" }, { "test", "-v" }, { "run", "-v" } }) do
+      assert.is_true(cli._routed_command(a), a[1])
+    end
   end)
 end)

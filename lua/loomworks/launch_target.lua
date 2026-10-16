@@ -587,11 +587,12 @@ end
 
 --- `deploy_sync` without blocking the event loop: each copy runs
 --- asynchronously (deploy.execute_deploy_steps `opts`: `cancelled`,
---- `resume`), then `cb(ok, err)`.
---- @param opts { cancelled: (fun(): boolean)|nil, resume: (fun(fn: function))|nil }|nil
+--- `resume`), then `cb(ok, err)`. `on_step` as for `_deploy_phase`.
+--- @param opts { cancelled: (fun(): boolean)|nil, resume: (fun(fn: function))|nil, on_step: (fun(ev: table))|nil }|nil
 --- @param cb fun(ok: boolean, err: string|nil)
 function LaunchTarget:deploy_async(opts, cb)
-    local o = { async = true, cancelled = opts and opts.cancelled, resume = opts and opts.resume }
+    local o = { async = true, cancelled = opts and opts.cancelled, resume = opts and opts.resume,
+        on_step = opts and opts.on_step }
     self:_deploy_phase("pre_build", function(ok, err)
         if not ok then return cb(false, err) end
         self:_deploy_phase("post_build", function(ok2, err2) cb(ok2, err2) end, o)

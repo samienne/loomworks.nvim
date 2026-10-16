@@ -250,7 +250,9 @@ describe("lw run through the workspace daemon (real processes)", function()
         for _, c in ipairs(cases) do
             local args = {}
             vim.list_extend(args, c[1])
-            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2], c[4] and (a .. "/" .. c[4]))
+            -- The plain in-process host (`--no-daemon` runs attached, §19.1).
+            local ra = lw(a, args, vim.tbl_extend("force", c[2] or {}, { LOOMWORKS_RUNTIME = "in-process" }),
+                c[4] and (a .. "/" .. c[4]))
             local rb = lw(b, args, c[2], c[4] and (b .. "/" .. c[4]))
             local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2] or {})
             assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
@@ -272,7 +274,7 @@ describe("lw run through the workspace daemon (real processes)", function()
         end
         for _, args in ipairs({ { "run" }, { "run", "--", "d1" }, { "run", "--print" } }) do
             local full = { unpack(args) }
-            local ra = lw(a, { "--no-daemon", unpack(full) })
+            local ra = lw(a, full, { LOOMWORKS_RUNTIME = "in-process" })
             local rb = lw(b, full)
             local what = table.concat(args, " ")
             assert.equals(ra.code, rb.code, what .. "\n" .. rb.stderr)
@@ -293,6 +295,42 @@ describe("lw run through the workspace daemon (real processes)", function()
         assert.is_nil(p.stdout:find("building", 1, true), p.stdout)
         assert.is_nil(p.stdout:find("step build", 1, true), p.stdout)
         assert.truthy(read(b .. "/deployed/prog.lua"), "the deploy did not run")
+    end)
+
+    it("-v (and --color=always): the build's commands, env lines against the client's environment and the deploy steps — the same bytes both ways (§19.17)", function()
+        local roots3 = { workspace(), workspace(), workspace() }
+        local b = roots3[2]
+        for _, root in ipairs(roots3) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end
+        local cases = {
+            { { "--color=always", "run", "-v", "go" }, { LW_V_CLIENT = "one" } },
+            { { "run", "--verbose", "go", "--", "x" }, { LW_V_CLIENT = "two" } },
+            { { "--color=always", "run", "--print", "-v", "go" }, { LW_V_CLIENT = "three" } },
+            { { "run", "-v", "cmd" }, { LW_V_CLIENT = "four", LW_TEST_FAIL = "build" } },
+            { { "run", "--dry-run", "-v", "go" }, { LW_V_CLIENT = "five" } },
+        }
+        for _, c in ipairs(cases) do
+            c[2].NoDefaultCurrentDirectoryInExePath = false
+            c[2].NODEFAULTCURRENTDIRECTORYINEXEPATH = false
+            -- In-process, through the daemon and attached (§19.1, §19.17).
+            local _, rb = H.three_way({ roots = roots3, args = c[1], extra = c[2], norm = norm, env = env,
+                keep_daemon = true, lw = function(root, args, extra) return lw(root, args, extra) end,
+                state = function(root) return cache_of(root, env.data .. "/trust.key") end })
+            local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2])
+            -- (`--print`: the status lines, the commands among them, on stderr.)
+            local status = (vim.tbl_contains(c[1], "--print") and norm(rb.stderr, b) or norm(rb.stdout, b))
+                :gsub("\27%[[%d;]*m", "")
+            assert.is_nil(status:find("LW_V_CLIENT", 1, true), what .. "\n" .. status)
+            if not vim.tbl_contains(c[1], "--dry-run") then
+                assert.truthy(status:find("lw-verbose/bin" .. (H.is_win and ";" or ":") .. "$PATH", 1, true),
+                    what .. "\n" .. status)
+            end
+            if vim.tbl_contains(c[1], "go") then
+                if not vim.tbl_contains(c[1], "--dry-run") then
+                    assert.truthy(status:find("    copy <ROOT>/prog.lua -> ", 1, true)
+                        or status:find("    up to date <ROOT>/deployed/prog.lua", 1, true), what .. "\n" .. status)
+                end
+            end
+        end
     end)
 
     it("a device option and a target that runs on a device stay in this process", function()

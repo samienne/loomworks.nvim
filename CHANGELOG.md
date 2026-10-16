@@ -71,6 +71,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - `lw build`, `lw test` and `lw clean` run through the workspace daemon now
   highlight their lines the same way as in-process, following `--color` /
   `--no-color` (#277).
+- `lw clean -v`, `lw test -v` and `lw run -v` also run through the workspace
+  daemon now, with the same lines as in-process; their environment line is
+  computed against the environment of the shell you ran `lw` from, not the
+  daemon's (#278).
 - `lw status` lists the repository's linked git worktrees in a short `Worktrees`
   section (path, branch, main and current markers, whether loomworks is set up
   there), capped like the other sections with a pointer to `lw worktree`. It is
