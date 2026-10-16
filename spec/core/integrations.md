@@ -662,7 +662,7 @@ including the quickfix list, work on it); one another client started is
 listed read-only with an origin marker (daemon.md §19.16 "Tasks in the task
 runner"). Progress, cache write-back and unit state come from the daemon
 (the task stream and `model_change`), not from `task_tracker`.
-*(Step 5t, plan.)* The build of a non-device launch target is one such task
+*(Step 5t: implemented, part C.)* The build of a non-device launch target is one such task
 (`Launch/1.build`), not one per dependency; its progress follows the task's
 current step (daemon.md §19.15 "Steps of a task").
 

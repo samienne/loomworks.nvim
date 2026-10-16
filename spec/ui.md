@@ -767,7 +767,11 @@ reader sees workspace state first.
      "Tasks in the task runner"). *(Step 5k C1a: the row, `Show output` and
      `Cancel task`; C1b: `Open overseer`.)* The reset action above leaves remote tasks alone.
    - *(Step 5t:)* a task carrying steps (core §19.15 "Steps of a task") keeps
-     its row, which follows the task's current step.
+     its row, which follows the task's current step: one row
+     `▸ {profile} — {action}: {step label} ({i}/{n})  {pct}%  {elapsed}`
+     (`: …` omitted while no step runs, or a step state is unknown). Its
+     progress entry's message and its overseer row's name
+     (`{name} — {step label} ({i}/{n})`) follow the same step.
 5. Sub-section `Build directory locks` (only when at least one lock
    is held or has a non-empty queue):
    ```

@@ -2167,7 +2167,7 @@ before a build. With `no_build` neither scope builds
 or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
 editor launch builds what it built in-process, not the whole profile.
 
-**Build of a launch target.** *(Step 5t, part B: implemented, daemon side; the editor calls it from part C.)* `Launch/1.build { profile?,
+**Build of a launch target.** *(Step 5t: implemented, daemon side part B, editor side part C.)* `Launch/1.build { profile?,
 project?, target?, kind?, force?, interactive, env, command }` (addressed
 as `prepare_run` is, plus `force`) builds a
 launch target as the editor's in-process launch build does (§8.8.4 steps 3–5,
@@ -2195,7 +2195,7 @@ the build, with `'<target>' is a device target; …` as its failure line (the
 editor keeps device targets' builds in-process and never sends one, §19.16
 "Editor operations") until step 5n extends `Launch/1.build` to them.
 
-**Steps of a task.** *(Step 5t, part B: implemented, daemon side.)* A target-scoped task —
+**Steps of a task.** *(Step 5t: implemented, daemon side part B, editor side part C.)* A target-scoped task —
 `Launch/1.build`, and `prepare_run` / `prepare_debug` with `build_scope =
 "target"` — announces its steps: its `TaskInfo` (the `started` signal,
 `Tasks/1.list`) and its task's `start.meta` carry `steps`, one `{ id, kind,
@@ -4213,7 +4213,7 @@ runtime is deferred until that module is actively developed.
        `Launch/1.build` for non-device targets (one owned task, the conflict
        question before the call, no editor deploy), the progress entry and
        the task runner row following the current step, prepare_run /
-       prepare_debug's progress likewise. Device targets' builds stay the
+       prepare_debug's progress likewise *(done once merged)*. Device targets' builds stay the
        editor's until 5n, which extends `Launch/1.build` to device targets
        with the post-build deploy, leaving install and launch to
        `Devices/1`.

@@ -455,6 +455,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- With the workspace daemon, the editor's *Build default target* of a
+  non-device target is one daemon task: the daemon builds the target's
+  dependencies, runs its pre-build deploy and builds it (the editor no longer
+  runs the deploy or orders the builds itself), and the progress entry, the
+  status page row and the overseer row show its current step (e.g.
+  `dependency lib (1/3)`); launches show their steps the same way. The
+  question about overwriting another profile's output artifact is now asked
+  before the build or launch starts, and answering Yes builds anyway. Device
+  targets still build in the editor. (#TBD)
 - `lw project show`: the project's tests row reads `none project-wide` instead of
   `none` when the project has no project-wide saved test targets, so it no longer
   looks like there are no tests when a configuration has its own. (#252)

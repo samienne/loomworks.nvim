@@ -1070,13 +1070,19 @@ editor connects are picked up too. The editor's own builds, configures and
 module cleans (of a profile, of one configuration, a target's build, the
 clean of a rebuild) run in the daemon too, as tasks the editor owns: they
 show the same way without a marker, with one progress entry each, Cancel
-stops them there, and quitting Neovim cancels them. Run and debug launches
-are prepared (built and resolved) there too, the program then started by the
-editor, and tests run there. When the daemon cannot carry an operation (not
+stops them there, and quitting Neovim cancels them. Building a launch
+target (*Build default target*) is one such task: the daemon builds its
+dependencies, runs its pre-build deploy and builds it, and the progress
+entry, the Tasks row and the overseer row show the current step (e.g.
+`dependency lib (1/3)`). Run and debug launches
+are prepared (built and resolved) there too, showing their steps the same
+way, the program then started by the editor, and tests run there. The
+question about overwriting another profile's output artifact is asked
+before such a build or launch starts. When the daemon cannot carry an operation (not
 connected yet, no `lw` found, an older daemon that lacks it) or declines it,
 the operation is refused with the reason in one notification line — the same
 note the status page's `Runtime:` line shows — and never run in the editor
-instead. Launches of device targets, and editing the configuration
+instead. Launches and builds of device targets, and editing the configuration
 (deletions included), still run in the editor; a device launch only while
 connected. `setup({ runtime = { mode = "in-process" } })` keeps the old
 in-process editor, which runs everything itself; it is deprecated and will be
