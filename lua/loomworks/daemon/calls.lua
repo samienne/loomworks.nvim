@@ -113,7 +113,7 @@ function M.frame(msg)
         return envelope.call(q[1], q[2], VERSION, q[3], q.args(type(msg.args) == "table" and msg.args or {}), msg.env),
             function(r)
                 if r.outcome ~= "ok" then return r end
-                return { outcome = "ok", result = q.result(r), notes = r.notes }
+                return { outcome = "ok", result = q.result(r), notes = r.notes, note_roles = r.note_roles }
             end, false
     end
     return nil

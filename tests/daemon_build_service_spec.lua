@@ -453,3 +453,18 @@ describe("daemon build service (§19.15)", function()
         assert.is_true(vim.wait(15000, function() return not srv.busy end, 20))
     end)
 end)
+
+describe("a reply's notes carry their roles (API.md §4.1)", function()
+    it("a notification before the task: its text in notes, its in-process role in note_roles, by index", function()
+        local svc = setmetatable({ server = { log = function() end } }, service.Service)
+        local c = {}
+        svc.current = c
+        local notify = svc:handlers().notify
+        notify("an error", vim.log.levels.ERROR)
+        notify("a warning", vim.log.levels.WARN)
+        notify("no level")
+        notify("chatter", vim.log.levels.INFO)
+        assert.same({ "an error", "a warning", "no level" }, c.notes)
+        assert.same({ "fail", "warn", "warn" }, c.note_roles)
+    end)
+end)
