@@ -416,8 +416,10 @@ end
 ---   (deploy is synchronous). Lets the headless runner drive deploy without
 ---   depending on Future scheduling, which needs an event loop the CLI does
 ---   not pump. The editor omits it and consumes the returned Future.
+--- @param opts? { on_step?: fun(ev: table) } `on_step` hears each deploy step
+---   (`deploy.execute_deploy_steps`), for `lw -v`
 --- @return loomworks.Future
-function LaunchTarget:_deploy_phase(phase, on_complete)
+function LaunchTarget:_deploy_phase(phase, on_complete, opts)
     local future_mod = require("loomworks.future")
     local deploy = self:_resolved_deploy()
     if not deploy then if on_complete then on_complete(true) end; return future_mod.resolved(true) end
@@ -441,6 +443,7 @@ function LaunchTarget:_deploy_phase(phase, on_complete)
         -- destinations (§8.8.4); nil for a command-type launch.
         launch_build_target = (self._launch_config and (self._launch_config.target and self._config_target or nil))
             or self._target,
+        on_step = opts and opts.on_step or nil,
     }
 
     -- Persist deploy records exactly once, whichever settlement path fires
@@ -465,13 +468,14 @@ end
 --- the editor drives pre-build deploy inside build() and post-build
 --- deploy via deploy(); a headless run has already built the profile, so it
 --- runs both phases here. Funnels through the same _deploy_phase code path.
+--- @param opts? { on_step?: fun(ev: table) } see `_deploy_phase`
 --- @return boolean ok, string|nil err
-function LaunchTarget:deploy_sync()
+function LaunchTarget:deploy_sync(opts)
     local ok, err = true, nil
     for _, phase in ipairs({ "pre_build", "post_build" }) do
         self:_deploy_phase(phase, function(o, e)
             if not o then ok, err = false, e end
-        end)
+        end, opts)
         if not ok then break end
     end
     return ok, err

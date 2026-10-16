@@ -1060,6 +1060,18 @@ do
     "--no-color build --color=never", "redirect_args: forwarded unchanged to a pin that knows them")
   eq(ra("1.0.0", "--color=always", "test"), "--color=always test",
     "redirect_args: forwarded unchanged to a newer pin")
+  -- `-v` is the version only before the command word; after it, it is the
+  -- command's own `--verbose` (spec §16.4 *Verbose*).
+  ok(pin.asks_version({ "-v" }) and pin.asks_version({ "--version" }),
+    "asks_version: lw -v / lw --version")
+  ok(pin.asks_version({ "--no-input", "-v" }), "asks_version: after a leading global flag")
+  ok(pin.asks_version({ "-v", "build" }), "asks_version: lw -v build is the version")
+  ok(pin.asks_version({ "--no-input", "-v", "build" }),
+    "asks_version: lw --no-input -v build is the version (before the command word)")
+  ok(not pin.asks_version({ "build", "-v" }), "asks_version: lw build -v is build's --verbose")
+  ok(not pin.asks_version({ "test", "Dev", "--version" }), "asks_version: --version after the command is not")
+  ok(not pin.asks_version({ "--", "-v" }), "asks_version: -v after -- is a program's")
+  ok(not pin.asks_version({ "status" }), "asks_version: no -v")
   local _, f10 = peel("project", "set", "App", "--type", "string", "V", "--", "--no-pin")
   ok(not f10.no_pin, "peel: project set --type <t> <name> -- <value>")
   local _, f10b = peel("project", "set", "App", "V", "x", "--no-pin")

@@ -21,13 +21,17 @@ local M = {}
 local Transport = {}
 Transport.__index = Transport
 
---- @param o { runner: loomworks.Runner, serial: string, backend?: table, timeouts?: table }
+--- `o.on_command` (optional, `lw -v`, headless §16.4 *Verbose*) hears every
+--- device command: a transfer as the connector command that runs it, an
+--- execution as the device-side invocation `{ cmd = argv, cwd, env }`.
+--- @param o { runner: loomworks.Runner, serial: string, backend?: table, timeouts?: table, on_command?: fun(c: table) }
 --- @return table transport
 function M.new(o)
     return setmetatable({
         runner = o.runner,
         serial = o.serial,
         backend = o.backend,
+        on_command = o.on_command,
         timeouts = spec_exec.timeouts(o.runner, o.timeouts),
         jobs = {},
     }, Transport)
@@ -97,7 +101,8 @@ function Transport:push(local_path, remote)
     local label = "push " .. remote
     local spec, err = build(label, self.runner.push, self.serial, local_path, remote)
     if not spec then return nil, err end
-    local _, fail = spec_exec.run(spec, { label = label, timeout = self.timeouts.transfer, backend = self.backend })
+    local _, fail = spec_exec.run(spec, { label = label, timeout = self.timeouts.transfer, backend = self.backend,
+        on_command = self.on_command })
     if fail then return nil, fail end
     return true
 end
@@ -110,7 +115,8 @@ function Transport:pull(remote, local_path)
     local label = "pull " .. remote
     local spec, err = build(label, self.runner.pull, self.serial, remote, local_path)
     if not spec then return nil, err end
-    local _, fail = spec_exec.run(spec, { label = label, timeout = self.timeouts.transfer, backend = self.backend })
+    local _, fail = spec_exec.run(spec, { label = label, timeout = self.timeouts.transfer, backend = self.backend,
+        on_command = self.on_command })
     if fail then return nil, fail end
     if not (vim.uv or vim.loop).fs_stat(local_path) then
         return nil, label .. ": no file arrived at " .. local_path
@@ -153,6 +159,7 @@ function Transport:start_exec(req, handlers, timeout)
     local label = handlers.label or ("exec " .. req.argv[1])
     local spec, err = build(label, self.runner.exec, self.serial, req)
     if not spec then return nil, err end
+    if self.on_command then self.on_command({ cmd = req.argv, cwd = req.cwd, env = req.env }) end
     local state = { pre = {}, post = {}, output = {}, status = nil, pid = nil }
     local has_pid = self.runner.parse_pid ~= nil
     local job = spec_exec.start(spec, {

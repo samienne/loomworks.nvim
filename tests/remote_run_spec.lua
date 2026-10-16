@@ -270,6 +270,14 @@ describe("lw run on a foreign target", function()
         assert.equals(1, #dev.killed)
     end)
 
+    it("-v prints the stop (terminate) command a --timeout issues", function()
+        dev.behaviors.Runner = function() return { out = { "slow" }, hang = true } end
+        local res = run({ timeout = 0.3, verbose = true })
+        assert.equals(remote_run.EXIT_TIMEOUT, res.ret)
+        assert.equals(1, #dev.killed)
+        assert.truthy(res.stdout:find("    $ " .. fx.CONNECTOR .. " -t SER1 kill ", 1, true), res.stdout)
+    end)
+
     it("cancellation kills the connector, terminates the device program, stops the log, frees the lock", function()
         local cancel
         local notes, roles = {}, {}

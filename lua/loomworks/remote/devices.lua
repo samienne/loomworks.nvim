@@ -18,7 +18,8 @@ local spec_exec = require("loomworks.remote.spec_exec")
 --- List a runner's devices (runs its `list_devices` spec under the query
 --- timeout). Returns the parsed device records, or nil + err.
 --- @param runner loomworks.Runner
---- @param opts? { backend?: table, timeouts?: table }
+--- @param opts? { backend?: table, timeouts?: table, on_command?: fun(c: table) }
+---   `on_command` hears the listing command (spec_exec, `lw -v`)
 --- @return table[]|nil devices, string|nil err
 function M.list(runner, opts)
     opts = opts or {}
@@ -27,6 +28,7 @@ function M.list(runner, opts)
     if not ok_spec then return nil, "device runner '" .. runner.id .. "' list_devices failed: " .. tostring(spec) end
     local job, fail = spec_exec.run(spec, {
         label = "list devices (" .. runner.id .. ")", timeout = t.query, backend = opts.backend,
+        on_command = opts.on_command,
     })
     if fail then return nil, fail end
     local ok, parsed = pcall(runner.parse_devices, job.lines)
