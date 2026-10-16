@@ -432,7 +432,11 @@ Each frame is `task { task_id, phase, ... }`, with `phase` one of:
 - `start` — first; carries `meta`. For an interface method's task the meta
   also names the `object`, `iface`, `v` and `method` that started it; its
   other fields are typed by the method's task meta schema.
-- `line` — one of the server's own text lines (a status line, a note).
+- `line` — one of the server's own text lines (a status line, a note):
+  `stream` (`out`, `note`, `err`), `text`, and optionally `role`, a
+  presentation hint for the line whose values the interface defines. A client
+  that does not render roles ignores it. An absent or unknown `role` is
+  rendered as a line with no role.
 - `output` — a step's raw output bytes, `stdout` or `stderr`.
 - `progress` — coalesced: a tick only when the integer percent advances.
 - `done` — last; carries `exit_code`, the refusal or failure when there is

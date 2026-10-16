@@ -128,6 +128,17 @@ standard output, a note on standard error. Its `done` carries `exit_code`
 and the refusal or failure a client prints as `lw: <error>`; the method's
 task result (`TaskEnd` and what the method adds) is in `done.result`.
 
+A `line` frame may carry a `role` (`LineRole`): `lead` (the operation's lead
+line, e.g. `building profile: <p>`), `phase` (a step header `==> [<kind>]
+<name>`), `reason` (a configure reason), `command` (a command line printed for
+`verbose`, below), `ok` (a success outcome), `fail` (a failure), `warn` (a
+warning) or `plain` (an informative line with no other role). These are the
+roles of spec §16.7 *Highlighting*, and the server gives each line the role
+the CLI gives it in-process. A line without `role` is `plain`, and so is a
+role a client does not know. The `text` never contains terminal escape
+sequences: whether and how a role is shown (colour, `--color`, `NO_COLOR`) is
+up to the client.
+
 From transport 11 a `task_id` and a `sub_id` are opaque strings
 (`TaskId`); a connection of protocol 10 keeps its integer task ids
 (PROTOCOL.md Annex A).
@@ -313,6 +324,9 @@ failure line with the `--target` hint, and `BUILD OK: <profile>`.
   build ends the task before any step with `target '<t>' names project
   '<p>', which <scope> does not build` (exit 1), as an ambiguous `--target`
   does.
+- **`verbose`** (`-v`) — the task also streams, under each step's header and
+  on its stream, the command lines of spec §16.4 *Verbose* as `line` frames of
+  role `command`. It changes what is streamed, never what runs.
 
 ### 8.3 `configure` and unit scopes
 
@@ -353,9 +367,11 @@ as a profile's is, never skipping the unit.
 
 ### 8.4 `clean`
 
-`clean { profile | units, interactive, command }` — `lw clean [<profile>]`
-(spec §16.1: each project's build-system clean on the profile's build
-directories; the configuration is kept). It is also `refused`, with the
+`clean { profile | units, verbose?, interactive, command }` — `lw clean
+[<profile>] [-v]` (spec §16.1: each project's build-system clean on the
+profile's build directories; the configuration is kept). `verbose` as for
+`build` (§8.2): each clean command and each core-performed wipe
+(`    remove <dir>`). It is also `refused`, with the
 `nothing to clean for profile '<p>' …` line and its exit code, when the
 profile has no configured build directory to clean — decided after
 resolution and before any lock. Its task's `meta.kind` is `clean`. An
@@ -461,14 +477,16 @@ long-running, attached to a terminal — so it never runs in the server.
 ### 9.1 `prepare_run`
 
 `prepare_run { profile?, target?, project?, kind?, cwd?, extra?, no_build?,
-quiet?, prefix?, force?, build_scope?, interactive, command }` carries the
+quiet?, prefix?, force?, build_scope?, verbose?, interactive, command }` carries the
 parsed command line of `lw run` (spec §16.17): `profile` and `target` (the
 operands; no `target` for the default target), `project` (`--project`),
 `kind` (`--target` / `--launch`), `cwd` (`--cwd`, sent as given: the launch
 resolves it — variables expanded, relative to the workspace root), `extra`
 (the arguments after `--`), `no_build` (`--no-build`, also set by
-`--dry-run`), `quiet` (`--print` / `--dry-run`) and `prefix` (true when
-`--prefix` is given). The wrapper itself and the report format stay with the
+`--dry-run`), `quiet` (`--print` / `--dry-run`), `prefix` (true when
+`--prefix` is given) and `verbose` (`-v`), as for `Build/1.build`, for the
+preparation's dependency build and deploy steps (`    copy …` /
+`    up to date …`). The wrapper itself and the report format stay with the
 client and do not change what is prepared; `prefix` only lets the server
 refuse a device target, after the validity gate and before deploy, with the
 `--prefix cannot wrap a device target …` line. Likewise a `cwd` for a device
@@ -584,12 +602,13 @@ client's (§9.2). All methods carry the caller's environment (`needs_env`).
 
 ### 10.1 `run`
 
-`run { profile?, junit?, extra?, no_build?, interactive, command }` — the
-plan form of `lw test` (spec §16.16: each unit's native runner, then its
+`run { profile?, junit?, extra?, no_build?, verbose?, interactive, command }`
+— the plan form of `lw test` (spec §16.16: each unit's native runner, then its
 saved test targets) — has the outcomes of `Build/1.build`; `junit` is the
 `--junit` path, made absolute by the client against its working directory,
-`extra` the arguments after `--`, for the plan's steps, and `no_build`
-`--no-build`. The plan's pre-build checks are made before acceptance: their
+`extra` the arguments after `--`, for the plan's steps, `no_build`
+`--no-build`, and `verbose`, as for `Build/1.build`, for the plan's build and
+each test runner and test program invocation. The plan's pre-build checks are made before acceptance: their
 notes travel with the reply, and a refusal is `refused` with the CLI's
 message and exit code (a foreign kit's registered tests with no saved test
 target, spec §18.6, pointing at `lw test --target` and `lw test-target add`;

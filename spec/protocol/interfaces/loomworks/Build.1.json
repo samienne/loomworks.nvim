@@ -84,6 +84,7 @@
             "type": "boolean"
           },
           "verbose": {
+            "description": "-v: The task also streams the spec §16.4 Verbose command lines as line frames of role command, under each step's header and on its stream (API.md §8.2); it changes what is streamed, never what runs.",
             "type": "boolean"
           }
         }
@@ -179,6 +180,10 @@
           },
           "units": {
             "$ref": "#/$defs/Units"
+          },
+          "verbose": {
+            "description": "-v, as for build (API.md §8.4): each clean command and each core-performed wipe (    remove <dir>).",
+            "type": "boolean"
           },
           "interactive": {
             "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
