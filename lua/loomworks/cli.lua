@@ -1342,7 +1342,7 @@ local RESET_TIMEOUT_MS = 120000
 -- before declaring the removal failed. Instant on a healthy filesystem.
 local RESET_VERIFY_MS = 30000
 
---- `lw clean [profile]` — run each project's build-system clean (e.g.
+--- `lw clean [profile] [-v|--verbose]` — run each project's build-system clean (e.g.
 --- `meson compile --clean`, `cmake --build --target clean`) on the profile's
 --- configured build dirs. Removes build artifacts but keeps the configuration
 --- (a later build reconfigures only if stale). Dies on any failure. The plan,
@@ -1350,6 +1350,7 @@ local RESET_VERIFY_MS = 30000
 --- the workspace daemon (spec §19.15 "Clean"). With `-v` each clean step
 --- prints its command (or the directory a core-performed wipe removes) under
 --- its header (§16.4 *Verbose*).
+--- @param ws loomworks.Workspace
 --- @param args string[] the command line from the command word on
 function M.cmd_clean(ws, args)
   local build_run = require("loomworks.build_run")
