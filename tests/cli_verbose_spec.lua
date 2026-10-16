@@ -125,6 +125,17 @@ describe("verbose lines", function()
       assert.is_nil(build_run.env_line({ PATH = path }))
     end)
 
+    it("leaves out an inherited empty value, which is a value (a whole run environment copies it)", function()
+      local uv = vim.uv or vim.loop
+      uv.os_setenv("LW_VERBOSE_EMPTY", "")
+      -- (Where the platform keeps an empty variable at all.)
+      if uv.os_environ().LW_VERBOSE_EMPTY == "" then
+        assert.is_nil(build_run.env_line({ LW_VERBOSE_EMPTY = "" }))
+      end
+      uv.os_unsetenv("LW_VERBOSE_EMPTY")
+      assert.equals("    env: LW_VERBOSE_EMPTY=", build_run.env_line({ LW_VERBOSE_EMPTY = "" }))
+    end)
+
     it("shows a value that extends the inherited one as the added part plus $NAME", function()
       local path = assert(exe.getenv("PATH"))
       assert.equals(line("PATH=/opt/gcc/bin" .. SEP .. "$PATH"),

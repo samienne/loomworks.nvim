@@ -169,6 +169,47 @@ function M.apply(env)
     end
 end
 
+--- The variables the scope of a client environment `env` adds to it (name →
+--- value; `with`): on Windows `NoDefaultCurrentDirectoryInExePath=1` when
+--- `env` lacks it, else none.
+--- @param env table<string, string>
+--- @return table<string, string>
+function M.additions(env)
+    if not WIN then return {} end
+    local exe = require("loomworks.exe")
+    for k in pairs(env) do
+        if key(k) == key(exe.NO_CWD_ENV) then return {} end
+    end
+    return { [exe.NO_CWD_ENV] = "1" }
+end
+
+--- `env` as it reads to the client whose environment is `client`, for the
+--- `-v` env line (spec §19.15 "Roles and verbose": against the client's
+--- environment, before the daemon's own adjustments). A whole environment
+--- read inside the scope of `client` (every non-empty variable of `client`
+--- present: a run environment, ConfigUnit:run_env) loses the variables the
+--- scope itself added (`additions`, with the added value); any other `env`
+--- (a step's own overrides) is returned as it is.
+--- @param env table<string, string>|nil
+--- @param client table<string, string>
+--- @return table<string, string>|nil
+function M.client_view(env, client)
+    if type(env) ~= "table" or type(client) ~= "table" then return env end
+    local added = {}
+    for k, v in pairs(M.additions(client)) do added[key(k)] = v end
+    if not next(added) then return env end
+    local has = {}
+    for k in pairs(env) do has[key(k)] = true end
+    for k, v in pairs(client) do
+        if v ~= "" and not M.special(k) and not has[key(k)] then return env end
+    end
+    local out = {}
+    for k, v in pairs(env) do
+        if added[key(k)] ~= v then out[k] = v end
+    end
+    return out
+end
+
 --- Run `fn` with the process environment switched to `env` (nil: as is),
 --- restoring the previous environment afterwards — also when `fn` raises
 --- (the error is re-raised). On Windows the scope keeps
@@ -181,18 +222,12 @@ end
 function M.with(env, fn)
     if not env then return fn() end
     local saved = M.capture()
-    if WIN then
-        local exe = require("loomworks.exe")
-        local has = false
-        for k in pairs(env) do
-            if key(k) == key(exe.NO_CWD_ENV) then has = true; break end
-        end
-        if not has then
-            local e = {}
-            for k, v in pairs(env) do e[k] = v end
-            e[exe.NO_CWD_ENV] = "1"
-            env = e
-        end
+    local add = M.additions(env)
+    if next(add) then
+        local e = {}
+        for k, v in pairs(env) do e[k] = v end
+        for k, v in pairs(add) do e[k] = v end
+        env = e
     end
     M.apply(env)
     local res = { xpcall(fn, debug.traceback) }

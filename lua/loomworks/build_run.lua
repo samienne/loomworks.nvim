@@ -768,15 +768,19 @@ function M.env_line(env, inherited_env)
     if type(env) ~= "table" or not next(env) then return nil end
     local exe = require("loomworks.exe")
     local sep = exe.is_windows and ";" or ":"
-    -- (Case-insensitive on Windows, as the process env lookup is.)
-    local lookup = exe.getenv
-    if type(inherited_env) == "table" then
-        local by_key = {}
-        for k, v in pairs(inherited_env) do
-            by_key[exe.is_windows and tostring(k):upper() or tostring(k)] = tostring(v)
-        end
-        lookup = function(k) return by_key[exe.is_windows and k:upper() or k] end
+    -- This process's environment as a table (libuv's view, which sees
+    -- in-process changes): an inherited empty value is a value (equal: hidden).
+    if type(inherited_env) ~= "table" then
+        local uv = vim.uv or vim.loop
+        local ok, cur = pcall(uv.os_environ)
+        inherited_env = ok and type(cur) == "table" and cur or {}
     end
+    -- (Case-insensitive on Windows, as the process env lookup is.)
+    local by_key = {}
+    for k, v in pairs(inherited_env) do
+        by_key[exe.is_windows and tostring(k):upper() or tostring(k)] = tostring(v)
+    end
+    local function lookup(k) return by_key[exe.is_windows and k:upper() or k] end
     local names = {}
     for k in pairs(env) do names[#names + 1] = tostring(k) end
     table.sort(names)

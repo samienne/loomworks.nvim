@@ -464,7 +464,12 @@ function M.run(svc, ctx)
         local okc, why = current()
         if not okc then drop(); return finish(1, stopped(why)) end
         if args.verbose then
-            for _, l in ipairs(build_run.command_lines(spec, spec.cwd or ws.root, { env = ctx.env })) do
+            -- (A build target's run environment is a whole one read in this
+            -- scope: shown without what the scope added, as the client reads it.)
+            local shown = {}
+            for k, v in pairs(spec) do shown[k] = v end
+            shown.env = envscope.client_view(spec.env, ctx.env)
+            for _, l in ipairs(build_run.command_lines(shown, spec.cwd or ws.root, { env = ctx.env })) do
                 task:line("out", l, "command")
             end
         end

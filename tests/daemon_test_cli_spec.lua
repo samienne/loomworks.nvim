@@ -59,6 +59,9 @@ io.stderr:write("saved stderr " .. name .. string.char(10))
 if os.getenv("LW_TEST_FAIL_SAVED") == name then os.exit(3) end
 ]]
 
+--- The toolchain runtime directory `lwtestmod` reports (never created).
+local RUNTIME_DIR = H.is_win and "C:/lw-runtime/bin" or "/lw-runtime/bin"
+
 --- The test-only module: the shell module plus a native batch runner.
 local function module_source(runner)
     return ([[
@@ -79,10 +82,13 @@ function TU:run_command_all(opts)
 end
 function TU:run_command_all_rebuilds() return false end
 function M.create_test_unit(unit) return setmetatable({ _config_unit = unit }, TU) end
--- (No build targets: saved test targets name launch configurations.)
-function M.parse_targets() return {} end
+-- One executable build target, `tprog` (this nvim), for a target-backed
+-- saved test target; its toolchain runtime directory makes the step's
+-- environment a full one on Windows (ConfigUnit:run_env, runenv.compose).
+function M.parse_targets() return { tprog = { type = "executable", artifact = %q } } end
+function M.runtime_path() return { %q } end
 return M
-]]):format(runner)
+]]):format(runner, (vim.v.progpath:gsub("\\", "/")), RUNTIME_DIR)
 end
 
 --- `s` with every spelling of `root` replaced (see daemon_build_cli_spec).
@@ -186,7 +192,9 @@ describe("lw test through the workspace daemon (real processes)", function()
                 return l
             end
             local app = project("app")
-            app.launch = { chk = launch("chk"), chk2 = launch("chk2") }
+            -- (`tchk`: target-backed — the build target `tprog` runs SAVED.)
+            app.launch = { chk = launch("chk"), chk2 = launch("chk2"),
+                tchk = { target = "tprog", args = { "--headless", "-u", "NONE", "-l", prog, "tchk" } } }
             app.lwtestmod.tests = saved
             local upath = root .. "/.nvim/loomworks.user.json"
             trust._set_key_path(env.data .. "/trust.key")
@@ -353,6 +361,42 @@ describe("lw test through the workspace daemon (real processes)", function()
                 local deployed = out:find("    copy <ROOT>/saved.lua -> ", 1, true) or out:find("    up to date ", 1, true)
                 assert.equals(not vim.tbl_contains(c[1], "--no-build"), deployed ~= nil, what .. "\n" .. out)
                 assert.truthy(out:find("    env: LW_V_SAVED=s", 1, true), what .. "\n" .. out)
+            end
+        end
+    end)
+
+    it("-v, a target-backed saved test target (a full environment on Windows): the env line shows nothing the daemon itself added — the same bytes in-process, through the daemon and attached (§19.15 \"Roles and verbose\")", function()
+        local a, b, c = workspace({ "tchk" }), workspace({ "tchk" }), workspace({ "tchk" })
+        for _, form in ipairs({ { "test", "dev", "-v" }, { "--color=always", "test", "dev", "--verbose" } }) do
+            local args = { "--no-input" }
+            vim.list_extend(args, form)
+            -- The client lacks NoDefaultCurrentDirectoryInExePath (a dev-source
+            -- or editor-hosted client; the released lw sets it at startup): on
+            -- Windows the daemon's environment scope adds it (envscope.with),
+            -- and the step's full environment (ConfigUnit:run_env) is read in it.
+            local function vars(runtime)
+                return { LOOMWORKS_RUNTIME = runtime, NoDefaultCurrentDirectoryInExePath = false,
+                    NODEFAULTCURRENTDIRECTORYINEXEPATH = false }
+            end
+            local ra = lw(a, args, vars("in-process"))
+            local rb = lw(b, args, vars("daemon"))
+            local rc = lw(c, { "--no-daemon", unpack(args) }, vars("daemon"))
+            local what = table.concat(form, " ")
+            assert.equals(0, ra.code, what .. "\n" .. ra.stdout .. ra.stderr)
+            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
+            assert.equals(ra.code, rc.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rc.stderr)
+            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
+            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
+            local out = norm(ra.stdout, a)
+            assert.equals(out, norm(rb.stdout, b), what .. " (daemon)")
+            assert.equals(out, norm(rc.stdout, c), what .. " (attached)")
+            out = out:gsub("\27%[[%d;]*m", "")
+            assert.truthy(out:find("saved tchk", 1, true), what .. "\n" .. out)
+            assert.is_nil(out:lower():find("nodefaultcurrentdirectoryinexepath", 1, true), what .. "\n" .. out)
+            if H.is_win then
+                -- (Its only addition: the toolchain runtime directory.)
+                local want = "    env: " .. require("loomworks.term").format_argv({ "PATH=" .. RUNTIME_DIR .. ";$PATH" })
+                assert.truthy(out:find(want .. "\n", 1, true), what .. "\n" .. out)
             end
         end
     end)
