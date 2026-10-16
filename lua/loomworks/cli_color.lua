@@ -3,7 +3,8 @@
 ---
 --- Every line the CLI prints on its own behalf has a ROLE (the invocation's
 --- lead line, a step header, a configure reason, a printed command, a success
---- outcome, a failure, a warning). `paint(role, text, stream)` wraps the text
+--- outcome, a failure, a warning, or `plain` — an informative line that fits
+--- no other role, never colored). `paint(role, text, stream)` wraps the text
 --- in the role's `term.sgr` markers when that stream may be colored, and
 --- returns it unchanged otherwise — so with color off every line is
 --- byte-identical to its plain form. Lines are colored by the role their
@@ -36,7 +37,8 @@ M.SGR = {
 }
 
 --- Role → SGR parameters. `phase` is a step header (`==> [<kind>] <name>`,
---- spec §16.7): its arrow gets `phase_arrow`, the rest `phase`.
+--- spec §16.7): its arrow gets `phase_arrow`, the rest `phase`. `plain` is
+--- false: a line with a role that is never colored.
 M.ROLES = {
   lead = M.SGR.bold,
   phase = M.SGR.bold,
@@ -45,6 +47,7 @@ M.ROLES = {
   ok = M.SGR.green,
   fail = M.SGR.red,
   warn = M.SGR.yellow,
+  plain = false,
 }
 local PHASE_ARROW = M.SGR.bold .. ";" .. M.SGR.cyan
 
@@ -61,7 +64,7 @@ function M.header(kind, name)
 end
 
 --- The color mode: "auto" (default), "always" or "never". Set from the global
---- option by the CLI dispatcher (`set_mode`).
+--- option by the CLI dispatcher (`set_from_option`).
 M.mode = "auto"
 
 --- Validate and set the color mode from a global option token. Returns nil and
@@ -166,8 +169,9 @@ end
 
 --- `text` painted for `role` when `stream` is colored, else unchanged. Each
 --- line of a multi-line text is wrapped on its own, so a color never spills
---- past a line end. A nil or unknown role is plain.
---- @param role string|nil lead|phase|reason|command|ok|fail|warn
+--- past a line end. The `plain` role (and a nil or unknown one) is never
+--- colored.
+--- @param role string|nil lead|phase|reason|command|ok|fail|warn|plain
 --- @param text string
 --- @param stream "stdout"|"stderr"
 --- @param color? boolean overrides the `enabled(stream)` decision

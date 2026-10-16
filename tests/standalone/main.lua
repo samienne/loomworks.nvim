@@ -1041,6 +1041,25 @@ do
     "own_end: a launch add program's --help is the program's")
   local _, f9 = peel("config", "set", "--dev", "App", "Debug", "options.X", "v")
   ok(f9.dev, "peel: before the value operand it is lw's")
+  -- Color options (spec §16.23): dropped for a pinned host that predates
+  -- them (it would reject them, exit 2), forwarded unchanged otherwise; only
+  -- lw's own (before `own_end`), never a program's.
+  local function ra(version, ...)
+    return table.concat(pin.redirect_args({ ... }, version), " ")
+  end
+  eq(ra("0.1.47", "--no-color", "build", "Dev"), "build Dev",
+    "redirect_args: a leading --no-color is dropped for an older pin")
+  eq(ra("0.1.47", "build", "--color=always", "Dev", "--no-color"), "build Dev",
+    "redirect_args: a command's own --color=/--no-color are dropped for an older pin")
+  eq(ra("0.1.47", "run", "demo", "--no-color", "--", "--no-color", "--color=x"),
+    "run demo -- --no-color --color=x",
+    "redirect_args: a program's color args after -- are kept for an older pin")
+  eq(ra("0.1.48-beta.1", "--no-color", "build"), "build",
+    "redirect_args: a prerelease of the first color release predates it")
+  eq(ra(pin.COLOR_OPTIONS_SINCE, "--no-color", "build", "--color=never"),
+    "--no-color build --color=never", "redirect_args: forwarded unchanged to a pin that knows them")
+  eq(ra("1.0.0", "--color=always", "test"), "--color=always test",
+    "redirect_args: forwarded unchanged to a newer pin")
   local _, f10 = peel("project", "set", "App", "--type", "string", "V", "--", "--no-pin")
   ok(not f10.no_pin, "peel: project set --type <t> <name> -- <value>")
   local _, f10b = peel("project", "set", "App", "V", "x", "--no-pin")
@@ -1726,6 +1745,12 @@ do
     ok(o and o.json and o.check and o.sub == nil, "status page flags (global flags tolerated)")
     o = P({ "--color=always", "bootstrap", "--no-color" }, "bootstrap")
     ok(o and o.sub == nil, "--color=<when> / --no-color are global flags, tolerated")
+    local _, ec = P({ "bootstrap", "--color" }, "bootstrap")
+    ok(ec and ec:find("unknown option '--color'", 1, true),
+      "a bare --color is a usage error, as everywhere else  (" .. tostring(ec) .. ")")
+    _, ec = P({ "--color=bogus", "bootstrap" }, "bootstrap")
+    ok(ec and ec:find("invalid value 'bogus' for --color", 1, true),
+      "--color=<bad> is a usage error, as everywhere else  (" .. tostring(ec) .. ")")
     local _, e = P({ "bootstrap", "--version", "0.1.36" }, "bootstrap")
     ok(e and e:find("`lw bootstrap install --version 0.1.36`", 1, true),
       "old `lw bootstrap --version X` is a usage error naming install  (" .. tostring(e) .. ")")

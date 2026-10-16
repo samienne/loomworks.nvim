@@ -77,7 +77,7 @@ end
 M._ascii_out = false
 
 -- `role` (optional) is the line's highlighting role (spec §16.7: lead, phase,
--- reason, command, ok, fail, warn): loomworks.cli_color paints it when the
+-- reason, command, ok, fail, warn, plain): loomworks.cli_color paints it when the
 -- stream it is written to may be colored and leaves it plain otherwise.
 local function out(s, role)
   if role then s = require("loomworks.cli_color").paint(role, s or "", "stdout") end
@@ -677,7 +677,7 @@ local function load_workspace(root, wait_tools, opts)
   -- info chatter is noise on a CLI.
   core._deps.notify = function(msg, level)
     if not level or level >= vim.log.levels.WARN then
-      errw(tostring(msg) .. "\n")
+      note(tostring(msg), (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
     end
   end
   -- A refused `.nvim` file (spec §17.4) is reported by the CLI itself, with
@@ -971,7 +971,7 @@ local function run_spec(step, root, to_stderr)
   -- empty env is dropped there (the child inherits ours, never a wiped PATH).
   local spec, herr = require("loomworks.build_run").spawn_spec(step, root)
   if not spec then
-    errw("lw: " .. tostring(herr) .. "\n")
+    errw("lw: " .. tostring(herr) .. "\n", "fail")
     return 127
   end
   step = { cmd = spec.cmd, cwd = spec.cwd, env = spec.env }
@@ -1014,11 +1014,11 @@ local function pick_config_set(ws)
   for _, s in ipairs(ws._config_sets or {}) do sets[#sets + 1] = s end
   table.sort(sets, function(a, b) return a.name < b.name end)
   if #sets == 1 then return sets[1] end
-  out("Select a configuration set to build:")
-  for i, s in ipairs(sets) do out(string.format("  %d) %s", i, s.name)) end
-  out("")
+  out("Select a configuration set to build:", "plain")
+  for i, s in ipairs(sets) do out(string.format("  %d) %s", i, s.name), "plain") end
+  out("", "plain")
   local line = prompt_line("Enter number (blank to cancel)")
-  if not line or line == "" then out("cancelled"); finish(0) end
+  if not line or line == "" then out("cancelled", "plain"); finish(0) end
   local n = tonumber(line)
   if not n or not sets[n] then die("invalid selection: " .. tostring(line)) end
   return sets[n]
@@ -1347,7 +1347,7 @@ function M.cmd_clean(ws, profile_name)
           die("clean failed: " .. tostring(err) .. ": " .. (step.name or "?"))
         end
       else
-        local code = run_spec(step, ws.root)
+        local code = M._run_spec(step, ws.root)
         if code ~= 0 then
           die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
         end
@@ -1453,21 +1453,21 @@ function M.cmd_reset(ws, args)
   end
 
   if #removal_dirs == 0 and not state_to_clear then
-    out("nothing to reset for " .. scope_label .. " — no build directories to remove.")
+    out("nothing to reset for " .. scope_label .. " — no build directories to remove.", "plain")
     return 0
   end
 
   if #removal_dirs > 0 then
     out(string.format("Will remove %d build director%s and reset %s to unconfigured:",
-      #removal_dirs, (#removal_dirs == 1) and "y" or "ies", scope_label))
-    for _, d in ipairs(removal_dirs) do out("  " .. d) end
+      #removal_dirs, (#removal_dirs == 1) and "y" or "ies", scope_label), "plain")
+    for _, d in ipairs(removal_dirs) do out("  " .. d, "plain") end
     if #mirrors > 0 then
-      out("and the owned LSP database" .. (#mirrors == 1 and "" or "s") .. " generated from them:")
-      for _, m in ipairs(mirrors) do out("  " .. m) end
+      out("and the owned LSP database" .. (#mirrors == 1 and "" or "s") .. " generated from them:", "plain")
+      for _, m in ipairs(mirrors) do out("  " .. m, "plain") end
     end
   else
     out("Will reset " .. scope_label .. " to unconfigured "
-      .. "(no build directories on disk; clearing cached state).")
+      .. "(no build directories on disk; clearing cached state).", "plain")
   end
 
   -- Destructive → confirm. `-y` skips; a non-interactive host without it refuses
@@ -1577,20 +1577,20 @@ function M.cmd_trust(root, args)
   local function cache_note()
     local ctext = io_mod.read_file(require("loomworks.cache").filepath(root))
     if ctext and trust.verify("cache", ctext) == "invalid" then
-      out("note: .nvim/loomworks.cache.json was not written on this machine — reset it with `lw nuke`.")
+      out("note: .nvim/loomworks.cache.json was not written on this machine — reset it with `lw nuke`.", "warn")
     end
   end
 
   local text = io_mod.read_file(path)
   if not text then
-    out("no working copy (.nvim/loomworks.user.json) — nothing to trust.")
+    out("no working copy (.nvim/loomworks.user.json) — nothing to trust.", "plain")
     cache_note()
     return 0
   end
   local status, content = trust.verify("user", text)
 
   if discard then
-    out("Will delete " .. path .. " (the working copy: profiles, local configuration, settings).")
+    out("Will delete " .. path .. " (the working copy: profiles, local configuration, settings).", "plain")
     if not yes then
       if not interactive() then
         die("refusing to discard the working copy without confirmation.\n  Re-run with --yes.")
@@ -1602,12 +1602,12 @@ function M.cmd_trust(root, args)
       local ok, err = io_mod.rm_rf(p)
       if not ok then die("could not delete " .. p .. ": " .. tostring(err)) end
     end
-    out("DISCARDED: " .. path)
+    out("DISCARDED: " .. path, "ok")
     return 0
   end
 
   if status == "valid" then
-    out(".nvim/loomworks.user.json is trusted (signed by this machine) — nothing to do.")
+    out(".nvim/loomworks.user.json is trusted (signed by this machine) — nothing to do.", "plain")
     cache_note()
     return 0
   end
@@ -1616,18 +1616,18 @@ function M.cmd_trust(root, args)
   if not ok or type(decoded) ~= "table" then
     die(path .. " is not valid JSON — fix it, or discard it with `lw trust --discard`")
   end
-  out(path)
+  out(path, "plain")
   out(status == "unsigned"
     and "  is not signed by this machine (written by hand, or by an earlier lw)."
-    or "  was modified outside loomworks, or copied from another machine.")
-  out("")
+    or "  was modified outside loomworks, or copied from another machine.", "warn")
+  out("", "plain")
   local prog, other = require("loomworks.program_fields").review(decoded, require("loomworks.modules"))
-  out("Program settings — what loomworks may run on this file's word:")
-  if #prog == 0 then out("  (none)") end
-  for _, l in ipairs(prog) do out("  " .. l) end
-  out("Other contents:")
-  for _, l in ipairs(other) do out("  " .. l) end
-  out("")
+  out("Program settings — what loomworks may run on this file's word:", "plain")
+  if #prog == 0 then out("  (none)", "plain") end
+  for _, l in ipairs(prog) do out("  " .. l, "plain") end
+  out("Other contents:", "plain")
+  for _, l in ipairs(other) do out("  " .. l, "plain") end
+  out("", "plain")
   if not yes then
     if not interactive() then
       die("refusing to trust without confirmation.\n"
@@ -1638,7 +1638,7 @@ function M.cmd_trust(root, args)
   end
   local sok, serr = trust.sign_file(path, "user", content)
   if not sok then die("could not sign " .. path .. ": " .. tostring(serr)) end
-  out("TRUSTED: .nvim/loomworks.user.json (signed for this machine)")
+  out("TRUSTED: .nvim/loomworks.user.json (signed for this machine)", "ok")
   cache_note()
   return 0
 end
@@ -1668,8 +1668,8 @@ function M.cmd_nuke(root, args)
   local areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root))
   if not areas then die("nuke refused: " .. tostring(area_err)) end
   for _, a in ipairs(areas) do targets[#targets + 1] = a .. "/" end
-  out("Will delete (build state only; your configuration is kept):")
-  for _, p in ipairs(targets) do out("  " .. p) end
+  out("Will delete (build state only; your configuration is kept):", "plain")
+  for _, p in ipairs(targets) do out("  " .. p, "plain") end
   if not yes then
     if not interactive() then
       die("refusing to delete build state without confirmation.\n  Re-run with -y.")
@@ -1687,7 +1687,7 @@ function M.cmd_nuke(root, args)
   if not done or #errors > 0 then
     die("nuke failed" .. (#errors > 0 and (":\n  " .. table.concat(errors, "\n  ")) or ""))
   end
-  out("NUKED: build state removed — the next build reconfigures from scratch.")
+  out("NUKED: build state removed — the next build reconfigures from scratch.", "ok")
   return 0
 end
 
@@ -1717,7 +1717,7 @@ function M.cmd_unlock(ws, args)
     local function report(left, where)
       errw("lw: " .. where .. " recorded " .. (left.program:match("([^/]+)$") or left.program)
         .. " (pid " .. left.pid .. ") on " .. device_serial .. " (" .. left.program .. ")"
-        .. "; it was not stopped and may still be running there\n")
+        .. "; it was not stopped and may still be running there\n", "warn")
     end
     local file_left = device_lock.load_leftover(device_serial)
     local info = device_lock.read(device_serial)
@@ -2062,7 +2062,7 @@ function M._device_clean(ws, args, deps)
   local device_lock = require("loomworks.remote.device_lock")
   local h, lerr = device_lock.acquire(serial, {
     wait = not no_wait, action = "clean", workspace = ws.name,
-    on_wait = function(msg) errw("lw: " .. msg .. "\n") end,
+    on_wait = function(msg) note("lw: " .. msg, "plain") end,
   })
   if not h then die(lerr) end
   on_exit(function() device_lock.release(h) end)
@@ -2073,7 +2073,7 @@ function M._device_clean(ws, args, deps)
   -- (spec §18.7).
   require("loomworks.remote.run").reap_on_acquire(runner, serial, h, {
     backend = deps and deps.backend, timeout = transport.timeouts.query,
-    note = function(s) errw("lw: " .. s .. "\n") end })
+    note = function(s, role) note("lw: " .. s, role or "plain") end })
   local ok, err, base_removed = require("loomworks.remote.staging").clean(transport, ws_prefix, runner.staging_base)
   device_lock.release(h)
   if not ok then die(err) end
@@ -2086,9 +2086,9 @@ function M._device_clean(ws, args, deps)
     if next(recs) == nil then ws._device_sync[serial] = nil end
     if ws._save_cache then ws:_save_cache() end
   end
-  out("removed " .. ws_prefix .. " from " .. serial)
-  if base_removed then out("removed empty " .. runner.staging_base:gsub("/+$", "") .. " from " .. serial) end
-  out("cleared host sync record")
+  out("removed " .. ws_prefix .. " from " .. serial, "ok")
+  if base_removed then out("removed empty " .. (runner.staging_base:gsub("/+$", "")) .. " from " .. serial, "ok") end
+  out("cleared host sync record", "ok")
   return 0
 end
 
@@ -2613,7 +2613,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
     else
       dinfo.error = lerr
     end
-    for _, line in ipairs(remote_run.render_print(plan, man, dinfo, opts.print_mode)) do out(line) end
+    for _, line in ipairs(remote_run.render_print(plan, man, dinfo, opts.print_mode)) do out(line, "plain") end
     return 0
   end
 
@@ -2627,12 +2627,12 @@ function M._run_foreign(lt, ws, f, opts, deps)
     fail_on_missing_results = opts.fail_on_missing_results,
     backend = deps.backend, liveness_ms = deps.liveness_ms,
     write_out = deps.write_out, write_err = deps.write_err,
-    note = function(s) errw("lw: " .. s .. "\n") end,
+    note = function(s, role) note("lw: " .. s, role or "plain") end,
     on_cleanup = on_exit,
   })
   if not result then die(err) end
   if opts.on_result then return opts.on_result(result) end
-  remote_run.report(result, function(s) errw(s .. "\n") end)
+  remote_run.report(result, function(s, role) errw(s .. "\n", role) end)
   return result.exit_code
 end
 
@@ -2690,7 +2690,7 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
     local cmd = spec.cmd
     if opts.dry_run and type(cmd) == "string" and (cmd:match("^[/\\]") or cmd:match("^%a:[/\\]"))
       and not uv.fs_stat(cmd) then
-      errw("note: " .. cmd .. " is not built yet\n")
+      errw("note: " .. cmd .. " is not built yet\n", "plain")
     end
     return emit_run_print(spec, opts.print_mode, ws.root)
   end
@@ -2746,7 +2746,7 @@ function M._run_test_executable(ws, lt, opts, deps)
   --- A step that cannot run: fail it (saved entry) or the invocation.
   local function refuse(msg)
     if not opts.saved then die(msg) end
-    errw("lw: " .. msg .. "\n")
+    errw("lw: " .. msg .. "\n", "fail")
     return { msg }
   end
 
@@ -2795,7 +2795,7 @@ function M._run_test_executable(ws, lt, opts, deps)
     failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
       results = results, results_missing = results_missing, crashes = #outcome.crashes,
       transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
-    remote_run.report(outcome, function(s2) errw(s2 .. "\n") end, failed)
+    remote_run.report(outcome, function(s2, role) errw(s2 .. "\n", role) end, failed)
   else
     local spec, serr = lt:resolve_launch_spec({ working_dir = opts.cwd_override })
     if not spec then
@@ -2850,7 +2850,7 @@ function M._run_test_executable(ws, lt, opts, deps)
     end
     if junit_results then
       local ok, werr = test_run.write_file(opts.junit_path, test_run.junit_xml(label, junit_results))
-      if ok then out("JUnit: " .. opts.junit_path)
+      if ok then out("JUnit: " .. opts.junit_path, "plain")
       else errw("lw: warning: cannot write JUnit " .. opts.junit_path .. ": " .. tostring(werr) .. "\n", "warn") end
     else
       errw("lw: warning: no JUnit output for " .. label .. " (no results file)\n", "warn")
@@ -2896,7 +2896,7 @@ function M._no_build_stale_notes(profile, units)
       if not why and unit.state_value == "failed_build" then why = "last build failed" end
       if why then
         note(string.format("lw: note: %s: its build may be stale (%s) — --no-build runs it as it is",
-          unit._project and unit._project.key or "?", why))
+          unit._project and unit._project.key or "?", why), "plain")
       end
     end
   end
@@ -3178,7 +3178,7 @@ function M._test_plan(ws, profile, opts, deps)
   for _, u in ipairs(plan) do
     if u.batch_dropped and #u.entries > 0 then
       note(string.format("lw: note: %s: its registered tests cannot run on this host (%s) — "
-        .. "skipping its batch runner; its saved test targets run on a device", u.project.key, u.platform))
+        .. "skipping its batch runner; its saved test targets run on a device", u.project.key, u.platform), "plain")
     elseif u.batch_dropped and n_batch + n_exec > 0 then
       -- Never skipped silently: name the unit, and how to include it only when
       -- it truly has no saved entries (under --discovered they were not
@@ -3195,7 +3195,7 @@ function M._test_plan(ws, profile, opts, deps)
           .. "targets; to run executables on a device: lw test-target add %s %s:<exe>",
           u.platform, profile.key, u.project.key)
       end
-      note(string.format("lw: note: %s: skipped — %s", u.project.key, why))
+      note(string.format("lw: note: %s: skipped — %s", u.project.key, why), "plain")
     end
   end
   if n_batch + n_exec == 0 then
@@ -3211,7 +3211,7 @@ function M._test_plan(ws, profile, opts, deps)
   end
   for _, u in ipairs(plan) do
     if u.unsupported and not noted_unsupported[u] then
-      note("lw: note: " .. u.project.key .. ": saved test targets are not supported by its module (no build targets) — ignored")
+      note("lw: note: " .. u.project.key .. ": saved test targets are not supported by its module (no build targets) — ignored", "plain")
     end
   end
   if M._has_device_opts(opts.dev) and n_exec == 0 then
@@ -3358,7 +3358,7 @@ function M._test_plan(ws, profile, opts, deps)
       end
     end
     if #steps == 0 then
-      out("no tests to run for profile '" .. profile.key .. "'")
+      out("no tests to run for profile '" .. profile.key .. "'", "plain")
       return 0
     end
     -- Same label twice: qualify the executable step with its project, then,
@@ -3401,12 +3401,12 @@ function M._test_plan(ws, profile, opts, deps)
             if norm_cmp(b.junit_out) ~= norm_cmp(b.junit_dest) then
               if uv.fs_stat(b.junit_out) then
                 uv.fs_copyfile(b.junit_out, b.junit_dest)
-                out("JUnit: " .. b.junit_dest)
+                out("JUnit: " .. b.junit_dest, "plain")
               else
                 errw("lw: warning: no JUnit output for " .. st.label .. "\n", "warn")
               end
             elseif uv.fs_stat(b.junit_dest) then
-              out("JUnit: " .. b.junit_dest)
+              out("JUnit: " .. b.junit_dest, "plain")
             else
               errw("lw: warning: no JUnit output for " .. st.label .. "\n", "warn")
             end
@@ -3434,8 +3434,8 @@ function M._test_plan(ws, profile, opts, deps)
           exit_only and "  (exit status only — no per-case results)" or "")
       end
     end
-    out("")
-    out("summary — profile '" .. profile.key .. "':")
+    out("", "plain")
+    out("summary — profile '" .. profile.key .. "':", "plain")
     for i, l in ipairs(summary) do out(l, summary_roles[i]) end
     if n_failed > 0 then
       die(string.format("%d of %d test step%s failed", n_failed, #summary, #summary == 1 and "" or "s"), 1)

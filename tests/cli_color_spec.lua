@@ -276,3 +276,59 @@ describe("build output highlighting", function()
     assert.equals(want, r.stdout:gsub("\r\n", "\n"))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- Roles beyond the build steps (spec §16.7): plain, per-stream stderr, die,
+-- clean and test outcome lines
+-- ---------------------------------------------------------------------------
+
+describe("more roles", function()
+  local build_run = require("loomworks.build_run")
+  local orig_plan, orig_spawn, orig_dirs
+  before_each(function()
+    orig_plan, orig_spawn, orig_dirs = overseer.plan_profile_clean, cli._run_spec, build_run.profile_build_dirs
+  end)
+  after_each(function()
+    overseer.plan_profile_clean, cli._run_spec, build_run.profile_build_dirs = orig_plan, orig_spawn, orig_dirs
+    reset()
+  end)
+
+  it("the plain role is never colored", function()
+    assert.equals("JUnit: x.xml", cc.paint("plain", "JUnit: x.xml", "stdout", true))
+    cc.mode = "always"
+    assert.equals("summary", cc.paint("plain", "summary", "stderr"))
+  end)
+
+  it("stderr is colored when it is a terminal and stdout is not", function()
+    fake({ [2] = true }, {}) -- stderr a terminal, stdout not
+    local saved = overseer.plan_profile_build
+    overseer.plan_profile_build = function() return { { kind = "build", name = "App", cmd = { "make" } } } end
+    cli._run_spec = function() return 0 end
+    local r = capture(function() cli._run_build_steps({ key = "p" }, { root = "/r" }, { quiet = true }) end)
+    overseer.plan_profile_build = saved
+    assert.equals(ESC .. "1mbuilding profile: p" .. ESC .. "0m\n"
+      .. ESC .. "1;36m==>" .. ESC .. "0m" .. ESC .. "1m [build] App" .. ESC .. "0m\n", r.stderr)
+  end)
+
+  it("die paints its message as a failure on stderr", function()
+    cc.mode = "always"
+    local r = capture(function() cli._no_build_die({ key = "p" }, { "x" }) end)
+    assert.equals(1, r.exit_code)
+    assert.equals(ESC .. "31mlw: --no-build: cannot run the tests against the existing build:" .. ESC .. "0m\n",
+      r.stderr:match("^[^\n]*\n"))
+    cc.mode = "never"
+    r = capture(function() cli._no_build_die({ key = "p" }, { "x" }) end)
+    assert.is_nil(r.stderr:find(ESC, 1, true))
+  end)
+
+  it("clean: lead, step header and the CLEAN OK outcome", function()
+    cc.mode = "always"
+    overseer.plan_profile_clean = function() return { { kind = "clean", name = "App", cmd = { "make", "clean" } } } end
+    cli._run_spec = function() return 0 end
+    build_run.profile_build_dirs = function() return {} end
+    local r = capture(function() cli.cmd_clean({ root = "/r", _profiles = { { key = "p" } } }, "p") end)
+    assert.equals(ESC .. "1mcleaning profile: p" .. ESC .. "0m\n"
+      .. ESC .. "1;36m==>" .. ESC .. "0m" .. ESC .. "1m [clean] App" .. ESC .. "0m\n"
+      .. ESC .. "32mCLEAN OK: p" .. ESC .. "0m\n", r.stdout)
+  end)
+end)

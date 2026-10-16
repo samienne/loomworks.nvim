@@ -1721,7 +1721,9 @@ output and standard error each only when it is a terminal, and never while
 `NO_COLOR` is set to a non-empty value; `always` colors anyway, e.g. for
 `lw --color=always build | less -R` or a CI log viewer that renders colors.
 Output from build tools and programs is never changed, and `lw` never sets
-color variables in their environment.
+color variables in their environment. `lw version` and `lw self-update` are not
+colored. In a repository pinned to an `lw` older than these options, the
+global `lw` drops them instead of passing them on, so the pinned `lw` still runs.
 
 | Command | Description |
 |---|---|

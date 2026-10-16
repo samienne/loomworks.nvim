@@ -241,6 +241,33 @@ function M.peel_host_flags(args)
   return forwarded, f
 end
 
+--- The first release whose lw knows the global color options (`--color=<when>`,
+--- `--no-color`, spec §16.7 *Highlighting*). A pinned lw older than this
+--- rejects them as unknown options (exit 2).
+M.COLOR_OPTIONS_SINCE = "0.1.48"
+
+--- The arguments a redirecting host forwards to the pinned lw `version`
+--- (spec §16.23): unchanged, except that the color options among lw's own
+--- arguments (before `own_end`) are dropped when the pinned lw predates them
+--- (a prerelease of COLOR_OPTIONS_SINCE included). They are never turned into
+--- an environment variable; a program's arguments are never touched.
+--- @param args string[] host flags already peeled
+--- @param version string the pinned version
+--- @return string[]
+function M.redirect_args(args, version)
+  if type(version) ~= "string"
+    or require("boot.paths").compare_versions(version, M.COLOR_OPTIONS_SINCE) >= 0 then
+    return args
+  end
+  local stop = M.own_end(args)
+  local out = {}
+  for i, v in ipairs(args) do
+    local color = type(v) == "string" and (v == "--no-color" or v:sub(1, 8) == "--color=")
+    if not (i < stop and color) then out[#out + 1] = v end
+  end
+  return out
+end
+
 --- The error for a development source with no directory configured. With
 --- `in_args` (a `--dev` after the command word, `peel_host_flags`) it adds a
 --- hint: the user may have meant it for the program (spec §16.7).
@@ -283,7 +310,7 @@ end
 --- (and ignored) here.
 M.GLOBAL_FLAGS = { ["--no-input"] = true, ["--non-interactive"] = true,
   ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true,
-  ["--color"] = true, ["--no-color"] = true }
+  ["--no-color"] = true }
 
 local INSTALL_ONLY = { "--version", "--latest", "--channel", "--pin-only", "--force" }
 
@@ -323,7 +350,11 @@ function M.parse_bootstrap_args(args, command, popts)
     elseif v == "--force" then o.force = true; o.flags[v] = true
     elseif v == "--json" then o.json = true; o.flags[v] = true
     elseif v == "--check" then o.check = true; o.flags[v] = true
-    elseif M.GLOBAL_FLAGS[v] then -- tolerated
+    elseif v == "--color" and eqv ~= nil then -- `--color=<when>`, validated, else ignored
+      if eqv ~= "auto" and eqv ~= "always" and eqv ~= "never" then
+        return nil, "invalid value '" .. eqv .. "' for --color -- use auto, always or never"
+      end
+    elseif M.GLOBAL_FLAGS[v] and eqv == nil then -- tolerated
     elseif type(v) == "string" and v:sub(1, 1) == "-" then
       return nil, "unknown option '" .. v .. "' for `" .. C(command) .. "`"
     elseif not seen_command and v == command then
