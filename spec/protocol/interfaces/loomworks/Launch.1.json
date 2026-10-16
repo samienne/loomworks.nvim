@@ -59,6 +59,10 @@
             "description": "The client wraps the program (--prefix): a device target is refused.",
             "type": "boolean"
           },
+          "verbose": {
+            "description": "-v, as for loomworks.Build/1 build (API.md §9.1): for the preparation's dependency build and deploy steps (    copy ... /     up to date ...).",
+            "type": "boolean"
+          },
           "force": {
             "description": "The answer to the artifact-conflict question (spec 5.9), which the client asks before the call as before a build: build over another profile's output artifact.",
             "type": "boolean"

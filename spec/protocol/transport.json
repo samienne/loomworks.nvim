@@ -142,7 +142,10 @@
         "task_id": { "description": "From transport 11 the opaque task id (loomworks.Common/1 TaskId, a string); a protocol-10 connection keeps its integer.", "type": ["string", "integer"] },
         "phase": { "enum": ["start", "line", "output", "progress", "done"] },
         "meta": { "description": "start: the task's meta (loomworks.Common/1 TaskMeta); for an interface method's task it names the object, iface, v and method.", "type": "object" },
-        "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (PROTOCOL.md §14.1).", "type": "object" }
+        "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (PROTOCOL.md §14.1).", "type": "object" },
+        "stream": { "description": "line: the line's stream (out, note, err); output: stdout or stderr. An open string.", "type": "string" },
+        "text": { "description": "line: the line's text, without terminal escape sequences (API.md §4.2); output: the step's raw bytes.", "type": "string" },
+        "role": { "description": "line: the line's presentation role (API.md §4.2); absent = plain. An open string: the interface defines the values.", "type": "string" }
       }
     }
   },

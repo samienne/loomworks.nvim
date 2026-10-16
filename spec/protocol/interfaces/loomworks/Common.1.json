@@ -3,7 +3,7 @@
   "version": 1,
   "status": "draft",
   "types_only": true,
-  "description": "Types shared by every core interface (API.md §4): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
+  "description": "Types shared by every core interface (API.md §4): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta, the task line role and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
   "methods": {},
   "$defs": {
     "Id": {
@@ -176,6 +176,10 @@
         "phase": { "description": "A deploy step's phase.", "enum": ["pre_build", "post_build"] },
         "state": { "$ref": "#/$defs/TaskStepState" }
       }
+    },
+    "LineRole": {
+      "description": "A task line's presentation role (API.md §4.2; spec §16.7 Highlighting): lead, phase (a step header), reason (a configure reason), command (a verbose command line), ok, fail, warn or plain. Absent = plain. Open: clients tolerate unknown values (PROTOCOL.md §17.2) and show them as plain.",
+      "enum": ["lead", "phase", "reason", "command", "ok", "fail", "warn", "plain"]
     },
     "TaskStepState": {
       "description": "A step's state (API.md §4.3): pending until it runs; skipped when a failure, a cancel or a device = true outcome left it unrun. A preparation with no_build has no steps (steps absent). Clients show an unknown state as neutral.",

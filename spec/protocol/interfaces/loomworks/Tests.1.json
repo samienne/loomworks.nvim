@@ -36,6 +36,10 @@
           "no_build": {
             "description": "Run against the existing build (--no-build, spec 16.16): nothing configured, built or deployed; the plan's no-build checks refuse an unconfigured unit or an unbuilt executable before any step.",
             "type": "boolean"
+          },
+          "verbose": {
+            "description": "-v, as for loomworks.Build/1 build (API.md §10.1): the task streams the command lines of spec §16.4 Verbose.",
+            "type": "boolean"
           }
         }
       },
