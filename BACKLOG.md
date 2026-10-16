@@ -191,6 +191,34 @@ Found 2026-10-16 while listing the daemon's objects (staging/daemon bdb07c4).
   test-first: a failing spec sending a previous-generation id (entity and
   task), then the refusal.
 
+## Warm-daemon load warnings
+
+In-process, the warnings a workspace load raises (`core._deps.notify`) print
+on every command. Through the daemon they reach only the request that loads
+the workspace: a warm daemon reuses its loaded workspace
+(`Service:live()`, `daemon/service.lua`), so a second `lw status` or
+`lw build` prints none. The gap predates #279, whose reply `note_roles` made
+the warnings that do arrive colored like in-process (CHANGELOG reworded in
+#280). Needs a spec decision first: either replay the load's warnings (with
+their roles) on each request, or keep them as persistent workspace
+diagnostics that every request reports. The parity tests do not cover it:
+the read-only `parity()` restarts the daemon for each case and `three_way`
+stops it, so every daemon case loads a cold workspace.
+
+## Direct `vim.notify` calls bypass `core._deps.notify`
+
+`config.lua:199` ("project 'x' directory not found") and about 45 other files
+call `vim.notify` directly instead of `core._deps.notify`. In-process, `lw`
+runs under `nvim -l`, which prints these on stderr in nvim's own unpainted
+form. In the daemon they go to the daemon's log and never reach the client.
+Two options:
+- Inside `Service:with_model`, route `vim.notify` to the current request for
+  the duration of a segment (`handlers().notify`), with role `plain` since
+  in-process does not paint them.
+- Preferred: move the call sites to `core._deps.notify`, so both hosts paint
+  them `warn`. This changes in-process `--color` output, so it needs a spec
+  note first (spec §16.7 *Highlighting*).
+
 ## Daemon task output replay
 
 Settled for step 5k (spec/core/daemon.md §19.16 "Tasks in the task runner"):
