@@ -380,6 +380,23 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             assert.is_true(vim.wait(1000, function() return #loomtest.nodes() == 0 end, 10))
         end)
 
+        it("setup is idempotent: a repeated setup does not stack its listeners", function()
+            fake_obs()
+            adapter_mod.setup()
+            adapter_mod.setup()
+            adapter_mod.setup()
+            vim.wait(300) -- earlier deferred re-renders drained
+            local orig, renders = adapter_mod._render, 0
+            adapter_mod._render = function() renders = renders + 1 end
+            local ok, err = pcall(function()
+                require("loomworks.events").emit("active_set_changed")
+                vim.wait(400)
+            end)
+            adapter_mod._render = orig
+            assert(ok, err)
+            assert.equals(1, renders)
+        end)
+
         it("a stale view arriving is shown, not discovered, by the re-render alone", function()
             local obs, calls = fake_obs(function(m)
                 if m == "discover" then return { outcome = "accepted", task_id = 5 } end

@@ -2627,6 +2627,7 @@ lw.lsp_buf_state(bufnr)                     -- "none" | "held" | "ok" | "withhel
 lw.on("active_set_changed", function(active_set)
   -- React to profile switches, task completions, file changes
 end)
+lw.off("active_set_changed", fn)            -- remove a listener `lw.on` added
 ```
 
 ### Profile object

@@ -717,6 +717,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   projects when there are several. (#247)
 
 ### Fixed
+- The loomtest adapter's `setup()` is idempotent: calling it again (a repeated
+  setup in a config) replaces its event listeners instead of adding another
+  set, so one profile switch no longer re-renders the test tree once per call.
+  New `require("loomworks").off(event, fn)` removes a listener. (#PR)
 - `lw test`: the end-of-run summary names a failed step's failing tests, like
   the step's own line (at most 10, then `and K more`). (#248)
 - Experimental daemon: an editor test run that hit an internal error right

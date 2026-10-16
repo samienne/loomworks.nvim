@@ -298,6 +298,13 @@ function M.on(event, fn)
     events.on(event, fn)
 end
 
+--- Remove an event listener registered with `M.on`.
+--- @param event string
+--- @param fn function
+function M.off(event, fn)
+    events.off(event, fn)
+end
+
 --- Emit `lsp_buf_state_changed` (spec §7) for the LSP layer, which reaches the
 --- event bus only through this facade.
 --- @param payload { bufnr: integer, server: string, state: loomworks.LspBufState }
