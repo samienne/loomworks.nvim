@@ -624,7 +624,7 @@ function M.phase(service, ctx, store, sel, kind)
                         waited = true
                         local ws = ctx.ws
                         task:line("note", "waiting for " .. (ws._display_build_dir and ws:_display_build_dir(d) or d)
-                            .. " (in use by another task of this workspace)")
+                            .. " (in use by another task of this workspace)", "plain")
                     end
                     vim.defer_fn(function() service:with_model(ctx, ready) end,
                         require("loomworks.daemon.test_discover").WAIT_POLL_MS)
@@ -661,7 +661,7 @@ function M.phase(service, ctx, store, sel, kind)
         end)
         now = false
         if not entry.granted then
-            task:line("note", "waiting for another test task of the same build directory")
+            task:line("note", "waiting for another test task of the same build directory", "plain")
         end
     end
 
@@ -815,12 +815,12 @@ function M.phase(service, ctx, store, sel, kind)
             result.discovery_error = derr
             if n == 0 then
                 if derr then return api.finish(1, derr, { result = result }) end
-                api.task:line("out", "no tests to run for profile '" .. ctx.profile.key .. "'")
+                api.task:line("out", "no tests to run for profile '" .. ctx.profile.key .. "'", "plain")
                 return api.finish(0, nil, { result = result })
             end
             if bad == 0 then
                 if derr then return api.finish(1, derr, { result = result }) end
-                api.task:line("out", "TESTS OK: " .. ctx.profile.key .. " (" .. counts.passed .. " passed)")
+                api.task:line("out", "TESTS OK: " .. ctx.profile.key .. " (" .. counts.passed .. " passed)", "ok")
                 return api.finish(0, nil, { result = result })
             end
             return api.finish(1, bad .. " of " .. n .. " tests failed" .. (derr and ("; " .. derr) or ""),
@@ -836,12 +836,12 @@ function M.phase(service, ctx, store, sel, kind)
             local s = steps[si]
             s.seen, s.captured, s.out = {}, {}, {}
             api.task:progress(0.5 + (si - 1) / #steps / 2)
-            api.task:line("out", "==> [test] " .. s.project .. ": " .. s.name)
+            api.task:line("out", require("loomworks.cli_color").header("test", s.project .. ": " .. s.name), "phase")
             if type(s.prepare) == "function" then
                 local ok, pok, perr = pcall(s.prepare)
                 if not (ok and pok) then
                     local msg = tostring((ok and perr) or pok or "preparation failed")
-                    api.task:line("err", "lw: " .. msg .. "\n")
+                    api.task:line("err", "lw: " .. msg .. "\n", "fail")
                     s.output = msg
                     step_done(s, 1)
                     return next_test()

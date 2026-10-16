@@ -5,10 +5,11 @@
 ---   { kind = "task", task_id, phase = "start", meta = { name, kind, profile, units, origin } }
 ---       `origin` is the owner's `hello.client` (`cli` / `editor`), set here,
 ---       never taken from the request (protocol 7)
----   { kind = "task", task_id, phase = "line", stream = "out"|"note"|"err", text }
+---   { kind = "task", task_id, phase = "line", stream = "out"|"note"|"err", text, role? }
 ---       one of loomworks's own lines (status lines, notes) — the client prints
 ---       it exactly as the in-process host prints it (stdout line, stderr
----       line, stderr text)
+---       line, stderr text); `role` is the line's highlighting role, the one
+---       the in-process host prints it with (Common/1 LineRole, spec §16.7)
 ---   { kind = "task", task_id, phase = "output", stream = "stdout"|"stderr", text }
 ---       raw bytes of a build step
 ---   { kind = "task", task_id, phase = "progress", pct }
@@ -311,12 +312,14 @@ function Task:step(index, state, err)
     if s.on_step then pcall(s.on_step, self, index, state, err) end
 end
 
---- One of loomworks's own lines.
+--- One of loomworks's own lines, with its role when the producer knows it
+--- (spec §16.7; the role the in-process host prints the line with).
 --- @param stream "out"|"note"|"err"
 --- @param text string
-function Task:line(stream, text)
+--- @param role? string lead|phase|reason|command|ok|fail|warn|plain (Common/1 LineRole)
+function Task:line(stream, text, role)
     if self.finished then return end
-    self:_emit({ phase = "line", stream = stream, text = text })
+    self:_emit({ phase = "line", stream = stream, text = text, role = role })
 end
 
 --- Raw output of a step. Each observer sees at most OBSERVER_CAP_BYTES of it.

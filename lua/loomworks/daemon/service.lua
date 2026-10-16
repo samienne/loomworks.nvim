@@ -281,7 +281,9 @@ function Service:handlers()
         notify = function(msg, level)
             if level and level < vim.log.levels.WARN then return end
             local c = self.current
-            if c and c.task then c.task:line("err", tostring(msg) .. "\n")
+            if c and c.task then
+                -- (The in-process loader's roles: an error fails, a warning warns.)
+                c.task:line("err", tostring(msg) .. "\n", (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
             elseif c then c.notes = c.notes or {}; c.notes[#c.notes + 1] = tostring(msg)
             else self.server:log("%s", tostring(msg)) end
         end,

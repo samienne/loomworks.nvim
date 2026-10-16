@@ -103,7 +103,8 @@ end
 local function norm(s, root) return unroot((s:gsub("\r\n", "\n")), root) end
 
 local function drop_notice(s)
-    return (s:gsub("lw: testing through the workspace daemon %(pid %d+%)\n", ""))
+    -- (Painted dim under --color=always: the whole line goes.)
+    return (s:gsub("[^\n]*lw: testing through the workspace daemon %(pid %d+%)[^\n]*\n", ""))
 end
 
 --- The persisted build state, comparable across two roots.
@@ -285,6 +286,33 @@ describe("lw test through the workspace daemon (real processes)", function()
         assert.truthy(bad.stderr:find("lw: 1 of 2 test steps failed", 1, true), bad.stderr)
         local reports = files_of(b .. "/reports")
         assert.truthy(next(reports), "no JUnit file written")
+    end)
+
+    it("--color=always: each line the same text and role both ways — the same bytes (§19.17)", function()
+        local a, b = workspace(), workspace()
+        local cases = {
+            { { "--color=always", "test", "dev" } },
+            { { "--color=always", "test", "dev" }, { LW_TEST_FAIL_UNIT = "app" } },
+            { { "--color=always", "test", "dev", "--junit", "reports/n.xml" }, { LW_TEST_NO_JUNIT = "1" } },
+            { { "--color=always", "test", "dev" }, { LW_TEST_FAIL = "build" } },
+        }
+        for _, c in ipairs(cases) do
+            local args = { "--no-input" }
+            vim.list_extend(args, c[1])
+            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
+            local rb = lw(b, args, c[2])
+            local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2] or {})
+            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
+            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
+            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
+            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
+            assert.truthy(ra.stdout:find("\27[1mbuilding profile: dev\27[0m", 1, true), what .. "\n" .. ra.stdout)
+        end
+        -- The test phase is painted too: its step headers and the outcome.
+        local ok = lw(b, { "--no-input", "--color=always", "test", "dev" })
+        assert.equals(0, ok.code, ok.stderr)
+        assert.truthy(ok.stdout:find("\27[1;36m==>\27[0m\27[1m [test] app: nvim\27[0m", 1, true), ok.stdout)
+        assert.truthy(ok.stdout:find("\27[32mTESTS OK: dev (2 steps)\27[0m", 1, true), ok.stdout)
     end)
 
     it("saved test targets: the daemon runs the whole plan, as in-process (§16.16, §19.15)", function()

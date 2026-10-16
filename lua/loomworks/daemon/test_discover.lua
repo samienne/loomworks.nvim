@@ -214,7 +214,7 @@ function M.prober(svc, ctx, run, o)
         P.held[#P.held + 1] = h
         if h.reclaimed and ws._recover_interrupted_build_dir then
             local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
-            if line then task:line("err", "lw: " .. line) end
+            if line then task:line("err", "lw: " .. line, "plain") end
         end
         return true
     end
@@ -245,7 +245,7 @@ function M.prober(svc, ctx, run, o)
                 -- Behind a task of this daemon: wait for its end.
                 if not waited then
                     waited = true
-                    task:line("note", "waiting for " .. shown(bd) .. " (in use by another task of this workspace)")
+                    task:line("note", "waiting for " .. shown(bd) .. " (in use by another task of this workspace)", "plain")
                 end
                 timer(M.WAIT_POLL_MS, function()
                     svc:with_model(ctx, function() if go_on() then start() end end)
@@ -257,12 +257,12 @@ function M.prober(svc, ctx, run, o)
                 rec.fp, rec.mark = fp, mark
                 st:set_record(unit, rec)
             end
-            task:line("out", "==> [discover] " .. label)
+            task:line("out", require("loomworks.cli_color").header("discover", label), "phase")
             if bd then
                 local lok, lmsg = take_lock(bd)
                 if not lok then
                     release_entry()
-                    task:line("err", label .. ": " .. tostring(lmsg))
+                    task:line("err", label .. ": " .. tostring(lmsg), "fail")
                     record({ outcome = "error", message = tostring(lmsg) })
                     return k("error", tostring(lmsg))
                 end
@@ -280,7 +280,7 @@ function M.prober(svc, ctx, run, o)
             end
             local function failed(msg)
                 scrub(unit)
-                task:line("err", label .. ": " .. msg)
+                task:line("err", label .. ": " .. msg, "fail")
                 record({ outcome = "error", message = msg })
                 return k("error", msg)
             end
@@ -307,7 +307,7 @@ function M.prober(svc, ctx, run, o)
                     local okc, why = o.current()
                     if not okc then return k("stopped", why) end
                     local n = M.count_tests(entries)
-                    task:line("out", label .. ": " .. n .. (n == 1 and " test" or " tests"))
+                    task:line("out", label .. ": " .. n .. (n == 1 and " test" or " tests"), "plain")
                     record({ outcome = "ok", entries = entries or {} })
                     k("ok", n)
                 end)
@@ -330,7 +330,7 @@ function M.prober(svc, ctx, run, o)
             now = false
             P.entry = e
             if granted then return start() end
-            task:line("note", "waiting for another test task of " .. shown(bd))
+            task:line("note", "waiting for another test task of " .. shown(bd), "plain")
             return
         end
         start()
@@ -423,7 +423,7 @@ function M.run(svc, ctx)
         if not u then
             st.discovered = profile
             task:line("out", string.format("DISCOVER OK: %s (%d %s, %d failed)", profile.key, total,
-                total == 1 and "test" or "tests", failed))
+                total == 1 and "test" or "tests", failed), "ok")
             return finish(0, nil, { tests = total, failed = failed })
         end
         task:progress((i - 1) / math.max(#units, 1))

@@ -213,7 +213,7 @@ local function take_locks(run, ws, task, dirs, operation, command)
         run.held[#run.held + 1] = h
         if h.reclaimed and ws._recover_interrupted_build_dir then
             local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
-            if line then task:line("err", "lw: " .. line .. "\n") end
+            if line then task:line("err", "lw: " .. line .. "\n", "plain") end
         end
     end
     return true
@@ -377,7 +377,7 @@ function M.run(svc, ctx)
     local function spawn(step, on_exit, on_progress, on_output)
         local spec, herr = build_run.spawn_spec(step, ws.root)
         if not spec then
-            task:line("err", "lw: " .. tostring(herr) .. "\n")
+            task:line("err", "lw: " .. tostring(herr) .. "\n", "fail")
             return on_exit(127)
         end
         local env = envscope.with_overlay(ctx.env, spec.env)
@@ -443,8 +443,8 @@ function M.run(svc, ctx)
     -- run here: the service declined a plan whose kit runs on a device.
     local test_plan = require("loomworks.test_plan")
     local test_host = {
-        out = function(s) task:line("out", s) end,
-        err = function(s) task:line("err", s) end,
+        out = function(s, role) task:line("out", s, role) end,
+        err = function(s, role) task:line("err", s, role) end,
         fail = function(msg, code) finish(code or 1, msg) end,
         progress = function(f) task:progress(0.5 + f / 2) end,
     }
@@ -521,10 +521,10 @@ function M.run(svc, ctx)
         local prepared, perr = test_plan.prepare(ws, profile, ctx.test_pre, topts)
         if not prepared then return finish(1, perr) end
         -- (`no_build`: a possibly stale build's notes, §16.16.)
-        for _, n in ipairs(prepared.notes or {}) do task:line("note", n) end
+        for _, n in ipairs(prepared.notes or {}) do task:line("note", n, "plain") end
         if #prepared.steps == 0 then
             release_all()
-            task:line("out", "no tests to run for profile '" .. profile.key .. "'")
+            task:line("out", "no tests to run for profile '" .. profile.key .. "'", "plain")
             return finish(0, nil, { result = { steps = {}, junit = {} } })
         end
         test_plan.run(ws, profile, prepared, topts, test_host, function(code, err, results)
@@ -612,7 +612,7 @@ function M.run(svc, ctx)
         ci = ci + 1
         if ci > #csteps then
             release_all()
-            task:line("out", "CLEAN OK: " .. label)
+            task:line("out", "CLEAN OK: " .. label, "ok")
             return finish(0)
         end
         local step = csteps[ci]
@@ -634,7 +634,7 @@ function M.run(svc, ctx)
                     run.wiping = false
                     if run.cancelled then return finish(run.cancel_code, stopped()) end
                     if code ~= 0 then return finish(code, msg) end
-                    if note then task:line("out", note) end
+                    if note then task:line("out", note, "plain") end
                     task:progress(ci / #csteps)
                     next_clean()
                 end)
@@ -678,16 +678,15 @@ function M.run(svc, ctx)
             if after_steps then return after_steps() end
             -- A run's build ends without a line of its own (as in-process).
             if running then return prepare() end
-            task:line("out", (op == "configure" and "CONFIGURE OK: " or "BUILD OK: ") .. label)
+            task:line("out", (op == "configure" and "CONFIGURE OK: " or "BUILD OK: ") .. label, "ok")
             return finish(0)
         end
         local step = steps[i]
         progress((i - 1) / #steps)
         local ok_g, g_err = build_run.before_step(ws, step, { force = args.force })
         if not ok_g then return finish(1, g_err) end
-        for _, line in ipairs(build_run.step_lines(ws, step, { verbose = args.verbose })) do
-            task:line(out_stream, line)
-        end
+        local lines, roles = build_run.step_lines(ws, step, { verbose = args.verbose })
+        for k, line in ipairs(lines) do task:line(out_stream, line, roles[k]) end
         -- Within the step, its build tool's progress lines move the percent.
         local base = i - 1
         spawn(step, function(code, signal) step_done(step, code, signal) end,
@@ -789,7 +788,7 @@ function M.run(svc, ctx)
                 -- A launch target's build ends here (no launch to resolve),
                 -- with the plain build's closing line.
                 if target_build then
-                    task:line(out_stream, "BUILD OK: " .. lt:display_name())
+                    task:line(out_stream, "BUILD OK: " .. lt:display_name(), "ok")
                     return finish(0)
                 end
                 return prepare()
@@ -812,7 +811,7 @@ function M.run(svc, ctx)
             if ph.deploy then
                 -- (n counts the declared sources, fresh ones included.)
                 task:line(out_stream, "deploying (" .. ph.deploy .. "): " .. ph.copies
-                    .. (ph.copies == 1 and " copy" or " copies"))
+                    .. (ph.copies == 1 and " copy" or " copies"), "plain")
                 -- Each copy on the event loop, a cancel stopping between two
                 -- copies (it then ends the run once the copy in flight is done).
                 run.deploying = true
@@ -838,7 +837,7 @@ function M.run(svc, ctx)
             if ph.dep then
                 unit = lt:_resolve_dep_config_unit(ph.dep.project, ph.dep.config_hint)
                 if not unit then return finish(1, LaunchTarget.unresolved_dependency_message(ph.dep.project)) end
-                task:line(out_stream, "building dependency: " .. ph.dep.project.key)
+                task:line(out_stream, "building dependency: " .. ph.dep.project.key, "plain")
             end
             local bd = unit.build_dir and unit:build_dir() or nil
             local lok, lmsg = take_locks(run, ws, task, bd and { bd } or {}, "build",
@@ -853,7 +852,7 @@ function M.run(svc, ctx)
             band = { (pi - 1) / #phases, 1 / #phases }
             next_step()
         end
-        task:line(out_stream, "building launch target: " .. lt:display_name())
+        task:line(out_stream, "building launch target: " .. lt:display_name(), "lead")
         next_phase()
     end
 
@@ -897,7 +896,7 @@ function M.run(svc, ctx)
     -- the reply's, before acceptance), else checked here.
     if testing and not ctx.test_pre then
         ctx.test_pre = test_plan.precheck(profile, { extra = args.extra or {} })
-        for _, n in ipairs(ctx.test_pre.notes) do task:line("note", n) end
+        for _, n in ipairs(ctx.test_pre.notes) do task:line("note", n, "plain") end
         if ctx.test_pre.err then finish(ctx.test_pre.code, ctx.test_pre.err); return run end
     end
     -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
@@ -937,7 +936,7 @@ function M.run(svc, ctx)
         if not lok then finish(1, lmsg); return run end
 
         if op == "clean" then
-            task:line("out", "cleaning " .. scope_line)
+            task:line("out", "cleaning " .. scope_line, "lead")
             next_clean()
             return run
         end
@@ -975,15 +974,15 @@ function M.run(svc, ctx)
             -- editor's configure action does nothing for it.
             if op == "configure" then
                 release_all()
-                task:line("out", "nothing to configure for " .. (units_scope and label or ("profile '" .. label .. "'")))
+                task:line("out", "nothing to configure for " .. (units_scope and label or ("profile '" .. label .. "'")), "plain")
                 finish(0); return run
             end
             finish(1, build_run.nothing_to_build_message(profile, units_scope and label or nil)); return run
         end
-        task:line(out_stream, (op == "configure" and "configuring " or "building ") .. scope_line)
+        task:line(out_stream, (op == "configure" and "configuring " or "building ") .. scope_line, "lead")
         -- The same trust notice as the in-process build (spec §17.10, §19.15).
         local tn = build_run.trust_notice(ws, profile, units_scope)
-        if tn then task:line("note", tn) end
+        if tn then task:line("note", tn, "warn") end
         next_step()
     end
     -- An editor test run waits for the Tests/1 tasks of its directories
@@ -1071,7 +1070,7 @@ function M.reset(svc, ctx)
     task:start({ name = pkey or "--all", kind = "reset", profile = pkey,
         scope = plan.scope == "all" and "all" or nil, units = units })
     if ctx.listing then
-        for _, line in ipairs(reset_plan.listing(plan)) do task:line("out", line) end
+        for _, line in ipairs(reset_plan.listing(plan)) do task:line("out", line, "plain") end
     end
 
     -- Lock order (spec §19.3): the workspace operation lock first, then every
@@ -1102,8 +1101,8 @@ function M.reset(svc, ctx)
         svc:with_model(ctx, function()
             if was_stopped or run.cancelled then return finish(run.cancel_code or 1, stopped()) end
             if code ~= 0 then return finish(code or 1, msg) end
-            for _, line in ipairs(reset_plan.mirror_warnings(plan)) do task:line("out", line) end
-            task:line("out", reset_plan.ok_line(plan))
+            for _, line in ipairs(reset_plan.mirror_warnings(plan)) do task:line("out", line, "warn") end
+            task:line("out", reset_plan.ok_line(plan), "ok")
             finish(0)
         end)
     end)
