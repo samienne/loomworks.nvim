@@ -2,7 +2,7 @@
   "interface": "loomworks.Profiles",
   "version": 1,
   "status": "draft",
-  "description": "Object /profiles (spec 19.14, 19.20): queries of a profile. Step 5g.2 lands compiler_cache (the protocol-10 query profile_cache stays as its v0 alias); list and the command methods follow in step 5o.",
+  "description": "Object /profiles (API.md §11): queries of a profile. Step 5g.2 lands compiler_cache (the protocol-10 query profile_cache stays as its v0 alias); list and the command methods follow in step 5o.",
   "methods": {
     "compiler_cache": {
       "description": "The compiler cache the profile resolves for one of its projects, as lw profile query <profile> <project> cache prints it; cache is absent when the project's module does not cache C/C++. Probes the client's PATH. An unknown profile, a project the profile does not map, or a stale id is the refused result.",

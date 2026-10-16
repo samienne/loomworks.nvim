@@ -2,7 +2,7 @@
   "interface": "loomworks.view.ProjectsIndex",
   "version": 1,
   "status": "draft",
-  "description": "Object /views (spec 19.13 Views): what the statusline and the buffer to project lookup need of the workspace's projects, nothing of the status page. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
+  "description": "Object /views (API.md §14.2): what the statusline and the buffer to project lookup need of the workspace's projects, nothing of the status page. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
   "methods": {
     "get": {
       "description": "The view's full state. Never loads the workspace: an unloaded one has no projects.",

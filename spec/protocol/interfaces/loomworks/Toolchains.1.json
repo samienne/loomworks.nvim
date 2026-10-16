@@ -2,7 +2,7 @@
   "interface": "loomworks.Toolchains",
   "version": 1,
   "status": "draft",
-  "description": "Object /toolchains (spec 19.14, 19.20): the toolchains detected in the client's environment. The protocol-10 query tools stays as its v0 alias; rescan lands with the command methods (step 5o).",
+  "description": "Object /toolchains (API.md §11): the toolchains detected in the client's environment. The protocol-10 query tools stays as its v0 alias; rescan lands with the command methods (step 5o).",
   "methods": {
     "list": {
       "description": "The toolchains detected in the client's environment, per module type (the live model is not changed). Loads the workspace when none is loaded.",

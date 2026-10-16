@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Tasks",
   "version": 1,
-  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): list, cancel, the started, ended and step signals (a target-scoped task's steps, step 5t) and the task_id subscription filter. Tasks are started with the protocol-10 build request (task-streamed interface methods land in step 5g.2 part B).",
+  "description": "Object /tasks (API.md §7): list, cancel, the started, ended and step signals (a target-scoped task's steps, step 5t) and the task_id subscription filter. Tasks are started with the protocol-10 build request (task-streamed interface methods land in step 5g.2 part B).",
   "cases": [
     {
       "name": "list is empty and cancel of a task that is not running is refused",

@@ -2,7 +2,7 @@
   "interface": "loomworks.Launch",
   "version": 1,
   "status": "draft",
-  "description": "Object /launch (spec 19.15 Run, Debug, Build scope of a launch; 19.20): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. device_log lands in a later step. Step 5t (spec 19.15 Build of a launch target, Steps of a task) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler.",
+  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. device_log lands in a later step. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler.",
   "methods": {
     "prepare_run": {
       "description": "Build (unless no_build), deploy and resolve the launch of the profile's target or launch configuration; the task result carries the launch spec, or device for a program that runs on a device in the client.",
@@ -96,7 +96,7 @@
               "$ref": "loomworks.Common/1#/$defs/LaunchSpec"
             },
             "device": {
-              "description": "The program runs on a device: the client runs it (spec 19.15 Run).",
+              "description": "The program runs on a device: the client runs it (API.md §9.1).",
               "type": "boolean"
             }
           }
@@ -195,7 +195,7 @@
       "mutates": true
     },
     "build": {
-      "description": "Build a launch target as the editor's in-process launch build does (spec 19.15 Build of a launch target; step 5t): the target resolved as prepare_run resolves it, then its dependencies, the pre-build deploy steps and its own unit, in that order, as one task whose steps (Common/1 TaskMeta.steps, Tasks/1 step) follow each phase. No artifact probe, post-build deploy or launch resolution. A device target ends the task nonzero before the build.",
+      "description": "Build a launch target as the editor's in-process launch build does (API.md §9.4; step 5t): the target resolved as prepare_run resolves it, then its dependencies, the pre-build deploy steps and its own unit, in that order, as one task whose steps (Common/1 TaskMeta.steps, Tasks/1 step) follow each phase. No artifact probe, post-build deploy or launch resolution. A device target ends the task nonzero before the build.",
       "params": {
         "type": "object",
         "additionalProperties": false,

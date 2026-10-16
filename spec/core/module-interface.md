@@ -471,7 +471,7 @@ Entry shape (core-defined fields):
 | `server` | Server name — selects the integration |
 | `root_dir` | Absolute path used for root_dir matching and client scoping |
 | `db_state` | *(optional)* `"ready"` or `"unconfigured"`. `"unconfigured"` when the unit that would supply this entry's build-directory-derived inputs (its compilation database in particular) is **not configured on this machine** (§17.8), or there is no active profile / no active unit for the project; the entry then carries **no** database location (§9.1). `"ready"` when that unit is configured here. Whether a configured unit's database actually exists yet is not part of this field — the integration checks that itself (§9.3 `withhold_reason`) |
-| `db_dir` | *(optional)* The build directory whose owned database (`refresh_lsp_database` below) this entry reads — another unit's build directory when the module redirects its database there (a cross-configuration reference). When omitted, core sets it to the project's active build directory (absent when there is none). Core matches database writes against it (the completion nudge, `done` below) and keys the entry's database revision by it (daemon.md §19.20); it does not locate the database for the server (that remains the integration's fields, §9.1) |
+| `db_dir` | *(optional)* The build directory whose owned database (`refresh_lsp_database` below) this entry reads — another unit's build directory when the module redirects its database there (a cross-configuration reference). When omitted, core sets it to the project's active build directory (absent when there is none). Core matches database writes against it (the completion nudge, `done` below) and keys the entry's database revision by it ([API.md](../protocol/API.md) §13); it does not locate the database for the server (that remains the integration's fields, §9.1) |
 | _…per-server_ | Each integration documents its own additional fields. See [`spec/integrations/lsp/`](spec/integrations/lsp/). |
 
 Modules with no LSP needs return `{}` (or omit the method). The module
@@ -1660,7 +1660,7 @@ status. Selection persists to `user.json` via
 `Workspace:set_debug_adapter(language, adapter)`. Known adapters per
 language are reported by the integrations themselves. *(Step 5k, plan:)*
 in `daemon` runtime mode the section reads and writes the mapping through
-the daemon's `loomworks.DebugConfig/1` (daemon.md §19.20), in-process when
+the daemon's `loomworks.DebugConfig/1` ([API.md](../protocol/API.md) §12), in-process when
 that interface is unavailable; the installed status stays the editor's.
 
 **Language-based adapter resolution.** Adapters are resolved per

@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Toolchains",
   "version": 1,
-  "description": "Object /toolchains (spec 19.14, 19.20): list, in the client's environment.",
+  "description": "Object /toolchains (API.md §11): list, in the client's environment.",
   "cases": [
     {
       "name": "list returns the detected toolchains per module type",

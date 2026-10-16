@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Tests",
   "version": 1,
-  "description": "Object /tests (spec 19.15, 19.20): run as a task-streamed method with its structured results; the editor's run_cases, prepare_debug, collect and result: their refusals and argument checks (their runs over discovered tests: tests/daemon_test_runs_spec.lua).",
+  "description": "Object /tests (API.md §10): run as a task-streamed method with its structured results; the editor's run_cases, prepare_debug, collect and result: their refusals and argument checks (their runs over discovered tests: tests/daemon_test_runs_spec.lua).",
   "cases": [
     {
       "name": "run builds, finds no tests and ends with the structured results",

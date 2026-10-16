@@ -2,7 +2,7 @@
   "interface": "loomworks.LspConfig",
   "version": 1,
   "status": "draft",
-  "description": "Object /lsp (spec 19.20 LspConfig/1, 19.16 LSP configuration, 9.2, 9.7, 9.8): what the workspace's language servers are configured with - each project's lsp_configs entries with db_state, db_dir and db_rev, the working copy's per-server options and whether the active profile's owned databases are ready. Starting and stopping servers and the withhold reasons stay the client's.",
+  "description": "Object /lsp (API.md §13; spec 19.16 LSP configuration, 9.2, 9.7, 9.8): what the workspace's language servers are configured with - each project's lsp_configs entries with db_state, db_dir and db_rev, the working copy's per-server options and whether the active profile's owned databases are ready. Starting and stopping servers and the withhold reasons stay the client's.",
   "methods": {
     "get": {
       "description": "The whole state, computed with the caller's environment (an entry's server binary resolves in it). Never loads the workspace: in any state but loaded it answers that state with ready false, no projects and no options.",

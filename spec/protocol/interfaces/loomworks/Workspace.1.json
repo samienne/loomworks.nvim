@@ -2,10 +2,10 @@
   "interface": "loomworks.Workspace",
   "version": 1,
   "status": "draft",
-  "description": "Object /workspace (spec 19.20): the workspace's header and its model changes. Step 5g.2 lands header and the changed and header_changed signals; the command methods follow in step 5o.",
+  "description": "Object /workspace (API.md §6): the workspace's header and its model changes. Step 5g.2 lands header and the changed and header_changed signals; the command methods follow in step 5o.",
   "methods": {
     "header": {
-      "description": "The always-warm header (spec 19.13 Header): the session fields and the model's state. Never loads the workspace.",
+      "description": "The always-warm header (API.md §2): the session fields and the model's state. Never loads the workspace.",
       "params": { "type": "object", "additionalProperties": false },
       "result": { "$ref": "#/$defs/Header" },
       "needs_env": false,
@@ -14,7 +14,7 @@
   },
   "signals": {
     "changed": {
-      "description": "A committed write of a state file (spec 19.12): the model changed; a client fetches the state again. The interface form of the protocol-10 model_change broadcast.",
+      "description": "A committed write of a state file (API.md §6): the model changed; a client fetches the state again. The interface form of the protocol-10 model_change broadcast.",
       "args": {
         "type": "object",
         "required": ["seq", "session_generation"],

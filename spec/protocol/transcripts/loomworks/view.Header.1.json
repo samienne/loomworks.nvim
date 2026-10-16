@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.view.Header",
   "version": 1,
-  "description": "Object /views (spec 19.13 Views, 19.20): get, and the update signal with the full state as initial.",
+  "description": "Object /views (API.md §14.1): get, and the update signal with the full state as initial.",
   "cases": [
     {
       "name": "get reports the session, the running version and an unloaded model without loading it",

@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Workspace",
   "version": 1,
-  "description": "Object /workspace (spec 19.13 Header, 19.12, 19.20): header and the changed and header_changed signals.",
+  "description": "Object /workspace (API.md §2, §6): header and the changed and header_changed signals.",
   "cases": [
     {
       "name": "header reports the session and an unloaded model without loading it",
