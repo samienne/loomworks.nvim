@@ -775,12 +775,17 @@ function M.env_line(env, inherited_env)
         local ok, cur = pcall(uv.os_environ)
         inherited_env = ok and type(cur) == "table" and cur or {}
     end
-    -- (Case-insensitive on Windows, as the process env lookup is.)
+    -- (Case-insensitive on Windows, as the process env lookup is; the
+    -- exact-case spelling first when the table holds two, `Path` and `PATH`.)
     local by_key = {}
     for k, v in pairs(inherited_env) do
         by_key[exe.is_windows and tostring(k):upper() or tostring(k)] = tostring(v)
     end
-    local function lookup(k) return by_key[exe.is_windows and k:upper() or k] end
+    local function lookup(k)
+        local exact = inherited_env[k]
+        if exact ~= nil then return tostring(exact) end
+        return by_key[exe.is_windows and k:upper() or k]
+    end
     local names = {}
     for k in pairs(env) do names[#names + 1] = tostring(k) end
     table.sort(names)

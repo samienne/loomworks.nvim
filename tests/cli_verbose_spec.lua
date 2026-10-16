@@ -540,6 +540,17 @@ describe("-v on the in-process host of the daemon line", function()
     end
   end)
 
+  it("two spellings of one variable inherited (Path and PATH): the exact-case one is the baseline", function()
+    local SEP = require("loomworks.exe").is_windows and ";" or ":"
+    local function line(arg) return "    env: " .. require("loomworks.term").format_argv({ arg }) end
+    local client = { Path = "/p/lower", PATH = "/p/upper" }
+    -- Whichever order the table yields them in.
+    assert.is_nil(build_run.env_line({ PATH = "/p/upper" }, client))
+    assert.is_nil(build_run.env_line({ Path = "/p/lower" }, client))
+    assert.equals(line("PATH=/x" .. SEP .. "$PATH"), build_run.env_line({ PATH = "/x" .. SEP .. "/p/upper" }, client))
+    assert.equals(line("Path=/x" .. SEP .. "$Path"), build_run.env_line({ Path = "/x" .. SEP .. "/p/lower" }, client))
+  end)
+
   it("the lead and success lines carry their roles from one place (both hosts)", function()
     assert.same({ "building profile: p", "lead" }, { build_run.lead_line("build", "profile: p") })
     assert.same({ "cleaning a (Debug)", "lead" }, { build_run.lead_line("clean", "a (Debug)") })
