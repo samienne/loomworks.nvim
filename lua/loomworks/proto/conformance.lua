@@ -105,7 +105,14 @@ M.FORMAT = 1
 ---          copy with the profile `dev` and, on `app`, the launch
 ---          configuration `hello` (an existing program, run with one
 ---          argument) and the compile database
----          `${build_dir}/compile_commands.json` (one clangd entry)
+---          `${build_dir}/compile_commands.json` (one clangd entry);
+---          a second `shell` project `lib` (path `lib`, configuration
+---          `Debug`, the same commands, build directory
+---          `${workspace_root}/out/lib/${variant}`) outside the
+---          configuration set, and on `app` the launch configuration
+---          `staged`, whose deploy makes `lib` its dependency (a post-build
+---          source pinning `configuration` `Debug`) and has one pre-build
+---          copy whose source never exists (step 5t)
 ---   tests  the `shell` fixture's project `app` (same commands, build
 ---          directory and configuration set `dev`) as a project of the
 ---          harness-only module `teststub` (tests/fixtures/teststub,

@@ -28,10 +28,13 @@
             "args": { "projects": [ {
               "id": { "$bind": "app_id", "$type": "string" }, "key": "app", "label": "app", "type": "shell",
               "path": "app", "abs_path": { "$pattern": "/app$" }, "active": { "$absent": true }
+            }, {
+              "id": { "$type": "string" }, "key": "lib", "label": "lib", "type": "shell",
+              "path": "lib", "abs_path": { "$pattern": "/lib$" }, "active": { "$absent": true }
             } ] }
         } },
         { "send": { "kind": "call", "req_id": 3, "object": "/views", "iface": "loomworks.view.ProjectsIndex", "v": 1, "method": "get", "args": {} } },
-        { "expect": { "kind": "ok", "req_id": 3, "result": { "projects": [ { "id": { "$var": "app_id" }, "key": "app" } ] } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "projects": [ { "id": { "$var": "app_id" }, "key": "app" }, { "key": "lib" } ] } } },
         { "send": { "kind": "build", "req_id": 4, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
         { "expect": { "kind": "ok", "req_id": 4, "outcome": "accepted", "task_id": { "$bind": "task" } } },
         { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },

@@ -275,6 +275,10 @@ function M.run(svc, ctx)
     -- `prepare_debug`, §19.15 "Tests"): `ctx.cases` plans its build and
     -- runs what follows it (loomworks.daemon.test_runs).
     local cases = op == "cases" and ctx.cases or nil
+    -- The build of a launch target (`Launch/1.build`, §19.15 "Build of a
+    -- launch target"): a build (`meta.kind`, its lines) of the target
+    -- scope's phases up to the launch target's own unit.
+    local target_build = ctx.op == "target_build"
     -- What the lines name: the profile's key, or the units' names.
     local label = (units_scope and #units_scope > 0) and build_run.units_label(units_scope) or profile.key
     local scope_line = (units_scope and #units_scope > 0) and label or ("profile: " .. label)
@@ -299,9 +303,32 @@ function M.run(svc, ctx)
         end
     end
     run.release_all = release_all
+    -- A target-scoped task's step states (§19.15 "Steps of a task"), by
+    -- index into its plan; nil for other tasks.
+    local step_states
+    local function set_step(index, state, err)
+        if not (step_states and step_states[index]) or step_states[index] == state then return end
+        step_states[index] = state
+        task:step(index, state, err)
+    end
+    -- At the task's end, before its `done`: the running step ended as the
+    -- task did (cancelled, failed with the failure line, else ok), the steps
+    -- not reached `skipped`.
+    local function close_steps(code, err)
+        for index, state in ipairs(step_states or {}) do
+            if state == "running" then
+                local failed = not run.cancelled and code ~= 0
+                set_step(index, run.cancelled and "cancelled" or (failed and "failed" or "ok"),
+                    failed and err or nil)
+            elseif state == "pending" then
+                set_step(index, "skipped")
+            end
+        end
+    end
     local function finish(code, err, fields)
         if run.finished then return end
         run.finished = true
+        close_steps(code, err)
         release_all()
         if cases and cases.on_finish then pcall(cases.on_finish, code, err) end
         task:done(code, err, fields)
@@ -510,7 +537,7 @@ function M.run(svc, ctx)
     -- Exactly what the in-process `lw run` does before its `running …` line
     -- (cli.cmd_run, `_run_launch_target_impl`), over loomworks.run_prep; the
     -- locks are already released (deploy runs without them, as in-process).
-    local target_scoped = running and args.build_scope == "target" and not args.no_build
+    local target_scoped = (running and args.build_scope == "target" and not args.no_build) or target_build
     local function prepare()
         if run.cancelled then return finish(run.cancel_code, stopped()) end
         local okc, why = current()
@@ -667,63 +694,145 @@ function M.run(svc, ctx)
             function(f) if i == base + 1 then progress((base + f) / #steps) end end)
     end
 
-    -- ---- a target-scoped launch build (§19.15 "Build scope of a launch") --
+    -- ---- a target-scoped launch build (§19.15 "Build scope of a launch",
+    -- "Build of a launch target") ---------------------------------------------
     -- The launch flow the editor runs in-process before a launch (§8.8.4
     -- steps 3-6, LaunchTarget:build + deploy): each dependency's unit, the
     -- pre-build deploy steps, the launch target's own unit (its one target
-    -- where the module builds single targets), the post-build deploy steps.
-    -- Each unit's build takes that unit's build-directory lock for that
-    -- build only; the first failure ends the task, the later phases not run.
-    local function target_scope()
+    -- where the module builds single targets), then — a preparation only —
+    -- the artifact probe and the post-build deploy steps. Each unit's build
+    -- takes that unit's build-directory lock for that build only; the deploy
+    -- steps run asynchronously, without locks, a cancel stopping them between
+    -- two copies; the first failure ends the task, the later phases not run.
+    -- Each phase is one step of the task (§19.15 "Steps of a task").
+
+    --- The launch target and its phases, each with its step (`{ id, kind,
+    --- label, project?, configuration?, target?, phase?, state = "pending"
+    --- }`), planned before the task starts (its `start.meta.steps`) — or
+    --- nil and the refusal of the target (resolution, validity, a debug's
+    --- kit-told refusal, a device target's build, an abstract configuration).
+    --- @return { lt: table, phases: table[] }|nil, string|nil
+    local function plan_target_scope()
         local rp = require("loomworks.run_prep")
         local lt, serr = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
-        if not lt then return finish(1, serr) end
+        if not lt then return nil, serr end
         local verr = rp.validity_error(lt)
-        if verr then return finish(1, verr) end
+        if verr then return nil, verr end
         local drefusal = debugging and rp.debug_refusal(lt, true) or nil
-        if drefusal then return finish(1, drefusal) end
+        if drefusal then return nil, drefusal end
+        if target_build and lt:requires_device() then return nil, rp.device_build_refusal(lt) end
         local aerr = lt:abstract_error()
-        if aerr then return finish(1, aerr) end
+        if aerr then return nil, aerr end
         local phases = {}
-        for _, dep in ipairs(lt:build_dependencies()) do phases[#phases + 1] = { dep = dep } end
-        phases[#phases + 1] = { deploy = "pre_build" }
-        if lt._target then
-            phases[#phases + 1] = { unit = lt._target._config_unit, target_id = lt._target.id }
-        elseif lt._config_unit then
-            phases[#phases + 1] = { unit = lt._config_unit }
+        local function add(ph, step)
+            ph.step = step
+            phases[#phases + 1] = ph
+        end
+        local pkey = lt._project and lt._project.key or nil
+        for _, dep in ipairs(lt:build_dependencies()) do
+            -- (Named for the plan; resolved again when its turn comes.)
+            local u = lt:_resolve_dep_config_unit(dep.project, dep.config_hint)
+            add({ dep = dep }, { kind = "build", label = "dependency " .. dep.project.key,
+                project = dep.project.key, configuration = u and u:config_key() or nil })
+        end
+        -- (A phase that declares no copies is no step.)
+        local function deploy(phase)
+            local n = lt:deploy_count(phase)
+            if n > 0 then
+                add({ deploy = phase, copies = n },
+                    { kind = "deploy", label = "deploy (" .. phase .. ")", project = pkey, phase = phase })
+            end
+        end
+        deploy("pre_build")
+        local own = lt._target and lt._target._config_unit or lt._config_unit
+        if own then
+            local tid = lt._target and lt._target.id or nil
+            add({ unit = own, target_id = tid }, { kind = "build", label = lt:display_name(),
+                project = own._project and own._project.key or pkey, configuration = own:config_key(),
+                target = tid })
         end
         -- The artifact is probed once the target's own unit built, before the
         -- post-build deploy (§19.15 "Debug"; "Run": a foreign artifact runs
         -- on a device, in the client, which then deploys itself).
-        phases[#phases + 1] = { probe = true }
-        phases[#phases + 1] = { deploy = "post_build" }
+        if not target_build then
+            add({ probe = true }, { kind = "probe", label = "probe " .. lt:display_name(), project = pkey })
+            deploy("post_build")
+        end
+        for index, ph in ipairs(phases) do
+            ph.step.id, ph.step.state = "s" .. index, "pending"
+        end
+        return { lt = lt, phases = phases }
+    end
+
+    --- Run the planned phases (plan_target_scope), each step's state
+    --- following it; a preparation then prepares the launch.
+    local function target_scope(scope)
+        local rp = require("loomworks.run_prep")
+        local lt, phases = scope.lt, scope.phases
         local LaunchTarget = require("loomworks.launch_target")
         local overseer = require("loomworks.overseer")
         local pi = 0
-        local function next_phase()
+        local next_phase
+        -- The phase (its step) succeeded: on to the next one.
+        local function phase_done()
+            set_step(pi, "ok")
+            next_phase()
+        end
+        next_phase = function()
             if run.cancelled then return finish(run.cancel_code, stopped()) end
             local okc, why = current()
             if not okc then return finish(1, stopped(why)) end
             pi = pi + 1
             local ph = phases[pi]
             band = nil
-            if not ph then return prepare() end
+            if not ph then
+                -- A launch target's build ends here (no launch to resolve),
+                -- with the plain build's closing line.
+                if target_build then
+                    task:line(out_stream, "BUILD OK: " .. lt:display_name())
+                    return finish(0)
+                end
+                return prepare()
+            end
             progress((pi - 1) / #phases)
+            set_step(pi, "running")
             if ph.probe then
                 -- (Refreshed: the unit's targets may predate its build.)
                 local plt, perr = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
                 if not plt then return finish(1, perr) end
                 local prefusal = debugging and rp.debug_refusal(plt) or nil
                 if prefusal then return finish(1, prefusal) end
-                if not debugging and rp.foreign_of(plt) then return finish(0, nil, { device = true }) end
-                return next_phase()
+                if not debugging and rp.foreign_of(plt) then
+                    -- (The probe succeeded; the post-build deploy is the client's.)
+                    set_step(pi, "ok")
+                    return finish(0, nil, { device = true })
+                end
+                return phase_done()
             end
             if ph.deploy then
-                local dok, derr = true, nil
-                lt:_deploy_phase(ph.deploy, function(o, e) if not o then dok, derr = false, e end end)
-                if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
-                if ctx.refused then return finish(1, ctx.refused) end
-                return next_phase()
+                -- (n counts the declared sources, fresh ones included.)
+                task:line(out_stream, "deploying (" .. ph.deploy .. "): " .. ph.copies
+                    .. (ph.copies == 1 and " copy" or " copies"))
+                -- Each copy on the event loop, a cancel stopping between two
+                -- copies (it then ends the run once the copy in flight is done).
+                run.deploying = true
+                lt:_deploy_phase(ph.deploy, function(dok, derr)
+                    run.deploying = false
+                    -- A cancel during the last copy: every copy completed and
+                    -- its records were saved, so the step is ok; the cancel
+                    -- then stops the run at the next phase.
+                    if run.cancelled and not dok then return finish(run.cancel_code, stopped()) end
+                    local okn, whyn = current()
+                    if not okn then return finish(1, stopped(whyn)) end
+                    if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
+                    if ctx.refused then return finish(1, ctx.refused) end
+                    phase_done()
+                end, {
+                    async = true,
+                    cancelled = function() return run.cancelled end,
+                    resume = function(fn) svc:with_model(ctx, fn) end,
+                })
+                return
             end
             local unit = ph.unit
             if ph.dep then
@@ -731,7 +840,6 @@ function M.run(svc, ctx)
                 if not unit then return finish(1, LaunchTarget.unresolved_dependency_message(ph.dep.project)) end
                 task:line(out_stream, "building dependency: " .. ph.dep.project.key)
             end
-            if not unit then return next_phase() end
             local bd = unit.build_dir and unit:build_dir() or nil
             local lok, lmsg = take_locks(run, ws, task, bd and { bd } or {}, "build",
                 ctx.command or ("lw " .. op))
@@ -740,8 +848,8 @@ function M.run(svc, ctx)
             local planned, perr = overseer.plan_unit_build(ws, unit,
                 { target_id = ph.target_id, profile = profile })
             if not planned then return finish(1, "cannot build: " .. tostring(perr)) end
-            if #planned == 0 then release_all(); return next_phase() end
-            steps, i, after_steps = planned, 0, next_phase
+            if #planned == 0 then release_all(); return phase_done() end
+            steps, i, after_steps = planned, 0, phase_done
             band = { (pi - 1) / #phases, 1 / #phases }
             next_step()
         end
@@ -761,8 +869,30 @@ function M.run(svc, ctx)
             units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
         end
     end
+    -- A target-scoped task's phases are planned before it starts: its steps
+    -- are its start meta's (§19.15 "Steps of a task").
+    local scope_plan, scope_err
+    if target_scoped then
+        -- (A throw while planning ends the task, once started, as a
+        -- failure with no steps.)
+        local okp, a, b = pcall(plan_target_scope)
+        if okp then
+            scope_plan, scope_err = a, b
+        else
+            scope_plan, scope_err = nil, "cannot plan the launch target's build: " .. tostring(a)
+        end
+        if scope_plan then
+            step_states = {}
+            for index in ipairs(scope_plan.phases) do step_states[index] = "pending" end
+        end
+    end
+    local plan_steps
+    for _, ph in ipairs(scope_plan and scope_plan.phases or {}) do
+        plan_steps = plan_steps or {}
+        plan_steps[#plan_steps + 1] = ph.step
+    end
     task:start({ name = label, kind = cases and cases.kind or op, profile = profile and profile.key or nil,
-        units = units })
+        units = units, steps = plan_steps })
     -- A test run's pre-build plan: the service's (its notes and refusal were
     -- the reply's, before acceptance), else checked here.
     if testing and not ctx.test_pre then
@@ -772,7 +902,11 @@ function M.run(svc, ctx)
     end
     -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
     if running and args.no_build then prepare(); return run end
-    if target_scoped then target_scope(); return run end
+    if target_scoped then
+        if not scope_plan then finish(1, scope_err); return run end
+        target_scope(scope_plan)
+        return run
+    end
     -- A debug of a target its kit already tells is foreign (or a device
     -- target) is refused before the build (§19.15 "Debug"); one found by
     -- probing its artifact, once the build probed it (prepare).

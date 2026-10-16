@@ -123,8 +123,17 @@ function M.fixture(name, key_path)
             configurations = { Debug = vim.empty_dict() },
         } }
     end
+    -- A project `lib` outside the configuration set: the dependency of the
+    -- launch configuration `staged` (a deploy source pinning its
+    -- configuration, spec 8.8.4), built by Launch/1.build (step 5t).
+    local lib = { path = "lib", shell = {
+        build_dir = "${workspace_root}/out/lib/${variant}",
+        configure_cmd = cmd("lib-configure"), build_cmd = cmd("lib-build"),
+        configurations = { Debug = vim.empty_dict() },
+    } }
+    vim.fn.mkdir(root .. "/lib", "p")
     write(root .. "/loomworks.json", vim.json.encode({
-        projects = { app = app() },
+        projects = { app = app(), lib = lib },
         configuration_sets = { dev = { app = "Debug" } },
     }))
     local trust = require("loomworks.trust")
@@ -137,7 +146,13 @@ function M.fixture(name, key_path)
     -- (17.6), honored only from the working copy.
     user_app.shell.compile_commands = "${build_dir}/compile_commands.json"
     user_app.launch = { hello = { command = nv, args = { "--version" } },
-        multi = { command = nv, args = { "--version" }, debug = { "typescript", "c++" } } }
+        multi = { command = nv, args = { "--version" }, debug = { "typescript", "c++" } },
+        -- `staged` (step 5t): the dependency `lib` (its post-build deploy
+        -- source) and one pre-build copy whose source never exists.
+        staged = { command = nv, args = { "--version" }, deploy = { ["staged/"] = {
+            { project = "app", path = "missing.txt", pre_build = true },
+            { project = "lib", path = "lib.txt", configuration = "Debug" },
+        } } } }
     local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
         projects = { app = user_app } }
     local signed, serr = trust.sign("user", trust.encode(user))

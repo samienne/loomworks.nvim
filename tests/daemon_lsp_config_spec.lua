@@ -118,13 +118,15 @@ describe("LspConfig/1 in the daemon (§19.20)", function()
                 changed(),
                 lsp(4, "get"),
                 ok(4, { state = "loaded", ready = true,
-                    projects = { { project = "app", path = "app", entries = { entry(1) } } } }),
+                    projects = { { project = "app", path = "app", entries = { entry(1) } },
+                        { project = "lib", path = "lib", entries = {} } } }),
             }, op(5, "build"), {
                 -- The build changed nothing the state shows but the written
                 -- database: changed for the raised db_rev alone.
                 changed(),
                 lsp(6, "get"),
-                ok(6, { state = "loaded", projects = { { project = "app", entries = { entry(2) } } } }),
+                ok(6, { state = "loaded", projects = { { project = "app", entries = { entry(2) } },
+                    { project = "lib", entries = {} } } }),
             }),
         }, root, key)
         assert.is_true(a, b)

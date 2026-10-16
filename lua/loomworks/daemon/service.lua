@@ -50,6 +50,13 @@
 --- the debug spec. Both preparations take `build_scope` ("profile", the
 --- default, or "target": the launch flow's units instead of the profile,
 --- §19.15 "Build scope of a launch").
+--- Both take `force` (the artifact-conflict answer, §5.9; interface only).
+---
+--- **`Launch/1.build`** (§19.15 "Build of a launch target"; an interface
+--- method only, op `target_build`) — addressed as `prepare_run` is, plus
+--- `force`; the outcomes of `build`. Its task (`meta.kind = build`) runs the
+--- target scope's phases up to the launch target's own unit and resolves no
+--- launch; a device target ends it nonzero before the build.
 ---
 --- **Request** `{ kind = "clean", args = { profile? }, … }` (§19.15 "Clean")
 --- — the same outcomes; also "refused" with the in-process `nothing to clean
@@ -140,6 +147,16 @@ function M.attach(server, host)
         if server.interfaces then
             core_ifaces.task_signal(server.interfaces, t, "ended",
                 { task_id = t.id, exit_code = exit_code, error = type(err) == "string" and err or nil })
+        end
+    end
+    -- A target-scoped task's step changed state (§19.15 "Steps of a task"):
+    -- its `seq` is each frame's own envelope `seq`.
+    self.tasks.on_step = function(t, index, state, err)
+        if server.interfaces then
+            core_ifaces.task_signal(server.interfaces, t, "step", function(_, seq)
+                return { task_id = t.id, seq = seq, index = index, state = state,
+                    error = type(err) == "string" and err or nil }
+            end)
         end
     end
     envscope.install()
@@ -572,21 +589,29 @@ local function v0_args_ok(a)
     return true
 end
 
---- Is `a` (a `prepare_run` or, `debug`, a `prepare_debug` request's args)
---- well-formed?
+--- Is `a` (a `prepare_run` or, `op == "debug"`, a `prepare_debug` request's
+--- args — or, `op == "target_build"`, a `Launch/1.build` request's)
+--- well-formed? `force` only through the interface methods (`interface`).
 --- @param a table
---- @param debug? boolean
+--- @param op "run"|"debug"|"target_build"
+--- @param interface boolean
 --- @return boolean
-local function run_args_ok(a, debug)
+local function run_args_ok(a, op, interface)
     for _, k in ipairs({ "target", "project", "cwd" }) do
         if a[k] ~= nil and type(a[k]) ~= "string" then return false end
     end
     if a.kind ~= nil and a.kind ~= "target" and a.kind ~= "launch" then return false end
-    for _, k in ipairs({ "no_build", "quiet", "prefix" }) do
+    for _, k in ipairs({ "no_build", "quiet", "prefix", "force" }) do
         if a[k] ~= nil and type(a[k]) ~= "boolean" then return false end
     end
+    -- (The conflict question's answer, §5.9: not in the protocol-10 request.)
+    if a.force ~= nil and not interface then return false end
     -- (No report and no wrapper for a debug launch.)
-    if debug and (a.quiet ~= nil or a.prefix ~= nil) then return false end
+    if op ~= "run" and (a.quiet ~= nil or a.prefix ~= nil) then return false end
+    -- (A launch target's build: no launch to resolve, always built, §19.15.)
+    if op == "target_build" and (a.cwd ~= nil or a.extra ~= nil or a.no_build ~= nil or a.build_scope ~= nil) then
+        return false
+    end
     if a.build_scope ~= nil and a.build_scope ~= "profile" and a.build_scope ~= "target" then return false end
     return true
 end
@@ -597,7 +622,7 @@ end
 --- are this one implementation: the method passes `deliver` (its reply) and
 --- `call` (the task's interface identity and result, `Task.call`). `debug`
 --- (Launch/1.prepare_debug) has no protocol-10 request.
---- @param op "build"|"test"|"run"|"debug"|"clean"|"reset"|"configure"
+--- @param op "build"|"test"|"run"|"debug"|"target_build"|"clean"|"reset"|"configure"
 --- @param conn table
 --- @param msg table
 --- @param deliver? fun(fields: table) answer an interface call instead of a v0 reply
@@ -638,7 +663,7 @@ function Service:_on_operation(op, conn, msg, deliver, call)
     if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string")
         or (a.profile_id ~= nil and (type(a.profile_id) ~= "string" or a.profile ~= nil))
         or (a.project_id ~= nil and (type(a.project_id) ~= "string" or a.project ~= nil))
-        or ((op == "run" or op == "debug") and not run_args_ok(a, op == "debug"))
+        or ((op == "run" or op == "debug" or op == "target_build") and not run_args_ok(a, op, deliver ~= nil))
         or (op == "test" and a.no_build ~= nil and type(a.no_build) ~= "boolean")
         or (op == "reset" and not reset_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
@@ -715,7 +740,7 @@ function Service:_accept(ctx)
     if stale then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1, notes = ctx.notes }) end
     if ctx.op == "reset" then return self:_accept_reset(ctx, ws) end
     local a = ctx.args
-    local launching = ctx.op == "run" or ctx.op == "debug"
+    local launching = ctx.op == "run" or ctx.op == "debug" or ctx.op == "target_build"
     local profile, units
     if a.units then
         local uerr
@@ -790,9 +815,13 @@ function Service:_accept(ctx)
         args = { reconfigure = a.reconfigure == true }
     elseif launching then
         -- (The program's arguments: an empty list is still a list.)
+        -- (`force`: the artifact-conflict question's answer, §5.9.)
         args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
-            no_build = a.no_build == true, build_scope = a.build_scope }
+            no_build = a.no_build == true, build_scope = a.build_scope, force = a.force == true }
         if ctx.op == "run" then args.quiet, args.prefix = a.quiet == true, a.prefix == true end
+        -- A launch target's build is the target scope's build phases (§19.15
+        -- "Build of a launch target").
+        if ctx.op == "target_build" then args.build_scope = "target" end
     else
         args = { extra = extra, targets = (a.targets and #a.targets > 0) and a.targets or nil,
             force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true,

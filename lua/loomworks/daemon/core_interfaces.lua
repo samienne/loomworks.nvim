@@ -2,13 +2,13 @@
 --- service serves (spec §19.20 "Interface catalogue", step 5g.2):
 ---
 ---   /workspace   loomworks.Workspace/1    header (changed, header_changed)
----   /tasks       loomworks.Tasks/1        list, cancel (started, ended)
+---   /tasks       loomworks.Tasks/1        list, cancel (started, ended, step)
 ---   /internal    lw.internal.Snapshot/1   get (same_build)
 ---   /build       loomworks.Build/1        build T, configure T, clean T, reset T
 ---   /tests       loomworks.Tests/1        run T, discover T, run_cases T, prepare_debug T, collect,
 ---                                         result (results; loomworks.daemon.test_discover,
 ---                                         loomworks.daemon.test_runs)
----   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T
+---   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T, build T
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list
@@ -171,7 +171,8 @@ end
 function M.tasks_impl(service)
     local methods = {}
     function methods.list(ctx)
-        local rows = service.tasks:snapshot(ctx.conn)
+        -- (With a target-scoped task's steps and their current states.)
+        local rows = service.tasks:snapshot(ctx.conn, true)
         for _, r in ipairs(rows) do
             local t = service.tasks.tasks[r.task_id]
             r.owned = t ~= nil and t.owner == ctx.conn
@@ -282,7 +283,7 @@ end
 --- `units` (Build/1 build, configure, clean; spec §19.15 "Editor scopes and
 --- configure") is a non-empty list, exclusive with `profile`: otherwise
 --- `invalid_args`, before anything is resolved.
---- @param op "build"|"test"|"run"|"debug"|"clean"|"reset"|"configure"
+--- @param op "build"|"test"|"run"|"debug"|"target_build"|"clean"|"reset"|"configure"
 --- @param where table
 --- @param method string
 --- @return function
@@ -336,6 +337,8 @@ function M.launch_impl(service)
     return { methods = {
         prepare_run = operation(service, "run", M.LAUNCH, "prepare_run"),
         prepare_debug = operation(service, "debug", M.LAUNCH, "prepare_debug"),
+        -- The build of a launch target (§19.15 "Build of a launch target").
+        build = operation(service, "target_build", M.LAUNCH, "build"),
     } }
 end
 
@@ -527,11 +530,12 @@ function M.mount(registry, service)
     end
 end
 
---- The `Tasks.started` / `Tasks.ended` signals of a task (the stream's hooks).
+--- The `Tasks.started` / `Tasks.ended` / `Tasks.step` signals of a task (the
+--- stream's hooks); `args` may be a function of the frame's `seq` (Registry:emit).
 --- @param registry loomworks.daemon.Registry
 --- @param task loomworks.daemon.Task
---- @param name "started"|"ended"
---- @param args table
+--- @param name "started"|"ended"|"step"
+--- @param args table|fun(sub: table, seq: integer): table
 function M.task_signal(registry, task, name, args)
     registry:emit(M.TASKS.path, M.TASKS.iface, M.TASKS.v, name, args, function(sub_args)
         return sub_args.task_id == nil or sub_args.task_id == task.id

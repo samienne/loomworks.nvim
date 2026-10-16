@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Tasks",
   "version": 1,
-  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): list, cancel, the started and ended signals and the task_id subscription filter. Tasks are started with the protocol-10 build request (task-streamed interface methods land in step 5g.2 part B).",
+  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): list, cancel, the started, ended and step signals (a target-scoped task's steps, step 5t) and the task_id subscription filter. Tasks are started with the protocol-10 build request (task-streamed interface methods land in step 5g.2 part B).",
   "cases": [
     {
       "name": "list is empty and cancel of a task that is not running is refused",
@@ -62,6 +62,63 @@
         { "send": { "kind": "call", "req_id": 4, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": { "$var": "task" } } } },
         { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
         { "expect": { "kind": "signal", "object": "/tasks", "name": "ended", "args": { "task_id": { "$var": "task" }, "exit_code": 130 } }, "timeout_ms": 60000 }
+      ]
+    },
+    {
+      "name": "a subscriber sees each step of a launch target's build between its started and its ended, each step's seq its frame's",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1 } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "target": "staged", "kind": "launch" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
+        { "expect": {
+            "kind": "signal", "object": "/tasks", "name": "started", "sub_id": { "$var": "sub" }, "seq": 1,
+            "args": { "task": { "task_id": { "$var": "task" }, "kind": "build", "steps": [
+              { "id": { "$bind": "s1" }, "kind": "build", "project": "lib", "state": "pending" },
+              { "kind": "deploy", "phase": "pre_build", "state": "pending" },
+              { "kind": "build", "project": "app", "state": "pending" }
+            ] } }
+        } },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 2, "args": { "task_id": { "$var": "task" }, "seq": 2, "index": 1, "state": "running", "error": { "$absent": true } } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 3, "args": { "task_id": { "$var": "task" }, "seq": 3, "index": 1, "state": "ok" } }, "timeout_ms": 120000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 4, "args": { "task_id": { "$var": "task" }, "seq": 4, "index": 2, "state": "running" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 5, "args": { "task_id": { "$var": "task" }, "seq": 5, "index": 2, "state": "failed", "error": { "$pattern": "^deploy failed: " } } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 6, "args": { "task_id": { "$var": "task" }, "seq": 6, "index": 3, "state": "skipped" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "ended", "seq": 7, "args": { "task_id": { "$var": "task" }, "exit_code": 1, "error": { "$pattern": "^deploy failed: " } } }, "timeout_ms": 60000 }
+      ]
+    },
+    {
+      "name": "a late listener catches up on a running task's steps through list; a cancel ends the running step cancelled, the others skipped",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "target": "staged", "kind": "launch" }, "env": { "$var": "env", "$with": { "LW_TEST_SLEEP": "60000" } } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": "building launch target: app: staged" }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": "building dependency: lib" }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "args": { "task_id": { "$var": "task" } } } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "sub_id": { "$bind": "sub" }, "seq": 0 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "tasks": [ { "task_id": { "$var": "task" }, "kind": "build", "owned": true, "steps": [
+          { "kind": "build", "project": "lib", "state": "running" },
+          { "kind": "deploy", "state": "pending" },
+          { "kind": "build", "project": "app", "state": "pending" }
+        ] } ] } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": { "$var": "task" } } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "sub_id": { "$var": "sub" }, "seq": 1, "args": { "task_id": { "$var": "task" }, "seq": 1, "index": 1, "state": "cancelled" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 2, "args": { "index": 2, "state": "skipped" } } },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 3, "args": { "index": 3, "state": "skipped" } } },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "ended", "seq": 4, "args": { "task_id": { "$var": "task" }, "exit_code": 130 } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 130, "result": { "exit_code": 130, "error": { "$pattern": "stopped: cancelled" } } }, "timeout_ms": 60000 }
       ]
     }
   ]
