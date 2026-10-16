@@ -154,8 +154,32 @@
         "object": { "type": "string" },
         "iface": { "type": "string" },
         "v": { "type": "integer" },
-        "method": { "type": "string" }
+        "method": { "type": "string" },
+        "steps": {
+          "description": "The step plan of a target-scoped task (spec 19.15 Steps of a task; step 5t), each pending; absent for other tasks.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/TaskStep" }
+        }
       }
+    },
+    "TaskStep": {
+      "description": "One step of a target-scoped task (spec 19.15 Steps of a task; step 5t): a dependency's or the launch target's own unit build, a deploy phase or the artifact probe, in run order.",
+      "type": "object",
+      "required": ["id", "kind", "label", "state"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "description": "Clients show an unknown kind as neutral.", "enum": ["build", "deploy", "probe"] },
+        "label": { "type": "string" },
+        "project": { "type": "string" },
+        "configuration": { "type": "string" },
+        "target": { "type": "string" },
+        "phase": { "description": "A deploy step's phase.", "enum": ["pre_build", "post_build"] },
+        "state": { "$ref": "#/$defs/TaskStepState" }
+      }
+    },
+    "TaskStepState": {
+      "description": "A step's state (spec 19.15 Steps of a task): pending until it runs; skipped when a failure or a cancel left it unreached. Clients show an unknown state as neutral.",
+      "enum": ["pending", "running", "ok", "failed", "cancelled", "skipped"]
     },
     "TestNodeRef": {
       "description": "A test node of loomworks.view.Tests/1, by its view id (spec 19.13 The tests view): opaque, scoped to its unit; stale once a re-discovery dropped the node, the active profile changed or the session generation is another.",

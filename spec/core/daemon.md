@@ -2157,9 +2157,54 @@ locked. Once the launch target's own unit built, the artifact is probed
 before the post-build deploy steps: a foreign one ends a debug as refused
 ("Debug" above) and a run with `device = true` ("Run" above), the post-build
 deploy left to the client. A failing step ends the task with the in-process
-failure line, the later steps not run. With `no_build` neither scope builds
+failure line, the later steps not run. *(Step 5t, plan.)* Its deploy steps
+run asynchronously, a cancel stopping between two copies, and its steps are
+reported as "Steps of a task" below describes; `force` is the answer to the
+artifact-conflict question (§5.9), which the editor asks before the call as
+before a build. With `no_build` neither scope builds
 or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
 editor launch builds what it built in-process, not the whole profile.
+
+**Build of a launch target.** *(Step 5t, plan.)* `Launch/1.build { profile?,
+project?, target?, kind?, force?, jobs?, interactive, env, command }` builds a
+launch target as the editor's in-process launch build does (§8.8.4 steps 3–5,
+`LaunchTarget:build`), as one task (`meta.kind = build`) with the outcomes of
+`build`: the launch target is resolved as `prepare_run` resolves it, the
+validity and abstract-configuration gates refuse before acceptance-side
+effects, then the launch's dependencies (explicit `depends_on` and
+deploy-source projects, a deploy source in the configuration it names), the
+pre-build deploy steps, and the launch target's own unit (its one target where
+the module builds single targets) run in that order — the phases of the
+`target` build scope above up to and including the target's own unit, without
+its artifact probe, post-build deploy steps or launch resolution. Each build
+takes the build-directory lock of the unit it builds, for that build only; the
+deploy steps run without locks and record their freshness in the workspace
+cache as in-process. `force` is the answer to the artifact-conflict question
+(§5.9), asked by the client before the call. The first failing step ends the
+task with the in-process failure line, the later steps not run; `done`
+carries `exit_code` 0 when every step succeeded. A cancel (`Tasks/1.cancel`)
+kills a running build step and stops a deploy between two copies; the steps
+not reached are not run. A device target (§11) is not addressable here
+(`kind` is `target` or `launch`); it is refused as a stale reference until
+`Devices/1` (step 5n).
+
+**Steps of a task.** *(Step 5t, plan.)* A target-scoped task —
+`Launch/1.build`, and `prepare_run` / `prepare_debug` with `build_scope =
+"target"` — announces its steps: its `TaskInfo` (the `started` signal,
+`Tasks/1.list`) carries `steps`, one `{ id, kind, label, project?,
+configuration?, target?, phase?, state }` per phase in run order (`kind`
+`build` for a dependency's or the target's own unit, `deploy` for a deploy
+phase with `phase` `pre_build` or `post_build`, `probe` for the artifact
+probe), each `pending` at start. Each transition is a `Tasks/1` `step {
+task_id, seq, index, state, error? }` signal (`running`, `ok`, `failed` with
+its failure line, `cancelled`; the steps a failure or a cancel leaves
+unreached become `skipped`), sent before the task's `done`. `step` is a delta
+on top of `TaskInfo.steps`: on a seq gap a client re-reads `Tasks/1.list`. A
+unit's own tool steps (configure, build) are not steps here; they stay its
+lines, output and progress. Clients show an unknown step kind or state as
+neutral. Every step also has its line on the task stream, as today
+(`building dependency: <project>`; a deploy phase `deploying (<phase>): <n>
+copies`).
 
 **Tests.** *(Step 5m, plan: part 0 this spec; B1 discovery, B2 runs, debug
 preparation and results; the editor's use §19.16 "Tests"; the methods
@@ -2579,7 +2624,8 @@ step 5g.3 (`tasks.lua` `Task:_observes`).)* The task stream is a
 **transport** mechanism (§19.8), not part of any one interface: a method its
 schema declares task-streamed (§19.20) — `Build/1.build`, `Tests/1.run`,
 `Launch/1.prepare_run`, from step 5k `Build/1.configure` and
-`Launch/1.prepare_debug`, a module's log stream — replies `accepted` with a
+`Launch/1.prepare_debug`, from step 5t `Launch/1.build`, a module's log
+stream — replies `accepted` with a
 `task_id` and then streams `task` frames with the phases, ownership, flow
 control, observer bounds and disconnect-cancellation above. What the
 interface types is the payload: `start.meta` also names `object`, `iface`, `v`
@@ -2603,8 +2649,10 @@ not errors (§19.20).
 - **Cancellation**, besides the disconnect above, is
   `loomworks.Tasks/1.cancel { task_id }`, allowed for the task's owner only;
   any other connection gets the error `forbidden`.
-- `loomworks.Tasks/1.list` gives the running tasks to an interface client;
-  `status.tasks` (§19.11) stays as it is, frozen.
+- `loomworks.Tasks/1.list` gives the running tasks to an interface client
+  (from step 5t with the steps of a target-scoped task and their current
+  states, "Steps of a task" above); `status.tasks` (§19.11) stays as it is,
+  frozen.
 
 **Routing.** A client routes an operation to the daemon only when the daemon
 carries every argument form the client was given; any other form runs on the
@@ -3019,15 +3067,21 @@ operations as **interface calls**, owning their tasks (§19.15 "The editor as
 owner"):
 
 - builds — of a profile (`Build/1.build { profile }`), of configuration units
-  (`units`), serial (`jobs = 1`), of a launch target before a launch
-  (`targets` with `{ project, target }`);
+  (`units`), serial (`jobs = 1`);
+- *(step 5t)* the build of a non-device launch target (`Launch/1.build`; the
+  editor's *Build target*), as one owned task — its dependencies, its
+  pre-build deploy and its own build never run in the editor; its progress
+  entry follows the task's current step (§19.15 "Steps of a task"). The
+  artifact-conflict question is asked before the call, over the units it
+  builds, and its answer sent as `force`;
 - configures — of a profile or of units (`Build/1.configure`);
 - module cleans — of a profile or of units (`Build/1.clean`), and the clean
   of a clean-and-build, followed by its build as a second call once the
   clean's task ended successfully;
 - the preparation of run and debug launches of non-device targets
   (`Launch/1.prepare_run`, `Launch/1.prepare_debug`, both with `build_scope =
-  "target"`): the editor then runs the returned `launch` in its task runner,
+  "target"`; from step 5t with `force` as for a build, the progress entry
+  following the current step): the editor then runs the returned `launch` in its task runner,
   or hands the returned `debug` to its debugger (its adapter-specific shape
   and the installed-adapter check, made before the call, stay in the editor,
   §8.9.6; the adapter checked is the one the daemon's mapping names,
@@ -3052,8 +3106,11 @@ owner"):
   writes fail, as any operation is refused ("Availability" below).
 
 Test runs and discovery go through `Tests/1` (step 5m, "Tests" below).
-Device-target launches (build → deploy → install → launch, §11) stay in the
-editor until `Devices/1` (step 5n); they are the only operation the editor
+Device-target launches **and builds** (build → deploy → install → launch,
+§11) stay in the editor until `Devices/1` (step 5n) — their builds as
+`Build/1` calls, their deploy steps in the editor; so does the post-build
+deploy of a run whose preparation ended with `device = true`. They are the
+only operations the editor
 still runs itself, apart from the transitional configuration mutations below
 (its deletions among them, until step 5o; §19.15), and only while connected (a disconnected editor refuses
 them with the Runtime status like any other operation).
@@ -4127,6 +4184,22 @@ runtime is deferred until that module is actively developed.
        `LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON` or `CI` for its mode, so a
        headless editor under `CI=true` (this repo's test suite included)
        defaults to `daemon`.
+     - **5t — Launch-target builds as one call** (§19.15 "Build of a launch
+       target", "Steps of a task"; §19.16 "Editor operations"; §19.20
+       `Launch/1`, `Tasks/1`; after 5s, before 5n), in parts: 0 — spec; B —
+       daemon side: `Launch/1.build`, the target-scope phase planner shared
+       with the preparations, the asynchronous cancellable deploy phases,
+       `force` on the preparations, `TaskInfo.steps` and the `Tasks/1.step`
+       signal on every target-scoped task, schemas and transcripts on the
+       `shell` fixture (a dependency, a pre-build deploy, a failing step, a
+       cancel); C — editor side: `LaunchTarget:build` through
+       `Launch/1.build` for non-device targets (one owned task, the conflict
+       question before the call, no editor deploy), the progress entry and
+       the task runner row following the current step, prepare_run /
+       prepare_debug's progress likewise. Device targets' builds stay the
+       editor's until 5n, which extends `Launch/1.build` to device targets
+       with the post-build deploy, leaving install and launch to
+       `Devices/1`.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
@@ -4358,10 +4431,10 @@ the steps of §19.19. Their schemas, not this table, are the full contract.
 | `/projects` | `loomworks.ConfigSets/1` | add, update_mapping, generate_defaults |
 | `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
 | `/tests` | `loomworks.Tests/1` | discover T, run T, run_cases T, prepare_debug T, collect, result (results) |
-| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, device_log |
+| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T, device_log |
 | `/debug` | `loomworks.DebugConfig/1` | adapters, set_adapter, known_languages |
 | `/lsp` | `loomworks.LspConfig/1` | get, set_option (changed) |
-| `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended; task frames) |
+| `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended, step; task frames; `TaskInfo.steps`) |
 | `/toolchains` | `loomworks.Toolchains/1` | list, rescan |
 | `/toolchains` | `loomworks.Sdks/1` | list, add, remove, detect |
 | `/devices` | `loomworks.Devices/1` | list, scan (changed) |
