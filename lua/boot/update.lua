@@ -235,6 +235,8 @@ end
 --- against the pinned `sha256` (mandatory, unconditional). Idempotent: a present
 --- file whose hash matches is reused; a mismatch deletes the bad file. Reuses
 --- boot.download + boot.verify + rename_with_retry. Returns true, dest or nil, err.
+--- `opts.on_fetch()`, when given, is called once just before a download (never
+--- when the cached file verifies), so a caller can say it is fetching.
 function M.ensure_host_binary(version, asset, sha256, dest, opts)
   if not pin.valid_version(version) then
     return nil, "unsafe release version '" .. tostring(version) .. "'"
@@ -253,6 +255,7 @@ function M.ensure_host_binary(version, asset, sha256, dest, opts)
   end
   local tmp = dest .. ".dl"
   paths.rm_rf(tmp)
+  if opts and opts.on_fetch then opts.on_fetch() end
   local url = M.versioned_base(version, opts) .. "/" .. asset
   local okd, ed = download.fetch_to_file(url, tmp)
   if not okd then paths.rm_rf(tmp); return nil, "fetch " .. asset .. ": " .. ed end
@@ -294,6 +297,8 @@ end
 --- sound. A repository's own `.nvim/cache` is never consulted: a clone can
 --- ship a pre-"extracted" bundle there. Returns the lua-root or nil, err.
 --- (`opts.root`, the pin root, is accepted for callers but no longer used.)
+--- `opts.on_fetch()`, when given, is called once just before the bundle is
+--- downloaded (never when it is already provisioned).
 function M.ensure_version(version, opts)
   opts = opts or {}
   -- Trust boundary: `version` becomes an rm_rf'd path below, so refuse a
@@ -317,6 +322,7 @@ function M.ensure_version(version, opts)
 
   local tmpzip = cache .. "/.dl-" .. sha .. "-" .. version .. ".zip"
   paths.rm_rf(tmpzip)
+  if opts.on_fetch then opts.on_fetch() end
   local url = M.versioned_base(version, opts) .. "/" .. bundle
   local okd, ed = download.fetch_to_file(url, tmpzip)
   if not okd then paths.rm_rf(tmpzip); return nil, "fetch bundle: " .. ed end

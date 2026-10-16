@@ -715,6 +715,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   has some; the project row still always shows. (#242)
 - `lw project show` without a name shows the only project, or lists the
   projects when there are several. (#247)
+- In a repository with `lw.pin`, workspace commands print `loomworks <version>
+  (pinned)` to stderr instead of always claiming to fetch; `fetching loomworks
+  <version> (pinned)...` appears only when the pinned release is really
+  downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
 - `lw test`: the end-of-run summary names a failed step's failing tests, like
