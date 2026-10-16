@@ -43,13 +43,18 @@ Implementation-specific specs live in sibling files under `spec/`:
 - [`spec/sdks/`](spec/sdks/) — per-SDK-provider details (cpp_compiler, …)
 - [`spec/ui.md`](spec/ui.md) — the status page, highlight groups, and
   winbar/statusline component
+- [`spec/protocol/PROTOCOL.md`](spec/protocol/PROTOCOL.md) — the wire
+  protocol between the workspace daemon and its clients, standalone:
+  transport bindings, framing, handshake, envelope, objects and interfaces,
+  errors, ids, signals, tasks, schemas and evolution. Its JSON schemas
+  (`transport.json`, `meta/`, `interfaces/`, `transcripts/`) sit beside it
 
 Section numbering differs by subtree. The `spec/core/*.md` files are a
 physical partition of the single global core §-namespace: they keep their
 **original** section numbers (§1, §2, …, §19) and do **not** restart at §1.
 By contrast, section numbers inside the other `spec/` subtrees
-(`spec/modules/`, `spec/integrations/`, `spec/sdks/`, `spec/ui.md`) are
-local to each file and restart at §1.
+(`spec/modules/`, `spec/integrations/`, `spec/sdks/`, `spec/ui.md`,
+`spec/protocol/PROTOCOL.md`) are local to each file and restart at §1.
 
 ## Where does this change go?
 
@@ -77,6 +82,7 @@ local to each file and restart at §1.
 | What an lw binary implements (`lw version --json`, the release's descriptor asset); what a channel offers (`lw release query`, §16.42); where lw installs what it downloads (`LOOMWORKS_INSTALL_DIR`); which `lw daemon` sub-commands follow a pin | `specification.md` §16.41, §16.42, §16.22 "Install folder", §16.23 (+ §19.20 for `Root.describe`) |
 | Saved test targets: the `tests` field, `lw test` plan (batch + saved steps, selectors, `--list`), `lw test-target`, the saved-targets TestUnit | `specification.md` §1.3.4 (model), §16.16 (test plan), §16.9 (editing), §8.9.2–§8.9.4 (TestUnit, adapters), §8.7 (launch rename follows entries), §17.6 (args trust and restore); [`spec/ui.md`](spec/ui.md) §1.8 |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
+| The wire protocol between the daemon and its clients: framing, handshake and authentication, transport version, message envelope, objects/interfaces/naming, the root object, transport errors, ids and seq, subscriptions, task stream, schema language, evolution, transcripts | [`spec/protocol/PROTOCOL.md`](spec/protocol/PROTOCOL.md) (+ its JSON schemas beside it; §19 for the daemon that serves it) |
 | The workspace runtime: the daemon, `--no-daemon`, runtime lock, workspace operation lock and lock order, journalled multi-file commits, handle/endpoint/auth/version handshake, daemon lifetime, routing operations to the daemon, the daemon's discoverable versioned interfaces and their schemas (§19.20) | `specification.md` §19 (rationale and step plan: [`DAEMON.md`](DAEMON.md); + §2.7, §16.6, §18.7 for the existing locks) |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /

@@ -27,6 +27,8 @@
   - [`spec/integrations/debug/`](spec/integrations/debug/) — codelldb,
     cppdbg, pwa-node, …
   - [`spec/sdks/`](spec/sdks/) — cpp_compiler, …
+  - [`spec/protocol/PROTOCOL.md`](spec/protocol/PROTOCOL.md) — the workspace
+    daemon's wire protocol, standalone (its JSON schemas sit beside it)
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — Implementation architecture.
   Defines *how* the system is built: layers, object model, data flow,
   file layout.
