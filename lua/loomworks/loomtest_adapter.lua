@@ -726,9 +726,21 @@ function M._reset()
     _last_stale, _stale_meanwhile, _held, _run = nil, false, false, nil
 end
 
---- Set up event listeners for automatic registration.
+--- The event listeners the last `setup` registered (`{ event, fn }`).
+local _listeners = {}
+
+--- Set up event listeners for automatic registration. Idempotent: a repeated
+--- call replaces the listeners of the previous one rather than adding more.
 function M.setup()
-    local lw = require("loomworks")
+    local loomworks = require("loomworks")
+    for _, l in ipairs(_listeners) do loomworks.off(l[1], l[2]) end
+    _listeners = {}
+    local lw = {
+        on = function(event, fn)
+            loomworks.on(event, fn)
+            _listeners[#_listeners + 1] = { event, fn }
+        end,
+    }
 
     lw.on("workspace_changed", function(ws)
         if ws then
