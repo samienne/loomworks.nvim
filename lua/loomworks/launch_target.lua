@@ -490,6 +490,24 @@ function LaunchTarget:_deploy_phase(phase, on_complete, opts)
     return f
 end
 
+--- How many copies a deploy phase declares (each source of each
+--- destination; fresh ones are skipped when it runs): 0 for a phase with no
+--- deploy steps. The daemon's target-scoped build plans a deploy step only
+--- for a phase that has copies (spec §19.15 "Steps of a task").
+--- @param phase "pre_build"|"post_build"
+--- @return integer
+function LaunchTarget:deploy_count(phase)
+    local deploy = self:_resolved_deploy()
+    if not deploy then return 0 end
+    local deploy_mod = require("loomworks.deploy")
+    local pre_dict, post_dict = deploy_mod.partition_by_phase(deploy)
+    local n = 0
+    for _, source_val in pairs(phase == "pre_build" and pre_dict or post_dict) do
+        n = n + #deploy_mod.normalize_sources(source_val)
+    end
+    return n
+end
+
 --- Run every deploy phase synchronously and return (ok, err). Headless seam:
 --- the editor drives pre-build deploy inside build() and post-build
 --- deploy via deploy(); a headless run has already built the profile, so it

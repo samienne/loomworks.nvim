@@ -63,7 +63,7 @@ describe("daemon run preparation (§19.15 Run)", function()
         with(run_prep, "validity_error", function() return nil end)
         with(run_prep, "foreign_of", function() return nil end)
         with(run_prep, "resolve_spec", function()
-            return { name = "app", cmd = "/bin/app", args = {}, cwd = "/ws" }
+            return { name = "app", config_key = ck, cmd = "/bin/app", args = {}, cwd = "/ws" }
         end)
         with(run_prep, "env_overrides", function() return {} end)
         local ws = { root = "/ws" }
@@ -148,11 +148,15 @@ describe("daemon run preparation (§19.15 Run)", function()
         assert.are.same({ outcome = "declined", reason = "malformed request" }, reply)
     end)
 
+    --- A configuration unit stub's key.
+    local function ck() return "Debug" end
+
     --- A launch target stub of project `app` (module language c++).
     local function launch_target(fields)
         local lt = {
             requires_device = function() return false end,
             display_name = function() return "app: hello" end,
+            deploy_count = function() return 1 end,
             _project = { key = "app", _module = { primary_language = function() return "c++" end } },
         }
         for k, v in pairs(fields or {}) do lt[k] = v end
@@ -176,7 +180,10 @@ describe("daemon run preparation (§19.15 Run)", function()
         local ws = { root = "/ws" }
         local done, lines = nil, {}
         local task = {
-            start = function() end,
+            start = function(_, meta) if opts.meta then opts.meta.start = meta end end,
+            step = function(_, index, state, err)
+                if opts.steps then opts.steps[#opts.steps + 1] = { index, state, err } end
+            end,
             progress = function(_, f) if opts.progress then opts.progress[#opts.progress + 1] = f end end,
             output = function() end, set_flow = function() end,
             line = function(_, _, text) lines[#lines + 1] = text end,
@@ -247,7 +254,7 @@ describe("daemon run preparation (§19.15 Run)", function()
     it("builds the dependencies, deploys around the launch's own unit, then prepares; not the profile", function()
         local overseer = require("loomworks.overseer")
         local calls = {}
-        local lib_unit, app_unit = { name = "lib" }, { name = "app" }
+        local lib_unit, app_unit = { name = "lib", config_key = ck }, { name = "app", config_key = ck }
         local planned_for = {}
         with(overseer, "plan_unit_build", function(_, unit, o)
             calls[#calls + 1] = "build " .. unit.name .. (o.target_id and (":" .. o.target_id) or "")
@@ -272,7 +279,8 @@ describe("daemon run preparation (§19.15 Run)", function()
         assert.are.equal(profile, planned_for[1])
         assert.are.equal(profile, planned_for[2])
         assert.are.equal("/bin/app", done.fields.launch.cmd)
-        assert.are.same({ "building launch target: app: hello", "building dependency: lib" }, lines)
+        assert.are.same({ "building launch target: app: hello", "building dependency: lib",
+            "deploying (pre_build): 1 copies", "deploying (post_build): 1 copies" }, lines)
     end)
 
     it("builds a module target's one target, and with no_build neither builds nor deploys", function()
@@ -283,7 +291,7 @@ describe("daemon run preparation (§19.15 Run)", function()
             return {}
         end)
         local lt = launch_target({
-            _target = { id = "hello", _config_unit = { name = "app" } },
+            _target = { id = "hello", _config_unit = { name = "app", config_key = ck } },
             abstract_error = function() return nil end,
             build_dependencies = function() return {} end,
             _deploy_phase = function(_, _, cb) cb(true) end,
@@ -303,7 +311,7 @@ describe("daemon run preparation (§19.15 Run)", function()
         local planned = false
         with(overseer, "plan_unit_build", function() planned = true; return {} end)
         local lt = launch_target({
-            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app" },
+            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck },
             abstract_error = function() return nil end,
             build_dependencies = function() return { { project = { key = "lib" } } } end,
             _resolve_dep_config_unit = function() return nil end,
@@ -328,7 +336,7 @@ describe("daemon run preparation (§19.15 Run)", function()
             return {}
         end)
         local lt = launch_target({
-            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app" },
+            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck },
             abstract_error = function() return nil end,
             build_dependencies = function() return {} end,
             _deploy_phase = function(_, phase, cb) calls[#calls + 1] = "deploy " .. phase; cb(true) end,
@@ -380,10 +388,10 @@ describe("daemon run preparation (§19.15 Run)", function()
         with(build_run, "after_step", function() end)
         with(runner, "spawn", function(_, sink) sink.done(0) end)
         local lt = launch_target({
-            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app", steps = 2 },
+            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck, steps = 2 },
             abstract_error = function() return nil end,
             build_dependencies = function() return { { project = { key = "lib" } } } end,
-            _resolve_dep_config_unit = function() return { name = "lib", steps = 1 } end,
+            _resolve_dep_config_unit = function() return { name = "lib", config_key = ck, steps = 1 } end,
             _deploy_phase = function(_, _, cb) cb(true) end,
         })
         local prog = {}

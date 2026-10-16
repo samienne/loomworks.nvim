@@ -54,6 +54,7 @@ local function mount_views(srv, o)
         assert(reg:mount("/launch", "core", "loomworks.Launch", 1, { methods = {
             prepare_run = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
             prepare_debug = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
+            build = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
         } }))
         assert(reg:mount("/debug", "core", "loomworks.DebugConfig", 1, { methods = {
             adapters = function() return { languages = {} } end,

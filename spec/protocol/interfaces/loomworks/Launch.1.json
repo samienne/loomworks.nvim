@@ -59,6 +59,10 @@
             "description": "The client wraps the program (--prefix): a device target is refused.",
             "type": "boolean"
           },
+          "force": {
+            "description": "The answer to the artifact-conflict question (spec 5.9), which the client asks before the call as before a build: build over another profile's output artifact.",
+            "type": "boolean"
+          },
           "build_scope": {
             "description": "What the preparation builds before resolving: profile (the default) builds the profile and runs its deploy steps, as lw run does; target runs the launch flow instead -- the launch's dependencies, the pre-build deploy steps, the launch target's own unit, the post-build deploy steps -- each build taking only its unit's build-directory lock. Neither builds or deploys with no_build.",
             "enum": [
@@ -148,6 +152,10 @@
           "no_build": {
             "type": "boolean"
           },
+          "force": {
+            "description": "The answer to the artifact-conflict question (spec 5.9), which the client asks before the call as before a build: build over another profile's output artifact.",
+            "type": "boolean"
+          },
           "build_scope": {
             "description": "What the preparation builds before resolving: profile (the default) builds the profile and runs its deploy steps, as lw run does; target runs the launch flow instead -- the launch's dependencies, the pre-build deploy steps, the launch target's own unit, the post-build deploy steps -- each build taking only its unit's build-directory lock. Neither builds or deploys with no_build.",
             "enum": [
@@ -179,6 +187,71 @@
             },
             "debug": {
               "$ref": "loomworks.Common/1#/$defs/DebugSpec"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "build": {
+      "description": "Build a launch target as the editor's in-process launch build does (spec 19.15 Build of a launch target; step 5t): the target resolved as prepare_run resolves it, then its dependencies, the pre-build deploy steps and its own unit, in that order, as one task whose steps (Common/1 TaskMeta.steps, Tasks/1 step) follow each phase. No artifact probe, post-build deploy or launch resolution. A device target ends the task nonzero before the build.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target or launch configuration name.",
+            "type": "string"
+          },
+          "project": {
+            "description": "The project the target belongs to.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "kind": {
+            "description": "Which kind of name target is (--target / --launch); absent: either.",
+            "enum": [
+              "target",
+              "launch"
+            ]
+          },
+          "force": {
+            "description": "The answer to the artifact-conflict question (spec 5.9), asked by the client before the call: build over another profile's output artifact.",
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The build's end: exit_code 0 when every step succeeded, else the first failing step's failure line.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
             }
           }
         }

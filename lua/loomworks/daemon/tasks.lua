@@ -77,6 +77,7 @@ M._queued = queued
 --- @field started_at integer|nil wall-clock seconds (os.time) it started
 --- @field last_pct integer last progress percent sent (-1 before the first tick)
 --- @field call loomworks.daemon.TaskCall|nil the interface method it runs for (§19.20): `{ object, iface, v, method, result = fun(exit_code, err, fields, extra): table }`
+--- @field steps table[]|nil a target-scoped task's steps with their current states (§19.15 "Steps of a task"): `{ id, kind, label, project?, configuration?, target?, phase?, state }` each, in run order
 local Task = {}
 Task.__index = Task
 
@@ -125,17 +126,19 @@ function Stream:busy() return self.count > 0 end
 --- The running (started, not finished) tasks as the `status` reply's `tasks`
 --- (spec §19.11): `{ task_id, name, kind, profile, scope?, units, origin,
 --- started_at, percent? }` each, in start order; each `task_id` as `conn`
---- takes it (M.wire_id).
+--- takes it (M.wire_id). `with_steps`: also a target-scoped task's `steps`
+--- (loomworks.Tasks/1's TaskInfo; `status.tasks` stays frozen without them).
 --- @param conn? table the connection the rows are for (nil: the opaque id)
+--- @param with_steps? boolean
 --- @return table[]
-function Stream:snapshot(conn)
+function Stream:snapshot(conn, with_steps)
     local list = {}
     for _, t in pairs(self.tasks) do
         if t.meta and not t.finished then list[#list + 1] = t end
     end
     table.sort(list, function(a, b) return a.n < b.n end)
     local out = {}
-    for i, t in ipairs(list) do out[i] = t:info(conn) end
+    for i, t in ipairs(list) do out[i] = t:info(conn, with_steps) end
     return out
 end
 
@@ -256,24 +259,31 @@ end
 
 --- The task as a row of the `status` reply's `tasks` and of
 --- loomworks.Tasks/1: `{ task_id, name, kind, profile, scope?, units,
---- origin, started_at, percent? }`, its `task_id` as `conn` takes it.
+--- origin, started_at, percent? }`, its `task_id` as `conn` takes it;
+--- `with_steps` (loomworks.Tasks/1's TaskInfo): also its `steps` with their
+--- current states, a copy.
 --- @param conn? table nil: the opaque id
+--- @param with_steps? boolean
 --- @return table
-function Task:info(conn)
+function Task:info(conn, with_steps)
     local m = self.meta or {}
     return { task_id = M.wire_id(self, conn), name = m.name, kind = m.kind, profile = m.profile,
         scope = m.scope, units = m.units, origin = m.origin, started_at = self.started_at,
-        percent = (self.last_pct or -1) >= 0 and self.last_pct or nil }
+        percent = (self.last_pct or -1) >= 0 and self.last_pct or nil,
+        steps = (with_steps and self.steps) and vim.deepcopy(self.steps) or nil }
 end
 
 --- Announce the task. Its `origin` is filled from the owner (§19.15), and
 --- for the task of an interface method (`task.call`, §19.20 "Tasks and
 --- cancel") the meta also names its `object`, `iface`, `v` and `method`.
 --- The stream's `on_started(task, info)` hook (loomworks.Tasks/1's
---- `started` signal) runs after the `start` frame.
+--- `started` signal) runs after the `start` frame. A target-scoped task's
+--- `meta.steps` (§19.15 "Steps of a task", each `pending`) is its step plan:
+--- the task keeps a copy whose states `step` advances.
 --- @param meta table
 function Task:start(meta)
     meta = meta or {}
+    if meta.steps then self.steps = vim.deepcopy(meta.steps) end
     meta.origin = M.origin_of(self.owner)
     local call = self.call
     if call then
@@ -283,7 +293,22 @@ function Task:start(meta)
     self.started_at = os.time()
     self:_emit({ phase = "start", meta = meta })
     local s = self.stream
-    if s.on_started then pcall(s.on_started, self, self:info()) end
+    if s.on_started then pcall(s.on_started, self, self:info(nil, true)) end
+end
+
+--- A step of a target-scoped task changed state (§19.15 "Steps of a
+--- task"): its current state recorded (Tasks/1.list), then the stream's
+--- `on_step(task, index, state, err)` hook (loomworks.Tasks/1's `step`
+--- signal). Never after the task ended (its signals precede its `done`).
+--- @param index integer the step's 1-based position in `steps`
+--- @param state "running"|"ok"|"failed"|"cancelled"|"skipped"
+--- @param err? string a failed step's failure line
+function Task:step(index, state, err)
+    local st = self.steps and self.steps[index]
+    if self.finished or not st or st.state == state then return end
+    st.state = state
+    local s = self.stream
+    if s.on_step then pcall(s.on_step, self, index, state, err) end
 end
 
 --- One of loomworks's own lines.

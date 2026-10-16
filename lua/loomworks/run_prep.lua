@@ -329,6 +329,16 @@ function M.debug_refusal(lt, by_kit_only)
     return nil
 end
 
+--- The refusal of a daemon build of a device target (`Launch/1.build`,
+--- spec §19.15 "Build of a launch target"): its build, deploy, install and
+--- launch stay with the client until device targets move to the daemon.
+--- @param lt loomworks.LaunchTarget
+--- @return string
+function M.device_build_refusal(lt)
+    return "'" .. lt:display_name() .. "' is a device target; the daemon does not build device targets yet "
+        .. "(their builds stay in the client)."
+end
+
 --- Resolve the debug spec of a launch target — the seam the editor's debug
 --- paths (LaunchTarget:debug / multi_adapter_specs) consume. One spec for run
 --- and debug (spec §8.9.6 "One spec for run and debug", step 5k C2): the
