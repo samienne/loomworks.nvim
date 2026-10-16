@@ -39,9 +39,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `none` when the project has no project-wide saved test targets, so it no longer
   looks like there are no tests when a configuration has its own (#252).
 - In a repository with `lw.pin`, workspace commands print `loomworks <version>
-  (pinned)` instead of always claiming to fetch; `fetching loomworks <version>
-  (pinned)...` appears only when the pinned release is really downloaded. The
-  pinned hashes are still verified on every run (#262).
+  (pinned)` to stderr instead of always claiming to fetch; `fetching loomworks
+  <version> (pinned)...` appears only when the pinned release is really
+  downloaded, including on a first run through `lw.sh` / `lw.cmd` (#262).
 
 ## 0.1.47 - 2026-10-15
 
