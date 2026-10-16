@@ -52,21 +52,6 @@ project target, like the editor's launch editor does), e.g. `lw launch add
 the target exists in the active profile's configuration, and the same
 publish/intent defaults as the other CLI-created launch configs.
 
-## Daemon reply notes carry no role (`--color` parity)
-
-Found reviewing PR #277. A warning or error the workspace raises while the
-daemon is still answering a routed request, before its task starts (a load
-warning, say), reaches the client as the reply's `notes`
-(`daemon/service.lua` `Service:handlers().notify`, `c.notes`): plain strings
-with no level. The client prints them plain on stderr (`cli.lua` `_delegate`
-and the attached path, the `r.notes` loops), while the in-process host paints
-the same notification `fail` or `warn` by its level (`cli.lua`
-`load_workspace`, `core._deps.notify`). So under `--color=always` those lines
-differ between the two paths, which spec/core/daemon.md section 19.17 does not
-allow. The fix is spec-first: give reply notes a role (or a level) in the
-interface, in `Common/1` beside `LineRole`, then send and paint it. Not done in
-the `-v` port (PR B), which changed no spec text for it.
-
 ## Daemon step 5d: route `lw reset`
 
 Decided 2026-10-05: `lw reset` shares build directories with build and clean,
