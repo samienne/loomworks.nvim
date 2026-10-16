@@ -157,6 +157,25 @@ The editor's `C` action deletes the build directory and resets the unit to
 unconfigured (spec section 4.7), while `lw clean` runs the build system's own
 clean target. Decide whether to align the names or the behaviour.
 
+## Daemon object identity: spec/code drift
+
+Found 2026-10-16 while listing the daemon's objects (staging/daemon bdb07c4).
+
+- **`objects_changed` after startup.** The spec says it fires when the
+  workspace loads or unloads and when a module loads (spec/core/daemon.md
+  §19.20, ~:4334-4340). The code mounts every object at service attach and
+  never fires it afterwards (`daemon/core_interfaces.lua:22-24`); nothing
+  calls `Registry:unmount` (`daemon/interfaces.lua:210-228`). Decide which is
+  right: align the spec to the fixed set, or mount/unmount on load (and for
+  `/modules/<id>`, step 5q).
+- **Stale ids are not refused as stale.** §19.12 (~:1509-1516) says an id
+  carries the session generation and an id from another generation is
+  refused as stale. No generation check was found: `daemon/snapshot.lua:76-82`
+  only matches ids it registered, so an old id most likely comes back as
+  "not found". Unverified for task ids (`daemon/tasks.lua`). Bugfix is
+  test-first: a failing spec sending a previous-generation id (entity and
+  task), then the refusal.
+
 ## Daemon task output replay
 
 Settled for step 5k (spec/core/daemon.md §19.16 "Tasks in the task runner"):
