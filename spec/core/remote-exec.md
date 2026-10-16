@@ -297,6 +297,12 @@ A remote run holds the device lock (§18.7) for its whole duration and performs:
 
 Standard input is not forwarded to the device program.
 
+With `-v` / `--verbose` (§16.4 *Verbose*), core prints each runner spec it
+executes for the run — staging, preparation, collection and log-session
+commands as their `cmd` and `args` — and the device-side `exec` request
+(program and arguments, working directory, library directories and device
+environment), on its own status channel, as it runs them.
+
 ### 18.6 Remote tests
 
 A test executable (a build target run by the test runner) that is foreign runs
