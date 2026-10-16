@@ -1439,7 +1439,7 @@ on the spot (a confirmation prompt blocks the loop) and every attached
 fallback checks it, so a command that lost R exits 1 rather than continuing
 in-process.
 
-**Interfaces (spec §19.20 and the wire protocol, `spec/protocol/PROTOCOL.md` — steps 5g.1, 5g.2 and 5g.3 built; 5q plan).**
+**Interfaces (spec §19.20, the wire protocol `spec/protocol/PROTOCOL.md` and the interface suite `spec/protocol/API.md` — steps 5g.1, 5g.2 and 5g.3 built; 5q plan).**
 Three layers, each with one owner:
 
 - **Transport** — `daemon/protocol.lua` (framing, kinds incl. `call` /
