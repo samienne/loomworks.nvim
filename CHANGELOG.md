@@ -26,6 +26,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+## 0.1.48 - 2026-10-16
+
+`lw` highlights its own output: step headers, configure reasons, outcomes,
+failures and warnings stand out from the tool output, with new `--color` and
+`--no-color` options. `lw status` lists the linked git worktrees, and a pinned
+repository names its version once and announces a fetch only when it downloads.
+
 ### Added
 
 - `lw` highlights its own lines: step headers (`==> [build] ...`), configure
