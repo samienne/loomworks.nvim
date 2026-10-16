@@ -38,7 +38,7 @@
             "type": "boolean"
           },
           "verbose": {
-            "description": "-v, as for loomworks.Build/1 build (API.md §10.1): for the plan's build and each test runner and test program invocation.",
+            "description": "-v, as for loomworks.Build/1 build (API.md §10.1): the task streams the command lines of spec §16.4 Verbose.",
             "type": "boolean"
           }
         }

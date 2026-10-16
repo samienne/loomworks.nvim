@@ -607,8 +607,8 @@ client's (§9.2). All methods carry the caller's environment (`needs_env`).
 saved test targets) — has the outcomes of `Build/1.build`; `junit` is the
 `--junit` path, made absolute by the client against its working directory,
 `extra` the arguments after `--`, for the plan's steps, `no_build`
-`--no-build`, and `verbose`, as for `Build/1.build`, for the plan's build and
-each test runner and test program invocation. The plan's pre-build checks are made before acceptance: their
+`--no-build`, and `verbose`, as for `Build/1.build`: the task streams the
+command lines of spec §16.4 *Verbose*. The plan's pre-build checks are made before acceptance: their
 notes travel with the reply, and a refusal is `refused` with the CLI's
 message and exit code (a foreign kit's registered tests with no saved test
 target, spec §18.6, pointing at `lw test --target` and `lw test-target add`;

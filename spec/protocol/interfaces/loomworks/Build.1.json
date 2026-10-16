@@ -84,7 +84,7 @@
             "type": "boolean"
           },
           "verbose": {
-            "description": "-v: The task also streams the spec §16.4 Verbose command lines as line frames of role command, under each step's header and on its stream (API.md §8.2); it changes what is streamed, never what runs.",
+            "description": "-v, as for lw build (API.md §8.2): the task also streams the command lines of spec §16.4 Verbose as line frames of role command, under each step's header and on its stream; it changes what is streamed, never what runs.",
             "type": "boolean"
           }
         }

@@ -26,10 +26,6 @@
             "description": "The target or launch configuration name.",
             "type": "string"
           },
-          "verbose": {
-            "description": "-v, as for loomworks.Build/1 build (API.md §9.1): for the preparation's dependency build and deploy steps (    copy ... /     up to date ...).",
-            "type": "boolean"
-          },
           "project": {
             "description": "The project the target belongs to.",
             "$ref": "loomworks.Common/1#/$defs/Ref"
@@ -61,6 +57,10 @@
           },
           "prefix": {
             "description": "The client wraps the program (--prefix): a device target is refused.",
+            "type": "boolean"
+          },
+          "verbose": {
+            "description": "-v, as for loomworks.Build/1 build (API.md §9.1): for the preparation's dependency build and deploy steps (    copy ... /     up to date ...).",
             "type": "boolean"
           },
           "force": {

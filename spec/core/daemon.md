@@ -1646,14 +1646,15 @@ resolved with the same messages and exit codes as in-process (§16.9).
 `runtime-mode daemon` (`daemon/service.lua`, `daemon/runner.lua`,
 `daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
 `_delegate`), and for the plan form of `lw test` (`lw test [<profile>]
-[--no-build] [--junit <file>] [-v] [-- <args>]`, §16.16, saved test targets included — the
+[--no-build] [--junit <file>] [-- <args>]`, §16.16, saved test targets included — the
 plan shared with the in-process host in `test_plan.lua`; `lw test --target`,
-`--saved`, `--discovered` and `--list` stay in-process, see Routing), and for the preparation of `lw run` (`lw run … [-v]`, §16.17; see Run;
+`--saved`, `--discovered` and `--list` stay in-process, see Routing), and for the preparation of `lw run` (§16.17; see Run;
 `run_prep.lua`, the client's `_finish_routed_run`; device runs stay
-in-process, see Routing), and for `lw clean [<profile>] [-v]` (§16.1; see Clean;
+in-process, see Routing), and for `lw clean [<profile>]` (§16.1; see Clean;
 the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
 the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir`
-with a stop predicate); observed by the editor (§19.16);
+with a stop predicate); `-v` on `lw test`, `lw run` and `lw clean`, plan
+(see Roles and verbose); observed by the editor (§19.16);
 `lw reset [<profile> | --all] [-y]` (§16.30; see
 Reset, step 5d); other operations future. The task-streamed interface
 methods ("Tasks of interface methods" below: `Build/1`, `Tests/1.run`,
@@ -1710,19 +1711,18 @@ what a build does; a user who wants colour sets them in the environment of
 For a test run it is the test plan of §16.16 ([API.md](../protocol/API.md) §10.1), the in-process
 host's own code (`test_plan.lua`) run with the task as its host.
 
-**Roles and verbose.** *(Plan.)* Every `line` the daemon emits carries the role the
+**Roles and verbose.** *(Planned.)* Every `line` the daemon emits carries the role the
 in-process host prints that line with (§16.7, [API.md](../protocol/API.md) §4.2). The shared line
 producers return the role beside the text (`build_run.step_lines` and the
 clean, deploy and test line helpers), so both hosts take it from one place.
 The client paints by role exactly as its in-process printer does, and decides
 colour per stream after the `quiet` redirection (`--print` sends `out` to
 stderr). The daemon never writes escape sequences and never sees
-`--color`/`--no-color`, which stay in the client and are not sent. The editor
-(§19.16) ignores `role`: it appends each line's text, the command lines of
-`verbose` included, as it appends every `line`.
+`--color`/`--no-color`, which stay in the client and are not sent.
 With `verbose` the daemon emits the command lines itself. Their `env:` line
-is computed against the **requesting client's** environment (**Environment**
-below, [API.md](../protocol/API.md) §5), not the daemon's. This holds also when the line is
+is computed against the environment the client sent ([API.md](../protocol/API.md) §5, **Environment**
+below), before the daemon's own adjustments (such as
+`NoDefaultCurrentDirectoryInExePath`), not the daemon's. This holds also when the line is
 produced in an asynchronous step callback, outside the environment scope
 (`daemon/envscope.lua`), so the inherited environment is passed in
 explicitly.
@@ -2700,6 +2700,9 @@ follows the task's current step.
   restart only say `started by lw (cli) — cancel it there`. Its output
   starts when the editor joined (Joining late below).
 
+The editor ignores `role`: it appends each line's text, the command lines of
+`verbose` included, as it appends every `line`.
+
 No diagnostics are parsed from a task's output by loomworks, for daemon tasks
 as for local ones; the quickfix list is the task runner's own action. When
 the task runner cannot host such tasks (its extension point unavailable), the
@@ -3225,7 +3228,7 @@ that cannot be removed is `tests/cli_reset_spec.lua`'s, the deletion and its
 check being the one path both hosts run); the projection half #88. For
 `lw build`, `lw test`, `lw run` and `lw clean` also with `-v`, and with
 `--color=always`: the same bytes both ways (each line the same text and
-role) — plan, with the daemon side of §19.15 *Roles and verbose*.*
+role) — plan, with the daemon side of §19.15 "Roles and verbose".*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
