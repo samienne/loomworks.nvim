@@ -1543,7 +1543,9 @@ generation rule. An interface signal's `seq` counts per object **and
 connection**, over only the signals actually sent to that connection: it is
 gapless for that connection, so a gap means a lost signal and the client
 fetches the state again (the `model_change` broadcast's per-workspace `seq`
-above is the protocol-10 form). A connection of protocol 10 (v0, §19.8) keeps
+above is the protocol-10 form). `seq` is counted per connection and per
+object, not per subscription, so a client with several subscriptions on one
+object sees gaps in each and should check gaps across all of them together. A connection of protocol 10 (v0, §19.8) keeps
 receiving the `model_change` broadcast unconditionally.
 
 ### 19.13 Snapshot and projection
@@ -2170,9 +2172,10 @@ project?, target?, kind?, force?, interactive, env, command }` (addressed
 as `prepare_run` is, plus `force`) builds a
 launch target as the editor's in-process launch build does (§8.8.4 steps 3–5,
 `LaunchTarget:build`), as one task (`meta.kind = build`) with the outcomes of
-`build`: the launch target is resolved as `prepare_run` resolves it, the
-validity and abstract-configuration gates refuse before acceptance-side
-effects, then the launch's dependencies (explicit `depends_on` and
+`build`: the launch target is resolved as `prepare_run` resolves it; a
+resolution or validity refusal (including the abstract-configuration gate),
+or an error while planning the steps, ends the task nonzero with no steps,
+before any build (there is no `refused` reply); then the launch's dependencies (explicit `depends_on` and
 deploy-source projects, a deploy source in the configuration it names), the
 pre-build deploy steps, and the launch target's own unit (its one target where
 the module builds single targets) run in that order — the phases of the
@@ -2182,8 +2185,10 @@ takes the build-directory lock of the unit it builds, for that build only; the
 deploy steps run without locks and record their freshness in the workspace
 cache as in-process. `force` is the answer to the artifact-conflict question
 (§5.9), asked by the client before the call. The first failing step ends the
-task with the in-process failure line, the later steps not run; `done`
-carries `exit_code` 0 when every step succeeded. A cancel (`Tasks/1.cancel`)
+task with the in-process failure line, the later steps not run; when every
+step succeeded the task closes with the plain build's line `BUILD OK:
+<target>` (the launch target's display name) and `done` carries `exit_code`
+0. A cancel (`Tasks/1.cancel`)
 kills a running build step and stops a deploy between two copies; the steps
 not reached are not run. A device target (§11) ends the task nonzero, before
 the build, with `'<target>' is a device target; …` as its failure line (the
@@ -2210,7 +2215,11 @@ unit's own tool steps (configure, build) are not steps here; they stay its
 lines, output and progress. Clients show an unknown step kind or state as
 neutral. Every step also has its line on the task stream, as today
 (`building dependency: <project>`; a deploy phase `deploying (<phase>): <n>
-copies`).
+copies`, where `n` counts the phase's declared sources, including fresh ones
+the copy will skip; a single source reads `1 copy`). A deploy whose copies all
+completed is `ok` even when a cancel arrived during its last copy (its
+freshness records are saved); the cancel then stops the task before its next
+step.
 
 **Tests.** *(Step 5m, plan: part 0 this spec; B1 discovery, B2 runs, debug
 preparation and results; the editor's use §19.16 "Tests"; the methods
