@@ -142,7 +142,10 @@ that step:
 - each device command of remote execution (§18), including the program
   invocation run on the device;
 - the environment overrides a step adds, as `    env: <NAME>=<value> …` —
-  never the inherited environment.
+  never the inherited environment. A value that extends the inherited one
+  shows only what was added, with the inherited part written as `$NAME`
+  (e.g. `env: PATH=C:\gcc\bin;$PATH`), and a variable whose value equals the
+  inherited one is not shown.
 
 Commands are formatted as for the workspace log (above). Verbose changes only
 what is printed, never what runs; without it none of these lines appear.
@@ -314,7 +317,9 @@ their wording.
 **Highlighting.** Every line the runner prints on its own behalf has a
 **role**: the invocation's lead line, a step header, a configure reason
 (§16.4), a printed command (§16.4 *Verbose*), a success outcome, a failure,
-or a warning. The runner colors its lines by role, never by matching their
+a warning, or **plain** — an informative line that fits no other role (e.g. a
+`JUnit: <path>` report location, a summary line, a note), which is never
+colored. The runner colors its lines by role, never by matching their
 text, so the phases of a run stand out from the tool output between them.
 Whether it colors is decided by the global option `--color=auto|always|never`
 (`--no-color` is short for `--color=never`), default `auto`:
@@ -336,6 +341,9 @@ itself trigger a reconfigure, §5.1). Without color, every line's text is
 exactly what it is with color, minus the escape sequences. *Informative:* a
 step header's `==>` is bold cyan and the rest bold; reasons and commands are
 dim; success is green, failure red, a warning yellow.
+The output of the host operations that never redirect (§16.23) — reporting
+the host version and self-update — is printed by the invoked host and is never
+colored.
 
 Every command documents itself: `lw help <command>` and, equivalently,
 `--help` / `-h` anywhere among a command's own arguments (never after the `--`
@@ -1467,7 +1475,10 @@ the running host's own release version it runs the operation **in-process**: no
 download and no redirect (the fast path). When they differ it MUST acquire and
 verify the pinned host binary, provision the pinned bundle (§16.22), and
 **re-exec** the pinned binary with the same arguments, so the operation runs
-under exactly the pinned release. Where the re-exec is a child process rather
+under exactly the pinned release. The one exception is the color options (§16.7
+*Highlighting*): the host drops `--color=…` and `--no-color` from the arguments
+it forwards to a pinned host that predates those options, and forwards them
+unchanged otherwise. It never turns them into an environment variable. Where the re-exec is a child process rather
 than a replacement of the process, it MUST behave as a replacement would: the
 redirecting host shares its standard streams with the pinned host, waits for it
 and exits with its status (128 + the signal number when a signal ended it). It
