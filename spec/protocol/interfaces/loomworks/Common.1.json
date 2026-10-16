@@ -3,7 +3,7 @@
   "version": 1,
   "status": "draft",
   "types_only": true,
-  "description": "Types shared by every core interface (API.md §4): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta, the task line role and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
+  "description": "Types shared by every core interface (API.md §4): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta, the task line role, the reply notes and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
   "methods": {},
   "$defs": {
     "Id": {
@@ -44,7 +44,8 @@
         "task_id": { "description": "The task the call runs as, for a task-streamed method.", "$ref": "#/$defs/TaskId" },
         "profile_key": { "description": "The profile the operation resolved to.", "type": "string" },
         "pid": { "description": "The daemon's process id.", "type": "integer" },
-        "notes": { "type": "array", "items": { "type": "string" } }
+        "notes": { "$ref": "#/$defs/Notes" },
+        "note_roles": { "$ref": "#/$defs/NoteRoles" }
       }
     },
     "Refused": {
@@ -55,7 +56,8 @@
         "message": { "type": "string" },
         "exit_code": { "type": "integer" },
         "stream": { "description": "out: the message is the command's ordinary stdout line (exit_code 0), not an error. Clients treat an unknown stream as an error.", "enum": ["out"] },
-        "notes": { "type": "array", "items": { "type": "string" } }
+        "notes": { "$ref": "#/$defs/Notes" },
+        "note_roles": { "$ref": "#/$defs/NoteRoles" }
       }
     },
     "Declined": {
@@ -76,7 +78,8 @@
         "lines": { "type": "array", "items": { "type": "string" } },
         "plan": { "description": "An opaque token of the plan shown; sent back with the confirmation, which a changed plan refuses.", "type": "string" },
         "profile_key": { "type": "string" },
-        "notes": { "type": "array", "items": { "type": "string" } }
+        "notes": { "$ref": "#/$defs/Notes" },
+        "note_roles": { "$ref": "#/$defs/NoteRoles" }
       }
     },
     "Outcome": {
@@ -178,8 +181,18 @@
       }
     },
     "LineRole": {
-      "description": "A task line's presentation role (API.md §4.2; spec §16.7 Highlighting): lead, phase (a step header), reason (a configure reason), command (a verbose command line), ok, fail, warn or plain. Absent = plain. Open: clients tolerate unknown values (PROTOCOL.md §17.2) and show them as plain.",
+      "description": "A task line's or a reply note's presentation role (API.md §4.1, §4.2; spec §16.7 Highlighting): lead, phase (a step header), reason (a configure reason), command (a verbose command line), ok, fail, warn or plain. Absent = plain. Open: clients tolerate unknown values (PROTOCOL.md §17.2) and show them as plain.",
       "enum": ["lead", "phase", "reason", "command", "ok", "fail", "warn", "plain"]
+    },
+    "Notes": {
+      "description": "Lines the server wrote for the call before any task of it started (a warning or error the workspace raised while loading, a test plan's pre-build notes; API.md §4.1), in order: the client writes each to standard error before anything else of the call.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "NoteRoles": {
+      "description": "The role of each entry of notes, by index (API.md §4.1): note_roles[i] is the LineRole of notes[i]. An absent array, a missing entry or an unknown value is plain. Present only with notes, and then as long as notes.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/LineRole" }
     },
     "TaskStepState": {
       "description": "A step's state (API.md §4.3): pending until it runs; skipped when a failure, a cancel or a device = true outcome left it unrun. A preparation with no_build has no steps (steps absent). Clients show an unknown state as neutral.",

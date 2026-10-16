@@ -104,6 +104,17 @@ errors (PROTOCOL.md §11.1):
 - `confirm` (`lines`, `plan`) — the operation needs the user's confirmation
   of a plan first (§8.6).
 
+`accepted`, `refused` and `confirm` — and the results of the read methods —
+may carry `notes`: lines the server wrote for the call before any task of it
+started (a warning or error the workspace raised while loading, a test plan's
+pre-build notes, §10.1), in order. A client writes each to standard error
+before anything else of the call, the refusal's message included. With them
+`note_roles` (`NoteRoles`) gives each note its role (`LineRole`, §4.2) by
+index: the role the CLI gives that line in-process (a workspace error `fail`,
+a warning `warn`, a test plan's note `plain`). A missing `note_roles`, a
+missing entry or an unknown role is `plain`; a note's text never contains
+terminal escape sequences.
+
 The error `not_loaded` means loading the workspace failed; its `data`
 carries the header's `state` and `error` (§2).
 
@@ -128,7 +139,7 @@ standard output, a note on standard error. Its `done` carries `exit_code`
 and the refusal or failure a client prints as `lw: <error>`; the method's
 task result (`TaskEnd` and what the method adds) is in `done.result`.
 
-A `line` frame may carry a `role` (`LineRole`): `lead` (the operation's lead
+A `line` frame may carry a `role` (`LineRole`), as a reply's notes may (§4.1): `lead` (the operation's lead
 line, e.g. `building profile: <p>`), `phase` (a step header `==> [<kind>]
 <name>`), `reason` (a configure reason), `command` (a command line printed for
 `verbose`, below), `ok` (a success outcome), `fail` (a failure), `warn` (a
@@ -609,7 +620,7 @@ saved test targets) — has the outcomes of `Build/1.build`; `junit` is the
 `extra` the arguments after `--`, for the plan's steps, `no_build`
 `--no-build`, and `verbose`, as for `Build/1.build`: the task streams the
 command lines of spec §16.4 *Verbose*. The plan's pre-build checks are made before acceptance: their
-notes travel with the reply, and a refusal is `refused` with the CLI's
+notes travel with the reply (§4.1, role `plain`), and a refusal is `refused` with the CLI's
 message and exit code (a foreign kit's registered tests with no saved test
 target, spec §18.6, pointing at `lw test --target` and `lw test-target add`;
 arguments after `--` for a plan of both kinds, exit 2). A plan with saved

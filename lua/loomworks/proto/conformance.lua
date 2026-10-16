@@ -61,7 +61,8 @@
 ---
 --- Every received frame is validated: a transport frame (transport.json)
 --- against its frame schema; the `ok` of an interface call against its
---- method's result schema; an `error`'s code is a transport code or one the
+--- method's result schema, and its `note_roles` (API.md §4.1) only with
+--- `notes` and as long as them; an `error`'s code is a transport code or one the
 --- method declares; a `signal` against its interface's signal schema, and a
 --- subscribed signal's `seq` is the previous one of its object on this
 --- connection + 1 (from the baseline `subscribe` returned); a signal of a
@@ -421,6 +422,14 @@ function Session:check_received(frame)
                 local okr, rerr = self.set:validate(rel, "/methods/" .. call.method .. "/result", frame.result)
                 if not okr then
                     return false, string.format("%s/%d.%s result: %s", call.iface, call.v, call.method, tostring(rerr))
+                end
+                -- note_roles is parallel to notes (API.md §4.1): the schema
+                -- types each, the engine their pairing.
+                local res = frame.result
+                if type(res) == "table" and res.note_roles ~= nil
+                    and (type(res.notes) ~= "table" or #res.note_roles ~= #res.notes) then
+                    return false, string.format("%s/%d.%s result: note_roles is not as long as notes",
+                        call.iface, call.v, call.method)
                 end
                 -- A task-streamed method's accepted task: its frames are typed.
                 local r = frame.result

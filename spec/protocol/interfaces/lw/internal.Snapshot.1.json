@@ -77,7 +77,8 @@
         "index": { "$ref": "#/$defs/Index" },
         "seq": { "type": "integer" },
         "session_generation": { "type": "integer" },
-        "notes": { "type": "array", "items": { "type": "string" } }
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "note_roles": { "$ref": "loomworks.Common/1#/$defs/NoteRoles" }
       }
     }
   }

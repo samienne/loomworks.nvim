@@ -105,6 +105,17 @@ local function errw(s, role)
   io.stdout:flush(); io.stderr:write(term.render(s or ""))
 end
 
+--- A daemon reply's notes (API.md §4.1), in order on stderr, each painted by
+--- its `note_roles` entry exactly as `note` paints it in-process; a missing
+--- array or entry is plain (and `paint` shows an unknown role as plain).
+--- @param r table the reply
+function M._reply_notes(r)
+  local roles = type(r.note_roles) == "table" and r.note_roles or {}
+  for i, n in ipairs(type(r.notes) == "table" and r.notes or {}) do
+    note(tostring(n), type(roles[i]) == "string" and roles[i] or nil)
+  end
+end
+
 --- `-v` / `--verbose` output (spec §16.4 *Verbose*): each line, of the
 --- `command` role (§16.7), on the status stream — stdout, or stderr when
 --- `quiet` keeps stdout for a machine-readable payload (`lw run --print`).
@@ -9054,7 +9065,7 @@ function M._delegate(op, root, args, ensured, opts)
     if not r then return end
     -- Printed here, before any task event of it is dispatched (they can
     -- arrive in the same read).
-    for _, n in ipairs(type(r.notes) == "table" and r.notes or {}) do errw(tostring(n) .. "\n") end
+    M._reply_notes(r)
     if r.outcome == "accepted" then
       task_id, accepted = r.task_id, true
       profile_key = type(r.profile_key) == "string" and r.profile_key or nil
@@ -9524,13 +9535,15 @@ function M._read_projection(root, opts)
   local KIND = require("loomworks.daemon.protocol").KIND
   local snapshot = require("loomworks.daemon.snapshot")
   -- The reply, or nil (the in-process path); a refusal ends the command.
+  -- Its notes (API.md §4.1) are printed first, also on an `ok` reply.
   local function answered(r)
     if not r or r.kind == "error" or r.outcome == "declined" then return nil end
     if r.outcome == "refused" then
-      for _, n in ipairs(type(r.notes) == "table" and r.notes or {}) do errw(tostring(n) .. "\n") end
+      M._reply_notes(r)
       die(r.message or "the workspace runtime refused the request")
     end
     if r.outcome ~= "ok" then return nil end
+    M._reply_notes(r)
     return r
   end
   local snap = answered((ask({ kind = KIND.snapshot, scope = "all", env = env })))

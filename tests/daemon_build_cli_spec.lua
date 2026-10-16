@@ -157,6 +157,19 @@ describe("lw build through the workspace daemon (real processes)", function()
         end
     end)
 
+    it("--color=always: the warnings the workspace raises before the build starts, painted both ways (§19.17)", function()
+        local roots3 = { workspace(), workspace(), workspace() }
+        for _, root in ipairs(roots3) do H.load_warnings(root) end
+        -- In-process, through the daemon and attached (§19.1, §19.17).
+        local ra = H.three_way({ roots = roots3, args = { "--no-input", "--color=always", "build", "dev" }, lw = lw,
+            norm = norm, env = env, state = function(root) return cache_of(root, env.data .. "/trust.key") end })
+        assert.equals(0, ra.code, ra.stderr)
+        -- The reply's notes (API.md §4.1), each painted by its role: warn.
+        assert.truthy(ra.stderr:find("\27[33mloomworks: project 'ghost': configure_cmd is required\27[0m", 1, true),
+            ra.stderr)
+        assert.truthy(ra.stderr:find("\27[33mloomworks: ignoring an unsigned build cache", 1, true), ra.stderr)
+    end)
+
     it("-v with a module environment: the env line against the client's environment, the same bytes both ways (§19.17)", function()
         local roots3 = { workspace(), workspace(), workspace() }
         for _, root in ipairs(roots3) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end

@@ -157,8 +157,10 @@ describe("lw test through the workspace daemon (real processes)", function()
     --- `dev` (app=Debug, lib=Debug), created by lw itself. `saved`: app's
     --- saved test targets (§1.3.4) — launch configurations `chk` and `chk2`
     --- running the SAVED program — as its project-wide `tests` list;
-    --- `launch_extra`: fields added to both launch configurations.
-    local function workspace(saved, launch_extra)
+    --- `launch_extra`: fields added to both launch configurations; `sh`: a
+    --- third project in `dev`, of the `shell` module, whose saved test target
+    --- its module cannot run (a test plan's pre-build note, §16.16).
+    local function workspace(saved, launch_extra, sh)
         local root = H.tmp()
         roots[#roots + 1] = root
         vim.fn.mkdir(root .. "/app", "p")
@@ -175,10 +177,18 @@ describe("lw test through the workspace daemon (real processes)", function()
                 configurations = { Debug = vim.empty_dict() },
             } }
         end
-        write(root .. "/loomworks.json", vim.json.encode({
+        local cfg = {
             projects = { app = project("app"), lib = project("lib") },
             configuration_sets = { dev = { app = "Debug", lib = "Debug" } },
-        }))
+        }
+        if sh then
+            vim.fn.mkdir(root .. "/sh", "p")
+            local p = project("sh")
+            p.shell, p.lwtestmod = p.lwtestmod, nil
+            p.shell.tests = { "x" }
+            cfg.projects.sh, cfg.configuration_sets.dev.sh = p, "Debug"
+        end
+        write(root .. "/loomworks.json", vim.json.encode(cfg))
         local r = H.lw({ "--no-input", "--no-daemon", "profile", "create", "dev" }, { env = env, cwd = root })
         assert.equals(0, r.code, r.stderr)
         if saved then
@@ -328,6 +338,22 @@ describe("lw test through the workspace daemon (real processes)", function()
         assert.equals(0, ok.code, ok.stderr)
         assert.truthy(ok.stdout:find("\27[1;36m==>\27[0m\27[1m [test] app: nvim\27[0m", 1, true), ok.stdout)
         assert.truthy(ok.stdout:find("\27[32mTESTS OK: dev (2 steps)\27[0m", 1, true), ok.stdout)
+    end)
+
+    it("--color=always: the workspace's warnings and the test plan's notes before the run, painted both ways (§19.17)", function()
+        local roots3 = { workspace(nil, nil, true), workspace(nil, nil, true), workspace(nil, nil, true) }
+        for _, root in ipairs(roots3) do H.load_warnings(root) end
+        -- In-process, through the daemon and attached (§19.1, §19.17).
+        local ra = H.three_way({ roots = roots3, args = { "--no-input", "--color=always", "test", "dev" }, lw = lw,
+            norm = norm, env = env, state = function(root)
+                return { cache = cache_of(root, env.data .. "/trust.key"), reports = files_of(root .. "/reports") }
+            end })
+        -- The reply's notes (API.md §4.1) by role: the load's warnings warn,
+        -- the plan's note plain.
+        assert.truthy(ra.stderr:find("\27[33mloomworks: project 'ghost': configure_cmd is required\27[0m", 1, true),
+            ra.stderr)
+        assert.truthy(ra.stderr:find("\nlw: note: sh: saved test targets are not supported by its module", 1, true),
+            ra.stderr)
     end)
 
     it("-v (and --color=always): each runner and program command, env lines against the client's environment, deploy steps — the same bytes both ways (§19.17)", function()

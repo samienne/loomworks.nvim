@@ -276,6 +276,17 @@ function Service:_drain()
     self.draining = false
 end
 
+--- Append a note to a request's reply notes with its role (API.md §4.1:
+--- `note_roles[i]` is the LineRole of `notes[i]`), so the two never part.
+--- @param c table the request context
+--- @param text string
+--- @param role string a Common/1 LineRole
+local function add_note(c, text, role)
+    c.notes, c.note_roles = c.notes or {}, c.note_roles or {}
+    c.notes[#c.notes + 1] = text
+    c.note_roles[#c.note_roles + 1] = role
+end
+
 --- The handlers the host's loader installs on the workspace core: they report
 --- into the request whose segment is running (a notification is printed on
 --- that client's stderr, a refused save ends its build), else the runtime log.
@@ -288,7 +299,7 @@ function Service:handlers()
             if c and c.task then
                 -- (The in-process loader's roles: an error fails, a warning warns.)
                 c.task:line("err", tostring(msg) .. "\n", (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
-            elseif c then c.notes = c.notes or {}; c.notes[#c.notes + 1] = tostring(msg)
+            elseif c then add_note(c, tostring(msg), (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
             else self.server:log("%s", tostring(msg)) end
         end,
         refused = function(msg)
@@ -469,14 +480,17 @@ function Service:_on_model_request(conn, msg, answer, bad, deliver)
         local ws, refusal, decline = self:live(ctx, true)
         if not ws then
             if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
-            return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1, notes = ctx.notes })
+            return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1,
+                notes = ctx.notes, note_roles = ctx.note_roles })
         end
         if ctx.refused then
-            return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
+            return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1,
+                notes = ctx.notes, note_roles = ctx.note_roles })
         end
         local fields = answer(ws, ctx)
         fields.outcome = fields.outcome or "ok"
         fields.notes = ctx.notes
+        fields.note_roles = ctx.note_roles
         ctx.reply(fields)
     end)
 end
@@ -741,13 +755,16 @@ function Service:_accept(ctx)
     local ws, refusal, decline = self:live(ctx)
     if not ws then
         if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
-        return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     if ctx.refused then
-        return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     local stale = self:_resolve_ids(ws, ctx.args)
-    if stale then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1, notes = ctx.notes }) end
+    if stale then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1,
+        notes = ctx.notes, note_roles = ctx.note_roles }) end
     if ctx.op == "reset" then return self:_accept_reset(ctx, ws) end
     local a = ctx.args
     local launching = ctx.op == "run" or ctx.op == "debug" or ctx.op == "target_build"
@@ -755,7 +772,8 @@ function Service:_accept(ctx)
     if a.units then
         local uerr
         units, uerr = self:_resolve_units(ws, a.units)
-        if not units then return ctx.reply({ outcome = "refused", message = uerr, exit_code = 1, notes = ctx.notes }) end
+        if not units then return ctx.reply({ outcome = "refused", message = uerr, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles }) end
     else
         local err, action
         profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
@@ -766,7 +784,8 @@ function Service:_accept(ctx)
             return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
         end
         if not profile then
-            return ctx.reply({ outcome = "refused", message = err, exit_code = 1, notes = ctx.notes })
+            return ctx.reply({ outcome = "refused", message = err, exit_code = 1,
+                notes = ctx.notes, note_roles = ctx.note_roles })
         end
     end
     -- A test run's plan is checked before the build, as in-process (§16.16):
@@ -783,12 +802,11 @@ function Service:_accept(ctx)
                 .. test_pre.device_platform .. "; device test runs stay in this process" })
         end
         if #test_pre.notes > 0 then
-            ctx.notes = ctx.notes or {}
-            for _, n in ipairs(test_pre.notes) do ctx.notes[#ctx.notes + 1] = n end
+            for _, n in ipairs(test_pre.notes) do add_note(ctx, n, "plain") end
         end
         if test_pre.err then
             return ctx.reply({ outcome = "refused", message = test_pre.err, exit_code = test_pre.code or 1,
-                notes = ctx.notes })
+                notes = ctx.notes, note_roles = ctx.note_roles })
         end
     end
     -- A run of a profile built by a foreign kit is a device run: its device
@@ -806,14 +824,16 @@ function Service:_accept(ctx)
         clean_steps = build_run.plan_clean(profile, units)
         if not clean_steps then
             return ctx.reply({ outcome = "refused", message = build_run.nothing_to_clean_message(profile,
-                units and build_run.units_label(units) or nil), exit_code = 1, notes = ctx.notes })
+                units and build_run.units_label(units) or nil), exit_code = 1,
+                    notes = ctx.notes, note_roles = ctx.note_roles })
         end
     end
     local task = self.tasks:create(ctx.conn)
     task.call = ctx.call
     ctx.task, ctx.ws, ctx.profile, ctx.units = task, ws, profile, units
     ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn),
-        profile_key = profile and profile.key or nil, pid = self.server.pid, notes = ctx.notes })
+        profile_key = profile and profile.key or nil, pid = self.server.pid,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     local runner = require("loomworks.daemon.runner")
     local extra = (a.extra and #a.extra > 0) and a.extra or nil
     local args
@@ -872,7 +892,8 @@ function Service:_accept_reset(ctx, ws)
             return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
         end
         if not profile then
-            return ctx.reply({ outcome = "refused", message = err, exit_code = 1, notes = ctx.notes })
+            return ctx.reply({ outcome = "refused", message = err, exit_code = 1,
+                notes = ctx.notes, note_roles = ctx.note_roles })
         end
         scope = { profile = profile }
     end
@@ -882,23 +903,24 @@ function Service:_accept_reset(ctx, ws)
     -- compared first (as in-process, cli.cmd_reset), so a listed plan whose
     -- directories vanished is CHANGED (exit 1), not "nothing to reset".
     if a.plan ~= nil and a.plan ~= plan.token then
-        return ctx.reply({ outcome = "refused", message = reset_plan.CHANGED, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = reset_plan.CHANGED, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     if reset_plan.is_empty(plan) then
         return ctx.reply({ outcome = "refused", message = reset_plan.nothing_message(plan), exit_code = 0,
-            stream = "out", notes = ctx.notes })
+            stream = "out", notes = ctx.notes, note_roles = ctx.note_roles })
     end
     -- The client asks (§19.15 Confirmation): what the question shows, and a
     -- token of it; no lock, nothing changed.
     if not a.yes then
         return ctx.reply({ outcome = "confirm", lines = reset_plan.listing(plan), plan = plan.token,
-            profile_key = profile_key, notes = ctx.notes })
+            profile_key = profile_key, notes = ctx.notes, note_roles = ctx.note_roles })
     end
     local task = self.tasks:create(ctx.conn)
     task.call = ctx.call
     ctx.task, ctx.ws = task, ws
     ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile_key,
-        pid = self.server.pid, notes = ctx.notes })
+        pid = self.server.pid, notes = ctx.notes, note_roles = ctx.note_roles })
     local run = require("loomworks.daemon.runner").reset(self, {
         op = "reset", task = task, ws = ws, plan = plan, env = ctx.env, command = ctx.command,
         listing = a.plan == nil,

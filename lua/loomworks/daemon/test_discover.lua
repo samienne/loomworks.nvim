@@ -457,20 +457,23 @@ function M.accept(svc, ctx)
     local ws, refusal, decline = svc:live(ctx)
     if not ws then
         if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
-        return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     if ctx.refused then
-        return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     local profile = test_state.active_profile(ws)
     if not profile then
-        return ctx.reply({ outcome = "refused", message = M.NO_PROFILE, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = M.NO_PROFILE, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     local task = svc.tasks:create(ctx.conn)
     task.call = ctx.call
     ctx.task, ctx.ws, ctx.profile = task, ws, profile
     ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile.key,
-        pid = svc.server.pid, notes = ctx.notes })
+        pid = svc.server.pid, notes = ctx.notes, note_roles = ctx.note_roles })
     local run = M.run(svc, ctx)
     svc.server:log("discover %s (task %s) accepted", profile.key, task.id)
     if run and not run.finished then

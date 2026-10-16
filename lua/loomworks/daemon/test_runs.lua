@@ -385,13 +385,16 @@ local function accept(service, ctx, kind)
     local ws, refusal, decline = service:live(ctx)
     if not ws then
         if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
-        return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     if ctx.refused then
-        return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
+        return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1,
+            notes = ctx.notes, note_roles = ctx.note_roles })
     end
     local a = ctx.args
-    local function refuse(msg) return ctx.reply({ outcome = "refused", message = msg, exit_code = 1, notes = ctx.notes }) end
+    local function refuse(msg) return ctx.reply({ outcome = "refused", message = msg, exit_code = 1,
+        notes = ctx.notes, note_roles = ctx.note_roles }) end
     -- (The nodes first: an id of no node of the active profile is a stale
     -- reference, also when no profile is active.)
     local store = test_store.of(service)
@@ -419,7 +422,7 @@ local function accept(service, ctx, kind)
     task.call = ctx.call
     ctx.task, ctx.ws, ctx.profile, ctx.units = task, ws, profile, units
     ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile.key,
-        pid = service.server.pid, notes = ctx.notes })
+        pid = service.server.pid, notes = ctx.notes, note_roles = ctx.note_roles })
     -- The task is accepted: from here a throw before the runner has the run
     -- (which `ctx.run` would cancel) ends the task itself.
     local pok, phase = pcall(M.phase, service, ctx, store, { recs = recs, covered = covered, idx = idx }, kind)

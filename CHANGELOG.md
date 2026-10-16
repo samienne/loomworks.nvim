@@ -753,6 +753,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- Through the workspace daemon, warnings and errors printed before a build,
+  test or run starts are now colored like the in-process output (`--color`),
+  and the warnings a read-only command (`lw status`, `lw tools`) raises while
+  loading the workspace are no longer dropped. (#279)
 - The loomtest adapter's `setup()` is idempotent: calling it again (a repeated
   setup in a config) replaces its event listeners instead of adding another
   set, so one profile switch no longer re-renders the test tree once per call.
