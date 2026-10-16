@@ -104,6 +104,45 @@ describe("verbose lines", function()
     assert.same({ "    $ ctest" }, build_run.command_lines({ cmd = { "ctest" }, env = {} }))
   end)
 
+  describe("env: never the inherited environment", function()
+    local exe = require("loomworks.exe")
+    local SEP = exe.is_windows and ";" or ":"
+    -- The env line quotes each NAME=value like a command argument.
+    local function line(arg) return "    env: " .. require("loomworks.term").format_argv({ arg }) end
+    local saved
+    before_each(function()
+      saved = vim.env.LW_VERBOSE_SECRET
+      vim.env.LW_VERBOSE_SECRET = "s3cret-value"
+    end)
+    after_each(function() vim.env.LW_VERBOSE_SECRET = saved end)
+
+    it("leaves out a variable whose value equals the inherited one", function()
+      local path = assert(exe.getenv("PATH"))
+      assert.equals("    env: CC=gcc", build_run.env_line({
+        PATH = path, LW_VERBOSE_SECRET = "s3cret-value", CC = "gcc",
+      }))
+      -- Nothing added at all: no env line.
+      assert.is_nil(build_run.env_line({ PATH = path }))
+    end)
+
+    it("shows a value that extends the inherited one as the added part plus $NAME", function()
+      local path = assert(exe.getenv("PATH"))
+      assert.equals(line("PATH=/opt/gcc/bin" .. SEP .. "$PATH"),
+        build_run.env_line({ PATH = "/opt/gcc/bin" .. SEP .. path }))
+      assert.equals(line("PATH=$PATH" .. SEP .. "/opt/tail"),
+        build_run.env_line({ PATH = path .. SEP .. "/opt/tail" }))
+    end)
+
+    if exe.is_windows then
+      it("matches names case-insensitively on Windows", function()
+        local path = assert(exe.getenv("PATH"))
+        assert.is_nil(build_run.env_line({ Path = path }))
+        assert.equals(line("Path=C:/gcc/bin;$Path"),
+          build_run.env_line({ Path = "C:/gcc/bin;" .. path }))
+      end)
+    end
+  end)
+
   it("a wrapped command shows the command the wrapper runs (display_cmd)", function()
     assert.same("    $ cmake -S .",
       build_run.command_lines({ cmd = { "cmd", "/c", "x.bat" }, display_cmd = { "cmake", "-S", "." } })[1])

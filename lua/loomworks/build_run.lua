@@ -196,15 +196,38 @@ end
 
 --- `    env: <NAME>=<value> …` for a step's environment overrides (names sorted,
 --- each `NAME=value` quoted like a command argument), or nil when it adds none.
+--- Never the inherited environment (§16.4 *Verbose*): a variable whose value
+--- equals the inherited one is left out, and a value that extends the
+--- inherited one (`<added><sep><inherited>` or `<inherited><sep><added>`, sep
+--- the platform path separator) shows the added part with the inherited part
+--- as `$NAME`. Display only — the env that runs is untouched.
 --- @param env table<string, string>|nil
 --- @return string|nil
 function M.env_line(env)
     if type(env) ~= "table" or not next(env) then return nil end
+    local exe = require("loomworks.exe")
+    local sep = exe.is_windows and ";" or ":"
     local names = {}
     for k in pairs(env) do names[#names + 1] = tostring(k) end
     table.sort(names)
     local parts = {}
-    for i, k in ipairs(names) do parts[i] = k .. "=" .. tostring(env[k]) end
+    for _, k in ipairs(names) do
+        local v = tostring(env[k])
+        -- The process env lookup is case-insensitive on Windows.
+        local inherited = exe.getenv(k)
+        if v ~= inherited then
+            if inherited then
+                local n = #inherited
+                if v:sub(-(n + 1)) == sep .. inherited then
+                    v = v:sub(1, #v - n) .. "$" .. k
+                elseif v:sub(1, n + 1) == inherited .. sep then
+                    v = "$" .. k .. v:sub(n + 1)
+                end
+            end
+            parts[#parts + 1] = k .. "=" .. v
+        end
+    end
+    if #parts == 0 then return nil end
     return "    env: " .. require("loomworks.term").format_argv(parts)
 end
 

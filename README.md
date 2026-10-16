@@ -1878,7 +1878,9 @@ command it runs, dimmed when color is on, on the same stream as the header:
 
 - configure, build, clean and test commands as `$ <command>`, then
   `(in <directory>)` and, when the step adds any, `env: NAME=value ...` (only
-  the overrides, never the inherited environment);
+  the overrides, never the inherited environment: a variable equal to the
+  inherited one is left out, and one that extends it shows only the added part,
+  with the inherited part as `$NAME`, e.g. `env: PATH=C:\gcc\bin;$PATH`);
 - `remove <dir>` for a build directory a clean wipes itself;
 - `copy <source> -> <destination>` for each deploy step, or
   `up to date <destination>` when it was skipped as fresh;
