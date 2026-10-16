@@ -934,92 +934,17 @@ via `lw device select` (§18.3).
 
 ### 1.9 loomworks.json Schema
 
-```json
-{
-  "name": "MyWorkspace",
-  "projects": {
-    "App": {
-      "path": "packages/app",
-      "cmake": {
-        "configurations": {
-          "Debug": {},
-          "Release": {},
-          "cross-debug": {
-            "toolchain": "${VENDOR_SDK_ROOT}/cmake/cross.toolchain.cmake"
-          }
-        },
-        "compile_commands_from": "ninja-debug",
-        "clangd": "${VENDOR_SDK_ROOT}/llvm/bin/clangd"
-      }
-    },
-    "Frontend": { "typescript": {} }
-  },
-  "configuration_sets": {
-    "Debug":   { "App": "Debug",   "Frontend": "development" },
-    "Release": { "App": "Release", "Frontend": "production"  }
-  },
-  "profiles": {
-    "cross": {
-      "configuration_set": "Debug",
-      "kit_id": "ninja-cross-clang"
-    }
-  }
-}
-```
+The shape of `loomworks.json` is [formats.md](../formats.md) §3.2. The labels
+below are kept for references into this section.
 
-**Top-level fields**:
+**Top-level fields**: [formats.md](../formats.md) §3.2.
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | No | Workspace display name (defaults to root dir name). Published from the working copy's `name` (§2.2); the working copy wins at load |
-| `projects` | Yes | Dict of project_key → project definition |
-| `configuration_sets` | No | Dict of set_name → { project_key → variant } |
-| `profiles` | No | Dict of profile_key → explicit profile definition |
-| `configuration_set_descriptions` | No | Dict of set_name → description (§1.10). A sidecar because a set's own table is a flat project → configuration map with no room for a field |
+**Project definition fields**: [formats.md](../formats.md) §3.2, including the
+core-owned keys of the module section (`description`, `tests`).
 
-**Project definition fields**:
+**CMake type_config fields**: [formats.md](../formats.md) §3.2.
 
-| Field | Description |
-|-------|-------------|
-| `path` | Relative path from workspace root (defaults to project key) |
-| `depends_on` | Reserved for future cross-project dependencies (ignored in v1) |
-| `<type>` | Inner key determines project type; value is the type-specific config |
-
-The type key (`cmake`, `meson`, `typescript`, etc.) is the only required field. Its
-value is a table passed to the module as `type_config`.
-
-The project's **description** (§1.10) is the core-owned key `description` inside
-the module section (`projects.<key>.<type>.description`), not a project-level
-key. Core lifts it out before the section reaches the module as `type_config`.
-(An older loomworks reads an unknown project-level key as a second module type
-and refuses the file; it keeps an unknown module-section field. This is the
-same placement rule as the `device` block, §18.9.) The project-wide saved test
-targets (`projects.<key>.<type>.tests`, §1.3.4) are another such core-owned
-key in the module section.
-
-**CMake type_config fields**:
-
-| Field | Description |
-|-------|-------------|
-| `configurations` | Dict of config_name → config overrides |
-| `compile_commands_from` | Name of another configuration to source compile_commands.json from |
-| `clangd` | Path to project-specific clangd binary (`${ENV_VAR}` expanded) |
-
-Configuration overrides may include:
-- `toolchain`: path to CMake toolchain file (`${ENV_VAR}` expanded, no absolute paths)
-- `role`: `"compile_commands"` hides the configuration from UI
-- `description`: the configuration's description (§1.10), valid in every module's
-  configuration table; a generic field, not a module field
-- `tests`: the configuration's saved test targets (§1.3.4); a generic field,
-  not a module field
-
-**Explicit profile fields**:
-
-| Field | Description |
-|-------|-------------|
-| `configuration_set` | Name of a configuration set to derive mappings from |
-| `kit_id` | Tool key to use (e.g., `"ninja-clang-18.0.0"`) |
-| `description` | The profile's description (§1.10) |
+**Explicit profile fields**: [formats.md](../formats.md) §3.2.
 
 ### 1.10 Descriptions
 
@@ -1031,29 +956,11 @@ built-in variables), not matched against anything, and not interpreted as
 markup, a format string or a command. It is not part of any item's identity or
 key.
 
-**Location in the files.** The same locations apply in loomworks.json and in
-user.json:
+**Location in the files.** Moved to [formats.md](../formats.md) §3.3, with
+the rule that the field is additive and optional.
 
-| Item | Location |
-|--|--|
-| Project | `projects.<key>.<type>.description` (inside the module section, §1.9) |
-| Configuration | `projects.<key>.<type>.configurations.<name>.description` |
-| Configuration set | `configuration_set_descriptions.<set_name>` (top-level sidecar, §1.9) |
-| Profile | `profiles.<key>.description` |
-| Launch configuration | `projects.<key>.launch.<name>.description` (inside the launch configuration's own table, §8.7) |
-
-The field is additive and optional. Absence means "no description", and there
-is no format-version bump. The loomworks.json file has no version, user.json
-stays at `_meta.version` 2, and the cache is unaffected. A sidecar entry naming
-no configuration set is ignored, and the next write of that file drops it.
-
-**Shape.** A description is a JSON string. It is stored **normalised**:
-
-1. Line endings are LF. CRLF and lone CR become LF.
-2. Trailing whitespace is removed from every line.
-3. Leading and trailing blank lines are removed.
-4. A description that is then empty is **absent**. The key is removed from the
-   file and never stored as `""`.
+**Shape.** Moved to [formats.md](../formats.md) §3.3 (a JSON string, stored
+normalised).
 
 Descriptions are **not inherited**. A configuration inheriting a base, a profile
 derived from a set, and a project's configurations each show only their own

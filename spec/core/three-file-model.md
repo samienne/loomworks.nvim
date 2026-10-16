@@ -3,9 +3,8 @@
 
 ## 2. Three-File Model
 
-All three files are JSON written **deterministically**: object keys in sorted
-order at every depth (arrays keep their order), so rewriting unchanged data
-produces byte-identical output and an edit shows up as a minimal diff.
+All three files are JSON; their encoding (sorted keys, deterministic output)
+is [formats.md](../formats.md) §1.2.
 
 ### 2.1 loomworks.json — Published Snapshot (optional)
 
@@ -20,11 +19,9 @@ Contains the items the user has chosen to share with collaborators.
 - Changes from outside (branch switch, manual edit) are detected via file
   watcher and folded back into the working copy without overwriting the
   user's local changes (see §2.4).
-- Paths are relative to workspace root.
-- Absolute paths are **forbidden** (breaks portability).
+- Paths in it: [formats.md](../formats.md) §3.1.
 - Never trusted to name programs: program-bearing fields (§17.6) in it are
   ignored with a diagnostic, and preserved when the user publishes.
-- `${ENV_VAR}` expansion for toolchain paths.
 
 The runtime never reads loomworks.json directly to drive behavior —
 external file changes are merged into the working copy, and the working
@@ -37,74 +34,10 @@ The live working state and the workspace's runtime source of truth. Every
 materialized item, every intent override, and every piece of session
 metadata lives here. All UI mutations land here.
 
-```json
-{
-  "_meta": { "version": 2, "written_by": "0.1.43" },
-  "name": "reactive",
-  "active_profile": "Debug:ninja-gcc-12",
-  "projects": { ... },
-  "configuration_sets": { ... },
-  "configuration_set_descriptions": { ... },
-  "profiles": { ... },
-  "intent": { ... },
-  "default_target": { ... },
-  "device": { ... },
-  "profile_variables": { ... },
-  "lsp": { ... }
-}
-```
-
-The `device` field maps profile keys to device serial strings:
-```json
-"device": {
-    "Debug:<sdk>-<platform>-<arch>": "FMR0225108000951"
-}
-```
-It is unrelated to a project's `device` block (`projects.<p>.<type>.device`,
-§18.9), which shapes remote execution and lives in the project definition.
-
-The `profile_variables` field holds each profile's machine-local fill values
-for **blank** project variables (§1.3.1), keyed profile → project → variable:
-```json
-"profile_variables": {
-    "Debug:ninja-gcc-12": {
-        "App": { "sdk_root": "/opt/sdk/3.2" }
-    }
-}
-```
-These are per-machine values (an SDK path, a device address) and — like the
-`active_profile`, `name`, and `device` fields — are personal to this checkout:
-they live in `user.json` only and are never published to `loomworks.json`
-(§2.4), regardless of the profile's intent. The reserved `cache` policy variable
-(§1.3.2) is filled through this same map when a profile pins a machine-local
-compiler-cache policy; its *configuration-* and *compiler-family-level*
-overrides, by contrast, live in the project's `variables` / `overrides` blocks
-and publish and merge per-variable exactly like any other variable value
-(§2.3 per-configuration merge).
-
-The optional `name` field overrides the workspace display name (§1.1). It is
-present only when the user has set one explicitly (`lw init --name`,
-`lw workspace rename`, or the editor); when absent the name defaults to the
-root directory basename. Written to `loomworks.json` on publish.
-
-The `intent` field stores explicit per-item intent overrides (see §2.4).
-
-The `configuration_set_descriptions` field holds configuration-set descriptions
-(§1.10), keyed by set name. It has the same shape and meaning as in
-loomworks.json. A set's entry lives in whichever files the set itself lives in.
-Descriptions of projects, configurations and profiles sit inside those items'
-own tables (§1.10).
-
-The `lsp` field stores per-server option overrides. Keys are server
-names (e.g. `clangd`); values are option tables whose accepted shape
-is defined by the integration's spec under `spec/integrations/lsp/`.
-All fields within a server table are optional — omitted fields fall
-back to the integration's hardcoded defaults. Saved on every
-mutation (toggle from the status page) so changes survive nvim
-restarts. Workspace-wide, not per-project: a single clangd binary
-serves every buffer in the workspace regardless of which project
-owns it. See `spec/integrations/lsp/clangd.md` §12 for clangd's
-specific schema and how options map to cmd flags.
+Its shape and fields (`_meta`, `name`, `active_profile`, `projects`,
+`configuration_sets`, `configuration_set_descriptions`, `profiles`, `intent`,
+`default_target`, `device`, `profile_variables`, `lsp`) are
+[formats.md](../formats.md) §4.
 
 - Always gitignored.
 - Written on every UI mutation (add/edit/remove project, config, profile, etc.).
@@ -731,14 +664,9 @@ then overwritten, as every write was before this section; so can a writer that
 gave up waiting for the lock. Writers that follow this section exclude each
 other completely.
 
-**Writer version stamp.** Every write of the working copy and of the build
-cache records, besides the schema version `_meta.version`, the writing
-loomworks version as `_meta.written_by` (a development build records its last
-released version with a `+dev` suffix; precedence ignores the suffix; a build
-that cannot tell its version records none). In the
-working copy `_meta` is part of the signed bytes (§17.3). Older versions read
-only `_meta.version`, ignore unknown `_meta` members and rewrite `_meta`
-without them; a file without `written_by` was written by such a version.
+**Writer version stamp.** Moved to [formats.md](../formats.md) §1.3
+(`_meta.version` and `_meta.written_by` in the working copy and the build
+cache).
 
 **Reading a newer file.**
 
