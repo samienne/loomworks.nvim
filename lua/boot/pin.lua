@@ -282,7 +282,8 @@ end
 --- Global flags the CLI accepts among a command's own arguments; tolerated
 --- (and ignored) here.
 M.GLOBAL_FLAGS = { ["--no-input"] = true, ["--non-interactive"] = true,
-  ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true }
+  ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true,
+  ["--color"] = true, ["--no-color"] = true }
 
 local INSTALL_ONLY = { "--version", "--latest", "--channel", "--pin-only", "--force" }
 

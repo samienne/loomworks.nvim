@@ -1724,6 +1724,8 @@ do
     ok(o and o.sub == nil, "plain `lw bootstrap` is the status page")
     o = P({ "--no-input", "bootstrap", "--json", "--check" }, "bootstrap")
     ok(o and o.json and o.check and o.sub == nil, "status page flags (global flags tolerated)")
+    o = P({ "--color=always", "bootstrap", "--no-color" }, "bootstrap")
+    ok(o and o.sub == nil, "--color=<when> / --no-color are global flags, tolerated")
     local _, e = P({ "bootstrap", "--version", "0.1.36" }, "bootstrap")
     ok(e and e:find("`lw bootstrap install --version 0.1.36`", 1, true),
       "old `lw bootstrap --version X` is a usage error naming install  (" .. tostring(e) .. ")")
