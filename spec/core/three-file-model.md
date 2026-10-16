@@ -37,7 +37,26 @@ metadata lives here. All UI mutations land here.
 Its shape and fields (`_meta`, `name`, `active_profile`, `projects`,
 `configuration_sets`, `configuration_set_descriptions`, `profiles`, `intent`,
 `default_target`, `device`, `profile_variables`, `lsp`) are
-[formats.md](../formats.md) §4.
+[formats.md](../formats.md) §4. What some of those fields mean:
+
+- **`name`.** It is present only when the user has set one explicitly
+  (`lw init --name`, `lw workspace rename`, or the editor); when absent the
+  name defaults to the root directory basename. Written to `loomworks.json`
+  on publish.
+- **`profile_variables`.** These are per-machine values (an SDK path, a device
+  address) and — like the `active_profile`, `name`, and `device` fields — are
+  personal to this checkout: they live in `user.json` only and are never
+  published to `loomworks.json` (§2.4), regardless of the profile's intent.
+  The reserved `cache` policy variable (§1.3.2) is filled through this same
+  map when a profile pins a machine-local compiler-cache policy; its
+  *configuration-* and *compiler-family-level* overrides, by contrast, live in
+  the project's `variables` / `overrides` blocks and publish and merge
+  per-variable exactly like any other variable value (§2.4 "Per-configuration
+  merge").
+- **`lsp`.** Saved on every mutation (toggle from the status page) so changes
+  survive nvim restarts. Workspace-wide, not per-project: a single clangd
+  binary serves every buffer in the workspace regardless of which project
+  owns it.
 
 - Always gitignored.
 - Written on every UI mutation (add/edit/remove project, config, profile, etc.).

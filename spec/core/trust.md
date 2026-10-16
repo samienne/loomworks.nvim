@@ -37,6 +37,13 @@ under the machine key. The signature envelope, the signed bytes, the
 signature and what it does and does not bind are
 [formats.md](../formats.md) §2.2.
 
+Copying a working copy from one workspace to another on the same machine is
+the same case as moving the workspace: the copy is **valid** there, and
+everything it names (profiles, toolchain selections, launch configurations,
+environment) is used as from any signed working copy — it was written by this
+machine's user, which is what the signature attests; it does not attest which
+workspace it was written for.
+
 A file is, on read:
 
 - **valid** — the member is present and verifies under this machine's key;

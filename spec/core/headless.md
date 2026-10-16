@@ -214,9 +214,9 @@ editor and the CLI share this lock, so neither operates on a directory the other
 holds — in particular a reset (§16.30) cannot remove a directory the other is
 building, and a build cannot enter a directory a reset is removing. Acquisition
 is **fail-fast** (the loser reports the holder and declines rather than waiting).
-The lockfile holds the common lock record of §19.5 (holder process id, host,
-process start time, nonce, holder kind, operation — rewritten from `configure`
-to `build` as the holder moves between steps — and start time), and the holder
+The lockfile holds the common lock record of §19.5
+([formats.md](../formats.md) §6.1; its operation is rewritten from `configure`
+to `build` as the holder moves between steps), and the holder
 heartbeats its mtime. A **dead** holder's lock (same host, no process with that
 id and start time) is reclaimed at once, and the interrupted step's state is
 recovered (§19.5 step 5); a lock on another host, or one whose record has no

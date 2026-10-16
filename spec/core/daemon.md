@@ -218,8 +218,7 @@ that needs a lock it did not take up front (for example a remote run that
 discovers it must rebuild) first releases every lock of a later class.
 
 The **workspace operation lock** O is the O_EXCL + heartbeat primitive with the
-common lock record of §19.5 (`{ pid, host, start_time, lock_nonce, kind,
-operation, started_at }`). It is taken by every
+common lock record of §19.5 ([formats.md](../formats.md) §6.1). It is taken by every
 operation that writes more than one of the three workspace files, or that
 removes a workspace file or a build tree as part of a larger change:
 
@@ -350,7 +349,8 @@ resets only build state — the journal also covers `loomworks.json` and the
 working copy.
 
 **Validation.** Moved to [formats.md](../formats.md) §7: a journal that fails
-it refuses the workspace as above.
+it refuses the workspace as above. Rolling forward never bypasses trust — the
+renamed files are verified on load as any file is (§17.4).
 
 **Implementation notes (master).** The operations that hold O commit through a
 transaction: every write of one of the three files during it is staged (and

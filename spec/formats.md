@@ -61,6 +61,10 @@ All three files are JSON written **deterministically**: object keys in sorted
 order at every depth (arrays keep their order), so rewriting unchanged data
 produces byte-identical output and an edit shows up as a minimal diff.
 
+The export of spec §16.39 "Format" states this encoding as sorted keys,
+two-space indentation and a trailing line feed, and writes a DEL or C1 control
+character in a string as a JSON `\u` escape.
+
 ### 1.3 The `_meta` member
 
 The working copy (§4) and the build cache (§5) carry a top-level `_meta`
@@ -125,12 +129,8 @@ deterministic sorted encoding of §1.2 — avoids any canonicalization ambiguity
 the fixed first-line position cannot be confused with a nested member of the
 same name. The workspace root is deliberately **not** bound: moving or renaming
 the workspace directory, or seeding a git worktree from the main checkout on the
-same machine (spec §16.25), keeps the files valid. Copying a working copy from
-one workspace to another on the same machine is the same case: the copy is
-**valid** there, and everything it names (profiles, toolchain selections,
-launch configurations, environment) is used as from any signed working copy —
-it was written by this machine's user, which is what the signature attests;
-it does not attest which workspace it was written for. Both hosts produce identical
+same machine (spec §16.25), keeps the files valid. Whether a working copy copied
+from one workspace to another is valid there is spec §17.3. Both hosts produce identical
 signatures for identical content. Readers remove the member before decoding, so
 it never appears in loaded data; older loomworks versions read a signed file as
 ordinary JSON.
@@ -193,7 +193,7 @@ never trusted to name programs is spec §17.6.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | No | Workspace display name (defaults to root dir name). Published from the working copy's `name` (spec §2.2); the working copy wins at load |
+| `name` | No | Workspace display name (defaults to root dir name). Published from the working copy's `name` (§4); the working copy wins at load |
 | `projects` | Yes | Dict of project_key → project definition |
 | `configuration_sets` | No | Dict of set_name → { project_key → variant } |
 | `profiles` | No | Dict of profile_key → explicit profile definition |
@@ -242,6 +242,7 @@ Configuration overrides may include:
 | `configuration_set` | Name of a configuration set to derive mappings from |
 | `kit_id` | Tool key to use (e.g., `"ninja-clang-18.0.0"`) |
 | `description` | The profile's description (spec §1.10) |
+| `default_target` | The profile's default target (§3.4) |
 
 ### 3.3 Descriptions
 
@@ -274,8 +275,8 @@ no configuration set is ignored, and the next write of that file drops it.
 
 ### 3.4 Fields defined elsewhere
 
-The following members of a project are defined, with their shape, in the
-sections named. The same members appear in the working copy (§4).
+The following members are defined, with their shape, in the sections named.
+The same members appear in the working copy (§4).
 
 | Member | Section |
 |--|--|
@@ -286,6 +287,7 @@ sections named. The same members appear in the working copy (§4).
 | Configuration inheritance (`inherits`) and module options | spec §1.3, the module's file under [`spec/modules/`](modules/) |
 | `projects.<key>.launch.<name>` (launch configurations, `deploy`) | spec §8.7 |
 | `projects.<key>.<type>.device` | spec §18.9 |
+| `profiles.<key>.default_target` (`{ project, target, working_dir? }`) and the working copy's `default_target` map keyed by profile key (§4) | spec §8.6 "Default target storage" |
 | The rest of `projects.<key>.<type>` (the module's `type_config`) | the module's file under [`spec/modules/`](modules/) |
 
 ## 4. `.nvim/loomworks.user.json`
@@ -332,22 +334,16 @@ for **blank** project variables (spec §1.3.1), keyed profile → project → va
     }
 }
 ```
-These are per-machine values (an SDK path, a device address) and — like the
-`active_profile`, `name`, and `device` fields — are personal to this checkout:
-they live in `user.json` only and are never published to `loomworks.json`
-(spec §2.4), regardless of the profile's intent. The reserved `cache` policy variable
-(spec §1.3.2) is filled through this same map when a profile pins a machine-local
-compiler-cache policy; its *configuration-* and *compiler-family-level*
-overrides, by contrast, live in the project's `variables` / `overrides` blocks
-and publish and merge per-variable exactly like any other variable value
-(spec §2.3 per-configuration merge).
+Whether the field is published, and how the values it holds merge, is
+spec §2.2 "`profile_variables`".
 
-The optional `name` field overrides the workspace display name (spec §1.1). It is
-present only when the user has set one explicitly (`lw init --name`,
-`lw workspace rename`, or the editor); when absent the name defaults to the
-root directory basename. Written to `loomworks.json` on publish.
+The optional `name` field overrides the workspace display name (spec §1.1).
+When it is present, its default and how it is published are spec §2.2
+"`name`".
 
 The `intent` field stores explicit per-item intent overrides (see spec §2.4).
+
+The `default_target` field maps profile keys to a default target (§3.4).
 
 The `configuration_set_descriptions` field holds configuration-set descriptions
 (spec §1.10), keyed by set name. It has the same shape and meaning as in
@@ -359,11 +355,9 @@ The `lsp` field stores per-server option overrides. Keys are server
 names (e.g. `clangd`); values are option tables whose accepted shape
 is defined by the integration's spec under `spec/integrations/lsp/`.
 All fields within a server table are optional — omitted fields fall
-back to the integration's hardcoded defaults. Saved on every
-mutation (toggle from the status page) so changes survive nvim
-restarts. Workspace-wide, not per-project: a single clangd binary
-serves every buffer in the workspace regardless of which project
-owns it. See `spec/integrations/lsp/clangd.md` §12 for clangd's
+back to the integration's hardcoded defaults. It is a top-level
+field of the working copy, not a project member; when it is saved
+and what it applies to are spec §2.2 "`lsp`". See `spec/integrations/lsp/clangd.md` §12 for clangd's
 specific schema and how options map to cmd flags.
 
 ## 5. `.nvim/loomworks.cache.json` (informative)
@@ -371,9 +365,12 @@ specific schema and how options map to cmd flags.
 The build cache is private to the implementation that writes it. Its shape
 and field meanings are described in spec §2.3, and an implementation that
 wants to share build state with another implementation follows that section.
-It carries `_meta` (§1.3) and is signed with the `kind` `cache` (§2.2). How
-an unsigned, invalid or newer-schema cache is handled is spec §2.3, §2.7 and
-§17.4; how concurrent writers merge it is spec §2.7 "Build cache: merge".
+It carries `_meta` (§1.3) and is signed with the `kind` `cache` (§2.2). A
+cache a reader cannot use is handled by the rules of the behavioural
+specification: unsigned, spec §17.4 "Build cache unsigned (migration)";
+invalid, spec §17.4 "Build cache invalid"; a newer or older schema, spec §2.7
+"Reading a newer file". How concurrent writers merge it is spec §2.7 "Build
+cache: merge".
 
 ## 6. Lock files
 
@@ -426,7 +423,7 @@ host's live holder; one still empty then is judged as a record without fields.
 | Runtime (R) | `<root>/.nvim/loomworks.daemon.lock` | the common record (§6.1) plus the runtime's fields below | spec §19.2 |
 | Workspace operation (O) | `<root>/.nvim/loomworks.op.lock` | the common record | spec §19.3 |
 | Build directory (B) | `<build dir>.loomworks-lock` | the common record | spec §16.6 |
-| Device (D) | a per-serial lockfile in a per-user state directory | the common record plus the device fields of spec §18.7 "Leftover programs" | spec §18.7 |
+| Device (D) | `<data>/device-locks/<serial>.lock`, with `<data>/device-locks/<serial>.leftover` for a program left running (spec §16.40); `LOOMWORKS_DEVICE_LOCK_DIR` relocates the directory (spec §16.34) | the common record plus the device fields of spec §18.7 "Leftover programs" | spec §18.7 |
 | File save (F) | `<file>.lock` beside the guarded file | the common record | spec §2.7 "Write lock" |
 
 (Moved from spec §19.2.) The runtime lock's record is the common lock record of
@@ -445,8 +442,8 @@ its entries in the file order of spec §19.3.
 **Validation.** A journal is data from disk: it is honoured only when every
 entry names one of the three workspace files in `.nvim/` and the staged files
 match `<file>.txn-<hex id>` beside them; anything else refuses the workspace
-(spec §19.4 "Recovery"). Rolling forward never bypasses trust — the renamed files are verified
-on load as any file is (spec §17.4).
+(spec §19.4 "Recovery"). How the files it rolls forward are then verified
+is spec §19.4 "Validation".
 
 ## 8. Daemon handle `.nvim/loomworks.daemon.json`
 

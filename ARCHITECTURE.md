@@ -520,7 +520,8 @@ a same-schema newer `written_by` warns once (`save_guard.newer_writer_warning`).
 Today every host loads the workspace in-process; the pieces of §19 that exist
 on master are the operation-safety primitives above and in §16.6 / §18.7
 (`build_lock.lua`, `remote/device_lock.lua`, `save_guard.lua`), all on the
-common lock record of §19.5 (`lock_record.lua`, with `proc.lua` for process
+common lock record of §19.5 (its shape is `spec/formats.md` §6.1;
+`lock_record.lua`, with `proc.lua` for process
 start times and tree kills). A reclaimed build-directory lock reports its
 holder's interrupted step; `Workspace:_recover_interrupted_build_dir(dir,
 record)` then resets the units of that directory (configure → `unconfigured`,
