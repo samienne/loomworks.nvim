@@ -280,7 +280,7 @@ describe("daemon run preparation (§19.15 Run)", function()
         assert.are.equal(profile, planned_for[2])
         assert.are.equal("/bin/app", done.fields.launch.cmd)
         assert.are.same({ "building launch target: app: hello", "building dependency: lib",
-            "deploying (pre_build): 1 copies", "deploying (post_build): 1 copies" }, lines)
+            "deploying (pre_build): 1 copy", "deploying (post_build): 1 copy" }, lines)
     end)
 
     it("builds a module target's one target, and with no_build neither builds nor deploys", function()

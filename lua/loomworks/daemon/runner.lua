@@ -786,8 +786,12 @@ function M.run(svc, ctx)
             local ph = phases[pi]
             band = nil
             if not ph then
-                -- A launch target's build ends here (no launch to resolve).
-                if target_build then return finish(0) end
+                -- A launch target's build ends here (no launch to resolve),
+                -- with the plain build's closing line.
+                if target_build then
+                    task:line(out_stream, "BUILD OK: " .. lt:display_name())
+                    return finish(0)
+                end
                 return prepare()
             end
             progress((pi - 1) / #phases)
@@ -806,13 +810,18 @@ function M.run(svc, ctx)
                 return phase_done()
             end
             if ph.deploy then
-                task:line(out_stream, "deploying (" .. ph.deploy .. "): " .. ph.copies .. " copies")
+                -- (n counts the declared sources, fresh ones included.)
+                task:line(out_stream, "deploying (" .. ph.deploy .. "): " .. ph.copies
+                    .. (ph.copies == 1 and " copy" or " copies"))
                 -- Each copy on the event loop, a cancel stopping between two
                 -- copies (it then ends the run once the copy in flight is done).
                 run.deploying = true
                 lt:_deploy_phase(ph.deploy, function(dok, derr)
                     run.deploying = false
-                    if run.cancelled then return finish(run.cancel_code, stopped()) end
+                    -- A cancel during the last copy: every copy completed and
+                    -- its records were saved, so the step is ok; the cancel
+                    -- then stops the run at the next phase.
+                    if run.cancelled and not dok then return finish(run.cancel_code, stopped()) end
                     local okn, whyn = current()
                     if not okn then return finish(1, stopped(whyn)) end
                     if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
@@ -864,7 +873,14 @@ function M.run(svc, ctx)
     -- are its start meta's (§19.15 "Steps of a task").
     local scope_plan, scope_err
     if target_scoped then
-        scope_plan, scope_err = plan_target_scope()
+        -- (A throw while planning ends the task, once started, as a
+        -- failure with no steps.)
+        local okp, a, b = pcall(plan_target_scope)
+        if okp then
+            scope_plan, scope_err = a, b
+        else
+            scope_plan, scope_err = nil, "cannot plan the launch target's build: " .. tostring(a)
+        end
         if scope_plan then
             step_states = {}
             for index in ipairs(scope_plan.phases) do step_states[index] = "pending" end

@@ -118,7 +118,7 @@ describe("daemon launch-target build (§19.15 Build of a launch target)", functi
         assert.is_nil(rec.done.fields)
         assert.are.equal("build", rec.meta.kind)
         assert.are.same({ "building launch target: app: hello", "building dependency: lib",
-            "deploying (pre_build): 1 copies" }, rec.lines)
+            "deploying (pre_build): 1 copy", "BUILD OK: app: hello" }, rec.lines)
     end)
 
     it("announces its plan in the start meta, each step pending, no probe or post-build deploy", function()
@@ -202,6 +202,35 @@ describe("daemon launch-target build (§19.15 Build of a launch target)", functi
         assert.matches("stopped: cancelled by the client", rec.done.err, 1, true)
         assert.are.same({ "1:running", "1:ok", "2:running", "2:cancelled", "3:skipped" }, transitions(rec))
         assert.are.same({ "build lib" }, rec.calls)
+    end)
+
+    it("closes a deploy ok whose copies all completed though a cancel came during the last one", function()
+        local lt = launch_target()
+        local pending
+        lt._deploy_phase = function(_, _, cb)
+            -- The last copy is in flight: it completes, no further check.
+            pending = function() cb(true) end
+        end
+        local rec = run_op(lt, {})
+        rec.run.cancel("cancelled by the client that started it", 130)
+        pending()
+        -- The deploy did its work: ok; the cancel then stops the next phase.
+        assert.are.same({ "1:running", "1:ok", "2:running", "2:ok", "3:skipped" }, transitions(rec))
+        assert.are.equal(130, rec.done.code)
+        assert.are.same({ "build lib" }, rec.calls)
+    end)
+
+    it("ends a task whose planning throws as a started failure with no steps", function()
+        local rec
+        assert.has_no.errors(function()
+            rec = run_op(launch_target({ deploy_count = function() error("boom in planning") end }), {})
+        end)
+        assert.is_table(rec.meta)
+        assert.is_nil(rec.meta.steps)
+        assert.are.equal(1, rec.done.code)
+        assert.matches("boom in planning", rec.done.err, 1, true)
+        assert.are.same({}, rec.calls)
+        assert.are.same({}, rec.steps)
     end)
 
     it("cancels a running build step: it is cancelled, the steps not reached skipped", function()
