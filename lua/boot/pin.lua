@@ -216,6 +216,21 @@ function M.own_end(args)
   return n, c
 end
 
+--- Does `args` ask for the version: `-v` / `--version` before the command
+--- word (or, with no command word, among lw's own arguments)? After the
+--- command `-v` is that command's own option — `--verbose` on build, run,
+--- test and clean (spec §16.4 *Verbose*) — so `lw build -v` builds while
+--- `lw -v build` prints the version.
+--- @param args string[] the whole command line, host flags already peeled
+--- @return boolean
+function M.asks_version(args)
+  local stop, c = M.own_end(args)
+  for i = 1, (c or stop) - 1 do
+    if args[i] == "-v" or args[i] == "--version" then return true end
+  end
+  return false
+end
+
 --- Peel the host-level flags (`--dev`, `--dev=<path>`, `--no-pin`) off the
 --- command line — only where they are lw's own (`own_end`): after `--` or in
 --- a program's arguments they are left in place for the program.
