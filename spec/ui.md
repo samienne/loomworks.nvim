@@ -766,6 +766,8 @@ reader sees workspace state first.
      and `Open overseer` opening its single overseer task (core §19.16
      "Tasks in the task runner"). *(Step 5k C1a: the row, `Show output` and
      `Cancel task`; C1b: `Open overseer`.)* The reset action above leaves remote tasks alone.
+   - *(Step 5t:)* a task carrying steps (core §19.15 "Steps of a task") keeps
+     its row, which follows the task's current step.
 5. Sub-section `Build directory locks` (only when at least one lock
    is held or has a non-empty queue):
    ```

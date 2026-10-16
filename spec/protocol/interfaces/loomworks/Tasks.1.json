@@ -2,7 +2,7 @@
   "interface": "loomworks.Tasks",
   "version": 1,
   "status": "draft",
-  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): the running tasks, their observation by subscription and their cancellation by their owner. The task frames themselves are the transport's task stream (spec 19.15), not signals of this interface.",
+  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): the running tasks, their observation by subscription and their cancellation by their owner. The task frames themselves are the transport's task stream (spec 19.15), not signals of this interface. Step 5t adds the steps of a target-scoped task: TaskInfo.steps and the step signal (spec 19.15 Steps of a task).",
   "methods": {
     "list": {
       "description": "The running tasks (started, not ended), in start order.",
@@ -60,6 +60,20 @@
           "error": { "description": "The refusal or failure the owner prints as lw: <error>.", "type": "string" }
         }
       }
+    },
+    "step": {
+      "description": "A step of a target-scoped task changed state (spec 19.15 Steps of a task; step 5t), sent after the task's started and before its done. A delta on top of TaskInfo.steps: on a seq gap a client re-reads list.",
+      "args": {
+        "type": "object",
+        "required": ["task_id", "seq", "index", "state"],
+        "properties": {
+          "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" },
+          "seq": { "description": "The signal envelope's seq: gapless per object and connection (spec 19.12).", "type": "integer", "minimum": 1 },
+          "index": { "description": "The step's 1-based position in TaskInfo.steps.", "type": "integer", "minimum": 1 },
+          "state": { "$ref": "loomworks.Common/1#/$defs/TaskStepState" },
+          "error": { "description": "A failed step's failure line.", "type": "string" }
+        }
+      }
     }
   },
   "subscribe_args": {
@@ -92,7 +106,12 @@
         "origin": { "description": "The owner's hello.client. Clients show an unknown origin as neutral.", "enum": ["cli", "editor"] },
         "started_at": { "description": "Wall-clock seconds.", "type": "integer" },
         "percent": { "type": "integer", "minimum": 0, "maximum": 100 },
-        "owned": { "description": "The calling connection owns it (it may cancel it).", "type": "boolean" }
+        "owned": { "description": "The calling connection owns it (it may cancel it).", "type": "boolean" },
+        "steps": {
+          "description": "A target-scoped task's steps with their current states (spec 19.15 Steps of a task; step 5t); absent for other tasks.",
+          "type": "array",
+          "items": { "$ref": "loomworks.Common/1#/$defs/TaskStep" }
+        }
       }
     }
   }

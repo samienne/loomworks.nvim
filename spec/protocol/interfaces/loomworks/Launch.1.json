@@ -2,7 +2,7 @@
   "interface": "loomworks.Launch",
   "version": 1,
   "status": "draft",
-  "description": "Object /launch (spec 19.15 Run, Debug, Build scope of a launch; 19.20): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. device_log lands in a later step.",
+  "description": "Object /launch (spec 19.15 Run, Debug, Build scope of a launch; 19.20): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. device_log lands in a later step. Step 5t (spec 19.15 Build of a launch target, Steps of a task) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler.",
   "methods": {
     "prepare_run": {
       "description": "Build (unless no_build), deploy and resolve the launch of the profile's target or launch configuration; the task result carries the launch spec, or device for a program that runs on a device in the client.",
