@@ -211,10 +211,36 @@ function LaunchTarget:build(on_complete)
         return future_mod.rejected(abs_err)
     end
 
-    -- `daemon` mode: a build the daemon cannot carry now is refused before
+    local editor_ops = require("loomworks.daemon.editor_ops")
+    -- `daemon` mode, a non-device target (step 5t, spec §19.16 "Editor
+    -- operations"): ONE `Launch/1.build` the editor owns — the daemon builds
+    -- the dependencies, runs the pre-build deploy and builds the target;
+    -- nothing of it runs here, and a build it cannot carry is refused.
+    if not self:requires_device() then
+        local routed
+        local f = future_mod.create(function(resolve, reject, token)
+            local handle
+            routed, handle = editor_ops.build_target(self, {
+                resolve = function() resolve(true) end,
+                reject = function(err) reject(err) end,
+            })
+            -- Cancelling the Future cancels the daemon's task.
+            if handle then token:on_cancel(function() handle:cancel() end) end
+        end)
+        if routed then
+            if on_complete then
+                f:next(function() on_complete(true) end)
+                 :catch(function() on_complete(false) end)
+            end
+            return f
+        end
+    end
+
+    -- `daemon` mode, a device target (its build stays the editor's until
+    -- step 5n): a build the daemon cannot carry now is refused before
     -- anything runs — its dependencies' builds or its pre-build deploy in
     -- the editor (spec §19.16 "Availability").
-    local refused = require("loomworks.daemon.editor_ops").build_refusal(self._workspace)
+    local refused = editor_ops.build_refusal(self._workspace)
     if refused then
         if on_complete then on_complete(false) end
         return future_mod.rejected(refused)
@@ -291,6 +317,34 @@ function LaunchTarget:build_dependencies()
         end
     end
     return all_deps
+end
+
+--- The configuration units a launch's build builds that already exist in
+--- the editor's model: each dependency's (the active profile's mapping, or a
+--- pinned configuration's existing unit — never materialised here) and the
+--- target's own. The artifact-conflict question asked before a daemon call
+--- (§19.16 "Editor operations", step 5t) covers these.
+--- @return loomworks.ConfigUnit[]
+function LaunchTarget:existing_build_units()
+    local out, seen = {}, {}
+    local function add(u)
+        if u and not seen[u] then
+            seen[u] = true
+            out[#out + 1] = u
+        end
+    end
+    local ws = self._workspace
+    for _, dep in ipairs(self:build_dependencies()) do
+        local pp = self._profile and self._profile:project(dep.project.key)
+        if pp and pp._config_unit then
+            add(pp._config_unit)
+        elseif dep.config_hint and ws and ws.find_config_unit then
+            local cfg = dep.project:get_configuration(dep.config_hint)
+            if cfg then add(ws:find_config_unit(dep.project, cfg, nil)) end
+        end
+    end
+    add(self._target and self._target._config_unit or self._config_unit)
+    return out
 end
 
 --- The refusal of a dependency no configuration resolves for (§8.8.4).

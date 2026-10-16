@@ -167,11 +167,14 @@ M.ROOT = {
     methods = { "describe", "subscribe" }, signals = { "retiring", "objects_changed" },
 }
 -- `cancel` for the tasks the editor owns (step 5k, §19.15 "The editor as
--- owner"); `list` is declared with it (§19.16 "Interface client") — the
--- observer still joins late through `status` (§19.11).
+-- owner"); `list` re-reads the steps of target-scoped tasks after a seq gap
+-- (step 5t, §19.15 "Steps of a task") — the observer still joins late
+-- through `status` (§19.11). `step` moves a task's current step; `started`
+-- and `ended` (which follow the task frames they announce) only count
+-- toward the object's seq (§19.12).
 M.TASKS = {
     object = "/tasks", iface = "loomworks.Tasks", v = 1, feature = "tasks",
-    methods = { "cancel", "list" }, signals = {},
+    methods = { "cancel", "list" }, signals = { "started", "ended", "step" },
 }
 M.WORKSPACE = {
     object = "/workspace", iface = "loomworks.Workspace", v = 1, feature = "model changes",
@@ -198,10 +201,12 @@ M.BUILD = {
 }
 -- The preparation of the editor's run and debug launches (step 5k C2,
 -- §19.16 "Editor operations"): task-streamed like M.BUILD; the editor then
--- starts the returned program itself.
+-- starts the returned program itself. `build`: the build of a non-device
+-- launch target (step 5t, §19.15 "Build of a launch target"), the call
+-- `launch_build` here (WIRE).
 M.LAUNCH = {
     object = "/launch", iface = "loomworks.Launch", v = 1, feature = "launch",
-    methods = { "prepare_run", "prepare_debug" }, signals = {}, call_only = true, tasks = true,
+    methods = { "prepare_run", "prepare_debug", "build" }, signals = {}, call_only = true, tasks = true,
 }
 -- The debug adapters section (step 5k C2, §19.20 `DebugConfig/1`): plain
 -- calls, no task; re-read on `Workspace/1` `changed` (it has no signal).
@@ -1431,6 +1436,7 @@ function Observer:_subscribe(conn, done)
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
+    self._tasks_seq, self._tasks_relist = nil, nil
     self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
     if not (type(conn.transport) == "number" and conn.transport >= 11) or type(welcome_objects) ~= "table"
@@ -1496,6 +1502,8 @@ function Observer:_ensure_subscriptions(conn, objects, done)
                             -- `/tests` `results` (step 5m C2): its own `seq`
                             -- baseline (per object and connection, §19.12).
                             if want == M.TESTS then self:_tests_subscribed(result) end
+                            -- `/tasks`: the baseline of its seq (step 5t).
+                            if want == M.TASKS then self:_tasks_subscribed(result) end
                         end
                         settle()
                     end)
@@ -1645,6 +1653,73 @@ function Observer:_tests_subscribed(result)
     for _, args in ipairs(early or {}) do self:_test_results(args) end
 end
 
+--- The `/tasks` subscription answered (step 5t): its `seq` is the baseline of
+--- the object's signals on this connection (§19.12), unless signals already
+--- arrived past it.
+--- @param result table|nil the subscribe reply's result
+function Observer:_tasks_subscribed(result)
+    local seq = type(result) == "table" and tonumber(result.seq) or nil
+    if seq and (self._tasks_seq == nil or self._tasks_seq < seq) then self._tasks_seq = seq end
+end
+
+--- A `Tasks/1` signal (§19.15 "Steps of a task", step 5t). Every one counts
+--- toward the object's gapless `seq` (§19.12); a `step` moves the current
+--- step of a task the editor knows (a delta on its `steps`). A gap means a
+--- lost signal: the steps are read again through `Tasks/1.list`.
+--- @param msg table the signal
+--- @param args table its args
+function Observer:_tasks_signal(msg, args)
+    local seq = tonumber(msg.seq)
+    local gap = false
+    if seq then
+        if self._tasks_seq and seq > self._tasks_seq + 1 then gap = true end
+        if self._tasks_seq == nil or seq > self._tasks_seq then self._tasks_seq = seq end
+    end
+    if msg.name == "step" then
+        local task = args.task_id ~= nil and self._tasks[args.task_id] or nil
+        if task and task:set_step(tonumber(args.index), args.state, args.error) then
+            self:_step_changed(task)
+        end
+    end
+    if gap then self:_relist_steps() end
+end
+
+--- A task's current step moved: its progress entry, status row and
+--- task-runner row follow it (§19.16 "Tasks in the task runner").
+--- @param task loomworks.RemoteTask
+function Observer:_step_changed(task)
+    self:_emit("daemon_task_step", { task = task })
+    pcall(require("loomworks.daemon.task_runner").step, task)
+end
+
+--- Read the running tasks' steps again (`Tasks/1.list`, after a seq gap)
+--- and adopt their states for the tasks the editor knows. One read at a
+--- time; a gap seen meanwhile reads once more after it.
+function Observer:_relist_steps()
+    if self._tasks_relist then
+        self._tasks_relist = "again"
+        return
+    end
+    local conn = self.conn
+    if not conn or conn.closed or type(conn.call) ~= "function" then return end
+    self._tasks_relist = true
+    self:_icall("list", {}, function(result)
+        vim.schedule(function()
+            local again = self._tasks_relist == "again"
+            self._tasks_relist = nil
+            if self.state == "stopped" or self.conn ~= conn then return end
+            local list = type(result) == "table" and type(result.tasks) == "table" and result.tasks or {}
+            for _, info in ipairs(list) do
+                local task = type(info) == "table" and info.task_id ~= nil and self._tasks[info.task_id] or nil
+                if task and type(info.steps) == "table" and task:adopt_steps(info.steps) then
+                    self:_step_changed(task)
+                end
+            end
+            if again then self:_relist_steps() end
+        end)
+    end)
+end
+
 --- Joining late (spec §19.16): ask `status` and adopt every task in its
 --- `tasks` (§19.11) as a remote task, its output starting now. A task whose
 --- `start` already arrived on the stream is kept; one that ended before the
@@ -1730,6 +1805,7 @@ function Observer:_on_closed(c)
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
+    self._tasks_seq, self._tasks_relist = nil, nil
     self:_clear_views()
     self:_lsp_changed()
     self:_stop_timer("_keepalive")
@@ -1764,7 +1840,8 @@ function Observer:_on_message(msg)
         -- Interface signals (§19.20): the root's `retiring` and
         -- `Workspace.changed`, the interface forms of the protocol-10
         -- broadcasts below. (`Tasks.started` / `ended` follow the task
-        -- frames they announce: nothing to do.)
+        -- frames they announce: they only count toward the seq; `step`
+        -- moves a task's current step, step 5t.)
         local args = type(msg.args) == "table" and msg.args or {}
         if msg.object == M.ROOT.object and msg.name == "retiring" then
             return self:_on_message({ kind = "retiring" })
@@ -1777,6 +1854,8 @@ function Observer:_on_message(msg)
             return self:_fetch_lsp()
         elseif msg.object == M.TESTS.object and msg.iface == M.TESTS.iface and msg.name == "results" then
             return self:_test_results(args)
+        elseif msg.object == M.TASKS.object and msg.iface == M.TASKS.iface then
+            return self:_tasks_signal(msg, args)
         elseif msg.name == "update" then
             for _, want in ipairs(M.VIEWS) do
                 if msg.object == want.object and msg.iface == want.iface and msg.v == want.v then
@@ -1912,10 +1991,10 @@ M.DECLINED_CODES = { same_build_required = true, stopping = true, retiring = tru
 --- Tasks/1, to be cancelled).
 local METHOD_IFACE = {
     build = M.BUILD, configure = M.BUILD, clean = M.BUILD,
-    prepare_run = M.LAUNCH, prepare_debug = M.LAUNCH,
+    prepare_run = M.LAUNCH, prepare_debug = M.LAUNCH, launch_build = M.LAUNCH,
     adapters = M.DEBUG, set_adapter = M.DEBUG,
     get = M.LSP, set_option = M.LSP,
-    cancel = M.TASKS,
+    cancel = M.TASKS, list = M.TASKS,
     discover = M.TESTS, run_cases = M.TESTS, prepare_test_debug = M.TESTS, collect = M.TESTS, result = M.TESTS,
 }
 
@@ -1923,7 +2002,9 @@ local METHOD_IFACE = {
 --- Launch/1 and Tests/1 both have a `prepare_debug`, so the test one is the
 --- call `prepare_test_debug` here — METHOD_IFACE, CALLS and the degraded
 --- methods are keyed by the call's name, the daemon is sent `prepare_debug`.
-local WIRE = { prepare_test_debug = "prepare_debug" }
+--- Likewise Build/1 and Launch/1 both have a `build`: the launch target's is
+--- the call `launch_build` (step 5t).
+local WIRE = { prepare_test_debug = "prepare_debug", launch_build = "build" }
 
 --- The calls the editor makes (step 5k), each naming its method literally
 --- (the guard checks them against the `methods` of M.BUILD, M.LAUNCH,
@@ -1944,6 +2025,9 @@ local CALLS = {
     prepare_debug = function(conn, args, cb, env)
         conn:call(M.LAUNCH.object, M.LAUNCH.iface, M.LAUNCH.v, "prepare_debug", args, cb, env)
     end,
+    launch_build = function(conn, args, cb, env)
+        conn:call(M.LAUNCH.object, M.LAUNCH.iface, M.LAUNCH.v, "build", args, cb, env)
+    end,
     adapters = function(conn, args, cb, env)
         conn:call(M.DEBUG.object, M.DEBUG.iface, M.DEBUG.v, "adapters", args, cb, env)
     end,
@@ -1958,6 +2042,9 @@ local CALLS = {
     end,
     cancel = function(conn, args, cb, env)
         conn:call(M.TASKS.object, M.TASKS.iface, M.TASKS.v, "cancel", args, cb, env)
+    end,
+    list = function(conn, args, cb, env)
+        conn:call(M.TASKS.object, M.TASKS.iface, M.TASKS.v, "list", args, cb, env)
     end,
     discover = function(conn, args, cb, env)
         conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "discover", args, cb, env)
@@ -1992,7 +2079,7 @@ function Observer:_icall(name, args, cb)
         return cb(nil, { code = "closed", message = "not connected" })
     end
     local env = nil
-    if name ~= "cancel" then env = (self.opts.environ or vim.fn.environ)() end
+    if name ~= "cancel" and name ~= "list" then env = (self.opts.environ or vim.fn.environ)() end
     send(conn, args, cb, env)
 end
 
@@ -2672,6 +2759,7 @@ function Observer:stop()
     self.conn = nil
     if c then c.on_close = nil; c:close() end
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
+    self._tasks_seq, self._tasks_relist = nil, nil
     self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end

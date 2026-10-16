@@ -223,6 +223,16 @@ function M.setup(opts)
         end
     end)
 
+    -- A task carrying steps (step 5t, §19.15 "Steps of a task") keeps its
+    -- one entry, which follows its current step.
+    lw.on("daemon_task_step", function(data)
+        local handle = handles["daemon:" .. data.task.id]
+        local step = data.task:step_text()
+        if handle and step then
+            handle:report({ message = clip(step) })
+        end
+    end)
+
     lw.on("daemon_task_stopped", function(data)
         local task = data.task
         local key = "daemon:" .. task.id

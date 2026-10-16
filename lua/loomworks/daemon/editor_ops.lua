@@ -40,11 +40,16 @@
 --- section reads and writes `loomworks.DebugConfig/1` (M.debug_adapters,
 --- M.set_debug_adapter); while that is not carried the section is
 --- unavailable and its writes fail.
+---
+--- Step 5t part C: the build of a non-device launch target is one
+--- `Launch/1.build` the editor owns (M.build_target) — no dependency build
+--- or deploy in the editor; it and the preparations ask the
+--- artifact-conflict question before the call, its Yes sent as `force`.
 
 local M = {}
 
 local VERB = { build = "build", configure = "configure", clean = "clean",
-    prepare_run = "launch", prepare_debug = "debug launch", discover = "test discovery",
+    prepare_run = "launch", prepare_debug = "debug launch", launch_build = "build", discover = "test discovery",
     run_cases = "test run", prepare_test_debug = "test debug preparation" }
 
 --- The calls whose task-runner restart is not sent again (§19.16 "Tasks in
@@ -59,7 +64,7 @@ M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = 
 --- workspace's own observer carries its operations: a step chained from a
 --- workspace the editor has since swapped away from is never sent to another
 --- workspace's daemon.
---- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"launch_build"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"
 --- @param ws loomworks.Workspace|nil
 --- @return loomworks.daemon.Observer|nil
 function M.carrier(method, ws)
@@ -97,8 +102,9 @@ end
 
 --- In `daemon` mode, the refusal of a build of `ws` the daemon cannot carry
 --- now (M.refuse's message, notified), or nil — carried, or the `in-process`
---- mode. A launch target's build asks it first, so that nothing of it (its
---- pre-build deploy) runs in the editor when its build would be refused.
+--- mode. A device target's build (still the editor's until step 5n) asks it
+--- first, so that nothing of it (its pre-build deploy) runs in the editor
+--- when its build would be refused.
 --- @param ws loomworks.Workspace|nil
 --- @return string|nil
 function M.build_refusal(ws)
@@ -327,10 +333,12 @@ function M.device_launch_refusal(target)
     return "launch: " .. (obs and obs.state ~= "stopped" and obs:refusal("build") or "the workspace is no longer loaded")
 end
 
---- Prepare a run (`mode` "launch") or debug launch of a non-device launch
---- target through the daemon (`Launch/1.prepare_run` / `prepare_debug`,
---- §19.16 "Editor operations"), under the availability rule of the header.
---- False only in the `in-process` mode — the caller runs the in-process
+--- A `Launch/1` call the editor owns on a non-device launch target (§19.16
+--- "Editor operations"): the preparation of a run or debug launch
+--- (`prepare_run` / `prepare_debug`) or, step 5t, the target's build
+--- (`launch_build`, sent as `build`), under the availability rule of the
+--- header; the artifact-conflict question asked first, its Yes sent as
+--- `force` (step 5t). False only in the `in-process` mode — the caller runs the in-process
 --- chain. Otherwise true, and it ends through `k`: `k.resolve(done)` with
 --- the task result (`launch`, or `device = true` for a foreign artifact;
 --- `debug`) once the preparation ended with exit 0 — the caller then starts
@@ -341,13 +349,12 @@ end
 --- program is started — a call not yet sent is never sent, one not yet
 --- answered is cancelled once accepted, an accepted one at once
 --- (`Tasks/1.cancel` of the owned task, Observer:cancel_owned_id).
---- @param mode "launch"|"debug"
+--- @param method "prepare_run"|"prepare_debug"|"launch_build"
 --- @param target loomworks.LaunchTarget
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
 --- @return loomworks.daemon.Preparation|nil preparation (routed, not refused at once)
-function M.prepare(mode, target, k)
-    local method = mode == "debug" and "prepare_debug" or "prepare_run"
+local function launch_call(method, target, k)
     local ws = M.scope_workspace({ profile = target._profile })
     local daemon, mode_obs = M.daemon_of(ws)
     if not daemon then return false end
@@ -372,10 +379,12 @@ function M.prepare(mode, target, k)
     local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
     local kk = { resolve = live(k.resolve), reject = live(k.reject) }
     local reply = on_reply(method, obs, kk)
-    local function send()
+    local function send(force)
         if p.cancelled then return end
         if not obs:can_call(method) then return M.refuse(method, obs, kk) end
-        obs:start_owned(method, M.launch_args(target), {
+        local args = method == "launch_build" and M.target_build_args(target) or M.launch_args(target)
+        if force then args.force = true end
+        obs:start_owned(method, args, {
             on_reply = function(r)
                 if r.outcome == "accepted" then
                     p.task_id = r.task_id
@@ -391,14 +400,68 @@ function M.prepare(mode, target, k)
             end,
         })
     end
+    -- The artifact-conflict question (§5.9) over the units the launch's
+    -- build builds, before the call; its Yes travels as `force` (step 5t).
+    local function go()
+        if p.cancelled then return end
+        ask_conflict(obs.ws, target:existing_build_units(), function(force, err)
+            if err then
+                if p.cancelled then return end
+                vim.notify("loomworks: " .. err, vim.log.levels.WARN)
+                return kk.reject(err, true)
+            end
+            send(force)
+        end)
+    end
     local lw = require("loomworks")
     if lw.has_pending_deletions() then
         vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
-        lw.after_deletions(send)
+        lw.after_deletions(go)
     else
-        send()
+        go()
     end
     return true, p
+end
+
+--- Prepare a run (`mode` "launch") or debug launch of a non-device launch
+--- target through the daemon (see launch_call).
+--- @param mode "launch"|"debug"
+--- @param target loomworks.LaunchTarget
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil preparation (routed, not refused at once)
+function M.prepare(mode, target, k)
+    return launch_call(mode == "debug" and "prepare_debug" or "prepare_run", target, k)
+end
+
+--- The arguments of a launch target's build (`Launch/1.build`, §19.15
+--- "Build of a launch target"): the launch target addressed as a
+--- preparation addresses it (M.launch_args) — no `build_scope`, `cwd`,
+--- `extra` or `no_build`, which the build does not take.
+--- @param target loomworks.LaunchTarget
+--- @return table
+function M.target_build_args(target)
+    local a = M.launch_args(target)
+    a.build_scope, a.cwd = nil, nil
+    return a
+end
+
+--- Build a non-device launch target through the daemon (step 5t, §19.16
+--- "Editor operations"): ONE `Launch/1.build` the editor owns — the
+--- daemon builds its dependencies, runs its pre-build deploy and builds its
+--- own unit, reporting each as a step; nothing of it runs in the editor.
+--- The artifact-conflict question is asked before the call, its Yes sent as
+--- `force`. False only in the `in-process` mode — the caller builds
+--- in-process. Otherwise true, and it ends through `k` as M.prepare does:
+--- `k.resolve(done)` once the task ended with exit 0, else
+--- `k.reject(message, notified)` (refused when the daemon cannot carry it
+--- now — never built in the editor).
+--- @param target loomworks.LaunchTarget
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
+function M.build_target(target, k)
+    return launch_call("launch_build", target, k)
 end
 
 --- The discovery of the active profile's tests through the daemon (step 5m

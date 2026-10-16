@@ -222,8 +222,12 @@ return {
     -- conn:call(M.TESTS.object, M.TESTS.iface, ...) for run_cases,
     -- prepare_debug (the call `prepare_test_debug`), collect and result —
     -- the versioned table Tests/1.
+    -- 19 -> 21: step 5t C adds two CALLS naming their methods literally:
+    -- conn:call(M.LAUNCH.object, M.LAUNCH.iface, ...) for build (the call
+    -- `launch_build`) and conn:call(M.TASKS.object, M.TASKS.iface, ...) for
+    -- list (the steps re-read after a seq gap) — Launch/1 and Tasks/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 19,
+        ["lua/loomworks/daemon/observer.lua"] = 21,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core
