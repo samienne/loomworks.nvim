@@ -72,7 +72,7 @@
             "meta": { "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "kind": "discover", "profile": "dev",
               "units": [ { "project": "app", "configuration": "Debug" } ] }
         } },
-        { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug", "role": "phase" } },
         { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "line", "stream": "out", "text": "app/Debug: 3 tests" }, "timeout_ms": 60000 },
         { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "line", "stream": "out", "text": "DISCOVER OK: dev (3 tests, 0 failed)" } },
         { "expect": { "kind": "task", "task_id": { "$var": "d1" }, "phase": "done", "exit_code": 0,
@@ -85,7 +85,7 @@
 
         { "send": { "kind": "call", "req_id": 4, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": { "force": true }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "accepted", "task_id": { "$bind": "d3" } } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "d3" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d3" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug", "role": "phase" } },
         { "expect": { "kind": "task", "task_id": { "$var": "d3" }, "phase": "done", "exit_code": 0, "result": { "tests": 3, "failed": 0 } }, "timeout_ms": 60000 }
       ]
     },
@@ -102,7 +102,7 @@
         { "expect": { "kind": "task", "task_id": { "$var": "b" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },
         { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": {}, "env": { "$var": "env", "$with": { "LW_TEST_DISCOVER_SLEEP": "60000" } } } },
         { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "d" } } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "d" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "d" }, "phase": "line", "stream": "out", "text": "==> [discover] app/Debug", "role": "phase" } },
         { "send": { "kind": "call", "req_id": 3, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": { "$var": "d" } } } },
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
         { "expect": { "kind": "task", "task_id": { "$var": "d" }, "phase": "done", "exit_code": 130,

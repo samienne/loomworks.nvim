@@ -536,6 +536,15 @@ function Session:check_task(frame)
         end
         local ok, err = self.set:validate(t.rel, base .. "meta", frame.meta)
         if not ok then return false, what .. " meta: " .. tostring(err) end
+    elseif frame.phase == "line" and frame.role ~= nil then
+        -- A line's role is its interface's LineRole (API.md §4.2): a client
+        -- tolerates an unknown one, but the server sends only declared values.
+        local ns = tostring(t.iface):match("^([%w_]+)%.")
+        local crel = ns and documents.interface_path(ns .. ".Common", 1)
+        if crel then
+            local ok, err = self.set:validate(crel, "/$defs/LineRole", frame.role)
+            if not ok then return false, what .. " line role: " .. tostring(err) end
+        end
     elseif frame.phase == "done" then
         self.tasks[frame.task_id] = nil
         if frame.result == nil then return false, what .. ": done without a result" end

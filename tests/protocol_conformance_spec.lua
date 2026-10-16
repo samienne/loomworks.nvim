@@ -127,6 +127,20 @@ describe("conformance engine", function()
         ok, err = run({ accepted, start, J('{"kind":"task","task_id":"g.4","phase":"done","exit_code":0,"result":{"exit_code":"zero"}}') })
         assert.is_false(ok)
         assert.truthy(err:find("result", 1, true), err)
+        -- A line's role is the interface's LineRole (Common/1); absent is plain.
+        local done = J('{"kind":"task","task_id":"g.4","phase":"done","exit_code":0,"result":{"exit_code":0}}')
+        ok, err = run({ accepted, start,
+            J('{"kind":"task","task_id":"g.4","phase":"line","stream":"out","text":"building profile: p","role":"lead"}'),
+            J('{"kind":"task","task_id":"g.4","phase":"line","stream":"out","text":"x"}'), done })
+        assert.is_true(ok, err)
+        ok, err = run({ accepted, start,
+            J('{"kind":"task","task_id":"g.4","phase":"line","stream":"out","text":"x","role":"sparkly"}'), done })
+        assert.is_false(ok)
+        assert.truthy(err:find("line role", 1, true), err)
+        ok, err = run({ accepted, start,
+            J('{"kind":"task","task_id":"g.4","phase":"line","stream":"out","text":"x","role":3}'), done })
+        assert.is_false(ok)
+        assert.truthy(err:find("role", 1, true), err)
         -- A task no interface call started (protocol 10) is only matched.
         ok, err = run({ J('{"kind":"ok","req_id":1,"result":{"outcome":"refused","message":"m","exit_code":1}}'),
             J('{"kind":"task","task_id":"g.9","phase":"start","meta":{"kind":"build"}}'),
