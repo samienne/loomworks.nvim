@@ -145,7 +145,8 @@ end
 
 --- The status lines announcing a step (§16.4): `==> [kind] name`, WHY a
 --- configure runs (the gate's reason + the module's full / in-place choice),
---- and with `verbose` the command line + cwd. Also writes the command line to
+--- and with `verbose` the command line + cwd + env overrides
+--- (`command_lines`). Also writes the command line to
 --- the workspace log (always, §16.4). Each line's highlighting role (§16.7)
 --- is returned alongside it: `phase` for the header, `reason`, `command`.
 --- @param ws loomworks.Workspace
@@ -168,12 +169,60 @@ function M.step_lines(ws, step, opts)
     local cwd = step.cwd or ws.root
     overseer.log_task_command(ws, step.name, step, cwd)
     if opts.verbose then
-        lines[#lines + 1] = "    $ " .. overseer.command_text(step)
-        lines[#lines + 1] = "    (in " .. tostring(cwd) .. ")"
-        roles[#roles + 1] = "command"
-        roles[#roles + 1] = "command"
+        for _, l in ipairs(M.command_lines(step, cwd)) do
+            lines[#lines + 1] = l
+            roles[#roles + 1] = "command"
+        end
     end
     return lines, roles
+end
+
+--- The lines `-v` / `--verbose` prints for one command a step runs (headless
+--- §16.4 *Verbose*), each of the `command` role (§16.7): `    $ <command>`
+--- (formatted as for the workspace log, `overseer.command_text`), then
+--- `    (in <cwd>)` when a working directory is given, then
+--- `    env: <NAME>=<value> …` for the environment overrides the step adds
+--- (`spec.env`, names sorted) — never the inherited environment.
+--- @param spec { cmd?: string[], display_cmd?: string[], env?: table<string, string> }
+--- @param cwd? string
+--- @return string[]
+function M.command_lines(spec, cwd)
+    local lines = { "    $ " .. require("loomworks.overseer").command_text(spec) }
+    if cwd then lines[#lines + 1] = "    (in " .. tostring(cwd) .. ")" end
+    local env = M.env_line(spec.env)
+    if env then lines[#lines + 1] = env end
+    return lines
+end
+
+--- `    env: <NAME>=<value> …` for a step's environment overrides (names sorted,
+--- each `NAME=value` quoted like a command argument), or nil when it adds none.
+--- @param env table<string, string>|nil
+--- @return string|nil
+function M.env_line(env)
+    if type(env) ~= "table" or not next(env) then return nil end
+    local names = {}
+    for k in pairs(env) do names[#names + 1] = tostring(k) end
+    table.sort(names)
+    local parts = {}
+    for i, k in ipairs(names) do parts[i] = k .. "=" .. tostring(env[k]) end
+    return "    env: " .. require("loomworks.term").format_argv(parts)
+end
+
+--- The `-v` line for one deploy step (§16.4 *Verbose*, §8):
+--- `    copy <source> -> <destination>`, or `    up to date <destination>`
+--- when the step was skipped as fresh.
+--- @param ev { action: "copy"|"fresh", source: string, dest: string }
+--- @return string
+function M.deploy_line(ev)
+    if ev.action == "fresh" then return "    up to date " .. tostring(ev.dest) end
+    return "    copy " .. tostring(ev.source) .. " -> " .. tostring(ev.dest)
+end
+
+--- The `-v` line for a clean's removal of a directory (§16.4 *Verbose*).
+--- @param dir string
+--- @return string
+function M.remove_line(dir)
+    return "    remove " .. tostring(dir)
 end
 
 --- The spawnable form of a step: the program resolved to an absolute path

@@ -79,15 +79,17 @@ local LAUNCH_ADDR = spec({ valued = { "--project", "--launch" } })
 --- sub-command but an operand (`lw target <profile>`).
 M.COMMANDS = {
   run = spec({
-    flags = concat({ "--target", "--launch", "--print", "--dry-run", "--no-build" }, DEVICE_FLAGS),
+    flags = concat({ "--target", "--launch", "--print", "--dry-run", "--no-build", "--verbose", "-v" },
+      DEVICE_FLAGS),
     valued = concat({ "--project", "--cwd", "--working-dir", "--prefix" }, DEVICE_VALUED),
     eq = { "--print=", "--dry-run=" },
   }),
   build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v" }, valued = { "--target" },
     eq = { "--target=" } }),
-  test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json", "--no-build" }, DEVICE_FLAGS),
+  test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json", "--no-build", "--verbose",
+      "-v" }, DEVICE_FLAGS),
     valued = concat({ "--junit", "--target", "--cwd", "--working-dir" }, DEVICE_VALUED) }),
-  clean = NONE,
+  clean = spec({ flags = { "--verbose", "-v" } }),
   reset = spec({ flags = { "--all", "-y", "--yes" } }),
   unlock = spec({ flags = { "--all" }, valued = { "--device" } }),
   profiles = NONE,
