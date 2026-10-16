@@ -365,13 +365,16 @@ end
 --- mode: launched by the run itself), `[3]` attached (`--no-daemon` in daemon
 --- mode, no daemon running) — with the same exit code, output
 --- (`o.norm(s, root)` then `parity_text`) and state (`o.state(root)`). The
---- daemon is stopped afterwards. Returns the in-process result.
---- @param o { roots: string[], args: string[], lw: function, norm: function, state: function, env: table, extra?: table, stdin?: string, routed?: boolean }
---- @return table
+--- in-process run is the plain host, never the attached runtime: the daemon's
+--- environment scope must not hide a divergence (§19.17). The daemon is
+--- stopped afterwards unless `o.keep_daemon` (a loop of cases on the same
+--- roots). Returns the in-process, daemon and attached results.
+--- @param o { roots: string[], args: string[], lw: function, norm: function, state: function, env: table, extra?: table, stdin?: string, routed?: boolean, keep_daemon?: boolean }
+--- @return table ra, table rb, table rc
 function M.three_way(o)
     local function with(t) return vim.tbl_extend("force", o.extra or {}, t) end
     local a, b, c = o.roots[1], o.roots[2], o.roots[3]
-    local what = table.concat(o.args, " ")
+    local what = table.concat(o.args, " ") .. " " .. vim.inspect(o.extra or {})
     local ra = o.lw(a, o.args, with({ LOOMWORKS_RUNTIME = "in-process" }), o.stdin)
     local rb = o.lw(b, o.args, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
     local rc = o.lw(c, { "--no-daemon", unpack(o.args) }, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
@@ -390,7 +393,7 @@ function M.three_way(o)
         -- ... and no daemon was involved (§19.1 rule c).
         assert(not rc.stderr:find("through the workspace daemon", 1, true), what .. ": daemon line\n" .. rc.stderr)
     end
-    M.stop_daemon(b, o.env)
+    if not o.keep_daemon then M.stop_daemon(b, o.env) end
     local ea = M.parity_text(o.norm(ra.stdout, a))
     local fa = M.parity_text(o.norm(ra.stderr, a))
     for _, x in ipairs({ { rb, b, "daemon" }, { rc, c, "attached" } }) do
@@ -401,7 +404,7 @@ function M.three_way(o)
         assert.same(o.state(a), o.state(root), how)
     end
     assert.is_nil(uv.fs_stat(c .. "/.nvim/loomworks.daemon.lock"), what .. ": R not released")
-    return ra
+    return ra, rb, rc
 end
 
 return M

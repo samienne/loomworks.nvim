@@ -260,7 +260,8 @@ describe("lw test through the workspace daemon (real processes)", function()
         for _, c in ipairs(cases) do
             local args = { "--no-input" }
             vim.list_extend(args, c[1])
-            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
+            -- The plain in-process host (`--no-daemon` runs attached, §19.1).
+            local ra = lw(a, args, vim.tbl_extend("force", c[2] or {}, { LOOMWORKS_RUNTIME = "in-process" }))
             local rb = lw(b, args, c[2])
             local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2] or {})
             assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
@@ -278,7 +279,9 @@ describe("lw test through the workspace daemon (real processes)", function()
         -- working directory on both paths (the daemon's cwd is the root).
         do
             local args = { "--no-input", "test", "dev", "--junit", "sub-reports/s.xml" }
-            local ra = H.lw({ "--no-daemon", unpack(args) }, { env = env, cwd = a .. "/app" })
+            local ea = { vars = vim.deepcopy(env.vars), data = env.data, config = env.config }
+            ea.vars.LOOMWORKS_RUNTIME = "in-process"
+            local ra = H.lw(args, { env = ea, cwd = a .. "/app" })
             local rb = H.lw(args, { env = env, cwd = b .. "/app" })
             assert.equals(ra.code, rb.code, ra.stderr .. "\n---\n" .. rb.stderr)
             assert.truthy(rb.stderr:find(NOTICE, 1, true), rb.stderr)
@@ -302,7 +305,7 @@ describe("lw test through the workspace daemon (real processes)", function()
     end)
 
     it("--color=always: each line the same text and role both ways — the same bytes (§19.17)", function()
-        local a, b = workspace(), workspace()
+        local roots3 = { workspace(), workspace(), workspace() }
         local cases = {
             { { "--color=always", "test", "dev" } },
             { { "--color=always", "test", "dev" }, { LW_TEST_FAIL_UNIT = "app" } },
@@ -312,17 +315,16 @@ describe("lw test through the workspace daemon (real processes)", function()
         for _, c in ipairs(cases) do
             local args = { "--no-input" }
             vim.list_extend(args, c[1])
-            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
-            local rb = lw(b, args, c[2])
+            -- In-process, through the daemon and attached (§19.1, §19.17).
+            local ra = H.three_way({ roots = roots3, args = args, extra = c[2], lw = lw, norm = norm, env = env,
+                keep_daemon = true, state = function(root)
+                    return { cache = cache_of(root, env.data .. "/trust.key"), reports = files_of(root .. "/reports") }
+                end })
             local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2] or {})
-            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
-            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
-            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
-            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
             assert.truthy(ra.stdout:find("\27[1mbuilding profile: dev\27[0m", 1, true), what .. "\n" .. ra.stdout)
         end
         -- The test phase is painted too: its step headers and the outcome.
-        local ok = lw(b, { "--no-input", "--color=always", "test", "dev" })
+        local ok = lw(roots3[2],{ "--no-input", "--color=always", "test", "dev" })
         assert.equals(0, ok.code, ok.stderr)
         assert.truthy(ok.stdout:find("\27[1;36m==>\27[0m\27[1m [test] app: nvim\27[0m", 1, true), ok.stdout)
         assert.truthy(ok.stdout:find("\27[32mTESTS OK: dev (2 steps)\27[0m", 1, true), ok.stdout)
@@ -332,8 +334,8 @@ describe("lw test through the workspace daemon (real processes)", function()
         local tests = { "chk", { "chk2", "--x" } }
         local extra = { env = { LW_V_SAVED = "s" },
             deploy = { ["deployed/saved.lua"] = { project = "app", path = "${workspace_root}/saved.lua" } } }
-        local a, b = workspace(tests, extra), workspace(tests, extra)
-        for _, root in ipairs({ a, b }) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end
+        local roots3 = { workspace(tests, extra), workspace(tests, extra), workspace(tests, extra) }
+        for _, root in ipairs(roots3) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end
         local cases = {
             { { "--color=always", "test", "dev", "-v" }, { LW_V_CLIENT = "one" } },
             { { "test", "dev", "--verbose" }, { LW_V_CLIENT = "two" } },
@@ -344,14 +346,18 @@ describe("lw test through the workspace daemon (real processes)", function()
             local args = { "--no-input" }
             vim.list_extend(args, c[1])
             c[2].NoDefaultCurrentDirectoryInExePath = false
-            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
-            local rb = lw(b, args, c[2])
+            c[2].NODEFAULTCURRENTDIRECTORYINEXEPATH = false
+            -- In-process, through the daemon and attached (§19.1, §19.17).
+            local ra = H.three_way({ roots = roots3, args = args, extra = c[2], lw = lw, norm = norm, env = env,
+                keep_daemon = true, state = function(root)
+                    -- (The deploy records: keyed by the absolute destination, with its source's mtime.)
+                    local cache = cache_of(root, env.data .. "/trust.key")
+                    local deployed = cache and vim.tbl_count(cache.deploy_state or {})
+                    if cache then cache.deploy_state = nil end
+                    return { cache = cache, deployed = deployed }
+                end })
             local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2])
-            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
-            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
-            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
-            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
-            local out = norm(rb.stdout, b):gsub("\27%[[%d;]*m", "")
+            local out = norm(ra.stdout, roots3[1]):gsub("\27%[[%d;]*m", "")
             -- The runner's command and env line (its PATH addition, over the client's PATH).
             assert.truthy(out:find("    env: LW_V_RUNNER=1 ", 1, true), what .. "\n" .. out)
             assert.truthy(out:find("/lw-runner/bin" .. (H.is_win and ";" or ":") .. "$PATH", 1, true), what .. "\n" .. out)
@@ -366,7 +372,7 @@ describe("lw test through the workspace daemon (real processes)", function()
     end)
 
     it("-v, a target-backed saved test target (a full environment on Windows): the env line shows nothing the daemon itself added — the same bytes in-process, through the daemon and attached (§19.15 \"Roles and verbose\")", function()
-        local a, b, c = workspace({ "tchk" }), workspace({ "tchk" }), workspace({ "tchk" })
+        local roots3 = { workspace({ "tchk" }), workspace({ "tchk" }), workspace({ "tchk" }) }
         for _, form in ipairs({ { "test", "dev", "-v" }, { "--color=always", "test", "dev", "--verbose" } }) do
             local args = { "--no-input" }
             vim.list_extend(args, form)
@@ -374,23 +380,12 @@ describe("lw test through the workspace daemon (real processes)", function()
             -- or editor-hosted client; the released lw sets it at startup): on
             -- Windows the daemon's environment scope adds it (envscope.with),
             -- and the step's full environment (ConfigUnit:run_env) is read in it.
-            local function vars(runtime)
-                return { LOOMWORKS_RUNTIME = runtime, NoDefaultCurrentDirectoryInExePath = false,
-                    NODEFAULTCURRENTDIRECTORYINEXEPATH = false }
-            end
-            local ra = lw(a, args, vars("in-process"))
-            local rb = lw(b, args, vars("daemon"))
-            local rc = lw(c, { "--no-daemon", unpack(args) }, vars("daemon"))
+            local ra = H.three_way({ roots = roots3, args = args, lw = lw, norm = norm, env = env, keep_daemon = true,
+                extra = { NoDefaultCurrentDirectoryInExePath = false, NODEFAULTCURRENTDIRECTORYINEXEPATH = false },
+                state = function(root) return cache_of(root, env.data .. "/trust.key") end })
             local what = table.concat(form, " ")
             assert.equals(0, ra.code, what .. "\n" .. ra.stdout .. ra.stderr)
-            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
-            assert.equals(ra.code, rc.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rc.stderr)
-            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
-            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
-            local out = norm(ra.stdout, a)
-            assert.equals(out, norm(rb.stdout, b), what .. " (daemon)")
-            assert.equals(out, norm(rc.stdout, c), what .. " (attached)")
-            out = out:gsub("\27%[[%d;]*m", "")
+            local out = norm(ra.stdout, roots3[1]):gsub("\27%[[%d;]*m", "")
             assert.truthy(out:find("saved tchk", 1, true), what .. "\n" .. out)
             assert.is_nil(out:lower():find("nodefaultcurrentdirectoryinexepath", 1, true), what .. "\n" .. out)
             if H.is_win then
