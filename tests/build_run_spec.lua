@@ -417,6 +417,16 @@ describe("build_run", function()
             assert.same({ "==> [build] ?", "    $ ninja -C /b", "    (in /b)" },
                 build_run.step_lines({ root = "/ws" }, { kind = "build", cwd = "/b" }, { verbose = true }))
         end)
+
+        it("gives each line its highlighting role (spec §16.7)", function()
+            stub(overseer, "configure_reason_line", function() return "configure: first configure" end)
+            stub(overseer, "log_task_command", function() end)
+            stub(overseer, "command_text", function() return "cmake -S . -B b" end)
+            local lines, roles = build_run.step_lines({ root = "/ws" },
+                { kind = "configure", name = "App/Debug", cwd = "/b" }, { verbose = true })
+            assert.equals(#lines, #roles)
+            assert.same({ "phase", "reason", "command", "command" }, roles)
+        end)
     end)
 
     describe("build_run.spawn_spec", function()

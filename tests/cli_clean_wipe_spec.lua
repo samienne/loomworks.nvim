@@ -134,7 +134,7 @@ describe("lw clean (wipe_build_dir)", function()
     fake_built(ws, unit, dir)
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
+    local r = capture(function() return cli.cmd_clean(ws, { "clean", by.Dev.key }) end)
     assert.is_nil(r.exit_code, r.stderr .. r.stdout)
     assert.is_nil(uv.fs_stat(dir), "the build dir is wiped")
     assert.is_nil(unit.state_value, "unit no longer claims a build state")
@@ -165,7 +165,7 @@ describe("lw clean (wipe_build_dir)", function()
       vim.fn.delete(d, "rf"); return true
     end
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
+    local r = capture(function() return cli.cmd_clean(ws, { "clean", by.Dev.key }) end)
     assert.is_nil(r.exit_code, r.stderr .. r.stdout)
     assert.equals("unknown", seen)
   end)
@@ -179,7 +179,7 @@ describe("lw clean (wipe_build_dir)", function()
     fake_built(ws, rel, dir)
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
+    local r = capture(function() return cli.cmd_clean(ws, { "clean", by.Dev.key }) end)
     assert.is_nil(r.exit_code, r.stderr .. r.stdout)
     assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"), "shared build dir must survive")
     assert.equals("built", rel.state_value, "the other config's state is untouched")
@@ -197,7 +197,7 @@ describe("lw clean (wipe_build_dir)", function()
     end
     cli._reset_verify_ms = 100
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
+    local r = capture(function() return cli.cmd_clean(ws, { "clean", by.Dev.key }) end)
     cli._reset_verify_ms = nil
     assert.is_not_nil(r.exit_code, "clean must fail")
     assert.matches("could not remove", r.stderr .. r.stdout)
@@ -213,7 +213,7 @@ describe("lw clean (wipe_build_dir)", function()
     for _, u in ipairs(units) do fake_built(ws, u, dir) end
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Both.key) end)
+    local r = capture(function() return cli.cmd_clean(ws, { "clean", by.Both.key }) end)
     assert.is_nil(r.exit_code, r.stderr .. r.stdout)
     assert.is_nil(uv.fs_stat(dir), "the dir shared only within the clean is wiped")
     assert.is_nil((r.stdout .. r.stderr):find("kept", 1, true),
@@ -233,7 +233,7 @@ describe("lw clean (wipe_build_dir)", function()
     fake_built(ws, other, dir)
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Both.key) end)
+    local r = capture(function() return cli.cmd_clean(ws, { "clean", by.Both.key }) end)
     assert.is_nil(r.exit_code, r.stderr .. r.stdout)
     assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"), "dir referenced outside the clean survives")
     assert.equals("built", other.state_value, "the outside config's state is untouched")
@@ -257,7 +257,7 @@ describe("lw clean (wipe_build_dir)", function()
       return require("loomworks.future").resolved(false)
     end
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
+    local r = capture(function() return cli.cmd_clean(ws, { "clean", by.Dev.key }) end)
     assert.is_not_nil(r.exit_code, "a failed removal must not be reported as success")
     assert.matches("could not remove", r.stderr .. r.stdout)
   end)

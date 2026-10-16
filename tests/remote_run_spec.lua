@@ -270,9 +270,17 @@ describe("lw run on a foreign target", function()
         assert.equals(1, #dev.killed)
     end)
 
+    it("-v prints the stop (terminate) command a --timeout issues", function()
+        dev.behaviors.Runner = function() return { out = { "slow" }, hang = true } end
+        local res = run({ timeout = 0.3, verbose = true })
+        assert.equals(remote_run.EXIT_TIMEOUT, res.ret)
+        assert.equals(1, #dev.killed)
+        assert.truthy(res.stdout:find("    $ " .. fx.CONNECTOR .. " -t SER1 kill ", 1, true), res.stdout)
+    end)
+
     it("cancellation kills the connector, terminates the device program, stops the log, frees the lock", function()
         local cancel
-        local notes = {}
+        local notes, roles = {}, {}
         dev.behaviors.Runner = function()
             return { out = { "running" }, hang = true, after = function()
                 vim.schedule(function() cancel() end)
@@ -284,7 +292,7 @@ describe("lw run on a foreign target", function()
             ws = ws, runner = runner, unit = unit, manifest = man, device = {}, args = {},
             backend = dev:backend(), liveness_ms = 100000,
             write_out = function() end, write_err = function() end,
-            note = function(s) notes[#notes + 1] = s end,
+            note = function(s, role) notes[#notes + 1] = s; roles[s] = role end,
             on_cleanup = function(fn) cancel = fn end,
         })
         assert.is_table(result)
@@ -300,6 +308,14 @@ describe("lw run on a foreign target", function()
         assert.is_not_nil(folder, all)
         assert.equals(result.run_dir, folder)
         assert.truthy((read(folder .. "/output.log") or ""):find("running", 1, true))
+        -- Each line carries its highlighting role (spec §16.7).
+        local seen = {}
+        for line, role in pairs(roles) do
+            if line:find("^running Runner on SER1") then seen.phase = role
+            elseif line:find("^interrupted") then seen.warn = role
+            elseif line:find("^run folder:") then seen.plain = role end
+        end
+        assert.same({ phase = "phase", warn = "warn", plain = "plain" }, seen)
     end)
 
     it("an interrupt without a runner terminate says the device program may still run", function()
@@ -525,6 +541,24 @@ describe("lw run on a foreign target", function()
         local res = run({ device = "SER1" })
         assert.is_false(res.ok)
         assert.truthy(res.stderr:find("--device applies only", 1, true))
+    end)
+end)
+
+describe("remote_run.report", function()
+    it("gives each summary line its highlighting role; relayed device log lines none", function()
+        local by = {}
+        remote_run.report({ failed = true, status = 3, warnings = { "w1" }, crashes = { "c1" },
+            missing_results = { "r1" }, show = { log = "on_failure" }, log_tail = { "device says" } },
+            function(s, role) by[s] = role or "none" end)
+        assert.same({
+            ["--- device log (last 1 lines) ---"] = "plain",
+            ["device says"] = "none",
+            ["---"] = "plain",
+            ["lw: warning: w1"] = "warn",
+            ["lw: the program exited with status 3"] = "fail",
+            ["lw: crash report: c1"] = "fail",
+            ["lw: result file did not come back: r1"] = "warn",
+        }, by)
     end)
 end)
 

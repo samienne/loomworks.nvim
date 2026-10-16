@@ -282,6 +282,21 @@ function M.own_end(args)
   return n, c
 end
 
+--- Does `args` ask for the version: `-v` / `--version` before the command
+--- word (or, with no command word, among lw's own arguments)? After the
+--- command `-v` is that command's own option — `--verbose` on build, run,
+--- test and clean (spec §16.4 *Verbose*) — so `lw build -v` builds while
+--- `lw -v build` prints the version.
+--- @param args string[] the whole command line, host flags already peeled
+--- @return boolean
+function M.asks_version(args)
+  local stop, c = M.own_end(args)
+  for i = 1, (c or stop) - 1 do
+    if args[i] == "-v" or args[i] == "--version" then return true end
+  end
+  return false
+end
+
 --- Peel the host-level flags (`--dev`, `--dev=<path>`, `--no-pin`) off the
 --- command line — only where they are lw's own (`own_end`): after `--` or in
 --- a program's arguments they are left in place for the program.
@@ -305,6 +320,33 @@ function M.peel_host_flags(args)
     end
   end
   return forwarded, f
+end
+
+--- The first release whose lw knows the global color options (`--color=<when>`,
+--- `--no-color`, spec §16.7 *Highlighting*). A pinned lw older than this
+--- rejects them as unknown options (exit 2).
+M.COLOR_OPTIONS_SINCE = "0.1.48"
+
+--- The arguments a redirecting host forwards to the pinned lw `version`
+--- (spec §16.23): unchanged, except that the color options among lw's own
+--- arguments (before `own_end`) are dropped when the pinned lw predates them
+--- (a prerelease of COLOR_OPTIONS_SINCE included). They are never turned into
+--- an environment variable; a program's arguments are never touched.
+--- @param args string[] host flags already peeled
+--- @param version string the pinned version
+--- @return string[]
+function M.redirect_args(args, version)
+  if type(version) ~= "string"
+    or require("boot.paths").compare_versions(version, M.COLOR_OPTIONS_SINCE) >= 0 then
+    return args
+  end
+  local stop = M.own_end(args)
+  local out = {}
+  for i, v in ipairs(args) do
+    local color = type(v) == "string" and (v == "--no-color" or v:sub(1, 8) == "--color=")
+    if not (i < stop and color) then out[#out + 1] = v end
+  end
+  return out
 end
 
 --- The error for a development source with no directory configured. With
@@ -379,7 +421,8 @@ end
 --- Global flags the CLI accepts among a command's own arguments; tolerated
 --- (and ignored) here.
 M.GLOBAL_FLAGS = { ["--no-input"] = true, ["--non-interactive"] = true,
-  ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true }
+  ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true,
+  ["--no-color"] = true }
 
 local INSTALL_ONLY = { "--version", "--latest", "--channel", "--pin-only", "--force" }
 
@@ -419,7 +462,11 @@ function M.parse_bootstrap_args(args, command, popts)
     elseif v == "--force" then o.force = true; o.flags[v] = true
     elseif v == "--json" then o.json = true; o.flags[v] = true
     elseif v == "--check" then o.check = true; o.flags[v] = true
-    elseif M.GLOBAL_FLAGS[v] then -- tolerated
+    elseif v == "--color" and eqv ~= nil then -- `--color=<when>`, validated, else ignored
+      if eqv ~= "auto" and eqv ~= "always" and eqv ~= "never" then
+        return nil, "invalid value '" .. eqv .. "' for --color -- use auto, always or never"
+      end
+    elseif M.GLOBAL_FLAGS[v] and eqv == nil then -- tolerated
     elseif type(v) == "string" and v:sub(1, 1) == "-" then
       return nil, "unknown option '" .. v .. "' for `" .. C(command) .. "`"
     elseif not seen_command and v == command then

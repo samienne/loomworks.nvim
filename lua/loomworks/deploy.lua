@@ -423,7 +423,10 @@ end
 --- Only `on_complete` reports an asynchronous deploy (the returned Future is
 --- settled already only for a synchronous one).
 --- @param deploy_dict table<string, table|table[]> deploy definitions from launch config
---- @param ctx table { workspace, profile, launch_project }
+--- @param ctx table { workspace, profile, launch_project, on_step? }
+---   `on_step(ev)` (optional) hears each step as it is decided, before any
+---   copy: `{ action = "copy"|"fresh", source, dest }` — `lw -v` prints it
+---   (headless §16.4 *Verbose*).
 --- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
 --- @param normalize fun(p: string): string path normalizer
 --- @param on_complete? fun(ok: boolean, err?: string)
@@ -496,7 +499,12 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
             errors[#errors + 1] = "cancelled"
             return finish()
         end
-        if not M.check_freshness(step, deploy_records, normalize) then return next_step() end
+        local needs_copy = M.check_freshness(step, deploy_records, normalize)
+        if ctx.on_step then
+            ctx.on_step({ action = needs_copy and "copy" or "fresh",
+                source = step.source_path, dest = step.dest_path })
+        end
+        if not needs_copy then return next_step() end
         local source_stat = uv.fs_stat(step.source_path)
         if not source_stat then
             errors[#errors + 1] = "source file missing: " .. step.source_path

@@ -47,7 +47,7 @@ describe("non-interactive no-profile refusal names the invoked command", functio
   end)
 
   it("lw clean → lw clean <profile>", function()
-    local err = refusal(function() cli.cmd_clean(ws2(), nil) end)
+    local err = refusal(function() cli.cmd_clean(ws2(), { "clean" }) end)
     assert.is_truthy(err:find("lw clean <profile>", 1, true), err)
     assert.is_falsy(err:find("lw build <profile>", 1, true), err)
   end)

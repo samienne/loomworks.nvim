@@ -154,12 +154,10 @@ end
 -- ---- host commands: version / self-update (work without a bundle) -----------
 -- `--version` / `-v` are the conventional spellings; accept them as aliases so
 -- they don't fall through to workspace resolution and error about a missing
--- loomworks.json.
-if not command then
-  for _, v in ipairs(forwarded) do
-    if v == "--version" or v == "-v" then command = "version"; break end
-  end
-end
+-- loomworks.json. Only before the command word: after it `-v` is the
+-- command's own option (`lw build -v`, spec §16.4 *Verbose*), while
+-- `lw -v build` is still the version.
+if pin.asks_version(forwarded) then command = "version" end
 --- Is system Lua fused into this host? A dev build (`make install` /
 --- `luvi lua --`) fuses it; a release host carries only the bootstrap.
 local function fused_system_lua() return bundle.readfile("loomworks/cli.lua") ~= nil end
@@ -612,7 +610,8 @@ do
     uv.os_setenv("LOOMWORKS_PINNED", p.version)
     -- (A daemon's root is its --root: it runs from the per-user state dir.)
     uv.os_setenv("LW_ROOT", pin_start or uv.cwd())
-    local code = require("boot.exe").run_in_place(bin, forwarded)
+    -- A pinned lw that predates the color options would reject them (§16.23).
+    local code = require("boot.exe").run_in_place(bin, pin.redirect_args(forwarded, p.version))
     if not code then
       io.stderr:write("lw: cannot exec pinned lw at " .. bin .. "\n")
       exit(1)

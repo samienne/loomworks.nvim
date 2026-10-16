@@ -461,6 +461,16 @@ describe("lw test plan (§16.16)", function()
         assert.truthy(r.stdout:find("A: X%s+passed  %(exit status only — no per%-case results%)"), r.stdout)
     end)
 
+    it("-v prints each runner / program command and its directory under the step header", function()
+        local profile = two_units()
+        local quiet = run_plan(profile, {})
+        assert.is_nil(quiet.stdout:find("    $ ", 1, true), quiet.stdout)
+        local r = run_plan(profile, { verbose = true }, nil, { root = "/ws" })
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.truthy(r.stdout:find("==> [test] A: ctest\n    $ ctest A:Debug\n    (in /ws)\n", 1, true), r.stdout)
+        assert.truthy(r.stdout:find("==> [test] A: Y\n    $ /bin/Y --y\n    (in /)\n", 1, true), r.stdout)
+    end)
+
     it("every step runs after a failure; the summary names it; exit 1", function()
         local profile = two_units()
         local r = run_plan(profile, {}, { ["A:Debug"] = 8 })
@@ -468,6 +478,20 @@ describe("lw test plan (§16.16)", function()
         assert.equals(4, #r.ran)
         assert.truthy(r.stdout:find("A: ctest%s+FAILED %(exit status 8%)"))
         assert.truthy(r.stderr:find("1 of 4 test steps failed", 1, true))
+    end)
+
+    it("highlights outcome lines by role; the summary heading stays plain (spec §16.7)", function()
+        local cc = require("loomworks.cli_color")
+        cc.mode = "always"
+        local ok_run = run_plan((two_units()), {})
+        local fail_run = run_plan((two_units()), {}, { ["A:Debug"] = 8 })
+        cc.mode = "auto"
+        local E = "\27["
+        assert.truthy(ok_run.stdout:find("\nsummary — profile 'Dev:kit':\n", 1, true), ok_run.stdout)
+        assert.truthy(ok_run.stdout:find("\27%[32m  A: X%s+passed"), ok_run.stdout)
+        assert.truthy(ok_run.stdout:find(E .. "32mTESTS OK: Dev:kit (4 steps)" .. E .. "0m", 1, true))
+        assert.truthy(fail_run.stdout:find("\27%[31m  A: ctest%s+FAILED %(exit status 8%)"), fail_run.stdout)
+        assert.truthy(fail_run.stderr:find(E .. "31mlw: 1 of 4 test steps failed", 1, true), fail_run.stderr)
     end)
 
     it("--saved runs only executables, --discovered only batch steps", function()

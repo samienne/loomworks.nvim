@@ -668,27 +668,112 @@ end
 
 --- The status lines announcing a step (§16.4): `==> [kind] name`, WHY a
 --- configure runs (the gate's reason + the module's full / in-place choice),
---- and with `verbose` the command line + cwd. Also writes the command line to
---- the workspace log (always, §16.4).
+--- and with `verbose` the command line + cwd (`command_lines`) — plus, with
+--- `env`, the env overrides line, computed against THIS process's environment:
+--- the in-process host passes it; the daemon's runner does not (its steps run
+--- in the requesting client's environment, not the daemon's). Also writes the
+--- command line to the workspace log (always, §16.4). Each line's
+--- highlighting role (§16.7) is returned alongside it: `phase` for the
+--- header, `reason`, `command`.
 --- @param ws loomworks.Workspace
 --- @param step table
---- @param opts? { verbose?: boolean }
+--- @param opts? { verbose?: boolean, env?: boolean }
 --- @return string[] lines (no trailing newlines)
+--- @return string[] roles parallel to `lines` (loomworks.cli_color roles)
 function M.step_lines(ws, step, opts)
     opts = opts or {}
     local overseer = require("loomworks.overseer")
-    local lines = { string.format("==> [%s] %s", step.kind, step.name or "?") }
+    local lines = { require("loomworks.cli_color").header(step.kind, step.name) }
+    local roles = { "phase" }
     if step.kind == "configure" then
         local why = overseer.configure_reason_line(step)
-        if why then lines[#lines + 1] = "    " .. why end
+        if why then
+            lines[#lines + 1] = "    " .. why
+            roles[#roles + 1] = "reason"
+        end
     end
     local cwd = step.cwd or ws.root
     overseer.log_task_command(ws, step.name, step, cwd)
     if opts.verbose then
-        lines[#lines + 1] = "    $ " .. overseer.command_text(step)
-        lines[#lines + 1] = "    (in " .. tostring(cwd) .. ")"
+        for _, l in ipairs(M.command_lines(step, cwd, { env = opts.env == true })) do
+            lines[#lines + 1] = l
+            roles[#roles + 1] = "command"
+        end
     end
+    return lines, roles
+end
+
+--- The lines `-v` / `--verbose` prints for one command a step runs (headless
+--- §16.4 *Verbose*), each of the `command` role (§16.7): `    $ <command>`
+--- (formatted as for the workspace log, `overseer.command_text`), then
+--- `    (in <cwd>)` when a working directory is given, then
+--- `    env: <NAME>=<value> …` for the environment overrides the step adds
+--- (`spec.env`, names sorted; `env_line`) — never the inherited environment,
+--- which is this process's. `opts.env = false` leaves the env line out.
+--- @param spec { cmd?: string[], display_cmd?: string[], env?: table<string, string> }
+--- @param cwd? string
+--- @param opts? { env?: boolean }
+--- @return string[]
+function M.command_lines(spec, cwd, opts)
+    local lines = { "    $ " .. require("loomworks.overseer").command_text(spec) }
+    if cwd then lines[#lines + 1] = "    (in " .. tostring(cwd) .. ")" end
+    local env = not (opts and opts.env == false) and M.env_line(spec.env) or nil
+    if env then lines[#lines + 1] = env end
     return lines
+end
+
+--- `    env: <NAME>=<value> …` for a step's environment overrides (names sorted,
+--- each `NAME=value` quoted like a command argument), or nil when it adds none.
+--- Never the inherited environment (§16.4 *Verbose*): a variable whose value
+--- equals the inherited one is left out, and a value that extends the
+--- inherited one (`<added><sep><inherited>` or `<inherited><sep><added>`, sep
+--- the platform path separator) shows the added part with the inherited part
+--- as `$NAME`. Display only — the env that runs is untouched.
+--- @param env table<string, string>|nil
+--- @return string|nil
+function M.env_line(env)
+    if type(env) ~= "table" or not next(env) then return nil end
+    local exe = require("loomworks.exe")
+    local sep = exe.is_windows and ";" or ":"
+    local names = {}
+    for k in pairs(env) do names[#names + 1] = tostring(k) end
+    table.sort(names)
+    local parts = {}
+    for _, k in ipairs(names) do
+        local v = tostring(env[k])
+        -- The process env lookup is case-insensitive on Windows.
+        local inherited = exe.getenv(k)
+        if v ~= inherited then
+            if inherited then
+                local n = #inherited
+                if v:sub(-(n + 1)) == sep .. inherited then
+                    v = v:sub(1, #v - n) .. "$" .. k
+                elseif v:sub(1, n + 1) == inherited .. sep then
+                    v = "$" .. k .. v:sub(n + 1)
+                end
+            end
+            parts[#parts + 1] = k .. "=" .. v
+        end
+    end
+    if #parts == 0 then return nil end
+    return "    env: " .. require("loomworks.term").format_argv(parts)
+end
+
+--- The `-v` line for one deploy step (§16.4 *Verbose*, §8):
+--- `    copy <source> -> <destination>`, or `    up to date <destination>`
+--- when the step was skipped as fresh.
+--- @param ev { action: "copy"|"fresh", source: string, dest: string }
+--- @return string
+function M.deploy_line(ev)
+    if ev.action == "fresh" then return "    up to date " .. tostring(ev.dest) end
+    return "    copy " .. tostring(ev.source) .. " -> " .. tostring(ev.dest)
+end
+
+--- The `-v` line for a clean's removal of a directory (§16.4 *Verbose*).
+--- @param dir string
+--- @return string
+function M.remove_line(dir)
+    return "    remove " .. tostring(dir)
 end
 
 --- The spawnable form of a step: the program resolved to an absolute path
@@ -855,11 +940,12 @@ function M.nothing_to_clean_message(profile, label)
         .. " — no configured build directories."
 end
 
---- The line announcing a clean step.
+--- The line announcing a clean step, and its highlighting role (§16.7).
 --- @param step table
---- @return string
+--- @return string line
+--- @return string role `phase` (a step header)
 function M.clean_step_line(step)
-    return string.format("==> [clean] %s", step.name or "?")
+    return require("loomworks.cli_color").header("clean", step.name), "phase"
 end
 
 --- After a module clean step (not a wipe) exits — both hosts: a successful

@@ -136,7 +136,7 @@ describe("lw status profile build state (spec §16.18)", function()
 
     -- `lw clean` Dev: the next status shows it no longer built.
     local ws2 = load(root)
-    quiet(function() cli.cmd_clean(ws2, dev_key) end)
+    quiet(function() cli.cmd_clean(ws2, { "clean", dev_key }) end)
     local cleaned = status_text(root)
     local s = state_of(cleaned, dev_key)
     assert.is_not_nil(s, cleaned)
