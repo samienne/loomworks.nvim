@@ -136,6 +136,30 @@ describe("lw build through the workspace daemon (real processes)", function()
         end
     end)
 
+    it("--color=always: each line the same text and role both ways — the same bytes (§19.17)", function()
+        local a, b = workspace(), workspace()
+        local cases = {
+            { { "--color=always", "build", "dev" } },
+            { { "--color=always", "build", "dev", "-v" } },
+            { { "--color=always", "build", "dev", "--reconfigure" } },
+            { { "--color=always", "build", "dev" }, { LW_TEST_FAIL = "build" } },
+        }
+        for _, c in ipairs(cases) do
+            local args = { "--no-input" }
+            vim.list_extend(args, c[1])
+            local ra = lw(a, args, vim.tbl_extend("force", c[2] or {}, { LOOMWORKS_RUNTIME = "in-process" }))
+            local rb = lw(b, args, c[2])
+            local what = table.concat(c[1], " ")
+            assert.equals(ra.code, rb.code, what .. "\n" .. rb.stderr)
+            -- Painted: the lead line and the step header carry their roles.
+            assert.truthy(ra.stdout:find("\27[1mbuilding profile: dev\27[0m", 1, true), what .. "\n" .. ra.stdout)
+            assert.truthy(ra.stdout:find("\27[1;36m==>\27[0m", 1, true), what .. "\n" .. ra.stdout)
+            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
+            assert.equals(H.parity_text(norm(ra.stderr, a)), H.parity_text(norm(rb.stderr, b)), what)
+            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
+        end
+    end)
+
     it("prints the notice only when the build is routed (an attached selection uses a live daemon); every other case runs in-process", function()
         local root = workspace()
         local r = lw(root, { "--no-input", "build", "dev" })

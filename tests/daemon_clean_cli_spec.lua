@@ -46,7 +46,8 @@ end
 local function norm(s, roots) return unroot((s:gsub("\r\n", "\n")), roots) end
 
 local function drop_notice(s)
-    return (s:gsub("lw: cleaning through the workspace daemon %(pid %d+%)\n", ""))
+    -- (Painted dim under --color=always: the whole line goes.)
+    return (s:gsub("[^\n]*lw: cleaning through the workspace daemon %(pid %d+%)[^\n]*\n", ""))
 end
 
 --- The persisted build state, comparable across two roots.
@@ -198,6 +199,20 @@ describe("lw clean through the workspace daemon (real processes)", function()
         parity(a, b, { "clean", "1" }, nil, nil, nil, true)
         local m = parity(a, b, { "clean" }, nil, nil, nil, false)
         assert.truthy(m.stderr:find("lw: no profile specified", 1, true), m.stderr)
+    end)
+
+    it("--color=always: each line the same text and role both ways — the same bytes (§19.17)", function()
+        local a, b = workspace(), workspace()
+        build(a); build(b)
+        local f = parity(a, b, { "--color=always", "clean", "dev" }, { LW_TEST_FAIL = "clean" }, nil, nil, true)
+        assert.equals(3, f.code)
+        assert.truthy(f.stderr:find("\27[31mlw: clean failed (exit 3)", 1, true), f.stderr)
+        local ok = parity(a, b, { "--color=always", "clean", "dev" }, nil, nil, nil, true)
+        assert.equals(0, ok.code, ok.stderr)
+        -- Painted by role: the lead, each step header, the outcome.
+        assert.truthy(ok.stdout:find("\27[1mcleaning profile: dev\27[0m", 1, true), ok.stdout)
+        assert.truthy(ok.stdout:find("\27[1;36m==>\27[0m\27[1m [clean] lib: clean Debug\27[0m", 1, true), ok.stdout)
+        assert.truthy(ok.stdout:find("\27[32mCLEAN OK: dev\27[0m", 1, true), ok.stdout)
     end)
 
     it("an unsafe wipe path: refused with the in-process line, nothing removed, both ways", function()

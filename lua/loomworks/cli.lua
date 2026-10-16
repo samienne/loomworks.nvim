@@ -9001,9 +9001,12 @@ function M._delegate(op, root, args, ensured, opts)
     if m.kind ~= "task" or m.task_id == nil or m.task_id ~= task_id then return end
     if m.phase == "line" then
       local text = tostring(m.text or "")
-      if m.stream == "out" and not quiet then out(text); io.stdout:flush()
-      elseif m.stream == "out" or m.stream == "note" then note(text)
-      else errw(text) end
+      -- Painted by its role exactly as in-process, for the stream it lands
+      -- on after the `quiet` redirection (an unknown role prints plain).
+      local role = type(m.role) == "string" and m.role or nil
+      if m.stream == "out" and not quiet then out(text, role); io.stdout:flush()
+      elseif m.stream == "out" or m.stream == "note" then note(text, role)
+      else errw(text, role) end
     elseif m.phase == "output" then
       -- A step's raw bytes, as the in-process child writes them to the
       -- inherited terminal: written to the file descriptor directly, never
