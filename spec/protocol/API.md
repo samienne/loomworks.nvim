@@ -139,16 +139,16 @@ standard output, a note on standard error. Its `done` carries `exit_code`
 and the refusal or failure a client prints as `lw: <error>`; the method's
 task result (`TaskEnd` and what the method adds) is in `done.result`.
 
-A `line` frame may carry a `role` (`LineRole`), as a reply's notes may (§4.1): `lead` (the operation's lead
-line, e.g. `building profile: <p>`), `phase` (a step header `==> [<kind>]
-<name>`), `reason` (a configure reason), `command` (a command line printed for
-`verbose`, below), `ok` (a success outcome), `fail` (a failure), `warn` (a
-warning) or `plain` (an informative line with no other role). These are the
-roles of spec §16.7 *Highlighting*, and the server gives each line the role
-the CLI gives it in-process. A line without `role` is `plain`, and so is a
-role a client does not know. The `text` never contains terminal escape
-sequences: whether and how a role is shown (colour, `--color`, `NO_COLOR`) is
-up to the client.
+A `line` frame may carry a `role` (`LineRole`), as a reply's notes may (§4.1):
+`lead` (the operation's lead line, e.g. `building profile: <p>`), `phase` (a
+step header `==> [<kind>] <name>`), `reason` (a configure reason), `command`
+(a command line printed for `verbose`, below), `ok` (a success outcome),
+`fail` (a failure), `warn` (a warning) or `plain` (an informative line with no
+other role). These are the roles of spec §16.7 *Highlighting*, and the server
+gives each line the role the CLI gives it in-process. A line without `role` is
+`plain`, and so is a role a client does not know. The `text` never contains
+terminal escape sequences: whether and how a role is shown (colour, `--color`,
+`NO_COLOR`) is up to the client.
 
 From transport 11 a `task_id` and a `sub_id` are opaque strings
 (`TaskId`); a connection of protocol 10 keeps its integer task ids
