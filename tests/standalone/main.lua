@@ -1066,6 +1066,8 @@ do
     "asks_version: lw -v / lw --version")
   ok(pin.asks_version({ "--no-input", "-v" }), "asks_version: after a leading global flag")
   ok(pin.asks_version({ "-v", "build" }), "asks_version: lw -v build is the version")
+  ok(pin.asks_version({ "--no-input", "-v", "build" }),
+    "asks_version: lw --no-input -v build is the version (before the command word)")
   ok(not pin.asks_version({ "build", "-v" }), "asks_version: lw build -v is build's --verbose")
   ok(not pin.asks_version({ "test", "Dev", "--version" }), "asks_version: --version after the command is not")
   ok(not pin.asks_version({ "--", "-v" }), "asks_version: -v after -- is a program's")

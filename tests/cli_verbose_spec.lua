@@ -200,6 +200,73 @@ describe("lw build -v", function()
   end)
 end)
 
+describe("-v reaches the dependency build of lw run and lw test", function()
+  local saved = {}
+  local profile = { key = "p", projects = function() return {} end }
+  before_each(function()
+    saved.plan, saved.spawn = overseer.plan_profile_build, cli._run_spec
+    saved.sel, saved.build, saved.named = cli._run_selection, cli._run_build_steps, cli._run_named_tests
+    overseer.plan_profile_build = function()
+      return { { kind = "build", name = "App", cmd = { "make" }, cwd = "/r/b", env = { CC = "gcc" } } }
+    end
+    cli._run_spec = function() return 0 end
+    cc.mode = "never"
+  end)
+  after_each(function()
+    overseer.plan_profile_build, cli._run_spec = saved.plan, saved.spawn
+    cli._run_selection, cli._run_build_steps, cli._run_named_tests = saved.sel, saved.build, saved.named
+    cc.mode = "auto"
+  end)
+
+  -- `lw run` hands its own -v (and --print's quiet) to the build it runs first.
+  local function run_build_opts(args)
+    local seen
+    cli._run_selection = function(ws) return profile, nil, ws end
+    cli._run_build_steps = function(_, _, o) seen = o; error({ __exit = true }, 0) end
+    capture(function() cli.cmd_run({ root = "/r" }, args) end)
+    return seen
+  end
+
+  it("lw run -v builds verbosely", function()
+    local o = run_build_opts({ "run", "-v" })
+    assert.is_true(o.verbose)
+    assert.is_false(o.quiet)
+    assert.is_false(run_build_opts({ "run" }).verbose)
+  end)
+
+  it("lw run -v --print builds verbosely and quietly (lines on stderr)", function()
+    local o = run_build_opts({ "run", "-v", "--print" })
+    assert.is_true(o.verbose)
+    assert.is_true(o.quiet)
+  end)
+
+  it("lw test -v --target: the build's commands are printed", function()
+    cli._run_named_tests = function() return 0 end
+    local r = capture(function()
+      return cli._test_targets({ root = "/r" }, profile, { "t" }, { verbose = true }, {})
+    end)
+    assert.equals(0, r.ret)
+    assert.truthy(r.stdout:find("==> [build] App\n    $ make\n    (in /r/b)\n    env: CC=gcc\n", 1, true), r.stdout)
+  end)
+
+  it("lw test -v (the test plan): the build's commands are printed", function()
+    local r = capture(function()
+      local ok, err = pcall(cli._test_plan, { root = "/r" }, profile, { verbose = true }, {})
+      -- What follows the build (an empty plan) does not matter here.
+      if not ok and not (type(err) == "table" and err.__exit) then return err end
+    end)
+    assert.truthy(r.stdout:find("==> [build] App\n    $ make\n    (in /r/b)\n    env: CC=gcc\n", 1, true), r.stdout)
+  end)
+
+  it("without -v the dependency build prints no command", function()
+    cli._run_named_tests = function() return 0 end
+    local r = capture(function()
+      return cli._test_targets({ root = "/r" }, profile, { "t" }, {}, {})
+    end)
+    assert.is_nil(r.stdout:find("$ make", 1, true), r.stdout)
+  end)
+end)
+
 describe("lw clean -v", function()
   local io_mod = require("loomworks.io")
   local orig_plan, orig_spawn, orig_dirs, orig_rm
@@ -281,6 +348,13 @@ describe("lw run -v: deploy steps", function()
 
   it("prints none without -v", function()
     local r = run({})
+    assert.is_nil(r.stdout:find("copy", 1, true), r.stdout)
+    assert.is_nil(r.stdout:find("up to date", 1, true), r.stdout)
+  end)
+
+  it("under --print they go to stderr, keeping stdout for the report", function()
+    local r = run({ verbose = true, print_mode = "sh" })
+    assert.truthy(r.stderr:find("    copy /b/a.dll -> /o/a.dll\n    up to date /o/c.dll\n", 1, true), r.stderr)
     assert.is_nil(r.stdout:find("copy", 1, true), r.stdout)
     assert.is_nil(r.stdout:find("up to date", 1, true), r.stdout)
   end)
@@ -372,7 +446,7 @@ describe("lw run -v on a device: device commands", function()
     cc.mode = "auto"
   end)
 
-  local function run(verbose)
+  local function run(verbose, extra)
     cc.mode = "never"
     local lt = {
       _target = target, _config_unit = unit, _project = { key = "App" }, _profile = { key = "Debug:fake-kit" },
@@ -384,7 +458,9 @@ describe("lw run -v on a device: device commands", function()
     local ws = { name = "ws", _device_sync = {}, _devices = {}, _save_cache = function() end }
     local deps = { backend = dev:backend(), liveness_ms = 100000,
       write_out = function() end, write_err = function() end }
-    return capture(function() return cli._run_launch_target(lt, ws, { verbose = verbose }, deps) end)
+    local opts = { verbose = verbose }
+    for k, v in pairs(extra or {}) do opts[k] = v end
+    return capture(function() return cli._run_launch_target(lt, ws, opts, deps) end)
   end
 
   it("prints the device listing, staging and the program invocation on the device", function()
@@ -401,6 +477,13 @@ describe("lw run -v on a device: device commands", function()
   it("prints none without -v", function()
     local r = run(false)
     assert.equals(0, r.ret, r.stderr)
+    assert.is_nil(r.stdout:find("    $ ", 1, true), r.stdout)
+  end)
+
+  it("under --print they go to stderr, keeping stdout for the report", function()
+    local r = run(true, { print_mode = "sh" })
+    assert.equals(0, r.ret, r.stderr)
+    assert.truthy(r.stderr:find("    $ " .. fx.CONNECTOR, 1, true), r.stderr)
     assert.is_nil(r.stdout:find("    $ ", 1, true), r.stdout)
   end)
 end)
