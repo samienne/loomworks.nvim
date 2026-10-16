@@ -612,7 +612,7 @@ function M.run(svc, ctx)
         ci = ci + 1
         if ci > #csteps then
             release_all()
-            task:line("out", "CLEAN OK: " .. label, "ok")
+            task:line("out", build_run.ok_line("clean", label))
             return finish(0)
         end
         local step = csteps[ci]
@@ -678,7 +678,7 @@ function M.run(svc, ctx)
             if after_steps then return after_steps() end
             -- A run's build ends without a line of its own (as in-process).
             if running then return prepare() end
-            task:line("out", (op == "configure" and "CONFIGURE OK: " or "BUILD OK: ") .. label, "ok")
+            task:line("out", build_run.ok_line(op == "configure" and "configure" or "build", label))
             return finish(0)
         end
         local step = steps[i]
@@ -788,7 +788,7 @@ function M.run(svc, ctx)
                 -- A launch target's build ends here (no launch to resolve),
                 -- with the plain build's closing line.
                 if target_build then
-                    task:line(out_stream, "BUILD OK: " .. lt:display_name(), "ok")
+                    task:line(out_stream, build_run.ok_line("build", lt:display_name()))
                     return finish(0)
                 end
                 return prepare()
@@ -936,7 +936,7 @@ function M.run(svc, ctx)
         if not lok then finish(1, lmsg); return run end
 
         if op == "clean" then
-            task:line("out", "cleaning " .. scope_line, "lead")
+            task:line("out", build_run.lead_line("clean", scope_line))
             next_clean()
             return run
         end
@@ -979,10 +979,10 @@ function M.run(svc, ctx)
             end
             finish(1, build_run.nothing_to_build_message(profile, units_scope and label or nil)); return run
         end
-        task:line(out_stream, (op == "configure" and "configuring " or "building ") .. scope_line, "lead")
+        task:line(out_stream, build_run.lead_line(op == "configure" and "configure" or "build", scope_line))
         -- The same trust notice as the in-process build (spec §17.10, §19.15).
-        local tn = build_run.trust_notice(ws, profile, units_scope)
-        if tn then task:line("note", tn, "warn") end
+        local tn, tn_role = build_run.trust_notice(ws, profile, units_scope)
+        if tn then task:line("note", tn, tn_role) end
         next_step()
     end
     -- An editor test run waits for the Tests/1 tasks of its directories
@@ -1102,7 +1102,7 @@ function M.reset(svc, ctx)
             if was_stopped or run.cancelled then return finish(run.cancel_code or 1, stopped()) end
             if code ~= 0 then return finish(code or 1, msg) end
             for _, line in ipairs(reset_plan.mirror_warnings(plan)) do task:line("out", line, "warn") end
-            task:line("out", reset_plan.ok_line(plan), "ok")
+            task:line("out", reset_plan.ok_line(plan))
             finish(0)
         end)
     end)

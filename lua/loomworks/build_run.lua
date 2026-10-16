@@ -219,11 +219,12 @@ end
 --- Both hosts print it (in-process and through the daemon, §19.15), so a
 --- build never silently runs without an environment or command the shared
 --- file names. Counts workspace-level entries and those of the profile's
---- projects.
+--- projects. Its highlighting role (§16.7, `warn`) is returned beside it.
 --- @param ws table workspace
 --- @param profile table|nil
 --- @param units? table[] configuration units: their projects instead of the profile's
 --- @return string|nil line
+--- @return string|nil role `warn` (with a line)
 function M.trust_notice(ws, profile, units)
     if not (ws and ws.ignored_program_settings) then return nil end
     local keys = {}
@@ -235,7 +236,30 @@ function M.trust_notice(ws, profile, units)
     if n == 0 then return nil end
     return string.format("lw: %d program setting%s in loomworks.json ignored — only your local config "
         .. "may name programs or environment (`lw status` lists %s; lw help trust)",
-        n, n == 1 and "" or "s", n == 1 and "it" or "them")
+        n, n == 1 and "" or "s", n == 1 and "it" or "them"), "warn"
+end
+
+local LEAD_VERB = { build = "building", clean = "cleaning", configure = "configuring" }
+
+--- An operation's lead line (§16.4), printed before its steps by both hosts
+--- (in-process and through the daemon, §19.15), and its highlighting role
+--- (§16.7): `building <scope>`, `cleaning <scope>`, `configuring <scope>`.
+--- @param op "build"|"clean"|"configure"
+--- @param scope string `profile: <key>`, or the units' names (`units_label`)
+--- @return string line
+--- @return string role `lead`
+function M.lead_line(op, scope)
+    return LEAD_VERB[op] .. " " .. scope, "lead"
+end
+
+--- An operation's success line, printed by both hosts, and its highlighting
+--- role (§16.7): `BUILD OK: <label>`, `CLEAN OK: <label>`, `CONFIGURE OK: <label>`.
+--- @param op "build"|"clean"|"configure"
+--- @param label string the profile key, the units' names or a launch target's name
+--- @return string line
+--- @return string role `ok`
+function M.ok_line(op, label)
+    return op:upper() .. " OK: " .. label, "ok"
 end
 
 --- Whether `cmd` runs a batch file through cmd.exe: the program the build

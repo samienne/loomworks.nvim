@@ -507,6 +507,16 @@ describe("-v on the in-process host of the daemon line", function()
     assert.same({ "phase", "command", "command", "command" }, roles)
   end)
 
+  it("the lead and success lines carry their roles from one place (both hosts)", function()
+    assert.same({ "building profile: p", "lead" }, { build_run.lead_line("build", "profile: p") })
+    assert.same({ "cleaning a (Debug)", "lead" }, { build_run.lead_line("clean", "a (Debug)") })
+    assert.same({ "configuring profile: p", "lead" }, { build_run.lead_line("configure", "profile: p") })
+    assert.same({ "BUILD OK: p", "ok" }, { build_run.ok_line("build", "p") })
+    assert.same({ "CLEAN OK: p", "ok" }, { build_run.ok_line("clean", "p") })
+    assert.same({ "CONFIGURE OK: p", "ok" }, { build_run.ok_line("configure", "p") })
+    assert.same({ "RESET OK: p", "ok" }, { require("loomworks.reset_plan").ok_line({ label = "p" }) })
+  end)
+
   it("the test host prints a runner's command lines before it runs, only with -v", function()
     cc.mode = "never"
     local ran = 0

@@ -1183,10 +1183,10 @@ local function run_build_steps(profile, ws, opts)
   -- so a machine consumer like `lw run --print` captures only its report.
   local quiet = opts.quiet or false
   local log = quiet and note or out
-  log("building profile: " .. profile.key, "lead")
+  log(build_run.lead_line("build", "profile: " .. profile.key))
   -- Ignored loomworks.json program settings (spec §17.10): one line, stderr.
-  local tn = build_run.trust_notice(ws, profile)
-  if tn then note(tn, "warn") end
+  local tn, tn_role = build_run.trust_notice(ws, profile)
+  if tn then note(tn, tn_role) end
   for _, step in ipairs(steps) do
     -- Conflict gate + full-reconfigure reset. `--force` and `--no-input`
     -- alike just refuse with exit 1; force is the only bypass, never a prompt.
@@ -1329,7 +1329,7 @@ function M.cmd_build(ws, args)
     die("nothing to build for profile '" .. profile.key ..
       "' — no buildable projects (unavailable module or unresolved tool?)")
   end
-  out("BUILD OK: " .. profile.key, "ok")
+  out(require("loomworks.build_run").ok_line("build", profile.key))
   return 0
 end
 
@@ -1368,7 +1368,7 @@ function M.cmd_clean(ws, args)
   end
   local groups = build_run.wipe_groups(ws, steps)
   with_build_locks(profile, "clean", function()
-    out("cleaning profile: " .. profile.key, "lead")
+    out(build_run.lead_line("clean", "profile: " .. profile.key))
     for _, step in ipairs(steps) do
       out(build_run.clean_step_line(step))
       if step.wipe_build_dir then
@@ -1397,7 +1397,7 @@ function M.cmd_clean(ws, args)
     end
   end)
   if op_tok then require("loomworks.op_lock").release(op_tok) end
-  out("CLEAN OK: " .. profile.key, "ok")
+  out(build_run.ok_line("clean", profile.key))
   return 0
 end
 
@@ -1505,7 +1505,7 @@ function M.cmd_reset(ws, args, opts)
   -- A mirror left behind is a warning, not a reset failure (spec §16.30):
   -- it was kept as shared, refused by a safety check, or failed to delete.
   for _, line in ipairs(reset_plan.mirror_warnings(plan)) do out(line, "warn") end
-  out(reset_plan.ok_line(plan), "ok")
+  out(reset_plan.ok_line(plan))
   return 0
 end
 

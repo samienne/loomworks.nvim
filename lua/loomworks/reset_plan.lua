@@ -281,11 +281,12 @@ M.ABORTED = "aborted — nothing was removed"
 --- A confirmed plan that no longer matches (§19.15 "Reset", exit 1).
 M.CHANGED = "the build directories to reset changed since they were listed — run lw reset again"
 
---- The success line.
+--- The success line, printed by both hosts, and its highlighting role (§16.7).
 --- @param plan loomworks.ResetPlan
---- @return string
+--- @return string line
+--- @return string role `ok`
 function M.ok_line(plan)
-    return "RESET OK: " .. plan.label
+    return "RESET OK: " .. plan.label, "ok"
 end
 
 --- The warnings after a completed reset: each listed owned LSP database mirror
