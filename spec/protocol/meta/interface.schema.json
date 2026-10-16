@@ -1,5 +1,5 @@
 {
-  "description": "Meta-schema of a loomworks interface document (spec 19.20 'Schemas and conformance'). Written in the restricted keyword set it enforces.",
+  "description": "Meta-schema of a loomworks interface document (PROTOCOL.md §16). Written in the restricted keyword set it enforces.",
   "type": "object",
   "required": ["interface", "version", "status", "methods"],
   "additionalProperties": false,
@@ -12,7 +12,7 @@
     "version": { "type": "integer", "minimum": 1 },
     "status": { "enum": ["draft", "stable", "deprecated"] },
     "description": { "type": "string" },
-    "frozen": { "description": "Never versioned past this version (loomworks.Root/1, spec 19.8).", "type": "boolean" },
+    "frozen": { "description": "Never versioned past this version (loomworks.Root/1, PROTOCOL.md §7).", "type": "boolean" },
     "same_build": { "description": "Callable only by a client of the daemon's own lw_version.", "type": "boolean" },
     "internal": { "description": "Not a stable contract (lw.internal.*).", "type": "boolean" },
     "types_only": { "description": "Shared definitions only; mounted on no object (loomworks.Common).", "type": "boolean" },
@@ -32,7 +32,7 @@
         "params": { "$ref": "#/$defs/Schema" },
         "result": { "$ref": "#/$defs/Schema" },
         "task": {
-          "description": "Present for a task-streamed method (spec 19.15): the task's start meta and its done result.",
+          "description": "Present for a task-streamed method (PROTOCOL.md §14): the task's start meta and its done result.",
           "type": "object",
           "required": ["meta", "result"],
           "additionalProperties": false,

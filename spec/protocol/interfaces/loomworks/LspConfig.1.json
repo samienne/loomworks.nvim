@@ -145,7 +145,7 @@
           "type": "string"
         },
         "id": {
-          "description": "The project's opaque id (spec 19.12), only from the daemon.",
+          "description": "The project's opaque id (PROTOCOL.md §12.1), only from the daemon.",
           "$ref": "loomworks.Common/1#/$defs/Id"
         },
         "path": {

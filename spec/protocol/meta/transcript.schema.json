@@ -1,5 +1,5 @@
 {
-  "description": "Meta-schema of a golden transcript file (spec 19.20 'Schemas and conformance'): transcripts/<namespace>/<Rest>.<v>.json, the cases of one interface version, replayed by the conformance runner against any binary over the standard-I/O transport. The format (fixtures, the handshake, the steps, the selector and the matchers) is described in lua/loomworks/proto/conformance.lua (its header comment).",
+  "description": "Meta-schema of a golden transcript file (PROTOCOL.md §18): transcripts/<namespace>/<Rest>.<v>.json, the cases of one interface version, replayed by the conformance runner against any binary over the standard-I/O transport. The format (fixtures, the handshake, the steps, the selector and the matchers) is described in lua/loomworks/proto/conformance.lua (its header comment).",
   "type": "object",
   "required": ["transcripts", "interface", "version", "cases"],
   "additionalProperties": false,

@@ -35,7 +35,7 @@
       "type": "object",
       "required": ["key", "label", "type", "path", "abs_path"],
       "properties": {
-        "id": { "description": "The project's opaque id (spec 19.12): always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "The project's opaque id (PROTOCOL.md §12.1): always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "label": { "description": "The project's display text: its key (a project has no display name of its own). Clients show it, never derive it.", "type": "string" },
         "type": { "description": "The project's module type (cmake, meson, ...); a project of an unknown or rejected type is listed with its declared type and without active.", "type": "string" },

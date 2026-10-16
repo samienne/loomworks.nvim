@@ -42,7 +42,7 @@
     },
     {
       "name": "the protocol-10 build alias keeps its v0 shape at protocol 10: integer task ids, flat outcome",
-      "description": "An older client negotiates 10 and is served unchanged (spec 19.8, 19.15); its replies are checked against transport.json v0.replies.",
+      "description": "An older client negotiates 10 and is served unchanged (PROTOCOL.md Annex A); its replies are checked against transport.json v0.replies.",
       "fixture": "shell",
       "hello": { "protocol": 10, "protocol_min": 10 },
       "allow": [ { "kind": "model_change" }, { "kind": "task", "phase": "line" }, { "kind": "task", "phase": "output" }, { "kind": "task", "phase": "progress" } ],
@@ -56,7 +56,7 @@
     },
     {
       "name": "an id of an earlier session generation is a stale reference: refused, never another entity",
-      "description": "Ids carry the session generation (spec 19.12, 19.20). 1.1 stands for an id the first entity got in an earlier session (generation 1): before ids carried the generation, it would have named whatever entity this session numbered 1.",
+      "description": "Ids carry the session generation (PROTOCOL.md §12.1). 1.1 stands for an id the first entity got in an earlier session (generation 1): before ids carried the generation, it would have named whatever entity this session numbered 1.",
       "fixture": "shell",
       "allow": [ { "kind": "model_change" } ],
       "steps": [

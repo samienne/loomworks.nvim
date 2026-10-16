@@ -29,7 +29,7 @@
           "enum": ["loaded", "unloaded", "error", "refused"]
         },
         "profile": { "description": "The active profile's key; absent with none (units then empty).", "type": "string" },
-        "profile_id": { "description": "The active profile's opaque id (spec 19.12): present exactly when profile is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "profile_id": { "description": "The active profile's opaque id (PROTOCOL.md §12.1): present exactly when profile is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "stale": {
           "description": "The tree may no longer match the build: no discovery of the active profile in this session yet, or since then a configure, build, clean or reset of one of its units ended (any client's), its saved test target list changed or the active profile changed. Only Tests/1.discover clears it; the daemon never discovers by itself.",
           "type": "boolean"
@@ -65,7 +65,7 @@
       "type": "object",
       "required": ["id", "kind", "name", "runnable"],
       "properties": {
-        "id": { "description": "The node's id: opaque and daemon-issued (spec 19.12), scoped to its unit, stable while its unit, TestUnit and name are within one session; a local key in-process. Never parsed by a client.", "type": "string" },
+        "id": { "description": "The node's id: opaque and daemon-issued (PROTOCOL.md §12.1), scoped to its unit, stable while its unit, TestUnit and name are within one session; a local key in-process. Never parsed by a client.", "type": "string" },
         "kind": {
           "description": "target (a test executable, a native runner's registered test or a saved test target), suite (explicit: clients never infer suites from case names) or test. Clients show an unknown kind as a plain node.",
           "enum": ["target", "suite", "test"]

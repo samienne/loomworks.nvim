@@ -7,11 +7,11 @@
   "methods": {},
   "$defs": {
     "Id": {
-      "description": "An opaque entity id (spec 19.12); stale when its session generation is not the daemon's.",
+      "description": "An opaque entity id (PROTOCOL.md §12.1); stale when its session generation is not the daemon's.",
       "type": "string"
     },
     "TaskId": {
-      "description": "An opaque task id (spec 19.15, 19.20), scoped to the session generation like an entity id: a client only compares it and sends it back.",
+      "description": "An opaque task id (PROTOCOL.md §12.1, §14), scoped to the session generation like an entity id: a client only compares it and sends it back.",
       "type": "string"
     },
     "Ref": {
@@ -80,7 +80,7 @@
       }
     },
     "Outcome": {
-      "description": "The domain result every operation shares (spec 19.20 'Errors and domain results'). Clients tolerate an unknown outcome.",
+      "description": "The domain result every operation shares (spec 19.20; PROTOCOL.md §11.1). Clients tolerate an unknown outcome.",
       "oneOf": [
         { "$ref": "#/$defs/Accepted" },
         { "$ref": "#/$defs/Refused" },
