@@ -156,7 +156,7 @@
         "v": { "type": "integer" },
         "method": { "type": "string" },
         "steps": {
-          "description": "The step plan of a target-scoped task (spec 19.15 Steps of a task; step 5t), each pending; absent for other tasks.",
+          "description": "The step plan of a target-scoped task (spec 19.15 Steps of a task; step 5t), each pending; absent for other tasks and for a preparation with no_build.",
           "type": "array",
           "items": { "$ref": "#/$defs/TaskStep" }
         }
@@ -167,7 +167,7 @@
       "type": "object",
       "required": ["id", "kind", "label", "state"],
       "properties": {
-        "id": { "type": "string" },
+        "id": { "description": "Opaque, stable within the task.", "type": "string" },
         "kind": { "description": "Clients show an unknown kind as neutral.", "enum": ["build", "deploy", "probe"] },
         "label": { "type": "string" },
         "project": { "type": "string" },
@@ -178,7 +178,7 @@
       }
     },
     "TaskStepState": {
-      "description": "A step's state (spec 19.15 Steps of a task): pending until it runs; skipped when a failure or a cancel left it unreached. Clients show an unknown state as neutral.",
+      "description": "A step's state (spec 19.15 Steps of a task): pending until it runs; skipped when a failure, a cancel or a device = true outcome left it unrun. A preparation with no_build has no steps (steps absent). Clients show an unknown state as neutral.",
       "enum": ["pending", "running", "ok", "failed", "cancelled", "skipped"]
     },
     "TestNodeRef": {

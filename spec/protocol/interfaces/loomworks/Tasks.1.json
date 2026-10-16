@@ -62,13 +62,13 @@
       }
     },
     "step": {
-      "description": "A step of a target-scoped task changed state (spec 19.15 Steps of a task; step 5t), sent before the task's done. A delta on top of TaskInfo.steps: on a seq gap a client re-reads list.",
+      "description": "A step of a target-scoped task changed state (spec 19.15 Steps of a task; step 5t), sent after the task's started and before its done. A delta on top of TaskInfo.steps: on a seq gap a client re-reads list.",
       "args": {
         "type": "object",
         "required": ["task_id", "seq", "index", "state"],
         "properties": {
           "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" },
-          "seq": { "description": "Gapless per object and connection (spec 19.12).", "type": "integer", "minimum": 1 },
+          "seq": { "description": "The signal envelope's seq: gapless per object and connection (spec 19.12).", "type": "integer", "minimum": 1 },
           "index": { "description": "The step's 1-based position in TaskInfo.steps.", "type": "integer", "minimum": 1 },
           "state": { "$ref": "loomworks.Common/1#/$defs/TaskStepState" },
           "error": { "description": "A failed step's failure line.", "type": "string" }

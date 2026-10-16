@@ -2166,7 +2166,8 @@ or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
 editor launch builds what it built in-process, not the whole profile.
 
 **Build of a launch target.** *(Step 5t, plan.)* `Launch/1.build { profile?,
-project?, target?, kind?, force?, jobs?, interactive, env, command }` builds a
+project?, target?, kind?, force?, interactive, env, command }` (addressed
+as `prepare_run` is, plus `force`) builds a
 launch target as the editor's in-process launch build does (§8.8.4 steps 3–5,
 `LaunchTarget:build`), as one task (`meta.kind = build`) with the outcomes of
 `build`: the launch target is resolved as `prepare_run` resolves it, the
@@ -2184,22 +2185,27 @@ cache as in-process. `force` is the answer to the artifact-conflict question
 task with the in-process failure line, the later steps not run; `done`
 carries `exit_code` 0 when every step succeeded. A cancel (`Tasks/1.cancel`)
 kills a running build step and stops a deploy between two copies; the steps
-not reached are not run. A device target (§11) is not addressable here
-(`kind` is `target` or `launch`); it is refused as a stale reference until
-`Devices/1` (step 5n).
+not reached are not run. A device target (§11) ends the task nonzero, before
+the build, with `'<target>' is a device target; …` as its failure line (the
+editor keeps device targets' builds in-process and never sends one, §19.16
+"Editor operations") until step 5n extends `Launch/1.build` to them.
 
 **Steps of a task.** *(Step 5t, plan.)* A target-scoped task —
 `Launch/1.build`, and `prepare_run` / `prepare_debug` with `build_scope =
 "target"` — announces its steps: its `TaskInfo` (the `started` signal,
-`Tasks/1.list`) carries `steps`, one `{ id, kind, label, project?,
-configuration?, target?, phase?, state }` per phase in run order (`kind`
-`build` for a dependency's or the target's own unit, `deploy` for a deploy
-phase with `phase` `pre_build` or `post_build`, `probe` for the artifact
-probe), each `pending` at start. Each transition is a `Tasks/1` `step {
-task_id, seq, index, state, error? }` signal (`running`, `ok`, `failed` with
-its failure line, `cancelled`; the steps a failure or a cancel leaves
-unreached become `skipped`), sent before the task's `done`. `step` is a delta
-on top of `TaskInfo.steps`: on a seq gap a client re-reads `Tasks/1.list`. A
+`Tasks/1.list`) and its task's `start.meta` carry `steps`, one `{ id, kind,
+label, project?, configuration?, target?, phase?, state }` per phase in run
+order (`id` opaque, stable within the task; `kind` `build` for a
+dependency's or the target's own unit, `deploy` for a deploy phase with
+`phase` `pre_build` or `post_build`, `probe` for the artifact probe), each
+`pending` at start. A preparation with `no_build` has no steps (`steps`
+absent). Each transition is a `Tasks/1` `step { task_id, seq, index, state,
+error? }` signal (`running`, `ok`, `failed` with its failure line,
+`cancelled`; `skipped` for a step a failure, a cancel or a `device = true`
+outcome left unrun), its `seq` the signal envelope's `seq` (§19.12); a
+task's `step` signals follow its `started` and precede its `done`. `step` is
+a delta on top of `TaskInfo.steps`: on a seq gap a client re-reads
+`Tasks/1.list`. A
 unit's own tool steps (configure, build) are not steps here; they stay its
 lines, output and progress. Clients show an unknown step kind or state as
 neutral. Every step also has its line on the task stream, as today
@@ -3069,7 +3075,7 @@ owner"):
 - builds — of a profile (`Build/1.build { profile }`), of configuration units
   (`units`), serial (`jobs = 1`);
 - *(step 5t)* the build of a non-device launch target (`Launch/1.build`; the
-  editor's *Build target*), as one owned task — its dependencies, its
+  editor's *Build default target*), as one owned task — its dependencies, its
   pre-build deploy and its own build never run in the editor; its progress
   entry follows the task's current step (§19.15 "Steps of a task"). The
   artifact-conflict question is asked before the call, over the units it
@@ -3352,7 +3358,9 @@ path is never used in `daemon` mode.
 **one** task in the editor's task runner (overseer, §12) — one per daemon
 task, not one per step: a profile build is one entry whose output carries the
 `==> [build] <project>` lines, where in-process it is one entry per project;
-the units' states come from `meta.units` (Running state below).
+the units' states come from `meta.units` (Running state below). *(Step 5t:)*
+a task carrying steps (§19.15 "Steps of a task") keeps its one entry, which
+follows the task's current step.
 
 - An **editor-owned** task is a task-runner task whose start is the call,
   whose stop is `Tasks/1.cancel` (§19.15 "The editor as owner"), whose
@@ -4431,7 +4439,7 @@ the steps of §19.19. Their schemas, not this table, are the full contract.
 | `/projects` | `loomworks.ConfigSets/1` | add, update_mapping, generate_defaults |
 | `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
 | `/tests` | `loomworks.Tests/1` | discover T, run T, run_cases T, prepare_debug T, collect, result (results) |
-| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T, device_log |
+| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T *(5t, with part B)*, device_log |
 | `/debug` | `loomworks.DebugConfig/1` | adapters, set_adapter, known_languages |
 | `/lsp` | `loomworks.LspConfig/1` | get, set_option (changed) |
 | `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended, step; task frames; `TaskInfo.steps`) |
