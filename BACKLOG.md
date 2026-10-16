@@ -728,13 +728,19 @@ implementations of the committed-ignore rule. Follow-ups:
   (timeout)" under parallel load / on the Windows CI runner; passes alone.
   Seen on PR #168 CI and a local `make test`. Make the wait robust.
   Failed once more on Windows CI on PR #175 ("running tasks: unavailable
-  (timeout)"), passed on rerun.
+  (timeout)"), passed on rerun. Again on staging/daemon CI at a1cc634 and
+  425c27b.
 - Standalone bootstrap tests (Windows): "the helper's children are
   enumerated" failed with (0) on PR #177 (run 37891094721), passed on
   rerun.
 - `tests/daemon_reset_cli_spec.lua` "every case: the same output..." failed
   once on Windows CI (PR #171 run 37734890114, docs-only change), passed on
   rerun.
+- Intermittent Windows CI failures on staging/daemon, not yet investigated:
+  `tests/editor_clean_wipe_spec.lua:251` ("clean settles") and
+  `tests/daemon_lifetime_spec.lua:310` / `:346` (-1) at cd26e86;
+  `tests/daemon_editor_ops_spec.lua:174` (-1) at 3d56a5e;
+  `tests/deferred_lsp_spec.lua:195` (its safety timeout) at a52fe9c.
 
 ### `lw health fix <n>` (deferred, user idea)
 
