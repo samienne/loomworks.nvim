@@ -117,13 +117,35 @@ logs the same line.
 
 **The command line.** Every configure and build step — headless or from the
 editor — writes its full command line and working directory to the workspace
-log at info level; asked to (`lw build -v` / `--verbose`), the runner also
-prints them under the step's header. A step whose command is a wrapper shows
+log at info level; asked to (*Verbose*, below), the runner also prints them
+under the step's header. A step whose command is a wrapper shows
 the command the wrapper runs (§8.1 `display_cmd`), not the wrapper. Arguments
 are quoted for readability, and data in them is rendered like any other
 (§16.7). The workspace log (`.nvim/loomworks.log`) is appended to by every host
 and never truncated; past 1 MB it is rotated to `loomworks.log.1`, keeping one
 old file.
+
+**Verbose.** `-v` / `--verbose` is an option of the build, run, test and clean
+commands, given among the command's own arguments (before the command, `-v`
+asks for the version); on a run or a test it also applies to the dependency
+build. With it the runner prints, under each step's header and on the stream
+that header is written to (§16.17 *Output streams*), every command it runs for
+that step:
+
+- each configure, build and clean command as `    $ <command>`, followed by
+  `    (in <working directory>)`;
+- a clean's removal of a directory as `    remove <directory>`;
+- each test runner and test program invocation (§16.16), in the same
+  `$` / `(in …)` form;
+- each deploy step (§8) as `    copy <source> -> <destination>`, or
+  `    up to date <destination>` when it is skipped as fresh;
+- each device command of remote execution (§18), including the program
+  invocation run on the device;
+- the environment overrides a step adds, as `    env: <NAME>=<value> …` —
+  never the inherited environment.
+
+Commands are formatted as for the workspace log (above). Verbose changes only
+what is printed, never what runs; without it none of these lines appear.
 
 **Forced full reconfigure.** `lw build --reconfigure` configures every unit of
 the profile before building, whether or not the gate would, forcing each
@@ -218,9 +240,43 @@ read from the workspace files, the cache, the health cache or tool probes
 Such data MUST NOT reach the terminal as control sequences: every control
 character except tab and line feed is rendered visibly (e.g. escape as `^[`),
 so data can never move the cursor, rewrite the screen, set the window title or
-clipboard, or forge hyperlinks. The runner's own coloring (on a terminal only)
-is unaffected. Output relayed verbatim from a build tool or launched program is
-that program's own output and is passed through unchanged.
+clipboard, or forge hyperlinks. The runner's own coloring (*Highlighting*,
+below) is unaffected. Output relayed verbatim from a build tool or launched
+program is that program's own output and is passed through unchanged.
+
+**Step headers.** Each step of a build, clean or test — configure, build,
+clean, a test runner or test program — is announced on one line of the form
+`==> [<kind>] <name>`, where `<kind>` names the step (`configure`, `build`,
+`clean`, `test`) and `<name>` the unit, runner or program it applies to. The
+lines around the headers — the invocation's lead line (e.g.
+`building profile: <profile>`), the configure reason (§16.4), outcome lines
+(e.g. `BUILD OK: <profile>`, a test step's `passed`) — are informative in
+their wording.
+
+**Highlighting.** Every line the runner prints on its own behalf has a
+**role**: the invocation's lead line, a step header, a configure reason
+(§16.4), a printed command (§16.4 *Verbose*), a success outcome, a failure,
+or a warning. The runner colors its lines by role, never by matching their
+text, so the phases of a run stand out from the tool output between them.
+Whether it colors is decided by the global option `--color=auto|always|never`
+(`--no-color` is short for `--color=never`), default `auto`:
+
+- `auto` colors a line only when the stream it is written to is a terminal —
+  standard output and standard error are tested separately, and on Windows the
+  runner enables escape-sequence processing on that stream's handle — and
+  never while the `NO_COLOR` environment variable is set, to any value
+  including the empty string. The `CI` variable plays no part.
+- `always` colors regardless of the terminal test and of `NO_COLOR` (for log
+  viewers that render escape sequences); `never` does not color.
+
+The option governs all of the runner's own coloring (status, health and other
+listings included). It never applies to output relayed from a build tool or
+launched program, and the runner never adds or changes variables in a child's
+environment to influence its coloring (a changed configure environment would
+itself trigger a reconfigure, §5.1). Without color, every line's text is
+exactly what it is with color, minus the escape sequences. *Informative:* a
+step header's `==>` is bold cyan and the rest bold; reasons and commands are
+dim; success is green, failure red, a warning yellow.
 
 Every command documents itself: `lw help <command>` and, equivalently,
 `--help` / `-h` anywhere among a command's own arguments (never after the `--`
@@ -246,7 +302,8 @@ install a global bundle. Answering help never fetches anything.
 `-`) that the command does not know is a **usage error** (exit 2): it names the
 option and points at `lw help <command>`, and nothing runs — a mistyped option
 never falls through to a build or a launch. The global options (non-interactive
-control, create intent, source selection, pin bypass) are known to every
+control, create intent, source selection, pin bypass, color — `--color`,
+`--no-color`, *Highlighting* above) are known to every
 command, and are recognised before the command and among its own arguments,
 up to the first `--` — never after it. After a launch configuration's command
 (or `--from-target <target>`) when one is added, every token is the program's,
@@ -636,6 +693,10 @@ invocation, or one file per unit (a label suffix distinguishing them) when a
 profile runs several. The runner maps both to its native mechanism; a runner
 that cannot emit JUnit reports that without failing the run.
 
+With `-v` / `--verbose` (§16.4 *Verbose*) a test invocation prints, under each
+test step's header, the runner or test program command line it runs and its
+working directory, as well as the commands of its dependency build.
+
 A headless test invocation MAY instead name one or more **test
 executables** (build targets). Each named target is built (unless the build is skipped, below), then run directly —
 not through the native batch runner — with its framework's machine-readable
@@ -901,7 +962,7 @@ so the optional operands are never ambiguous with program arguments.
 
 **Launch prefix.** A run MAY interpose a **prefix command** before the resolved launch command: the launched process becomes `<prefix tokens> <resolved command> <arguments>`, executed in the launch's resolved working directory and environment (§8.6) with the same terminal attachment as an unprefixed run (above). The prefix is a host-level wrapper the system does **not** interpret, so it serves any external launcher — a memory checker, tracer, profiler, timing tool, or an interactive debugger invoked on the program (e.g. `valgrind`, `gdb --args`). It is therefore distinct from debugger *attachment* orchestrated by the system (deferred, above): the system execs the wrapper unaware of its purpose. Running the wrapper **inside** the resolved working directory and environment is the point — a caller cannot reproduce it by wrapping the run invocation itself, which would wrap the resolver, not the program. A prefix is **multiple tokens** (e.g. `valgrind --leak-check=full`); it is supplied as an option, so it consumes neither the positional operands nor the forwarded arguments, and a host defines how the tokens are given (a tokenized string and/or a repeatable option). The launched process's exit status remains the invocation's exit status. A prefix on a **device target** or a **foreign** build target is an error — a local wrapper does not apply to on-device execution.
 
-**Command inspection.** A run MAY resolve the launch **without executing it**, reporting the fully-resolved invocation instead: the command and its arguments (a command configuration's declared arguments and any forwarded arguments included), the working directory, and the environment overrides the launch contributes — not the inherited environment. This is a read-only report (§16.9), for inspection or for a caller that drives execution itself. A build target's command is known only once its artifact is (§16.18); an unresolved artifact is reported as unresolved, never guessed (§16.3). **Output streams.** The dependency build's output (and the runner's own status lines) goes to standard output, as for a plain build (§16.7) — except when standard output carries a machine-readable payload (the inspection report below, in either format), where it goes to standard error so the payload stays parseable. The launched program's output is its own and is never redirected. Because the working directory and environment are reported rather than applied, a caller that reconstructs the invocation is responsible for reproducing them — the prefix mechanism (above) is the faithful way to run under a wrapper. Whether the dependency build (§16.4) precedes the report or is skipped is a host option. A host MAY also offer a **dry run**: the same report, but the run never builds, deploys or executes anything — it implies skipping the dependency build. A build target whose artifact path is known but whose program does not exist yet (never built) is still reported, with a note on the diagnostic stream that it is not built; this is not a failure. A foreign target's report needs the built files for its staging manifest, so an unbuilt one is reported as unbuilt (§16.3). For a foreign target the report names the device-side invocation instead — device, staged program path, arguments, working directory, library directories and device environment — plus the staging manifest; nothing is staged or executed.
+**Command inspection.** A run MAY resolve the launch **without executing it**, reporting the fully-resolved invocation instead: the command and its arguments (a command configuration's declared arguments and any forwarded arguments included), the working directory, and the environment overrides the launch contributes — not the inherited environment. This is a read-only report (§16.9), for inspection or for a caller that drives execution itself. A build target's command is known only once its artifact is (§16.18); an unresolved artifact is reported as unresolved, never guessed (§16.3). **Output streams.** The dependency build's output (and the runner's own status lines) goes to standard output, as for a plain build (§16.7) — except when standard output carries a machine-readable payload (the inspection report below, in either format), where it goes to standard error so the payload stays parseable. The launched program's output is its own and is never redirected. With `-v` / `--verbose` (§16.4 *Verbose*) a run prints the commands of its dependency build, its deploy steps and, for a foreign target, its device commands, on the same stream as the status lines. Because the working directory and environment are reported rather than applied, a caller that reconstructs the invocation is responsible for reproducing them — the prefix mechanism (above) is the faithful way to run under a wrapper. Whether the dependency build (§16.4) precedes the report or is skipped is a host option. A host MAY also offer a **dry run**: the same report, but the run never builds, deploys or executes anything — it implies skipping the dependency build. A build target whose artifact path is known but whose program does not exist yet (never built) is still reported, with a note on the diagnostic stream that it is not built; this is not a failure. A foreign target's report needs the built files for its staging manifest, so an unbuilt one is reported as unbuilt (§16.3). For a foreign target the report names the device-side invocation instead — device, staged program path, arguments, working directory, library directories and device environment — plus the staging manifest; nothing is staged or executed.
 
 **Shared code paths.** Resolution, dependency build, deploy, and the launch
 command/spec are the same seams the editor drives; the headless runner differs
