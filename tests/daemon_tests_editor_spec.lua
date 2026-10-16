@@ -628,23 +628,30 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             local obs = on_view(function(m)
                 if m == "run_cases" then n = n + 1; return { outcome = "accepted", task_id = n } end
             end)
+            -- As the daemon sends a run (§19.16 "Tests" Runs): the step's
+            -- cases as `results`, then `done` — so the held view has them
+            -- too and a re-render of it (any time) keeps them.
             loomtest.run("n3")
             vim.wait(50)
+            results(obs, 2, 51, { { id = "n3", status = "passed" } })
             obs:_on_message({ kind = "task", task_id = 51, phase = "done", exit_code = 1,
                 error = "discovery of b failed", result = { cases = { { id = "n3", status = "passed" } },
                     counts = { passed = 1, failed = 0, skipped = 0, errored = 0 },
                     discovery_error = "discovery of b failed" } })
             assert.is_true(vim.wait(1000, function() return #errors() == 1 end, 10))
             assert.equals("loomtest: discovery of b failed", errors()[1])
+            adapter_mod._render()
             assert.equals("passed", loomtest.get_node("n3").status)
             loomtest.run("n3")
             vim.wait(50)
+            results(obs, 3, 52, { { id = "n3", status = "failed" } })
             obs:_on_message({ kind = "task", task_id = 52, phase = "done", exit_code = 1,
                 error = "1 of 1 tests failed; discovery of b failed",
                 result = { cases = { { id = "n3", status = "failed" } },
                     discovery_error = "discovery of b failed" } })
             assert.is_true(vim.wait(1000, function() return #errors() == 2 end, 10))
             assert.equals("loomtest: 1 of 1 tests failed; discovery of b failed", errors()[2])
+            adapter_mod._render()
             assert.equals("failed", loomtest.get_node("n3").status)
             -- The field decides, never the message text: failed cases and no
             -- discovery_error end quietly whatever the error says.
