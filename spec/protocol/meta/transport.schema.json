@@ -1,5 +1,5 @@
 {
-  "description": "Meta-schema of the transport document (spec 19.8, 19.20): the frames of the transport layer and its error codes. The frame schemas use the restricted keyword set of interface.schema.json.",
+  "description": "Meta-schema of the transport document (PROTOCOL.md §4-§11, §16): the frames of the transport layer and its error codes. The frame schemas use the restricted keyword set of interface.schema.json.",
   "type": "object",
   "required": ["transport", "protocol_min", "error_codes", "frames"],
   "additionalProperties": false,

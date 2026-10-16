@@ -1,7 +1,7 @@
 {
   "transport": 11,
   "protocol_min": 10,
-  "description": "The transport layer (spec 19.8, 19.20): the handshake, the frozen control subset and, from protocol 11, the message envelope. Only this layer carries the protocol number. Fields are only ever added; a receiver ignores a field it does not know.",
+  "description": "The transport layer (PROTOCOL.md §4-§11): the handshake, the frozen control subset and, from protocol 11, the message envelope. Only this layer carries the protocol number. Fields are only ever added; a receiver ignores a field it does not know.",
   "error_codes": {
     "unknown_object": { "description": "No object at that path." },
     "unknown_interface": { "description": "The object does not implement that interface." },
@@ -134,7 +134,7 @@
       }
     },
     "task": {
-      "description": "A task-stream event (spec 19.15).",
+      "description": "A task-stream event (PROTOCOL.md §14.2).",
       "type": "object",
       "required": ["kind", "task_id", "phase"],
       "properties": {
@@ -142,12 +142,12 @@
         "task_id": { "description": "From transport 11 the opaque task id (loomworks.Common/1 TaskId, a string); a protocol-10 connection keeps its integer.", "type": ["string", "integer"] },
         "phase": { "enum": ["start", "line", "output", "progress", "done"] },
         "meta": { "description": "start: the task's meta (loomworks.Common/1 TaskMeta); for an interface method's task it names the object, iface, v and method.", "type": "object" },
-        "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (spec 19.20 Tasks and cancel).", "type": "object" }
+        "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (PROTOCOL.md §14.1).", "type": "object" }
       }
     }
   },
   "v0": {
-    "description": "The protocol-10 (v0) replies (spec 19.8, 19.15): the shape a protocol-10 request's ok reply keeps, so the v0 aliases stay unchanged for older clients. Minimal: the fields clients read. A v0 error reply carries error as a string. task_id is an integer on a connection of protocol 10 and the opaque string from transport 11 (the conformance engine checks which).",
+    "description": "The protocol-10 (v0) replies (PROTOCOL.md Annex A): the shape a protocol-10 request's ok reply keeps, so the v0 aliases stay unchanged for older clients. Minimal: the fields clients read. A v0 error reply carries error as a string. task_id is an integer on a connection of protocol 10 and the opaque string from transport 11 (the conformance engine checks which).",
     "replies": {
       "ping": { "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ok" }, "req_id": { "type": "integer" } } },
       "status": {

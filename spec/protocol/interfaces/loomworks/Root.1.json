@@ -3,7 +3,7 @@
   "version": 1,
   "status": "stable",
   "frozen": true,
-  "description": "Object / (spec 19.20 'The root object'): discovery, schemas and subscriptions. Frozen (spec 19.8): never versioned past 1; it only gains optional fields and new methods, which a client calls only after seeing them in describe().root_methods.",
+  "description": "Object / (PROTOCOL.md §10): discovery, schemas and subscriptions. Frozen (PROTOCOL.md §7): never versioned past 1; it only gains optional fields and new methods, which a client calls only after seeing them in describe().root_methods.",
   "methods": {
     "describe": {
       "description": "The binary, the transport range, the session generation, the objects with their interfaces, and the root's methods.",
@@ -78,7 +78,7 @@
       }
     },
     "retiring": {
-      "description": "The daemon was retired (spec 19.11): it exits once idle. Reaches every authenticated connection without a subscription.",
+      "description": "The daemon was retired (PROTOCOL.md §10.2, spec 19.11): it exits once idle. Reaches every authenticated connection without a subscription.",
       "args": { "type": "object" }
     }
   },

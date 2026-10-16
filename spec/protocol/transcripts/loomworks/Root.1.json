@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Root",
   "version": 1,
-  "description": "Object / (spec 19.20 'The root object'): the private-pipe handshake, describe, schema, subscribe and unsubscribe, and the envelope's transport errors.",
+  "description": "Object / (PROTOCOL.md §10): the private-pipe handshake, describe, schema, subscribe and unsubscribe, and the envelope's transport errors.",
   "cases": [
     {
       "name": "hello is answered by welcome with the objects",

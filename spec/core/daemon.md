@@ -859,48 +859,28 @@ version — the envelope, the root object, `protocol_min`, `welcome.objects`
 (below and §19.20; `daemon/interfaces.lua`, `proto/envelope.lua`) — accepting
 clients of 10 and 11); the rest of the broadcasts #88.*
 
-**Framing.** A message is a JSON object prefixed by its decimal byte length
-and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
-reply echoes; broadcasts carry none. An unknown kind, a malformed frame or a
-handler error yields a typed error reply, never a crash.
+**Wire protocol.** Framing, the mutual authentication handshake
+(`hello` / `challenge` / `auth` / `welcome`), the pre-authentication limits
+and the private bindings that skip authentication are specified in
+[PROTOCOL.md](../protocol/PROTOCOL.md) §3–§5, §7.
 
-**Authentication** (mutual, before anything else). Let *K* =
-HMAC-SHA256(machine key §17.2, `"loomworks-daemon-v1"`), and *E* the endpoint
-address from the handle.
+**Authentication key.** The shared secret *K* of the handshake is
+HMAC-SHA256(machine key §17.2, `"loomworks-daemon-v1"`), and the endpoint
+address *E* is the address from the handle (§19.6). `hello.client` is `cli`
+or `editor`; `role = "observer"` is a client that only watches (§19.16). The
+`welcome` fields are `{ header, seq, clients, busy, retiring }` (§19.13) plus
+the transport's `objects` (§19.20). New `welcome` fields go inside `header`
+if they are model fields, and beside it if they are transport fields (such as
+`objects`, or the relay's `daemon` and `via` below).
 
-1. client → `hello { protocol, lw_version, schemas, client = cli|editor, role?, nonce = Nc }`
-   (`role = "observer"`: a client that only watches, §19.16 — an addition a
-   daemon of an older protocol ignores)
-2. daemon → `challenge { protocol, lw_version, schemas, session_generation,
-   server_nonce = Ns, server_proof = HMAC(K, "server\n" .. E .. "\n" .. Nc .. "\n" .. Ns) }`
-3. client verifies `server_proof`; on failure it closes the connection without
-   sending anything else and reports the endpoint as untrusted. Otherwise →
-   `auth { client_proof = HMAC(K, "client\n" .. E .. "\n" .. Ns .. "\n" .. Nc) }`
-4. daemon verifies → `welcome { header, seq, clients, busy, retiring }` (§19.13).
-   Welcome fields are only ever added — model fields inside `header`, transport
-   fields beside it (`objects`, protocol 11, §19.20) — and a later field never
-   replaces `root`, `pid`, `lw_version` or `session_generation`.
-
-Nonces are 32 random bytes (hex); proofs are compared in constant time. Before
-`welcome` the daemon accepts only `hello` and `auth`, caps a frame at 64 KiB
-(a longer length prefix closes the connection before the payload is read),
-closes a connection that has not authenticated within about 5 s, and sends no
-broadcast to it. A failed proof closes the connection with no detail. Because
-the server proves knowledge of *K* first, a process squatting the endpoint
-cannot impersonate the daemon to a client. The loopback transport (§19.1) skips
-authentication; it never leaves the process. Its connection starts in the
-authenticated state — the server sends `welcome` over it and nothing before —
-and is then served exactly as an authenticated pipe connection (frame cap,
-requests, replies, task streams, broadcasts, flow control); closing either end
-is end-of-stream to the other. The private standard-I/O transport (`lw daemon
-run --stdio --private`, tests only, §19.10 "Tests", §19.20) is a private pipe too: its connection is a child of
-the process that spawned it, so the daemon answers that process's `hello`
-directly with `welcome` — no `challenge`, no `auth`, the nonce ignored; the
-versions in `hello` are negotiated as on the socket, and anything other than
-`hello` first closes it. Closing the daemon's standard input ends that
-connection and stops the runtime: as for any disconnect (§19.15), the tasks
-the connection owns are cancelled, and the process exits once they ended
-(a process that spawned it and goes away leaves no build running). The socket transport keeps the challenge.
+**Private bindings.** The loopback transport (§19.1) is the in-process
+private binding of PROTOCOL.md §3; it never leaves the process. The private
+standard-I/O transport (`lw daemon run --stdio --private`, tests only, §19.10
+"Tests", §19.20) is its standard-I/O binding. Closing the daemon's standard
+input ends that connection and stops the runtime: as for any disconnect
+(§19.15), the tasks the connection owns are cancelled, and the process exits
+once they ended (a process that spawned it and goes away leaves no build
+running). The socket transport keeps the challenge.
 *(Step 5i, `daemon/relay.lua`: `lw daemon run --stdio` is a **connection**, never a
 daemon — §19.10 "Connections". It connects to the workspace's shared daemon
 over the socket (starting it first if none runs), authenticates there with the
@@ -914,7 +894,7 @@ runner's fresh, isolated daemon, behind the hidden, gated `--private` flag
 unreachable without that gate.)*
 
 **Relay handshake.** *(Step 5i, `daemon/relay.lua`.)* The relay's client sees the
-pipe handshake above (`hello` first, then `welcome`, no `challenge`); the
+standard-I/O handshake of [PROTOCOL.md](../protocol/PROTOCOL.md) §3 (`hello` first, then `welcome`, no `challenge`); the
 relay runs the socket handshake on its behalf:
 
 1. The relay reads the client's `hello` from standard input **first** —
@@ -946,9 +926,8 @@ relay runs the socket handshake on its behalf:
      talking to an attached runtime (a repository pinned before 5i): the
      editor treats it as such and never sends `retire` over it.
 
-   Both are optional fields added to `welcome`, which the frozen-subset rule
-   below allows (added, never removed, renamed or retyped; a receiver
-   ignores a field it does not know); an attached runtime omits both.
+   Both are optional fields added to `welcome`, as the frozen-subset rule
+   ([PROTOCOL.md](../protocol/PROTOCOL.md) §7) allows; an attached runtime omits both.
 5. When the `welcome` says `retiring`, the relay does not forward it: it
    closes that connection, waits for the retiring daemon's runtime lock to
    be released — at most `RELAY_RETIRE_WAIT` (60 s) — launches the
@@ -958,38 +937,14 @@ relay runs the socket handshake on its behalf:
    relay instead keeps waiting without a bound and never launches the
    successor (§19.10 "No launch").
 
-**Frozen control subset.** Framing, `hello`/`challenge`/`auth`/`welcome`,
-`ping`, `status`, `stop` and `retire` (§19.9) never change shape across
-versions, so any two versions can always authenticate, inspect and retire each
-other. Fields of these messages are only ever added, never removed, renamed or
-retyped, and a receiver ignores a field it does not know. *(Step 5g.1.)*
-From protocol 11 the frozen subset also covers the `retiring` broadcast, the
-envelope kinds and their routing fields (`kind`, `req_id`, `object`, `iface`,
-`v`, `method`, `sub_id`, `task_id`), the transport error codes (§19.20; new
-codes may be added, a client treats an unknown one as `internal`) and the root
-interface `loomworks.Root/1` (§19.20), so any two versions sharing a transport
-can also discover each other. *(Planned, step 5i.)* The relay's
-`welcome.daemon` and `welcome.via` (above) are such additions: optional, they
-change no existing field and do not move `protocol`.
-
-**What the protocol number versions.** *(Step 5g.1.)* From protocol 11,
-`protocol` versions the **transport** only: the framing, authentication, the
-handshake, the message envelope (`call`, `ok`, `error`, `signal`, `task`;
-§19.20), flow control (§19.15) and the root object. Everything a client does
-beyond that is an **interface** (§19.20) with its own version, chosen per call;
-a new operation, field or view never changes `protocol`. After 11 the number
-moves only for a genuinely breaking transport change. `hello` and `challenge`
-gain an optional `protocol_min`, so each side states a range
-`[protocol_min, protocol]` (absent: `protocol_min = protocol`); `welcome` gains
-an optional `objects` list (§19.20). There are no capability flags. A daemon
-of protocol 11 accepts clients of 10 and 11: the request kinds of protocol 10
-(`build`, `test`, `prepare_run`, `clean`, `reset`, `snapshot`, `query`) and its
-broadcasts (`model_change`, task events to every connection) are served
-unchanged as **v0 aliases** of the corresponding interface methods — the same
-handlers, with an argument and result adapter, never a second implementation —
-until `protocol_min` is raised to 11 (§19.19, retirement of protocol 10). A v0
-request gets a v0 reply (`error` a string); only an interface call gets the
-structured `error` object.
+**Frozen control subset and the protocol number.** Which messages never
+change shape, and what the `protocol` number versions from protocol 11 — the
+transport only, with each side stating a range `[protocol_min, protocol]` —
+are specified in [PROTOCOL.md](../protocol/PROTOCOL.md) §6–§7. *(Planned, step 5i.)* The relay's
+`welcome.daemon` and `welcome.via` (above) are such additions: optional,
+they change no existing field and do not move `protocol`. A daemon of
+protocol 11 accepts clients of 10 through the v0 aliases ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A) until
+`protocol_min` is raised to 11 (§19.19, retirement of protocol 10).
 
 ### 19.9 Version handshake
 
@@ -1044,11 +999,9 @@ it; the client refuses with the update message of §2.7 "Reading a newer file".
 editor retirement: step 5h.5.)* The rules above split
 into a protocol rule and a client policy:
 
-- **Transport.** Client and daemon agree on the highest transport version in
-  the overlap of their `[protocol_min, protocol]` ranges (§19.8); with no
-  overlap the daemon is incompatible. Interfaces are not negotiated here:
-  the client chooses a version per interface and stamps it on each call
-  (§19.20). Shipped editors of protocol 10 observe only a daemon whose
+- **Transport.** Client and daemon agree on a transport version as
+  [PROTOCOL.md](../protocol/PROTOCOL.md) §6 specifies; interfaces are chosen per call (PROTOCOL.md §9.4).
+  Shipped editors of protocol 10 observe only a daemon whose
   protocol equals their own (§19.16), so in practice "11 accepts 10" serves
   clients of the 11 era that still send the v0 request kinds, until step
   5g.3.
@@ -1507,13 +1460,10 @@ broadcast at or below the last `seq` of the same session generation is
 ignored; a new generation is always applied.
 
 The daemon keeps a session-local **opaque-id registry** keyed by object
-identity: an id is assigned once, survives renames (it follows the object, not
-its key) and refreshes (the deserializer reuses a matching object), is never
-reused within a session, and is discarded on restart (a new session
-generation). An id is an opaque string that carries the session generation,
-so an id cached from an earlier session never names an entity of this one:
-it is a stale reference, refused (§19.20 "Errors and domain results"), never
-resolved to whatever entity the new session numbered alike. Snapshots carry
+identity, which provides the ids of [PROTOCOL.md](../protocol/PROTOCOL.md) §12.1: an id survives renames (it
+follows the object, not its key) and refreshes (the deserializer reuses a
+matching object), and is discarded on restart (a new session generation).
+Snapshots carry
 a current-key → id index from which a client builds its id↔key map, a
 transport-layer router that domain logic never consults. *(Step 5g.2 part B
 changed the index's ids from integers to these strings, in the protocol-10
@@ -1539,14 +1489,11 @@ this registry and its `key` / `label` for display; a request names an entity
 by a reference that is either `{ id }` or `{ key }` (§19.20). `model_change`
 becomes the `changed { seq, session_generation, scopes? }` signal of
 `loomworks.Workspace/1`, delivered to its subscribers under the same
-generation rule. An interface signal's `seq` counts per object **and
-connection**, over only the signals actually sent to that connection: it is
-gapless for that connection, so a gap means a lost signal and the client
-fetches the state again (the `model_change` broadcast's per-workspace `seq`
-above is the protocol-10 form). `seq` is counted per connection and per
-object, not per subscription, so a client with several subscriptions on one
-object sees gaps in each and should check gaps across all of them together. A connection of protocol 10 (v0, §19.8) keeps
-receiving the `model_change` broadcast unconditionally.
+generation rule. An interface signal's `seq` is counted as [PROTOCOL.md](../protocol/PROTOCOL.md) §12.3
+specifies (per object and connection, gapless); the `model_change`
+broadcast's per-workspace `seq` above is the protocol-10 form ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A). A
+connection of protocol 10 (v0, §19.8) keeps receiving the `model_change`
+broadcast unconditionally.
 
 ### 19.13 Snapshot and projection
 
@@ -1924,7 +1871,8 @@ them over transport 11; `loomworks.Tasks/1` observation signals, `list` and
 the daemon side of "Editor scopes and configure" is implemented (part B1),
 the rest plan.*
 
-A running operation streams `task` events on a **task stream**, separate from
+A running operation streams `task` events on the **task stream** of
+[PROTOCOL.md](../protocol/PROTOCOL.md) §14, separate from
 model changes and observable by every connected client (a build started by the
 CLI streams into the editor): `start` (`meta = { name, kind, profile, units,
 origin }` — `profile` the profile's key, `units` one `{ project, configuration }` per
@@ -1933,23 +1881,12 @@ semantic keys, which a client resolves to its own domain objects at the
 boundary, §19.14; `origin` the owner's `hello.client`, `cli` or `editor`,
 set by the daemon, never taken from the request), `line` (one of loomworks's own lines —
 a status line on standard output, a note on standard error), `output` (a
-step's raw bytes, `stdout` or `stderr`), `progress` (coalesced: a tick only
-when the integer percent advances) and `done` (`exit_code`, and the refusal or
-failure the client prints as `lw: <error>`). The client that started the task
-— its **owner** — receives every event, unbounded and in order: the stream is
-its terminal. It is **flow-controlled**: when a few megabytes wait unread on
-the owner's connection (a client that stopped reading, e.g. `lw build | less`
-paused), the daemon stops reading the running step's output until the owner
-caught up, so the build tool then blocks on its full pipe as it blocks on a
-paused terminal in-process, and the daemon's memory stays bounded. Up to that
-bound (about 4 MiB) the output is buffered, so a reader paused briefly does
-not pause the tool — a build whose whole output fits finishes while the reader
-waits, and the reader still gets all of it, in order;
-cancellation still applies while paused. Other clients **observe** it with
-output bounded per task by bytes (a few megabytes each, then a single
-truncation notice); an observer whose connection falls further behind than a
-bound is disconnected (it connects again to re-attach) — unless it owns a
-running operation itself, which then only misses observed events. Model changes are never dropped; the durable
+step's raw bytes, `stdout` or `stderr`), `progress` and `done` (`exit_code`,
+and the refusal or failure the client prints as `lw: <error>`). Ownership,
+flow control and observer bounds are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.3–§14.4. For a CLI owner the
+stream is its terminal: a client that stopped reading (`lw build | less`
+paused) pauses the running step's output, so the build tool then blocks on
+its full pipe as it blocks on a paused terminal in-process. The durable
 outcome arrives as a `model_change` (§19.12).
 
 **Request.** `build { args, interactive, env, command }` — `args` carries the
@@ -2207,13 +2144,10 @@ dependency's or the target's own unit, `deploy` for a deploy phase with
 absent). Each transition is a `Tasks/1` `step { task_id, seq, index, state,
 error? }` signal (`running`, `ok`, `failed` with its failure line,
 `cancelled`; `skipped` for a step a failure, a cancel or a `device = true`
-outcome left unrun), its `seq` the signal envelope's `seq` (§19.12); a
-task's `step` signals follow its `started` and precede its `done`. `step` is
-a delta on top of `TaskInfo.steps`: on a seq gap a client re-reads
-`Tasks/1.list`. A
+outcome left unrun); its ordering, its `seq` and the re-read of
+`Tasks/1.list` on a gap are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.7. A
 unit's own tool steps (configure, build) are not steps here; they stay its
-lines, output and progress. Clients show an unknown step kind or state as
-neutral. Every step also has its line on the task stream, as today
+lines, output and progress. Every step also has its line on the task stream, as today
 (`building dependency: <project>`; a deploy phase `deploying (<phase>): <n>
 copies`, where `n` counts the phase's declared sources, including fresh ones
 the copy will skip; a single source reads `1 copy`). A deploy whose copies all
@@ -2440,8 +2374,7 @@ daemon side — `daemon/core_interfaces.lua`, `daemon/service.lua`
 `_resolve_units`, `daemon/runner.lua`, `build_run.plan` /
 `overseer.plan_units_build`; the editor calls them from part C1.)* `Build/1` grows
 additively for the editor's actions (§19.16 "Editor operations"); its
-interfaces are still drafts, so this is no new version (§19.20 "Schemas and
-conformance"). The CLI's requests are unchanged: a protocol-10 (v0) request
+interfaces are still drafts, so this is no new version ([PROTOCOL.md](../protocol/PROTOCOL.md) §17.1). The CLI's requests are unchanged: a protocol-10 (v0) request
 carrying `units`, `jobs` or a `{ project, target }` item is `declined`
 (`malformed request`).
 
@@ -2572,12 +2505,12 @@ that step, releases its locks and ends the task nonzero (`build stopped:
 <reason>`; `test stopped: <reason>` for a test run; `run stopped: <reason>`
 for a run's preparation, `debug stopped: <reason>` for a debug's;
 `configure stopped: <reason>` for a configure; `clean stopped: <reason>` for
-a clean; `reset stopped: <reason>` for a reset). A client that loses the connection after its operation was
-accepted reports a failure; it never re-runs the operation another way (for a
-run: it starts no program). Cancellation ends with the task: a run's program,
+a clean; `reset stopped: <reason>` for a reset). A client that loses the connection
+after its operation was accepted follows [PROTOCOL.md](../protocol/PROTOCOL.md) §14.5 (for a run: it starts no
+program). Cancellation ends with the task: a run's program,
 started after it, is never the daemon's to stop (Run). A
 connection that owns a running operation is never dropped for silence
-(§19.11); the CLI also pings while it waits. The step's processes are the
+([PROTOCOL.md](../protocol/PROTOCOL.md) §14.4, §19.11); the CLI also pings while it waits. The step's processes are the
 daemon's, not in the client's console, so the interrupt must reach the
 client itself: on Windows a routed client re-enables the console's Ctrl-C for
 its process (a process started with it disabled — `start /b`, a new process
@@ -2587,10 +2520,10 @@ processes in that console still stop).
 
 **Task ownership.** *(Step 5i: the CLI's two-stage Ctrl-C is implemented,
 part F — `cli.lua` `_routed_cancel`, the interrupt handler's interceptor.)* Every task a connection starts — build, test, run preparation,
-configure, clean, reset — is owned by that connection. When the connection
-closes for any reason (a CLI's Ctrl-C, the editor quitting or crashing, `lw`
-killed, a `--stdio` relay ending), the daemon cancels its tasks as above.
-Other connections only observe: closing an observer never stops a task.
+configure, clean, reset — is owned by that connection ([PROTOCOL.md](../protocol/PROTOCOL.md) §14.3). When the
+connection closes for any reason (a CLI's Ctrl-C, the editor quitting or
+crashing, `lw` killed, a `--stdio` relay ending), the daemon cancels its tasks
+as above.
 Configure counts as a connection-owned task from step 5i (cancelled when its
 connection closes), but in 5i it reaches the daemon only as a step of a
 routed build, test or run preparation; a standalone configure is routed from
@@ -2636,16 +2569,12 @@ then owns it with no connection.)*
 implemented, part A; the task-streamed methods (`start.meta` naming the
 method, `done.result`), part B; the observation bound to the subscription,
 step 5g.3 (`tasks.lua` `Task:_observes`).)* The task stream is a
-**transport** mechanism (§19.8), not part of any one interface: a method its
-schema declares task-streamed (§19.20) — `Build/1.build`, `Tests/1.run`,
+**transport** mechanism ([PROTOCOL.md](../protocol/PROTOCOL.md) §14), not part of any one interface. The
+task-streamed methods are `Build/1.build`, `Tests/1.run`,
 `Launch/1.prepare_run`, from step 5k `Build/1.configure` and
-`Launch/1.prepare_debug`, from step 5t `Launch/1.build`, a module's log
-stream — replies `accepted` with a
-`task_id` and then streams `task` frames with the phases, ownership, flow
-control, observer bounds and disconnect-cancellation above. What the
-interface types is the payload: `start.meta` also names `object`, `iface`, `v`
-and `method`, and `done` carries `result`, validated against the method's
-task result schema (for `prepare_run` the launch spec, for `prepare_debug`
+`Launch/1.prepare_debug`, from step 5t `Launch/1.build`, and a module's log
+stream. Each method's schema types the task's `start.meta` and its
+`done.result` (for `prepare_run` the launch spec, for `prepare_debug`
 the debug spec, for a test run its
 structured results: `steps`, one `{ name, exit_code, status }` per test step
 run, and the `junit` files written; per-case results come later as an
@@ -2653,17 +2582,11 @@ optional field). The outcomes of the operations (`accepted`, `refused`,
 `declined`, `confirm`) are unchanged; they are domain results of the method,
 not errors (§19.20).
 
-- **Observation** is by subscription: a connection subscribed to
-  `loomworks.Tasks/1` on `/tasks` (optionally for one `task_id`) receives its
-  `started` / `ended` signals and the frames of the tasks it matches, bounded
-  as for an observer above. A connection of protocol 10 keeps receiving every
-  task's frames as today. A connection that joins late — subscribing with a
-  `task_id`, or adopting what `list` returns — receives a task's output from
-  that moment; nothing earlier is replayed (no `attach` method; BACKLOG
-  "Daemon task output replay").
-- **Cancellation**, besides the disconnect above, is
-  `loomworks.Tasks/1.cancel { task_id }`, allowed for the task's owner only;
-  any other connection gets the error `forbidden`.
+- **Observation, late joining and cancel** are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.6, with
+  `loomworks.Tasks/1` on `/tasks` as the task interface. A connection of
+  protocol 10 keeps receiving every task's frames as today. Nothing earlier
+  than joining is replayed (no `attach` method; BACKLOG "Daemon task output
+  replay").
 - `loomworks.Tasks/1.list` gives the running tasks to an interface client
   (from step 5t with the steps of a target-scoped task and their current
   states, "Steps of a task" above); `status.tasks` (§19.11) stays as it is,
@@ -4302,103 +4225,36 @@ plan: the editor's interfaces steps 5j–5o; module
 interfaces step 5q; out-of-process providers are reserved and built later
 (§19.19).*
 
-**Layers.** The protocol has three layers:
+**The protocol.** The layers (transport, interfaces, data), interface
+naming and reserved namespaces, objects as services, the root object
+`loomworks.Root/1`, per-call version choice and `same_build`, the message
+envelope (`call`, `ok`, `error`, `signal`, `task`), the transport error codes
+and the rule that a mutating method's reply is never turned into an error
+are specified in [PROTOCOL.md](../protocol/PROTOCOL.md) §2, §8–§11. This section adds what is specific to
+loomworks:
 
-1. **Transport** — framing, authentication, the handshake, the message
-   envelope, flow control and the root object. Only this layer carries the
-   `protocol` number (§19.8).
-2. **Interfaces** — named, individually versioned contracts, each a set of
-   methods, signals and errors described by a schema. One daemon may serve
-   several versions of an interface at once.
-3. **Data** — entities (profiles, projects, configurations, configuration
-   units, launches, tasks, devices, build directories) travel as plain records
-   carrying their opaque `id` (§19.12) and their `key` / `label`. There are no
-   remote object references: the only per-connection state in the daemon is
-   the connection's subscriptions and the tasks it owns, both dropped when it
-   closes.
-
-**Naming.**
-
-- An interface is `<namespace>.<Name>` with a positive integer version,
-  written `loomworks.Build/1`; on the wire `iface = "loomworks.Build"`,
-  `v = 1`. `loomworks.*` is reserved for core and `lw.internal.*` for
-  same-build facilities that are never a stable contract. A module's
-  namespace is its module id; the registry refuses a module interface outside
-  it, so two plugins cannot collide. Each editor view is an interface of its
-  own (`loomworks.view.<Name>`), versioned on its own.
-- Objects are paths naming **services, never entities**: `/` (the root), the
-  core services `/workspace`, `/profiles`, `/projects`, `/build`, `/tests`,
-  `/launch`, `/lsp`, `/debug`, `/tasks`, `/toolchains`, `/devices`,
-  `/health`, `/maintenance`, `/views`, `/internal`, and `/modules/<id>` for
-  each module.
-- Methods, signals and error codes are `snake_case`; a module's own error codes
-  are prefixed with its namespace (`<id>.<code>`).
-
-**The root object.** Object `/` always implements `loomworks.Root/1`, which is
-frozen (§19.8): it is never versioned past 1, gaining only optional fields
-and new methods, which a client calls only after seeing them in
-`describe().root_methods`.
-
-| Method | Params | Result |
-|--|--|--|
-| `describe` | `{}` | `binary { lw_version, impl, dev }`, `transport { min, max }`, `session_generation`, `objects` — per object its `path`, `owner` (`core` or the module id) and `interfaces`, each `{ name, versions, deprecated?, internal?, same_build?, schema_digest }` (`schema_digest` maps a version to the sha256 of its schema document) — `root_methods`, and `delivery?`: `"subscription"` when the daemon sends a transport-11 connection task frames and changes only through its subscriptions (step 5g.3); absent (an older daemon) means it also sends the protocol-10 broadcasts |
-| `schema` | `{ iface, v }` | that interface version's schema document |
-| `subscribe` | `{ object, iface, v, signals?, args? }` | `{ sub_id, seq, initial? }` — `seq` is the baseline: the last `seq` of that object sent to this connection (0: none), so the subscription's first signal is `seq + 1` |
-| `unsubscribe` | `{ sub_id }` | `{}` |
-
-The root's signals reach every authenticated connection without a
-subscription: `objects_changed { added, removed }` (paths; a module loaded,
-the workspace loaded or unloaded) and `retiring` (§19.11). `welcome` carries
-`objects`, the `describe().objects` list without digests, so a client with
-nothing else to ask needs no extra round trip; a daemon that has not loaded
-its workspace lists the objects that need none and sends `objects_changed`
-when it loads.
-
-**Version choice.** For each interface it uses, a client takes the highest
-version it supports among the object's `versions`, and stamps that version on
-**every call and every subscription**; the daemon keeps no per-connection
-version state, so a reconnect only re-runs discovery. With no common version
-the client degrades the feature that needs the interface (§19.16), never the
-connection. An interface flagged `same_build` is callable only when the
-client's `hello.lw_version` equals the daemon's; otherwise the call fails
-with `same_build_required`.
-
-**Message envelope.** After `welcome`, besides the frozen control subset
-(§19.8), which stays as it is:
-
-```
-call   { kind = "call",   req_id, object, iface, v, method, args, env? }
-ok     { kind = "ok",     req_id, result }
-error  { kind = "error",  req_id, error = { code, message, data? } }
-signal { kind = "signal", object, iface, v, name, sub_id?, seq?, args }
-task   { kind = "task",   task_id, phase, ... }     -- §19.15
-```
-
-`env` is the client's environment, an envelope field because every method that
-touches the model runs in it, under the one environment-scope rule of §19.15
-(Environment). `args` are validated against the method's schema before the
-handler runs; an invalid call is `invalid_args` naming the first violation.
-Results and signals are validated in development builds and tests: a
-violation fails the test, and is a log line in a release build.
-
-**Errors and domain results.** `error` means only that the call could not be
-processed. The operations' outcomes — `accepted`, `refused` (with message and
-exit code), `declined` (with reason), `confirm` (with lines and plan) — are
-**domain results** inside `result`, a union every interface shares. The
-transport's error codes are `unknown_object`, `unknown_interface`,
-`unsupported_version` (`data.versions` lists the offered ones),
-`unknown_method`, `invalid_args`, `same_build_required`, `not_loaded` (the
-method needs the workspace and loading it failed; `data` carries the header's
-`state` and `error`, §19.13), `stopping`, `retiring`, `forbidden` and
-`internal`. An interface declares its own codes in its schema. A stale
-reference (a removed entity, an id of an earlier session generation) is the
-method's `refused` / not-found result, never an error of the transport.
-Once a mutating method's handler ran, its reply is never turned into an
-error: a reply that does not match its schema (checked in development builds
-and tests) is logged and sent as it is, because it may report what already
-started (an accepted task), and an error would let a client run the
-operation a second time. A non-mutating method's invalid reply may be
-`internal` there.
+- **Entities.** The data layer's entities are profiles, projects,
+  configurations, configuration units, launches, tasks, devices and build
+  directories, each with its opaque `id` (§19.12) and its `key` / `label`.
+- **Views.** Each editor view is an interface of its own
+  (`loomworks.view.<Name>`), versioned on its own.
+- **Objects.** The core services are `/workspace`, `/profiles`, `/projects`,
+  `/build`, `/tests`, `/launch`, `/lsp`, `/debug`, `/tasks`, `/toolchains`,
+  `/devices`, `/health`, `/maintenance`, `/views`, `/internal`, and
+  `/modules/<id>` for each module. A module's namespace is its module id.
+- **Root.** `describe().binary` is `{ lw_version, impl, dev }`; an object's
+  `owner` is `core` or the module id; `delivery = "subscription"` is step
+  5g.3. The root's `objects_changed` reports a module loaded or the workspace
+  loaded or unloaded, and `retiring` is §19.11's. A daemon that has not loaded
+  its workspace lists the objects that need none.
+- **Environment.** `env` is an envelope field because every method that
+  touches the model runs in it, under the one environment-scope rule of
+  §19.15 (Environment).
+- **Domain results.** The operations' outcomes — `accepted`, `refused` (with
+  message and exit code), `declined` (with reason), `confirm` (with lines and
+  plan) — are a union every interface shares (`loomworks.Common/1`).
+  `not_loaded` means loading the workspace failed; its `data` carries the
+  header's `state` and `error` (§19.13).
 
 **The CLI's calls.** Over transport 11 the CLI sends its operations and
 reads as interface calls (`daemon/calls.lua`) and acts on a transport error
@@ -4416,30 +4272,14 @@ method it runs in-process.
 the key the user typed, which the daemon resolves exactly as the in-process
 command does (same messages and exit codes).
 
-**Signals and subscriptions.** `Root.subscribe` registers a subscription of the
-calling connection to one interface version of one object, optionally limited
-to some of its signals and filtered by `args` as the interface defines (a
-task id, a list of units). The daemon encodes that interface's signals at the
-subscribed version and stamps them with the `sub_id`. An interface declares
-per signal whether subscribing returns its full state as `initial` — every
-view does, so subscribing after a reconnect re-hydrates the client. A
-connection receives only the signals it subscribed to, plus the root's.
-`seq` and `session_generation` follow §19.12: `seq` counts per object and
-connection, over only the signals sent to that connection (gapless for it,
-from the baseline `subscribe` returns), and a gap or a new generation means
-"get the state again".
-
-**Tasks and cancel.** A method its schema declares task-streamed runs as a
-task owned by the calling connection, on the transport's task stream
-(§19.15): the frames are not interface signals, because ownership,
-back-pressure, observer bounds and disconnect-cancellation are shared by every
-such method of every interface. The interface types the task's `meta` and its
-`done.result`. Observers subscribe to `loomworks.Tasks/1`; only the owner may
-cancel (`forbidden` otherwise); a disconnect still cancels. From transport 11
-a `task_id` and a `sub_id` are opaque strings scoped to the session
-generation, like entity ids (`loomworks.Common/1` `TaskId`); a connection of
-protocol 10 keeps its integer task ids in its task frames, its `accepted`
-replies and `status.tasks`, unchanged.
+**Signals, subscriptions and tasks.** Subscriptions, `initial` state,
+`seq` and session generation, and the task stream of task-streamed methods
+(ownership, back-pressure, observer bounds, disconnect-cancellation; only the
+owner may cancel) are [PROTOCOL.md](../protocol/PROTOCOL.md) §12–§14. Every view's signals declare `initial`, so
+subscribing after a reconnect re-hydrates the client. Observers subscribe to
+`loomworks.Tasks/1`. From transport 11 a `task_id` and a `sub_id` are opaque
+strings (`loomworks.Common/1` `TaskId`); a connection of protocol 10 keeps its
+integer task ids ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A).
 
 **Interface catalogue.** The first versions of the core interfaces, landed by
 the steps of §19.19. Their schemas, not this table, are the full contract.
@@ -4629,103 +4469,44 @@ the module, and is reported by `lw health`. Handlers receive a context
 never the connection. The wire version of a module interface is independent of
 the in-process module API version (§8.0).
 
-**Providers (reserved).** A daemon not written in Lua hosts modules **out of
-process**: a provider is spawned by the daemon (`<provider> --stdio`) or
-connects with `hello.role = "provider"`, and registers its objects and their
-schemas through `loomworks.Provider/1.register`. The daemon routes calls for
-`/modules/<id>` to it and forwards its signals and task frames; the task stays
-owned by the calling client connection, the provider only produces its events.
-The core's module contract for such a provider (detection, configure and build
-steps, language-server configuration) is the interface
-`loomworks.ModuleProvider/1`, which the daemon calls. The role, these two
-interface names and the routing rule are reserved; nothing else of providers
-is specified until they are built.
+**Providers (reserved).** A daemon not written in Lua hosts modules out of
+process through providers ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex B), which own `/modules/<id>`.
 
-**Schemas and conformance.** Each interface version has one schema document:
-JSON Schema (2020-12) for parameters, results, signal payloads and shared
-definitions, in an envelope naming the interface, version and status and, per
-method, its parameters, result, optional task meta and result, errors, whether
-it needs the client environment and whether it mutates, and per interface the
-schema of a subscription's `args` (`subscribe_args`; without one a
-subscription takes no `args`). Documents use only a
-restricted keyword set (`type`, `properties`, `required`,
-`additionalProperties`, `items`, `enum`, `const`, `oneOf`, `$ref`, `$defs`,
-`minimum`, `maximum`, `minItems`, `pattern`, `description`) that every validator
-implements identically. Core's documents live in this repository's protocol
-schema directory, together with the transport document, golden transcripts
-and the frozen snapshot of every interface version a stable release
-shipped; after the split they move to a separate protocol repository, tagged
-and pinned by both the binary and the plugin. A module's documents live in its
-own repository. The contract is enforced by:
+**Schemas and conformance.** The schema documents, their restricted keyword
+set, the additive ratchet and the conformance checks are [PROTOCOL.md](../protocol/PROTOCOL.md) §16–§17. Core's
+documents live in this repository's protocol schema directory
+(`spec/protocol/`), together with the transport document, golden transcripts
+and the frozen snapshot of every interface version a stable release shipped;
+after the split they move to a separate protocol repository, tagged and
+pinned by both the binary and the plugin. A module's documents live in its
+own repository. Server conformance drives the transcripts against any binary
+over the standard-I/O transport — the Lua daemon and any rewrite alike — and
+client conformance replays them against the plugin's client. Besides the
+checks of PROTOCOL.md §17.4, a **registry and schema agreement** check
+requires every mounted interface version to have a document with the
+published digest, every method an implementation and every version older
+than the newest an adapter. The daemon validates its results and signals
+(PROTOCOL.md §16.4) in development builds and tests: a violation fails the
+test, and is a log line in a release build; a mutating method's invalid reply
+is also logged (PROTOCOL.md §11.3). The released versions whose snapshots
+`frozen/` keeps (PROTOCOL.md §16.5) are those a stable release shipped.
 
-- a **lint**: every document is valid against the meta-schema and uses only the
-  allowed keywords;
-- an **additive ratchet**: against its frozen snapshot, a version's parameters
-  (method `params`, `subscribe_args`, and the transport frames a client sends)
-  may only gain optional properties and enum values, its results and signals
-  only gain properties, enum values and alternatives; nothing is removed
-  (including an enum value), renamed, retyped or made required. Anything else
-  is a new version. A client that sends a parameter value added
-  after the version first shipped checks the interface's `schema_digest` (or
-  the daemon's version) first, since an older daemon refuses it as
-  `invalid_args`;
-- **registry and schema agreement**: every mounted interface version has a
-  document with the published digest, every method a handler, every version
-  older than the newest an adapter;
-- **server conformance**: golden transcripts, driven against any binary over
-  the standard-I/O transport — the Lua daemon and any rewrite alike;
-- **client conformance**: the plugin's client against the same transcripts,
-  replayed, for every interface version it claims.
-
-**Transcripts.** A transcript file, `transcripts/<namespace>/<Rest>.<v>.json`
-beside the interface's schema and checked by `meta/transcript.schema.json`, is
-`{ transcripts = 1, interface, version, description, cases }`. A case
-(`name`, `description?`, `fixture?`, `hello?`, `handshake?`, `allow?`,
-`steps`) runs on a fresh daemon over one connection, on a workspace the
-runner prepares (`fixture`: `empty`, the default, or `shell`, a shell project
-`app` with configuration `Debug`, the configuration set and trusted profile
-`dev` and a launch configuration `hello` — from step 5t also a project `lib`
-outside the set and a launch configuration `staged` depending on it — or
-`tests`, that project as one of
+**Transcripts.** The transcript format, the runner's steps, matchers and
+checks are [PROTOCOL.md](../protocol/PROTOCOL.md) §18. The fixtures the runner prepares (`fixture`) are `empty`,
+the default; `shell`, a shell project `app` with configuration `Debug`, the
+configuration set and trusted profile `dev` and a launch configuration
+`hello` — from step 5t also a project `lib` outside the set and a launch
+configuration `staged` depending on it; and `tests`, that project as one of
 the harness-only test module `teststub` with two test targets and `dev`
-active; step 5m). Unless `handshake` is false the
-runner sends `hello` (the case's `hello` fields over the default) and binds
-the `welcome` as the variable `welcome`; `lw_version`, `env` (the client
-environment to send) and `root` are bound before. A step is `send` (a frame
-template, validated against the transport unless `malformed`), `expect` (the
-earliest unconsumed received frame its selector — `kind` and the literal
-`req_id`, `object`, `iface`, `name`, `sub_id`, `task_id`, `phase` — picks
-must match the pattern, within `timeout_ms`) or `expect_none` (no frame the
-selector picks arrives `within_ms`); frames of other streams interleave
-freely, and at the end every received frame must have been consumed or match
-an `allow` pattern. Patterns are partial (an object names the fields it
-checks, an array has the actual length); an object whose keys all start with
-`$` is a matcher: `$any`, `$type`, `$absent`, `$bind` (bind or compare a
-variable), `$var` (a bound value, with `$with` merged over it in a
-template), `$contains`, `$exact`, `$pattern`, `$len`, combinable. The runner
-validates every received frame: transport frames against the transport
-document, an interface call's `ok` against its result schema and its `error`
-code against the transport's and the method's codes, a signal against its
-schema with a gapless `seq` per object, none for a subscription after its
-`unsubscribe` and its `session_generation` (if any) the `welcome`'s, every
-task's frames in order (`start` first, nothing after `done`; integer ids at
-protocol 10, strings from 11) and the task frames of a task-streamed call
-(the start meta naming the method; `done.result` against its task result
-schema); a protocol-10 reply is checked against its v0 shape
-(`transport.json` `v0.replies`), so the v0 aliases provably stay unchanged;
-other protocol-10 frames are only matched. An explicit `null` is a present
-value (`$absent` fails on it, `$any` accepts it), and an object pattern never
-matches an array nor an array pattern an object.
+active (step 5m). The runner binds `lw_version`, `env` and `root` before the
+handshake.
 
-Clients **must tolerate** unknown fields, unknown enum values and unknown
-alternatives in results and signals (an unknown value is shown as unknown or
-neutral, never a failure), so an interface may add a field, a state or an
-outcome without a new version.
-
-**Versions and deprecation.** Within an interface version only additive changes
-are allowed. A breaking change makes version `N+1`; the daemon keeps serving
-`N` through an adapter over `N+1` — never a second implementation — and
-announces `N` in `describe().deprecated` and on the editor's Runtime line. A
-deprecated version, and a transport version below a raised `protocol_min`, is
-dropped no earlier than **two stable releases and at least 60 days** after the
-first stable release that deprecated it.
+**Versions and deprecation.** Tolerance of unknown values, new interface
+versions and the support window are [PROTOCOL.md](../protocol/PROTOCOL.md) §17. The daemon serves a
+deprecated version `N` through an adapter over `N+1` — never a second
+implementation — and the transport-10 v0 aliases (PROTOCOL.md Annex A) the
+same way: the same handlers, with an argument and result adapter. The support
+window of PROTOCOL.md §17.3 is **two stable releases and at least 60 days**
+after the first stable release that deprecated the version; a transport
+version below a raised `protocol_min` is dropped under the same window. A
+deprecated version is also announced on the editor's Runtime line.

@@ -421,7 +421,7 @@
         "type": "object",
         "required": ["seq", "cases"],
         "properties": {
-          "seq": { "description": "Gapless per object and connection (spec 19.12).", "type": "integer", "minimum": 1 },
+          "seq": { "description": "Gapless per object and connection (PROTOCOL.md §12.3).", "type": "integer", "minimum": 1 },
           "task_id": { "description": "The run_cases task; absent for a collect.", "$ref": "loomworks.Common/1#/$defs/TaskId" },
           "cases": {
             "description": "The cases whose status changed since the previous results of this run, each with its current status.",

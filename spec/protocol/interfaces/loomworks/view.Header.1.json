@@ -31,7 +31,7 @@
         },
         "name": { "description": "The workspace's name (state loaded).", "type": "string" },
         "active_profile": { "description": "The active profile's key (state loaded; absent when none).", "type": "string" },
-        "active_profile_id": { "description": "The active profile's opaque id (spec 19.12): present exactly when active_profile is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "active_profile_id": { "description": "The active profile's opaque id (PROTOCOL.md §12.1): present exactly when active_profile is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "config_set": { "description": "The name of the active profile's configuration set (state loaded, a profile active).", "type": "string" },
         "config_set_id": { "description": "That configuration set's opaque id: present exactly when config_set is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "error": { "description": "The load failure (state error or refused).", "type": "string" },
