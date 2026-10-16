@@ -500,10 +500,18 @@ do
     -- Machine-local (never the repo's .nvim/cache): a clone could ship a
     -- binary there together with a pin naming its hash (spec §16.22/§16.23).
     local bin = require("boot.update").pinned_binary_path(p.version, asset)
-    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it...\n")
-    io.stdout:flush()
+    -- Say "fetching" only when a download really happens (host binary and/or
+    -- bundle not yet provisioned machine-locally); the hash checks below run
+    -- on every invocation regardless.
+    local announced = false
+    local function on_fetch()
+      if announced then return end
+      announced = true
+      io.write("fetching loomworks " .. p.version .. " (pinned)...\n")
+      io.stdout:flush()
+    end
     local ok, err = require("boot.update").ensure_host_binary(
-      p.version, asset, p.hashes[asset], bin)
+      p.version, asset, p.hashes[asset], bin, { on_fetch = on_fetch })
     if not ok then
       io.stderr:write("lw: could not fetch pinned lw " .. p.version .. ": " ..
         tostring(err) .. "\n")
@@ -516,6 +524,7 @@ do
     local upd = require("boot.update")
     local vdir, verr = upd.ensure_version(p.version, {
       bundle_sha256 = p.hashes[pin.bundle_asset(p.version)],
+      on_fetch = on_fetch,
     })
     if not vdir then
       io.stderr:write("lw: could not provision pinned bundle " .. p.version ..
@@ -531,6 +540,8 @@ do
     end
     -- Carry the sentinel + workspace root across the exec; the child inherits
     -- our environment (uv.os_setenv is visible to spawned children).
+    io.write("loomworks " .. p.version .. " (pinned)\n")
+    io.stdout:flush()
     uv.os_setenv("LOOMWORKS_PINNED", p.version)
     uv.os_setenv("LW_ROOT", getenv("LW_ROOT") or uv.cwd())
     local code = require("boot.exe").run_in_place(bin, forwarded)
