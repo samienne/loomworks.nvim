@@ -183,7 +183,8 @@
                       }
                     }
                   ]
-                }
+                },
+                { "project": "lib", "path": "lib", "entries": [] }
               ],
               "options": {
                 "clangd": {
@@ -357,7 +358,8 @@
                       "db_rev": 0
                     }
                   ]
-                }
+                },
+                { "project": "lib", "path": "lib", "entries": [] }
               ]
             }
           }

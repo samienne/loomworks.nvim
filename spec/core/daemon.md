@@ -2157,7 +2157,7 @@ locked. Once the launch target's own unit built, the artifact is probed
 before the post-build deploy steps: a foreign one ends a debug as refused
 ("Debug" above) and a run with `device = true` ("Run" above), the post-build
 deploy left to the client. A failing step ends the task with the in-process
-failure line, the later steps not run. *(Step 5t, plan.)* Its deploy steps
+failure line, the later steps not run. *(Step 5t, part B: implemented, daemon side.)* Its deploy steps
 run asynchronously, a cancel stopping between two copies, and its steps are
 reported as "Steps of a task" below describes; `force` is the answer to the
 artifact-conflict question (§5.9), which the editor asks before the call as
@@ -2165,7 +2165,7 @@ before a build. With `no_build` neither scope builds
 or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
 editor launch builds what it built in-process, not the whole profile.
 
-**Build of a launch target.** *(Step 5t, plan.)* `Launch/1.build { profile?,
+**Build of a launch target.** *(Step 5t, part B: implemented, daemon side; the editor calls it from part C.)* `Launch/1.build { profile?,
 project?, target?, kind?, force?, interactive, env, command }` (addressed
 as `prepare_run` is, plus `force`) builds a
 launch target as the editor's in-process launch build does (§8.8.4 steps 3–5,
@@ -2190,7 +2190,7 @@ the build, with `'<target>' is a device target; …` as its failure line (the
 editor keeps device targets' builds in-process and never sends one, §19.16
 "Editor operations") until step 5n extends `Launch/1.build` to them.
 
-**Steps of a task.** *(Step 5t, plan.)* A target-scoped task —
+**Steps of a task.** *(Step 5t, part B: implemented, daemon side.)* A target-scoped task —
 `Launch/1.build`, and `prepare_run` / `prepare_debug` with `build_scope =
 "target"` — announces its steps: its `TaskInfo` (the `started` signal,
 `Tasks/1.list`) and its task's `start.meta` carry `steps`, one `{ id, kind,
@@ -4194,13 +4194,13 @@ runtime is deferred until that module is actively developed.
        defaults to `daemon`.
      - **5t — Launch-target builds as one call** (§19.15 "Build of a launch
        target", "Steps of a task"; §19.16 "Editor operations"; §19.20
-       `Launch/1`, `Tasks/1`; after 5s, before 5n), in parts: 0 — spec; B —
+       `Launch/1`, `Tasks/1`; after 5s, before 5n), in parts: 0 — spec *(done)*; B —
        daemon side: `Launch/1.build`, the target-scope phase planner shared
        with the preparations, the asynchronous cancellable deploy phases,
        `force` on the preparations, `TaskInfo.steps` and the `Tasks/1.step`
        signal on every target-scoped task, schemas and transcripts on the
        `shell` fixture (a dependency, a pre-build deploy, a failing step, a
-       cancel); C — editor side: `LaunchTarget:build` through
+       cancel) *(done once merged)*; C — editor side: `LaunchTarget:build` through
        `Launch/1.build` for non-device targets (one owned task, the conflict
        question before the call, no editor deploy), the progress entry and
        the task runner row following the current step, prepare_run /
@@ -4669,7 +4669,9 @@ beside the interface's schema and checked by `meta/transcript.schema.json`, is
 `steps`) runs on a fresh daemon over one connection, on a workspace the
 runner prepares (`fixture`: `empty`, the default, or `shell`, a shell project
 `app` with configuration `Debug`, the configuration set and trusted profile
-`dev` and a launch configuration `hello`, or `tests`, that project as one of
+`dev` and a launch configuration `hello` — from step 5t also a project `lib`
+outside the set and a launch configuration `staged` depending on it — or
+`tests`, that project as one of
 the harness-only test module `teststub` with two test targets and `dev`
 active; step 5m). Unless `handshake` is false the
 runner sends `hello` (the case's `hello` fields over the default) and binds

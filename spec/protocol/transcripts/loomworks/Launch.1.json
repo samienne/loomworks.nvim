@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Launch",
   "version": 1,
-  "description": "Object /launch (spec 19.15 Run, Debug, Build scope of a launch; 19.20): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts.",
+  "description": "Object /launch (spec 19.15 Run, Debug, Build scope of a launch; 19.20): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts; build (step 5t), a launch target's build as one task with its steps.",
   "cases": [
     {
       "name": "prepare_run of a launch configuration ends with its launch spec",
@@ -96,15 +96,22 @@
       ]
     },
     {
-      "name": "prepare_run with build_scope target builds the launch's unit and ends with its launch spec",
+      "name": "prepare_run with build_scope target announces its steps, builds the launch's unit and ends with its launch spec",
       "fixture": "shell",
       "allow": [
         { "kind": "task" },
         { "kind": "model_change" }
       ],
       "steps": [
-        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "profile": { "key": "dev" }, "target": "hello", "kind": "launch", "build_scope": "target" }, "env": { "$var": "env" } } },
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "profile": { "key": "dev" }, "target": "hello", "kind": "launch", "build_scope": "target", "force": false }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "kind": "run", "steps": [
+              { "kind": "build", "project": "app", "state": "pending" },
+              { "kind": "probe", "state": "pending" }
+            ] }
+        } },
         { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": { "$pattern": "^building launch target: app: hello" } } },
         { "expect": {
             "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
@@ -126,6 +133,67 @@
         { "send": { "kind": "call", "req_id": 2, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_debug", "args": { "quiet": true }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "build_scope": "everything" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "build of a launch configuration builds its own unit as one task with one step; nothing is launched",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "project": { "key": "app" }, "target": "hello", "kind": "launch", "force": true }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" }, "profile_key": "dev" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "kind": "build", "profile": "dev",
+              "steps": [ { "id": { "$type": "string" }, "kind": "build", "label": { "$type": "string" }, "project": "app", "configuration": { "$type": "string" }, "state": "pending" } ] }
+        } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": { "$pattern": "^building launch target: app: hello" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
+            "result": { "exit_code": 0, "error": { "$absent": true } }, "launch": { "$absent": true }, "device": { "$absent": true }
+        }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "build of a launch configuration builds its dependency, then ends at its failing pre-build deploy; its own unit is never built",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "target": "staged", "kind": "launch" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" } } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "method": "build", "kind": "build",
+              "steps": [
+                { "kind": "build", "project": "lib", "configuration": { "$type": "string" }, "state": "pending" },
+                { "kind": "deploy", "phase": "pre_build", "project": "app", "state": "pending" },
+                { "kind": "build", "project": "app", "state": "pending" }
+              ] }
+        } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": "building launch target: app: staged" }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "line", "text": "building dependency: lib" }, "timeout_ms": 60000 },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 1,
+            "result": { "exit_code": 1, "error": { "$pattern": "^deploy failed: " } }
+        }, "timeout_ms": 60000 }
+      ]
+    },
+    {
+      "name": "build takes no launch arguments, and force is a boolean",
+      "fixture": "shell",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "target": "hello", "no_build": true }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 1, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "target": "hello", "extra": ["x"] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "target": "hello", "force": "yes" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
       ]
     }
