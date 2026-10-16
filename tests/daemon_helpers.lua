@@ -229,6 +229,28 @@ function M.shell_workspace(opts)
     return root
 end
 
+--- Make loading `root` raise warnings before any task starts (API.md §4.1
+--- reply notes): a project without a configure command (in no configuration
+--- set, so nothing builds it) and, unless `opts.signed_cache`, a build cache an
+--- earlier lw left unsigned (which a read-only command leaves as it is).
+--- @param root string
+--- @param opts? { signed_cache?: boolean }
+function M.load_warnings(root, opts)
+    local f = assert(io.open(root .. "/loomworks.json", "rb"))
+    local cfg = vim.json.decode(f:read("*a")); f:close()
+    local ghost = vim.deepcopy(cfg.projects.app)
+    ghost.path, ghost.launch = "ghost", nil
+    for _, v in pairs(ghost) do
+        if type(v) == "table" then v.configure_cmd = nil end
+    end
+    vim.fn.mkdir(root .. "/ghost", "p")
+    cfg.projects.ghost = ghost
+    f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
+    if opts and opts.signed_cache then return end
+    f = assert(io.open(root .. "/.nvim/loomworks.cache.json", "wb"))
+    f:write('{ "_meta": { "version": 8 }, "build_dirs": {} }'); f:close()
+end
+
 --- `lw daemon stop` in `root`, then wait until the stopped daemon's process
 --- has exited. stop returns once the runtime lock is released, a moment
 --- before the process is gone — on a loaded machine a while: a test that

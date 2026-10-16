@@ -43,8 +43,8 @@ end
 --- dropped.
 local function norm(s, root)
     s = unroot((s:gsub("\r\n", "\n")), root)
-    -- (The workspace name is its directory's.)
-    s = s:gsub("loomworks — [^\n]-  %(<ROOT>%)", "loomworks — <NAME>  (<ROOT>)")
+    -- (The workspace name is its directory's; painted or not.)
+    s = s:gsub("loomworks — [^%s\27]+", "loomworks — <NAME>")
     return (s:gsub("Runtime[^\n]*\n", ""))
 end
 
@@ -218,6 +218,20 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         -- A refusal is the same line on every runtime.
         r = parity(roots3, { "project", "show", "nope" })
         assert.equals(1, r.code)
+    end)
+
+    it("--color=always: the warnings the workspace raises on a read, painted the same on every runtime (§19.17)", function()
+        local roots3 = { workspace(), workspace(), workspace() }
+        for _, root in ipairs(roots3) do H.load_warnings(root, { signed_cache = true }) end
+        -- An `ok` snapshot reply, then an `ok` snapshot and tools query
+        -- reply: their notes (API.md §4.1) by role, as in-process.
+        for _, args in ipairs({ { "--color=always", "status" }, { "--color=always", "tools" } }) do
+            local r = parity(roots3, args)
+            local what = table.concat(args, " ")
+            assert.equals(0, r.code, what .. "\n" .. r.stderr)
+            assert.truthy(r.stderr:find("\27[33mloomworks: project 'ghost': configure_cmd is required\27[0m", 1,
+                true), what .. "\n" .. r.stderr)
+        end
     end)
 
     it("with no daemon running a read launches none and reads in-process (§19.1)", function()

@@ -334,3 +334,26 @@ describe("more roles", function()
       .. ESC .. "32mCLEAN OK: p" .. ESC .. "0m\n", r.stdout)
   end)
 end)
+
+describe("a daemon reply's notes (API.md §4.1)", function()
+  after_each(reset)
+
+  it("each on stderr, painted by its note_roles entry as in-process; a missing or unknown role is plain", function()
+    cc.mode = "always"
+    local buf = {}
+    local rs = io.stderr
+    io.stderr = { write = function(_, s) buf[#buf + 1] = s end }
+    local ok, err = pcall(cli._reply_notes, { notes = { "e", "w", "p", "u", "m" },
+      note_roles = { "fail", "warn", "plain", "sparkly" } })
+    io.stderr = rs
+    assert(ok, err)
+    assert.equals(ESC .. "31me" .. ESC .. "0m\n" .. ESC .. "33mw" .. ESC .. "0m\np\nu\nm\n", table.concat(buf))
+    -- No note_roles at all (an older daemon): every note plain.
+    buf = {}
+    io.stderr = { write = function(_, s) buf[#buf + 1] = s end }
+    ok, err = pcall(cli._reply_notes, { notes = { "a", "b" } })
+    io.stderr = rs
+    assert(ok, err)
+    assert.equals("a\nb\n", table.concat(buf))
+  end)
+end)
