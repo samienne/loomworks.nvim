@@ -142,7 +142,10 @@ that step:
 - each device command of remote execution (§18), including the program
   invocation run on the device;
 - the environment overrides a step adds, as `    env: <NAME>=<value> …` —
-  never the inherited environment.
+  never the inherited environment. A value that extends the inherited one
+  shows only what was added, with the inherited part written as `$NAME`
+  (e.g. `env: PATH=C:\gcc\bin;$PATH`), and a variable whose value equals the
+  inherited one is not shown.
 
 Commands are formatted as for the workspace log (above). Verbose changes only
 what is printed, never what runs; without it none of these lines appear.
