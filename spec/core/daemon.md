@@ -1653,8 +1653,8 @@ plan shared with the in-process host in `test_plan.lua`; `lw test --target`,
 in-process, see Routing), and for `lw clean [<profile>]` (§16.1; see Clean;
 the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
 the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir`
-with a stop predicate); `-v` on `lw test`, `lw run` and `lw clean`, plan
-(see Roles and verbose); observed by the editor (§19.16);
+with a stop predicate); `-v` on `lw test`, `lw run` and `lw clean` (see
+Roles and verbose); observed by the editor (§19.16);
 `lw reset [<profile> | --all] [-y]` (§16.30; see
 Reset, step 5d); other operations future. The task-streamed interface
 methods ("Tasks of interface methods" below: `Build/1`, `Tests/1.run`,
@@ -1711,7 +1711,7 @@ what a build does; a user who wants colour sets them in the environment of
 For a test run it is the test plan of §16.16 ([API.md](../protocol/API.md) §10.1), the in-process
 host's own code (`test_plan.lua`) run with the task as its host.
 
-**Roles and verbose.** *(Planned.)* Every `line` the daemon emits carries the role the
+**Roles and verbose.** Every `line` the daemon emits carries the role the
 in-process host prints that line with (§16.7, [API.md](../protocol/API.md) §4.2). The shared line
 producers return the role beside the text (`build_run.step_lines` and the
 clean, deploy and test line helpers), so both hosts take it from one place.
@@ -3228,7 +3228,8 @@ that cannot be removed is `tests/cli_reset_spec.lua`'s, the deletion and its
 check being the one path both hosts run); the projection half #88. For
 `lw build`, `lw test`, `lw run` and `lw clean` also with `-v`, and with
 `--color=always`: the same bytes both ways (each line the same text and
-role) — plan, with the daemon side of §19.15 "Roles and verbose".*
+role; the same four files, also with a module environment, its `env:` line
+against the client's).*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST

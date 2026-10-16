@@ -73,7 +73,9 @@ function TU:run_command_all(opts)
     local cmd = { vim.v.progpath, "--headless", "-u", "NONE", "-l", %q, opts.junit or "",
         self._config_unit._project.key }
     vim.list_extend(cmd, opts.extra_args or {})
-    return { cmd = cmd, junit_out = opts.junit }
+    local sep = package.config:sub(1, 1) == "\\" and ";" or ":"
+    return { cmd = cmd, junit_out = opts.junit,
+        env = { LW_V_RUNNER = "1", PATH = "/lw-runner/bin" .. sep .. (os.getenv("PATH") or "") } }
 end
 function TU:run_command_all_rebuilds() return false end
 function M.create_test_unit(unit) return setmetatable({ _config_unit = unit }, TU) end
@@ -148,8 +150,9 @@ describe("lw test through the workspace daemon (real processes)", function()
     --- A workspace with two `lwtestmod` projects (app, lib) and a profile
     --- `dev` (app=Debug, lib=Debug), created by lw itself. `saved`: app's
     --- saved test targets (§1.3.4) — launch configurations `chk` and `chk2`
-    --- running the SAVED program — as its project-wide `tests` list.
-    local function workspace(saved)
+    --- running the SAVED program — as its project-wide `tests` list;
+    --- `launch_extra`: fields added to both launch configurations.
+    local function workspace(saved, launch_extra)
         local root = H.tmp()
         roots[#roots + 1] = root
         vim.fn.mkdir(root .. "/app", "p")
@@ -178,7 +181,9 @@ describe("lw test through the workspace daemon (real processes)", function()
             local prog = root .. "/saved.lua"
             write(prog, SAVED)
             local function launch(name)
-                return { command = nv, args = { "--headless", "-u", "NONE", "-l", prog, name } }
+                local l = { command = nv, args = { "--headless", "-u", "NONE", "-l", prog, name } }
+                for k, v in pairs(launch_extra or {}) do l[k] = vim.deepcopy(v) end
+                return l
             end
             local app = project("app")
             app.launch = { chk = launch("chk"), chk2 = launch("chk2") }
@@ -313,6 +318,43 @@ describe("lw test through the workspace daemon (real processes)", function()
         assert.equals(0, ok.code, ok.stderr)
         assert.truthy(ok.stdout:find("\27[1;36m==>\27[0m\27[1m [test] app: nvim\27[0m", 1, true), ok.stdout)
         assert.truthy(ok.stdout:find("\27[32mTESTS OK: dev (2 steps)\27[0m", 1, true), ok.stdout)
+    end)
+
+    it("-v (and --color=always): each runner and program command, env lines against the client's environment, deploy steps — the same bytes both ways (§19.17)", function()
+        local tests = { "chk", { "chk2", "--x" } }
+        local extra = { env = { LW_V_SAVED = "s" },
+            deploy = { ["deployed/saved.lua"] = { project = "app", path = "${workspace_root}/saved.lua" } } }
+        local a, b = workspace(tests, extra), workspace(tests, extra)
+        for _, root in ipairs({ a, b }) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end
+        local cases = {
+            { { "--color=always", "test", "dev", "-v" }, { LW_V_CLIENT = "one" } },
+            { { "test", "dev", "--verbose" }, { LW_V_CLIENT = "two" } },
+            { { "--color=always", "test", "dev", "-v" }, { LW_V_CLIENT = "three", LW_TEST_FAIL_UNIT = "app" } },
+            { { "test", "dev", "-v", "--no-build" }, { LW_V_CLIENT = "four" } },
+        }
+        for _, c in ipairs(cases) do
+            local args = { "--no-input" }
+            vim.list_extend(args, c[1])
+            c[2].NoDefaultCurrentDirectoryInExePath = false
+            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
+            local rb = lw(b, args, c[2])
+            local what = table.concat(c[1], " ") .. " " .. vim.inspect(c[2])
+            assert.equals(ra.code, rb.code, what .. "\n" .. ra.stderr .. "\n---\n" .. rb.stderr)
+            assert.equals(norm(ra.stdout, a), norm(rb.stdout, b), what)
+            assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)), what)
+            assert.truthy(rb.stderr:find(NOTICE, 1, true), what .. "\n" .. rb.stderr)
+            local out = norm(rb.stdout, b):gsub("\27%[[%d;]*m", "")
+            -- The runner's command and env line (its PATH addition, over the client's PATH).
+            assert.truthy(out:find("    env: LW_V_RUNNER=1 ", 1, true), what .. "\n" .. out)
+            assert.truthy(out:find("/lw-runner/bin" .. (H.is_win and ";" or ":") .. "$PATH", 1, true), what .. "\n" .. out)
+            assert.is_nil(out:find("LW_V_CLIENT", 1, true), out)
+            if c[2].LW_TEST_FAIL_UNIT == nil then
+                -- A saved target: its deploy step (none with --no-build), then its program's command and env.
+                local deployed = out:find("    copy <ROOT>/saved.lua -> ", 1, true) or out:find("    up to date ", 1, true)
+                assert.equals(not vim.tbl_contains(c[1], "--no-build"), deployed ~= nil, what .. "\n" .. out)
+                assert.truthy(out:find("    env: LW_V_SAVED=s", 1, true), what .. "\n" .. out)
+            end
+        end
     end)
 
     it("saved test targets: the daemon runs the whole plan, as in-process (§16.16, §19.15)", function()

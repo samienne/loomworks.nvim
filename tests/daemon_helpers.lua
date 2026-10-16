@@ -302,6 +302,51 @@ function M.alive(pid, start)
     return type(start) == "string" and proc.alive(pid, start) == true
 end
 
+--- The module environment of the `-v` parity cases (spec §16.4 *Verbose*,
+--- §19.15 "Roles and verbose"): a new variable, PATH extended (shown as
+--- `$PATH` plus the addition), LW_V_CLIENT equal to the client's (never
+--- shown; each case sends another value) and, as on Windows the daemon's
+--- scope adds it, NoDefaultCurrentDirectoryInExePath (shown: the client
+--- does not set it).
+M.VERBOSE_ENV = {
+    LW_V_ADD = "added value",
+    PATH = (M.is_win and "C:/lw-verbose/bin;" or "/lw-verbose/bin:") .. "${PATH}",
+    LW_V_CLIENT = "${LW_V_CLIENT}",
+    NoDefaultCurrentDirectoryInExePath = "1",
+}
+
+--- Give every project of `root` the module environment `vars` (`<module>.env`,
+--- a working-copy-only field, spec §17.10): each project's definition (the
+--- working copy's, else loomworks.json's) is written into the signed working
+--- copy with it. The profile must exist (`lw profile create`).
+--- @param root string
+--- @param key_path string the environment's trust key (`env.data .. "/trust.key"`)
+--- @param vars table<string, string>
+function M.add_module_env(root, key_path, vars)
+    local trust = require("loomworks.trust")
+    local function rd(path)
+        local f = assert(io.open(path, "rb")); local t = f:read("*a"); f:close(); return t
+    end
+    local upath = root .. "/.nvim/loomworks.user.json"
+    local cfg = vim.json.decode(rd(root .. "/loomworks.json"))
+    trust._set_key_path(key_path)
+    local status, body = trust.verify("user", rd(upath))
+    if status ~= "valid" then trust._set_key_path(nil); error("working copy: " .. tostring(status)) end
+    local user = vim.json.decode(body)
+    user.projects = user.projects or {}
+    for name, proj in pairs(cfg.projects or {}) do
+        local p = user.projects[name] or proj
+        for k, v in pairs(p) do
+            if type(v) == "table" and k ~= "launch" and k ~= "configurations" then v.env = vars end
+        end
+        user.projects[name] = p
+    end
+    local signed, serr = trust.sign("user", trust.encode(user))
+    trust._set_key_path(nil)
+    if not signed then error(serr) end
+    local f = assert(io.open(upath, "wb")); f:write(signed); f:close()
+end
+
 --- `s` (stdout or stderr, root already replaced) comparable across the three
 --- runtimes: CRLF as LF, the daemon's delegation line dropped, pids and
 --- durations masked.

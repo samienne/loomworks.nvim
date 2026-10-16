@@ -424,6 +424,12 @@ function M.run(svc, ctx)
         return false
     end
 
+    --- `-v`: a deploy step's line (`    copy …` / `    up to date …`), on the
+    --- status stream, as the in-process host prints it (cli._verbose_hooks).
+    local deploy_step = args.verbose and function(ev)
+        task:line(out_stream, build_run.deploy_line(ev), "command")
+    end or nil
+
     -- Progress: a test run spends the first half building.
     -- A target-scoped launch build's current phase band `{ lo, span }`: a
     -- unit's step fractions are scaled into it, so the task's progress never
@@ -441,6 +447,9 @@ function M.run(svc, ctx)
     -- program is spawned like a build step (streamed, cancellable); the
     -- plan goes on in a model segment once it exited. A device step is not
     -- run here: the service declined a plan whose kit runs on a device.
+    -- With `verbose` (`lw test -v`, §16.4 *Verbose*) each runner and program
+    -- invocation streams its command lines first and a launch's deploy its
+    -- steps, as the in-process host prints them (cli._test_host).
     local test_plan = require("loomworks.test_plan")
     local test_host = {
         out = function(s, role) task:line("out", s, role) end,
@@ -454,6 +463,11 @@ function M.run(svc, ctx)
         if run.cancelled then drop(); return finish(run.cancel_code, stopped()) end
         local okc, why = current()
         if not okc then drop(); return finish(1, stopped(why)) end
+        if args.verbose then
+            for _, l in ipairs(build_run.command_lines(spec, spec.cwd or ws.root, { env = ctx.env })) do
+                task:line("out", l, "command")
+            end
+        end
         spawn(spec, function(code, signal)
             if run.cancelled then drop() end
             if ended_by_cancel() then return end
@@ -504,6 +518,7 @@ function M.run(svc, ctx)
         lt:deploy_async({
             cancelled = function() return run.cancelled end,
             resume = function(fn) svc:with_model(ctx, fn) end,
+            on_step = deploy_step,
         }, function(ok, err)
             run.deploying = false
             if run.cancelled then return finish(run.cancel_code, stopped()) end
@@ -569,7 +584,7 @@ function M.run(svc, ctx)
         if rp.foreign_of(lt) then return finish(0, nil, { device = true }) end
         -- (A target-scoped build deployed in its own phases.)
         if not args.no_build and not target_scoped then
-            local dok, derr = lt:deploy_sync()
+            local dok, derr = lt:deploy_sync({ on_step = deploy_step })
             if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
             if ctx.refused then return finish(1, ctx.refused) end
         end
@@ -619,8 +634,14 @@ function M.run(svc, ctx)
         task:progress((ci - 1) / #csteps)
         task:line("out", build_run.clean_step_line(step))
         if not step.wipe_build_dir then
+            if args.verbose then
+                for _, l in ipairs(build_run.command_lines(step, step.cwd or ws.root, { env = ctx.env })) do
+                    task:line("out", l, "command")
+                end
+            end
             return spawn(step, function(code, signal) clean_step_done(step, code, signal) end)
         end
+        if args.verbose then task:line("out", build_run.remove_line(step.build_dir), "command") end
         -- The core-performed wipe: the in-process deletion (build_run.wipe_step
         -- over Workspace:clean_wipe_build_dir — cache `unknown` first, reset
         -- only after success, a dir shared outside the clean kept). Its
@@ -685,7 +706,8 @@ function M.run(svc, ctx)
         progress((i - 1) / #steps)
         local ok_g, g_err = build_run.before_step(ws, step, { force = args.force })
         if not ok_g then return finish(1, g_err) end
-        local lines, roles = build_run.step_lines(ws, step, { verbose = args.verbose })
+        -- (`-v`: the env line against the client's environment, §19.15.)
+        local lines, roles = build_run.step_lines(ws, step, { verbose = args.verbose, env = ctx.env })
         for k, line in ipairs(lines) do task:line(out_stream, line, roles[k]) end
         -- Within the step, its build tool's progress lines move the percent.
         local base = i - 1
@@ -830,6 +852,7 @@ function M.run(svc, ctx)
                     async = true,
                     cancelled = function() return run.cancelled end,
                     resume = function(fn) svc:with_model(ctx, fn) end,
+                    on_step = deploy_step,
                 })
                 return
             end

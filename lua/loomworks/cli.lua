@@ -8517,8 +8517,9 @@ end
 M.ROUTED_COMMANDS = { build = true, test = true, run = true, clean = true, reset = true }
 
 --- Would argv `args` be routed to the daemon, for the ensure step's bound
---- (§19.10)? A routed command, except `lw test --target` and a `lw run` with a
---- device option (they stay in-process, §19.15), which get the plain
+--- (§19.10)? A routed command — `-v` included, which the requests carry
+--- (§19.15 "Roles and verbose") — except `lw test --target` and a `lw run`
+--- with a device option (they stay in-process, §19.15), which get the plain
 --- non-routed ensure.
 --- @param args string[]
 --- @return boolean
@@ -8627,15 +8628,15 @@ function M._build_request(args)
 end
 
 --- The request a `lw clean` argv routes as (spec §19.15 "Clean"): the same
---- parse as `cmd_clean` (`_parse_clean_args`) — `{ profile? }` — or nil when
---- `cmd_clean` would refuse the arguments (it then reports them) or `-v` is
---- given (the request carries no verbose: `cmd_clean` prints it in-process).
+--- parse as `cmd_clean` (`_parse_clean_args`) — `{ profile?, verbose? }`
+--- (`verbose` only with `-v`) — or nil when `cmd_clean` would refuse the
+--- arguments (it then reports them).
 --- @param args string[] argv, args[1] == "clean"
 --- @return table|nil
 function M._clean_request(args)
   local ok, profile, verbose = pcall(M._parse_clean_args, args, function() error("refused", 0) end)
-  if not ok or verbose then return nil end
-  return { profile = profile }
+  if not ok then return nil end
+  return { profile = profile, verbose = verbose or nil }
 end
 
 --- `lw clean`'s arguments: an optional profile (or config-set) and
@@ -8719,12 +8720,12 @@ function M._reset_confirm(root, args, req, reply, ensured, opts)
 end
 
 --- The request a `lw test` argv routes as (spec §19.15): the same parse as
---- `cmd_test` — `{ profile?, junit?, extra, no_build? }`, `junit` made absolute against
+--- `cmd_test` — `{ profile?, junit?, extra, no_build?, verbose? }`, `junit` made absolute against
 --- this process's working directory as `cmd_test` does. Returns "target" for
 --- the named-executable form (`--target`, not carried in this step), or nil
 --- when `cmd_test` would refuse the arguments or they carry a form the daemon
---- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options,
---- `-v`: `cmd_test` runs or reports them in-process).
+--- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options:
+--- `cmd_test` runs or reports them in-process).
 --- @param args string[] argv, args[1] == "test"
 --- @return table|"target"|nil
 function M._test_request(args)
@@ -8748,6 +8749,9 @@ function M._test_request(args)
     elseif a == "--no-build" then
       req.no_build = true
       i = i + 1
+    elseif a == "-v" or a == "--verbose" then
+      req.verbose = true
+      i = i + 1
     elseif a:sub(1, 1) == "-" or req.profile then
       return nil
     else
@@ -8763,8 +8767,7 @@ end
 --- cwd?, extra, no_build, quiet }` — and, second, what stays with this client
 --- (the parsed run: wrapper, report format). "device" when a device option is
 --- given (a device run stays in-process); nil when `cmd_run` would refuse the
---- arguments (it then reports them) or `-v` is given (the request carries no
---- verbose: `cmd_run` prints it in-process). `cwd` is sent as given: the launch
+--- arguments (it then reports them). `verbose` only with `-v`. `cwd` is sent as given: the launch
 --- resolves it as in-process (variables expanded, relative to the workspace
 --- root).
 --- @param args string[] argv, args[1] == "run"
@@ -8777,7 +8780,7 @@ function M._run_request(args)
   end
   local ok, r = pcall(M._parse_run_args, args, function() error("refused", 0) end,
     function() return false end)
-  if not ok or type(r) ~= "table" or r.verbose then return nil end
+  if not ok or type(r) ~= "table" then return nil end
   local pos = r.positionals
   local req = {
     extra = r.extra_args, no_build = r.no_build, quiet = r.print_mode ~= nil,
@@ -8785,6 +8788,7 @@ function M._run_request(args)
     -- (Only whether a wrapper is given: it refuses a device target before
     -- any deploy, as in-process; the wrapper itself stays here.)
     prefix = (r.prefix_tokens and #r.prefix_tokens > 0) or nil,
+    verbose = r.verbose or nil,
   }
   -- The §16.17 operand grammar (`_run_selection`): one operand is a target.
   if #pos >= 2 then req.profile, req.target = pos[1], pos[2] else req.target = pos[1] end

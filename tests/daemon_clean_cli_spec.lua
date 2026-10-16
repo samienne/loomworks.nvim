@@ -215,6 +215,30 @@ describe("lw clean through the workspace daemon (real processes)", function()
         assert.truthy(ok.stdout:find("\27[32mCLEAN OK: dev\27[0m", 1, true), ok.stdout)
     end)
 
+    it("-v (and --color=always): each clean command, its env line against the client's environment and the wipe, the same bytes both ways (§19.17)", function()
+        local a, b = workspace(), workspace()
+        for _, root in ipairs({ a, b }) do H.add_module_env(root, env.data .. "/trust.key", H.VERBOSE_ENV) end
+        build(a); build(b)
+        local f = parity(a, b, { "--color=always", "clean", "dev", "-v" },
+            { LW_TEST_FAIL = "clean", LW_V_CLIENT = "one", NoDefaultCurrentDirectoryInExePath = false }, nil, nil, true)
+        assert.equals(3, f.code)
+        local ok = parity(a, b, { "clean", "dev", "--verbose" },
+            { LW_V_CLIENT = "two", NoDefaultCurrentDirectoryInExePath = false }, nil, nil, true)
+        assert.equals(0, ok.code, ok.stderr)
+        local out = norm(ok.stdout, { ["<ROOT>"] = b })
+        -- The module clean's command, its directory and env overrides; the wipe's directory.
+        assert.truthy(out:find("==> [clean] app: clean Debug\n    $ ", 1, true), out)
+        assert.truthy(out:find("\n    (in <ROOT>/app)\n    env: ", 1, true), out)
+        assert.truthy(out:find("lw-verbose/bin" .. (H.is_win and ";" or ":") .. "$PATH", 1, true), out)
+        assert.is_nil(out:find("LW_V_CLIENT", 1, true), out)
+        assert.truthy(out:find("==> [clean] lib: clean Debug\n    remove <ROOT>/out/lib/Debug\n", 1, true), out)
+        build(a); build(b)
+        local c = parity(a, b, { "--color=always", "clean", "dev", "-v" },
+            { LW_V_CLIENT = "three", NoDefaultCurrentDirectoryInExePath = false }, nil, nil, true)
+        assert.equals(0, c.code, c.stderr)
+        assert.truthy(c.stdout:find("\27[2m    remove ", 1, true), c.stdout)
+    end)
+
     it("an unsafe wipe path: refused with the in-process line, nothing removed, both ways", function()
         local oa, ob = H.tmp() .. "/outside", H.tmp() .. "/outside"
         local a, b = workspace((oa:gsub("\\", "/"))), workspace((ob:gsub("\\", "/")))
