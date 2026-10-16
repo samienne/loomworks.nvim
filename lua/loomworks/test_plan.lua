@@ -765,8 +765,9 @@ function M.exec_step(ws, lt, opts, host, cb)
     end
 
     -- A launch's deploy steps run before its program (§8.8.4): through the
-    -- host when it has an asynchronous deploy (the workspace daemon, which
-    -- keeps its loop free and stops between copies on a cancel), else here —
+    -- host when it has its own deploy (the workspace daemon's asynchronous
+    -- one, which keeps its loop free and stops between copies on a cancel;
+    -- the in-process host's under `-v`, which prints each step), else here —
     -- unless the build is skipped, which skips deploy too (§16.16).
     if not reasons and cfg and not opts.no_build then
         local function deployed(dok, derr)

@@ -213,6 +213,9 @@ end
 ---   on_exit  fun(job)|nil
 ---   cwd      string|nil host working directory for the connector
 ---   backend  table|nil process backend (default: libuv)
+---   on_command fun(c: { cmd: string[], env: table|nil, cwd: string|nil })|nil
+---            hears the validated connector command before it is spawned
+---            (`lw -v`, headless §16.4 *Verbose*)
 --- @param spec table runner-built spec
 --- @param opts? table
 --- @return loomworks.SpecJob
@@ -234,6 +237,11 @@ function M.start(spec, opts)
     end
     if not nspec then return fail_now(serr) end
     job.spec = nspec
+    if opts.on_command then
+        local argv = { nspec.cmd }
+        for _, a in ipairs(nspec.args or {}) do argv[#argv + 1] = a end
+        opts.on_command({ cmd = argv, env = nspec.env, cwd = opts.cwd })
+    end
     local path, rerr
     if backend.resolve then
         path, rerr = backend.resolve(nspec.cmd)

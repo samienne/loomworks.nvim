@@ -154,12 +154,10 @@ end
 -- ---- host commands: version / self-update (work without a bundle) -----------
 -- `--version` / `-v` are the conventional spellings; accept them as aliases so
 -- they don't fall through to workspace resolution and error about a missing
--- loomworks.json.
-if not command then
-  for _, v in ipairs(forwarded) do
-    if v == "--version" or v == "-v" then command = "version"; break end
-  end
-end
+-- loomworks.json. Only before the command word: after it `-v` is the
+-- command's own option (`lw build -v`, spec §16.4 *Verbose*), while
+-- `lw -v build` is still the version.
+if pin.asks_version(forwarded) then command = "version" end
 --- Is system Lua fused into this host? A dev build (`make install` /
 --- `luvi lua --`) fuses it; a release host carries only the bootstrap.
 local function fused_system_lua() return bundle.readfile("loomworks/cli.lua") ~= nil end

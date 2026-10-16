@@ -242,7 +242,7 @@ M.LEFTOVER_REPORT_AGE = 86400
 --- @param runner loomworks.Runner
 --- @param serial string
 --- @param leftover { pid: integer, nonce: string, program: string, started_at: integer|nil }
---- @param o { backend?: table, timeout?: number, note: fun(s: string, role?: string), now?: integer }
+--- @param o { backend?: table, timeout?: number, note: fun(s: string, role?: string), now?: integer, on_command?: fun(c: table) }
 --- @return "stopped"|"gone"|"unknown"|"failed"|"unsupported"
 function M.reap_leftover(runner, serial, leftover, o)
     local name = leftover.program:match("([^/]+)$") or leftover.program
@@ -261,7 +261,7 @@ function M.reap_leftover(runner, serial, leftover, o)
         return "failed"
     end
     local job, fail = spec_exec.run(spec, { label = "stop leftover " .. name, timeout = o.timeout,
-        backend = o.backend })
+        backend = o.backend, on_command = o.on_command })
     if fail then
         o.note("warning: could not stop leftover " .. what .. from .. ": " .. fail, "warn")
         return "failed"
@@ -290,7 +290,7 @@ end
 --- @param runner loomworks.Runner
 --- @param serial string
 --- @param lock table device lock handle
---- @param o { backend?: table, timeout?: number, note: fun(s: string, role?: string), now?: integer }
+--- @param o { backend?: table, timeout?: number, note: fun(s: string, role?: string), now?: integer, on_command?: fun(c: table) }
 function M.reap_on_acquire(runner, serial, lock, o)
     local device_lock = require("loomworks.remote.device_lock")
     local outcomes = {}
@@ -326,6 +326,13 @@ end
 ---                    (device_rel is relative to the staging root)
 ---   extra_args_fn    fun(plan) → string[] appended to argv (e.g. results option)
 ---   backend, liveness_ms, write_out, write_err, note, on_cleanup
+---   on_command       fun(c: { cmd, cwd?, env? })|nil: hears each device
+---                    command the run issues (`lw -v`, headless §16.4
+---                    *Verbose*) — the listing, leftover reap, staging,
+---                    log clear / stream, crash snapshots, the program
+---                    invocation, result pulls and the stop (except a
+---                    stop sent from a signal handler, which may print
+---                    nothing); never the periodic liveness listing
 ---   (`note(s, role)`: `role` is the line's highlighting role, spec §16.7 —
 ---   phase, ok, warn or plain; a caller that does not color ignores it)
 --- @param o table
@@ -341,7 +348,9 @@ function M.execute(o)
         timed_out = false, failed = false }
 
     -- Device selection (§18.3).
-    local list, lerr = devices_mod.list(runner, { backend = o.backend, timeouts = o.timeouts })
+    local on_command = o.on_command
+    local list, lerr = devices_mod.list(runner, { backend = o.backend, timeouts = o.timeouts,
+        on_command = on_command })
     if not list then return nil, lerr end
     devices_mod.merge(o.ws, runner.id, list)
     local serial, serr = devices_mod.select(list, { explicit = o.serial, persisted = o.persisted,
@@ -364,7 +373,8 @@ function M.execute(o)
     })
     if not lock then return nil, lock_err end
 
-    local t = transport_mod.new({ runner = runner, serial = serial, backend = o.backend, timeouts = o.timeouts })
+    local t = transport_mod.new({ runner = runner, serial = serial, backend = o.backend, timeouts = o.timeouts,
+        on_command = on_command })
     local exec_job, log_job, live_job, live_timer
     local state
     local out_f, dev_f
@@ -381,10 +391,13 @@ function M.execute(o)
         if runner.terminate and state and plan.nonce then
             local ok, spec = pcall(runner.terminate, serial, plan.nonce, state.pid)
             if ok and spec then
-                local job = spec_exec.start(spec, { label = "terminate", timeout = timeout or 10, backend = o.backend })
                 -- From a signal handler (a fast libuv callback) nothing may
-                -- block: the stop request is sent and the process exits.
+                -- block or be printed through the CLI: the stop request is
+                -- sent unreported and the process exits. Otherwise (timeout,
+                -- transport error, lost status) on_command hears it.
                 local fast = vim.in_fast_event and vim.in_fast_event()
+                local job = spec_exec.start(spec, { label = "terminate", timeout = timeout or 10, backend = o.backend,
+                    on_command = (not fast) and on_command or nil })
                 if fast then return "sent" end
                 local wok = pcall(job.wait, job)
                 local failed = not wok or (job.failure and job:failure())
@@ -456,7 +469,8 @@ function M.execute(o)
 
     -- A program an interrupted run left on this device (§18.7): reaped
     -- before staging, still holding the new lock.
-    M.reap_on_acquire(runner, serial, lock, { backend = o.backend, timeout = t.timeouts.query, note = note })
+    M.reap_on_acquire(runner, serial, lock, { backend = o.backend, timeout = t.timeouts.query, note = note,
+        on_command = on_command })
 
     -- (2) Stage (§18.4).
     o.ws._device_sync = o.ws._device_sync or {}
@@ -526,7 +540,7 @@ function M.execute(o)
     -- (3) Prepare: log clear (best-effort) + crash snapshot.
     if session and session.clear then
         local _, cfail = spec_exec.run(session.clear, { label = "clear device log", timeout = t.timeouts.query,
-            backend = o.backend })
+            backend = o.backend, on_command = on_command })
         if cfail then result.warnings[#result.warnings + 1] = cfail end
     end
     local crash_before, crash_parse
@@ -534,7 +548,7 @@ function M.execute(o)
         local ok, spec, parse = pcall(runner.crash_snapshot, serial)
         if ok and spec and type(parse) == "function" then
             local job, cfail = spec_exec.run(spec, { label = "crash snapshot", timeout = t.timeouts.query,
-                backend = o.backend })
+                backend = o.backend, on_command = on_command })
             if cfail then
                 result.warnings[#result.warnings + 1] = cfail .. " (crash reports not collected)"
             else
@@ -554,7 +568,7 @@ function M.execute(o)
         end
         dev_f = dev_f or io.open(run_dir .. "/device.log", "wb")
         log_job = spec_exec.start(spec, {
-            label = "device log", backend = o.backend,
+            label = "device log", backend = o.backend, on_command = on_command,
             on_line = function(_, line)
                 local okr, kept = pcall(session.receive, line)
                 if not okr or kept == nil then return end
@@ -726,7 +740,7 @@ function M.execute(o)
         local ok, spec = pcall(runner.crash_snapshot, serial)
         if ok and spec then
             local job, cfail = spec_exec.run(spec, { label = "crash snapshot", timeout = t.timeouts.query,
-                backend = o.backend })
+                backend = o.backend, on_command = on_command })
             if not cfail then
                 local pok, after = pcall(crash_parse, job.lines)
                 local cok, paths = pcall(runner.crash_collect, crash_before, pok and after or {},

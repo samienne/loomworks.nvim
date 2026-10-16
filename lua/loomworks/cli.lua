@@ -105,6 +105,31 @@ local function errw(s, role)
   io.stdout:flush(); io.stderr:write(term.render(s or ""))
 end
 
+--- `-v` / `--verbose` output (spec §16.4 *Verbose*): each line, of the
+--- `command` role (§16.7), on the status stream — stdout, or stderr when
+--- `quiet` keeps stdout for a machine-readable payload (`lw run --print`).
+--- @param lines string[]
+--- @param quiet? boolean
+function M._verbose_out(lines, quiet)
+  local w = quiet and note or out
+  for _, l in ipairs(lines) do w(l, "command") end
+end
+
+--- The reporters a `-v` run hands to its deploy steps (`on_step`, see
+--- loomworks.deploy) and device runs (`on_command`, see loomworks.remote.run);
+--- an empty table without `verbose`, so nothing extra is printed.
+--- @param verbose? boolean
+--- @param quiet? boolean see `_verbose_out`
+--- @return { on_step?: fun(ev: table), on_command?: fun(c: table) }
+function M._verbose_hooks(verbose, quiet)
+  if not verbose then return {} end
+  local build_run = require("loomworks.build_run")
+  return {
+    on_step = function(ev) M._verbose_out({ build_run.deploy_line(ev) }, quiet) end,
+    on_command = function(c) M._verbose_out(build_run.command_lines(c, c.cwd), quiet) end,
+  }
+end
+
 -- ---------------------------------------------------------------------------
 -- Shell-word splitting and POSIX-sh quoting (for `lw run --prefix` / `--print`)
 -- ---------------------------------------------------------------------------
@@ -1167,7 +1192,7 @@ local function run_build_steps(profile, ws, opts)
     -- alike just refuse with exit 1; force is the only bypass, never a prompt.
     local ok_g, g_err = build_run.before_step(ws, step, { force = opts.force })
     if not ok_g then die(g_err, 1) end
-    local lines, roles = build_run.step_lines(ws, step, { verbose = opts.verbose })
+    local lines, roles = build_run.step_lines(ws, step, { verbose = opts.verbose, env = true })
     for i, line in ipairs(lines) do log(line, roles[i]) end
     -- Through the module table so tests can stub the spawn.
     -- (A step a signal ended comes back as 128 + signal, with the signal.)
@@ -1322,9 +1347,13 @@ local RESET_VERIFY_MS = 30000
 --- configured build dirs. Removes build artifacts but keeps the configuration
 --- (a later build reconfigures only if stale). Dies on any failure. The plan,
 --- lines and the core-performed wipe are loomworks.build_run's, shared with
---- the workspace daemon (spec §19.15 "Clean").
-function M.cmd_clean(ws, profile_name)
+--- the workspace daemon (spec §19.15 "Clean"). With `-v` each clean step
+--- prints its command (or the directory a core-performed wipe removes) under
+--- its header (§16.4 *Verbose*).
+--- @param args string[] the command line from the command word on
+function M.cmd_clean(ws, args)
   local build_run = require("loomworks.build_run")
+  local profile_name, verbose = M._parse_clean_args(args, die)
   local profile
   profile, ws = resolve_build_target(ws, profile_name, "lw clean <profile>")
   local steps = build_run.plan_clean(profile)
@@ -1345,6 +1374,7 @@ function M.cmd_clean(ws, profile_name)
       if step.wipe_build_dir then
         -- Core-performed wipe (spec §8.1) = a build-directory deletion
         -- (§4.6, §4.7), the daemon's same path (build_run.wipe_step).
+        if verbose then out(build_run.remove_line(step.build_dir), "command") end
         local done, res = false, nil
         build_run.wipe_step(ws, step, groups,
           { verify_ms = M._reset_verify_ms or RESET_VERIFY_MS },
@@ -1357,6 +1387,9 @@ function M.cmd_clean(ws, profile_name)
         if res.code ~= 0 then die(res.msg, res.code) end
         if res.note then out(res.note, "plain") end
       else
+        if verbose then
+          for _, l in ipairs(build_run.command_lines(step, step.cwd or ws.root)) do out(l, "command") end
+        end
         local code, sig = M._run_spec(step, ws.root)
         build_run.after_clean_step(ws, step, code)
         if code ~= 0 then die(build_run.failure_message(step, code, nil, sig), code) end
@@ -2282,7 +2315,7 @@ ensure_unit_targets = function(ws, unit)
 end
 
 --- `lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--no-build]
---- [--junit <file>] [--list [--json]] [-- <args>]` — build a profile, then run its test plan
+--- [-v|--verbose] [--junit <file>] [--list [--json]] [-- <args>]` — build a profile, then run its test plan
 --- (spec §16.16): per unit, the module's native batch runner, then its saved
 --- test targets. `--target` replaces the whole plan for the run; `--saved` /
 --- `--discovered` keep one kind of step; `--list` reports the plan read-only.
@@ -2290,6 +2323,8 @@ end
 --- build"); `--list` ignores it.
 --- Args after `--` are forwarded (to the runners, or to the executables).
 --- `--junit <file>` writes JUnit XML for CI (one file per step when several).
+--- `-v` prints the commands of the dependency build and of every test step
+--- (§16.4 *Verbose*).
 function M.cmd_test(ws, args)
   -- Split on `--`: everything after is forwarded to the test runner/programs.
   local pre, extra, seen_sep = {}, {}, false
@@ -2300,7 +2335,7 @@ function M.cmd_test(ws, args)
   end
   -- Pre-`--` tokens: `--junit <file>`, `--target <exe>` (repeatable), the plan
   -- selectors, `--no-build`, `--list [--json]`, device options (§16.34) and a profile.
-  local profile_name, junit, sel, list, json, cwd_override, no_build
+  local profile_name, junit, sel, list, json, cwd_override, no_build, verbose
   local names, dev_opts = {}, DEV.new_device_opts()
   local selectors = 0
   local i = 1
@@ -2321,6 +2356,7 @@ function M.cmd_test(ws, args)
       i = i + 1
     elseif pre[i] == "--list" then list = true; i = i + 1
     elseif pre[i] == "--no-build" then no_build = true; i = i + 1
+    elseif pre[i] == "-v" or pre[i] == "--verbose" then verbose = true; i = i + 1
     elseif pre[i] == "--json" then json = true; i = i + 1
     elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then
       cwd_override = pre[i + 1]
@@ -2331,7 +2367,7 @@ function M.cmd_test(ws, args)
       profile_name = pre[i]; i = i + 1
     else
       die("unexpected argument '" .. tostring(pre[i]) ..
-        "' — usage: lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--no-build] [--junit <file>] [-- args…]")
+        "' — usage: lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--no-build] [-v|--verbose] [--junit <file>] [-- args…]")
     end
   end
   if selectors > 1 then
@@ -2360,10 +2396,10 @@ function M.cmd_test(ws, args)
   -- Named test executables replace the whole plan (§16.16).
   if #names > 0 then
     return M._test_targets(ws, profile, names, { junit = junit, extra = extra, dev = dev_opts,
-      cwd_override = cwd_override, no_build = no_build })
+      cwd_override = cwd_override, no_build = no_build, verbose = verbose })
   end
   return M._test_plan(ws, profile, { sel = sel, junit = junit, extra = extra, dev = dev_opts,
-    no_build = no_build })
+    no_build = no_build, verbose = verbose })
 end
 
 --- `lw init` — initialize the working copy (.nvim/loomworks.user.json).
@@ -2447,6 +2483,7 @@ M.RUN_DEVICE_OPTIONS = { ["--device"] = true, ["--timeout"] = true, ["--query-ti
 --- @field print_mode "sh"|"json"|nil `--print` / `--dry-run` report format
 --- @field dry_run boolean
 --- @field no_build boolean `--no-build` (also set by `--dry-run`)
+--- @field verbose boolean `-v` / `--verbose` (§16.4 *Verbose*)
 --- @field extra_args string[] the arguments after `--`
 --- @field dev table device options (DEV.new_device_opts)
 --- @field device_option boolean a device option was given
@@ -2472,11 +2509,12 @@ function M._parse_run_args(args, fail, device)
   -- and `--no-build`; remaining pre-`--` tokens are positional and follow the
   -- §16.17 operand grammar (0/1/2). None of the options consume the operands or
   -- the forwarded (post-`--`) args.
-  local r = { positionals = {}, prefix_tokens = {}, no_build = false, dry_run = false,
+  local r = { positionals = {}, prefix_tokens = {}, no_build = false, dry_run = false, verbose = false,
     extra_args = extra_args, dev = DEV.new_device_opts(), device_option = false }
   local i = 1
   while pre[i] do
     if pre[i] == "--project" then r.proj_scope = pre[i + 1]; i = i + 2
+    elseif pre[i] == "-v" or pre[i] == "--verbose" then r.verbose = true; i = i + 1
     elseif pre[i] == "--target" then r.kind = "target"; i = i + 1
     elseif pre[i] == "--launch" then r.kind = "launch"; i = i + 1
     elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then r.cwd_override = pre[i + 1]; i = i + 2
@@ -2525,6 +2563,7 @@ function M._run_target_opts(r)
     dry_run = r.dry_run,
     extra_args = r.extra_args,
     cwd_override = r.cwd_override,
+    verbose = r.verbose,
     device = d.device, fresh = d.fresh, timeout = d.timeout,
     timeouts = d.timeouts, log_options = d.log_options, no_wait = d.no_wait,
   }
@@ -2554,6 +2593,9 @@ end
 ---                     --no-build): a pure read-only report. A program that is
 ---                     not built yet is still reported, with a note on stderr.
 ---   --no-build        skip the build+deploy (inspect / run what is already built).
+---   -v, --verbose     also print the build's commands, each deploy step and, for
+---                     a device run, every device command (§16.4 *Verbose*; on
+---                     stderr with --print).
 function M.cmd_run(ws, args)
   local r = M._parse_run_args(args, die, DEV.parse_device_opt)
 
@@ -2572,7 +2614,7 @@ function M.cmd_run(ws, args)
   -- executes the artifact and may run indefinitely.
   if not r.no_build then
     with_build_locks(profile, "build", function()
-      M._run_build_steps(profile, ws, { quiet = r.print_mode ~= nil })
+      M._run_build_steps(profile, ws, { quiet = r.print_mode ~= nil, verbose = r.verbose })
     end)
   end
 
@@ -2592,6 +2634,8 @@ end
 ---                           does not exist yet (never built)
 ---   extra_args    string[]  post-`--` args forwarded to the program
 ---   cwd_override  string|nil per-invocation working dir
+---   verbose       boolean   `-v`: print the deploy steps and, for a foreign
+---                           target, the device commands (§16.4 *Verbose*)
 --- `deps.run_spec` is injectable for tests.
 --- @param lt loomworks.LaunchTarget
 --- @param ws loomworks.Workspace
@@ -2632,7 +2676,8 @@ end
 --- Run a foreign build target on a device (spec §16.17, §18.5): deploy on the
 --- host → stage → execute remotely. Returns the invocation's exit status (the
 --- device program's; a lost status is a transport failure, EXIT_TRANSPORT).
---- `deps.backend` / `deps.liveness_ms` are test seams.
+--- With `opts.verbose` the deploy steps and every device command are printed
+--- (§16.4 *Verbose*). `deps.backend` / `deps.liveness_ms` are test seams.
 --- @return integer
 function M._run_foreign(lt, ws, f, opts, deps)
   deps = deps or {}
@@ -2651,9 +2696,10 @@ function M._run_foreign(lt, ws, f, opts, deps)
   local runner = f.platform and runners.for_foreign(f) or nil
   if not runner then die(foreign.refusal(f)) end
 
+  local hooks = M._verbose_hooks(opts.verbose, opts.print_mode ~= nil)
   -- Deploy steps run on the host before staging, unchanged (§18.4).
   if not opts.no_build then
-    local dok, derr = lt:deploy_sync()
+    local dok, derr = lt:deploy_sync({ on_step = hooks.on_step })
     if not dok then die("deploy failed: " .. tostring(derr)) end
   end
 
@@ -2688,7 +2734,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
     if not plan then die(perr) end
     local dinfo = { runner = runner.id }
     local list, lerr = require("loomworks.remote.devices").list(runner,
-      { backend = deps.backend, timeouts = opts.timeouts })
+      { backend = deps.backend, timeouts = opts.timeouts, on_command = hooks.on_command })
     if list then
       dinfo.serial, dinfo.error = require("loomworks.remote.devices").select(list, {
         explicit = opts.device, persisted = profile and profile._device_serial,
@@ -2711,7 +2757,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
     backend = deps.backend, liveness_ms = deps.liveness_ms,
     write_out = deps.write_out, write_err = deps.write_err,
     note = function(s, role) note("lw: " .. s, role or "plain") end,
-    on_cleanup = on_exit,
+    on_cleanup = on_exit, on_command = hooks.on_command,
   })
   if not result then die(err) end
   if opts.on_result then return opts.on_result(result) end
@@ -2751,7 +2797,7 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
 
   -- Deploy (both phases). Skipped with --no-build (paired with the build).
   if not opts.no_build then
-    local dok, derr = lt:deploy_sync()
+    local dok, derr = lt:deploy_sync({ on_step = M._verbose_hooks(opts.verbose, opts.print_mode ~= nil).on_step })
     if not dok then die("deploy failed: " .. tostring(derr)) end
   end
 
@@ -2800,21 +2846,34 @@ end
 --- The in-process host of the test plan (loomworks.test_plan): lines on this
 --- process's stdout / stderr, a refusal ends it (`die`), each program runs on
 --- this terminal (`run_spec`) and a device step through `_run_foreign`.
+--- With `verbose` (`lw test -v`, §16.4 *Verbose*) each runner and program
+--- invocation prints its command lines first, a launch's deploy its steps,
+--- and a device step every device command.
 --- `deps` (tests): run_spec, plus `_run_foreign` deps.
+--- @param verbose? boolean
 --- @return table host
-function M._test_host(ws, deps)
+function M._test_host(ws, deps, verbose)
   deps = deps or {}
+  local hooks = M._verbose_hooks(verbose)
   local host = { out = out, err = errw, fail = function(msg, code) die(msg, code) end }
   function host.foreign_of(lt) return M._foreign_of(lt) end
-  function host.spawn(spec, cb) return cb((deps.run_spec or run_spec)(spec, ws.root)) end
-  function host.exec(lt, o, cb) return cb(M._run_test_executable(ws, lt, o, deps)) end
+  function host.spawn(spec, cb)
+    if verbose then M._verbose_out(require("loomworks.build_run").command_lines(spec, spec.cwd or ws.root)) end
+    return cb((deps.run_spec or run_spec)(spec, ws.root))
+  end
+  if verbose then
+    function host.deploy(lt, cb) return cb(lt:deploy_sync({ on_step = hooks.on_step })) end
+  end
+  function host.exec(lt, o, cb)
+    return cb(M._run_test_executable(ws, lt, vim.tbl_extend("force", o, { verbose = verbose }), deps))
+  end
   function host.foreign(lt, f, o, cb)
     local outcome
     local dev = o.dev or DEV.new_device_opts()
     M._run_foreign(lt, ws, f, {
       extra_args = {}, device = dev.device, fresh = dev.fresh, no_build = o.no_build,
       timeout = dev.timeout, timeouts = dev.timeouts, log_options = dev.log_options,
-      no_wait = dev.no_wait, before_exec = o.before_exec,
+      no_wait = dev.no_wait, before_exec = o.before_exec, verbose = verbose,
       on_result = function(r) outcome = r; return r.exit_code end,
     }, deps)
     return cb(outcome)
@@ -2824,11 +2883,13 @@ end
 
 --- Run ONE test executable step in this process (spec §16.16, §18.6;
 --- loomworks.test_plan.exec_step documents `opts`). A step that cannot run
---- fails the invocation (`die`) unless it is a saved entry's.
+--- fails the invocation (`die`) unless it is a saved entry's. `opts.verbose`
+--- (`-v`): the step prints its deploy steps and the program invocation (on a
+--- device, every device command) under its header (`_test_host`).
 --- @return boolean failed, string[] reasons, table counts, boolean exit_only, string|nil junit_path
 function M._run_test_executable(ws, lt, opts, deps)
   local r
-  require("loomworks.test_plan").exec_step(ws, lt, opts, M._test_host(ws, deps),
+  require("loomworks.test_plan").exec_step(ws, lt, opts, M._test_host(ws, deps, opts.verbose),
     function(...) r = { ... } end)
   return r[1], r[2], r[3], r[4], r[5]
 end
@@ -2836,7 +2897,7 @@ end
 --- Run named test executables (spec §16.16, §18.6): build the profile, then
 --- run each named executable through `M._run_test_executable`, in its
 --- project directory or the per-invocation `cwd_override`.
---- `opts = { junit?, extra = string[], dev = device options, cwd_override?, no_build? }`:
+--- `opts = { junit?, extra = string[], dev = device options, cwd_override?, no_build?, verbose? }`:
 --- `no_build` builds nothing and requires every named target to be built
 --- already (§16.16 "Skipping the build"), under the build-dir locks.
 --- `deps` (tests): build(profile, ws), resolve_target(ws, profile, name) → lt,
@@ -2902,7 +2963,7 @@ function M._test_targets(ws, profile, names, opts, deps)
   if deps.build then
     deps.build(profile, ws)
   else
-    with_build_locks(profile, "build", function() run_build_steps(profile, ws, {}) end)
+    with_build_locks(profile, "build", function() run_build_steps(profile, ws, { verbose = opts.verbose }) end)
   end
   return M._run_named_tests(ws, profile, names, opts, deps, resolve, check_cwd)
 end
@@ -2972,7 +3033,7 @@ function M._run_named_tests(ws, profile, names, opts, deps, resolve, check_cwd)
     local lt = lts[i]
     local failed = M._run_test_executable(ws, lt, {
       label = name, extra = opts.extra, dev = opts.dev, cwd_override = opts.cwd_override,
-      no_build = opts.no_build,
+      no_build = opts.no_build, verbose = opts.verbose,
       junit_path = opts.junit and test_run.junit_path(opts.junit, name, several) or nil,
     }, deps)
     if failed then failed_names[#failed_names + 1] = name end
@@ -3006,7 +3067,7 @@ end
 --- `lw test [profile] [--saved | --discovered]` — the test plan (spec §16.16):
 --- per unit, its batch step then one executable step per saved entry. Every
 --- step runs even when an earlier one failed; the invocation succeeds iff the
---- build and every step succeeded. `opts = { sel?, junit?, extra, dev, no_build? }`:
+--- build and every step succeeded. `opts = { sel?, junit?, extra, dev, no_build?, verbose? }`:
 --- `no_build` builds and deploys nothing and fails before any step when a
 --- unit is not configured here, an executable is not built, or a
 --- self-rebuilding runner cannot skip its rebuild (§16.16 "Skipping the
@@ -3031,7 +3092,7 @@ function M._test_plan(ws, profile, opts, deps)
       if deps.build then
         deps.build(profile, ws, pre.keep)
       else
-        run_build_steps(profile, ws, { for_test = { keep = pre.keep } })
+        run_build_steps(profile, ws, { for_test = { keep = pre.keep }, verbose = opts.verbose })
       end
     end
     for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
@@ -3043,7 +3104,7 @@ function M._test_plan(ws, profile, opts, deps)
       return 0
     end
     local rc, err
-    test_plan.run(ws, profile, prepared, opts, M._test_host(ws, deps), function(code, msg) rc, err = code, msg end)
+    test_plan.run(ws, profile, prepared, opts, M._test_host(ws, deps, opts.verbose), function(code, msg) rc, err = code, msg end)
     if err then die(err, rc) end
     return rc
   end
@@ -8565,12 +8626,31 @@ function M._build_request(args)
 end
 
 --- The request a `lw clean` argv routes as (spec §19.15 "Clean"): the same
---- parse as `cmd_clean` — `{ profile? }`, the first operand (`cmd_clean`
---- refuses no argument form; the profile resolution refuses, as in-process).
+--- parse as `cmd_clean` (`_parse_clean_args`) — `{ profile? }` — or nil when
+--- `cmd_clean` would refuse the arguments (it then reports them) or `-v` is
+--- given (the request carries no verbose: `cmd_clean` prints it in-process).
 --- @param args string[] argv, args[1] == "clean"
---- @return table
+--- @return table|nil
 function M._clean_request(args)
-  return { profile = args[2] }
+  local ok, profile, verbose = pcall(M._parse_clean_args, args, function() error("refused", 0) end)
+  if not ok or verbose then return nil end
+  return { profile = profile }
+end
+
+--- `lw clean`'s arguments: an optional profile (or config-set) and
+--- `-v` / `--verbose`; anything else is refused through `fail(msg)`.
+--- @param args string[] argv, args[1] == "clean"
+--- @param fail fun(msg: string)
+--- @return string|nil profile_name, boolean verbose
+function M._parse_clean_args(args, fail)
+  local profile_name, verbose = nil, false
+  for i = 2, #args do
+    local a = args[i]
+    if a == "-v" or a == "--verbose" then verbose = true
+    elseif not profile_name then profile_name = a
+    else fail("unexpected argument '" .. tostring(a) .. "' — usage: lw clean [profile] [-v|--verbose]") end
+  end
+  return profile_name, verbose
 end
 
 --- The request a `lw reset` argv routes as (spec §19.15 "Reset"): the same
@@ -8642,8 +8722,8 @@ end
 --- this process's working directory as `cmd_test` does. Returns "target" for
 --- the named-executable form (`--target`, not carried in this step), or nil
 --- when `cmd_test` would refuse the arguments or they carry a form the daemon
---- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options:
---- `cmd_test` runs or reports them in-process).
+--- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options,
+--- `-v`: `cmd_test` runs or reports them in-process).
 --- @param args string[] argv, args[1] == "test"
 --- @return table|"target"|nil
 function M._test_request(args)
@@ -8682,7 +8762,8 @@ end
 --- cwd?, extra, no_build, quiet }` — and, second, what stays with this client
 --- (the parsed run: wrapper, report format). "device" when a device option is
 --- given (a device run stays in-process); nil when `cmd_run` would refuse the
---- arguments (it then reports them). `cwd` is sent as given: the launch
+--- arguments (it then reports them) or `-v` is given (the request carries no
+--- verbose: `cmd_run` prints it in-process). `cwd` is sent as given: the launch
 --- resolves it as in-process (variables expanded, relative to the workspace
 --- root).
 --- @param args string[] argv, args[1] == "run"
@@ -8695,7 +8776,7 @@ function M._run_request(args)
   end
   local ok, r = pcall(M._parse_run_args, args, function() error("refused", 0) end,
     function() return false end)
-  if not ok or type(r) ~= "table" then return nil end
+  if not ok or type(r) ~= "table" or r.verbose then return nil end
   local pos = r.positionals
   local req = {
     extra = r.extra_args, no_build = r.no_build, quiet = r.print_mode ~= nil,
@@ -11522,6 +11603,9 @@ function M.cmd_complete(cword, words)
   elseif cmd == "build" and n >= 2 and not has(a, "--") then
     emit({ "--target", "--force", "--reconfigure", "--verbose" })
     return 0
+  elseif cmd == "clean" and n >= 2 then
+    emit({ "--verbose" })
+    return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
       local ws = comp_ws(root)
@@ -11998,9 +12082,11 @@ for a deterministic build. The CI pattern is:
                 (cmake `--fresh`, below CMake 3.24 a reset of CMakeCache.txt +
                 CMakeFiles; meson `setup --wipe`) — for a build tree whose
                 configure state you no longer trust.
-  -v, --verbose  print each configure / build step's full command line and
-                the directory it runs in (for an MSVC kit, the cmake command
-                run inside vcvarsall). Always written to .nvim/loomworks.log.
+  -v, --verbose  print each configure / build step's full command line, the
+                directory it runs in and the environment overrides it adds
+                (for an MSVC kit, the cmake command run inside vcvarsall). The
+                command line is always written to .nvim/loomworks.log. (Before
+                the command, `lw -v` is the version.)
   --break-locks[=now]  recover a build-directory lock whose holder hangs (or,
                 on this host, is still running): ask it to stop (POSIX), wait
                 ~5s (`=now` skips the wait), kill its process tree, recover the
@@ -12013,7 +12099,7 @@ the build dir was configured by an older lw — then builds. Each configure
 prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO
 removed)`. Non-zero exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
-  clean = [[lw clean [profile | config-set] [--break-locks]
+  clean = [[lw clean [profile | config-set] [-v] [--break-locks]
 
 Run each project's build-system clean on the profile's build directories
 (cmake -> `cmake --build <dir> --target clean`; meson -> `meson compile
@@ -12024,7 +12110,10 @@ created are skipped. Non-zero exit on any failure.
 Profile resolution matches `lw build` (a unique substring works; --no-input
 requires an explicit profile). To remove a build directory entirely rather than
 just its artifacts — a hard reset to unconfigured — use `lw reset`.
-`--break-locks[=now]` recovers a hung build-directory lock (see `lw help build`).]],
+`--break-locks[=now]` recovers a hung build-directory lock (see `lw help build`).
+
+  -v, --verbose  print each clean command and the directory it runs in (or
+                 `remove <dir>` for a build directory lw wipes itself).]],
   reset = [[lw reset [profile | --all] [-y] [--break-locks]
 
 HARD-reset build state: remove the build directories (rm -rf, NOT the build
@@ -12345,6 +12434,9 @@ Wrapping and inspecting the launch:
                         is still reported, with a note on stderr.
   --no-build            skip the build+deploy — run / inspect what is already
                         built.
+  -v, --verbose         also print the commands of the build, each deploy copy
+                        and, for a device run, every device command (on stderr
+                        with --print).
 
 Disambiguating a name present more than once:
   <project>:<target>     scope to a project
@@ -12508,8 +12600,8 @@ args/env/working-dir layered on top — no hand-written path.
 
 Configs live in the project's working copy; they reach loomworks.json when the
 project is published (`lw project publish <project>`).]],
-  test = [[lw test [profile | config-set] [--saved | --discovered] [--no-build] [--junit <file>] [-- args…]
-lw test [profile] --target <exe> [--target <exe>…] [--cwd <dir>] [--no-build] [--junit <file>] [-- exe-args…]
+  test = [[lw test [profile | config-set] [--saved | --discovered] [--no-build] [-v] [--junit <file>] [-- args…]
+lw test [profile] --target <exe> [--target <exe>…] [--cwd <dir>] [--no-build] [-v] [--junit <file>] [-- exe-args…]
 lw test [profile] --list [--json] [--saved | --discovered]
 
 Build a profile (unless --no-build), then run its test plan: per project, the module's NATIVE
@@ -12535,6 +12627,9 @@ profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
                  An unconfigured project or an unbuilt test executable
                  fails the run before any test starts; a possibly stale
                  build (config changed, last build failed) is noted.
+  -v, --verbose  print the commands of the build and, under each test step,
+                 the runner or test program command line and its directory
+                 (on a device, every device command); deploy copies too.
   --list         print the plan without configuring, building or running:
                  each saved entry's kind (target / launch), args and working_dir
                  (written and expanded), source and state (--json:
@@ -14161,7 +14256,7 @@ local function main()
   elseif command == "build" then
     finish(M.cmd_build(ws, a))
   elseif command == "clean" then
-    finish(M.cmd_clean(ws, a[2]))
+    finish(M.cmd_clean(ws, a))
   elseif command == "reset" then
     finish(M.cmd_reset(ws, a))
   elseif command == "unlock" then

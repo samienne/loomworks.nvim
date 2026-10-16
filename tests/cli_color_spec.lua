@@ -314,12 +314,12 @@ describe("more roles", function()
     cc.mode = "always"
     overseer.plan_profile_clean = function() return {} end
     local ws = { root = "/r", _profiles = { { key = "p" } } }
-    local r = capture(function() cli.cmd_clean(ws, "p") end)
+    local r = capture(function() cli.cmd_clean(ws, { "clean", "p" }) end)
     assert.equals(1, r.exit_code)
     assert.equals(ESC .. "31mlw: nothing to clean for profile 'p' — no configured build directories." .. ESC .. "0m\n",
       r.stderr)
     cc.mode = "never"
-    r = capture(function() cli.cmd_clean(ws, "p") end)
+    r = capture(function() cli.cmd_clean(ws, { "clean", "p" }) end)
     assert.is_nil(r.stderr:find(ESC, 1, true))
   end)
 
@@ -328,7 +328,7 @@ describe("more roles", function()
     overseer.plan_profile_clean = function() return { { kind = "clean", name = "App", cmd = { "make", "clean" } } } end
     cli._run_spec = function() return 0 end
     build_run.profile_build_dirs = function() return {} end
-    local r = capture(function() cli.cmd_clean({ root = "/r", _profiles = { { key = "p" } } }, "p") end)
+    local r = capture(function() cli.cmd_clean({ root = "/r", _profiles = { { key = "p" } } }, { "clean", "p" }) end)
     assert.equals(ESC .. "1mcleaning profile: p" .. ESC .. "0m\n"
       .. ESC .. "1;36m==>" .. ESC .. "0m" .. ESC .. "1m [clean] App" .. ESC .. "0m\n"
       .. ESC .. "32mCLEAN OK: p" .. ESC .. "0m\n", r.stdout)
