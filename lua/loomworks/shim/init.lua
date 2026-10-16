@@ -664,8 +664,14 @@ vim.log = { levels = { TRACE = 0, DEBUG = 1, INFO = 2, WARN = 3, ERROR = 4, OFF 
 function vim.notify(msg, level)
   if not level or level >= vim.log.levels.WARN then
     -- Control characters in the message (which may carry workspace data) are
-    -- escaped before they reach the terminal (loomworks.term).
-    io.stderr:write(require("loomworks.term").render("[loomworks] " .. tostring(msg)) .. "\n")
+    -- escaped before they reach the terminal (loomworks.term). Highlighted
+    -- by level (spec §16.7): a warning or a failure.
+    local text = "[loomworks] " .. tostring(msg)
+    local ok, cc = pcall(require, "loomworks.cli_color")
+    if ok then
+      text = cc.paint((level or 0) >= vim.log.levels.ERROR and "fail" or "warn", text, "stderr")
+    end
+    io.stderr:write(require("loomworks.term").render(text) .. "\n")
   end
 end
 function vim.notify_once(msg, level) vim.notify(msg, level) end

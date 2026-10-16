@@ -1870,6 +1870,19 @@ silently ignored; arguments for the program or build tool go after `--`. An
 unknown command is an error too (exit 2, e.g. `lw frobnicate`), inside or
 outside a workspace.
 
+`lw` highlights its own lines so the phases of a run stand out from the build
+tool's output between them: step headers (`==> [configure] App/Debug`), why a
+configure runs, `BUILD OK` / `TESTS OK` and other outcomes, failures and
+warnings, and the status listings. The global `--color=auto|always|never`
+decides (`--no-color` is `--color=never`). `auto`, the default, colors standard
+output and standard error each only when it is a terminal, and never while
+`NO_COLOR` is set to a non-empty value; `always` colors anyway, e.g. for
+`lw --color=always build | less -R` or a CI log viewer that renders colors.
+Output from build tools and programs is never changed, and `lw` never sets
+color variables in their environment. `lw version` and `lw self-update` are not
+colored. In a repository pinned to an `lw` older than these options, the
+global `lw` drops them instead of passing them on, so the pinned `lw` still runs.
+
 | Command | Description |
 |---|---|
 | `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |

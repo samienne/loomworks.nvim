@@ -669,26 +669,34 @@ end
 --- The status lines announcing a step (§16.4): `==> [kind] name`, WHY a
 --- configure runs (the gate's reason + the module's full / in-place choice),
 --- and with `verbose` the command line + cwd. Also writes the command line to
---- the workspace log (always, §16.4).
+--- the workspace log (always, §16.4). Each line's highlighting role (§16.7)
+--- is returned alongside it: `phase` for the header, `reason`, `command`.
 --- @param ws loomworks.Workspace
 --- @param step table
 --- @param opts? { verbose?: boolean }
 --- @return string[] lines (no trailing newlines)
+--- @return string[] roles parallel to `lines` (loomworks.cli_color roles)
 function M.step_lines(ws, step, opts)
     opts = opts or {}
     local overseer = require("loomworks.overseer")
-    local lines = { string.format("==> [%s] %s", step.kind, step.name or "?") }
+    local lines = { require("loomworks.cli_color").header(step.kind, step.name) }
+    local roles = { "phase" }
     if step.kind == "configure" then
         local why = overseer.configure_reason_line(step)
-        if why then lines[#lines + 1] = "    " .. why end
+        if why then
+            lines[#lines + 1] = "    " .. why
+            roles[#roles + 1] = "reason"
+        end
     end
     local cwd = step.cwd or ws.root
     overseer.log_task_command(ws, step.name, step, cwd)
     if opts.verbose then
         lines[#lines + 1] = "    $ " .. overseer.command_text(step)
         lines[#lines + 1] = "    (in " .. tostring(cwd) .. ")"
+        roles[#roles + 1] = "command"
+        roles[#roles + 1] = "command"
     end
-    return lines
+    return lines, roles
 end
 
 --- The spawnable form of a step: the program resolved to an absolute path
@@ -855,11 +863,12 @@ function M.nothing_to_clean_message(profile, label)
         .. " — no configured build directories."
 end
 
---- The line announcing a clean step.
+--- The line announcing a clean step, and its highlighting role (§16.7).
 --- @param step table
---- @return string
+--- @return string line
+--- @return string role `phase` (a step header)
 function M.clean_step_line(step)
-    return string.format("==> [clean] %s", step.name or "?")
+    return require("loomworks.cli_color").header("clean", step.name), "phase"
 end
 
 --- After a module clean step (not a wipe) exits — both hosts: a successful

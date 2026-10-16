@@ -7,8 +7,8 @@
 ---
 --- Execution is written in continuation-passing style over a host:
 ---
----   host.out(line)          a stdout line
----   host.err(text)          stderr text (the caller supplies the newline)
+---   host.out(line, role)    a stdout line
+---   host.err(text, role)    stderr text (the caller supplies the newline)
 ---   host.fail(msg, code)    end the invocation (`lw: <msg>`, exit code); never
 ---                           returns to the plan (in-process: `die`)
 ---   host.spawn(spec, cb)    run `{ cmd, cwd?, env?, cleanup? }` (argv[1]
@@ -28,6 +28,10 @@
 ---   host.foreign_of(lt)?    the foreign classification of a step's artifact
 ---                           (default: run_prep.foreign_of)
 ---   host.progress(f)?       the fraction of the steps done
+---
+--- `role` is the line's highlighting role (spec §16.7: phase, ok, fail, warn,
+--- plain), which the in-process host paints by (loomworks.cli_color); a host
+--- that does not render roles ignores it.
 ---
 --- The in-process host calls back synchronously; the daemon's after the
 --- spawned process exited (or the probe / deploy copy finished), in a model
@@ -510,7 +514,7 @@ function M.run(ws, profile, prepared, opts, host, done)
             queue[#queue + 1] = { st = st }
         end
     end
-    local summary, n_failed = {}, 0
+    local summary, summary_roles, n_failed = {}, {}, 0
     local results = { steps = {}, junit = {} }
     local function record(name, ok, code, junit)
         results.steps[#results.steps + 1] = { name = name, exit_code = code, status = ok and "passed" or "failed" }
@@ -520,14 +524,14 @@ function M.run(ws, profile, prepared, opts, host, done)
     local i = 0
     local next_step
     local function finish()
-        host.out("")
-        host.out("summary — profile '" .. profile.key .. "':")
-        for _, l in ipairs(summary) do host.out(l) end
+        host.out("", "plain")
+        host.out("summary — profile '" .. profile.key .. "':", "plain")
+        for k, l in ipairs(summary) do host.out(l, summary_roles[k]) end
         if n_failed > 0 then
             return done(1, string.format("%d of %d test step%s failed", n_failed, #summary,
                 #summary == 1 and "" or "s"), results)
         end
-        host.out(string.format("TESTS OK: %s (%d step%s)", profile.key, #summary, #summary == 1 and "" or "s"))
+        host.out(string.format("TESTS OK: %s (%d step%s)", profile.key, #summary, #summary == 1 and "" or "s"), "ok")
         return done(0, nil, results)
     end
     next_step = function()
@@ -538,16 +542,18 @@ function M.run(ws, profile, prepared, opts, host, done)
         local st = q.st
         if q.b then
             local b = q.b
-            host.out(string.format("==> [test] %s: %s", st.project.key, b.runner or "runner"))
+            host.out(require("loomworks.cli_color").header("test", st.project.key .. ": " .. (b.runner or "runner")),
+                "phase")
             return host.spawn(b, function(code)
                 local path, warning = build_run.junit_result(b)
                 if path then
-                    host.out("JUnit: " .. path)
+                    host.out("JUnit: " .. path, "plain")
                 elseif warning then
-                    host.err("lw: warning: no JUnit output for " .. st.label .. "\n")
+                    host.err("lw: warning: no JUnit output for " .. st.label .. "\n", "warn")
                 end
                 local ok = code == 0
                 if not ok then n_failed = n_failed + 1 end
+                summary_roles[#summary + 1] = ok and "ok" or "fail"
                 summary[#summary + 1] = string.format("  %-28s %s", st.project.key .. ": " .. (b.runner or "runner"),
                     ok and "passed" or ("FAILED (exit status " .. tostring(code) .. ")"))
                 record(b.name or st.label, ok, code, path)
@@ -563,6 +569,7 @@ function M.run(ws, profile, prepared, opts, host, done)
             if failed then n_failed = n_failed + 1 end
             local test_run = require("loomworks.remote.test_run")
             local names = failed and test_run.failed_names(c, test_run.FAILED_NAMES_CAP) or ""
+            summary_roles[#summary + 1] = failed and "fail" or "ok"
             summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
                 failed and ("FAILED (" .. test_run.failed_reasons(reasons, c) .. ")" .. (names ~= "" and (": " .. names) or ""))
                     or ("passed" .. ((c and not exit_only) and test_run.not_run_suffix(c) or "")),
@@ -615,7 +622,7 @@ function M.exec_step(ws, lt, opts, host, cb)
     --- A step that cannot run: fail it (saved entry) or the invocation (nil).
     local function refuse(msg)
         if not opts.saved then return nil end
-        host.err("lw: " .. msg .. "\n")
+        host.err("lw: " .. msg .. "\n", "fail")
         return { msg }
     end
 
@@ -625,8 +632,9 @@ function M.exec_step(ws, lt, opts, host, cb)
     end
     -- A device step takes its working directory from the `device` block, never
     -- from the entry (§1.3.4 "Working directory"): say so.
-    host.out(string.format("==> [test] %s%s", opts.header or label,
-        f and (opts.entry_working_dir and " (on a device; its working_dir is not used there)" or " (on a device)") or ""))
+    host.out(require("loomworks.cli_color").header("test", (opts.header or label) ..
+        (f and (opts.entry_working_dir and " (on a device; its working_dir is not used there)" or " (on a device)") or "")),
+        "phase")
     if opts.saved then
         local ok, why = lt:is_valid()
         if not ok then
@@ -646,12 +654,12 @@ function M.exec_step(ws, lt, opts, host, cb)
         if failed then
             local names = test_run.failed_names(c, test_run.FAILED_NAMES_CAP)
             host.out(string.format("%s: FAILED (%s)%s", label, test_run.failed_reasons(reasons, c),
-                names ~= "" and (": " .. names) or ""))
+                names ~= "" and (": " .. names) or ""), "fail")
         elseif exit_only then
-            host.out(label .. ": passed (exit status 0; no per-case results)")
+            host.out(label .. ": passed (exit status 0; no per-case results)", "ok")
         else
             host.out(string.format("%s: %d test%s passed%s", label, c.passed, c.passed == 1 and "" or "s",
-                test_run.not_run_suffix(c)))
+                test_run.not_run_suffix(c)), "ok")
         end
         local written
         if opts.junit_path then
@@ -664,12 +672,13 @@ function M.exec_step(ws, lt, opts, host, cb)
                 local ok, werr = test_run.write_file(opts.junit_path, test_run.junit_xml(label, junit_results))
                 if ok then
                     written = opts.junit_path
-                    host.out("JUnit: " .. opts.junit_path)
+                    host.out("JUnit: " .. opts.junit_path, "plain")
                 else
-                    host.err("lw: warning: cannot write JUnit " .. opts.junit_path .. ": " .. tostring(werr) .. "\n")
+                    host.err("lw: warning: cannot write JUnit " .. opts.junit_path .. ": " .. tostring(werr) .. "\n",
+                        "warn")
                 end
             else
-                host.err("lw: warning: no JUnit output for " .. label .. " (no results file)\n")
+                host.err("lw: warning: no JUnit output for " .. label .. " (no results file)\n", "warn")
             end
         end
         return cb(failed, reasons or {}, c, exit_only, written)
@@ -703,7 +712,7 @@ function M.exec_step(ws, lt, opts, host, cb)
                 failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
                     results = results, results_missing = results_missing, crashes = #outcome.crashes,
                     transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
-                remote_run.report(outcome, function(s2) host.err(s2 .. "\n") end, failed)
+                remote_run.report(outcome, function(s2, role) host.err(s2 .. "\n", role) end, failed)
                 return conclude()
             end)
         end

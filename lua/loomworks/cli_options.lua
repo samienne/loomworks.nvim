@@ -5,10 +5,10 @@
 --- The tables mirror the command parsers in cli.lua; keep them in step when a
 --- parser gains an option (tests/cli_unknown_options_spec.lua pins the rules).
 --- The global options (`M.GLOBAL`: `--no-input`, `--non-interactive`,
---- `--shared`, `--local`, `--dev[=…]`, `--no-pin`, `--no-daemon`) are stripped
---- by the dispatcher (`split_globals`) before this check — only where they are
---- lw's own (`own_end`), never from a program's arguments — and `--help` /
---- `-h` are answered before it.
+--- `--shared`, `--local`, `--dev[=…]`, `--no-pin`, `--no-daemon`, `--no-color`,
+--- `--color=<when>`) are stripped by the dispatcher (`split_globals`) before
+--- this check — only where they are lw's own (`own_end`), never from a
+--- program's arguments — and `--help` / `-h` are answered before it.
 ---
 --- A spec is:
 ---   flags      options that take no value;
@@ -277,15 +277,18 @@ end
 
 --- The global options (spec §16.7): known to every command, recognised
 --- before the command and among its own arguments, never after `--` nor in a
---- program's arguments (see `own_end`). None takes a separate value.
+--- program's arguments (see `own_end`). None takes a separate value: the
+--- valued ones are spelled `--dev=<path>` and `--color=<when>` (a bare
+--- `--color` is not one).
 M.GLOBAL = set({ "--no-input", "--non-interactive", "--shared", "--local",
-  "--dev", "--no-pin", "--no-daemon" })
+  "--dev", "--no-pin", "--no-daemon", "--no-color" })
 
---- Is `v` a global option (including `--dev=<path>`)?
+--- Is `v` a global option (including `--dev=<path>` and `--color=<when>`)?
 --- @param v any
 --- @return boolean
 function M.is_global(v)
-  return type(v) == "string" and (M.GLOBAL[v] == true or v:sub(1, 6) == "--dev=")
+  return type(v) == "string" and (M.GLOBAL[v] == true or v:sub(1, 6) == "--dev="
+    or v:sub(1, 8) == "--color=")
 end
 
 --- Walk `argv` (argv[1] is the command) with its command's spec; global
