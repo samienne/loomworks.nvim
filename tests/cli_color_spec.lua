@@ -357,3 +357,44 @@ describe("a daemon reply's notes (API.md §4.1)", function()
     assert.equals("a\nb\n", table.concat(buf))
   end)
 end)
+
+describe("a notification raised while projecting a daemon snapshot", function()
+  after_each(reset)
+
+  it("is painted on stderr as the in-process load paints it (fail / warn), info dropped", function()
+    cc.mode = "always"
+    -- A live daemon of this version that answers the snapshot `ok`; the
+    -- projection then raises one notification of each level.
+    local seams = {
+      { require("loomworks.daemon.runtime"), "select", function()
+        return { mode = require("loomworks.daemon.runtime").DAEMON, daemon = true }
+      end },
+      { cli, "_daemon_workspace_trusted", function() return true end },
+      { require("loomworks.daemon.inspect"), "state", function()
+        return { kind = "live", handle = { endpoint = "e" } }
+      end },
+      { require("loomworks.daemon.endpoint"), "check", function() return true end },
+      { require("loomworks.daemon.client"), "session", function()
+        return { challenge = {}, closed = false, close = function() end }
+      end },
+      { require("loomworks.daemon.version"), "matches", function() return true end },
+      { require("loomworks.daemon.calls"), "request", function(_, _, cb) cb({ outcome = "ok" }) end },
+      { require("loomworks.daemon.snapshot"), "project", function(_, _, opts)
+        opts.notify("boom", vim.log.levels.ERROR)
+        opts.notify("careful", vim.log.levels.WARN)
+        opts.notify("chatter", vim.log.levels.INFO)
+        return nil
+      end },
+    }
+    local saved = {}
+    for i, s in ipairs(seams) do saved[i] = s[1][s[2]]; s[1][s[2]] = s[3] end
+    local buf = {}
+    local rs = io.stderr
+    io.stderr = { write = function(_, s) buf[#buf + 1] = s end }
+    local ok, err = pcall(cli._read_projection, "/r", {})
+    io.stderr = rs
+    for i, s in ipairs(seams) do s[1][s[2]] = saved[i] end
+    assert(ok, err)
+    assert.equals(ESC .. "31mboom" .. ESC .. "0m\n" .. ESC .. "33mcareful" .. ESC .. "0m\n", table.concat(buf))
+  end)
+end)

@@ -97,6 +97,18 @@ local function note(s, role)
   io.stdout:flush(); io.stderr:write(term.render(s or "") .. "\n")
 end
 
+--- A workspace load's notification (`core._deps.notify`), as `lw` prints it:
+--- warnings and errors on stderr, painted `fail` (ERROR and above) or `warn`;
+--- the editor's info chatter is noise on a CLI and dropped. The in-process
+--- load and the projection of a daemon snapshot both print through it.
+--- @param msg any
+--- @param level? integer vim.log.levels; nil prints as a warning
+local function load_notify(msg, level)
+  if not level or level >= vim.log.levels.WARN then
+    note(tostring(msg), (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
+  end
+end
+
 --- stderr counterpart of `out` for text that is not a whole line (same
 --- rendering; stdout flushed first, as `note`). Raw tool output relayed from a
 --- child process does not use it.
@@ -740,13 +752,8 @@ function M._load_workspace_soft(root, wait_tools, opts)
   local lw = require("loomworks")
   local core = lw._core()
   local handlers = opts and opts.handlers
-  -- Route notifications to stderr (warnings/errors only); the editor's
-  -- info chatter is noise on a CLI.
-  core._deps.notify = handlers and handlers.notify or function(msg, level)
-    if not level or level >= vim.log.levels.WARN then
-      note(tostring(msg), (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
-    end
-  end
+  -- Route notifications to stderr (warnings/errors only, see load_notify).
+  core._deps.notify = handlers and handlers.notify or load_notify
   -- A refused `.nvim` file (spec §17.4) is reported by the CLI itself, with
   -- its own commands (spec §17.10).
   core._deps.quiet_trust_errors = true
@@ -9556,10 +9563,8 @@ function M._read_projection(root, opts)
   end
   local ws = snapshot.project(root, snap, {
     tools = tools,
-    -- As the in-process load: warnings and errors on stderr.
-    notify = function(msg, level)
-      if not level or level >= vim.log.levels.WARN then errw(tostring(msg) .. "\n") end
-    end,
+    -- As the in-process load: warnings and errors on stderr, painted.
+    notify = load_notify,
   })
   if not ws then release(); return nil end
   -- Tests: a marker that this command read the daemon's projection.
