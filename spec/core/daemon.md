@@ -3228,8 +3228,9 @@ that cannot be removed is `tests/cli_reset_spec.lua`'s, the deletion and its
 check being the one path both hosts run); the projection half #88. For
 `lw build`, `lw test`, `lw run` and `lw clean` also with `-v`, and with
 `--color=always`: the same bytes both ways (each line the same text and
-role; the same four files, also with a module environment, its `env:` line
-against the client's).*
+role; in `tests/daemon_{build,test,run,clean}_cli_spec.lua`, also with a
+module environment, the `env:` line computed against the client's
+environment).*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
