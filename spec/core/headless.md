@@ -264,8 +264,9 @@ Whether it colors is decided by the global option `--color=auto|always|never`
 - `auto` colors a line only when the stream it is written to is a terminal —
   standard output and standard error are tested separately, and on Windows the
   runner enables escape-sequence processing on that stream's handle — and
-  never while the `NO_COLOR` environment variable is set, to any value
-  including the empty string. The `CI` variable plays no part.
+  never while the `NO_COLOR` environment variable is set to a non-empty
+  value (an empty `NO_COLOR` counts as unset). The `CI` variable plays no
+  part.
 - `always` colors regardless of the terminal test and of `NO_COLOR` (for log
   viewers that render escape sequences); `never` does not color.
 
