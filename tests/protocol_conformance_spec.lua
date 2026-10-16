@@ -212,6 +212,32 @@ describe("conformance engine", function()
         assert.is_true((engine.match(J('{"a":{}}'), J('{"a":{"b":1}}'), {})))
     end)
 
+    it("types a reply's note_roles: LineRole values, an array, as long as notes", function()
+        local function run(result)
+            local call = { send = J('{"kind":"call","req_id":1,"object":"/build","iface":"loomworks.Build","v":1,"method":"build","args":{},"env":{}}') }
+            return engine.run_case({ name = "t", handshake = false, steps = { call, { expect = { kind = "ok", req_id = 1 } } } },
+                canned({ J('{"kind":"ok","req_id":1,"result":' .. result .. '}') }), { timeout_ms = 10, settle_ms = 0 })
+        end
+        local ok, err = run('{"outcome":"refused","message":"m","exit_code":1,"notes":["e","w","p"],"note_roles":["fail","warn","plain"]}')
+        assert.is_true(ok, err)
+        -- Without note_roles every note is plain.
+        ok, err = run('{"outcome":"refused","message":"m","exit_code":1,"notes":["w"]}')
+        assert.is_true(ok, err)
+        -- A client shows an unknown role as plain; the server sends only LineRole values.
+        ok, err = run('{"outcome":"refused","message":"m","exit_code":1,"notes":["w"],"note_roles":["sparkly"]}')
+        assert.is_false(ok)
+        assert.truthy(err:find("result", 1, true), err)
+        ok, err = run('{"outcome":"refused","message":"m","exit_code":1,"notes":["w"],"note_roles":"warn"}')
+        assert.is_false(ok)
+        assert.truthy(err:find("result", 1, true), err)
+        ok, err = run('{"outcome":"refused","message":"m","exit_code":1,"notes":["w","x"],"note_roles":["warn"]}')
+        assert.is_false(ok)
+        assert.truthy(err:find("not as long as notes", 1, true), err)
+        ok, err = run('{"outcome":"refused","message":"m","exit_code":1,"note_roles":["warn"]}')
+        assert.is_false(ok)
+        assert.truthy(err:find("not as long as notes", 1, true), err)
+    end)
+
     it("validates a protocol-10 reply against its v0 shape", function()
         local function run(frames, hello_protocol)
             local steps = {}

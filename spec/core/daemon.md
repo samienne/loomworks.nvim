@@ -1715,6 +1715,12 @@ host's own code (`test_plan.lua`) run with the task as its host.
 in-process host prints that line with (§16.7, [API.md](../protocol/API.md) §4.2). The shared line
 producers return the role beside the text (`build_run.step_lines` and the
 clean, deploy and test line helpers), so both hosts take it from one place.
+So does every note of a reply ([API.md](../protocol/API.md) §4.1): a
+notification the workspace raises before the call's task starts goes into
+the reply's `notes` with the role the in-process loader prints it with
+(`fail` for an error, `warn` for a warning), a test plan's pre-build note
+with `plain`, in `note_roles`; the client paints each as its in-process
+printer does on standard error.
 The client paints by role exactly as its in-process printer does, and decides
 colour per stream after the `quiet` redirection (`--print` sends `out` to
 stderr). The daemon never writes escape sequences and never sees

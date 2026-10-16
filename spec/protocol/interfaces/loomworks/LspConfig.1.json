@@ -95,6 +95,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
         }
       }
     },

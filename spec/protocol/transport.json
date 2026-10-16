@@ -211,7 +211,8 @@
           "reason": { "type": "string" },
           "lines": { "type": "array", "items": { "type": "string" } },
           "plan": { "type": "string" },
-          "notes": { "type": "array", "items": { "type": "string" } }
+          "notes": { "type": "array", "items": { "type": "string" } },
+          "note_roles": { "description": "The role of each note, by index (loomworks.Common/1 NoteRoles); absent = plain.", "type": "array", "items": { "type": "string" } }
         }
       }
     }
