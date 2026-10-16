@@ -869,7 +869,9 @@ HMAC-SHA256(machine key §17.2, `"loomworks-daemon-v1"`), and the endpoint
 address *E* is the address from the handle (§19.6). `hello.client` is `cli`
 or `editor`; `role = "observer"` is a client that only watches (§19.16). The
 `welcome` fields are `{ header, seq, clients, busy, retiring }` (§19.13) plus
-the transport's `objects` (§19.20).
+the transport's `objects` (§19.20). New `welcome` fields go inside `header`
+if they are model fields, and beside it if they are transport fields (such as
+`objects`, or the relay's `daemon` and `via` below).
 
 **Private bindings.** The loopback transport (§19.1) is the in-process
 private binding of PROTOCOL.md §3; it never leaves the process. The private
@@ -924,9 +926,8 @@ relay runs the socket handshake on its behalf:
      talking to an attached runtime (a repository pinned before 5i): the
      editor treats it as such and never sends `retire` over it.
 
-   Both are optional fields added to `welcome`, which the frozen-subset rule
-   ([PROTOCOL.md](../protocol/PROTOCOL.md) §7) allows (added, never removed, renamed or retyped; a receiver
-   ignores a field it does not know); an attached runtime omits both.
+   Both are optional fields added to `welcome`, as the frozen-subset rule
+   ([PROTOCOL.md](../protocol/PROTOCOL.md) §7) allows; an attached runtime omits both.
 5. When the `welcome` says `retiring`, the relay does not forward it: it
    closes that connection, waits for the retiring daemon's runtime lock to
    be released — at most `RELAY_RETIRE_WAIT` (60 s) — launches the
@@ -1885,8 +1886,8 @@ and the refusal or failure the client prints as `lw: <error>`). Ownership,
 flow control and observer bounds are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.3–§14.4. For a CLI owner the
 stream is its terminal: a client that stopped reading (`lw build | less`
 paused) pauses the running step's output, so the build tool then blocks on
-its full pipe as it blocks on a paused terminal in-process. Model changes
-are never dropped; the durable outcome arrives as a `model_change` (§19.12).
+its full pipe as it blocks on a paused terminal in-process. The durable
+outcome arrives as a `model_change` (§19.12).
 
 **Request.** `build { args, interactive, env, command }` — `args` carries the
 parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
@@ -2373,8 +2374,7 @@ daemon side — `daemon/core_interfaces.lua`, `daemon/service.lua`
 `_resolve_units`, `daemon/runner.lua`, `build_run.plan` /
 `overseer.plan_units_build`; the editor calls them from part C1.)* `Build/1` grows
 additively for the editor's actions (§19.16 "Editor operations"); its
-interfaces are still drafts, so this is no new version (§19.20 "Schemas and
-conformance"). The CLI's requests are unchanged: a protocol-10 (v0) request
+interfaces are still drafts, so this is no new version ([PROTOCOL.md](../protocol/PROTOCOL.md) §17.1). The CLI's requests are unchanged: a protocol-10 (v0) request
 carrying `units`, `jobs` or a `{ project, target }` item is `declined`
 (`malformed request`).
 
@@ -4481,10 +4481,18 @@ after the split they move to a separate protocol repository, tagged and
 pinned by both the binary and the plugin. A module's documents live in its
 own repository. Server conformance drives the transcripts against any binary
 over the standard-I/O transport — the Lua daemon and any rewrite alike — and
-client conformance replays them against the plugin's client.
+client conformance replays them against the plugin's client. Besides the
+checks of PROTOCOL.md §17.4, a **registry and schema agreement** check
+requires every mounted interface version to have a document with the
+published digest, every method an implementation and every version older
+than the newest an adapter. The daemon validates its results and signals
+(PROTOCOL.md §16.4) in development builds and tests: a violation fails the
+test, and is a log line in a release build; a mutating method's invalid reply
+is also logged (PROTOCOL.md §11.3). The released versions whose snapshots
+`frozen/` keeps (PROTOCOL.md §16.5) are those a stable release shipped.
 
 **Transcripts.** The transcript format, the runner's steps, matchers and
-checks are @P §18. The fixtures the runner prepares (`fixture`) are `empty`,
+checks are [PROTOCOL.md](../protocol/PROTOCOL.md) §18. The fixtures the runner prepares (`fixture`) are `empty`,
 the default; `shell`, a shell project `app` with configuration `Debug`, the
 configuration set and trusted profile `dev` and a launch configuration
 `hello` — from step 5t also a project `lib` outside the set and a launch
@@ -4494,5 +4502,11 @@ active (step 5m). The runner binds `lw_version`, `env` and `root` before the
 handshake.
 
 **Versions and deprecation.** Tolerance of unknown values, new interface
-versions through adapters and the deprecation window are @P §17. A
+versions and the support window are [PROTOCOL.md](../protocol/PROTOCOL.md) §17. The daemon serves a
+deprecated version `N` through an adapter over `N+1` — never a second
+implementation — and the transport-10 v0 aliases (PROTOCOL.md Annex A) the
+same way: the same handlers, with an argument and result adapter. The support
+window of PROTOCOL.md §17.3 is **two stable releases and at least 60 days**
+after the first stable release that deprecated the version; a transport
+version below a raised `protocol_min` is dropped under the same window. A
 deprecated version is also announced on the editor's Runtime line.

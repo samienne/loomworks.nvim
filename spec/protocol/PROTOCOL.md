@@ -40,6 +40,9 @@ Section numbers in this file are local to it (§1, §2, …).
 - **Session generation** — an integer a server announces in its handshake;
   it changes whenever the server restarts, and scopes every opaque id (§12).
 
+Wire identifiers such as `lw_version`, the `loomworks.*` and `lw.internal.*`
+namespaces and `loomworks.Root/1` are historical names, kept as they are.
+
 ## 2. Layers
 
 The protocol has three layers:
@@ -193,8 +196,10 @@ specification, not by the transport.
 - `header` — an object; `transport.json` names its required fields (`root`,
   `pid`, `lw_version`, `session_generation`). Fields are only ever added — a
   later field never replaces `root`, `pid`, `lw_version` or
-  `session_generation`. The meaning of the header's other fields, and of
-  `seq`, `clients` and `busy`, belongs to the interface suite.
+  `session_generation`. The interface suite defines the meaning of all header
+  fields, and of `seq`, `clients` and `busy`; the header's shape stays in
+  `transport.json` (§12.2 says what a client does when `session_generation`
+  changes).
 - `retiring` — true when the server is retiring (§10.2).
 - `objects` — from transport 11: the `describe().objects` list (§10) without
   digests, so a client with nothing else to ask needs no extra round trip.
@@ -224,13 +229,13 @@ task   { kind = "task",   task_id, phase, ... }
 - `task` is a task-stream frame (§14).
 
 `args` are validated against the method's schema before the method runs; an
-invalid call is `invalid_args` naming the first violation. Results and
-signals are validated in development builds and tests: a violation fails the
-test, and is a log line in a release build (see also §11.3).
+invalid call is `invalid_args` naming the first violation. A server may also
+check its results and signals against their schemas (§11.3, §16.4).
 
 **`env`.** The client's environment, a map of string to string. It is an
 envelope field because a method that depends on the client's environment runs
-in it; a method's schema declares whether it needs one (`needs_env`, §16).
+in it; a method's schema declares whether it needs one (`needs_env`, §16),
+and a client sends `env` on a call whose method sets `needs_env`.
 What a method does with it is defined by the method.
 
 ## 9. Objects, interfaces and naming
@@ -346,16 +351,16 @@ not-found or refused result, never a transport error.
 | `internal` | The call failed inside the server. |
 
 New codes may be added (§7); a client treats an unknown code as `internal`.
-An interface declares its own codes in its schema (§9.5).
+An interface declares its own codes in its schema (§16.1).
 
 ### 11.3 Replies of mutating methods
 
 Once a mutating method (`mutates`, §16) has run, its reply is never turned
-into an error: a reply that does not match its schema (checked in
-development builds and tests) is logged and sent as it is, because it may
-report something that already started (an accepted task), and an error would
-let a client run the operation a second time. A non-mutating method's invalid
-reply may be `internal` there.
+into an error: a server that checks the reply against its schema and finds a
+mismatch still sends it as it is, because it may report something that
+already started (an accepted task), and an error would let a client run the
+operation a second time. A server that checks a non-mutating method's reply
+may answer an invalid one with `internal`.
 
 ## 12. Identity: ids, session generation and seq
 
@@ -446,19 +451,20 @@ Closing an observer never stops a task.
 
 The owner receives every frame of its task, unbounded and in order. The
 stream is **flow-controlled**: when about 4 MiB wait unread on the owner's
-connection, the server stops consuming the task's output until the owner
-has caught up, so the producing process blocks as it would on a paused
-terminal and the server's memory stays bounded. Up to that bound the output is
-buffered, so a reader paused briefly does not pause the producer, and a task
-whose whole output fits completes while the reader waits; the reader still
-gets all of it, in order. Cancellation still applies while paused.
+connection, the task's output window closes. While it is closed the server
+sends no further output for that task until the owner has caught up and the
+window reopens, and the task's work may be held back meanwhile; the server's
+memory stays bounded. Up to that bound the output is buffered, so a reader
+paused briefly does not hold the task back, and a task whose whole output
+fits completes while the reader waits; the reader still gets all of it, in
+order. Cancellation still applies while the window is closed.
 
 Observers receive a task's frames by subscription (§14.6) with output
 bounded per task by bytes (a few megabytes each, then a single truncation
 notice). An observer whose connection falls further behind than a bound is
 disconnected (it connects again to re-attach) — unless it owns a running task
 itself, which then only misses observed frames. Only task output is bounded
-this way; change notifications are never dropped.
+this way; interface signals are not subject to these bounds.
 
 A connection that owns a running task is never dropped for silence.
 
@@ -467,7 +473,7 @@ A connection that owns a running task is never dropped for silence.
 A task ends early when its owner cancels it (§14.6), when its owner's
 connection closes, or when the server can no longer carry it (it stops, or
 what the task operates on goes away). The server then stops the task's work,
-releases what it holds and ends the task with a nonzero `done`.
+releases what it holds and ends the task with a `done` with a nonzero `exit_code`.
 
 A client that loses the connection after its task was accepted reports a
 failure; it never re-runs the operation another way.
@@ -492,13 +498,14 @@ earlier is replayed.
 
 A task may announce its **steps**: its listing entry and its `start.meta`
 carry `steps`, one record per step in run order, each with an opaque `id`
-stable within the task, a `kind`, a `label` and a `state`, every step
-`pending` at start. Each transition is a `step { task_id, seq, index, state,
+stable within the task, a `kind`, a `label` and a `state`, every step in
+the initial state at start. Each transition is a `step { task_id, seq, index, state,
 error? }` signal of the task interface, its `seq` the signal envelope's `seq`
 (§12.3); a task's `step` signals follow its started signal and precede its
 `done`. `step` is a delta on top of the announced steps: on a `seq` gap a
 client re-reads the listing. Clients show an unknown step kind or state as
-neutral. The step kinds and states are defined by the interface suite.
+neutral. The step kinds and states, including the initial state, are defined by
+the interface suite.
 
 ## 15. Delivery guarantees
 
@@ -507,7 +514,8 @@ This section collects the guarantees stated elsewhere in this document.
 - A reply echoes its call's `req_id` (§4, §8).
 - A task's frames are in order (§14.2); the owner gets all of them (§14.4).
 - Only an observer's task output may be dropped, with a truncation notice, or
-  the observer disconnected (§14.4); change notifications are never dropped.
+  the observer disconnected (§14.4); interface signals are not subject to
+  these bounds.
 - A `seq` gap means a lost signal, and a new session generation a new
   server: in both cases the client fetches the state again (§12).
 - After a reconnect a client re-runs discovery (`welcome.objects` or
@@ -556,14 +564,15 @@ hexadecimal.
 
 ### 16.4 Validation
 
-A server always validates a call's `args` (§8). It validates results and
-signals in development builds and tests (§8, §11.3).
+A server always validates a call's `args` (§8). Whether it also checks its
+results and signals is up to the implementation (§11.3); a result or signal
+that does not match its schema is a defect of the server.
 
 ### 16.5 Where documents live
 
 The core suite's documents, the transport document, the golden transcripts
-(§18) and the frozen snapshot of every interface version a stable release
-shipped (`frozen/`) live in this directory. An extension's documents live
+(§18) and the frozen snapshot of every released interface version
+(`frozen/`, §17.1) live in this directory. An extension's documents live
 with the extension.
 
 ## 17. Evolution and compatibility
@@ -592,12 +601,11 @@ unknown fields (§7).
 
 ### 17.3 New versions and deprecation
 
-A breaking change makes version `N+1`. The server keeps serving `N` through
-an adapter over `N+1` — never a second implementation — and announces `N` in
-`describe()`'s `deprecated`. A deprecated interface version, and a transport
-version below a raised `protocol_min`, is dropped no earlier than **two stable
-releases and at least 60 days** after the first stable release that
-deprecated it.
+A breaking change makes version `N+1`. A server keeps accepting the previous
+version `N` for a support window that the interface suite's release policy
+defines, and announces `N` in `describe()`'s `deprecated` meanwhile. A
+transport version below a raised `protocol_min` is retired under the same
+policy.
 
 ### 17.4 Conformance checks
 
@@ -606,9 +614,6 @@ The contract is enforced by:
 - a **lint**: every document is valid against its meta-schema and uses only
   the allowed keywords (§16.2);
 - an **additive ratchet** (§17.1) against the frozen snapshot;
-- **registry and schema agreement**: every mounted interface version has a
-  document with the published digest, every method an implementation, every
-  version older than the newest an adapter;
 - **server conformance**: golden transcripts (§18), driven against any server
   over the standard-I/O binding (§3);
 - **client conformance**: a client against the same transcripts, replayed,
@@ -674,9 +679,8 @@ after which this annex no longer applies.
 
 - **Request kinds.** The transport-10 request kinds (`build`, `test`,
   `prepare_run`, `clean`, `reset`, `snapshot`, `query`) are served unchanged
-  as **v0 aliases** of the corresponding interface methods — the same
-  handlers, with an argument and result adapter, never a second
-  implementation. A v0 request gets a v0 reply, whose shape
+  as **v0 aliases** of the corresponding interface methods, with the same
+  effect as calling them. A v0 request gets a v0 reply, whose shape
   `transport.json` `v0.replies` keeps (the operations' outcome flat on the
   reply); a v0 `error` reply carries `error` as a string. Only an interface
   call gets the structured `error` object (§8).
