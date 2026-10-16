@@ -1345,14 +1345,14 @@ do
     and out:find("not started", 1, true) and not out:find("fetching", 1, true),
     "daemon run --stdio under a pin before it: refused, nothing fetched  (exit " .. tostring(code) .. ": " .. out .. ")")
   code, out = host({ "daemon", "restart", "--root", other }, nil)
-  ok(out:find("this repo pins lw 0.1.43-beta.20; fetching", 1, true) ~= nil,
+  ok(out:find("could not fetch pinned lw 0.1.43-beta.20", 1, true) ~= nil,
     "daemon restart under a pin that has it: redirected  (got " .. out .. ")")
   -- A launcher's LW_ROOT (the user's cwd) must not override the daemon's --root.
   code, out = host({ "daemon", "run", "--stdio", "--root", repo }, { LW_ROOT = other })
   ok(code == 1 and out:find("pins lw 0.1.43-beta.10", 1, true) ~= nil,
     "daemon run: --root wins over LW_ROOT  (exit " .. tostring(code) .. ": " .. out .. ")")
   code, out = host({ "daemon", "run", "--stdio", "--root", other }, { LW_ROOT = repo })
-  ok(out:find("pins lw 0.1.43-beta.20; fetching", 1, true) ~= nil,
+  ok(out:find("could not fetch pinned lw 0.1.43-beta.20", 1, true) ~= nil,
     "daemon run: --root wins over LW_ROOT, the other way  (got " .. out .. ")")
   paths.rm_rf(sb)
 end
@@ -1495,8 +1495,11 @@ do
     f:write("return 'planted'"); f:close()
   end
 
-  local dir, err = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha })
+  local fetched = 0
+  local dir, err = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha,
+    on_fetch = function() fetched = fetched + 1 end })
   ok(dir ~= nil, "ensure_version provisions" .. (err and (" — " .. err) or ""))
+  eq(fetched, 1, "ensure_version calls on_fetch once before downloading")
   eq(dir, data .. "/pinned/" .. bundle_sha .. "/lua-" .. ver,
     "extracted to the machine-local <data>/pinned/<sha256>/lua-<ver>")
   ok(dir ~= nil and not dir:find(repo, 1, true), "never the repo-local .nvim/cache location")
@@ -1526,8 +1529,10 @@ do
 
   -- idempotent: a second call reuses without touching the mirror
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror .. "/gone")
-  local dir2 = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha })
+  local dir2 = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha,
+    on_fetch = function() fetched = fetched + 1 end })
   eq(dir2, dir, "ensure_version idempotent (no refetch)")
+  eq(fetched, 1, "ensure_version does not call on_fetch when already provisioned")
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
 
   -- hash mismatch aborts and leaves nothing behind; a different pinned hash
@@ -1558,12 +1563,17 @@ do
   local sha = verify.sha256_hex(body)
   local dest = sb .. "/cache/lw-1.0.0-" .. asset
 
-  local ok1 = update.ensure_host_binary("1.0.0", asset, sha, dest)
+  local fetched = 0
+  local on_fetch = function() fetched = fetched + 1 end
+  local ok1 = update.ensure_host_binary("1.0.0", asset, sha, dest, { on_fetch = on_fetch })
   ok(ok1 == true, "ensure_host_binary downloads + verifies")
   ok(slurp(dest) == body, "cached binary bytes match")
+  eq(fetched, 1, "ensure_host_binary calls on_fetch once before downloading")
 
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror .. "/gone")
-  ok(update.ensure_host_binary("1.0.0", asset, sha, dest) == true, "idempotent when cached")
+  ok(update.ensure_host_binary("1.0.0", asset, sha, dest, { on_fetch = on_fetch }) == true,
+    "idempotent when cached")
+  eq(fetched, 1, "ensure_host_binary does not call on_fetch when the cached binary verifies")
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
 
   local dest2 = sb .. "/cache/lw-1.0.0-bad"
