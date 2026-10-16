@@ -2,7 +2,7 @@
   "interface": "loomworks.Tasks",
   "version": 1,
   "status": "draft",
-  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): the running tasks, their observation by subscription and their cancellation by their owner. The task frames themselves are the transport's task stream (PROTOCOL.md §14), not signals of this interface. Step 5t adds the steps of a target-scoped task: TaskInfo.steps and the step signal (spec 19.15 Steps of a task).",
+  "description": "Object /tasks (API.md §7): the running tasks, their observation by subscription and their cancellation by their owner. The task frames themselves are the transport's task stream (PROTOCOL.md §14), not signals of this interface. Step 5t adds the steps of a target-scoped task: TaskInfo.steps and the step signal (API.md §4.3).",
   "methods": {
     "list": {
       "description": "The running tasks (started, not ended), in start order.",
@@ -62,7 +62,7 @@
       }
     },
     "step": {
-      "description": "A step of a target-scoped task changed state (spec 19.15 Steps of a task; step 5t), sent after the task's started and before its done. A delta on top of TaskInfo.steps: on a seq gap a client re-reads list.",
+      "description": "A step of a target-scoped task changed state (API.md §4.3; step 5t), sent after the task's started and before its done. A delta on top of TaskInfo.steps: on a seq gap a client re-reads list.",
       "args": {
         "type": "object",
         "required": ["task_id", "seq", "index", "state"],
@@ -84,7 +84,7 @@
   },
   "$defs": {
     "TaskInfo": {
-      "description": "A running task: its start meta (spec 19.15) with its id, when it started and its last percent.",
+      "description": "A running task: its start meta (API.md §4.2) with its id, when it started and its last percent.",
       "type": "object",
       "required": ["task_id"],
       "properties": {
@@ -108,7 +108,7 @@
         "percent": { "type": "integer", "minimum": 0, "maximum": 100 },
         "owned": { "description": "The calling connection owns it (it may cancel it).", "type": "boolean" },
         "steps": {
-          "description": "A target-scoped task's steps with their current states (spec 19.15 Steps of a task; step 5t); absent for other tasks.",
+          "description": "A target-scoped task's steps with their current states (API.md §4.3; step 5t); absent for other tasks.",
           "type": "array",
           "items": { "$ref": "loomworks.Common/1#/$defs/TaskStep" }
         }

@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.view.Tests",
   "version": 1,
-  "description": "Object /views (spec 19.13 The tests view, 19.20): get, and the update signal with the full state as initial; stale until a discovery of the active profile ran, again after a build of its unit; the tree with explicit suite nodes and node ids stable across re-discoveries.",
+  "description": "Object /views (API.md §14.3): get, and the update signal with the full state as initial; stale until a discovery of the active profile ran, again after a build of its unit; the tree with explicit suite nodes and node ids stable across re-discoveries.",
   "cases": [
     {
       "name": "get reports an unloaded view without loading it; unknown arguments are invalid",

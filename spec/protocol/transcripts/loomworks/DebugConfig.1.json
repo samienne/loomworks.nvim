@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.DebugConfig",
   "version": 1,
-  "description": "Object /debug (spec 19.20 DebugConfig/1): the debug-adapter mapping read, set and reset in the working copy, the write's Workspace/1 changed before the reply.",
+  "description": "Object /debug (API.md §12): the debug-adapter mapping read, set and reset in the working copy, the write's Workspace/1 changed before the reply.",
   "cases": [
     {
       "name": "adapters and known_languages report the mapping with its defaults",

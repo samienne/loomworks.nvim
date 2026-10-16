@@ -2,7 +2,7 @@
   "interface": "loomworks.Tests",
   "version": 1,
   "status": "draft",
-  "description": "Object /tests (spec 19.15, 19.20): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Step 5m (spec 19.15 Tests, 19.20 Tests/1) adds the editor's discover (part B1), run_cases, prepare_debug (task-streamed), collect and result (part B2) with their handlers; its results signal, which needs no handler, is declared here from part 0.",
+  "description": "Object /tests (API.md §10): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Step 5m (API.md §10.2) adds the editor's discover (part B1), run_cases, prepare_debug (task-streamed), collect and result (part B2) with their handlers; its results signal, which needs no handler, is declared here from part 0.",
   "methods": {
     "run": {
       "description": "Build the profile (unless no_build), then run its registered tests (lw test [<profile>] [--no-build] [--junit <file>] [-- <args>]).",
@@ -100,7 +100,7 @@
       "mutates": true
     },
     "discover": {
-      "description": "Discover the tests of the active profile's units (spec 19.15 Tests) in the caller's environment, updating loomworks.view.Tests/1: each unit in project-key order, a unit with nothing to probe getting its view state and a unit whose tree is current not probed again unless force; a probe holds the unit's build-directory lock (behind a task of the daemon it waits; a holder in another process fails that unit, its state error). A unit's failure does not end the task; a cancel stops between units and at a probe's programs (the view stays stale). The view's update precedes done.",
+      "description": "Discover the tests of the active profile's units (API.md §10.2) in the caller's environment, updating loomworks.view.Tests/1: each unit in project-key order, a unit with nothing to probe getting its view state and a unit whose tree is current not probed again unless force; a probe holds the unit's build-directory lock (behind a task of the daemon it waits; a holder in another process fails that unit, its state error). A unit's failure does not end the task; a cancel stops between units and at a probe's programs (the view stays stale). The view's update precedes done.",
       "params": {
         "type": "object",
         "additionalProperties": false,
@@ -148,7 +148,7 @@
       "mutates": true
     },
     "run_cases": {
-      "description": "Run test nodes of the active profile (spec 19.15 Tests): the build-directory locks of the selection's units (waiting behind another Tests/1 task of the same directory, failing fast against another process), unless no_build the build of the selection's targets, then one test step per program under its structured harness, each with its own results file, every step even after one failed. Its per-case progress is the results signal; its end the view update. A stale or non-runnable node is refused before acceptance.",
+      "description": "Run test nodes of the active profile (API.md §10.2): the build-directory locks of the selection's units (waiting behind another Tests/1 task of the same directory, failing fast against another process), unless no_build the build of the selection's targets, then one test step per program under its structured harness, each with its own results file, every step even after one failed. Its per-case progress is the results signal; its end the view update. A stale or non-runnable node is refused before acceptance.",
       "params": {
         "type": "object",
         "additionalProperties": false,
@@ -238,7 +238,7 @@
       "mutates": true
     },
     "prepare_debug": {
-      "description": "Prepare debugging one test node (spec 19.15 Tests, 19.16 Tests): the locks and build of a run_cases of that node (released when the task ends), then the debug spec of the test step run_cases would have run (its program, arguments, filter and results option, working directory and environment) with the debug languages and adapters resolved, and a prepared token for collect. The client runs the program under its debugger.",
+      "description": "Prepare debugging one test node (API.md §10.2; spec 19.16 Tests): the locks and build of a run_cases of that node (released when the task ends), then the debug spec of the test step run_cases would have run (its program, arguments, filter and results option, working directory and environment) with the debug languages and adapters resolved, and a prepared token for collect. The client runs the program under its debugger.",
       "params": {
         "type": "object",
         "required": [
@@ -336,7 +336,7 @@
       "mutates": true
     },
     "result": {
-      "description": "A node's last result in this daemon session with its output and error locations (spec 19.15 Tests). A node with no last result answers only id and an empty errors; a stale id is refused.",
+      "description": "A node's last result in this daemon session with its output and error locations (API.md §10.2). A node with no last result answers only id and an empty errors; a stale id is refused.",
       "params": {
         "type": "object",
         "required": [

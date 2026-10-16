@@ -766,7 +766,7 @@ reader sees workspace state first.
      and `Open overseer` opening its single overseer task (core §19.16
      "Tasks in the task runner"). *(Step 5k C1a: the row, `Show output` and
      `Cancel task`; C1b: `Open overseer`.)* The reset action above leaves remote tasks alone.
-   - *(Step 5t:)* a task carrying steps (core §19.15 "Steps of a task") keeps
+   - *(Step 5t:)* a task carrying steps ([API.md](protocol/API.md) §4.3) keeps
      its row, which follows the task's current step: one row
      `▸ {profile} — {action}: {step label} ({i}/{n})  {pct}%  {elapsed}  {origin}`
      (`: …` omitted while no step runs, or a step state is unknown;
@@ -1199,7 +1199,7 @@ Users can override these by defining the highlight groups before plugin load.
 
 `lualine/components/loomworks.lua` provides a lualine component for
 winbar display. Its data are the `loomworks.view.Header/1` and
-`loomworks.view.ProjectsIndex/1` tables (daemon.md §19.13 "Views"; step 5j),
+`loomworks.view.ProjectsIndex/1` tables ([API.md](protocol/API.md) §14; daemon.md §19.13 "Views"; step 5j),
 read through `lw.buf_status()`: the daemon's while the editor is subscribed,
 shown as they are, otherwise built in-process with the same shape. The
 component reaches into neither the workspace nor its events: its spinner

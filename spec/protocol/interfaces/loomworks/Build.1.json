@@ -2,7 +2,7 @@
   "interface": "loomworks.Build",
   "version": 1,
   "status": "draft",
-  "description": "Object /build (spec 19.15, 19.20): the build operations of lw build, lw clean and lw reset as task-streamed methods, and the editor's configure; the protocol-10 build, clean and reset requests stay as their v0 aliases. Each replies with the operation's outcome (accepted with the task_id, refused, declined, confirm) and streams the task on the transport's task stream. build, configure and clean take a profile or configuration units (units, exclusive with profile: both is invalid_args; spec 19.15 Editor scopes and configure).",
+  "description": "Object /build (API.md §8): the build operations of lw build, lw clean and lw reset as task-streamed methods, and the editor's configure; the protocol-10 build, clean and reset requests stay as their v0 aliases. Each replies with the operation's outcome (accepted with the task_id, refused, declined, confirm) and streams the task on the transport's task stream. build, configure and clean take a profile or configuration units (units, exclusive with profile: both is invalid_args; API.md §8.3).",
   "$defs": {
     "UnitRef": {
       "description": "A configuration unit: its id (e.g. a view.ProjectsIndex/1 record's active.unit_id) or its project key and configuration-unit key (as in the task meta's units).",

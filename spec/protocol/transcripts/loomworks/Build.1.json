@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Build",
   "version": 1,
-  "description": "Object /build (spec 19.15, 19.20): build, configure, clean and reset as task-streamed methods; a profile or configuration units as the scope, jobs, project-qualified targets; references by key and by id; the outcomes as domain results.",
+  "description": "Object /build (API.md §8): build, configure, clean and reset as task-streamed methods; a profile or configuration units as the scope, jobs, project-qualified targets; references by key and by id; the outcomes as domain results.",
   "cases": [
     {
       "name": "build is accepted; its start meta names the method and its done carries the task result",

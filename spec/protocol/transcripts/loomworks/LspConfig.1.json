@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.LspConfig",
   "version": 1,
-  "description": "Object /lsp (spec 19.20 LspConfig/1): the LSP state read in each workspace state, a configure that loads the workspace (its entry unconfigured: no profile is active), options set and reset in the working copy, and changed after each change.",
+  "description": "Object /lsp (API.md §13): the LSP state read in each workspace state, a configure that loads the workspace (its entry unconfigured: no profile is active), options set and reset in the working copy, and changed after each change.",
   "cases": [
     {
       "name": "get answers an unloaded workspace's state without loading it; malformed arguments are errors",

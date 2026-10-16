@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Launch",
   "version": 1,
-  "description": "Object /launch (spec 19.15 Run, Debug, Build scope of a launch; 19.20): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts; build (step 5t), a launch target's build as one task with its steps.",
+  "description": "Object /launch (API.md §9): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts; build (step 5t), a launch target's build as one task with its steps.",
   "cases": [
     {
       "name": "prepare_run of a launch configuration ends with its launch spec",

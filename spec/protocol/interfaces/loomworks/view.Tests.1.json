@@ -2,7 +2,7 @@
   "interface": "loomworks.view.Tests",
   "version": 1,
   "status": "draft",
-  "description": "Object /views (spec 19.13 The tests view; step 5m): the active profile's test tree, unit states and last results, which the test explorer, its gutter signs and inline marks show. get returns the full current state (a running run's per-case statuses included); update, declared initial, carries the full state again when discovery changed the tree, when stale or discovering changed, and when a run starts or ends, never a delta. The per-case progress of a run comes as loomworks.Tests/1 results instead; a seq gap in either is recovered with get. The editor builds the same shape in-process without the daemon-only ids (profile_id, the units' id) and with local keys as node ids.",
+  "description": "Object /views (API.md §14.3; step 5m): the active profile's test tree, unit states and last results, which the test explorer, its gutter signs and inline marks show. get returns the full current state (a running run's per-case statuses included); update, declared initial, carries the full state again when discovery changed the tree, when stale or discovering changed, and when a run starts or ends, never a delta. The per-case progress of a run comes as loomworks.Tests/1 results instead; a seq gap in either is recovered with get. The editor builds the same shape in-process without the daemon-only ids (profile_id, the units' id) and with local keys as node ids.",
   "methods": {
     "get": {
       "description": "The view's full current state. Never loads the workspace and never discovers.",

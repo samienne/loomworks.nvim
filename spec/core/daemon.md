@@ -1007,7 +1007,7 @@ into a protocol rule and a client policy:
   5g.3.
 - **`lw_version` equality is the CLI's policy** for routed operations — pin
   semantics and behavioural parity, which no interface version expresses. Before
-  routing, the CLI compares `describe().binary.lw_version` (§19.20) with its own
+  routing, the CLI compares `describe().binary.lw_version` ([API.md](../protocol/API.md) §3) with its own
   (and the schema versions as above) and applies the idle-restart / busy-retire
   and bypass flow unchanged. The daemon enforces version equality only for
   interfaces flagged `same_build` (§19.20). An editor never requires an equal
@@ -1482,17 +1482,15 @@ optimization.
 references in requests (part B: the operations' interfaces and
 `Profiles/1.compiler_cache`; ids are opaque strings carrying the session
 generation) are implemented; records
-of further interfaces land with the steps that land them, §19.19.)* Ids are the only entity handles on
-the wire: there are no remote object references, proxies or lifetimes. Every
-entity record in an interface result or signal (§19.20) carries its `id` from
-this registry and its `key` / `label` for display; a request names an entity
-by a reference that is either `{ id }` or `{ key }` (§19.20). `model_change`
-becomes the `changed { seq, session_generation, scopes? }` signal of
-`loomworks.Workspace/1`, delivered to its subscribers under the same
+of further interfaces land with the steps that land them, §19.19.)* Ids are
+the only entity handles on the wire; the ids of this registry are those of
+the interface records and references ([API.md](../protocol/API.md) §1). `model_change` becomes the
+`changed { seq, session_generation, scopes? }` signal of
+`loomworks.Workspace/1` ([API.md](../protocol/API.md) §6), delivered to its subscribers under the same
 generation rule. An interface signal's `seq` is counted as [PROTOCOL.md](../protocol/PROTOCOL.md) §12.3
 specifies (per object and connection, gapless); the `model_change`
-broadcast's per-workspace `seq` above is the protocol-10 form ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A). A
-connection of protocol 10 (v0, §19.8) keeps receiving the `model_change`
+broadcast's per-workspace `seq` above is the protocol-10 form ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A).
+A connection of protocol 10 (v0, §19.8) keeps receiving the `model_change`
 broadcast unconditionally.
 
 ### 19.13 Snapshot and projection
@@ -1554,13 +1552,10 @@ fed these tables instead of the files' bytes (their signatures are not
 re-verified: the wire is authenticated). A projection is read-only: it never
 saves the working copy or the cache, and it watches no files.
 
-**Header.** `welcome.header` carries `root`, `pid`, `lw_version` and
-`session_generation`, plus the model's `state`: `loaded` with the
-workspace's `name` and `active_profile` (the active profile's key, absent when
-none); `error` or `refused` (a trust, newer-schema or journal refusal) with
-the load failure's `error` message; or `unloaded` before the daemon loaded the
-workspace. Sending `welcome` never loads the workspace (an editor's
-connection starts a load right after it, §19.16 "Loaded on attach").
+**Header.** `welcome.header` and `Workspace/1.header` — the session fields
+and the model's `state` — are [API.md](../protocol/API.md) §2. Sending `welcome` never loads the
+workspace; an editor's connection starts a load right after it (§19.16
+"Loaded on attach").
 
 **As interfaces.** *(`lw.internal.Snapshot/1` and
 `loomworks.Workspace/1.header`: implemented, step 5g.2 part A
@@ -1568,12 +1563,12 @@ connection starts a load right after it, §19.16 "Loaded on attach").
 `Snapshot/1.get` over transport 11 since part B (`daemon/calls.lua`); the
 editor views steps 5j–5n, §19.19: `view.Header/1` and `view.ProjectsIndex/1`
 specified ("Views" below, step 5j part 0) and served (part B), the editor's use plan.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
-(§19.20), flagged `same_build`: the CLI's read commands and the parity tests
+([API.md](../protocol/API.md) §15), flagged `same_build`: the CLI's read commands and the parity tests
 use it, the editor never does, and `snapshot` stays as its v0 alias. The
 always-warm header is the `loomworks.view.Header/1` interface (and
 `loomworks.Workspace/1.header`); `welcome.header` stays as it is, frozen.
 View-scoped models are `loomworks.view.*` interfaces, one per view, each
-returning its full state on subscribe (`initial`, §19.20) and following with
+returning its full state on subscribe (`initial`, [API.md](../protocol/API.md) §14) and following with
 `update` signals, so a reconnect re-hydrates with no further protocol; the
 editor's projection of file-shaped tables is replaced by these views as the
 steps land.
@@ -1582,190 +1577,47 @@ steps land.
 (`daemon/views.lua` mounted on `/views`, the builder `view_state.lua`); the
 editor side implemented, part C (the view store `views.lua`, the observer's
 `/views` subscriptions, lualine and the status page header on the store,
-`lw.buf_project`).)* Two views back the editor's always-warm surfaces, the statusline
-(spec/ui.md §3) and the buffer → project lookup. Both are served by the
-`/views` object. Each has one method, `get` (no arguments; returns the view's
-full state), and one signal, `update`, declared `initial` (§19.20), whose
-payload is the same full state: never a delta. A client replaces its table on
-every `update`, and after a `seq` gap or a new session generation (§19.12) it
-calls `get` again. The daemon sends `update` at the point where it checks
-`Workspace/1.header_changed`: after every model segment and every committed
-write, before the acknowledgement of the command that caused the change, and
-only when the view's state differs from the one last sent on that
-subscription. Unless a field says otherwise it is required; an optional field
-is absent (never `null`) when it does not apply, and a client shows an
-unknown enum value as neutral.
+`lw.buf_project`).)* Two views back the editor's always-warm surfaces, the
+statusline (spec/ui.md §3) and the buffer → project lookup:
+`loomworks.view.Header/1` and `loomworks.view.ProjectsIndex/1`, specified with
+the rules every view follows in [API.md](../protocol/API.md) §14. What only the daemon knows — the
+header's `pid`, `lw_version` and `session_generation`, and every opaque id
+— the in-process builder leaves out ("Two sources, one shape" below).
+`view.Header/1`'s `version` is the daemon's in the daemon's view and the
+editor's in one built in-process (also `daemon` mode's `unloaded` header
+before the daemon's arrives); the status page's header shows it (spec/ui.md
+§1). For its `trust`, the status page offers review & trust and discarding
+the working copy (`user`) or resetting the build cache (`cache`). Its
+`active_profile_id` is what the editor puts in an `{ id }` reference once
+commands move to interfaces (step 5o), as `config_set_id`. A ProjectsIndex
+record's `active.state` includes a task another client runs in the daemon
+(§19.16 "Running state"); the statusline icon is computed from these states.
 
-- `loomworks.view.Header/1` — the always-warm header. Its state is
-  `Workspace/1.header`'s fields with the same meaning (`root` string,
-  `state` one of `loaded` / `unloaded` / `error` / `refused`; optional `name`
-  string, `active_profile` string (the active profile's key), `error` string,
-  "Header" above; and `pid` integer, `lw_version` string,
-  `session_generation` integer, required in `Workspace/1.header` but optional
-  here: the daemon always sends them, the in-process builder leaves them out,
-  "Two sources, one shape" below), plus:
-  - `active_profile_id` (string, optional) — the active profile's opaque id
-    (§19.12); present exactly when `active_profile` is and the view comes
-    from the daemon, absent in-process. It is what a client puts in an
-    `{ id }` reference (§19.20) once commands move to interfaces (step 5o).
-  - `config_set` (string, optional) — the name of the active profile's
-    configuration set; present when `state` is `loaded` and a profile is
-    active.
-  - `config_set_id` (string, optional) — that configuration set's opaque id
-    (§19.12); present exactly when `config_set` is and the view comes from
-    the daemon, absent in-process (step 5o, as `active_profile_id`).
-  - `diagnostics` (`"error"` or `"warn"`, optional) — the highest severity
-    among the workspace's structural diagnostics (spec/ui.md §1); absent when
-    there are none or the workspace is not loaded.
-  - `trust` (`"user"` or `"cache"`, optional) — present only when `state` is
-    `refused` by a trust refusal (§17.4): the refused file, the working copy
-    (`user`: the status page offers review & trust and discarding it) or the
-    cache (`cache`: it offers resetting the build cache). Absent for a
-    newer-schema or journal refusal.
-  - `version` (string, optional) — the running loomworks version of the
-    `lw` that built the view, resolved like `_meta.written_by` (§2): the
-    daemon's in the daemon's view, the editor's in one built in-process
-    (also `daemon` mode's `unloaded` header before the daemon's arrives);
-    absent when unknown. The status page's header shows it (spec/ui.md §1).
-
-  `Workspace/1.header` is unchanged: `view.Header/1` is a separate interface
-  and adds its fields only to itself.
-- `loomworks.view.ProjectsIndex/1` — what the statusline and the buffer →
-  project lookup need, nothing of the status page. Its state is
-  `{ projects }`: `projects` (array, required) holds one record per project of
-  the workspace, ordered by key; it is empty when the workspace is not loaded.
-  A record:
-  - `id` (string, optional) — the project's opaque id (§19.12); always sent
-    by the daemon, absent in-process.
-  - `key` (string) — the project's key.
-  - `label` (string) — the project's display text, which every entity
-    record carries beside its `key` (§19.12 "Ids on the interfaces"). A
-    project has no display name of its own (data-model.md §1.2), so its
-    `label` is its key; a client shows `label`, never derives it.
-  - `type` (string) — the project's module type (`cmake`, `meson`, …); a
-    project of an unknown or rejected type (§8.0) is listed with its declared
-    type and without `active`.
-  - `path` (string) — the project's directory relative to the workspace root,
-    `/`-separated: its declared `path`, or its key when it declares none.
-  - `abs_path` (string) — the workspace root joined with `path`, absolute and
-    `/`-separated, as the daemon resolves it (not case-folded; a client
-    compares it with its own path normalization, §2.3 — case-insensitive on
-    Windows).
-  - `active` (object, optional) — present when the active profile maps the
-    project; absent with no active profile:
-    - `configuration` (string) — the name of the project's configuration in
-      the active profile.
-    - `unit_id` (string, optional) — the opaque id (§19.12) of the
-      configuration unit for the project's configuration and tool; absent
-      when the profile has no unit for the project yet, and always absent
-      in-process (records built in-process carry no ids, "Two sources, one
-      shape").
-    - `tool_key` (string, optional) — the key of that configuration's tool;
-      absent for a module whose single toolchain has none.
-    - `state` (string) — the configuration unit's state as the right column
-      of state-lifecycle.md §3.4 names it (`unconfigured`, `configured`,
-      `built`, `configure_failed`, `build_failed`, `unknown`, `configuring`,
-      `building`, `deleting`); `unconfigured` when the profile has no unit
-      for the project yet. It includes a task another client runs in the
-      daemon (§19.16 "Running state"). Only state changes send `update`; a
-      build's progress never does. The profile's overall state (the
-      statusline icon) is computed by the client from these states.
-
-  The buffer → project lookup (`lw.buf_project`, "Two sources, one shape")
-  is the record whose `abs_path` is the longest prefix of the buffer's path
-  **on a separator boundary**: a record matches when the buffer's path equals
-  its `abs_path` or starts with its `abs_path` followed by `/`, so a project
-  at `/a/foo` does not match a buffer in `/a/foobar`. Both paths are compared
-  in their normalized form (§2.3: `/`-separated, and lowercased on Windows).
-  A buffer's record is chosen first by physical path (links, junctions and
-  Windows 8.3 short names resolved): of the records whose physical path
-  contains the buffer's physical path, separator-bounded, the one with the
-  longest physical path wins; only when there is none, of the records whose
-  normalized `abs_path` contains the buffer's normalized path,
-  separator-bounded, the one with the longest normalized `abs_path` wins.
-  This deliberately fixes today's `project_for_buf`, whose bare prefix test
-  lets `/a/foo` claim a buffer in `/a/foobar`.
+The buffer → project lookup (`lw.buf_project`, "Two sources, one shape")
+is the record whose `abs_path` is the longest prefix of the buffer's path
+**on a separator boundary**: a record matches when the buffer's path equals
+its `abs_path` or starts with its `abs_path` followed by `/`, so a project
+at `/a/foo` does not match a buffer in `/a/foobar`. Both paths are compared
+in their normalized form (§2.3: `/`-separated, and lowercased on Windows).
+A buffer's record is chosen first by physical path (links, junctions and
+Windows 8.3 short names resolved): of the records whose physical path
+contains the buffer's physical path, separator-bounded, the one with the
+longest physical path wins; only when there is none, of the records whose
+normalized `abs_path` contains the buffer's normalized path,
+separator-bounded, the one with the longest normalized `abs_path` wins.
+This deliberately fixes today's `project_for_buf`, whose bare prefix test
+lets `/a/foo` claim a buffer in `/a/foobar`.
 
 **The tests view.** *(Step 5m, plan: part 0 this spec; A the host-neutral
 builder, in-process only; B1 the daemon side; C1 the editor's read path.)*
-`loomworks.view.Tests/1`, on `/views` like the two above (`get`, `update`
-declared `initial`, full state, never a delta; the field rules above), backs
-the test explorer, its gutter signs and inline marks (LOOMTEST.md). It
-differs from them in one point: the per-case progress of a running test is
-**not** sent as `update` but as the thin `Tests/1` `results` signal (§19.20
-`Tests/1`), so a run of thousands of cases does not resend the tree several
-times a second. `update` is sent, under the rule above, when discovery
-changed the tree, when `stale` or `discovering` changes, when a run starts
-(its selected nodes become `queued`) and when it ends (their results are the
-last results); `get` always answers the **current** state, a running run's
-per-case statuses included, so a client that saw a `seq` gap in either
-`update` or `results` recovers with one `get`. The daemon sends a run's last
-`results` before the `update` that ends it. Its state is `{ state, profile?,
-profile_id?, stale, discovering?, units }`:
-
-- `state` — the workspace's, as in `view.Header/1`; `units` is empty unless
-  `loaded`.
-- `profile` (string, optional) — the active profile's key; the view covers
-  the active profile only, and is empty (`units` = `[]`) with none.
-  `profile_id` (optional) — its opaque id, from the daemon only.
-- `stale` (boolean) — the tree may no longer match the build: no discovery
-  has run for the active profile in this session yet, or since then a
-  configure, build, clean or reset of one of its units ended (by any client,
-  the CLI's included), its saved test target list changed (§1.3.4), or the
-  active profile changed. Only `Tests/1.discover` clears it. The daemon never
-  discovers by itself: discovery runs test programs and needs the client's
-  environment (§19.16 "Tests").
-- `discovering` (TaskId, optional) — the task of a `Tests/1.discover` that is
-  running for this profile, of whichever client.
-- `units` (array) — one record per configuration unit of the active profile,
-  in project-key order:
-  - `id` (string, optional) — the configuration unit's opaque id (§19.12);
-    from the daemon only.
-  - `project` (string), `configuration` (string) — the keys, as in
-    `meta.units`.
-  - `state` — `ok` (discovered; `nodes` holds its tree), `pending` (not
-    discovered yet in this session), `not_configured` (not configured on this
-    machine, §17.8: discovery runs programs from the build directory),
-    `foreign` (its kit builds for another platform, §18.1), `no_tests` (its
-    module has no TestUnit and it has no saved test targets), `error`
-    (discovery failed). A client shows an unknown state as neutral.
-  - `message` (string, optional) — why, for `error`, `not_configured` and
-    `foreign`, as the in-process explorer says it.
-  - `nodes` (array) — the unit's test tree in discovery order, parents before
-    their children; empty unless `state` is `ok`. A node:
-    - `id` (string) — the node's id: an opaque id issued by the daemon
-      (§19.12), **scoped to its unit**, so the same `Suite.Case` in two
-      projects is two nodes. It is stable while the node's unit, TestUnit and
-      name are, across re-discoveries in one session; a client never parses
-      it. In-process (A) it is a local key with the same scope.
-    - `kind` — `target` (a test executable, a native runner's registered
-      test, or a saved test target), `suite` (an explicit node: a client
-      never infers suites from case names) or `test`; a client shows an
-      unknown kind as a plain node.
-    - `parent` (string, optional) — the parent node's `id`; absent for a
-      top-level node.
-    - `name` (string) — the display text (the saved-entry name with its
-      `#2` suffix, §8.9.2; the case name without its suite).
-    - `file` (string, optional), `line` (integer, optional) — the source
-      location, absolute and `/`-separated, as discovery maps it.
-    - `runnable` (boolean) — whether `run_cases` and `prepare_debug` accept
-      it; a missing saved entry is a non-runnable node with `status`
-      `errored` and its `message`.
-    - `source` (string, optional) — where discovery found it: `ctest`,
-      `meson`, `gtest` (probed cases), `saved` (a saved test target,
-      §1.3.4), or a module's own runner name; open-ended (a string, not an
-      enum) — a client shows an unknown source as neutral.
-    - `status` (optional) — `queued` or `running` while a run that selected
-      it is in progress, else its last result in this daemon session
-      (`passed`, `failed`, `skipped`, `errored`); absent when it has none. A
-      client shows an unknown status as neutral. Last results live in the
-      daemon's memory: they survive the editor's reconnects, not a daemon
-      restart (persisting them is later, §19.19 5m part D).
-    - `duration` (integer, optional, milliseconds), `message` (string,
-      optional, the first failure line) — of the last result.
-
-  Output and error locations are not in the view: a client reads them with
-  `Tests/1.result { id }` (§19.20) when it shows them.
+`loomworks.view.Tests/1` ([API.md](../protocol/API.md) §14.3), on `/views` like the two above, backs
+the test explorer, its gutter signs and inline marks (LOOMTEST.md). Its
+`stale` also counts the CLI's builds; discovery needs the client's
+environment (§19.16 "Tests"); the `message` of a unit is the in-process
+explorer's. In-process (A) a node's `id` is a local key with the same scope.
+Last results live in the daemon's memory: they survive the editor's
+reconnects, not a daemon restart (persisting them is later, §19.19 5m part
+D).
 
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
@@ -1819,17 +1671,11 @@ the daemon's registry, `args` (an object, default empty) its arguments, and
 segment, §19.15). The reply is `ok` with `outcome = "ok"` and `result` (the
 query's JSON object); `outcome = "refused"` (`message`) for an unknown name, a
 failed query or a workspace the daemon cannot load; `outcome = "declined"`
-(`reason`) as for `snapshot`. A query is read-only: it changes neither the
-model nor any file, and it runs against the model as it is (loaded as for
-`snapshot` when none is), never unloading it for another environment. The
-registry starts with `tools` (the toolchains each module type detects in the
-client's environment, detected once per query: `result.tools`, tool rows as
-in a snapshot's `tools`, §19.13) and `profile_cache` (`args.profile` and
-`args.project`, keys: `result.cache`, the compiler cache that profile
-resolves for that project, as fields `{ policy, tool?, path?, present,
-stale, msvc_auto_off, applicable, not_applied_reason?, not_applied_hint? }`
-that the client formats as `lw profile query … cache` prints it; `cache`
-absent when that project's module does not cache C/C++).
+(`reason`) as for `snapshot`. The registry holds `tools` and `profile_cache`, the v0 aliases of
+`Toolchains/1.list` and `Profiles/1.compiler_cache`, whose semantics are
+[API.md](../protocol/API.md) §11: `tools` answers that method's `tools` as `result.tools`, and
+`profile_cache` (`args.profile` and `args.project`, keys) its `cache` as
+`result.cache`.
 
 **As interfaces.** *(The query registry: implemented, step 5g.2 part B
 (`Toolchains/1.list`, `Profiles/1.compiler_cache`; the CLI calls them over
@@ -1842,7 +1688,7 @@ affected views' `update`s) before the acknowledgement, outcome `ok`,
 methods — `tools` is `loomworks.Toolchains/1.list`, `profile_cache` is
 `loomworks.Profiles/1.compiler_cache` — and `query { name }` stays as their v0
 alias. Wire arguments that name entities are references (`{ id }` or
-`{ key }`, §19.20): the editor sends ids, the CLI the keys the user typed,
+`{ key }`, [API.md](../protocol/API.md) §1.2): the editor sends ids, the CLI the keys the user typed,
 resolved with the same messages and exit codes as in-process (§16.9).
 
 ### 19.15 Task stream and delegated operations
@@ -1872,144 +1718,56 @@ the daemon side of "Editor scopes and configure" is implemented (part B1),
 the rest plan.*
 
 A running operation streams `task` events on the **task stream** of
-[PROTOCOL.md](../protocol/PROTOCOL.md) §14, separate from
-model changes and observable by every connected client (a build started by the
-CLI streams into the editor): `start` (`meta = { name, kind, profile, units,
-origin }` — `profile` the profile's key, `units` one `{ project, configuration }` per
-project of the profile, the project key and its configuration unit's key;
-semantic keys, which a client resolves to its own domain objects at the
-boundary, §19.14; `origin` the owner's `hello.client`, `cli` or `editor`,
-set by the daemon, never taken from the request), `line` (one of loomworks's own lines —
-a status line on standard output, a note on standard error), `output` (a
-step's raw bytes, `stdout` or `stderr`), `progress` and `done` (`exit_code`,
-and the refusal or failure the client prints as `lw: <error>`). Ownership,
-flow control and observer bounds are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.3–§14.4. For a CLI owner the
+[PROTOCOL.md](../protocol/PROTOCOL.md) §14, separate from model changes and observable by every connected
+client (a build started by the CLI streams into the editor); the task meta
+and the lines are [API.md](../protocol/API.md) §4.2. Ownership, flow control and observer bounds are
+[PROTOCOL.md](../protocol/PROTOCOL.md) §14.3–§14.4. For a CLI owner the
 stream is its terminal: a client that stopped reading (`lw build | less`
 paused) pauses the running step's output, so the build tool then blocks on
 its full pipe as it blocks on a paused terminal in-process. The durable
 outcome arrives as a `model_change` (§19.12).
 
-**Request.** `build { args, interactive, env, command }` — `args` carries the
+**Request.** The protocol-10 `build { args, interactive, env, command }`
+request is the v0 alias of `Build/1.build` ([API.md](../protocol/API.md) §8): `args` carries the
 parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
-`verbose`). The reply's `outcome` is one of:
-
-- `accepted` (`task_id`, `profile_key`, `pid`) — the build runs as a task owned
-  by this connection;
-- `refused` (`message`, `exit_code`) — before any side effect: the workspace
-  is refused (§17.4, a journal it cannot complete §19.4, a newer schema §2.7)
-  or the profile argument does not resolve (§16.9). The client prints it as
-  the in-process host does and exits with that code;
-- `declined` (`reason`) — before any side effect: the daemon does not carry
-  this request; the client runs it on the in-process path. It declines the
-  interactive onboarding of a profile from a configuration set (prompts,
-  §16.9) and a request in a different environment while another build runs
-  in it (see Environment).
+`verbose`), and its outcomes are [API.md](../protocol/API.md) §8.1 — on `refused` the client prints
+the message as the in-process host does and exits with that code; on
+`declined` it runs the command on the in-process path.
 
 `test { args, interactive, env, command }` — the plan form of `lw test`
-(§16.16: each unit's native runner, then its saved test targets) — has the
-same outcomes; `args` carries `profile`, `junit` (the `--junit` path, made
-absolute by the client against its working directory, as the in-process host
-does), `extra` (the arguments after `--`, for the plan's steps) and
-`no_build` (`--no-build`). The plan's
-pre-build checks are the in-process ones, made before acceptance: their notes
-travel with the reply, and a refusal is `refused` with the in-process message
-and exit code (a foreign kit's registered tests with no saved test target,
-§18.6, pointing at `lw test --target` and `lw test-target add`; arguments
-after `--` for a plan of both kinds, exit 2). A plan with saved test targets
-on a unit a foreign kit builds runs them on a device, which stays with the
-client as a device run does: `declined` (`profile '<p>' builds for
-<platform>; device test runs stay in this process`). Its task's `meta.kind`
-is `test`. In this section "build" stands for either operation unless a rule
-names one.
+(§16.16) — is the v0 alias of `Tests/1.run` ([API.md](../protocol/API.md) §10.1); `args` carries
+`profile`, `junit`, `extra` and `no_build`. Its plan's pre-build checks are
+the in-process ones; a saved test target on a unit a foreign kit builds runs
+on a device, which stays with the client as a device run does (`declined`).
+In this section "build" stands for either operation unless a rule names
+one.
 
 **Same behaviour.** An operation run in the daemon is behaviorally identical to
 the in-process operation it replaces — the same step sequence, locks, gates,
 status lines, cache write-back, failure lines and exit codes — differing only
 in how a step is spawned (streamed) and how a refusal travels (on the stream,
-printed by the client exactly as the in-process host prints it). For a build
-this is the shared build-step sequence of §16.4 / §16.6 / §16.28 / §5.1 / §5.10:
-the build-directory locks of §16.6 taken up front in canonical order with the
-§19.5 record (holder kind `daemon`, the operation rewritten configure → build),
-a dead holder's lock reclaimed with the interrupted step's state recovered,
-the build gate, the artifact-conflict gate (`--force`), the full-reconfigure
-reset, the configure record and the cache write-back under the save guard
-(§2.7 — a refused save ends the build with its message, as in-process), the
-failure line with the `--target` hint, and `BUILD OK: <profile>`. Only the
-build tool's own terminal detection differs: its output reaches the client
-through a pipe, as when the in-process build is piped (`lw build | tee`) — so
-a tool that colours or redraws only on a terminal does not (ninja prints every
-`[n/N]` line instead of one updating status line, compilers drop colour). No
-colour variable is added for it: such variables (`CLICOLOR_FORCE`, …) reach
-every process of the build, including ones whose output a build script
-captures, so they would change what a build does; a user who wants colour sets
-them in the environment of `lw build`, which the step receives.
+printed by the client exactly as the in-process host prints it). What each
+operation does and prints is [API.md](../protocol/API.md) §8–§10. In the daemon the build-directory
+locks carry the §19.5 record (holder kind `daemon`, the operation rewritten
+configure → build). Only the build tool's own terminal detection differs: its
+output reaches the client through a pipe, as when the in-process build is
+piped (`lw build | tee`) — so a tool that colours or redraws only on a
+terminal does not (ninja prints every `[n/N]` line instead of one updating
+status line, compilers drop colour). No colour variable is added for it:
+such variables (`CLICOLOR_FORCE`, …) reach every process of the build,
+including ones whose output a build script captures, so they would change
+what a build does; a user who wants colour sets them in the environment of
+`lw build`, which the step receives.
 
-For a test run it is the test plan of §16.16, the in-process host's own code
-(`test_plan.lua`) run with the task as its host: the build-directory locks
-taken as for a build and held across the build AND the test steps (a native
-runner may rebuild), unless `no_build` the build steps above in their for-test form (a unit
-whose runner rebuilds itself is not built separately unless it has saved test
-targets; no steps → no `building profile:` line), the units' targets parsed,
-every saved entry resolved before the first step (a missing one fails the
-test run with the in-process message; under `no_build` also the §16.16
-"Skipping the build" checks — an unconfigured unit, an unbuilt executable,
-a self-rebuilding runner that cannot skip its rebuild — with the in-process
-lines and exit 1, the locks held across those checks and the steps, and its
-stale-build notes), then each step with its `==> [test]
-…` line — a native runner (`<project>: <runner>`), or a saved test target
-(its launch's deploy unless `no_build`, its working directory, `${target_dir}`, the gtest
-results option, its one-line outcome) — every step run even after one
-failed, its JUnit file at the requested path (one per step when several; a
-warning line when none was written) with its `JUnit: <path>` line, and
-finally either `no tests to run for profile '<p>'`, or the per-step summary
-and `TESTS OK: <profile> (<n> step[s])`, or the failure `<k> of <n> test
-step[s] failed` with exit 1. Each program is spawned as a build step is
-(streamed, cancellable). A build step that fails ends the test run as it ends
-a build. A saved target whose artifact is found foreign only once built (no
-kit platform) is not run on a device by the daemon: its step fails with a
-line saying so.
+For a test run it is the test plan of §16.16 ([API.md](../protocol/API.md) §10.1), the in-process
+host's own code (`test_plan.lua`) run with the task as its host.
 
 **Run.** `lw run` (§16.17) is split: the daemon **prepares** the launch, the
 client **executes** it. The program is the user's own — interactive,
 possibly long-running, attached to a terminal — so it never runs in the
-daemon.
-
-`prepare_run { args, interactive, env, command }` — `args` carries the parsed
-command line: `profile` and `target` (the operands, §16.17; no `target` for
-the default target), `project` (`--project`), `kind` (`--target` /
-`--launch`), `cwd` (`--cwd`, sent as given: the launch resolves it as
-in-process — variables expanded, relative to the workspace root), `extra` (the arguments after `--`), `no_build` (`--no-build`, also
-set by `--dry-run`), `quiet` (`--print` / `--dry-run`) and `prefix` (true when
-`--prefix` is given). The wrapper itself and the report format stay with the
-client and do not change what is prepared; `prefix` only lets the daemon
-refuse a device target, after the validity gate and before deploy, with the
-in-process `--prefix cannot wrap a device target …` line. Likewise a `cwd` for a device
-target (a module-declared one, §11.4) is refused there with the in-process
-`--cwd does not apply to a device run …` line and exit code 2. The outcomes are those of `build`; it is also `declined` for a
-profile with a foreign kit (see Routing). An accepted request runs as a task
-(`meta.kind = run`) that does, and prints, exactly what the in-process run
-does before its `running …` line, in the same order:
-
-1. unless `no_build`, the profile's build: the build-directory locks taken as
-   for a build, the build steps above (every gate and line), then the locks
-   **released** — as in-process, they are held for the build only;
-2. the launch target resolved against the built tree (§16.17, "Launch target
-   selection": the named target, else the default target, else the sole
-   launchable one; the same messages for none, ambiguous and unset) and its
-   validity gate;
-3. unless `no_build`, the deploy steps (§8), after the locks were released,
-   as in-process;
-4. the launch spec resolved — variables and `${VAR}` expanded in the client's
-   environment (Environment, below).
-
-`done` then carries `exit_code` 0 and `launch = { name, cmd, args, cwd, env }`
-— the resolved command, its arguments (a command configuration's declared
-arguments, then `extra`), the absolute working directory and, in `env`, only
-the launch's own contribution over the client's environment (the overrides
-§16.17 "Command inspection" reports), never a whole environment — or a
-nonzero exit code and the in-process failure line (a failed build, no such
-target, a failed deploy, `cannot resolve launch: …`). The task, and every
-lock, ends before the program starts; the daemon keeps nothing of the run.
+daemon. The preparation is `Launch/1.prepare_run` ([API.md](../protocol/API.md) §9.1); the
+protocol-10 `prepare_run { args, interactive, env, command }` request is its
+v0 alias, `args` carrying the parsed command line.
 
 The client then closes its daemon connection and finishes the run as the
 in-process host does after resolving: `--print` / `--dry-run` print the
@@ -2039,419 +1797,101 @@ standard error, so standard output carries only the report. Hence:
   tools above.
 
 **Debug.** *(Step 5k, part B2: implemented, daemon side; the editor calls it
-from part C2.)* A debug launch takes the same split:
-the daemon prepares it, the client hands the result to its debugger, which
-starts the program — the program is never the daemon's. `prepare_debug {
-args, interactive, env, command }` takes the arguments of `prepare_run`
-except `quiet` and `prefix` (no report, no wrapper), has the outcomes of
-`build`, and runs as a task (`meta.kind = debug`) doing steps 1–4 of Run
-above in the same order, with the same gates and lines. `done` then carries
-`exit_code` 0 and `debug` (`loomworks.Common/1` `DebugSpec`):
+from part C2.)* A debug launch takes the same split: the daemon prepares it
+(`Launch/1.prepare_debug`, [API.md](../protocol/API.md) §9.2), the client hands the result to its
+debugger, which starts the program — the program is never the daemon's. The
+editor keeps device targets in-process and never sends one (§19.16 "Editor
+operations").
 
-- `name`, `program`, `args`, `cwd`, `env` — resolved exactly as the run's
-  `launch` of the same target and arguments (`program` is the run's `cmd`;
-  `env` only the launch's own contribution, the §17.9 denylist applied, never
-  a whole environment). A run and a debug of one target differ only in who
-  starts the program (§8.9.6 "Launch target debugging", which states the
-  behaviour change this makes for module targets);
-- `language` — the launch's primary language: a launch configuration's first
-  `debug` entry (§8.9.6 "Multi-adapter debugging"), otherwise the primary
-  language of the target's module;
-- `adapters` — one `{ language, adapter }` per debug language in order (a
-  launch configuration's `debug` array, otherwise `language` alone), each
-  adapter resolved from the workspace's mapping with its default
-  (`DebugConfig/1`, §19.20): the first launches the program, the others
-  attach to its process.
+**Build scope of a launch.** *(Step 5k, part B2: implemented, daemon side;
+its deploy steps' asynchrony and step reports: step 5t, part B.)* The
+`build_scope` of `prepare_run` and `prepare_debug` is [API.md](../protocol/API.md) §9.3; the
+`target` scope is the launch flow the editor runs before a launch in-process
+(§8.8.4 steps 3–6), each build locking as in-process. The CLI sends no
+`build_scope`; the editor sends `target`, so an editor launch builds what it
+built in-process, not the whole profile.
 
-Whether an adapter is installed in the client's debugger, its install hint,
-and the adapter-specific request shape (§8.9.6, spec/integrations/debug/)
-stay with the client, which checks the first before it sends the call.
-There is no device debug (§18; spec/core/integrations.md §11): a device
-target, or a target found foreign by its kit or by probing its artifact
-(§18.1, §18.11), ends the task nonzero — before the build when the kit
-tells, otherwise once the build probed it — with the
-in-process refusal of debugging a foreign target (§18.11) as its failure
-line (a device target, which has no artifact to name: `'<target>' is a
-device target; this host cannot debug it. …`); `prepare_debug` is never `declined` for it (the editor keeps device
-targets in-process and never sends one, §19.16 "Editor operations"). The
-kit-token check precedes everything (build and deploy alike). The artifact
-probe precedes every deploy of the profile scope; of the `target` scope
-(below) it follows the launch target's own unit and precedes the post-build
-deploy — the pre-build deploy steps necessarily run before it, since the
-artifact they precede does not exist yet.
+**Build of a launch target.** *(Step 5t: implemented, daemon side part B, editor side part C.)*
+`Launch/1.build` ([API.md](../protocol/API.md) §9.4) builds a launch target as the editor's
+in-process launch build does (§8.8.4 steps 3–5, `LaunchTarget:build`),
+deploy freshness recorded as in-process. The editor keeps device targets'
+builds in-process and never sends one (§19.16 "Editor operations") until
+step 5n extends `Launch/1.build` to them.
 
-**Build scope of a launch.** *(Step 5k, part B2: implemented, daemon side.)*
-`prepare_run` and
-`prepare_debug` take an optional `build_scope`: `profile` (the default:
-steps 1 and 3 above, as `lw run` builds) or `target` — in place of steps 1
-and 3, the launch flow the editor runs before a launch in-process (§8.8.4
-steps 3–6): the launch's dependencies (explicit `depends_on` and deploy-source
-projects, a deploy source in the configuration it names), the pre-build
-deploy steps, the launch target's own unit, the post-build deploy steps. Each
-build in it takes the build-directory locks of the units it builds, for that
-build only, as in-process, and resolves against the requested profile (its
-environment, variables and build gate), whether or not it is the active one;
-a single-target build builds the unit's own build directory, the one it
-locked. Once the launch target's own unit built, the artifact is probed
-before the post-build deploy steps: a foreign one ends a debug as refused
-("Debug" above) and a run with `device = true` ("Run" above), the post-build
-deploy left to the client. A failing step ends the task with the in-process
-failure line, the later steps not run. *(Step 5t, part B: implemented, daemon side.)* Its deploy steps
-run asynchronously, a cancel stopping between two copies, and its steps are
-reported as "Steps of a task" below describes; `force` is the answer to the
-artifact-conflict question (§5.9), which the editor asks before the call as
-before a build. With `no_build` neither scope builds
-or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
-editor launch builds what it built in-process, not the whole profile.
-
-**Build of a launch target.** *(Step 5t: implemented, daemon side part B, editor side part C.)* `Launch/1.build { profile?,
-project?, target?, kind?, force?, interactive, env, command }` (addressed
-as `prepare_run` is, plus `force`) builds a
-launch target as the editor's in-process launch build does (§8.8.4 steps 3–5,
-`LaunchTarget:build`), as one task (`meta.kind = build`) with the outcomes of
-`build`: the launch target is resolved as `prepare_run` resolves it; a
-resolution or validity refusal (including the abstract-configuration gate),
-or an error while planning the steps, ends the task nonzero with no steps,
-before any build (there is no `refused` reply); then the launch's dependencies (explicit `depends_on` and
-deploy-source projects, a deploy source in the configuration it names), the
-pre-build deploy steps, and the launch target's own unit (its one target where
-the module builds single targets) run in that order — the phases of the
-`target` build scope above up to and including the target's own unit, without
-its artifact probe, post-build deploy steps or launch resolution. Each build
-takes the build-directory lock of the unit it builds, for that build only; the
-deploy steps run without locks and record their freshness in the workspace
-cache as in-process. `force` is the answer to the artifact-conflict question
-(§5.9), asked by the client before the call. The first failing step ends the
-task with the in-process failure line, the later steps not run; when every
-step succeeded the task closes with the plain build's line `BUILD OK:
-<target>` (the launch target's display name) and `done` carries `exit_code`
-0. A cancel (`Tasks/1.cancel`)
-kills a running build step and stops a deploy between two copies; the steps
-not reached are not run. A device target (§11) ends the task nonzero, before
-the build, with `'<target>' is a device target; …` as its failure line (the
-editor keeps device targets' builds in-process and never sends one, §19.16
-"Editor operations") until step 5n extends `Launch/1.build` to them.
-
-**Steps of a task.** *(Step 5t: implemented, daemon side part B, editor side part C.)* A target-scoped task —
-`Launch/1.build`, and `prepare_run` / `prepare_debug` with `build_scope =
-"target"` — announces its steps: its `TaskInfo` (the `started` signal,
-`Tasks/1.list`) and its task's `start.meta` carry `steps`, one `{ id, kind,
-label, project?, configuration?, target?, phase?, state }` per phase in run
-order (`id` opaque, stable within the task; `kind` `build` for a
-dependency's or the target's own unit, `deploy` for a deploy phase with
-`phase` `pre_build` or `post_build`, `probe` for the artifact probe), each
-`pending` at start. A preparation with `no_build` has no steps (`steps`
-absent). Each transition is a `Tasks/1` `step { task_id, seq, index, state,
-error? }` signal (`running`, `ok`, `failed` with its failure line,
-`cancelled`; `skipped` for a step a failure, a cancel or a `device = true`
-outcome left unrun); its ordering, its `seq` and the re-read of
-`Tasks/1.list` on a gap are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.7. A
-unit's own tool steps (configure, build) are not steps here; they stay its
-lines, output and progress. Every step also has its line on the task stream, as today
-(`building dependency: <project>`; a deploy phase `deploying (<phase>): <n>
-copies`, where `n` counts the phase's declared sources, including fresh ones
-the copy will skip; a single source reads `1 copy`). A deploy whose copies all
-completed is `ok` even when a cancel arrived during its last copy (its
-freshness records are saved); the cancel then stops the task before its next
-step.
+**Steps of a task.** *(Step 5t: implemented, daemon side part B, editor side part C.)* The steps a
+target-scoped task announces are [API.md](../protocol/API.md) §4.3; their ordering, `seq` and the
+re-read of `Tasks/1.list` on a gap are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.7.
 
 **Tests.** *(Step 5m, plan: part 0 this spec; B1 discovery, B2 runs, debug
-preparation and results; the editor's use §19.16 "Tests"; the methods
-§19.20 `Tests/1`.)* The editor's test discovery and its runs of selected
-tests execute in the daemon, like its builds; only a test debug session's
-program is the client's ("Debug" above). They act on the **active profile**
-and its `view.Tests/1` (§19.13 "The tests view"); a node is named by its
-view `id`, and an id that no longer names a node of the view (a
-re-discovery dropped it, the active profile changed, an earlier session's
-id) is refused as a stale reference (§19.20).
+preparation and results; the editor's use §19.16 "Tests".)* The editor's
+test discovery and its runs of selected tests execute in the daemon, like
+its builds; only a test debug session's program is the client's. The
+methods are `Tests/1` ([API.md](../protocol/API.md) §10.2), on the active profile and its
+`view.Tests/1`. In the daemon a probe or run waiting for a build directory
+waits in the build-directory operation queue (§5.3, FIFO), and a holder in
+another process fails fast (§19.3); discovery is the in-process
+`discover_tests` (§8.9.3). The batch `lw test` (`Tests/1.run`) is unchanged
+by them. The CLI sends no `Tests/1.discover`, `run_cases` or
+`prepare_debug` in this step (`lw test --list` stays in-process, Routing).
 
-- **Discovery** (`Tests/1.discover`, task, `meta.kind = discover`). In the
-  caller's environment (§19.15 "Environment", as a build: a different
-  environment reloads the workspace first, and is declined while a build
-  runs), for each unit of the profile in project-key order, the in-process
-  discovery of §8.9.3 (`discover_tests`: every TestUnit's entries merged,
-  the saved test targets included, the configured-here and foreign-kit
-  rules applied — such units get their view state, not a tree). A unit
-  whose tree is current (discovered since its last configure or build ended
-  and its saved list last changed) is not probed again unless `force`.
-  Probing a unit runs its test programs from its build directory, so it
-  takes that build directory's lock (§16.6; within the daemon it waits in
-  the build-directory operation queue, §5.3, behind a running build or test
-  run of that directory; a holder in another process fails fast, §19.3, and
-  the unit's state is `error` with the busy line) for the probe only. Each
-  probed unit's line is `==> [discover] <project>/<configuration>`
-  followed by its outcome (`<n> tests`, the failure). A unit's failure does
-  not end the task: it is that unit's `error` state, and the task ends 0
-  with `DISCOVER OK: <profile> (<n> tests, <k> failed)`. A cancel stops
-  between units and at a probe's program (killed as a build step is): the
-  units already probed keep their new trees, the others their earlier ones,
-  and the view stays `stale`. The view's `update` is sent before `done`.
-- **Runs** (`Tests/1.run_cases`, task, `meta.kind = test`, `meta.units` the
-  units of the selection). The selection's nodes are resolved first (a
-  stale or non-runnable one refuses the call before acceptance with the
-  in-process message). The units a run **covers** are its selected nodes'
-  units, or for run-all (no `select`) every unit of the profile with tests
-  to discover (not `not_configured`, `foreign` or `no_tests`). Then, as the
-  plan of `lw test` (above): the build-directory locks of every covered
-  unit taken up front in canonical order and held across the build and the
-  test steps — within the daemon waiting in the build-directory operation
-  queue (§5.3, FIFO) behind another task of the same directory, so a second
-  editor's run waits for the first, and then behind a build or other task
-  of this daemon holding one of them, as discovery waits; a holder in
-  another process fails fast (§19.3). Before its build, a run first
-  **discovers** each covered unit whose tree is not current (as
-  "Discovery" above: not discovered yet in this session, or a configure,
-  build, clean or reset of it ended since — its tree is then stale), as
-  `Tests/1.discover` probes it (its `==> [discover]` line and outcome, its
-  record and the view's `update`), so an undiscovered unit is never
-  silently skipped and a stale tree's nodes run as the unit now has them: a
-  selected node the re-discovery no longer has ends the task with the
-  stale-reference message, and a unit whose discovery fails runs nothing
-  (its failure line; the task then ends 1). A selected node that has no
-  test command, or that the re-discovery made non-runnable, ends the task
-  with its message (the refusal before acceptance covers only the stale or
-  `runnable = false` nodes known at acceptance). Then, unless `no_build`, the
-  build of the selection's targets (each selected node's executable target
-  of its unit, as `{ project, target }` targets of `Build/1.build`; a unit
-  whose node has no single target, or run-all, builds the unit) with the
-  build-step sequence and its failure lines, then the test steps. Run-all
-  runs **per top-level node**: one structured run of each runnable
-  top-level node of every covered unit (the node's `test_command`, as a
-  selected `target` node runs), never a TestUnit's `test_command_all`. A
-  test step runs one TestUnit's structured harness (§8.9.2 `test_command`
-  through the owning TestUnit, §8.9.4), selected nodes of one executable
-  combined into one invocation where the TestUnit can filter them so, each
-  step announced
-  `==> [test] <project>: <name>` and spawned as a build step is (streamed,
-  cancellable). Each step writes its results file to its **own** path,
-  `<root>/.nvim/tmp/lw-test-<hex>.xml` (§16.40, removed once parsed; never a
-  fixed path in the build directory), so concurrent runs never share one.
-  The daemon reads the harness's per-case progress from the step's output
-  and sends it as `Tests/1` `results` (batched, at most about 4 per second);
-  on the step's end the results file is authoritative and its cases are
-  sent once more as `results`. The summary is `TESTS OK: <scope> (<n>
-  passed)` or `<k> of <n> tests failed` with exit 1; every step runs even
-  after one failed. A cancel kills the running step; its cases still
-  `queued` or `running` become unknown (their status removed, the earlier
-  last result not restored).
-- **Debug preparation** (`Tests/1.prepare_debug`, task, `meta.kind =
-  debug`). Exactly one runnable node (`select` a single `TestNodeRef`
-  object, not an array). The locks and build of a `run_cases`
-  of that node (the locks released when the task ends), then `done` carries
-  the `debug` spec (`loomworks.Common/1` `DebugSpec`) of the test step
-  `run_cases` would have run — program, arguments with the filter and the
-  results option (its own results file as above), working directory and
-  environment as that step's — with the language and adapters resolved as
-  "Debug" above (a saved `launch` entry's `debug` languages, otherwise the
-  primary language of the unit's module), and a `prepared` token. The
-  client runs the program under its debugger; a foreign kit or device target
-  is refused as "Debug" above. `Tests/1.collect { prepared }` (a call, not a
-  task) then parses that results file, records its cases as the nodes' last
-  results, removes the file, sends `results` and the view's `update`, and
-  returns the cases; a file that is missing (the session ended before the
-  program wrote it) records nothing for them. A `prepared` token is the
-  calling connection's: it is dropped, with its results file, by its
-  `collect`, by the connection's close, and when the daemon stops.
-- **Last results** (§19.13 "The tests view"): kept in the daemon's memory per
-  node for the session; a node's `Tests/1.result` answers its last output
-  (from the results file's per-case output, else the step's lines between
-  the case's start and end) and error locations as the TestUnit's parser
-  gives them. A re-discovery keeps the last result of a node whose `id`
-  survives.
-
-The batch `lw test` (`Tests/1.run`, above) is unchanged: native runners with
-an authoritative exit status, no per-case results, no `results` signal; it
-marks the view `stale` like any build. The CLI sends no `Tests/1.discover`,
-`run_cases` or `prepare_debug` in this step (`lw test --list` stays
-in-process, Routing).
-
-**Clean.** *(Step 5c.)* `clean { args, interactive, env, command }` — `lw
-clean [<profile>]` (§16.1: each project's build-system clean on the
-profile's build directories; the configuration is kept) — has the outcomes of
-`build`; `args` carries `profile`. It is also `refused`, with the in-process
-`nothing to clean for profile '<p>' …` line and its exit code, when the
-profile has no configured build directory to clean — decided after
-resolution and before any lock, as in-process. Its task's `meta.kind` is
-`clean`. An accepted request does, and prints, exactly what the in-process
-clean does: the build-directory locks of §16.6 taken **exclusive** up front in
-canonical order with the §19.5 record (holder kind `daemon`, operation
-`clean`; a dead holder's lock reclaimed and its state recovered as for a
-build), `cleaning profile: <p>`, one `==> [clean] <name>` line and step per
-project, and `CLEAN OK: <profile>`; a failing step ends the task with the
-in-process failure line and the step's exit code, the later steps not run.
-A **core-performed wipe** (§8.1 `wipe_build_dir`) runs in the daemon process
-as the SAME build-directory deletion as in-process (§4.6, §4.7; one path for
-both hosts), under the workspace operation lock taken before the
-build-directory locks (§19.3): the path is validated first (§4.6: non-empty,
-within the workspace root and never the root itself, links not followed, no
-command interpreter) — a refused path ends the task with the in-process
-`clean refused: unsafe build directory …` line; the clean's units sharing the
-directory are one deletion batch; the cache says `unknown` on disk before the
-tree is removed and the units are reset only after the removal succeeded; a
-directory still used by a configuration outside the clean is kept (the
-in-process `kept <dir> — still used by another configuration` line). The
-removal does not block the daemon's endpoint (pings, status and other
-clients are served while it runs). Cancelling during a wipe stops it between
-entries (`clean stopped: <reason>`); what was removed stays removed and the
-cache stays `unknown` (never reset after a partial removal, §4.7). The clean
-writes the cache exactly when the in-process clean does, and any write-back's
+**Clean.** *(Step 5c.)* The protocol-10 `clean { args, interactive, env,
+command }` request — `lw clean [<profile>]` (§16.1) — is the v0 alias of
+`Build/1.clean` ([API.md](../protocol/API.md) §8.4); `args` carries `profile`. In the daemon the
+build-directory locks carry the §19.5 record (holder kind `daemon`, operation
+`clean`), and a core-performed wipe runs in the daemon process as the SAME
+build-directory deletion as in-process (§4.6, §4.7; one path for both
+hosts), under the workspace operation lock taken before the build-directory
+locks (§19.3). The removal does not block the daemon's endpoint (pings,
+status and other clients are served while it runs). Any write-back's
 `model_change` precedes `done` (§19.16, End).
 
-**Reset.** *(Step 5d.)* `reset { args, interactive, env, command }`
-— `lw reset [<profile> | --all] [-y]` (§16.30: the profile's build
-directories, or with `--all` every build directory the workspace knows,
-orphaned ones included, removed from disk and their units returned to
-`unconfigured`; the profile is kept) — has the outcomes of `build`, plus
-`confirm`; `args` carries `profile`, `all`, `yes` (`-y` / `--yes`) and
-`plan`. The daemon plans the reset as in-process (§16.30: the directories to
-lock, the directories on disk to remove, whether cached state is cleared
-without a directory), after resolution and before any lock or side effect,
-and then answers:
-
-- with nothing to reset: `refused`, with the in-process `nothing to reset for
-  <scope> — no build directories to remove.` line and its exit code 0, and
-  `stream = "out"`: printed on standard output as in-process;
-- without `yes`: `confirm` (`lines`, `plan`, `profile_key` — absent for
-  `--all`; the client names the scope from it in its question and refusals)
-  — no lock taken, nothing changed. `lines` are the in-process listing (`Will remove N build
-  directories and reset <scope> to unconfigured:` and one line per directory,
-  or the line for cached state without a directory); `plan` is an opaque token
-  of the planned scope, lock set and removal set. The client prints the lines
-  on standard output and asks the user as in-process (Confirmation): a
-  non-interactive client prints the in-process refusal naming `-y` and exits
-  1; a declined prompt prints `aborted — nothing was removed` and exits 1; a
-  confirmed one sends `reset` again with `yes` and that `plan`;
-- with `yes` and a `plan`: the daemon plans again; a plan whose token differs
-  is `refused` (`the build directories to reset changed since they were
-  listed — run lw reset again`, exit 1) before any side effect — compared
-  before the nothing-to-reset check, so a listed plan whose directories
-  vanished is refused as changed, as in-process — so a reset
-  never removes a directory the user was not shown. An equal plan is
-  `accepted`, and its task prints no listing (the client printed it);
-- with `yes` and no `plan` (`-y` on the command line): `accepted`; the task
-  prints the listing first, as the in-process reset does before its deletion.
-
-Its task's `meta.kind` is `reset`; `meta.profile` is the profile's key, or
-absent with `meta.scope = "all"` for `--all`; `meta.units` are the planned
-units (for `--all` every configuration unit with a build directory; an
-orphaned directory has no unit and is not listed). An accepted reset does,
-and prints, exactly what the in-process reset does: the workspace operation
-lock taken first (§19.3, operation `reset`), then the build-directory locks
-of §16.6 for every directory of the lock set, **exclusive**, in canonical
-order with the §19.5 record (holder kind `daemon`, operation `reset`; a dead
-holder's lock reclaimed and its state recovered as for a build; a held one
-ends the task with the in-process refusal naming the holder, nothing
-removed). With every lock held and before anything is removed, the reset
-plans again and compares the token with the plan it listed: a directory that
-appeared or vanished in between (another process's build that finished and
-released before the locks were taken) ends the task with the same `the build
-directories to reset changed since they were listed — run lw reset again`,
-exit 1, the locks released and nothing removed. The removal is the SAME build-directory deletion as in-process
-(§4.6, §4.7; one path for both hosts): each path validated first; units
-sharing a directory are one deletion batch; the cache says `unknown` on disk
-before a tree is removed and the units are reset only after its removal
-succeeded; a directory still used by a configuration outside the reset is
-kept, its state cleared for the reset units only; `--all` then removes the
-orphaned directories by the same path. The reset then checks that every
-removed directory is gone from disk, waiting out a delete-pending directory
-for the in-process bound without blocking: a directory still present ends the
-task with the in-process `reset failed — N build directories could not be
-removed:` lines, a deletion that does not complete with `reset timed out — …`,
-both exit 1; success prints `RESET OK: <scope>`. The removal does not block
-the daemon's endpoint (pings, status and other clients are served while it
-runs). Cancelling during the removal stops it between entries (`reset
-stopped: <reason>`); what was removed stays removed and the cache stays
-`unknown` (never reset after a partial removal, §4.7); the locks are held
-until the removal has stopped and are then released, the operation lock last.
-A removal still running after its task ended (timed out) keeps the daemon
-busy — it neither idles out nor retires — until it settles, and a daemon that
-stops meanwhile asks it to stop between entries.
-The reset writes the cache exactly when the in-process reset does, and its
-write-back's `model_change` precedes `done` (§19.16, End).
+**Reset.** *(Step 5d.)* The protocol-10 `reset { args, interactive, env,
+command }` request — `lw reset [<profile> | --all] [-y]` (§16.30) — is the v0
+alias of `Build/1.reset` ([API.md](../protocol/API.md) §8.5); `args` carries `profile`, `all`, `yes`
+(`-y` / `--yes`) and `plan`. The CLI prints a `confirm`'s lines on standard
+output and asks the user as in-process: a non-interactive client prints the
+in-process refusal naming `-y` and exits 1; a declined prompt prints
+`aborted — nothing was removed` and exits 1; a confirmed one sends `reset`
+again with `yes` and that `plan`. In the daemon the workspace operation lock
+is §19.3's (operation `reset`) and the build-directory locks carry the §19.5
+record (holder kind `daemon`, operation `reset`); the removal is the SAME
+build-directory deletion as in-process (§4.6, §4.7; one path for both hosts)
+and does not block the daemon's endpoint (pings, status and other clients
+are served while it runs). A removal still running after its task ended
+(timed out) keeps the daemon busy — it neither idles out nor retires — until
+it settles, and a daemon that stops meanwhile asks it to stop between
+entries. The write-back's `model_change` precedes `done` (§19.16, End).
 
 **Editor scopes and configure.** *(Step 5k part B1: implemented on the
 daemon side — `daemon/core_interfaces.lua`, `daemon/service.lua`
 `_resolve_units`, `daemon/runner.lua`, `build_run.plan` /
 `overseer.plan_units_build`; the editor calls them from part C1.)* `Build/1` grows
 additively for the editor's actions (§19.16 "Editor operations"); its
-interfaces are still drafts, so this is no new version ([PROTOCOL.md](../protocol/PROTOCOL.md) §17.1). The CLI's requests are unchanged: a protocol-10 (v0) request
-carrying `units`, `jobs` or a `{ project, target }` item is `declined`
-(`malformed request`).
+interfaces are still drafts, so this is no new version ([PROTOCOL.md](../protocol/PROTOCOL.md) §17.1):
+`configure`, `units`, `jobs` and `{ project, target }` targets are [API.md](../protocol/API.md)
+§8.2–§8.3. `configure` configures as the editor's configure action does
+in-process, also a unit already configured, its locks carrying the §19.5
+record (holder kind `daemon`, operation `configure`); a `units` scope runs as
+the editor's unit actions run in-process, and an observer resolves its
+`meta.units` as for `reset --all` (§19.16 "Running state"); `jobs` is the
+editor's serial `-j1` build. The CLI's requests are unchanged: a protocol-10
+(v0) request carrying `units`, `jobs` or a `{ project, target }` item is
+`declined` (`malformed request`).
 
-- **`configure { profile | units, reconfigure, interactive, env, command }`**
-  — task-streamed, the outcomes of `build`, `meta.kind = configure`. It runs
-  the configure step of every unit of its scope — also one already
-  configured, as the editor's configure action does in-process — with the
-  gates of the build-step sequence that apply before a configure (the
-  validity and tool/configuration compatibility gates refuse as in-process)
-  and `reconfigure` meaning the full-reconfigure reset (§16.4). The
-  build-directory locks of §16.6 are taken **exclusive** up front in
-  canonical order with the §19.5 record (holder kind `daemon`, operation
-  `configure`; a dead holder's lock reclaimed as for a build). It prints
-  `configuring <scope>`, one `==> [configure] <name>` line and step per unit,
-  and `CONFIGURE OK: <scope>`; a failing step ends the task with the
-  in-process failure line and the step's exit code, the later steps not run.
-  It writes the configure record and the cache exactly as the in-process
-  configure does, the write-back's `model_change` before `done`. It
-  cancels as a build (`configure stopped: <reason>`).
-- **`units`** on `build`, `configure` and `clean` — a non-empty array, each
-  item `{ id }` (a configuration unit's id, e.g. a `view.ProjectsIndex/1`
-  record's `active.unit_id`) or `{ project, configuration }` (the project key
-  and configuration-unit key, as in `meta.units`); exclusive with `profile`
-  by key or by id (both → `invalid_args`; a unit that does not resolve → `refused` with the
-  in-process message). The scope is then those configuration units, each with
-  the tool its unit records, as the editor's unit actions run in-process —
-  the same steps, locks, gates and lines as for a profile, restricted to
-  them. Such a task's `meta.profile` is absent and `meta.units` lists the
-  units; an observer resolves them as for `reset --all` (§19.16 "Running
-  state"). `<scope>` in the lines above is `profile: <name>` (as in `building
-  profile: <name>`) or the units' `<project>/<configuration>` names,
-  comma-separated, and in the OK lines the profile's name or those names; a
-  unit's refusal reads `no configuration unit <project>/<configuration>
-  (unknown project or configuration)`, or for an id the stale-reference
-  refusal of a profile id. A scope with no configure step to run (a module
-  without one) prints `nothing to configure for <scope>` and ends 0, as the
-  editor's configure action does nothing for it. A unit with no tasks at all
-  — no module available, or its tool not detected on this machine — is not
-  that: the build or configure ends 1 before any step with
-  `cannot build: <project>/<configuration>: no tasks (unavailable module or
-  undetected tool)`, as the in-process unit configure refuses; a `clean` with
-  such a unit's tool undetected is refused as a profile's is, never skipping
-  the unit.
-- **`jobs`** on `build` — an integer ≥ 1: the build tool's parallelism for
-  this build only (the editor's serial `-j1` build), passed to the module as
-  the in-process build passes its parallel-jobs option (`-- -j<jobs>`, or
-  `-j<jobs>` right after a `--` the step's arguments already carry).
-- **`targets`** items may be `{ project, target }` besides a string: that
-  target of that project only. A string keeps its meaning (`--target`,
-  §16.4); a bare name in the known target lists of several units of one
-  project is that project's, not ambiguous. A project the scope does not build ends the task before any step
-  with `target '<t>' names project '<p>', which <scope> does not build`
-  (exit 1), as an ambiguous `--target` does.
+**Confirmation.** A daemon never prompts ([API.md](../protocol/API.md) §8.6).
 
-**Confirmation.** A daemon never prompts. An operation whose in-process form
-asks the user before acting (a confirmation, a picker) either is `declined`
-for that form (profile onboarding, above) or is asked by the client before it
-sends the request, the request then carrying the answer. `reset` is the only
-routed operation that asks one: the daemon returns what the question shows
-(`confirm`, Reset) and the answer travels with a token of what was shown, so
-the daemon acts only on the plan the user confirmed.
+**Environment.** A routed build behaves as if the client process had run it,
+as [API.md](../protocol/API.md) §5 specifies: the client sends its whole environment and the daemon
+applies it to the operation and to nothing else. In the daemon:
 
-**Environment.** A routed build behaves as if the client process had run it.
-The client sends its **whole environment** with the request; the daemon
-applies it to the operation and to nothing else:
-
-- every piece of model work for the request (the live-workspace sync or
-  reload, argument resolution, planning, gates, cache write-back) runs with
-  the daemon's process environment switched to the client's (on Windows
-  keeping `NoDefaultCurrentDirectoryInExePath=1`, §5.10, when the client's
-  lacks it) and restored afterwards — so `${VAR}` expansions, tool and program resolution on `PATH`
-  and probes the module spawns see the client's values. These pieces run one
-  at a time (a FIFO), so two clients never see each other's environment;
-- each step is spawned with exactly the client's environment plus the step's
-  own variables (§8.1, on Windows replacing a name that differs only in case)
-  — never the daemon's launch environment, whose loomworks-internal variables
-  (`LOOMWORKS_LUA`, `LW_ROOT`) therefore do not leak into builds;
+- every piece of model work for the request runs with the daemon's process
+  environment switched to the client's (on Windows keeping
+  `NoDefaultCurrentDirectoryInExePath=1`, §5.10, when the client's lacks it)
+  and restored afterwards. These pieces run one at a time (a FIFO), so two
+  clients never see each other's environment;
+- a step never gets the daemon's launch environment, whose
+  loomworks-internal variables (`LOOMWORKS_LUA`, `LW_ROOT`) therefore do not
+  leak into builds;
 - the daemon's workspace model is kept for the environment it was loaded in:
   a request whose environment differs reloads the workspace from disk first,
   as an in-process load in that environment would read it; while another
@@ -2473,17 +1913,10 @@ applies it to the operation and to nothing else:
   `vcvarsall` variables), and a variable missed by a list of what to compare
   would build with a model read in another environment.
 
-The whole environment is sent because a subset cannot be chosen safely:
-compiler, SDK and `vcvarsall` variables (`INCLUDE`, `LIB`, `WindowsSdkDir`,
-`VCToolsInstallDir`, …), cache tools and `${VAR}` references in the
-configuration can use any name, and an in-process build inherits them all.
-It may contain secrets; it never leaves the machine: it is sent only after
-the mutual authentication of §19.8, over the owner-only endpoint of §19.7, to
-a process of the same user, is held in memory for the request only, and is
-never written to the runtime log, the handle or any workspace file. The
-client's working directory is not sent: the client resolves the workspace
-root, and every step runs in its own absolute directory (the step's, or the
-root) on both paths.
+The environment never leaves the machine: it is sent only after the mutual
+authentication of §19.8, over the owner-only endpoint of §19.7, to a process
+of the same user, is held in memory for the request only, and is never
+written to the runtime log, the handle or any workspace file.
 
 **Live workspace.** The daemon loads its workspace on its first operation,
 or when an editor attaches (§19.16 "Loaded on attach") (the same load as the in-process path) and keeps it. Its file tracker does
@@ -2495,17 +1928,15 @@ waits for a tool rescan a changed `loomworks.json` started. It then resolves
 arguments as the in-process host does (§16.9; the same matcher, the same
 messages, the client's interactivity).
 
-**Cancellation.** An operation belongs to its client. When that client
-disconnects (`lw` ending on Ctrl-C — see Task ownership for when that is —
-drops the connection, which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
-retire, root removed, lost lock), or the workspace or the operation's subject
-is unloaded/removed, the daemon terminates the running step's process tree
-(identity-verified by process id and start time, §19.5), records nothing for
-that step, releases its locks and ends the task nonzero (`build stopped:
-<reason>`; `test stopped: <reason>` for a test run; `run stopped: <reason>`
-for a run's preparation, `debug stopped: <reason>` for a debug's;
-`configure stopped: <reason>` for a configure; `clean stopped: <reason>` for
-a clean; `reset stopped: <reason>` for a reset). A client that loses the connection
+**Cancellation.** An operation belongs to its client; when a task ends early
+and how is [API.md](../protocol/API.md) §7.2. The daemon cancels it when that client disconnects (`lw`
+ending on Ctrl-C — see Task ownership for when that is — drops the
+connection, which is the cancellation, and exits 130), when the daemon stops
+(`lw daemon stop`, idle, retire, root removed, lost lock), or when the
+workspace or the operation's subject is unloaded/removed; it terminates the
+running step's process tree identity-verified by process id and start time
+(§19.5).
+A client that loses the connection
 after its operation was accepted follows [PROTOCOL.md](../protocol/PROTOCOL.md) §14.5 (for a run: it starts no
 program). Cancellation ends with the task: a run's program,
 started after it, is never the daemon's to stop (Run). A
@@ -2570,27 +2001,12 @@ implemented, part A; the task-streamed methods (`start.meta` naming the
 method, `done.result`), part B; the observation bound to the subscription,
 step 5g.3 (`tasks.lua` `Task:_observes`).)* The task stream is a
 **transport** mechanism ([PROTOCOL.md](../protocol/PROTOCOL.md) §14), not part of any one interface. The
-task-streamed methods are `Build/1.build`, `Tests/1.run`,
-`Launch/1.prepare_run`, from step 5k `Build/1.configure` and
-`Launch/1.prepare_debug`, from step 5t `Launch/1.build`, and a module's log
-stream. Each method's schema types the task's `start.meta` and its
-`done.result` (for `prepare_run` the launch spec, for `prepare_debug`
-the debug spec, for a test run its
-structured results: `steps`, one `{ name, exit_code, status }` per test step
-run, and the `junit` files written; per-case results come later as an
-optional field). The outcomes of the operations (`accepted`, `refused`,
-`declined`, `confirm`) are unchanged; they are domain results of the method,
-not errors (§19.20).
-
-- **Observation, late joining and cancel** are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.6, with
-  `loomworks.Tasks/1` on `/tasks` as the task interface. A connection of
-  protocol 10 keeps receiving every task's frames as today. Nothing earlier
-  than joining is replayed (no `attach` method; BACKLOG "Daemon task output
-  replay").
-- `loomworks.Tasks/1.list` gives the running tasks to an interface client
-  (from step 5t with the steps of a target-scoped task and their current
-  states, "Steps of a task" above); `status.tasks` (§19.11) stays as it is,
-  frozen.
+task-streamed methods, their task results and `loomworks.Tasks/1` are
+[API.md](../protocol/API.md) §7: `Build/1.build`, `Tests/1.run` and `Launch/1.prepare_run` from step
+5g.2, `Build/1.configure` and `Launch/1.prepare_debug` from step 5k,
+`Launch/1.build` from step 5t, and a module's log stream. A connection of
+protocol 10 keeps receiving every task's frames as today. `status.tasks`
+(§19.11) stays as it is, frozen.
 
 **Routing.** A client routes an operation to the daemon only when the daemon
 carries every argument form the client was given; any other form runs on the
@@ -2998,7 +2414,7 @@ too old".
 
 **Editor operations.** *(Step 5k, plan: part 0 this spec; B1 and B2 the
 daemon side, §19.15 "Editor scopes and configure", "Debug", "Build scope of a
-launch", §19.20 `DebugConfig/1`; C1 the calls, task runner and cancellation;
+launch", [API.md](../protocol/API.md) §12; C1 the calls, task runner and cancellation;
 C2 run and debug through preparation and the debug adapters.)* In `daemon`
 mode, while connected to a compatible daemon, the editor runs these
 operations as **interface calls**, owning their tasks (§19.15 "The editor as
@@ -3009,7 +2425,7 @@ owner"):
 - *(step 5t)* the build of a non-device launch target (`Launch/1.build`; the
   editor's *Build default target*), as one owned task — its dependencies, its
   pre-build deploy and its own build never run in the editor; its progress
-  entry follows the task's current step (§19.15 "Steps of a task"). The
+  entry follows the task's current step ([API.md](../protocol/API.md) §4.3). The
   artifact-conflict question is asked before the call, over the units it
   builds, and its answer sent as `force`;
 - configures — of a profile or of units (`Build/1.configure`);
@@ -3109,12 +2525,12 @@ serialize its operations with a daemon's.)*
 
 **LSP configuration.** *(Step 5l, plan: part 0 this spec; A the
 host-neutral builder of the state, in-process only; B the daemon side,
-§19.20 `LspConfig/1`; C the editor side.)* In `daemon` mode what the
+[API.md](../protocol/API.md) §13; C the editor side.)* In `daemon` mode what the
 editor's language servers are configured with — each project's
 `lsp_configs` entries with their `db_state` (§9.1), the working copy's
 per-server options (§2, `user.json` `lsp`), and whether the active profile's
 owned databases are ready (§9.7) — comes **only** from the workspace daemon,
-as `LspConfig/1.get` answers it (§19.20). There is no in-process fallback:
+as `LspConfig/1.get` answers it ([API.md](../protocol/API.md) §13). There is no in-process fallback:
 the editor never builds that state itself — it does not call `lsp_configs`,
 derive a `db_state`, read options from its own model, generate or scan an
 owned database, or map a buffer to a project other than by `lw.buf_project`
@@ -3182,7 +2598,7 @@ an entry's server binary resolves as the editor would run it.
   (§8.4 `refresh_lsp_database`): the editor's model never does — not at its
   startup scan, not after a task, not on a watched path — whether or not the
   state is in use. A database the daemon (re)writes reaches the editor as a
-  raised `db_rev` on its entry (§19.20), on which the editor runs the
+  raised `db_rev` on its entry ([API.md](../protocol/API.md) §13), on which the editor runs the
   owned-database completion handling of §9.8 for that entry.
 - **Re-evaluation.** When a read gives entries or options that differ from
   the ones in use, or the state starts or stops being in use, the editor
@@ -3212,7 +2628,7 @@ never used in `daemon` mode.
 **Tests.** *(Step 5m, plan: part 0 this spec; A the host-neutral builder of
 the view and loomtest's adapter-executed runs, in-process only; B1 the
 daemon's discovery and view, B2 its runs, debug preparation and results,
-§19.20 `Tests/1`, §19.13 "The tests view"; C1 the editor's read path, C2 its
+[API.md](../protocol/API.md) §10, §14.3; C1 the editor's read path, C2 its
 runs and debug.)* In `daemon` mode the editor computes nothing about tests:
 it does not discover them, build or run a test program, parse a test
 program's output or results file, match a test to a build target, or keep
@@ -3222,7 +2638,7 @@ progress); discovery, runs and debug preparations are `Tests/1` calls. The
 test explorer, its gutter signs and inline marks (LOOMTEST.md) are the
 editor's — rendering, navigation, the cursor's test, the output window.
 
-- **Discovery.** `Tests/1.discover` is a task (§19.20), owned by the editor
+- **Discovery.** `Tests/1.discover` is a task ([API.md](../protocol/API.md) §10.2), owned by the editor
   like an operation's ("Tasks in the task runner" above: one overseer row,
   cancellable, its one progress entry), carrying the editor's whole
   environment at call time (§19.15 "Environment"). The editor sends it only
@@ -3291,7 +2707,7 @@ path is never used in `daemon` mode.
 task, not one per step: a profile build is one entry whose output carries the
 `==> [build] <project>` lines, where in-process it is one entry per project;
 the units' states come from `meta.units` (Running state below). *(Step 5t:)*
-a task carrying steps (§19.15 "Steps of a task") keeps its one entry, which
+a task carrying steps ([API.md](../protocol/API.md) §4.3) keeps its one entry, which
 follows the task's current step.
 
 - An **editor-owned** task is a task-runner task whose start is the call,
@@ -3749,7 +3165,7 @@ terminal). It runs none of the editor's own operations; where those run is
     from that moment; a task already ended is never shown. `status.tasks`
     carries no steps (frozen, §19.15): when it adopted a task and is
     subscribed to `/tasks`, the observer reads `Tasks/1.list` once and adopts
-    the steps and current states it gives (§19.15 "Steps of a task"); later
+    the steps and current states it gives ([API.md](../protocol/API.md) §4.3); later
     `step` signals are deltas on top of them. `/tasks` signals that arrive
     before the subscribe reply are held, then applied only past its `seq`
     baseline (§19.12).
@@ -4230,31 +3646,12 @@ naming and reserved namespaces, objects as services, the root object
 `loomworks.Root/1`, per-call version choice and `same_build`, the message
 envelope (`call`, `ok`, `error`, `signal`, `task`), the transport error codes
 and the rule that a mutating method's reply is never turned into an error
-are specified in [PROTOCOL.md](../protocol/PROTOCOL.md) §2, §8–§11. This section adds what is specific to
-loomworks:
-
-- **Entities.** The data layer's entities are profiles, projects,
-  configurations, configuration units, launches, tasks, devices and build
-  directories, each with its opaque `id` (§19.12) and its `key` / `label`.
-- **Views.** Each editor view is an interface of its own
-  (`loomworks.view.<Name>`), versioned on its own.
-- **Objects.** The core services are `/workspace`, `/profiles`, `/projects`,
-  `/build`, `/tests`, `/launch`, `/lsp`, `/debug`, `/tasks`, `/toolchains`,
-  `/devices`, `/health`, `/maintenance`, `/views`, `/internal`, and
-  `/modules/<id>` for each module. A module's namespace is its module id.
-- **Root.** `describe().binary` is `{ lw_version, impl, dev }`; an object's
-  `owner` is `core` or the module id; `delivery = "subscription"` is step
-  5g.3. The root's `objects_changed` reports a module loaded or the workspace
-  loaded or unloaded, and `retiring` is §19.11's. A daemon that has not loaded
-  its workspace lists the objects that need none.
-- **Environment.** `env` is an envelope field because every method that
-  touches the model runs in it, under the one environment-scope rule of
-  §19.15 (Environment).
-- **Domain results.** The operations' outcomes — `accepted`, `refused` (with
-  message and exit code), `declined` (with reason), `confirm` (with lines and
-  plan) — are a union every interface shares (`loomworks.Common/1`).
-  `not_loaded` means loading the workspace failed; its `data` carries the
-  header's `state` and `error` (§19.13).
+are specified in [PROTOCOL.md](../protocol/PROTOCOL.md) §2, §8–§11. The loomworks interface suite
+on top of it — the entities and references, the objects, the root's `binary`
+and `owner`, the shared types and outcomes, the environment and every
+interface version that has a schema — is specified in [API.md](../protocol/API.md). This section adds
+what is specific to this implementation and its roadmap. The root's
+`retiring` is §19.11's.
 
 **The CLI's calls.** Over transport 11 the CLI sends its operations and
 reads as interface calls (`daemon/calls.lua`) and acts on a transport error
@@ -4267,22 +3664,20 @@ unknown code — for a mutating method, which may have started, the command
 fails with exit 1 and is never run a second time in-process; for any other
 method it runs in-process.
 
-**References.** A request names an entity by a reference, `{ id }` or
-`{ key }`. The editor sends ids taken from results and views; the CLI sends
-the key the user typed, which the daemon resolves exactly as the in-process
-command does (same messages and exit codes).
+**References.** References (`{ id }` or `{ key }`) are [API.md](../protocol/API.md) §1.2. The
+editor sends ids taken from results and views; the CLI sends the key the
+user typed, which the daemon resolves with the in-process matcher (§16.9).
 
 **Signals, subscriptions and tasks.** Subscriptions, `initial` state,
 `seq` and session generation, and the task stream of task-streamed methods
 (ownership, back-pressure, observer bounds, disconnect-cancellation; only the
-owner may cancel) are [PROTOCOL.md](../protocol/PROTOCOL.md) §12–§14. Every view's signals declare `initial`, so
-subscribing after a reconnect re-hydrates the client. Observers subscribe to
-`loomworks.Tasks/1`. From transport 11 a `task_id` and a `sub_id` are opaque
-strings (`loomworks.Common/1` `TaskId`); a connection of protocol 10 keeps its
-integer task ids ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A).
+owner may cancel) are [PROTOCOL.md](../protocol/PROTOCOL.md) §12–§14; the task interface `loomworks.Tasks/1`,
+the task meta and the task ids are [API.md](../protocol/API.md) §4.2 and §7.
 
 **Interface catalogue.** The first versions of the core interfaces, landed by
-the steps of §19.19. Their schemas, not this table, are the full contract.
+the steps of §19.19. Their schemas, not this table, are the full contract;
+[API.md](../protocol/API.md) specifies the versions that have a schema, and the other rows are the
+roadmap.
 
 | Object | Interface | Methods (signals); T = task-streamed |
 |--|--|--|
@@ -4310,164 +3705,43 @@ the steps of §19.19. Their schemas, not this table, are the full contract.
 An interface whose surface grows unwieldy is split at its next version without
 disturbing the clients of the others.
 
-`Tasks/1` has no `attach`: a late joiner subscribes with a `task_id` or
-adopts what `list` returns, and receives output from then on (§19.15 "Tasks
-of interface methods"); replaying a task's earlier output is BACKLOG
+Replaying a task's earlier output (`Tasks/1` has no `attach`) is BACKLOG
 ("Daemon task output replay").
 
-**`DebugConfig/1`.** *(Step 5k, part B2: implemented, daemon side.)* The workspace's debug-adapter
-mapping (§8.9.6 "Adapter configuration"), on `/debug`:
-
-- `adapters {}` → `{ languages: [{ language, adapter, default, known,
-  overridden }] }` — one record per known language (`known_languages`): the
-  adapter in effect, the integration's default, the adapters known for the
-  language (`known`, from the integrations' declarations, never from the
-  client's debugger), and whether the working copy overrides the default;
-- `set_adapter { language, adapter? }` — sets the language's adapter in the
-  working copy (`user.json` `debug.adapters`, never `loomworks.json`), or,
-  with no `adapter`, removes the override so the default applies; written
-  as the in-process `Workspace:set_debug_adapter` writes it, under the model
-  lock, with a `model_change` (§19.12). The adapter name is stored as given,
-  as in-process (a client's picker offers `known`). A write that is refused
-  (a stale working copy, §2.7, or one that is not trusted) or fails changes
-  neither `user.json` nor the model, and is the `refused` result with its
-  message;
-- `known_languages {}` → `{ languages: [..] }` — every language a module or
-  integration declares (§8.9.6 "Language-based adapter resolution").
-
-It has no signal of its own: a change reaches subscribers as `Workspace/1`
-`changed`, on which a client reads `adapters` again. Whether an adapter is
-installed is the client's question (its debugger's adapter table, the
-install hint), never the daemon's.
+**`DebugConfig/1`.** *(Step 5k, part B2: implemented, daemon side.)* The
+workspace's debug-adapter mapping, on `/debug`, specified in [API.md](../protocol/API.md) §12.
+`set_adapter` writes as the in-process `Workspace:set_debug_adapter` writes,
+under the model lock, with a `model_change` (§19.12), and stores the adapter
+name as given, as in-process.
 
 **`LspConfig/1`.** *(Step 5l, plan: part B.)* What the workspace's language
-servers are configured with (§9; the editor's use: §19.16 "LSP
-configuration"), on `/lsp`:
-
-- `get {}` → `{ state, ready, projects: [{ project, id?, path, entries }],
-  options }`, computed with the caller's environment (§19.15
-  "Environment"). `state` is the workspace's, as in `view.Header/1`
-  (`loaded`, `unloaded`, `error`, `refused`); `ready` is whether the active
-  profile's owned databases have settled (§9.7; also true when there is no
-  active profile or nothing to generate). `projects` are in ascending key
-  order (the workspace-entry rule of §9.8 depends on it), each with its key,
-  its opaque `id` (only from the daemon, as in the views, §19.13), its path
-  relative to the root and the entries its module's `lsp_configs` gives
-  (§8.4). `options` are the working copy's per-server options (§2,
-  `user.json` `lsp`) as `{ [server]: { [key]: value } }`. `get` never loads
-  the workspace: in any state but `loaded` it answers with that `state`,
-  `ready = false`, no projects and no options.
-- An **entry** carries the core fields `server`, `root_dir`, `db_state`
-  (`ready` or `unconfigured`, §9.1), `db_dir` and `db_rev`, and passes every
-  other field of the module's entry through unread (a module's own
-  `build_dir` among them): the schema requires the core fields and allows any
-  others, which core never types. `db_dir` is the directory whose owned
-  database the entry reads: the module's when it sets one (a redirect to
-  another unit's database, §8.4), else the project's active build directory;
-  absent when there is neither. `db_rev` is an integer, kept per `db_dir`,
-  raised each time the daemon (re)writes that directory's owned database
-  (§8.4 `refresh_lsp_database`'s `done(true)`), so a database that went from
-  absent to present shows although no other field changed. Withhold reasons
-  (§9.8) are not in the state: deciding them from `db_state` and the entry
-  is the client's integrations' job.
-- `set_option { server, key, value? }` → `{}` — sets the server's option in
-  the working copy (`user.json` `lsp`, never `loomworks.json`), or, with no
-  `value`, removes it; written as the in-process `Workspace:set_lsp_option`
-  writes it, under the model lock, with a `model_change` (§19.12). A write
-  that is refused (a stale working copy, §2.7, or one that is not trusted) or
-  fails changes neither `user.json` nor the model, and is the `refused`
-  result with its message. An unknown server or key, or a value whose type
-  (or enum value, or list element type) the server's option schema does not
-  accept, is `invalid_args`, before anything is loaded or written; the
-  in-process `Workspace:set_lsp_option` refuses the same calls the same way,
-  writing nothing. (Unlike `DebugConfig/1.set_adapter`, whose adapter name is
-  stored as given: an option's schema is core's, so a client cannot know
-  better.)
-- Signal `changed { seq }` — carries no state. It is sent when the state the
-  daemon computes with its own environment differs from the one at its last
-  `changed` (checked where the views' `update` is, §19.13: after each model
-  segment and committed write), and when an owned database is written (a
-  raised `db_rev`). It has no `initial`: a client reads `get` after
-  subscribing, and again, with its own environment, on each `changed` and on
-  `Workspace/1` `changed` (a difference visible only under the client's
-  environment is not signalled). The state is whole, so a missed `changed`
-  is recovered by the next read.
+servers are configured with (the editor's use: §19.16 "LSP configuration"),
+on `/lsp`, specified in [API.md](../protocol/API.md) §13. Project ids in `get` come only from the
+daemon, as in the views (§19.13). `set_option` writes as the in-process
+`Workspace:set_lsp_option` writes, under the model lock, with a
+`model_change` (§19.12); the in-process `Workspace:set_lsp_option` refuses
+the calls `set_option` answers with `invalid_args` the same way, writing
+nothing.
 
 **`Tests/1`.** *(Step 5m, plan: B1 `discover`, B2 the rest; the shared
 types `TestNodeRef`, `TestCaseResult` and `TestStatus` in
 `loomworks.Common/1`, the view `loomworks.view.Tests/1`, specified in part
-0.)* The editor's test discovery, runs and debug preparations (§19.15
-"Tests", §19.16 "Tests"), on `/tests` beside the batch `run`, additively
-(the interface is a draft, so no new version). Every method acts on the
-active profile and names nodes by their view ids (`{ id }`, a
-`TestNodeRef`); a stale id is `refused` with the in-process "no such test"
-message, before acceptance. All of them carry the caller's environment
-(`needs_env`):
-
-- `discover { force? }` — task-streamed (`meta.kind = discover`), the
-  outcomes of `build`; `done.result` `{ exit_code, error?, tests, failed }`:
-  the number of tests of the profile's units after discovery (their
-  discovered entries no other entry is the parent of: the cases, and the
-  targets without cases) and of units whose discovery failed. `force` re-probes units whose tree is
-  current.
-- `run_cases { select?, no_build?, extra? }` — task-streamed (`meta.kind =
-  test`, `meta.units`), the outcomes of `build`. `select` (non-empty array of
-  `TestNodeRef`, runnable nodes): a `target` node runs its executable whole,
-  a `suite` or `test` node with a filter; absent: every runnable top-level
-  node of every unit of the profile, each its own step, the units not
-  discovered yet (or stale) discovered first (the editor's run-all,
-  §19.15 "Tests"). `no_build` skips the build; `extra` are arguments appended to every test step's program.
-  `done.result` `{ exit_code, error?, cases, counts }`: `cases` an array of
-  `TestCaseResult` (every case the run reported, in report order), `counts`
-  `{ passed, failed, skipped, errored }`. The run's result carries
-  `discovery_error` when a covered unit's discovery failed.
-- `prepare_debug { select, no_build? }` — task-streamed (`meta.kind =
-  debug`), the outcomes of `build`; `select` a single `TestNodeRef` object
-  (one runnable node; not an array, unlike `run_cases`).
-  `done.result` `{ exit_code, error?, debug?, prepared? }`: on success the
-  `DebugSpec` and the opaque `prepared` token.
-- `collect { prepared }` → `{ cases }` (an array of `TestCaseResult`, empty
-  when the program wrote no results), or `refused` for a token this
-  connection does not hold (already collected, or of a closed connection);
-  mutating (it records the last results).
-- `result { id }` → `{ id, status?, duration?, message?, output?,
-  truncated?, errors }` — the node's last result (§19.15 "Tests"): `output`
-  its captured output (at most its last 256 KiB, `truncated` then true),
-  `errors` an array of `{ message, file?, line? }` (absolute,
-  `/`-separated paths). A node with no last result answers only `id` and an
-  empty `errors`; a stale id is `refused`.
-- Signal `results { seq, task_id?, cases }` — the per-case progress of a
-  running `run_cases` (any client's) and the cases a `collect` recorded
-  (`task_id` then absent): `cases` an array of `TestCaseResult`, each with
-  its current `status` (`queued`, `running`, `passed`, `failed`, `skipped`,
-  `errored`). Sent to every subscriber of `/tests`, batched (at most about
-  4 per second per run), never `initial`. It is a delta on top of
-  `view.Tests/1`: a client applies it to its copy of the view, and on a `seq`
-  gap (§19.12) or a new session generation it calls `view.Tests/1.get`,
-  whose state already includes every change `results` carried. A run's last
-  `results` precedes the view `update` that ends it.
-
-A `TestCaseResult` is `{ id, status, duration?, message? }` (`duration` in
-milliseconds, `message` the first failure line). `TestStatus` is the enum
-above; a client shows an unknown status as neutral.
+0.)* The editor's test discovery, runs and debug preparations, on `/tests`
+beside the batch `run`, additively (the interface is a draft, so no new
+version), are specified in [API.md](../protocol/API.md) §10; the daemon side is §19.15 "Tests", the
+editor's use §19.16 "Tests".
 
 A per-file compile-command query (§8.4 `compile_command_for`) is not part of
 `LspConfig/1` (BACKLOG "Per-file compile command over the daemon").
 
-**Module interfaces.** A module provides an interface only for a feature core
-has no abstraction for (a device log stream, signing setup); a feature core
-abstracts (devices, toolchains, build steps) reaches clients through the core
-interface, which the module feeds through the module interface of §8. A Lua
-module declares its interfaces in its module table (`interfaces`: per
-interface name and version, the path of its schema relative to the plugin, its
-method handlers and its signals); its schemas ship with the module. When the
-module is loaded (§8.0), each declared interface version is mounted on
-`/modules/<id>` only if every method in its schema has a handler and every
-handler a method in its schema; a mismatch rejects that interface version, not
-the module, and is reported by `lw health`. Handlers receive a context
+**Module interfaces.** A module's interfaces — its namespace, the mount rule
+and rejection per interface version — are [API.md](../protocol/API.md) §16. A Lua module declares its
+interfaces in its module table (`interfaces`: per interface name and version,
+the path of its schema relative to the plugin, its method handlers and its
+signals); they are mounted when the module is loaded (§8.0), and a rejected
+interface version is reported by `lw health`. Handlers receive a context
 (environment, reply, task start, signal emission, reference resolution),
-never the connection. The wire version of a module interface is independent of
-the in-process module API version (§8.0).
+never the connection.
 
 **Providers (reserved).** A daemon not written in Lua hosts modules out of
 process through providers ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex B), which own `/modules/<id>`.
@@ -4492,14 +3766,8 @@ is also logged (PROTOCOL.md §11.3). The released versions whose snapshots
 `frozen/` keeps (PROTOCOL.md §16.5) are those a stable release shipped.
 
 **Transcripts.** The transcript format, the runner's steps, matchers and
-checks are [PROTOCOL.md](../protocol/PROTOCOL.md) §18. The fixtures the runner prepares (`fixture`) are `empty`,
-the default; `shell`, a shell project `app` with configuration `Debug`, the
-configuration set and trusted profile `dev` and a launch configuration
-`hello` — from step 5t also a project `lib` outside the set and a launch
-configuration `staged` depending on it; and `tests`, that project as one of
-the harness-only test module `teststub` with two test targets and `dev`
-active (step 5m). The runner binds `lw_version`, `env` and `root` before the
-handshake.
+checks are [PROTOCOL.md](../protocol/PROTOCOL.md) §18; the fixtures the runner prepares (`fixture`) are
+[API.md](../protocol/API.md) §17.
 
 **Versions and deprecation.** Tolerance of unknown values, new interface
 versions and the support window are [PROTOCOL.md](../protocol/PROTOCOL.md) §17. The daemon serves a

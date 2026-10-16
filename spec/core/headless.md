@@ -4389,7 +4389,7 @@ Every removal by housekeeping and `lw cleanup` follows these rules:
 `lw version --json` prints the **binary descriptor**: what this lw implements,
 for a program that has to decide whether it can use a binary before starting a
 daemon with it (the editor's quick pre-check, §19.16; authoritative is
-`Root.describe` after connecting, §19.20). It is a host command (§16.23: it
+`Root.describe` after connecting, [API.md](../protocol/API.md) §3). It is a host command (§16.23: it
 never redirects), needs no workspace and starts no daemon. It describes the
 system Lua this invocation resolved (§16.11) — the release bundle, the pinned
 bundle in pinned context, a development source — so a host with no system Lua

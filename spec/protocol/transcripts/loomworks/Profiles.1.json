@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Profiles",
   "version": 1,
-  "description": "Object /profiles (spec 19.14, 19.20): compiler_cache, with references by key and by id.",
+  "description": "Object /profiles (API.md §11): compiler_cache, with references by key and by id.",
   "cases": [
     {
       "name": "compiler_cache answers for a mapped project, by key and by id",

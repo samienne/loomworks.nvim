@@ -70,7 +70,7 @@ their `db_state`, the directory whose owned database each reads (`db_dir`,
 §8.4) and that database's revision, the per-server options (§2,
 `user.json` `lsp`), and whether the active profile's owned databases are
 ready (§9.7). In `daemon` mode it comes **only** from the workspace daemon
-(`loomworks.LspConfig/1`, daemon.md §19.16 "LSP configuration", §19.20),
+(`loomworks.LspConfig/1`, daemon.md §19.16 "LSP configuration", [API.md](../protocol/API.md) §13),
 fetched with the editor's environment; the editor never builds it, calls
 `lsp_configs`, derives a `db_state`, reads options from its own model or
 generates an owned database, and there is no in-process fallback — while
@@ -664,7 +664,7 @@ runner"). Progress, cache write-back and unit state come from the daemon
 (the task stream and `model_change`), not from `task_tracker`.
 *(Step 5t: implemented, part C.)* The build of a non-device launch target is one such task
 (`Launch/1.build`), not one per dependency; its progress follows the task's
-current step (daemon.md §19.15 "Steps of a task").
+current step ([API.md](../protocol/API.md) §4.3).
 
 ---
 

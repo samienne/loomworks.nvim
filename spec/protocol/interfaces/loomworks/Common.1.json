@@ -3,7 +3,7 @@
   "version": 1,
   "status": "draft",
   "types_only": true,
-  "description": "Types shared by every core interface (spec 19.20): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
+  "description": "Types shared by every core interface (API.md §4): references, ids, the domain outcome union, the client environment, the launch and debug specs, the task meta and the test node reference and case result (step 5m). Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
   "methods": {},
   "$defs": {
     "Id": {
@@ -32,7 +32,7 @@
       ]
     },
     "Environment": {
-      "description": "The client's environment (spec 19.15 Environment), sent as the envelope's env.",
+      "description": "The client's environment (API.md §5), sent as the envelope's env.",
       "type": "object",
       "additionalProperties": { "type": "string" }
     },
@@ -80,7 +80,7 @@
       }
     },
     "Outcome": {
-      "description": "The domain result every operation shares (spec 19.20; PROTOCOL.md §11.1). Clients tolerate an unknown outcome.",
+      "description": "The domain result every operation shares (API.md §4.1; PROTOCOL.md §11.1). Clients tolerate an unknown outcome.",
       "oneOf": [
         { "$ref": "#/$defs/Accepted" },
         { "$ref": "#/$defs/Refused" },
@@ -89,7 +89,7 @@
       ]
     },
     "LaunchSpec": {
-      "description": "A resolved launch (spec 19.15 Run): the program the client runs.",
+      "description": "A resolved launch (API.md §4.4): the program the client runs.",
       "type": "object",
       "required": ["cmd", "args", "cwd"],
       "properties": {
@@ -105,7 +105,7 @@
       }
     },
     "DebugSpec": {
-      "description": "A resolved debug launch (spec 19.15 Debug): the program the client's debugger starts, resolved exactly as the run's launch of the same target and arguments, with the debug languages and their adapters.",
+      "description": "A resolved debug launch (API.md §4.4): the program the client's debugger starts, resolved exactly as the run's launch of the same target and arguments, with the debug languages and their adapters.",
       "type": "object",
       "required": ["program", "args", "cwd", "language", "adapters"],
       "properties": {
@@ -134,7 +134,7 @@
       }
     },
     "TaskEnd": {
-      "description": "The task result every task-streamed method's result extends (spec 19.15): the exit code the client ends with and the failure it prints as lw: <error>.",
+      "description": "The task result every task-streamed method's result extends (API.md §4.2): the exit code the client ends with and the failure it prints as lw: <error>.",
       "type": "object",
       "required": ["exit_code"],
       "properties": {
@@ -143,7 +143,7 @@
       }
     },
     "TaskMeta": {
-      "description": "The start meta of a task frame (spec 19.15).",
+      "description": "The start meta of a task frame (API.md §4.2).",
       "type": "object",
       "properties": {
         "name": { "type": "string" },
@@ -156,14 +156,14 @@
         "v": { "type": "integer" },
         "method": { "type": "string" },
         "steps": {
-          "description": "The step plan of a target-scoped task (spec 19.15 Steps of a task; step 5t), each pending; absent for other tasks and for a preparation with no_build.",
+          "description": "The step plan of a target-scoped task (API.md §4.3; step 5t), each pending; absent for other tasks and for a preparation with no_build.",
           "type": "array",
           "items": { "$ref": "#/$defs/TaskStep" }
         }
       }
     },
     "TaskStep": {
-      "description": "One step of a target-scoped task (spec 19.15 Steps of a task; step 5t): a dependency's or the launch target's own unit build, a deploy phase or the artifact probe, in run order.",
+      "description": "One step of a target-scoped task (API.md §4.3; step 5t): a dependency's or the launch target's own unit build, a deploy phase or the artifact probe, in run order.",
       "type": "object",
       "required": ["id", "kind", "label", "state"],
       "properties": {
@@ -178,22 +178,22 @@
       }
     },
     "TaskStepState": {
-      "description": "A step's state (spec 19.15 Steps of a task): pending until it runs; skipped when a failure, a cancel or a device = true outcome left it unrun. A preparation with no_build has no steps (steps absent). Clients show an unknown state as neutral.",
+      "description": "A step's state (API.md §4.3): pending until it runs; skipped when a failure, a cancel or a device = true outcome left it unrun. A preparation with no_build has no steps (steps absent). Clients show an unknown state as neutral.",
       "enum": ["pending", "running", "ok", "failed", "cancelled", "skipped"]
     },
     "TestNodeRef": {
-      "description": "A test node of loomworks.view.Tests/1, by its view id (spec 19.13 The tests view): opaque, scoped to its unit; stale once a re-discovery dropped the node, the active profile changed or the session generation is another.",
+      "description": "A test node of loomworks.view.Tests/1, by its view id (API.md §14.3): opaque, scoped to its unit; stale once a re-discovery dropped the node, the active profile changed or the session generation is another.",
       "type": "object",
       "required": ["id"],
       "additionalProperties": false,
       "properties": { "id": { "$ref": "#/$defs/Id" } }
     },
     "TestStatus": {
-      "description": "A test node's status (spec 19.13, 19.20 Tests/1): queued or running while a run that selected it is in progress, else its last result. Clients show an unknown status as neutral.",
+      "description": "A test node's status (API.md §4.5, §10.2): queued or running while a run that selected it is in progress, else its last result. Clients show an unknown status as neutral.",
       "enum": ["queued", "running", "passed", "failed", "skipped", "errored"]
     },
     "TestCaseResult": {
-      "description": "One case's status in a run, a collect or the results signal (spec 19.20 Tests/1).",
+      "description": "One case's status in a run, a collect or the results signal (API.md §4.5).",
       "type": "object",
       "required": ["id", "status"],
       "properties": {

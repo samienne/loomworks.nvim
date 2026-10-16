@@ -2,7 +2,7 @@
   "interface": "loomworks.view.Header",
   "version": 1,
   "status": "draft",
-  "description": "Object /views (spec 19.13 Views): the always-warm header the statusline and the status page's header show. get returns the full state; update, declared initial, carries the full state again whenever it changed, never a delta. The editor builds the same shape in-process without the daemon-only fields (pid, lw_version, session_generation, the ids).",
+  "description": "Object /views (API.md §14.1): the always-warm header the statusline and the status page's header show. get returns the full state; update, declared initial, carries the full state again whenever it changed, never a delta. The editor builds the same shape in-process without the daemon-only fields (pid, lw_version, session_generation, the ids).",
   "methods": {
     "get": {
       "description": "The view's full state. Never loads the workspace.",

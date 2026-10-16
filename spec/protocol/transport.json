@@ -192,7 +192,7 @@
     },
     "$defs": {
       "Operation": {
-        "description": "The operations' outcome union, flat on the reply (spec 19.15).",
+        "description": "The operations' outcome union, flat on the reply (API.md §4.1).",
         "type": "object",
         "required": ["kind", "req_id", "outcome"],
         "properties": {
