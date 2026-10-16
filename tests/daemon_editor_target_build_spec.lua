@@ -376,5 +376,136 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.equals("warming", obs._tasks["b7"].steps[1].state)
             assert.is_nil(obs._tasks["b7"]:step_text())
         end)
+
+        it("a late-joined task's steps are read once through Tasks/1.list (status carries none)", function()
+            obs = fake_observer()
+            obs._tasks_seq = 0
+            local status_cb
+            function obs.conn.request(_, req, cb)
+                if req.kind == "status" then status_cb = cb end
+            end
+            obs:_join_late(obs.conn)
+            assert.is_function(status_cb)
+            status_cb({ tasks = { { task_id = "j1", name = profile.key, kind = "build", profile = profile.key,
+                origin = "cli" } } })
+            assert.is_true(vim.wait(2000, function() return obs._tasks["j1"] ~= nil end, 10))
+            local task = obs._tasks["j1"]
+            assert.is_nil(task.steps)
+            assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+            assert.same({ "/tasks", "loomworks.Tasks", "list" }, { sent[1].object, sent[1].iface, sent[1].method })
+            local listed = vim.deepcopy(STEPS)
+            listed[1].state = "running"
+            sent[1].cb({ tasks = { { task_id = "j1", kind = "build", steps = listed } } }, nil)
+            assert.is_true(vim.wait(2000, function() return task.steps ~= nil end, 10))
+            assert.equals("dependency lib (1/3)", task:step_text())
+            -- Later step deltas move it.
+            step_signal("j1", 1, 1, "ok")
+            step_signal("j1", 2, 2, "running")
+            assert.equals("deploy (pre_build) (2/3)", task:step_text())
+            assert.equals(1, #sent)
+        end)
+
+        it("signals before the /tasks subscribe reply are held: past the baseline applied, at or below ignored",
+            function()
+            obs = fake_observer()
+            obs._tasks_seq = 0
+            lt("run"):build()
+            assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+            accept(1, "e1")
+            start_frame("e1", vim.deepcopy(STEPS))
+            local task = obs._tasks["e1"]
+            -- A (re)subscription pending: its baseline not known yet.
+            obs._feat.tasks = "pending"
+            obs._tasks_seq = nil
+            step_signal("e1", 4, 1, "running")
+            step_signal("e1", 6, 2, "running")
+            assert.same({ "pending", "pending" }, { task.steps[1].state, task.steps[2].state })
+            assert.is_nil(obs._tasks_seq)
+            obs._feat.tasks = "subscribed"
+            obs:_tasks_subscribed({ seq = 5 })
+            -- seq 4 is in the state the baseline was taken at; seq 6 follows it.
+            assert.same({ "pending", "running" }, { task.steps[1].state, task.steps[2].state })
+            assert.equals(6, obs._tasks_seq)
+            vim.wait(50)
+            assert.equals(1, #sent)
+        end)
+
+        it("the progress entry drops the step text once no step runs", function()
+            local creates, reports = {}, {}
+            local saved_fp, saved_fid = package.loaded["fidget.progress"], package.loaded["loomworks.fidget"]
+            package.loaded["fidget.progress"] = { handle = { create = function(o)
+                creates[#creates + 1] = o.message
+                return { report = function(_, r) reports[#reports + 1] = r end,
+                    finish = function() end, cancel = function() end }
+            end } }
+            package.loaded["loomworks.fidget"] = nil
+            require("loomworks.fidget").setup()
+            package.loaded["fidget.progress"], package.loaded["loomworks.fidget"] = saved_fp, saved_fid
+            obs = fake_observer()
+            obs._tasks_seq = 0
+            lt("run"):build()
+            assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+            accept(1, "f1")
+            start_frame("f1", vim.deepcopy(STEPS))
+            assert.equals("Building", creates[#creates])
+            step_signal("f1", 1, 1, "running")
+            assert.equals("dependency lib (1/3)", reports[#reports].message)
+            step_signal("f1", 2, 1, "ok")
+            assert.equals("Building", reports[#reports].message)
+        end)
+    end)
+
+    describe("cancel", function()
+        it("cancelling the build's Future cancels the daemon task (Tasks/1.cancel)", function()
+            obs = fake_observer()
+            local f = lt("run"):build()
+            assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+            accept(1, "c1")
+            f:cancel()
+            assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
+            assert.same({ "/tasks", "loomworks.Tasks", "cancel" }, { sent[2].object, sent[2].iface, sent[2].method })
+            assert.same({ task_id = "c1" }, sent[2].args)
+            assert.is_true(obs._owned["c1"].cancelling)
+        end)
+
+        it("a build cancelled before its reply is cancelled once accepted", function()
+            obs = fake_observer()
+            local f = lt("run"):build()
+            assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+            f:cancel()
+            vim.wait(50)
+            assert.equals(1, #sent)
+            sent[1].cb({ outcome = "accepted", task_id = "c2" }, nil)
+            assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
+            assert.equals("cancel", sent[2].method)
+            assert.same({ task_id = "c2" }, sent[2].args)
+        end)
+    end)
+
+    describe("the daemon is the single authority (thin shim)", function()
+        it("an invalid target is not pre-checked in the editor: one Launch/1.build, the daemon's failure", function()
+            obs = fake_observer()
+            local t = lt("run")
+            t.is_valid = function() return false, { "stale mapping" } end
+            t.abstract_error = function() return "abstract" end
+            local err
+            t:build():catch(function(e) err = e end)
+            assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
+            assert.equals("build", sent[1].method)
+            accept(1, "v1")
+            done_frame("v1", 1, "target 'app:run' is not buildable: stale mapping")
+            assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
+            assert.equals("target 'app:run' is not buildable: stale mapping", err)
+        end)
+
+        it("in-process: an invalid target is still refused before anything runs", function()
+            local t = lt("run")
+            t.is_valid = function() return false, { "stale mapping" } end
+            local err
+            t:build():catch(function(e) err = e end)
+            assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
+            assert.matches("not buildable: stale mapping", err)
+            assert.equals(0, #created)
+        end)
     end)
 end)

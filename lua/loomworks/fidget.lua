@@ -37,6 +37,15 @@ local ACTION_TITLE = {
     run = "Preparing",
 }
 
+--- A remote task's entry message: its action and origin marker
+--- (`Building (lw)`).
+--- @param task loomworks.RemoteTask
+--- @return string
+local function daemon_title(task)
+    local origin = task:origin_label()
+    return (ACTION_TITLE[task.kind] or task.kind) .. (origin and (" (" .. origin .. ")") or "")
+end
+
 --- Create a fidget handle for an operation or task.
 --- @param key string handle key
 --- @param title string
@@ -210,10 +219,7 @@ function M.setup(opts)
     -- and profile, plus the origin marker. Keyed by the daemon's task id.
     lw.on("daemon_task_started", function(data)
         local task = data.task
-        local origin = task:origin_label()
-        create_handle("daemon:" .. task.id,
-            (ACTION_TITLE[task.kind] or task.kind) .. (origin and (" (" .. origin .. ")") or ""),
-            task.profile_name or task.name)
+        create_handle("daemon:" .. task.id, daemon_title(task), task.profile_name or task.name)
     end)
 
     lw.on("daemon_task_progress", function(data)
@@ -226,11 +232,11 @@ function M.setup(opts)
     -- A task carrying steps (step 5t, §19.15 "Steps of a task") keeps its
     -- one entry, which follows its current step.
     lw.on("daemon_task_step", function(data)
-        local handle = handles["daemon:" .. data.task.id]
-        local step = data.task:step_text()
-        if handle and step then
-            handle:report({ message = clip(step) })
-        end
+        local task = data.task
+        local handle = handles["daemon:" .. task.id]
+        if not handle then return end
+        -- No step running: the entry's own message again, without the step.
+        handle:report({ message = clip(task:step_text() or daemon_title(task)) })
     end)
 
     lw.on("daemon_task_stopped", function(data)

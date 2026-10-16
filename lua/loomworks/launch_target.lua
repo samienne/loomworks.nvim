@@ -193,29 +193,13 @@ function LaunchTarget:build(on_complete)
     local future_mod = require("loomworks.future")
     local overseer = require("loomworks.overseer")
 
-    -- Buildability gate via :is_valid(). Covers profile
-    -- incompleteness, invalid configurations (stubs, unresolved
-    -- inherits), and stale config_set mappings in one check.
-    local ok, err = self:assert_valid()
-    if not ok then
-        if on_complete then on_complete(false) end
-        return future_mod.rejected(err)
-    end
-
-    -- Guard: an abstract Configuration (no variant resolved) is refused
-    -- with a specific error rather than handing a no-op variant to the
-    -- module and watching the chain hang on a phantom task.
-    local abs_err = self:abstract_error()
-    if abs_err then
-        if on_complete then on_complete(false) end
-        return future_mod.rejected(abs_err)
-    end
-
     local editor_ops = require("loomworks.daemon.editor_ops")
     -- `daemon` mode, a non-device target (step 5t, spec §19.16 "Editor
     -- operations"): ONE `Launch/1.build` the editor owns — the daemon builds
     -- the dependencies, runs the pre-build deploy and builds the target;
-    -- nothing of it runs here, and a build it cannot carry is refused.
+    -- nothing of it runs here, and a build it cannot carry is refused. The
+    -- daemon is the single authority: its own buildability checks refuse
+    -- (the task ends nonzero with no steps); none are repeated here.
     if not self:requires_device() then
         local routed
         local f = future_mod.create(function(resolve, reject, token)
@@ -234,6 +218,24 @@ function LaunchTarget:build(on_complete)
             end
             return f
         end
+    end
+
+    -- In-process and device builds: buildability gate via :is_valid().
+    -- Covers profile incompleteness, invalid configurations (stubs, unresolved
+    -- inherits), and stale config_set mappings in one check.
+    local ok, err = self:assert_valid()
+    if not ok then
+        if on_complete then on_complete(false) end
+        return future_mod.rejected(err)
+    end
+
+    -- Guard: an abstract Configuration (no variant resolved) is refused
+    -- with a specific error rather than handing a no-op variant to the
+    -- module and watching the chain hang on a phantom task.
+    local abs_err = self:abstract_error()
+    if abs_err then
+        if on_complete then on_complete(false) end
+        return future_mod.rejected(abs_err)
     end
 
     -- `daemon` mode, a device target (its build stays the editor's until

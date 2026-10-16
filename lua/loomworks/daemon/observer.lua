@@ -1436,7 +1436,7 @@ function Observer:_subscribe(conn, done)
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
-    self._tasks_seq, self._tasks_relist = nil, nil
+    self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
     if not (type(conn.transport) == "number" and conn.transport >= 11) or type(welcome_objects) ~= "table"
@@ -1654,12 +1654,15 @@ function Observer:_tests_subscribed(result)
 end
 
 --- The `/tasks` subscription answered (step 5t): its `seq` is the baseline of
---- the object's signals on this connection (§19.12), unless signals already
---- arrived past it.
+--- the object's signals on this connection (§19.12), and the signals held
+--- while it was pending are applied past it (those at or below it are
+--- already in the state the baseline was taken at).
 --- @param result table|nil the subscribe reply's result
 function Observer:_tasks_subscribed(result)
-    local seq = type(result) == "table" and tonumber(result.seq) or nil
-    if seq and (self._tasks_seq == nil or self._tasks_seq < seq) then self._tasks_seq = seq end
+    self._tasks_seq = type(result) == "table" and tonumber(result.seq) or nil
+    local early = self._tasks_early
+    self._tasks_early = nil
+    for _, e in ipairs(early or {}) do self:_tasks_signal(e[1], e[2]) end
 end
 
 --- A `Tasks/1` signal (§19.15 "Steps of a task", step 5t). Every one counts
@@ -1669,7 +1672,15 @@ end
 --- @param msg table the signal
 --- @param args table its args
 function Observer:_tasks_signal(msg, args)
+    -- Before the subscription's baseline is known: held until it is.
+    if self._feat and self._feat[M.TASKS.feature] == "pending" then
+        self._tasks_early = self._tasks_early or {}
+        self._tasks_early[#self._tasks_early + 1] = { msg, args }
+        return
+    end
     local seq = tonumber(msg.seq)
+    -- At or below the baseline: already in the state it was taken at.
+    if seq and self._tasks_seq and seq <= self._tasks_seq then return end
     local gap = false
     if seq then
         if self._tasks_seq and seq > self._tasks_seq + 1 then gap = true end
@@ -1724,7 +1735,10 @@ end
 --- `tasks` (§19.11) as a remote task, its output starting now. A task whose
 --- `start` already arrived on the stream is kept; one that ended before the
 --- reply was computed is not in it (the daemon sends the reply before any
---- later `done`).
+--- later `done`). `status.tasks` carries no steps (it stays frozen,
+--- §19.15): with `/tasks` subscribed, one `Tasks/1.list` then gives the
+--- adopted tasks' steps and their current states (later `step` signals are
+--- deltas on top of it).
 --- @param conn loomworks.daemon.Conn
 function Observer:_join_late(conn)
     if type(conn.request) ~= "function" then return end
@@ -1733,12 +1747,19 @@ function Observer:_join_late(conn)
             if self.state == "stopped" or self.conn ~= conn or type(reply) ~= "table" then return end
             local list = type(reply.tasks) == "table" and reply.tasks or {}
             local clock = self:_clock()
+            local adopted = false
             for _, entry in ipairs(list) do
                 local id = type(entry) == "table" and entry.task_id or nil
                 if id ~= nil and not self._tasks[id] then
                     local task = remote_task.adopt(self.ws, entry, clock)
-                    if task then self:_add(task) end
+                    if task then
+                        self:_add(task)
+                        adopted = true
+                    end
                 end
+            end
+            if adopted and self._feat and self._feat[M.TASKS.feature] == "subscribed" then
+                self:_relist_steps()
             end
         end)
     end)
@@ -1805,7 +1826,7 @@ function Observer:_on_closed(c)
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
-    self._tasks_seq, self._tasks_relist = nil, nil
+    self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
     self:_lsp_changed()
     self:_stop_timer("_keepalive")
@@ -2759,7 +2780,7 @@ function Observer:stop()
     self.conn = nil
     if c then c.on_close = nil; c:close() end
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
-    self._tasks_seq, self._tasks_relist = nil, nil
+    self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end
