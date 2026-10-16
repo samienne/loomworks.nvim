@@ -41,15 +41,14 @@ The data layer's entities are profiles, projects, configurations,
 configuration units, launches, tasks, devices and build directories, each
 with its opaque `id` (PROTOCOL.md §12.1) and its `key` / `label`. Ids are the
 only entity handles on the wire. Every entity record in an interface result
-or signal carries its `id` and its `key` / `label` for display; a client
-shows `label`, never derives it.
+or signal carries its `id` and its `key` / `label` for display.
 
 ### 1.2 References
 
 A request names an entity by a reference (`loomworks.Common/1` `Ref`),
-either `{ id }` or `{ key }`. The editor sends ids taken from results and
-views; the CLI sends the key the user typed, which the server resolves as
-spec §16.9 specifies (its messages and exit codes). Keys are the model's
+either `{ id }` or `{ key }`. A client may send an id taken from a result or
+view, or a key; the server resolves a key as spec §16.9 specifies (its
+messages and exit codes). Keys are the model's
 keys (spec §1). Each method states how it answers a reference that does not
 resolve (§8.3, §10.2, §11).
 
@@ -208,7 +207,7 @@ compiler, SDK and `vcvarsall` variables (`INCLUDE`, `LIB`, `WindowsSdkDir`,
 `VCToolsInstallDir`, …), cache tools and `${VAR}` references in the
 configuration can use any name, and the CLI's own command inherits them all.
 It may contain secrets: a server holds it for the request only and never
-writes it to a log or to any file. The client's working directory is not
+writes it to the runtime log, the handle or any workspace file. The client's working directory is not
 sent: the client resolves the workspace root, and every step runs in its
 own absolute directory (the step's, or the root).
 
@@ -219,10 +218,9 @@ On `/workspace`:
 - `header {}` — the header of §2. It never loads the workspace.
 - Signal `changed { seq, session_generation, scopes? }` — the model changed
   (a committed write of a state file); a client fetches the state it holds
-  again. `seq` is the workspace's model sequence number; `scopes` names the
-  files that changed (`config`, `user`, `cache`) when known. A signal at or
-  below the last `seq` of the same session generation is ignored; a new
-  generation is always applied.
+  again. `seq` is the signal's sequence number, counted as PROTOCOL.md §12.3
+  specifies; `scopes` names the files that changed (`config`, `user`,
+  `cache`) when known. The session generation is PROTOCOL.md §12.2.
 - Signal `header_changed { header }` — the header's state, name, active
   profile or load error changed (a load, a reload, a failed load, a write
   that changed the active profile).
@@ -417,11 +415,11 @@ Its task's `meta.kind` is `reset`; `meta.profile` is the profile's key, or
 absent with `meta.scope = "all"` for `all`; `meta.units` are the planned
 units (for `all` every configuration unit with a build directory; an
 orphaned directory has no unit and is not listed). An accepted reset does,
-and prints, what the CLI's reset does: the workspace operation lock taken
-first, then the build-directory locks of spec §16.6 for every directory of
-the lock set, **exclusive**, in canonical order (a dead holder's lock
-reclaimed and its state recovered as for a build; a held one ends the task
-with the refusal naming the holder, nothing removed). With every lock held
+and prints, what the CLI's reset does: the workspace operation lock (spec
+§16.30) taken first, then the build-directory locks of spec §16.6 for every
+directory of the lock set, **exclusive**, in canonical order (a dead
+holder's lock reclaimed and its state recovered as for a build; a held one
+ends the task with the refusal naming the holder, nothing removed). With every lock held
 and before anything is removed, the reset plans again and compares the token
 with the plan it listed: a directory that appeared or vanished in between
 ends the task with the same `the build directories to reset changed since
@@ -579,8 +577,8 @@ device target; …` as its failure line.
 
 ## 10. `loomworks.Tests/1`
 
-On `/tests`: the batch test run of `lw test`, and the editor's test
-discovery, runs of selected tests and debug preparations. These execute in
+On `/tests`: the batch test run of `lw test`, and test discovery, runs of
+selected tests and debug preparations. These execute in
 the server, like its builds; only a test debug session's program is the
 client's (§9.2). All methods carry the caller's environment (`needs_env`).
 
@@ -639,7 +637,7 @@ reference (§1.2), with the message `no such test`, before acceptance.
 - **`discover { force? }`** — task-streamed (`meta.kind = discover`), the
   outcomes of `Build/1.build`. In the caller's environment, for each unit of
   the profile in project-key order, the discovery of spec §8.9.3
-  (`discover_tests`: every TestUnit's entries merged, the saved test targets
+  (every TestUnit's entries merged, the saved test targets
   included, the configured-here and foreign-kit rules applied — such units
   get their view state, not a tree). A unit whose tree is current
   (discovered since its last configure or build ended and its saved list
@@ -698,8 +696,8 @@ reference (§1.2), with the message `no such test`, before acceptance.
   executable combined into one invocation where the TestUnit can filter
   them so, each step announced `==> [test] <project>: <name>` and spawned as
   a build step is (streamed, cancellable). Each step writes its results file
-  to its **own** path, `<root>/.nvim/tmp/lw-test-<hex>.xml` (spec §16.40,
-  removed once parsed; never a fixed path in the build directory), so
+  to its **own** path (spec §16.40, removed once parsed; never a fixed path
+  in the build directory), so
   concurrent runs never share one. The server reads the harness's per-case
   progress from the step's output and sends it as `results` (batched, at
   most about 4 per second); on the step's end the results file is
@@ -760,8 +758,7 @@ A re-discovery keeps the last result of a node whose `id` survives.
 
 Both are queries: read-only, they change neither the model nor any file, and
 run in the client's environment against the model as it is (loading it when
-none is loaded, never unloading it for another environment). An unknown or
-failed query, or a workspace the server cannot load, is `refused`
+none is loaded, never unloading it for another environment). A failed query, or a workspace the server cannot load, is `refused`
 (`message`); a request the server does not carry is `declined` (`reason`).
 
 - **`Toolchains/1.list {}`** (on `/toolchains`) → `{ outcome = "ok", tools }`
@@ -902,7 +899,8 @@ and adds its fields only to itself.
 
 ### 14.2 `loomworks.view.ProjectsIndex/1`
 
-What a client needs to map a file to its project, nothing more. Its state
+What a client needs to show each project's state under the active profile
+and to map a file to its project. Its state
 is `{ projects }`: `projects` (array, required) holds one record per project
 of the workspace, ordered by key; it is empty when the workspace is not
 loaded. A record:
@@ -910,7 +908,8 @@ loaded. A record:
 - `id` (string, optional) — the project's opaque id.
 - `key` (string) — the project's key.
 - `label` (string) — the project's display text (§1.1). A project has no
-  display name of its own (spec §1.2), so its `label` is its key.
+  display name of its own (spec §1.2), so its `label` is its key; a client
+  shows `label`, never derives it.
 - `type` (string) — the project's module type (`cmake`, `meson`, …); a
   project of an unknown or rejected type (spec §8.0) is listed with its
   declared type and without `active`.

@@ -866,8 +866,8 @@ and the private bindings that skip authentication are specified in
 
 **Authentication key.** The shared secret *K* of the handshake is
 HMAC-SHA256(machine key §17.2, `"loomworks-daemon-v1"`), and the endpoint
-address *E* is the address from the handle (§19.6). `hello.client` is `cli`
-or `editor`; `role = "observer"` is a client that only watches (§19.16). The
+address *E* is the address from the handle (§19.6). The `hello.client` and
+`role` values are [API.md](../protocol/API.md) §2 (an observer is §19.16). The
 `welcome` fields are `{ header, seq, clients, busy, retiring }` (§19.13) plus
 the transport's `objects` (§19.20). New `welcome` fields go inside `header`
 if they are model fields, and beside it if they are transport fields (such as
@@ -2007,6 +2007,9 @@ task-streamed methods, their task results and `loomworks.Tasks/1` are
 `Launch/1.build` from step 5t, and a module's log stream. A connection of
 protocol 10 keeps receiving every task's frames as today. `status.tasks`
 (§19.11) stays as it is, frozen.
+
+**Observation, late joining and cancel** are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.6 and
+[API.md](../protocol/API.md) §7.
 
 **Routing.** A client routes an operation to the daemon only when the daemon
 carries every argument form the client was given; any other form runs on the
@@ -3652,6 +3655,14 @@ and `owner`, the shared types and outcomes, the environment and every
 interface version that has a schema — is specified in [API.md](../protocol/API.md). This section adds
 what is specific to this implementation and its roadmap. The root's
 `retiring` is §19.11's.
+
+**Message envelope** is [PROTOCOL.md](../protocol/PROTOCOL.md) §8.
+
+**The root object** is [PROTOCOL.md](../protocol/PROTOCOL.md) §10 and [API.md](../protocol/API.md) §3.
+
+**Errors and domain results** are [PROTOCOL.md](../protocol/PROTOCOL.md) §11 and [API.md](../protocol/API.md) §4.1.
+
+**Signals and subscriptions** are [PROTOCOL.md](../protocol/PROTOCOL.md) §12–§13.
 
 **The CLI's calls.** Over transport 11 the CLI sends its operations and
 reads as interface calls (`daemon/calls.lua`) and acts on a transport error
