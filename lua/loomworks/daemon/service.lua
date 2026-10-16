@@ -671,7 +671,10 @@ function Service:_on_operation(op, conn, msg, deliver, call)
         or (a.project_id ~= nil and (type(a.project_id) ~= "string" or a.project ~= nil))
         or ((op == "run" or op == "debug" or op == "target_build") and not run_args_ok(a, op, deliver ~= nil))
         or (op == "test" and a.no_build ~= nil and type(a.no_build) ~= "boolean")
-        or (a.verbose ~= nil and type(a.verbose) ~= "boolean")
+        -- (`verbose` only where its API defines it: build, clean, test,
+        -- prepare_run — not reset, configure, prepare_debug or Launch/1.build.)
+        or (a.verbose ~= nil and (type(a.verbose) ~= "boolean"
+            or not (op == "build" or op == "clean" or op == "test" or op == "run")))
         or (op == "reset" and not reset_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
