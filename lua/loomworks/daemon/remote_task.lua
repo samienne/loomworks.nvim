@@ -31,6 +31,17 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field project string the project key the daemon sent (display)
 --- @field configuration string|nil the configuration-unit key the daemon sent (display)
 
+--- @class loomworks.RemoteTaskStep
+--- @field id any opaque, stable within the task
+--- @field kind string `build`, `deploy`, `probe` (an unknown kind is shown neutrally)
+--- @field label string what the step does, for display
+--- @field state string `pending`, `running`, `ok`, `failed`, `cancelled`, `skipped` (an unknown state: neutral)
+--- @field error string|nil a failed step's failure line
+--- @field project string|nil
+--- @field configuration string|nil
+--- @field target string|nil
+--- @field phase string|nil a deploy step's `pre_build` / `post_build`
+
 --- @class loomworks.RemoteTask
 --- @field id integer the daemon's task id
 --- @field name string
@@ -50,6 +61,8 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- while it runs (a test or a run builds: "build")
 --- @field start_time number clock seconds (uv.hrtime based, like local tasks)
 --- @field pct integer|nil last progress tick
+--- @field steps loomworks.RemoteTaskStep[]|nil a target-scoped task's steps with their current states
+---   (§19.15 "Steps of a task", step 5t): `start.meta.steps`, moved by `Tasks/1.step`
 --- @field finished boolean
 --- @field exit_code integer|nil
 --- @field error string|nil
@@ -80,6 +93,7 @@ function M.new(ws, id, meta, clock)
         _chunks = {}, _bytes = 0, _truncated = false, _listeners = {},
     }, RemoteTask)
     self.profile_name = type(meta.profile) == "string" and meta.profile or nil
+    self.steps = M.steps_of(meta.steps)
     local profile
     if self.profile_name and ws then
         for _, p in ipairs(ws:get_profiles() or {}) do
@@ -129,6 +143,31 @@ function M.new(ws, id, meta, clock)
         end
     end
     return self
+end
+
+--- A task's steps as the daemon sent them (`start.meta.steps`,
+--- `TaskInfo.steps`; §19.15 "Steps of a task"), kept as display data: the
+--- well-formed entries, copied; nil when it has none.
+--- @param raw any
+--- @return loomworks.RemoteTaskStep[]|nil
+function M.steps_of(raw)
+    if type(raw) ~= "table" or #raw == 0 then return nil end
+    local out = {}
+    for _, s in ipairs(raw) do
+        if type(s) == "table" then
+            out[#out + 1] = {
+                id = s.id, kind = type(s.kind) == "string" and s.kind or "?",
+                label = type(s.label) == "string" and s.label or tostring(s.kind or "step"),
+                state = type(s.state) == "string" and s.state or "pending",
+                error = type(s.error) == "string" and s.error or nil,
+                project = type(s.project) == "string" and s.project or nil,
+                configuration = type(s.configuration) == "string" and s.configuration or nil,
+                target = type(s.target) == "string" and s.target or nil,
+                phase = type(s.phase) == "string" and s.phase or nil,
+            }
+        end
+    end
+    return #out > 0 and out or nil
 end
 
 --- A task already running when the observer connected (spec §19.16,
@@ -192,6 +231,57 @@ function RemoteTask:detach_units()
     for _, p in ipairs(self.profiles) do
         if p.remove_remote_task then p:remove_remote_task(self) end
     end
+end
+
+--- A `Tasks/1.step` delta (§19.15 "Steps of a task"): step `index` (1-based)
+--- is now `state` (`err`: a failed step's failure line). True when it
+--- changed; an index outside its steps is ignored.
+--- @param index integer|nil
+--- @param state any
+--- @param err any
+--- @return boolean changed
+function RemoteTask:set_step(index, state, err)
+    local s = index and self.steps and self.steps[index]
+    if not s or type(state) ~= "string" then return false end
+    local e = type(err) == "string" and err or nil
+    if s.state == state and s.error == e then return false end
+    s.state, s.error = state, e
+    return true
+end
+
+--- Adopt the step states of a `Tasks/1.list` entry (after a seq gap): its
+--- steps replace the task's. True when anything changed.
+--- @param raw table the entry's `steps`
+--- @return boolean changed
+function RemoteTask:adopt_steps(raw)
+    local steps = M.steps_of(raw)
+    if not steps then return false end
+    local changed = not self.steps or #self.steps ~= #steps
+    for i, s in ipairs(steps) do
+        local old = self.steps and self.steps[i]
+        if not old or old.state ~= s.state or old.error ~= s.error then changed = true end
+    end
+    self.steps = steps
+    return changed
+end
+
+--- The current step — the running one — and its index, or nil (none
+--- running: before the first, between two, after the last; or a step state
+--- this editor does not know, shown neutrally).
+--- @return loomworks.RemoteTaskStep|nil, integer|nil
+function RemoteTask:current_step()
+    for i, s in ipairs(self.steps or {}) do
+        if s.state == "running" then return s, i end
+    end
+    return nil, nil
+end
+
+--- The current step for display (`dependency lib (1/3)`), or nil.
+--- @return string|nil
+function RemoteTask:step_text()
+    local s, i = self:current_step()
+    if not s then return nil end
+    return string.format("%s (%d/%d)", s.label, i, #self.steps)
 end
 
 --- Append output (a line or raw bytes), within the cap.

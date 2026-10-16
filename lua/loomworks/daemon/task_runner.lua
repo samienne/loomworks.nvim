@@ -306,13 +306,28 @@ function M.read_only_message(remote)
 end
 
 --- The overseer task name of a daemon task: its name, an observed task's
---- with its origin marker (`[lw] build dev`).
+--- with its origin marker (`[lw] build dev`); a task carrying steps (step
+--- 5t, §19.15 "Steps of a task") with its current step (`dev — dependency
+--- lib (1/3)`).
 --- @param remote loomworks.RemoteTask
 --- @return string
 function M.task_name(remote)
     local who = remote:origin_label()
-    if who then return "[" .. who .. "] " .. remote.name end
-    return remote.name
+    local name = who and ("[" .. who .. "] " .. remote.name) or remote.name
+    local step = remote.step_text and remote:step_text()
+    if step then name = name .. " — " .. step end
+    return name
+end
+
+--- The task's current step moved (step 5t): its one overseer row follows it
+--- (§19.16 "Tasks in the task runner") — renamed and re-rendered.
+--- @param remote loomworks.RemoteTask
+function M.step(remote)
+    local task = M.overseer_task(remote)
+    if not task then return end
+    task.name = M.task_name(remote)
+    local ok, list = pcall(require, "overseer.task_list")
+    if ok and type(list) == "table" and type(list.touch) == "function" then pcall(list.touch, task) end
 end
 
 --- A daemon task the observer started tracking: its overseer task. `runner`:

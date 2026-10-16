@@ -983,7 +983,24 @@ re-cut onto master step by step; this section is expanded as each step lands.
   observer's `_owned_ended` also notifies any `on_done` error). A
   preparation not carried, declined or degraded is refused (no program,
   never the in-process chain). `editor_ops.NO_RESTART` makes the
-  task-runner restart of a preparation fail (`rerun`). Observer side:
+  task-runner restart of a preparation fail (`rerun`). Step 5t part C:
+  `LaunchTarget:build` of a non-device target in daemon mode is
+  `editor_ops.build_target(target, k)` — one owned `Launch/1.build` (the
+  observer's call `launch_build`, `WIRE` → `build`;
+  `target_build_args` = `launch_args` without `build_scope` / `cwd`), no
+  dependency build, deploy or fallback in the editor; a device target keeps
+  the editor's chain behind `build_refusal`. The preparations and the build
+  share `launch_call`, which asks the artifact-conflict question
+  (`ask_conflict` over `LaunchTarget:existing_build_units()`, never
+  materialising a unit) before the call and sends its Yes as `force`. The
+  steps: `RemoteTask.steps` from `start.meta.steps` (`steps_of`),
+  `Observer:_tasks_signal` counts every `Tasks/1` signal toward the
+  object's seq (`_tasks_seq`, baseline from the subscribe reply), applies a
+  `step` (`RemoteTask:set_step`) and, on a gap, re-reads `Tasks/1.list`
+  (`_relist_steps` → `adopt_steps`); each change emits `daemon_task_step`
+  (fidget's entry, the status page's single row of a stepped task) and
+  renames the task's overseer row (`task_runner.step`, `task_name` + `—
+  <step> (i/n)`). Observer side:
   `M.LAUNCH` (feature `launch`) and `M.DEBUG` (feature `debug adapters`,
   no task: `can_call` needs Tasks/1 only for `tasks` tables), their
   literal `CALLS`, `METHOD_IFACE` (method → table, for `can_call` and the

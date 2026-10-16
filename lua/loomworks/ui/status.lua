@@ -238,6 +238,7 @@ local view = View.new({
         "daemon_lsp_config",
         "daemon_task_started",
         "daemon_task_progress",
+        "daemon_task_step",
         "daemon_task_stopped",
         "tests_invalidated",
     },

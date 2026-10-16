@@ -142,6 +142,13 @@ local function remote_rows(task, now)
         if origin then chunks[#chunks + 1] = { "  " .. origin, "Comment" } end
         return chunks
     end
+    -- A task carrying steps (a launch target's build or preparation, step
+    -- 5t) keeps one row, which follows its current step (spec/ui.md §1.9).
+    if task.steps then
+        local step = task:step_text()
+        return { row(string.format("▸ %s — %s%s", task.profile_name or task.name, task.kind,
+            step and (": " .. step) or "")) }
+    end
     local rows = {}
     for _, u in ipairs(task.units) do
         local unit = u.unit
