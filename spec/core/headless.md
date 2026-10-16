@@ -214,9 +214,9 @@ editor and the CLI share this lock, so neither operates on a directory the other
 holds — in particular a reset (§16.30) cannot remove a directory the other is
 building, and a build cannot enter a directory a reset is removing. Acquisition
 is **fail-fast** (the loser reports the holder and declines rather than waiting).
-The lockfile holds the common lock record of §19.5 (holder process id, host,
-process start time, nonce, holder kind, operation — rewritten from `configure`
-to `build` as the holder moves between steps — and start time), and the holder
+The lockfile holds the common lock record of §19.5
+([formats.md](../formats.md) §6.1; its operation is rewritten from `configure`
+to `build` as the holder moves between steps), and the holder
 heartbeats its mtime. A **dead** holder's lock (same host, no process with that
 id and start time) is reclaimed at once, and the interrupted step's state is
 recovered (§19.5 step 5); a lock on another host, or one whose record has no
@@ -234,11 +234,8 @@ workspace root or absolute, and must lie under the root both as spelled and
 by its §4.6 identity (its resolved real path under the root's, so a junction
 or symlink to a folder outside the workspace is refused, naming the resolved
 lockfile for removal by hand); only the lockfile `<dir>.loomworks-lock`
-beside that identity, a regular file, is removed. Compatibility: a version
-before this identity rule derives the lockfile from the spelled path, so with
-an aliased spelling (a symlinked or junctioned workspace root, macOS `/tmp` →
-`/private/tmp`) an older pinned `lw` and a current one take different
-lockfiles and do not exclude each other. The CLI also releases
+beside that identity, a regular file, is removed. Compatibility with versions
+before this identity rule: [formats.md](../formats.md) §10. The CLI also releases
 its build locks on interrupt as well as on normal exit, so an interrupted
 (Ctrl-C'd) build does not leave a lock for the stale-reclaim window. An
 **interrupt** is any of: SIGINT (Ctrl-C), SIGTERM, SIGHUP (a terminal hangup)
@@ -1247,14 +1244,8 @@ command interpreters run the Windows launcher by explicit relative path
 elsewhere on the search path. Help and authoring output always show the
 relative form.
 
-The pin declares a release **version** and, for every host binary and for the
-release bundle, the **content hash** of that artifact. It is a trivially
-parseable key/value list (not JSON) so a launcher can read it with a system
-shell alone — one `version` entry, one hashed entry per host binary keyed by the
-binary's asset identity, and one hashed entry for the bundle. The pin carries a
-version and hashes **only, never a location**: the download origin is fixed by
-the host and overridable solely by the user's environment or host configuration,
-never by repository content (§16.23).
+The pin's content — a release version and content hashes, never a location —
+is [formats.md](../formats.md) §9.
 
 ### 16.22 Launcher behavior and pinned-release provisioning
 

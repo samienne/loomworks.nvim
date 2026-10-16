@@ -27,52 +27,22 @@ Explicit operations may run the project's own build system (§17.8).
 
 ### 17.2 Machine key
 
-On first use loomworks creates a **machine key**: 32 bytes from the host's
-secure random source, stored as 64 hexadecimal characters in `trust.key` in the
-**per-user data directory** — the same directory the standalone host uses for
-releases (§16.11), so the editor and the CLI on one machine share one key. The
-key is never stored in, or derived from, a workspace. It is created with
-owner-only permissions where the platform has them (mode `0600`, in a `0700`
-directory); on Windows the per-user local application-data directory is
-already private to the user. An existing key is never overwritten; a malformed
-key is an error that names the file (deleting it creates a new key — every
-workspace's signed files then read as `invalid`, §17.4).
+On first use loomworks creates a **machine key**. Its format, location and
+creation rules are [formats.md](../formats.md) §2.1.
 
 ### 17.3 Signed files
 
-Every file loomworks writes under a workspace's `.nvim/` whose content can
-cause execution — the working copy, the build cache and the health cache —
-carries a signature. The signature is the **first member** of the file's
-top-level object, alone on the file's second line, in exactly this form:
+The working copy, the build cache and the health cache carry a signature
+under the machine key. The signature envelope, the signed bytes, the
+signature and what it does and does not bind are
+[formats.md](../formats.md) §2.2.
 
-```
-{
-  "_sig": "<64 lowercase hex digits>",
-  …rest of the file…
-```
-
-The **signed bytes** are the file with that member removed (`{`, a newline,
-then everything after the member's line). The signature is
-
-```
-HMAC-SHA256(machine key, "loomworks-sig-v1\n" + kind + "\n" + SHA256-hex(signed bytes))
-```
-
-where `kind` is the file's role (`user`, `cache`, `health`), so a signed file of
-one role cannot be renamed into another. Signing the exact bytes — which are the
-deterministic sorted encoding of §2 — avoids any canonicalization ambiguity, and
-the fixed first-line position cannot be confused with a nested member of the
-same name. The workspace root is deliberately **not** bound: moving or renaming
-the workspace directory, or seeding a git worktree from the main checkout on the
-same machine (§16.25), keeps the files valid. Copying a working copy from
-one workspace to another on the same machine is the same case: the copy is
-**valid** there, and everything it names (profiles, toolchain selections,
-launch configurations, environment) is used as from any signed working copy —
-it was written by this machine's user, which is what the signature attests;
-it does not attest which workspace it was written for. Both hosts produce identical
-signatures for identical content. Readers remove the member before decoding, so
-it never appears in loaded data; older loomworks versions read a signed file as
-ordinary JSON.
+Copying a working copy from one workspace to another on the same machine is
+the same case as moving the workspace: the copy is **valid** there, and
+everything it names (profiles, toolchain selections, launch configurations,
+environment) is used as from any signed working copy — it was written by this
+machine's user, which is what the signature attests; it does not attest which
+workspace it was written for.
 
 A file is, on read:
 

@@ -129,9 +129,7 @@ stop without ending the process), its use by the CLI and the busy wait
 The **runtime lock** `<root>/.nvim/loomworks.daemon.lock` designates the one
 runtime of a workspace. It uses the build-directory lock primitive (§16.6): an
 exclusive create and an mtime heartbeat (about 5 s); a dead or hung holder is
-handled per §19.5. Its record is the common lock record of §19.5 plus the mode
-(`daemon` or `attached`), for an attached run the command, and the host
-version.
+handled per §19.5. Its record is [formats.md](../formats.md) §6.2.
 
 - A **daemon** acquires it before binding its endpoint and holds it for its
   lifetime. A daemon whose start finds the lock held by a live holder exits
@@ -220,8 +218,7 @@ that needs a lock it did not take up front (for example a remote run that
 discovers it must rebuild) first releases every lock of a later class.
 
 The **workspace operation lock** O is the O_EXCL + heartbeat primitive with the
-common lock record of §19.5 (`{ pid, host, start_time, lock_nonce, kind,
-operation, started_at }`). It is taken by every
+common lock record of §19.5 ([formats.md](../formats.md) §6.1). It is taken by every
 operation that writes more than one of the three workspace files, or that
 removes a workspace file or a build tree as part of a larger change:
 
@@ -317,9 +314,7 @@ workspace.
    target and flush it to stable storage. A removal has no staged file. The
    staged bytes are final — signed where the file is signed (§17.3).
 3. **Commit point.** Atomically write the journal
-   `<root>/.nvim/loomworks.txn.json`: `{ id, operation, pid, host, written_by,
-   entries: [ { file, action = replace|remove, sha256_new?, sha256_old? } ] }`,
-   entries in the file order of §19.3.
+   `<root>/.nvim/loomworks.txn.json` ([formats.md](../formats.md) §7).
 4. **Apply.** For each entry in order, rename the staged file over the target
    (or remove the target), then flush the directory where the platform
    supports it.
@@ -353,11 +348,9 @@ remedy: it acquires O, which completes or refuses the journal first, and it
 resets only build state — the journal also covers `loomworks.json` and the
 working copy.
 
-**Validation.** A journal is data from disk: it is honoured only when every
-entry names one of the three workspace files in `.nvim/` and the staged files
-match `<file>.txn-<hex id>` beside them; anything else refuses the workspace
-as above. Rolling forward never bypasses trust — the renamed files are verified
-on load as any file is (§17.4).
+**Validation.** Moved to [formats.md](../formats.md) §7: a journal that fails
+it refuses the workspace as above. Rolling forward never bypasses trust — the
+renamed files are verified on load as any file is (§17.4).
 
 **Implementation notes (master).** The operations that hold O commit through a
 transaction: every write of one of the three files during it is staged (and
@@ -405,41 +398,9 @@ A crashed or killed process must never leave a workspace stuck, and a hung one
 must be recoverable with one command. These rules apply uniformly to every lock
 of §19.3 (R, O, B, D, F) and to the handle file and socket (§19.6–§19.7).
 
-**Lock record.** Every lock record carries: process id, host name, the
-holder's **process start time** (as reported by the operating system; it
-distinguishes a reused process id), a random nonce, the holder kind (`lw`,
-`daemon`, or `editor`), the operation, and a start timestamp; its modification
-time is the heartbeat. As JSON: `{ pid, host, start_time, lock_nonce, kind,
-operation, started_at }`, plus `action` (a copy of `operation` that older
-versions read) and the class's own fields. The nonce is `lock_nonce`, not
-`nonce`: device-lock records already use `nonce` for their running program
-(§18.7). `start_time` is opaque and carries its method (`win:`, `linux:`,
-`mac:`); a value written by a method the reader cannot use is judged by
-heartbeat alone. It is a string, compared only for equality: `win:<creation
-time>` (the process creation time in 100 ns units, decimal),
-`linux:<boot id>:<start ticks>` (field 22 of `/proc/<pid>/stat`, with the
-boot id) or `mac:<seconds>.<microseconds>` — so it may itself contain colons,
-and a daemon's handle carries the same value as its runtime-lock record
-(§19.6). A daemon **instance id** `<pid>:<start_time>` (§19.10 "Skip an
-instance") is the decimal pid, a colon and that value verbatim; it is split
-at its first colon. A holder that holds a build-directory lock across
-several steps rewrites the record's operation when it moves from configure to
-build, so recovery knows which step was interrupted. A record without a start time (written by an older
-version) is judged by heartbeat alone. A lock file is created with its
-record already in it: the record is written to a temporary file beside it
-(`<lock file>.new.<nonce>`, a name no lock-file reader or scan matches) and
-given the lock file's name by a hard link, an atomic create-if-absent; the
-temporary name is then removed. Where the file system has no hard links, the
-lock file is created exclusively and its record written right after. A
-holder rewriting its record writes a temporary file and renames it over the
-lock file; that the lock file still carries its nonce is checked right
-before each rename, so a narrow window remains in which a lock file forced
-off or reclaimed between the check and the rename is overwritten (no wider
-than with the earlier in-place rewrite). A reader that
-finds a fresh empty lock file (modified within the last 2 s; one created
-without hard links, or by an older version) reads it again for up to 250 ms
-before judging it, so a record being written is never taken for another
-host's live holder; one still empty then is judged as a record without fields.
+**Lock record.** Moved to [formats.md](../formats.md) §6.1: the record's
+fields, `start_time` and the daemon instance id, and how a lock file is
+created, rewritten and read.
 
 **Holder states.** A process that finds a lock held classifies the holder:
 
@@ -580,21 +541,8 @@ dangerous things.
 by `daemon/server.lua`), the Runtime row and `lw daemon status`; the running-task
 lines (`daemon/running.lua`).*
 
-A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
-endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
-schemas = { user, cache }, session_generation, started_at, clients, busy,
-idle_since, lock_nonce, key_id, exe }` (`start_time` is the daemon's process start time of
-§19.5, `lock_nonce` its runtime-lock record's nonce, `exe` the path of the
-executable it runs — for display only, such as the editor's version-mismatch
-note, §19.16; never executed or trusted for a decision). `key_id` is a
-non-secret fingerprint of the daemon key K it authenticates with (§19.8): the
-first 16 hex digits of HMAC-SHA256(K, `"loomworks-daemon-key-id-v1"`). It
-tells, without connecting, whether a daemon belongs to this lw's data
-directory (machine key) — a daemon of another `LOOMWORKS_DATA_DIR`, such as a
-test run's, has another key and could never complete the handshake with this
-lw. It is one-way under its own label and is never part of a proof. A
-development build's
-`lw_version` is its source fingerprint (§19.9). It
+A daemon publishes its handle `<root>/.nvim/loomworks.daemon.json`
+([formats.md](../formats.md) §8) after binding its endpoint. It
 refreshes the file's modification time on its heartbeat and rewrites it when
 `clients`/`busy` change. Liveness is judged by the heartbeat, never by probing
 the pid (§16.6). The handle is **discovery only**: the runtime lock (§19.2)
