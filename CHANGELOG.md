@@ -36,6 +36,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   color off. Build tool and program output is never touched; a repository
   pinned to an older `lw` gets the options dropped, not passed on (#270).
 
+- `-v` / `--verbose` on `lw build`, `lw run`, `lw test` and `lw clean` prints
+  every command a step runs under its header: configure, build, clean and test
+  commands with their directory and environment overrides, the build
+  directories a clean removes, deploy copies, and on a device run every device
+  command. On a run or a test it covers the dependency build too. Before the
+  command, `lw -v` is still the version (#273).
+
 - `lw status` lists the repository's linked git worktrees in a short `Worktrees`
   section (path, branch, main and current markers, whether loomworks is set up
   there), capped like the other sections with a pointer to `lw worktree`. It is
