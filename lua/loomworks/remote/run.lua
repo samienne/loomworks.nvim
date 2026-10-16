@@ -330,8 +330,9 @@ end
 ---                    command the run issues (`lw -v`, headless §16.4
 ---                    *Verbose*) — the listing, leftover reap, staging,
 ---                    log clear / stream, crash snapshots, the program
----                    invocation, result pulls and the stop; never the
----                    periodic liveness listing
+---                    invocation, result pulls and the stop (except a
+---                    stop sent from a signal handler, which may print
+---                    nothing); never the periodic liveness listing
 ---   (`note(s, role)`: `role` is the line's highlighting role, spec §16.7 —
 ---   phase, ok, warn or plain; a caller that does not color ignores it)
 --- @param o table
@@ -390,12 +391,13 @@ function M.execute(o)
         if runner.terminate and state and plan.nonce then
             local ok, spec = pcall(runner.terminate, serial, plan.nonce, state.pid)
             if ok and spec then
-                -- (not reported to on_command: this may run from a signal
-                -- handler, where nothing may be printed through the CLI)
-                local job = spec_exec.start(spec, { label = "terminate", timeout = timeout or 10, backend = o.backend })
                 -- From a signal handler (a fast libuv callback) nothing may
-                -- block: the stop request is sent and the process exits.
+                -- block or be printed through the CLI: the stop request is
+                -- sent unreported and the process exits. Otherwise (timeout,
+                -- transport error, lost status) on_command hears it.
                 local fast = vim.in_fast_event and vim.in_fast_event()
+                local job = spec_exec.start(spec, { label = "terminate", timeout = timeout or 10, backend = o.backend,
+                    on_command = (not fast) and on_command or nil })
                 if fast then return "sent" end
                 local wok = pcall(job.wait, job)
                 local failed = not wok or (job.failure and job:failure())
