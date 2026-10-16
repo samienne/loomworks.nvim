@@ -756,7 +756,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Through the workspace daemon, warnings and errors printed before a build,
   test or run starts are now colored like the in-process output (`--color`),
   and the warnings a read-only command (`lw status`, `lw tools`) raises while
-  loading the workspace are no longer dropped. (#279)
+  loading the workspace are no longer dropped, on the request that loads the
+  workspace: a warm daemon reuses its loaded workspace and does not repeat
+  them. (#279)
+- Through the workspace daemon, a warning or error raised while a read-only
+  command reads the daemon's workspace is now colored like the in-process
+  output (`--color`). (#280)
 - The loomtest adapter's `setup()` is idempotent: calling it again (a repeated
   setup in a config) replaces its event listeners instead of adding another
   set, so one profile switch no longer re-renders the test tree once per call.
