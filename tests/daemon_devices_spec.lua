@@ -705,6 +705,37 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
         assert.is_nil(read(s.log):find("log_clear", 1, true))
     end)
 
+    it("sends at most LOG_BATCH_BYTES of records in one log signal, the rest on later ticks", function()
+        s = session()
+        local launch = launched()
+        subscribe()
+        devices.LOG_BATCH_BYTES = 400
+        devices.LOG_FLUSH_MS = 20
+        local id = start_log(launch, env_with({ LW_TEST_LOG_COUNT = "20", LW_TEST_LOG_SLEEP = "30000" }))
+        local recs, _, _, _, batches = collect(id, function(r) return #r >= 23 end)
+        assert.equals(23, #recs)
+        assert.equals("flood 20", recs[23].message)
+        assert.is_true(#batches >= 5, vim.inspect(batches))
+        local i = 0
+        for _, n in ipairs(batches) do
+            local bytes = #vim.json.encode(vim.list_slice(recs, i + 1, i + n))
+            assert.is_true(n == 1 or bytes <= 400, vim.inspect(batches))
+            i = i + n
+        end
+        cancel(id)
+        collect(id)
+        -- The end's flush is split too.
+        devices.LOG_FLUSH_MS = 60000
+        local done
+        recs, _, done, _, batches = collect(start_log(launch, env_with({ LW_TEST_LOG_COUNT = "20" })))
+        assert.equals(0, done.exit_code)
+        assert.equals(23, #recs)
+        assert.is_true(#batches >= 5, vim.inspect(batches))
+        -- The real bound is far under the frame limit.
+        devices.LOG_BATCH_BYTES = saved.LOG_BATCH_BYTES
+        assert.is_true(devices.LOG_BATCH_BYTES * 8 <= require("loomworks.daemon.protocol").MAX_FRAME)
+    end)
+
     it("kills a running pid probe when the stream ends by itself", function()
         s = session()
         local launch = launched()

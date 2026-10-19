@@ -72,8 +72,12 @@ M.PROBE_TIMEOUT_MS = 3000
 --- A device log (Launch/1.device_log): records waiting to be sent, at most
 --- (the oldest dropped beyond, counted in the next `log` signal's `dropped`).
 M.LOG_QUEUE_MAX = 2000
---- How often the waiting records are sent as one `log` signal.
+--- How often the waiting records are sent as `log` signals.
 M.LOG_FLUSH_MS = 100
+--- At most this many bytes of records (as JSON) in one `log` signal — far
+--- under protocol.MAX_FRAME even escaped; the rest wait for the next tick
+--- (all of them go, in signals this size, before the task's `done`).
+M.LOG_BATCH_BYTES = 1024 * 1024
 --- The log clear's timeout (the in-process view's too): a clear that does
 --- not end by then is killed, a note line, and the stream starts.
 M.LOG_CLEAR_TIMEOUT_MS = 3000
@@ -756,23 +760,35 @@ end
 --- `push` drops the oldest when full, counting it in `dropped`.
 --- @return table
 local function log_queue()
-    local q = { items = {}, head = 1, tail = 0, dropped = 0 }
+    local q = { items = {}, bytes = {}, head = 1, tail = 0, dropped = 0 }
     function q.size() return q.tail - q.head + 1 end
     function q.push(rec)
         q.tail = q.tail + 1
         q.items[q.tail] = rec
+        -- (Its size in the signal: its JSON and a separator.)
+        q.bytes[q.tail] = #vim.json.encode(rec) + 1
         if q.size() > M.LOG_QUEUE_MAX then
-            q.items[q.head] = nil
+            q.items[q.head], q.bytes[q.head] = nil, nil
             q.head = q.head + 1
             q.dropped = q.dropped + 1
         end
     end
-    --- Everything waiting, and the number dropped since the last take.
-    function q.take()
-        local out = {}
-        for i = q.head, q.tail do out[#out + 1] = q.items[i] end
+    --- The oldest records waiting, as many as fit in `max_bytes` (at least
+    --- one), and the number dropped since the last take.
+    --- @param max_bytes integer
+    function q.take(max_bytes)
+        local out, used = {}, 0
+        while q.head <= q.tail do
+            local n = q.bytes[q.head]
+            if #out > 0 and used + n > max_bytes then break end
+            out[#out + 1] = q.items[q.head]
+            used = used + n
+            q.items[q.head], q.bytes[q.head] = nil, nil
+            q.head = q.head + 1
+        end
+        if q.head > q.tail then q.items, q.bytes, q.head, q.tail = {}, {}, 1, 0 end
         local dropped = q.dropped
-        q.items, q.head, q.tail, q.dropped = {}, 1, 0, 0
+        q.dropped = 0
         return out, dropped
     end
     return q
@@ -796,19 +812,22 @@ local function run_device_log(service, ctx, l, command)
     task:start({ name = lt:display_name() .. " log on " .. serial, kind = "device_log",
         profile = l.profile and l.profile.key or nil })
 
-    -- The records, sent every LOG_FLUSH_MS while the owner keeps up
-    -- (PROTOCOL.md §14.4); all of them before the task's `done`.
+    -- The records, one signal of at most LOG_BATCH_BYTES every LOG_FLUSH_MS
+    -- while the owner keeps up (PROTOCOL.md §14.4); all of them, in signals
+    -- that size, before the task's `done`.
     local queue = log_queue()
     local function flush(force)
-        if queue.size() == 0 and queue.dropped == 0 then return end
-        if not force and tasks_mod._queued(task.owner) > tasks_mod.OWNER_HIGH then return end
-        local recs, dropped = queue.take()
-        local reg = service.server and service.server.interfaces
-        if not reg then return end
-        local where = core_ifaces.LAUNCH
-        reg:emit(where.path, where.iface, where.v, "log",
-            { task = task.id, records = recs, dropped = dropped > 0 and dropped or nil },
-            function(sub_args) return sub_args.task == nil or sub_args.task == task.id end)
+        repeat
+            if queue.size() == 0 and queue.dropped == 0 then return end
+            if not force and tasks_mod._queued(task.owner) > tasks_mod.OWNER_HIGH then return end
+            local recs, dropped = queue.take(M.LOG_BATCH_BYTES)
+            local reg = service.server and service.server.interfaces
+            if not reg then return end
+            local where = core_ifaces.LAUNCH
+            reg:emit(where.path, where.iface, where.v, "log",
+                { task = task.id, records = recs, dropped = dropped > 0 and dropped or nil },
+                function(sub_args) return sub_args.task == nil or sub_args.task == task.id end)
+        until not force
     end
 
     -- The pid probes run beside the stream, in their own child slot: a
