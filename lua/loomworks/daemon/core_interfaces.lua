@@ -12,7 +12,9 @@
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list
----   /profiles    loomworks.Profiles/1     compiler_cache
+---   /profiles    loomworks.Profiles/1     compiler_cache, set_device, clear_device
+---   /devices     loomworks.Devices/1      list, scan T, install T, launch T, stop (changed;
+---                                         loomworks.daemon.devices)
 ---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1, loomworks.view.Tests/1
 ---                                         get (update; loomworks.daemon.views)
 ---
@@ -105,6 +107,8 @@ function M.header_check(service)
     if not ok and reg then reg:_log("view update failed: %s", tostring(err)) end
     ok, err = pcall(M.lsp_check, service)
     if not ok and reg then reg:_log("LspConfig changed check failed: %s", tostring(err)) end
+    ok, err = pcall(require("loomworks.daemon.devices").check, service)
+    if not ok and reg then reg:_log("Devices changed check failed: %s", tostring(err)) end
 end
 
 --- `LspConfig/1.get`'s state (§19.20): `env_key` names the environment it is
@@ -377,14 +381,86 @@ function M.toolchains_impl(service)
     } }
 end
 
---- The `loomworks.Profiles/1` handlers.
+--- A working-copy write in a model segment of the caller's environment (as
+--- DebugConfig/1.set_adapter): after the tracker took in any pending file
+--- change, `write(ws)` returns the result (`ok`, or `refused` when the write
+--- was refused or failed — nothing written, the model unchanged).
+--- @param service loomworks.daemon.BuildService
+--- @param ctx table the call
+--- @param kind string the segment's request kind
+--- @param write fun(ws: table): table
+--- @return any interfaces.ASYNC
+local function write_segment(service, ctx, kind, write)
+    service:_on_model_request(ctx.conn, { kind = kind, env = ctx.env }, function(ws)
+        -- A change another process wrote is taken in first: the write then
+        -- never refuses as stale for it (§2.7).
+        local tr = ws._tracker
+        if tr and tr.sync then tr:sync() end
+        if service.host.current() ~= ws then
+            return { outcome = "refused", exit_code = 1,
+                message = "the workspace was reloaded (refused or changed .nvim files); try again" }
+        end
+        return write(ws)
+    end, nil, function(fields) ctx.reply(fields) end)
+    return require("loomworks.daemon.interfaces").ASYNC
+end
+
+--- The profile a `Profiles/1` write names (`{ id }` or `{ key }`), or nil +
+--- the refusal.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @param ref table
+--- @return table|nil profile, string|nil err
+local function profile_of(service, ws, ref)
+    if ref.id ~= nil then
+        local p = service.ids:find(ref.id, ws._profiles)
+        if not p then return nil, "no profile with id " .. tostring(ref.id) .. " (a stale reference)" end
+        return p
+    end
+    for _, p in pairs(ws._profiles or {}) do
+        if not p._removed and p.key == ref.key then return p end
+    end
+    return nil, "no profile '" .. tostring(ref.key) .. "'"
+end
+
+--- The `loomworks.Profiles/1` handlers. `set_device` / `clear_device`
+--- (API.md §11) write the profile's device to the working copy as the
+--- in-process Profile:set_device / clear_device do; `set_device`'s device
+--- is one of the registry's (Devices/1.list), by id or serial. The write's
+--- `model_change` (Workspace/1 `changed`) precedes the reply.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.profiles_impl(service)
-    return { methods = {
+    local methods = {
         compiler_cache = query(service, "profile_cache", function(r) return { cache = r.cache } end,
             function(a) return { profile = a.profile, project = a.project } end),
-    } }
+    }
+    local function refused(msg) return { outcome = "refused", message = tostring(msg), exit_code = 1 } end
+    function methods.set_device(ctx, args)
+        return write_segment(service, ctx, "profile_device", function(ws)
+            local profile, perr = profile_of(service, ws, args.profile)
+            if not profile then return refused(perr) end
+            local d = args.device
+            local device = d.id ~= nil and service.ids:find(d.id, ws._devices) or (d.key ~= nil and ws:find_device(d.key))
+            if not device then
+                return refused(d.id ~= nil and ("no device with id " .. tostring(d.id) .. " (a stale reference)")
+                    or ("no device '" .. tostring(d.key) .. "' — scan for devices first (Devices/1.scan)"))
+            end
+            local ok, err = profile:set_device(device.serial)
+            if not ok then return refused(err or "user.json was not written") end
+            return { outcome = "ok" }
+        end)
+    end
+    function methods.clear_device(ctx, args)
+        return write_segment(service, ctx, "profile_device", function(ws)
+            local profile, perr = profile_of(service, ws, args.profile)
+            if not profile then return refused(perr) end
+            local ok, err = profile:clear_device()
+            if not ok then return refused(err or "user.json was not written") end
+            return { outcome = "ok" }
+        end)
+    end
+    return { methods = methods }
 end
 
 --- The `loomworks.DebugConfig/1` handlers (§19.20 `DebugConfig/1`): the
@@ -523,6 +599,7 @@ function M.mount(registry, service)
         { M.PROFILES, M.profiles_impl },
         { M.DEBUG, M.debug_impl },
         { M.LSP, M.lsp_impl },
+        { require("loomworks.daemon.devices").WHERE, require("loomworks.daemon.devices").impl },
     }
     vim.list_extend(mounts, require("loomworks.daemon.views").MOUNTS)
     for _, m in ipairs(mounts) do

@@ -12,7 +12,7 @@
 ---                  "allow"?, "steps": [ ... ] } ] }
 ---
 --- A case runs on a fresh daemon of its `fixture` (a workspace the runner
---- prepares: `empty`, `shell`, `tests`; see FIXTURES) over one connection. Unless
+--- prepares: `empty`, `shell`, `tests`, `devices`; see FIXTURES) over one connection. Unless
 --- `handshake` is false, the runner first sends the default `hello` (with the
 --- case's `hello` fields over it) and expects `welcome`, bound as the
 --- variable `welcome`. Steps:
@@ -123,7 +123,17 @@ M.FORMAT = 1
 ---          and a trusted working copy with the profile `dev` active;
 ---          a discovery probe sleeps `LW_TEST_DISCOVER_SLEEP` ms of the
 ---          client environment
-M.FIXTURES = { empty = true, shell = true, tests = true }
+---   devices  the `shell` fixture's project `app` (same commands, build
+---          directory and configuration set `dev`) as a project of the
+---          harness-only module `devstub` (tests/fixtures/devstub, on the
+---          daemon's runtime path; step 5n), whose devices are `SER1`
+---          ("Stub Phone", online) and `SER2` ("Stub Tablet", offline) unless
+---          the client environment's `LW_TEST_DEVICES` names others, and a
+---          trusted working copy with the profile `dev` active, its default
+---          target the device target `app` and no device chosen; the
+---          client environment's `LOOMWORKS_DEVICE_LOCK_DIR` is a fresh
+---          directory
+M.FIXTURES = { empty = true, shell = true, tests = true, devices = true }
 
 --- Default per-step timeout.
 M.TIMEOUT_MS = 30000

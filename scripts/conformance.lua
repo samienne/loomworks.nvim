@@ -110,12 +110,13 @@ function M.fixture(name, key_path)
         write(root .. "/loomworks.json", vim.json.encode({ projects = vim.empty_dict() }))
         return root
     end
-    assert(name == "shell" or name == "tests", "unknown fixture " .. tostring(name))
+    assert(name == "shell" or name == "tests" or name == "devices", "unknown fixture " .. tostring(name))
     vim.fn.mkdir(root .. "/app", "p")
     write(root .. "/step.lua", M.STEP)
     local nv = (vim.v.progpath:gsub("\\", "/"))
     local function cmd(kind) return { nv, "--headless", "-u", "NONE", "-l", root .. "/step.lua", kind } end
     if name == "tests" then return M.tests_fixture(root, key_path, cmd) end
+    if name == "devices" then return M.devices_fixture(root, key_path, cmd) end
     local function app()
         return { path = "app", shell = {
             build_dir = "${workspace_root}/out/${variant}",
@@ -216,6 +217,52 @@ function M.register_teststub()
     mods.register("teststub", package.loaded["loomworks.modules.teststub"])
 end
 
+--- The directory of the harness-only `devstub` module (step 5n): on the
+--- runtime path of a daemon running the `devices` fixture.
+M.DEVSTUB = M.REPO .. "/tests/fixtures/devstub"
+
+--- The `devices` fixture (see loomworks.proto.conformance FIXTURES): the
+--- `shell` fixture's project `app` as a `devstub` project (its device target
+--- `app`), the profile `dev` active with that device target as its default
+--- target and no device chosen.
+--- @param root string
+--- @param key_path string
+--- @param cmd fun(kind: string): string[]
+--- @return string root
+function M.devices_fixture(root, key_path, cmd)
+    local function app()
+        return { path = "app", devstub = {
+            build_dir = "${workspace_root}/out/${variant}",
+            configure_cmd = cmd("configure"), build_cmd = cmd("build"),
+            configurations = { Debug = vim.empty_dict() },
+        } }
+    end
+    write(root .. "/loomworks.json", vim.json.encode({
+        projects = { app = app() },
+        configuration_sets = { dev = { app = "Debug" } },
+    }))
+    local trust = require("loomworks.trust")
+    trust._set_key_path(key_path)
+    local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
+        projects = { app = app() }, active_profile = "dev",
+        default_target = { dev = { project = "app", device_target = "app", device_target_label = "app app" } } }
+    local signed, serr = trust.sign("user", trust.encode(user))
+    trust._set_key_path(nil)
+    if not signed then error(serr) end
+    write(root .. "/.nvim/loomworks.user.json", signed)
+    return root
+end
+
+--- Make the `devstub` module loadable in this process (the loopback
+--- transport's daemon runs here).
+function M.register_devstub()
+    local mods = require("loomworks.modules")
+    if not package.loaded["loomworks.modules.devstub"] then
+        package.loaded["loomworks.modules.devstub"] = dofile(M.DEVSTUB .. "/lua/loomworks/modules/devstub.lua")
+    end
+    mods.register("devstub", package.loaded["loomworks.modules.devstub"])
+end
+
 -- ---------------------------------------------------------------------------
 -- Drivers
 -- ---------------------------------------------------------------------------
@@ -290,13 +337,15 @@ function M.wire_env(vars)
 end
 
 --- The default command of the stdio transport: this checkout's `lw`
---- through this nvim (for the `tests` fixture with the harness-only
---- `teststub` module on its runtime path; another `--lw` must provide it).
+--- through this nvim (for the `tests` / `devices` fixture with the
+--- harness-only `teststub` / `devstub` module on its runtime path; another
+--- `--lw` must provide it).
 --- @param fixture? string
 --- @return string[]
 function M.default_lw(fixture)
     local rtp = "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")"
     if fixture == "tests" then rtp = rtp .. "; vim.opt.rtp:append(" .. string.format("%q", M.TESTSTUB) .. ")" end
+    if fixture == "devices" then rtp = rtp .. "; vim.opt.rtp:append(" .. string.format("%q", M.DEVSTUB) .. ")" end
     return { vim.v.progpath, "--headless", "-u", "NONE", "--cmd", rtp, "-l", M.REPO .. "/lua/loomworks/cli.lua" }
 end
 
@@ -382,8 +431,13 @@ function M.run_case(case, opts)
             trust._set_key_path(key)
             ctx_env = { vars = uv.os_environ() }
             if case.fixture == "tests" then M.register_teststub() end
+            if case.fixture == "devices" then M.register_devstub() end
             d = M.loopback_driver(root)
         end
+        -- The device locks (§18.7) of the `devices` fixture's commands: the
+        -- daemon takes them in the client's environment, never in the
+        -- user's own lock directory.
+        if case.fixture == "devices" then ctx_env.vars.LOOMWORKS_DEVICE_LOCK_DIR = tmp() end
         local vars = { lw_version = opts.lw_version or version.identity(), root = root,
             env = M.wire_env(ctx_env.vars) }
         return engine.run_case(case, d, { vars = vars, timeout_ms = opts.timeout_ms })

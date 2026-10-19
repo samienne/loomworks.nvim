@@ -1,0 +1,71 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Devices",
+  "version": 1,
+  "description": "Object /devices (API.md §15; step 5n part B2): the registry (list, never probing), a scan in the client's environment with its changed signal, and the install, launch and stop of the device target of the devices fixture's profile on the device Profiles/1.set_device chose.",
+  "cases": [
+    {
+      "name": "list never probes; a scan fills the registry and signals changed",
+      "fixture": "devices",
+      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "devices": [] } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/devices", "iface": "loomworks.Devices", "v": 1, "signals": [ "changed" ] } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "sub_id": { "$bind": "sub" } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "scan", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "scan" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "start", "meta": { "kind": "scan", "object": "/devices", "iface": "loomworks.Devices", "method": "scan" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "line", "text": "SCAN OK: 2 devices (1 online)", "role": "ok" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0, "devices": 2 } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/devices", "iface": "loomworks.Devices", "v": 1, "name": "changed", "sub_id": { "$var": "sub" }, "args": { "seq": 1 } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "devices": [
+          { "id": { "$type": "string" }, "key": "SER1", "label": "Stub Phone", "state": "online", "provider": "devstub", "profiles": { "$absent": true } },
+          { "id": { "$type": "string" }, "key": "SER2", "label": "Stub Tablet", "state": "offline", "provider": "devstub" }
+        ] } } }
+      ]
+    },
+    {
+      "name": "a device target is installed and launched on the profile's device, and its program stopped",
+      "fixture": "devices",
+      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "scan", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "scan" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "install", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "nodev" }, "profile_key": "dev" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "nodev" }, "phase": "done", "exit_code": 1, "error": { "$pattern": "^profile 'dev' has no device" }, "result": { "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" }, "device": { "key": "SER1" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "install", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "accepted", "task_id": { "$bind": "install" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "install" }, "phase": "start", "meta": { "name": "app: app app on SER1", "kind": "install", "profile": "dev" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "install" }, "phase": "line", "text": "installing app: app app on SER1", "role": "phase" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "install" }, "phase": "output", "stream": "stdout", "text": { "$pattern": "^install SER1 " } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "install" }, "phase": "line", "text": "INSTALL OK: app: app app on SER1", "role": "ok" }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "install" }, "phase": "done", "exit_code": 0, "result": { "$exact": { "exit_code": 0 } } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "launch", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "accepted", "task_id": { "$bind": "launch" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "launch" }, "phase": "done", "exit_code": 0, "result": { "$exact": { "exit_code": 0, "pid": 4242, "bundle": "com.example.app" } } }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 6, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "stop", "args": { "task": { "$var": "launch" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "ok" } }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 7, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "stop", "args": { "task": { "$var": "launch" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 7, "result": { "outcome": "refused", "message": { "$pattern": "^no program launched by task " } } } }
+      ]
+    },
+    {
+      "name": "the task methods and stop need the client's environment; extra arguments are invalid",
+      "fixture": "devices",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "scan", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 1, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "install", "args": { "device": "SER1" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "stop", "args": { "task": "t-none" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": "no program launched by task t-none" } } }
+      ]
+    }
+  ]
+}

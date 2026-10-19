@@ -737,7 +737,7 @@ function M.run(svc, ctx)
     --- label, project?, configuration?, target?, phase?, state = "pending"
     --- }`), planned before the task starts (its `start.meta.steps`) — or
     --- nil and the refusal of the target (resolution, validity, a debug's
-    --- kit-told refusal, a device target's build, an abstract configuration).
+    --- kit-told refusal, an abstract configuration).
     --- @return { lt: table, phases: table[] }|nil, string|nil
     local function plan_target_scope()
         local rp = require("loomworks.run_prep")
@@ -747,7 +747,6 @@ function M.run(svc, ctx)
         if verr then return nil, verr end
         local drefusal = debugging and rp.debug_refusal(lt, true) or nil
         if drefusal then return nil, drefusal end
-        if target_build and lt:requires_device() then return nil, rp.device_build_refusal(lt) end
         local aerr = lt:abstract_error()
         if aerr then return nil, aerr end
         local phases = {}
@@ -780,9 +779,13 @@ function M.run(svc, ctx)
         end
         -- The artifact is probed once the target's own unit built, before the
         -- post-build deploy (§19.15 "Debug"; "Run": a foreign artifact runs
-        -- on a device, in the client, which then deploys itself).
+        -- on a device, in the client, which then deploys itself). A device
+        -- target's build ends with its post-build deploy: its install and
+        -- launch are Devices/1's (§19.16 "Devices", API.md §9.4).
         if not target_build then
             add({ probe = true }, { kind = "probe", label = "probe " .. lt:display_name(), project = pkey })
+            deploy("post_build")
+        elseif lt:requires_device() then
             deploy("post_build")
         end
         for index, ph in ipairs(phases) do

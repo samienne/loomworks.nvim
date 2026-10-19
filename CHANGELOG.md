@@ -753,6 +753,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- `lw device select` fails with the reason when it cannot save the profile's
+  device, instead of reporting it saved; choosing a device in the editor
+  shows the error likewise. (#287)
 - Through the workspace daemon, warnings and errors printed before a build,
   test or run starts are now colored like the in-process output (`--color`),
   and the warnings a read-only command (`lw status`, `lw tools`) raises while

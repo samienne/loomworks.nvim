@@ -219,6 +219,17 @@ stops it, so every daemon case loads a cold workspace.
   daemon's `last_result` says `cancelled`; take the outcome from the
   daemon's task end instead.
 
+## Device targets by name (step 5n part B2, PR #287)
+
+Device targets are reachable only as a profile's default target (API.md
+§15); `run_prep.launchable_targets` lists build targets and launch
+configurations only. Naming them needs a spec decision first (spec §16.17):
+id or label as the name, which `kind` selects one, whether one counts toward
+"the sole launchable target" (could make an existing profile ambiguous), and
+whether `lw targets` lists it. Today `lw run <profile> app` says there is no
+such target, and a default device target fails in `resolve_spec`
+("cannot resolve launch").
+
 ## Direct `vim.notify` calls bypass `core._deps.notify`
 
 `config.lua:199` ("project 'x' directory not found") and about 45 other files

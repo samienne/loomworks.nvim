@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Profiles",
   "version": 1,
-  "description": "Object /profiles (API.md §11): compiler_cache, with references by key and by id.",
+  "description": "Object /profiles (API.md §11): compiler_cache, with references by key and by id; set_device and clear_device (step 5n part B2).",
   "cases": [
     {
       "name": "compiler_cache answers for a mapped project, by key and by id",
@@ -30,6 +30,43 @@
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "compiler_cache", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "set_device chooses a scanned device by serial or id; clear_device removes it",
+      "fixture": "devices",
+      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" }, "device": { "key": "SER1" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "exit_code": 1, "message": { "$pattern": "^no device 'SER1'" } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "scan", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "scan" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 3, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "devices": [ { "id": { "$bind": "ser1" }, "key": "SER1" }, { "key": "SER2" } ] } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" }, "device": { "id": { "$var": "ser1" } } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "devices": [ { "key": "SER1", "profiles": [ "dev" ] }, { "key": "SER2", "profiles": { "$absent": true } } ] } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" }, "device": { "key": "SER2" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 7, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "clear_device", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 7, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 8, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "list", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 8, "result": { "devices": [ { "key": "SER1", "profiles": { "$absent": true } }, { "key": "SER2", "profiles": { "$absent": true } } ] } } }
+      ]
+    },
+    {
+      "name": "set_device / clear_device refuse an unknown profile and a stale device id; a missing reference is invalid",
+      "fixture": "devices",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "clear_device", "args": { "profile": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": "no profile 'nope'", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" }, "device": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
       ]
     }
   ]

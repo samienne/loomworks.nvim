@@ -49,22 +49,35 @@ function M.selected_serial(profile)
     return profile:device_serial()
 end
 
+--- The choice's write ended: on success, with `ws`, the page is told
+--- (`active_set_changed`); a failed write is reported as an error.
+--- @return boolean ok, string|nil err
+local function written(ws, profile, what, ok, err)
+    if ok then
+        if ws then ws._core._deps.events.emit("active_set_changed", ws._active_set) end
+        return true
+    end
+    vim.notify("loomworks: could not " .. what .. " the device of profile '" .. tostring(profile.key)
+        .. "': " .. tostring(err), vim.log.levels.ERROR)
+    return false, err
+end
+
 --- Select a device for the profile. With `ws`, the page is told
---- (`active_set_changed`).
+--- (`active_set_changed`). A failed write of the working copy is reported.
 --- @param ws loomworks.Workspace|nil
 --- @param profile loomworks.Profile
 --- @param serial string
+--- @return boolean ok, string|nil err
 function M.select(ws, profile, serial)
-    profile:set_device(serial)
-    if ws then ws._core._deps.events.emit("active_set_changed", ws._active_set) end
+    return written(ws, profile, "save", profile:set_device(serial))
 end
 
---- Clear the profile's device selection (see `select` for `ws`).
+--- Clear the profile's device selection (see `select`).
 --- @param ws loomworks.Workspace|nil
 --- @param profile loomworks.Profile
+--- @return boolean ok, string|nil err
 function M.clear(ws, profile)
-    profile:clear_device()
-    if ws then ws._core._deps.events.emit("active_set_changed", ws._active_set) end
+    return written(ws, profile, "clear", profile:clear_device())
 end
 
 return M

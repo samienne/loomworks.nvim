@@ -30,8 +30,16 @@ end
 
 local function mock_profile(key, serial)
     local p = { key = key, _device_serial = serial, saved = 0 }
-    function p:set_device(s) self._device_serial = s; self.saved = self.saved + 1 end
-    function p:clear_device() self._device_serial = nil; self.saved = self.saved + 1 end
+    function p:set_device(s)
+        if self.fail then return false, self.fail end
+        self._device_serial = s; self.saved = self.saved + 1
+        return true
+    end
+    function p:clear_device()
+        if self.fail then return false, self.fail end
+        self._device_serial = nil; self.saved = self.saved + 1
+        return true
+    end
     function p:projects() return {} end
     function p:sdk() return nil end
     return p
@@ -177,6 +185,43 @@ describe("lw device list / select", function()
         assert.is_true(res.ok)
         assert.is_nil(p._device_serial)
         assert.equals(2, p.saved)
+    end)
+
+    it("select / --clear report a failed write of the working copy", function()
+        local p = mock_profile("Debug", "SER1")
+        p.fail = "disk full"
+        local ws = mock_ws(nil, { p })
+        local res = capture(function() return cli._device_select(ws, { "SER9", "Debug" }) end)
+        assert.is_false(res.ok)
+        assert.equals(1, res.exit_code)
+        assert.truthy(res.stderr:find("disk full", 1, true), res.stderr)
+        assert.is_nil(res.stdout:find("device for profile", 1, true), res.stdout)
+        res = capture(function() return cli._device_select(ws, { "--clear", "Debug" }) end)
+        assert.is_false(res.ok)
+        assert.equals(1, res.exit_code)
+        assert.truthy(res.stderr:find("disk full", 1, true), res.stderr)
+        assert.is_nil(res.stdout:find("cleared", 1, true), res.stdout)
+    end)
+
+    it("the editor's device source reports a failed write and tells no one", function()
+        local ds = require("loomworks.device_source")
+        local p = mock_profile("Debug", "SER1")
+        p.fail = "disk full"
+        local emitted, notified = 0, {}
+        local ws = { _active_set = {}, _core = { _deps = { events = { emit = function() emitted = emitted + 1 end } } } }
+        local real_notify = vim.notify
+        vim.notify = function(msg, level) notified[#notified + 1] = { msg, level } end
+        local ok1, err1 = ds.select(ws, p, "SER9")
+        local ok2, err2 = ds.clear(ws, p)
+        vim.notify = real_notify
+        assert.is_false(ok1)
+        assert.equals("disk full", err1)
+        assert.is_false(ok2)
+        assert.equals("disk full", err2)
+        assert.equals(0, emitted)
+        assert.equals(2, #notified)
+        assert.truthy(notified[1][1]:find("disk full", 1, true), notified[1][1])
+        assert.equals(vim.log.levels.ERROR, notified[1][2])
     end)
 
     it("device clean removes this workspace's staging tree and its sync records", function()

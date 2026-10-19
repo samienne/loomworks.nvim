@@ -1,0 +1,265 @@
+{
+  "interface": "loomworks.Devices",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /devices (API.md §15; step 5n part B2): the workspace's devices (spec §11). The server keeps a registry of the devices its modules found; a client never lists or probes devices itself. A profile's device is chosen with Profiles/1.set_device and clear_device. Runner devices (spec §18) are not here.",
+  "methods": {
+    "list": {
+      "description": "The registry as it is, by serial: never loads the workspace (an unloaded one has none) and never probes a device.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "devices"
+        ],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Device"
+            }
+          }
+        }
+      },
+      "needs_env": false,
+      "mutates": false
+    },
+    "scan": {
+      "description": "A task (meta.kind scan) that asks each module that has devices to list them, in the caller's environment, and updates the registry (devices no longer listed stay, offline); changed follows when the registry's records differ. A cancel ends it at once and the registry is not updated; a scan whose modules have not all answered within a minute fails.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The scan's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "devices": {
+              "description": "The number of devices in the registry after the scan.",
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "install": {
+      "description": "A task (meta.kind install) that installs a built device target on its profile's device, with the module's install command spawned in the caller's environment, its output on the task. The target is addressed as Launch/1.prepare_run addresses it (API.md §9.1): the profile is resolved before the task is accepted (a refusal is the refused result); a target that does not resolve or is not a device target, a profile with no device, or a module that cannot install it ends the task nonzero before anything runs. It holds the target's build-directory lock (fail-fast), then the device lock (waiting for a live holder, its holder announced once on the task; a hung holder fails), for the command only. A cancel kills the command.",
+      "params": {
+        "$ref": "#/$defs/TargetParams"
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The install's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "launch": {
+      "description": "A task (meta.kind launch) that launches a device target on its profile's device, addressed and refused as install is, under the device lock only; then, when the module names the program's bundle, the program's process id is probed. A launch that succeeded is remembered for stop until its owner disconnects. A cancel kills the command or probe.",
+      "params": {
+        "$ref": "#/$defs/TargetParams"
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The launch's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "pid": {
+              "description": "The launched program's process id on the device, when it was found.",
+              "type": "integer"
+            },
+            "bundle": {
+              "description": "The launched program's bundle, when the module names one.",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "stop": {
+      "description": "Stop the program a finished launch task of the caller launched, with the module's stop command in the caller's environment under the device lock; ok once it succeeded (the launch is then forgotten; also when the module has no stop command). Another client's launch is forbidden; a task that launched nothing (unknown, still running, failed, or already stopped) or a failed stop is the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "task"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "description": "The launch's task id.",
+            "$ref": "loomworks.Common/1#/$defs/TaskId"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "const": "ok"
+              }
+            }
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "errors": [
+        "forbidden"
+      ],
+      "needs_env": true,
+      "mutates": true
+    }
+  },
+  "signals": {
+    "changed": {
+      "description": "The registry's records changed (a scan, a device appearing or going away, a profile choosing a device); carries no state and has no initial: a client reads list after subscribing and again on each changed.",
+      "args": {
+        "type": "object",
+        "required": [
+          "seq"
+        ],
+        "properties": {
+          "seq": {
+            "description": "Increases with each changed this daemon session sends.",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Device": {
+      "description": "A device of the registry (API.md §1.1): key its serial, label its name (the serial when it has none).",
+      "type": "object",
+      "required": [
+        "id",
+        "key",
+        "label",
+        "state",
+        "provider"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "loomworks.Common/1#/$defs/Id"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "state": {
+          "description": "online or offline; clients show an unknown state as neutral.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "The module that found it.",
+          "type": "string"
+        },
+        "profiles": {
+          "description": "The keys of the profiles that chose it; absent when none did.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "TargetParams": {
+      "description": "A device target, addressed as Launch/1.prepare_run addresses a launch target (API.md §9.1).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "description": "The profile, resolved as Launch/1.build resolves it without interactive (absent: refused, as a non-interactive command refuses it; the editor names its active profile); its device is the one used.",
+          "$ref": "loomworks.Common/1#/$defs/Ref"
+        },
+        "target": {
+          "description": "The target or launch configuration name (absent: the profile's default target).",
+          "type": "string"
+        },
+        "project": {
+          "description": "The project the target belongs to.",
+          "$ref": "loomworks.Common/1#/$defs/Ref"
+        },
+        "kind": {
+          "description": "Which kind of name target is; absent: either.",
+          "enum": [
+            "target",
+            "launch"
+          ]
+        }
+      }
+    }
+  }
+}

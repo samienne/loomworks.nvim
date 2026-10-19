@@ -2,8 +2,8 @@
 --- spec §19.15 "Build of a launch target") and of the steps of a
 --- target-scoped task (§19.15 "Steps of a task"): the plan in the start
 --- meta, each step's transitions, `skipped` / `failed` / `cancelled` at the
---- task's end, `force` reaching the conflict gate, a device target refused
---- before the build, a cancel stopping between two deploy copies — and the
+--- task's end, `force` reaching the conflict gate, a device target built
+--- with its post-build deploy (step 5n), a cancel stopping between two deploy copies — and the
 --- task stream's step state (Task:step, Task:info) behind Tasks/1.
 
 local service = require("loomworks.daemon.service")
@@ -165,13 +165,33 @@ describe("daemon launch-target build (§19.15 Build of a launch target)", functi
         assert.are.same({ "1:running", "1:ok", "2:running", "2:failed", "3:skipped" }, transitions(rec))
     end)
 
-    it("refuses a device target before the build, with no steps", function()
-        local rec = run_op(launch_target({ requires_device = function() return true end }), {})
+    it("builds a device target like any other, its post-build deploy included (step 5n)", function()
+        local lt = launch_target({ requires_device = function() return true end })
+        lt._deploy_phase = function(_, phase, cb)
+            lt.deployed = (lt.deployed or "") .. phase .. ";"
+            cb(true)
+        end
+        local rec = run_op(lt, {})
+        assert.are.equal(0, rec.done.code, rec.done.err)
+        assert.are.same({ "build lib", "build app" }, rec.calls)
+        assert.are.equal("pre_build;post_build;", lt.deployed)
+        -- No probe, no launch resolved, no device outcome: install and
+        -- launch are Devices/1's.
+        assert.is_nil(rec.done.fields)
+        local kinds = {}
+        for _, s in ipairs(rec.meta.steps) do kinds[#kinds + 1] = s.kind .. (s.phase and ("/" .. s.phase) or "") end
+        assert.are.same({ "build", "deploy/pre_build", "build", "deploy/post_build" }, kinds)
+        assert.are.equal("BUILD OK: app: hello", rec.lines[#rec.lines])
+    end)
+
+    it("a device target's post-build deploy failure fails the build", function()
+        local lt = launch_target({ requires_device = function() return true end })
+        lt._deploy_phase = function(_, phase, cb) cb(phase ~= "post_build", phase == "post_build" and "gone" or nil) end
+        local rec = run_op(lt, {})
         assert.are.equal(1, rec.done.code)
-        assert.matches("^'app: hello' is a device target; ", rec.done.err)
-        assert.are.same({}, rec.calls)
-        assert.is_nil(rec.meta.steps)
-        assert.are.same({}, rec.steps)
+        assert.are.equal("deploy failed: gone", rec.done.err)
+        assert.are.same({ "1:running", "1:ok", "2:running", "2:ok", "3:running", "3:ok", "4:running", "4:failed" },
+            transitions(rec))
     end)
 
     it("answers the artifact-conflict question with force on every build step", function()

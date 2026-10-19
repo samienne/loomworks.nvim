@@ -590,9 +590,9 @@ then the launch's dependencies (explicit `depends_on` and deploy-source
 projects, a deploy source in the configuration it names), the pre-build
 deploy steps, and the launch target's own unit (its one target where the
 module builds single targets) run in that order — the phases of the `target`
-build scope (§9.3) up to and including the target's own unit (until step
-5n, without its artifact probe, post-build deploy steps or launch
-resolution). Each build
+build scope (§9.3) up to and including the target's own unit (without its
+artifact probe, post-build deploy steps or launch resolution), and for a
+device target (spec §11) then its post-build deploy steps. Each build
 takes the build-directory lock of the unit it builds, for that build only;
 the deploy steps run without locks and record their freshness in the
 workspace cache. `force` is the answer to the artifact-conflict question
@@ -601,10 +601,8 @@ ends the task with its failure line, the later steps not run; when every
 step succeeded the task closes with the plain build's line `BUILD OK:
 <target>` (the launch target's display name) and `done` carries `exit_code`
 0. A cancel (`Tasks/1.cancel`) kills a running build step and stops a deploy
-between two copies; the steps not reached are not run. A device target
-(spec §11) ends the task nonzero, before the build, with `'<target>' is a
-device target; …` as its failure line. *(Step 5n, part B2.)* From step 5n a
-device target is built like any other, its post-build deploy steps
+between two copies; the steps not reached are not run. *(Step 5n, part
+B2.)* A device target is built like any other, its post-build deploy steps
 included, and its install and launch are left to `Devices/1` (§15).
 
 ### 9.5 `device_log`
@@ -816,14 +814,16 @@ none is loaded, never unloading it for another environment). A failed query, or 
   unknown profile, a project the profile does not map, or a stale id is
   `refused`.
 
-*(Step 5n, part B2; their documents land with their handlers.)* A profile's
-device is chosen with two writes, not queries:
+*(Step 5n, part B2.)* A profile's device is chosen with two writes, not
+queries, each in a model segment of the client's environment:
 
 - **`Profiles/1.set_device { profile, device }`** — sets the profile's
   device to one of `Devices/1.list`'s devices (§15), `device` a reference
   (§1.2) to it: its `id`, or its `key` (the serial). The device's serial is
   persisted as the profile's `device` in the working copy;
 - **`Profiles/1.clear_device { profile }`** — removes it.
+
+An unknown profile or device, or a stale id, is `refused`.
 
 Each reaches subscribers as `Workspace/1` `changed` and in
 `view.Workspace/1` (§14.4); a write that is refused or fails changes neither
@@ -1284,9 +1284,12 @@ state: it is the profile's `last_result`, in the view.
 
 ## 15. `loomworks.Devices/1`
 
-*(Step 5n, part B2; its document lands with its handlers.)* The workspace's
-devices (spec §11), on `/devices`. The server keeps a registry of the
+*(Step 5n, part B2.)* The workspace's devices (spec §11), on `/devices`. The server keeps a registry of the
 devices its modules found; a client never lists or probes devices itself.
+
+A device target is reached only as its profile's default target (`target`
+omitted): a name never selects one, since `prepare_run`'s named targets are
+build targets and launch configurations (spec §16.17).
 
 - `list {}` → `{ devices: [{ id, key, label, state, provider, profiles? }] }`
   — the registry as it is; it never probes a device. Each device is an
@@ -1295,17 +1298,31 @@ devices its modules found; a client never lists or probes devices itself.
   `offline` (a client shows an unknown state as neutral), `provider` the
   module that found it, `profiles` the keys of the profiles that chose it.
 - `scan {}` — a task that asks each module that has devices to list them,
-  in the client's environment (§5), and updates the registry.
+  in the client's environment (§5), and updates the registry (a device a
+  module no longer lists stays, `offline`); a cancel ends it at once,
+  nothing merged.
 - `install { profile?, project?, target?, kind? }` — a task that installs a
   built device target, addressed as `prepare_run` addresses it (§9.1), on its
-  profile's device.
+  profile's device: the profile is resolved before the task is accepted (a
+  refusal is `refused`); a target that does not resolve or is not a device
+  target, a profile with no device, or a module that cannot install it ends
+  the task nonzero before anything runs. The module's command runs in the
+  client's environment, its output on the task, under the target's
+  build-directory lock (fail-fast) and then the device lock (spec §18.7:
+  waiting for a live holder, announced once on the task) — the order of spec
+  §19.3.
 - `launch { profile?, project?, target?, kind? }` — a task that launches
-  that target there, addressed likewise; its `done` carries `{ pid?,
-  bundle? }`.
-- `stop { task }` — stops the program launched there, `task` the launch's
-  task id.
+  that target there, addressed and refused likewise, under the device lock
+  only; its `done` carries `{ pid?, bundle? }` (the program's process id,
+  probed when the module names its bundle).
+- `stop { task }` — stops the program a finished `launch` task of the caller
+  launched (`task` its id), with the module's stop command under the device
+  lock: `ok` (also when the module has none), else `refused` (no such
+  launch, a launch still running, a failed stop); another client's launch is
+  `forbidden`. A launch is stopped once, and forgotten when its owner
+  disconnects.
 - `changed` (signal) — the registry changed (a scan, a device appearing or
-  going away); a client reads `list` again.
+  going away, a profile choosing a device); a client reads `list` again.
 
 A profile's device is chosen with `Profiles/1.set_device` and
 `clear_device` (§11).
@@ -1336,5 +1353,8 @@ the default; `shell`, a shell project `app` with configuration `Debug`, the
 configuration set and trusted profile `dev` and a launch configuration
 `hello`, also a project `lib` outside the set and a launch configuration
 `staged` depending on it; and `tests`, that project as one of the
-harness-only test module `teststub` with two test targets and `dev` active.
+harness-only test module `teststub` with two test targets and `dev` active;
+and `devices`, that project as one of the harness-only device module
+`devstub` (devices `SER1`, online, and `SER2`, offline), `dev` active with
+its device target `app` as the default target and no device chosen.
 The runner binds `lw_version`, `env` and `root` before the handshake.
