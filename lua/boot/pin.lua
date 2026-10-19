@@ -164,7 +164,8 @@ function M.is_redirect_command(cmd)
 end
 
 -- `lw launch add|create` hands the line to a program after its command
--- operand (or `--from-target <t>`): every token there is a program argument.
+-- operand: every token there is a program argument. `--from-target <t>` has
+-- no command token, so lw's options then run to the first `--`.
 local LAUNCH_ADD = { add = true, create = true }
 local LAUNCH_ADD_VALUED = { ["--working-dir"] = true, ["--cwd"] = true, ["--env"] = true,
   ["--description"] = true }
@@ -205,7 +206,7 @@ function M.own_end(args)
   while k <= #args do
     local v = args[k]
     if v == "--" or npos >= 3 then return k, c end
-    if v == "--from-target" then return math.min(k + 2, n), c end
+    if v == "--from-target" then return to_dashdash(k + 2), c end
     if LAUNCH_ADD_VALUED[v] then
       k = k + 2
     else

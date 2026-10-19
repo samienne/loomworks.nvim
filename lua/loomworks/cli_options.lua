@@ -17,11 +17,12 @@
 ---   free_after the number of positional operands after which the rest of the
 ---              argv is not checked (a value that may start with '-', or a
 ---              program's own arguments);
----   frees      valued options after which (and their value) the rest is free
----              (`launch add --from-target <t> <program args…>`);
+---   binds      valued options after which `free_after` no longer applies:
+---              lw's own options then run to the first `--`, which ends
+---              them (`launch add --from-target <t>` has no command token);
 ---   permissive true: this command/sub-command is not checked (its grammar
 ---              passes unknown tokens through by design);
----   verbatim   true: what `free_after` / `frees` leaves unchecked is a
+---   verbatim   true: what `free_after` leaves unchecked is a
 ---              program's argument list, so not even a global option is
 ---              recognised there (`launch add`'s program arguments). Without
 ---              it the unchecked rest is a value operand: global options are
@@ -44,7 +45,7 @@ local function spec(t)
     valued = set(t.valued),
     eq = t.eq or {},
     free_after = t.free_after,
-    frees = set(t.frees),
+    binds = set(t.binds),
     permissive = t.permissive,
     verbatim = t.verbatim,
   }
@@ -184,15 +185,17 @@ M.COMMANDS = {
   launch = {
     subs = {
       list = NONE,
-      -- `<project> <name> <command> [args…]` / `--from-target <t> [args…]`:
-      -- everything after the command (or the target) is the program's.
+      -- `<project> <name> <command> [args…]`: everything after the command is
+      -- the program's. `--from-target <t>` has no command token: lw's options
+      -- run to the first `--` and only what follows it is the program's.
       add = spec({ valued = { "--working-dir", "--cwd", "--env", "--from-target", "--description" },
-        eq = { "--description=" }, frees = { "--from-target" }, free_after = 3, verbatim = true }),
-      -- Every token `set` does not know becomes a program argument (its
-      -- documented grammar), so there is nothing to refuse. A global option
-      -- there is lw's own up to `--`; after `--` every token is an argument
-      -- (`lw launch set App demo -- --dev`).
-      set = PERMISSIVE,
+        eq = { "--description=" }, binds = { "--from-target" }, free_after = 3, verbatim = true }),
+      -- Bare tokens are the new arguments; an unknown option before `--` is
+      -- refused (an argument starting with `-` goes after `--`). A global
+      -- option is lw's own up to `--` (`lw launch set App demo -- --dev`).
+      set = spec({ flags = { "--clear-working-dir", "--clear-args" },
+        valued = { "--project", "--launch", "--working-dir", "--cwd", "--env", "--unset-env",
+          "--command", "--from-target" } }),
       show = spec({ flags = { "--json" }, valued = { "--project", "--launch" } }),
       remove = LAUNCH_ADDR,
       rename = NONE,
@@ -307,18 +310,18 @@ local function walk(argv)
   end
   if not s then return nil, nil, to_dashdash(start) end
   if s.permissive then return nil, nil, to_dashdash(start) end
-  local npos, i = 0, start
+  local npos, i, free_after = 0, start, s.free_after
   while argv[i] ~= nil do
     local v = argv[i]
     if v == "--" then return nil, nil, i end
-    if s.free_after and npos >= s.free_after then
+    if free_after and npos >= free_after then
       return nil, nil, s.verbatim and i or to_dashdash(i)
     end
     if #v > 1 and v:sub(1, 1) == "-" then
       if M.is_global(v) then
         i = i + 1
       elseif s.valued[v] then
-        if s.frees[v] then return nil, nil, s.verbatim and math.min(i + 2, n) or to_dashdash(i + 2) end
+        if s.binds[v] then free_after = nil end
         i = i + 2
       elseif s.flags[v] then
         i = i + 1
@@ -341,7 +344,7 @@ end
 --- Where lw's own arguments end in `argv` (argv[1] is the command, leading
 --- global options already removed): the index of the first token that
 --- belongs to a program or a native tool — the first `--`, or the program
---- arguments after `launch add`'s command (or target) — or #argv + 1. Global
+--- arguments after `launch add`'s command — or #argv + 1. Global
 --- options are recognised only before it (spec §16.7); on `launch set` and the
 --- set-value commands that is up to `--`, which escapes an argument or value
 --- spelling a global option.

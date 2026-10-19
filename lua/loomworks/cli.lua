@@ -3762,7 +3762,7 @@ end
 function M.cmd_launch_add(root, args)
   local proj_name, name = args[3], args[4]
   local usage = "usage: lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]\n" ..
-    "   or: lw launch add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]"
+    "   or: lw launch add <project> <name> --from-target <target> [--working-dir D] [--env K=V] [-- args…]"
   if not (proj_name and name) then die(usage) end
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
@@ -3775,15 +3775,17 @@ function M.cmd_launch_add(root, args)
   -- command is the program's own args, where `-m` is common (§16.35).
   local positionals, from_target, working_dir, env = {}, nil, nil, nil
   local paras = {}
+  local stray -- the first unrecognised `-…` token before `--`
   local i = 5
   while args[i] do
     local v = args[i]
     if v == "--" then
-      -- Before the command (or the target), `--` ends lw's options: the rest
-      -- is the command and its arguments. After it the `--` is itself a
-      -- program argument (`npm run dev -- --port 3000`). Either way every
+      -- Before the command `--` ends lw's options: the rest is the command
+      -- and its arguments. After it the `--` is itself a program argument
+      -- (`npm run dev -- --port 3000`). A target-backed add has no command
+      -- token, so its `--` is always lw's and is dropped. Either way every
       -- token after it is the program's, verbatim (spec §16.7).
-      local from = (#positionals == 0 and not from_target) and i + 1 or i
+      local from = (#positionals == 0 or from_target) and i + 1 or i
       for k = from, #args do positionals[#positionals + 1] = args[k] end
       break
     elseif v == "--description" then
@@ -3797,11 +3799,19 @@ function M.cmd_launch_add(root, args)
       local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
       if not k then die("bad --env '" .. tostring(args[i + 1]) .. "' — use KEY=VALUE") end
       env = env or {}; env[k] = val; i = i + 2
-    else positionals[#positionals + 1] = v; i = i + 1 end
+    else
+      if not stray and #v > 1 and v:sub(1, 1) == "-" then stray = v end
+      positionals[#positionals + 1] = v; i = i + 1
+    end
   end
 
   local cfg
   if from_target then
+    -- No command token: until `--` every token is lw's (spec §16.7).
+    if stray then
+      die("unknown option '" .. stray .. "' for `lw launch add` — see `lw help launch`" ..
+        "\n    (arguments for the target's program go after `--`)", 2)
+    end
     -- Target-backed: no command positional; remaining positionals are args.
     cfg = { target = from_target }
     if #positionals > 0 then cfg.args = positionals end
@@ -3888,7 +3898,8 @@ local launch_show_resolved
 ---   --working-dir D | --clear-working-dir
 ---   --env K=V (add/update, repeatable) | --unset-env K (remove, repeatable)
 ---   --command C | --from-target T   (switch kind)
----   trailing positionals replace args | --clear-args
+---   bare args before `--` and every token after it replace args | --clear-args
+---   (an unknown option before `--` is a usage error, spec §16.7)
 function M.cmd_launch_set(root, args)
   local ws = load_workspace(root, false)
   local proj_name, name, next_i = consume_launch_address(ws, args, 3)
@@ -3941,6 +3952,11 @@ function M.cmd_launch_set(root, args)
     elseif v == "--clear-args" then new.args = nil; touched = true; i = i + 1
     elseif v == "--command" then new.command = args[i + 1]; new.target = nil; touched = true; i = i + 2
     elseif v == "--from-target" then new.target = args[i + 1]; new.command = nil; touched = true; i = i + 2
+    elseif #v > 1 and v:sub(1, 1) == "-" then
+      -- An unknown option is a usage error, not an argument: nothing changes
+      -- (spec §16.7). An argument starting with `-` goes after `--`.
+      die("unknown option '" .. v .. "' for `lw launch set` — see `lw help launch`" ..
+        "\n    (arguments starting with `-` go after `--`)", 2)
     else new_args = new_args or {}; new_args[#new_args + 1] = v; i = i + 1 end
   end
   if new_args then new.args = new_args; touched = true end
@@ -4160,6 +4176,10 @@ function M.cmd_launch_describe(root, args)
     local v = args[i]
     if v == "--project" then proj_name = args[i + 1]; i = i + 2
     elseif v == "--launch" then name = args[i + 1]; i = i + 2
+    elseif (v == "-m" or v == "--message" or v == "-F" or v == "--file") and args[i + 1] ~= nil then
+      -- A valued describe option takes its value with it, so `-m X` before
+      -- the address never reads X as the project.
+      rest[#rest + 1] = v; rest[#rest + 1] = args[i + 1]; i = i + 2
     else
       local need = (proj_name and 0 or 1) + (name and 0 or 1)
       if #pos < need and not (v:sub(1, 1) == "-" and v ~= "-") then
@@ -11365,17 +11385,22 @@ args/env/working-dir layered on top — no hand-written path.
         --dev). A `--` after the command is kept (npm run dev -- --port 1);
         one before the command only ends lw's options.
         e.g. lw launch add app serve node server.js --env PORT=8080
-  add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
+  add <project> <name> --from-target <target> [--working-dir D] [--env K=V] [--description <para>] [-- args…]
         Declare a target-backed launch config from a build target (by name).
-        e.g. lw launch add app run --from-target app --working-dir . --env FOO=bar
+        There is no command token, so up to `--` every option is lw's (an
+        unknown one is an error); that `--` is not kept, and every token
+        after it is the program's.
+        e.g. lw launch add app run --from-target app --working-dir . --env FOO=bar -- --theme dark
   set <project> <name> [flags]   Modify an existing config in place (only the
         given fields change). Flags:
           --working-dir D | --clear-working-dir
           --env K=V (add/update, repeat) | --unset-env K (remove, repeat)
           --command C | --from-target T   (switch kind)
-          trailing args replace the arg list | --clear-args
-          (after `--` every token is an arg, even --env or --dev;
-           before it --dev/--no-input/... are lw's own options)
+          [args…] [-- args…] replace the arg list | --clear-args
+          (an unknown option before `--` is an error and nothing changes;
+           an arg starting with `-` goes after `--`, where every token is
+           an arg, even --env or --dev; before it --dev/--no-input/... are
+           lw's own options)
         e.g. lw launch set app run --env PORT=9090 --unset-env FOO --working-dir .
   show <project> <name> [--json]
         Detail one config: description, target/command, args, working dir,

@@ -26,6 +26,26 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Changed
+
+- `lw launch set` no longer turns an unknown option into an argument: an
+  unknown option before `--` is a usage error (exit 2) and nothing changes.
+  An argument starting with `-` now goes after `--`
+  (`lw launch set app run -- --port 1`); bare arguments still work as before
+  (#PR).
+
+### Fixed
+
+- `lw launch add <project> <name> --from-target <target> … -- <args>` stored the
+  `--` as the first argument. A target-backed add has no command token, so its
+  `--` is lw's separator and is dropped; before it an unknown option is a usage
+  error instead of becoming an argument (#PR).
+- `lw launch set <project> <name> --description text` (an option `set` does not
+  have) replaced the config's arguments with `--description text`. It is now
+  refused with exit 2 and the config is left unchanged (#PR).
+- `lw launch describe -m <para> --project P --launch N` took the paragraph as
+  the project name when `-m` came before the address (#PR).
+
 ## 0.1.49 - 2026-10-19
 
 `lw build`, `lw run`, `lw test` and `lw clean` take `-v` / `--verbose`, which

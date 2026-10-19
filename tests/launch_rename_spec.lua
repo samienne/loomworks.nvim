@@ -71,7 +71,7 @@ describe("launch rename", function()
   it("moves every field, including device/deploy/debug/description and unknown keys", function()
     local root = make_ws()
     assert.is_nil(launch(root, "add", "App", "schema-test", "--from-target", "editor",
-      "--use-scene-json-schema", "D:/src/x").exit_code)
+      "--", "--use-scene-json-schema", "D:/src/x").exit_code)
     -- Give it fields no CLI flag sets, straight on the object (as the editor/
     -- a hand-written file would), then save.
     local ws = load(root)
@@ -241,7 +241,7 @@ describe("launch add --description / describe", function()
 
   it("describe sets, prints, --json, clears; empty removes the key", function()
     local root = make_ws()
-    launch(root, "add", "App", "demo", "--from-target", "editor", "--theme", "demo")
+    launch(root, "add", "App", "demo", "--from-target", "editor", "--", "--theme", "demo")
     local r = launch(root, "describe", "App", "demo", "-m", "Theme showcase", "-m", "Body")
     assert.is_nil(r.exit_code, r.stderr)
     assert.equals("Theme showcase\n\nBody", user_json(root).projects.App.launch.demo.description)
@@ -267,7 +267,7 @@ describe("launch add --description / describe", function()
 
   it("launch set keeps the description; show prints it and --json has every field", function()
     local root = make_ws()
-    launch(root, "add", "App", "demo", "--from-target", "editor", "--a", "--description", "Sum")
+    launch(root, "add", "App", "demo", "--from-target", "editor", "--description", "Sum", "--", "--a")
     launch(root, "set", "App", "demo", "--working-dir", "wd")
     local cfg = user_json(root).projects.App.launch.demo
     assert.equals("Sum", cfg.description)
@@ -286,7 +286,7 @@ describe("launch add --description / describe", function()
     local root = make_ws()
     launch(root, "add", "App", "plain", "--from-target", "editor")
     launch(root, "add", "App", "schema", "--from-target", "editor",
-      "--use-scene-json-schema", "D:/src/dres_schema_test", "--description", "Schema test data")
+      "--description", "Schema test data", "--", "--use-scene-json-schema", "D:/src/dres_schema_test")
     cli._test_stdout_tty = false
     local out = launch(root, "list").stdout
     cli._test_stdout_tty = nil
@@ -439,7 +439,7 @@ describe("editor: launch rows, launch editor rename and description", function()
 
   it("a name change in the launch editor is the atomic rename (fields + default targets)", function()
     local root = make_ws()
-    launch(root, "add", "App", "editor", "--from-target", "editor", "--x", "--description", "Plain")
+    launch(root, "add", "App", "editor", "--from-target", "editor", "--description", "Plain", "--", "--x")
     point_all_profiles_at(root, "editor")
     local ws = load(root)
     local proj = find_project(ws, "App")

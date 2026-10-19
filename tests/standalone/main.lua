@@ -1015,8 +1015,12 @@ do
   local p4, f4 = peel("launch", "add", "App", "ed", "Editor.exe", "--dev=x", "--no-pin")
   ok(not f4.dev and not f4.no_pin and p4:find("--dev=x --no-pin", 1, true) ~= nil,
     "peel: launch add's program args after the command are kept")
+  -- A target-backed add has no command token: lw's options run to `--`.
   local _, f4b = peel("launch", "add", "App", "ed", "--from-target", "t", "--dev")
-  ok(not f4b.dev, "peel: launch add --from-target <t> args are kept")
+  ok(f4b.dev, "peel: launch add --from-target <t> --dev before -- is lw's")
+  local p4c, f4c = peel("launch", "add", "App", "ed", "--from-target", "t", "--", "--dev")
+  ok(not f4c.dev and p4c:find("-- --dev", 1, true) ~= nil,
+    "peel: launch add --from-target <t> -- --dev kept")
   local p5, f5 = peel("run", "demo", "--", "--dev", "--no-pin")
   ok(not f5.dev and not f5.no_pin and p5 == "run demo -- --dev --no-pin", "peel: run -- --dev kept")
   local p6, f6 = peel("--dev", "build", "--no-pin", "Dev", "--dev=/src/lua", "--", "-j4")

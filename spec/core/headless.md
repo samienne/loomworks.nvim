@@ -314,10 +314,12 @@ never falls through to a build or a launch. The global options (non-interactive
 control, create intent, source selection, pin bypass, color — `--color`,
 `--no-color`, *Highlighting* above) are known to every
 command, and are recognised before the command and among its own arguments,
-up to the first `--` — never after it. After a launch configuration's command
-(or `--from-target <target>`) when one is added, every token is the program's,
-verbatim, a global option or a `--` included; only a `--` before the command
-ends lw's options there. When a launch configuration's arguments are edited and
+up to the first `--` — never after it. After a launch configuration's command,
+when one is added, every token is the program's, verbatim, a global option or a
+`--` included; only a `--` before the command ends lw's options there. A
+target-backed add (`--from-target <target>`) has no command token: until its
+first `--`, tokens are lw's options (an unknown one is a usage error); that
+`--` is not kept, and every token after it is the program's, verbatim. When a launch configuration's arguments are edited and
 on the set-value commands (a configuration parameter, a project variable's
 default, a profile fill, a setting), a global option before `--` is lw's own
 and `--` is the escape: every token after it is an argument or the value,
@@ -326,12 +328,14 @@ is not configured, the error adds a hint to put the token after `--`. A
 `--help` / `-h` is help only within the same bound. The check stops at `--`: what follows belongs to a program or native
 tool and is passed through untouched. It also stops where a command's grammar
 hands the rest of the line to someone else or takes a value that may itself
-start with `-`: the program arguments after a launch configuration's command
-(or target), and a set-value operand (a configuration parameter's value, a
-project variable's default, a profile fill). Commands whose grammar turns every
-unrecognised token into a program argument (editing a launch configuration's
-arguments) and the host-level commands (version reporting, self-update,
-installation, pin management) keep their own parsing.
+start with `-`: the program arguments after a launch configuration's command,
+and a set-value operand (a configuration parameter's value, a project
+variable's default, a profile fill). The host-level commands (version
+reporting, self-update, installation, pin management) keep their own parsing.
+When a launch configuration's arguments are edited, bare tokens before `--` and
+every token after it are the new arguments; an unknown option before `--` is a
+usage error (exit 2) and nothing is changed — an argument starting with `-`
+goes after `--`.
 
 **Unknown commands.** A command name the runner does not know is likewise a
 **usage error** (exit 2) that names it and points at the command index

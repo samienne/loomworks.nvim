@@ -118,8 +118,15 @@ describe("unknown options", function()
   it("lw launch add: the program's args after the command are never checked", function()
     assert_reached(run(root, "launch", "add", "App", "docs", "python", "-m", "http.server",
       "--bind", "0"), "cmd_launch")
+    -- A target-backed add has no command token: its program args follow `--`.
     assert_reached(run(root, "launch", "add", "App", "demo", "--from-target", "editor",
-      "--theme", "demo"), "cmd_launch")
+      "--", "--theme", "demo"), "cmd_launch")
+    assert_refused(run(root, "launch", "add", "App", "demo", "--from-target", "editor",
+      "--theme", "demo"), "--theme", "launch add")
+    -- `launch set`: an unknown option before `--` is refused (not taken as args).
+    assert_refused(run(root, "launch", "set", "App", "demo", "--description", "x"), "--description",
+      "launch set")
+    assert_reached(run(root, "launch", "set", "App", "demo", "--", "--description", "x"), "cmd_launch")
     assert_reached(run(root, "launch", "add", "App", "demo", "--env", "A=1", "node", "-x"), "cmd_launch")
     assert_refused(run(root, "launch", "add", "App", "demo", "--bogus", "node"), "--bogus", "launch add")
     assert_reached(run(root, "launch", "add", "App", "demo", "--description", "d", "node"), "cmd_launch")
