@@ -2727,7 +2727,13 @@ then `Devices/1.install` and `Devices/1.launch`, each owned by the editor
 like an operation's task. Choosing a profile's device is
 `Profiles/1.set_device`. Device-target launches are no longer an exception
 in "Editor operations"; while the daemon cannot carry them they are refused
-like any operation ("Availability").
+like any operation ("Availability"). Devices are runtime state. A reload of
+the workspace keeps the device list and its ids, and doesn't cancel device
+installs or launches that are running. That includes a reload caused by a
+scan from a client with a different environment. An install takes the build
+directory's lock and then the device's. While it waits for the device lock,
+the build directory stays locked, so a build of that directory fails at once
+in the meantime. A launch and a stop take only the device lock.
 
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, §12) — one per daemon
