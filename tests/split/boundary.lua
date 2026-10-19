@@ -66,6 +66,10 @@ M.shared = {
     -- the editor builds it in-process through test_source, the daemon serves
     -- the same shape (step 5m).
     "^loomworks%.test_state$",
+    -- A device log's lines as records (parse, prefilter, normalize): the
+    -- editor's in-process device-log view and the daemon's
+    -- `Launch/1.device_log` (step 5n B3) read the stream with the same code.
+    "^loomworks%.device_log_records$",
 }
 
 local binary_toplevel = {

@@ -1121,6 +1121,56 @@ function LaunchTarget:device_stop_command(device_serial, bundle_name)
     }
 end
 
+--- The command that clears the device's log buffer before a log stream
+--- starts: the module's optional `device_log_clear` (nil when the module has
+--- none, or it returns no command). One builder for the editor's log view
+--- (session_tracker) and the workspace daemon (`Launch/1.device_log`,
+--- API.md §9.5).
+--- @param device_serial string
+--- @return loomworks.DeviceCommand|nil
+function LaunchTarget:device_log_clear_command(device_serial)
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_log_clear then return nil end
+    local unit = self._config_unit
+    local spec = mod.device_log_clear(unit and unit._tool_data or {}, device_serial)
+    if not spec or not spec.cmd then return nil end
+    return {
+        name = self._project.key .. ": clear device log on " .. device_serial,
+        cmd = spec.cmd,
+        args = spec.args,
+        env = spec.env,
+    }
+end
+
+--- The command that streams the device's log on stdout for the program
+--- `pid` launched: the module's `device_log`, with `pid` passed to it when
+--- the module's optional `device_log_options` asks for strict-pid filtering.
+--- Also returns those options (`level`, default `I`: the client's initial
+--- soft filter; `strict_pid`). nil when the module has no `device_log`, or
+--- it returns no command. One builder for the editor's log view
+--- (session_tracker) and the workspace daemon (`Launch/1.device_log`).
+--- @param device_serial string
+--- @param pid integer|nil
+--- @return loomworks.DeviceCommand|nil cmd, { level: string, strict_pid: boolean }|nil log_options
+function LaunchTarget:device_log_command(device_serial, pid)
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_log then return nil end
+    local unit = self._config_unit
+    local td = unit and unit._tool_data or {}
+    local opts = (mod.device_log_options and mod.device_log_options(td)) or {}
+    local log_options = { level = opts.level or "I", strict_pid = opts.strict_pid and true or false }
+    local log_opts = {}
+    if log_options.strict_pid then log_opts.pid = pid end
+    local spec = mod.device_log(td, device_serial, log_opts)
+    if not spec or not spec.cmd then return nil end
+    return {
+        name = self._project.key .. ": device log on " .. device_serial,
+        cmd = spec.cmd,
+        args = spec.args,
+        env = spec.env,
+    }, log_options
+end
+
 --- Stop the app on a device. Returns a Future.
 --- Runs `device_stop_command` as an overseer task. Session tracker calls
 --- this from `stop_run()` when it knows the active run is a
