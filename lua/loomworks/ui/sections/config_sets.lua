@@ -5,35 +5,23 @@ local actions = require("loomworks.ui.actions")
 
 --- Render configuration set details when expanded.
 --- @param tree loomworks.Tree
---- @param cs loomworks.ConfigurationSet
---- @param tool_entries loomworks.ToolEntry[] (unused — kept in the
----        signature so callers that still pass it don't break;
----        profile creation now goes through the `Create profile from
----        set` action on the set node directly)
---- @param active_profile loomworks.Profile|nil (unused — see above)
---- @param lw table loomworks API (unused)
-local function render_set_details(tree, cs, tool_entries, active_profile, lw)
+--- @param row table the set's view row (`mappings`: project -> configuration)
+local function render_set_details(tree, row)
     tree:group("Projects:", "LoomworksSection", function()
-        local sorted = {}
-        for project, config in pairs(cs.mappings) do
-            sorted[#sorted + 1] = { project = project, config = config }
-        end
-        table.sort(sorted, function(a, b) return a.project.key < b.project.key end)
-        for _, entry in ipairs(sorted) do
-            local variant = entry.config.name
-            local cfg = entry.config
-            -- Orphan states, strongest first:
-            --   _removed        → underlying object was torn down
-            --   _source_missing → stub reference that no source backs
-            local is_orphan = cfg._removed or cfg._source_missing
-            if is_orphan then
+        local projects = {}
+        for project in pairs(row.mappings) do projects[#projects + 1] = project end
+        table.sort(projects)
+        for _, project in ipairs(projects) do
+            local variant = row.mappings[project]
+            -- A mapping to a removed or source-less configuration.
+            if row.missing[project] then
                 tree:leaf({
-                    { entry.project.key, "LoomworksProject" },
+                    { project, "LoomworksProject" },
                     { " → " .. variant .. " ⚠ missing", "WarningMsg" },
                 })
             else
                 tree:leaf({
-                    { entry.project.key, "LoomworksProject" },
+                    { project, "LoomworksProject" },
                     { " → ", "Comment" },
                     { variant, "LoomworksVariant" },
                 })
@@ -235,87 +223,76 @@ local function create_config_set()
     end)
 end
 
---- Render the configuration sets section.
+--- The actions of a configuration set row.
+--- @param ctx table the page context
+--- @param cs loomworks.ConfigurationSet|nil the row's object (nil: none)
+--- @return table
+local function set_actions(ctx, cs)
+    if not cs then return {} end
+    local ws, lw, all_profiles = ctx.ws, ctx.lw, ctx.all_profiles
+    local sname = cs.name
+    return helpers.describe_action({
+        on_enter = function() edit_config_set(cs) end,
+        on_publish = function()
+            helpers.cycle_intent(cs)
+            if ws then
+                ws:_save_user()
+                ws._core._deps.events.emit("active_set_changed", ws._active_set)
+            end
+        end,
+        on_publish_now = function()
+            if not ws then return end
+            local ok, err = ws:publish_one(cs)
+            if not ok then
+                vim.notify("loomworks: publish failed: " ..
+                    (err or "unknown"), vim.log.levels.ERROR)
+            end
+        end,
+        on_revert_one = function()
+            if not ws then return end
+            local ok, err = ws:revert_one(cs)
+            if not ok then
+                vim.notify("loomworks: revert failed: " ..
+                    (err or "unknown"), vim.log.levels.ERROR)
+            end
+        end,
+        on_create = function()
+            local all_tool_entries = lw.get_tool_entries()
+            local is_first = not next(all_profiles)
+            actions._create_profile_step2(cs, sname, all_tool_entries, is_first)
+        end,
+        on_delete = function() delete_config_set(cs) end,
+    }, cs)
+end
+
+--- Render the configuration sets section (from the workspace view's
+--- `config_sets`; the actions reach the set through `ctx.ref(row)`).
 --- @param tree loomworks.Tree
---- @param ctx table { lw, all_profiles, active_profile, config_sets, tool_entries }
+--- @param ctx table { lw, view, ref, ws, all_profiles, ... }
 return function(tree, ctx)
-    local config_sets = ctx.config_sets
-    local has_sets = config_sets and next(config_sets)
-
+    local view = ctx.view
     -- Show the section when sets exist, or when projects exist so create is offered.
-    local lw_for_check = ctx.lw
-    local has_projects = false
-    local projects = lw_for_check.get_projects()
-    if projects then
-        for _ in pairs(projects) do has_projects = true; break end
-    end
-    if not has_sets and not has_projects then return end
-
-    local all_profiles = ctx.all_profiles
-    local active_profile = ctx.active_profile
-    local tool_entries = ctx.tool_entries or {}
-    local lw = ctx.lw
+    if #view.config_sets == 0 and #view.projects == 0 then return end
 
     tree:leaf("Configuration Sets", "Title")
     tree:blank()
 
-    local sorted = {}
-    for _, cs in pairs(config_sets) do
-        sorted[#sorted + 1] = cs
-    end
-    table.sort(sorted, function(a, b) return a.name < b.name end)
-
-    local ws = lw.get_workspace()
-
-    helpers.render_grouped(tree, sorted, function(t, cs, group)
-        local is_active_set = active_profile
-                and active_profile._config_set_ref == cs
+    helpers.render_grouped(tree, view.config_sets, function(t, row, group)
         local is_shared_only = group == "shared"
-        local set_hl = is_active_set and "LoomworksActive"
+        local set_hl = row.active and "LoomworksActive"
                 or is_shared_only and "Comment"
                 or "LoomworksActionable"
-        local sname = cs.name
-        local cs_modified = ws and ws:is_config_set_modified(cs) and "+" or ""
-
-        t:node(cs_modified .. cs.name, helpers.with_description({
-            fold_key = "set:" .. cs.name,
+        local opts = helpers.describe({
+            fold_key = "set:" .. row.name,
             hl = set_hl,
             enter_label = "Edit mappings",
-            on_enter = function() edit_config_set(cs) end,
-            publish_label = helpers.intent_action_label(cs),
-            on_publish = function()
-                helpers.cycle_intent(cs)
-                if ws then
-                    ws:_save_user()
-                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
-                end
-            end,
-            on_publish_now = function()
-                if not ws then return end
-                local ok, err = ws:publish_one(cs)
-                if not ok then
-                    vim.notify("loomworks: publish failed: " ..
-                        (err or "unknown"), vim.log.levels.ERROR)
-                end
-            end,
-            on_revert_one = function()
-                if not ws then return end
-                local ok, err = ws:revert_one(cs)
-                if not ok then
-                    vim.notify("loomworks: revert failed: " ..
-                        (err or "unknown"), vim.log.levels.ERROR)
-                end
-            end,
-            on_create = function()
-                local all_tool_entries = lw.get_tool_entries()
-                local is_first = not next(all_profiles)
-                actions._create_profile_step2(cs, sname, all_tool_entries, is_first)
-            end,
-            on_delete = function() delete_config_set(cs) end,
-        }, cs), function()
-            t:description(cs.description)
-            render_set_details(t, cs,
-                tool_entries[cs.name] or {}, active_profile, lw)
+            publish_label = helpers.intent_action_label(row.intent),
+        }, row.description)
+        for k, v in pairs(set_actions(ctx, ctx.ref(row))) do opts[k] = v end
+
+        t:node((row.modified and "+" or "") .. row.name, opts, function()
+            t:description(row.description)
+            render_set_details(t, row)
         end)
     end)
 

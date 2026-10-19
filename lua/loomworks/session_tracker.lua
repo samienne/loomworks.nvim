@@ -386,11 +386,12 @@ local function start_run_in_process(target, mode, from_deploy)
         :next(function()
             -- Device target path: install + launch on device, then return
             if target:requires_device() then
-                local serial = target._profile:device_serial()
+                local device_source = require("loomworks.device_source")
+                local serial = device_source.selected_serial(target._profile)
                 if not serial then
                     -- Prompt for device selection
                     return Future.create(function(resolve, reject)
-                        target:scan_devices(function(devices)
+                        device_source.scan_for_target(target, function(devices)
                             local items = {}
                             for _, d in ipairs(devices) do
                                 if d:is_online() then
@@ -411,7 +412,7 @@ local function start_run_in_process(target, mode, from_deploy)
                                     reject("device selection cancelled")
                                     return
                                 end
-                                target._profile:set_device(choice.serial)
+                                device_source.select(nil, target._profile, choice.serial)
                                 resolve(choice.serial)
                             end)
                         end)

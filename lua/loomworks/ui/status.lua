@@ -72,10 +72,16 @@ local function render_fn(tree)
             "DiagnosticWarn")
     end
     tree:leaf("Root:      " .. tostring(hdr.root or ws.root), "Comment")
+
+    -- The body renders from `loomworks.view.Workspace/1` (spec §19.13 "The
+    -- workspace view"), built here from the in-process model (step 5n part
+    -- A); `ref` gives the sections' actions the domain object of a row.
+    local refs = setmetatable({}, { __mode = "k" })
+    local view = ws:view_workspace({ bind = function(row, obj) refs[row] = obj end })
+
     -- Banner when loomworks.json is missing on disk: the workspace still
     -- functions from user.json, and :w will publish it.
-    local config_path = ws.root .. "/loomworks.json"
-    if not (vim.uv or vim.loop).fs_stat(config_path) then
+    if not view.published then
         tree:leaf("⚠ loomworks.json not on disk — :w to publish",
             "DiagnosticWarn")
     end
@@ -92,6 +98,10 @@ local function render_fn(tree)
 
     local ctx = {
         lw = lw,
+        view = view,
+        ref = function(row) return refs[row] end,
+        -- For the sections' actions only (the in-process model they act on).
+        ws = ws,
         all_profiles = lw.get_profiles(),
         active_profile = lw.get_active_profile(),
         active_set = active_set,
@@ -103,26 +113,18 @@ local function render_fn(tree)
 
     -- Suggestions (spec/ui.md §1.1): a single compact advisory line pointing at
     -- `lw health`, shown only when the framework has findings. Not a diagnostic
-    -- — it never gates anything; the page keeps only the count.
-    local ws_obj = ws
-    if ws_obj then
-        -- Count only ACTIONABLE items — an affirmative "using <cache>" info item
-        -- shows in `lw health`, never inflates this nag count (headless §16.31).
-        local ok_s, n = pcall(function()
-            return require("loomworks.suggestions").count_actionable(ws_obj)
-        end)
-        if ok_s and type(n) == "number" and n > 0 then
-            tree:leaf(n .. (n == 1 and " suggestion" or " suggestions")
-                .. " — run `lw health`", "LoomworksStale")
-            tree:blank()
-        end
+    -- — it never gates anything; the page keeps only the count (of the
+    -- actionable items, headless §16.31).
+    local n = view.suggestions
+    if n > 0 then
+        tree:leaf(n .. (n == 1 and " suggestion" or " suggestions")
+            .. " — run `lw health`", "LoomworksStale")
+        tree:blank()
     end
 
     require("loomworks.ui.sections.profiles")(tree, ctx)
     require("loomworks.ui.sections.orphaned")(tree, ctx)
     require("loomworks.ui.sections.config_sets")(tree, ctx)
-
-    ctx.projects = lw.get_projects()
     require("loomworks.ui.sections.projects")(tree, ctx)
 
     require("loomworks.ui.sections.lsp")(tree, ctx)

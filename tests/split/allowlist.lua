@@ -120,7 +120,6 @@ return {
         },
         ["lua/loomworks/ui/status.lua"] = {
             "loomworks.events",
-            "loomworks.suggestions",
         },
         ["lua/loomworks/ui/tree.lua"] = {
             "loomworks.description",
@@ -164,13 +163,14 @@ return {
         ["lua/loomworks/reload.lua"] = 1,
         ["lua/loomworks/ui/actions.lua"] = 10,
         ["lua/loomworks/ui/project_browser.lua"] = 4,
-        ["lua/loomworks/ui/sections/config_sets.lua"] = 4,
+        -- config_sets.lua 4 -> 3, diagnostics.lua 1 -> 0, orphaned.lua 2 -> 1,
+        -- profiles.lua 2 -> 0, projects.lua 6 -> 5, sdks.lua 1 -> 0: step 5n
+        -- part A renders the body from `view.Workspace/1` (view_state.lua);
+        -- what is left are the actions' own model reads (5o's commands).
+        ["lua/loomworks/ui/sections/config_sets.lua"] = 3,
         ["lua/loomworks/ui/sections/debug.lua"] = 1,
-        ["lua/loomworks/ui/sections/diagnostics.lua"] = 1,
-        ["lua/loomworks/ui/sections/orphaned.lua"] = 2,
-        ["lua/loomworks/ui/sections/profiles.lua"] = 2,
-        ["lua/loomworks/ui/sections/projects.lua"] = 6,
-        ["lua/loomworks/ui/sections/sdks.lua"] = 1,
+        ["lua/loomworks/ui/sections/orphaned.lua"] = 1,
+        ["lua/loomworks/ui/sections/projects.lua"] = 5,
         ["lua/loomworks/ui/status.lua"] = 6,
         ["lua/loomworks/ui/tree.lua"] = 4,
         ["lua/loomworks/workspace_view.lua"] = 3,

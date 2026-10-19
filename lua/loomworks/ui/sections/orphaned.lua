@@ -58,14 +58,10 @@ end
 --- Render the orphaned build dirs section.
 --- Flat list of paths — orphaned cache entries and stray dirs merged together.
 --- @param tree loomworks.Tree
---- @param ctx table { lw }
+--- @param ctx table { view, ref, ws } the workspace view's `orphaned`
 return function(tree, ctx)
-    local lw = ctx.lw
-    local orphans = lw.get_orphaned_configs()
-
-    local workspace_view = require("loomworks.workspace_view")
-    local ws = lw.get_workspace()
-    local stray_dirs = ws and workspace_view.find_stray_build_dirs(ws) or {}
+    local orphans = ctx.view.orphaned.configurations
+    local stray_dirs = ctx.view.orphaned.stray_dirs
 
     if #orphans == 0 and #stray_dirs == 0 then return end
 
@@ -81,17 +77,17 @@ return function(tree, ctx)
         return is_win and n:lower() or n
     end
 
-    local ws_root = ws and ws.root or ""
+    local ws_root = ctx.ws and ctx.ws.root or ""
     for _, orphan in ipairs(orphans) do
-        local display = ".nvim/" .. (orphan.build_dir_key or orphan.config_key)
+        local display = ".nvim/" .. orphan.key
+        local obj = ctx.ref(orphan)
         tree:item(display, {
             hl = "Comment",
-            on_delete = actions.delete_orphaned_config(orphan),
+            on_delete = obj and actions.delete_orphaned_config(obj) or nil,
         })
         -- Track the absolute path to avoid duplicating with stray dirs
-        local entry = orphan.cached_entry or {}
-        if entry.build_dir then
-            seen_paths[norm_path(entry.build_dir)] = true
+        if orphan.build_dir then
+            seen_paths[norm_path(orphan.build_dir)] = true
         end
     end
 

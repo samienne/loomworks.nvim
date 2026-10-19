@@ -358,15 +358,13 @@ end
 --- Scan for connected devices from all device-capable modules.
 --- @param callback? fun(devices: loomworks.Device[])
 function M.scan_devices(callback)
-    local ws = M.get_workspace()
-    if ws then ws:scan_devices(callback) end
+    require("loomworks.device_source").scan(M.get_workspace(), callback)
 end
 
 --- Get the current list of discovered devices.
 --- @return loomworks.Device[]
 function M.get_devices()
-    local ws = M.get_workspace()
-    return ws and ws:devices() or {}
+    return require("loomworks.device_source").list(M.get_workspace())
 end
 
 --- Force-reload loomworks.json from disk and remerge.
