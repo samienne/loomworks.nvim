@@ -1784,8 +1784,8 @@ standard error, so standard output carries only the report. Hence:
 from part C2.)* A debug launch takes the same split: the daemon prepares it
 (`Launch/1.prepare_debug`, [API.md](../protocol/API.md) §9.2), the client hands the result to its
 debugger, which starts the program — the program is never the daemon's. The
-editor keeps device targets in-process and never sends one (§19.16 "Editor
-operations").
+editor keeps device targets in-process and never sends one until step 5n
+(§19.16 "Devices").
 
 **Build scope of a launch.** *(Step 5k, part B2: implemented, daemon side;
 its deploy steps' asynchrony and step reports: step 5t, part B.)* The
@@ -2430,9 +2430,11 @@ owner"):
   mapping: while it is not carried, its read failed, or it does not name the
   language, nothing is checked before the call and the debugger checks the
   prepared adapter). A run that ends with
-  `device = true` continues in the editor as its in-process launch does from
-  the post-build deploy, without building again ("Build scope of a launch"
-  above). The program is the editor's, never the daemon's; stopping a run or
+  `device = true` (a target found foreign by probing its artifact, spec
+  §18.1) continues in the editor from the post-build deploy, without
+  building again ("Build scope of a launch" above); runner devices (§18)
+  stay out of step 5n. A device target of spec §11 is launched through
+  `Devices/1` ("Devices" below). The program is the editor's, never the daemon's; stopping a run or
   debug session stops it as in-process. While the preparation runs, a stop
   cancels its task (`Tasks/1.cancel`) and no program is started, and a
   second launch asks, as for a running session, before it replaces it.
@@ -2449,7 +2451,8 @@ owner"):
 Test runs and discovery go through `Tests/1` (step 5m, "Tests" below);
 device-target launches through `Launch/1.build` and `Devices/1` (step 5n,
 "Devices" below). The editor runs no operation itself apart from the
-transitional configuration mutations below (its deletions among them, until
+rest of a `device = true` run above and the transitional configuration
+mutations below (its deletions among them, until
 step 5o; §19.15).
 
 *(Transition, until steps 5n and 5o.)* In `daemon` mode the status page's
@@ -2501,7 +2504,8 @@ missing on this connection:
 
 There is no in-process fallback and no opt-out; the editor never runs
 workspace logic itself beyond the
-transitional model of "Editor operations" above. *(Transition, until step 6b: the deprecated
+rest of a `device = true` run and the transitional model of "Editor
+operations" above. *(Transition, until step 6b: the deprecated
 `runtime.mode = "in-process"` editor of §19.1 runs every operation
 in-process, never routing; the cross-process build-directory locks (§16.6)
 serialize its operations with a daemon's.)*

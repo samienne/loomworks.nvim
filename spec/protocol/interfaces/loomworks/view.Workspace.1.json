@@ -74,6 +74,8 @@
         "config_set": { "description": "The name of the profile's configuration set.", "type": "string" },
         "active": { "type": "boolean" },
         "modified": { "description": "Whether the profile differs from the published baseline.", "type": "boolean" },
+        "intent": { "$ref": "#/$defs/Intent" },
+        "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
         "orphaned_set": { "description": "Its configuration set no longer exists.", "type": "boolean" },
         "tools": {
           "description": "One record per module type.",
@@ -91,13 +93,15 @@
         "compat_error": { "description": "Why a tool cannot build a project of the profile.", "type": "string" },
         "artifact_conflict": { "description": "A unit's output artifact is claimed by another profile's (spec 5.9).", "type": "boolean" },
         "device": {
-          "description": "The profile's device.",
+          "description": "The profile's device, an entity record (API.md 1.1).",
           "type": "object",
-          "required": ["serial", "state"],
+          "required": ["key", "label", "state"],
           "properties": {
-            "serial": { "type": "string" },
-            "name": { "type": "string" },
-            "state": { "description": "As in Devices/1 list. Clients show an unknown state as neutral.", "type": "string" }
+            "id": { "description": "The device's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+            "key": { "description": "The device's serial.", "type": "string" },
+            "label": { "description": "The device's name; its serial when it has none.", "type": "string" },
+            "state": { "description": "As in Devices/1 list. Clients show an unknown state as neutral.", "type": "string" },
+            "provider": { "description": "The module that found it, as in Devices/1 list.", "type": "string" }
           }
         },
         "default_target": { "description": "The profile's default launch target.", "type": "string" },
@@ -140,6 +144,8 @@
         "id": { "description": "The configuration set's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "name": { "type": "string" },
         "modified": { "type": "boolean" },
+        "intent": { "$ref": "#/$defs/Intent" },
+        "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
         "mappings": { "description": "The configuration set's project to configuration mapping.", "type": "object" }
       }
     },
@@ -152,12 +158,39 @@
         "type": { "description": "The project's module type.", "type": "string" },
         "path": { "description": "As in view.ProjectsIndex/1.", "type": "string" },
         "modified": { "type": "boolean" },
+        "intent": { "$ref": "#/$defs/Intent" },
+        "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
         "orphaned": { "description": "Its module type is unknown or rejected (spec 8.0).", "type": "boolean" },
-        "configurations": { "type": "array" },
-        "launches": { "type": "array" },
+        "configurations": {
+          "description": "The project's configurations; key is the configuration's name.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Item" }
+        },
+        "launches": {
+          "description": "The project's launch configurations; key is the launch's name.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Item" }
+        },
         "deploy": { "description": "The project's deploy declarations as the status page shows them." },
         "variables": { "type": "object" },
         "type_config": { "type": "object" }
+      }
+    },
+    "Intent": {
+      "description": "Where the item is published (spec 2.4): local (user.json only), shared (loomworks.json only) or local+shared (both). Clients show an unknown intent as neutral.",
+      "enum": ["local", "shared", "local+shared"]
+    },
+    "Item": {
+      "description": "A publishable item of a project (a configuration or a launch) with its publish state (spec 2.4).",
+      "type": "object",
+      "required": ["key", "label", "modified"],
+      "properties": {
+        "id": { "description": "The item's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "key": { "type": "string" },
+        "label": { "type": "string" },
+        "modified": { "description": "Whether it differs from the published baseline.", "type": "boolean" },
+        "intent": { "$ref": "#/$defs/Intent" },
+        "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" }
       }
     },
     "Sdk": {

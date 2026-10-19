@@ -590,8 +590,9 @@ then the launch's dependencies (explicit `depends_on` and deploy-source
 projects, a deploy source in the configuration it names), the pre-build
 deploy steps, and the launch target's own unit (its one target where the
 module builds single targets) run in that order — the phases of the `target`
-build scope (§9.3) up to and including the target's own unit, without its
-artifact probe, post-build deploy steps or launch resolution. Each build
+build scope (§9.3) up to and including the target's own unit (until step
+5n, without its artifact probe, post-build deploy steps or launch
+resolution). Each build
 takes the build-directory lock of the unit it builds, for that build only;
 the deploy steps run without locks and record their freshness in the
 workspace cache. `force` is the answer to the artifact-conflict question
@@ -795,7 +796,8 @@ A re-discovery keeps the last result of a node whose `id` survives.
 
 ## 11. `loomworks.Toolchains/1` and `loomworks.Profiles/1`
 
-Both are queries: read-only, they change neither the model nor any file, and
+Both are queries, except `Profiles/1.set_device` and `clear_device` below:
+read-only, they change neither the model nor any file, and
 run in the client's environment against the model as it is (loading it when
 none is loaded, never unloading it for another environment). A failed query, or a workspace the server cannot load, is `refused`
 (`message`); a request the server does not carry is `declined` (`reason`).
@@ -817,9 +819,10 @@ none is loaded, never unloading it for another environment). A failed query, or 
 *(Step 5n, part B2; their documents land with their handlers.)* A profile's
 device is chosen with two writes, not queries:
 
-- **`Profiles/1.set_device { profile, serial }`** — sets the profile's
-  device (its `device` serial, persisted in the working copy) to one of
-  `Devices/1.list`'s devices (§15);
+- **`Profiles/1.set_device { profile, device }`** — sets the profile's
+  device to one of `Devices/1.list`'s devices (§15), `device` a reference
+  (§1.2) to it: its `id`, or its `key` (the serial). The device's serial is
+  persisted as the profile's `device` in the working copy;
 - **`Profiles/1.clear_device { profile }`** — removes it.
 
 Each reaches subscribers as `Workspace/1` `changed` and in
@@ -1087,13 +1090,16 @@ the in-process builder leaves it out:
     configuration set's name);
   - `active` (boolean), `modified` (boolean), `orphaned_set` (boolean; its
     configuration set no longer exists);
+  - `intent` (string, optional) and `removed_upstream` (boolean, optional)
+    — its publish state (below);
   - `tools` (array) — `{ module, key?, label }`, one per module type;
   - `compat_error` (string, optional) — why a tool cannot build a project
     of the profile;
   - `artifact_conflict` (boolean) — a unit's output artifact is claimed by
     another profile's (spec §5.9);
-  - `device` (object, optional) — the profile's device: `{ serial, name?,
-    state }`, `state` as in `Devices/1.list` (§15);
+  - `device` (object, optional) — the profile's device: `{ id?, key, label,
+    state, provider? }`, `key` its serial, `label` its name (the serial when
+    it has none), `state` and `provider` as in `Devices/1.list` (§15);
   - `default_target` (string, optional) — the profile's default launch
     target;
   - `units` (array) — one per project the profile maps: `{ project,
@@ -1104,14 +1110,26 @@ the in-process builder leaves it out:
     was configured).
 - `orphaned` (object) — `{ configurations, stray_dirs }`: the orphaned
   cached configurations and the stray build directories (spec/ui.md §1.6).
-- `config_sets` (array) — `{ id?, name, modified, mappings }`, `mappings`
-  the configuration set's project → configuration mapping.
-- `projects` (array) — `{ id?, key, type, path, modified, orphaned,
-  configurations, launches, deploy, variables, type_config }`: the project's
-  declaration as the status page shows it (spec/ui.md §1.8), `orphaned` when
-  its module type is unknown or rejected (spec §8.0).
+- `config_sets` (array) — `{ id?, name, modified, intent?,
+  removed_upstream?, mappings }`, `mappings` the configuration set's project
+  → configuration mapping.
+- `projects` (array) — `{ id?, key, type, path, modified, intent?,
+  removed_upstream?, orphaned, configurations, launches, deploy, variables,
+  type_config }`: the project's declaration as the status page shows it
+  (spec/ui.md §1.8), `orphaned` when its module type is unknown or rejected
+  (spec §8.0). `configurations` and `launches` are arrays of publishable
+  items, each `{ id?, key, label, modified, intent?, removed_upstream? }`
+  (a configuration's `key` its name, a launch's its name).
 - `sdks` (array) — `{ key, label, resolved }`, `resolved` whether the SDK
   resolves on this machine.
+
+The publish state of a profile, configuration set, project, configuration
+or launch (spec §2.4): `modified` whether it differs from the published
+baseline; `intent` where it is published — `local` (`user.json` only),
+`shared` (`loomworks.json` only) or `local+shared` (both); `removed_upstream`
+whether it has effective intent `local+shared` and was removed from the
+published file since the baseline (absent means false). A client shows an
+unknown `intent` as neutral.
 
 `update` is sent under the rule above; a unit's state change sends it, a
 build's progress never does.
@@ -1122,17 +1140,22 @@ build's progress never does.
 devices (spec §11), on `/devices`. The server keeps a registry of the
 devices its modules found; a client never lists or probes devices itself.
 
-- `list {}` → `{ devices: [{ serial, name, state, provider, profiles? }] }`
-  — the registry as it is; it never probes a device. `state` is `online` or
+- `list {}` → `{ devices: [{ id, key, label, state, provider, profiles? }] }`
+  — the registry as it is; it never probes a device. Each device is an
+  entity record (§1.1): `key` its serial, `label` its name (the serial when
+  it has none). `state` is `online` or
   `offline` (a client shows an unknown state as neutral), `provider` the
   module that found it, `profiles` the keys of the profiles that chose it.
 - `scan {}` — a task that asks each module that has devices to list them,
   in the client's environment (§5), and updates the registry.
-- `install` — a task that installs a built device target, addressed as
-  `Launch/1.build` addresses it (§9.4), on its profile's device.
-- `launch` — a task that launches that target there, addressed likewise;
-  its `done` carries `{ pid?, bundle? }`.
-- `stop` — stops the program launched there.
+- `install { profile?, project?, target?, kind? }` — a task that installs a
+  built device target, addressed as `prepare_run` addresses it (§9.1), on its
+  profile's device.
+- `launch { profile?, project?, target?, kind? }` — a task that launches
+  that target there, addressed likewise; its `done` carries `{ pid?,
+  bundle? }`.
+- `stop { task }` — stops the program launched there, `task` the launch's
+  task id.
 - `changed` (signal) — the registry changed (a scan, a device appearing or
   going away); a client reads `list` again.
 
@@ -1148,7 +1171,7 @@ is a same-build facility, never a stable contract, and not specified here.
 ## 17. Module interfaces
 
 A module provides an interface only for a feature core has no abstraction
-for (a device log stream, signing setup); a feature core abstracts (devices,
+for (signing setup); a feature core abstracts (devices,
 toolchains, build steps) reaches clients through the core interface, which
 the module feeds through the module interface of spec §8. A module's
 interfaces live in its own namespace (its module id, PROTOCOL.md §9.1) on
