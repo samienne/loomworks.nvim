@@ -10,6 +10,13 @@ local actions = require("loomworks.ui.actions")
 
 local M = {}
 
+--- The editor's in-process workspace model (the page's one read of it: the
+--- header's root, and the model the actions write until step 5o part C2).
+--- @return loomworks.Workspace|nil
+local function model()
+    return require("loomworks").get_workspace()
+end
+
 -- ---------------------------------------------------------------------------
 -- Render function — assembles sections
 -- ---------------------------------------------------------------------------
@@ -23,7 +30,7 @@ end
 
 local function render_fn(tree)
     local lw = require("loomworks")
-    local ws = lw.get_workspace()
+    local ws = model()
     -- The header reads `loomworks.view.Header/1` (spec §19.13 "Two sources,
     -- one shape"): the daemon's while the editor is subscribed to it,
     -- otherwise built in-process.
@@ -74,14 +81,17 @@ local function render_fn(tree)
     tree:leaf("Root:      " .. tostring(hdr.root or ws.root), "Comment")
 
     -- The body renders from `loomworks.view.Workspace/1` (spec §19.13 "The
-    -- workspace view"), built here from the in-process model (step 5n part
-    -- A); `ref` gives the sections' actions the domain object of a row.
-    local refs = setmetatable({}, { __mode = "k" })
-    local view = ws:view_workspace({ bind = function(row, obj) refs[row] = obj end })
+    -- workspace view"): in `daemon` mode only the daemon's (nil while it is
+    -- not held), otherwise built from the in-process model. `ref` gives the
+    -- sections' actions the model object of a row; progress is overlaid
+    -- (API.md §14.4 "Progress is not in the view").
+    local body = require("loomworks.status_source").read(ws)
+    local view = body.view
 
     -- Banner when loomworks.json is missing on disk: the workspace still
-    -- functions from user.json, and :w will publish it.
-    if not view.published then
+    -- functions from user.json, and :w will publish it. Only of a loaded
+    -- workspace: an unloaded daemon's view says `published = false`.
+    if view and body.loaded and not view.published then
         tree:leaf("⚠ loomworks.json not on disk — :w to publish",
             "DiagnosticWarn")
     end
@@ -99,23 +109,11 @@ local function render_fn(tree)
     local ctx = {
         lw = lw,
         view = view,
-        ref = function(row) return refs[row] end,
-        -- Progress is not in the view (API.md §14.4 "Progress is not in the
-        -- view"): a busy profile's percent and elapsed time and a running
-        -- unit's step progress come from the in-process task tracking — the
-        -- rows' domain objects (their operations, units and observed tasks).
-        profile_progress = function(row)
-            local profile = refs[row]
-            if not profile then return nil end
-            return { pct = profile:operation_pct(), elapsed = profile:operation_elapsed() }
-        end,
-        unit_progress = function(u)
-            local pp = refs[u]
-            local unit = pp and pp._config_unit
-            if not unit then return nil end
-            return { progress = unit:progress(), elapsed = unit:elapsed() }
-        end,
-        -- For the sections' actions only (the in-process model they act on).
+        ref = body.ref,
+        profile_progress = body.profile_progress,
+        unit_progress = body.unit_progress,
+        -- For the sections' actions only (the in-process model they act on;
+        -- in `daemon` mode until step 5o part C2, spec §19.16 "Transition").
         ws = ws,
         all_profiles = lw.get_profiles(),
         active_profile = lw.get_active_profile(),
@@ -124,27 +122,48 @@ local function render_fn(tree)
         tool_entries = lw.get_tool_entries(),
     }
 
-    require("loomworks.ui.sections.diagnostics")(tree, ctx)
-
-    -- Suggestions (spec/ui.md §1.1): a single compact advisory line pointing at
-    -- `lw health`, shown only when the framework has findings. Not a diagnostic
-    -- — it never gates anything; the page keeps only the count (of the
-    -- actionable items, headless §16.31).
-    local n = view.suggestions
-    if n > 0 then
-        tree:leaf(n .. (n == 1 and " suggestion" or " suggestions")
-            .. " — run `lw health`", "LoomworksStale")
+    -- A body section while the daemon's view is not held (`daemon` mode):
+    -- one line in the warning highlight, as the Debug Adapters section's.
+    local function unavailable(title)
+        tree:leaf(title, "Title")
+        tree:blank()
+        tree:leaf("unavailable — " .. tostring(body.why), "DiagnosticWarn")
         tree:blank()
     end
 
-    require("loomworks.ui.sections.profiles")(tree, ctx)
-    require("loomworks.ui.sections.orphaned")(tree, ctx)
-    require("loomworks.ui.sections.config_sets")(tree, ctx)
-    require("loomworks.ui.sections.projects")(tree, ctx)
+    if view then
+        require("loomworks.ui.sections.diagnostics")(tree, ctx)
+
+        -- Suggestions (spec/ui.md §1.1): a single compact advisory line pointing at
+        -- `lw health`, shown only when the framework has findings. Not a diagnostic
+        -- — it never gates anything; the page keeps only the count (of the
+        -- actionable items, headless §16.31).
+        local n = view.suggestions
+        if n > 0 then
+            tree:leaf(n .. (n == 1 and " suggestion" or " suggestions")
+                .. " — run `lw health`", "LoomworksStale")
+            tree:blank()
+        end
+
+        require("loomworks.ui.sections.profiles")(tree, ctx)
+        require("loomworks.ui.sections.orphaned")(tree, ctx)
+        require("loomworks.ui.sections.config_sets")(tree, ctx)
+        require("loomworks.ui.sections.projects")(tree, ctx)
+    else
+        for _, title in ipairs({ "Diagnostics", "Suggestions", "Profiles", "Orphaned Build Dirs",
+            "Configuration Sets", "Projects" }) do
+            unavailable(title)
+        end
+    end
 
     require("loomworks.ui.sections.lsp")(tree, ctx)
     require("loomworks.ui.sections.debug")(tree, ctx)
-    require("loomworks.ui.sections.sdks")(tree, ctx)
+    if view then
+        require("loomworks.ui.sections.sdks")(tree, ctx)
+    else
+        tree:blank()
+        unavailable("SDKs")
+    end
 
     -- Tasks section lives at the bottom: it's the runtime-state
     -- diagnostic surface, only interesting when something is wrong.
@@ -166,11 +185,11 @@ local view = View.new({
     widget = tree,
     cursor_storage = {
         get = function()
-            local ws = require("loomworks").get_workspace()
+            local ws = model()
             return ws and ws._status_cursor_row
         end,
         set = function(row)
-            local ws = require("loomworks").get_workspace()
+            local ws = model()
             if ws then ws._status_cursor_row = row end
         end,
     },
@@ -206,14 +225,15 @@ local view = View.new({
         ["?"]     = "help",
         ["K"]     = "hover",
     },
+    -- The body's `modified` (the daemon's view in `daemon` mode).
     is_modified = function()
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        return ws and ws:has_any_modified() or false
+        return require("loomworks.status_source").modified(model())
     end,
+    -- Publish and revert stay in-process until step 5o part C2 (spec §19.16
+    -- "Transition"); in `daemon` mode their writes make the observer fetch
+    -- the workspace view (§19.13 "Freshness of views").
     on_write = function()
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
+        local ws = model()
         if not ws then
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
@@ -227,8 +247,7 @@ local view = View.new({
         end)
     end,
     on_revert = function()
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
+        local ws = model()
         if not ws then
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return

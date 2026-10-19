@@ -100,6 +100,20 @@ flight, `the workspace daemon did not answer DebugConfig/1.adapters` after a
 failed or declined read (the section re-renders when the read ends), or `the
 workspace is no longer loaded`.
 
+The body sections — Diagnostics, Suggestions, Profiles, Orphaned
+Configurations, Configuration Sets, Projects and SDKs — render from
+`loomworks.view.Workspace/1` (core §19.13 "The workspace view"). In `daemon`
+mode only the daemon's: while the editor does not hold it, each of the seven
+is its title and one line in the warning highlight, `unavailable — <why>`
+(the `workspace view` feature's note, e.g. `daemon offers no
+loomworks.view.Workspace, editor needs /1`; `waiting for the workspace
+daemon` while not connected or subscribing; the Runtime line's lost-connection
+note after a disconnect). The "loomworks.json not on disk" banner shows only
+for a loaded workspace (the header view's `state`). A busy profile's percent
+and elapsed time and a running unit's elapsed time come from the tasks
+observed through `Tasks/1`, never from the view. The page re-renders on each
+`update` of the view.
+
 Sections are separated by blank lines. Each section has a title line.
 
 ### 1.2 Tree Structure

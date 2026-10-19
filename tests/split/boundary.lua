@@ -29,6 +29,7 @@ M.plugin = {
     "^loomworks%.lsp$",
     "^loomworks%.lsp_source$",       -- where the LSP layer reads its state (spec §19.16 "LSP configuration")
     "^loomworks%.device_source$",    -- where the editor reads devices (spec §19.16 "Devices", step 5n)
+    "^loomworks%.status_source$",    -- where the status page's body reads (spec §19.13 "The workspace view", 5n)
     "^loomworks%.fidget$",
     "^loomworks%.reload$",
     "^loomworks%.auto_load$",
