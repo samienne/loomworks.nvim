@@ -18,6 +18,8 @@ if log and log ~= "" then
 end
 local ms = tonumber(os.getenv("LW_TEST_DEVICE_SLEEP") or "")
 if ms and op ~= "pid" then vim.uv.sleep(ms) end
+local pid_ms = tonumber(os.getenv("LW_TEST_PID_SLEEP") or "")
+if pid_ms and op == "pid" then vim.uv.sleep(pid_ms) end
 if os.getenv("LW_TEST_DEVICE_FAIL") == op then
     io.stderr:write(op .. " failed on " .. serial .. "\n")
     os.exit(1)

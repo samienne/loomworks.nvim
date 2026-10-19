@@ -23,7 +23,8 @@
 ---                     which prints `<op> <serial> <arg>` (the pid probe:
 ---                     `LW_TEST_DEVICE_PID`, default 4242), appends that line
 ---                     to the file `LW_TEST_DEVICE_LOG` names, sleeps
----                     `LW_TEST_DEVICE_SLEEP` ms and exits 1 when
+---                     `LW_TEST_DEVICE_SLEEP` ms (the pid probe:
+---                     `LW_TEST_PID_SLEEP` ms) and exits 1 when
 ---                     `LW_TEST_DEVICE_FAIL` names the op — all of ITS
 ---                     environment (the caller's, plus `LW_TEST_DEVICE_OP`
 ---                     from the command's own variables).

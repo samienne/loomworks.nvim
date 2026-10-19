@@ -65,14 +65,32 @@ local function session(extra)
             if f then s.inbox[#s.inbox + 1] = f end
         end
     end
-    --- A call's reply frame.
-    function s.raw(object, iface, method, args, env)
+    --- Send a call without waiting for its reply; returns its req_id.
+    function s.send_call(object, iface, method, args, env)
         s.req = s.req + 1
         local id = s.req
         if args == nil or next(args) == nil then args = vim.empty_dict() end
         s.send({ kind = "call", req_id = id, object = object, iface = iface, v = 1, method = method,
             args = args, env = env })
-        return s.wait(function(m) return m.req_id == id end)
+        return id
+    end
+    --- The reply frame of call `id`.
+    function s.reply(id, ms)
+        return s.wait(function(m) return m.req_id == id end, ms)
+    end
+    --- A call's reply frame.
+    function s.raw(object, iface, method, args, env)
+        return s.reply(s.send_call(object, iface, method, args, env))
+    end
+    --- Serve the daemon (frames kept) until `fn()` holds.
+    function s.poll(fn, ms)
+        local deadline = uv.now() + (ms or 30000)
+        while not fn() do
+            local left = deadline - uv.now()
+            assert(left > 0, "timed out waiting for a condition")
+            local f = d.recv(math.min(left, 50))
+            if f then s.inbox[#s.inbox + 1] = f end
+        end
     end
     function s.call(object, iface, method, args, env)
         local f = s.raw(object, iface, method, args, env)
@@ -329,6 +347,34 @@ describe("Devices/1 in the workspace daemon (§19.16 Devices)", function()
         local fr = s.raw("/devices", "loomworks.Devices", "stop", { task = "T-other" }, s.env)
         assert.equals("error", fr.kind)
         assert.equals("forbidden", fr.error.code)
+    end)
+
+    it("a cancel during the launch's pid probe ends the task at once", function()
+        s = session({ LW_TEST_PID_SLEEP = "2500" })
+        s.scan()
+        s.set_device("SER1")
+        local LT = require("loomworks.launch_target")
+        local orig = LT.device_resolve_pid
+        local exits = 0
+        LT.device_resolve_pid = function(self, serial, bundle, opts)
+            local sys = opts.system
+            opts.system = function(cmd, so, on_exit)
+                return sys(cmd, so, function(res) exits = exits + 1; on_exit(res) end)
+            end
+            return orig(self, serial, bundle, opts)
+        end
+        local ok, err = pcall(function()
+            local id = s.start("launch", DEV)
+            s.poll(function() return read(s.log):find("pid SER1", 1, true) ~= nil end)
+            s.call("/tasks", "loomworks.Tasks", "cancel", { task_id = id })
+            local f = s.done(id)
+            assert.equals(130, f.exit_code, vim.inspect(f))
+            -- Ended by the killed probe's exit, not after the probe's retries.
+            assert.is_true(exits < 6, "probe exits: " .. exits)
+            assert.is_nil(devices.launches(s.service())[id])
+        end)
+        LT.device_resolve_pid = orig
+        assert(ok, err)
     end)
 
     it("Launch/1.build builds a device target (no refusal, no device outcome)", function()

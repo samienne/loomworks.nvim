@@ -208,11 +208,13 @@ local function run_command(service, ctx, run, command, task, k)
 end
 
 --- The pid probes' spawner (LaunchTarget:device_resolve_pid `opts.system`):
---- `exe.system`'s shape, in the caller's environment, killed on a cancel.
+--- `exe.system`'s shape, in the caller's environment, killed on a cancel
+--- (whose exit then finishes the run).
+--- @param service loomworks.daemon.BuildService
 --- @param ctx table
 --- @param run table
 --- @return fun(cmd: string[], opts: table, on_exit: fun(res: table))
-local function probe_system(ctx, run)
+local function probe_system(service, ctx, run)
     return function(cmd, so, on_exit)
         so = so or {}
         if run.cancelled or run.finished then
@@ -221,6 +223,13 @@ local function probe_system(ctx, run)
         end
         spawn(ctx, run, cmd, { cwd = so.cwd, env = so.env, timeout = so.timeout or M.PROBE_TIMEOUT_MS },
             function(code, stdout, stderr)
+                -- A cancel killed the probe: the run ends now, not after
+                -- the probe's retries.
+                if run.cancelled and not run.finished then
+                    service:with_model(ctx, function()
+                        if not run.finished then run.finish(run.cancel_code, run.stopped()) end
+                    end)
+                end
                 on_exit({ code = code, signal = 0, stdout = stdout, stderr = stderr })
             end)
     end
@@ -479,7 +488,7 @@ local function run_device_op(service, ctx, op)
                 run.finish(0, nil, { pid = pid, bundle = bundle })
             end
             if not bundle then return launched(nil) end
-            lt:device_resolve_pid(serial, bundle, { system = probe_system(ctx, run) })
+            lt:device_resolve_pid(serial, bundle, { system = probe_system(service, ctx, run) })
                 :next(function(pid) service:with_model(ctx, function() launched(pid) end) end)
                 :catch(function() service:with_model(ctx, function() launched(nil) end) end)
         end)
