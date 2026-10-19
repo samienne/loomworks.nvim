@@ -1,0 +1,304 @@
+  1|  loomworks.nvim test
+   hl 0--1 Title
+  2|
+  3|  Workspace: root
+   hl 0--1 Type
+  4|  Root:      /root
+   hl 0--1 Comment
+  5|  ⚠ loomworks.json not on disk — :w to publish
+   hl 0--1 DiagnosticWarn
+  6|  [?] help  [L] load  [<C-n>] reset
+   hl 0--1 Comment
+  7|
+  8|  Diagnostics  5 warning(s)
+   hl 2-15 Title; 15-27 Comment
+  9|
+ 10|  ⚠ [ConfigurationSet/release] configuration set 'release' is invalid: stale mappings: Lib → Nope — fix the references in loomworks.json or user.json
+   hl 0--1 DiagnosticWarn
+   w  direct=true on_enter()
+ 11|  ⚠ [Profile/debug] profile 'debug' is invalid: incomplete — no tool/SDK selected for: App, Lib
+   hl 0--1 DiagnosticWarn
+   w  direct=true on_enter()
+ 12|  ⚠ [Profile/release] profile 'release' is invalid: incomplete — no tool/SDK selected for: App, Lib; abstract configuration (no variant, so nothing to build) mapped for: Lib/Nope; configuration set 'release': stale mappings: Lib → Nope — fix the references in loomworks.json or user.json
+   hl 0--1 DiagnosticWarn
+   w  direct=true on_enter()
+ 13|  ⚠ [Project/App] loomworks.json sets projects.App.launch.run (command = app, args = {1=--x, 2=1}) "Run it" — ignored: program settings are used only from your local config (lw help trust)
+   hl 0--1 DiagnosticWarn
+   w  direct=true on_enter()
+ 14|  ⚠ [Project/App/Release] configuration 'Release' on project 'App' is invalid: inherits from unknown bases: Gone
+   hl 0--1 DiagnosticWarn
+   w  direct=true on_enter()
+ 15|
+ 16|  Profiles
+   hl 0--1 Title
+ 17|  [Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete
+   hl 0--1 Comment
+ 18|
+ 19|  ── Local ──
+   hl 0--1 NonText
+ 20|  ○ ▼ debug [incomplete] (1 built, 1 unconfigured)  Day to day
+   hl 2-6 Comment; 6-54 LoomworksProfile; 56-66 LoomworksDescription
+   w  enter_label=Activate fold_key=profile:debug on_build() on_build_serial() on_clean() on_configure() on_delete() on_describe() on_enter() on_publish() on_rebuild() publish_label=Share (→ local + shared)
+   K  Day to day
+ 21|        Day to day
+   hl 0--1 LoomworksDescription
+   K  Day to day
+ 22|        Set: debug
+   hl 0--1 Comment
+ 23|        ▼ Toolchain: (none)
+   hl 0--1 Comment
+   w  fold_key=toolchain:debug
+ 24|            + Add tool
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 25|        Target: (no target set)
+   hl 0--1 Comment
+   w  direct=true on_build() on_enter()
+ 26|        Projects:
+   hl 0--1 LoomworksSection
+ 27|          ✓ ▼ App [cmake] → Debug (built)
+   hl 10-14 DiagnosticOk; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-39 LoomworksVariant; 39-47 Comment
+   w  enter_label=Open task output fold_key=profile_proj:debug:App on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
+ 28|                Build dir: /root/build/App/Debug
+   hl 0--1 Comment
+ 29|          ○ ▼ Lib [cmake] → Debug (unconfigured)
+   hl 10-14 Comment; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-39 LoomworksVariant; 39-54 Comment
+   w  enter_label=Open task output fold_key=profile_proj:debug:Lib on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
+ 30|                Build dir: /root/.nvim/build/Lib/Debug
+   hl 0--1 Comment
+ 31|
+ 32|  ○ ▼ release [incomplete] (unconfigured)
+   hl 2-6 Comment; 6-45 LoomworksProfileInactive
+   w  enter_label=Activate fold_key=profile:release on_build() on_build_serial() on_clean() on_configure() on_delete() on_describe() on_enter() on_publish() on_rebuild() publish_label=Share (→ local + shared)
+ 33|        Set: release
+   hl 0--1 Comment
+ 34|        ▼ Toolchain: (none)
+   hl 0--1 Comment
+   w  fold_key=toolchain:release
+ 35|            + Add tool
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 36|        Target: (no target set)
+   hl 0--1 Comment
+   w  direct=true on_build() on_enter()
+ 37|        Projects:
+   hl 0--1 LoomworksSection
+ 38|          ○ ▼ App [cmake] → Release (unconfigured)
+   hl 10-14 Comment; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-41 LoomworksVariant; 41-56 Comment
+   w  enter_label=Open task output fold_key=profile_proj:release:App on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
+ 39|                Build dir: /root/.nvim/build/App/Release
+   hl 0--1 Comment
+ 40|          ○ ▼ Lib [cmake] → Nope (unconfigured)
+   hl 10-14 Comment; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-38 LoomworksVariant; 38-53 Comment
+   w  enter_label=Open task output fold_key=profile_proj:release:Lib on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
+ 41|                Build dir: /root/.nvim/build/Lib/Nope
+   hl 0--1 Comment
+ 42|
+ 43|  ○ ▼ vanished [stale] (empty)
+   hl 2-6 Comment; 6-34 LoomworksProfileInactive
+   w  enter_label=Activate fold_key=profile:vanished on_build() on_build_serial() on_clean() on_configure() on_delete() on_describe() on_enter() on_publish() on_rebuild() publish_label=Share (→ local + shared)
+ 44|        Set 'vanished' removed from loomworks.json
+   hl 0--1 DiagnosticWarn
+ 45|        Target: (no target set)
+   hl 0--1 Comment
+   w  direct=true on_build() on_enter()
+ 46|
+ 47|  ▸ Create new profile
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 48|
+ 49|  Orphaned Build Dirs  [D] delete
+   hl 2-23 Title; 23-33 Comment
+ 50|
+ 51|  .nvim/build/Old/Debug
+   hl 0--1 Comment
+   w  on_delete()
+ 52|  ▸ Clean all
+   hl 0--1 LoomworksActionable
+   w  direct=true on_enter()
+ 53|
+ 54|  Configuration Sets
+   hl 0--1 Title
+ 55|
+ 56|  ── Shared ──
+   hl 0--1 NonText
+ 57|  ▼ debug
+   hl 0--1 LoomworksActive
+   w  enter_label=Edit mappings fold_key=set:debug on_create() on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 58|      Projects:
+   hl 0--1 LoomworksSection
+ 59|        App → Debug
+   hl 8-11 LoomworksProject; 11-16 Comment; 16-21 LoomworksVariant
+ 60|        Lib → Debug
+   hl 8-11 LoomworksProject; 11-16 Comment; 16-21 LoomworksVariant
+ 61|
+ 62|  ▼ release
+   hl 0--1 Comment
+   w  enter_label=Edit mappings fold_key=set:release on_create() on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 63|      Projects:
+   hl 0--1 LoomworksSection
+ 64|        App → Release
+   hl 8-11 LoomworksProject; 11-16 Comment; 16-23 LoomworksVariant
+ 65|        Lib → Nope ⚠ missing
+   hl 8-11 LoomworksProject; 11-32 WarningMsg
+ 66|
+ 67|  ▸ Create configuration set
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 68|
+ 69|  Projects
+   hl 0--1 Title
+ 70|
+ 71|  ── Local ──
+   hl 0--1 NonText
+ 72|  ▼ Old [cmake] (orphaned)
+   hl 2-6 LoomworksProject; 6-6 Comment; 6-9 LoomworksProject; 9-17 Comment; 17-28 DiagnosticWarn
+   w  fold_key=project:Old on_delete() on_describe() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
+ 73|      Path: Old
+   hl 0--1 Comment
+ 74|
+ 75|  ── Shared ──
+   hl 0--1 NonText
+ 76|  ▼ App [cmake]  The application.
+   hl 2-6 Comment; 6-6 Comment; 6-9 Comment; 9-17 Comment; 19-35 LoomworksDescription
+   w  fold_key=project:App on_delete() on_describe() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+   K  The application.\n\nIt does things.
+ 77|      The application.
+   hl 0--1 LoomworksDescription
+   K  The application.\n\nIt does things.
+ 78|      
+   hl 0--1 LoomworksDescription
+   K  The application.\n\nIt does things.
+ 79|      It does things.
+   hl 0--1 LoomworksDescription
+   K  The application.\n\nIt does things.
+ 80|      Path: App
+   hl 0--1 Comment
+ 81|      Configurations:
+   hl 0--1 LoomworksSection
+ 82|        ── Local ──
+   hl 0--1 NonText
+ 83|        ▼ variant:Debug
+   hl 8-12 Comment; 12-25 Comment
+   w  enter_label=Edit configuration fold_key=config:App:variant:Debug on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
+ 84|            ${home} = /h  (project)
+   hl 0--1 NonText
+ 85|        ▼ variant:Release
+   hl 8-12 Comment; 12-27 Comment
+   w  enter_label=Edit configuration fold_key=config:App:variant:Release on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
+ 86|            ${home} = /h  (project)
+   hl 0--1 NonText
+ 87|        ── Shared ──
+   hl 0--1 NonText
+ 88|        ▼ Base  (abstract, used by: Debug)
+   hl 8-12 Comment; 12-16 Comment; 16-44 Comment
+   w  enter_label=Edit configuration fold_key=config:App:Base on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 89|            Abstract mixin — not directly buildable
+   hl 0--1 Comment
+ 90|            Used by: Debug
+   hl 0--1 Comment
+ 91|            WARN=ON
+   hl 0--1 Comment
+ 92|            ${home} = /h  (project)
+   hl 0--1 NonText
+ 93|        ▼ Debug  (inherits: Base)
+   hl 8-12 Comment; 12-17 Comment; 17-35 Comment
+   w  enter_label=Edit configuration fold_key=config:App:Debug on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 94|            Inherits: Base
+   hl 0--1 Comment
+ 95|            OPT=1
+   hl 0--1 Comment
+ 96|            ${home} = /h  (project)
+   hl 0--1 NonText
+ 97|        ▼ ⚠ Release  (inherits: ⚠Gone)
+   hl 8-12 Comment; 12-16 DiagnosticWarn; 16-23 Comment; 23-44 Comment
+   w  enter_label=Edit configuration fold_key=config:App:Release on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 98|            Inherits: ⚠Gone
+   hl 0--1 WarningMsg
+ 99|            ${home} = /h  (project)
+   hl 0--1 NonText
+100|        ▸ Add configuration
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+101|      Launch:
+   hl 0--1 LoomworksSection
+102|        tgt  target:app
+   hl 8-11 LoomworksVariant; 11-23 Comment
+   w  enter_label=Edit launch config on_delete() on_describe() on_enter()
+   K  target:app
+103|        ▸ Add launch config
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+104|      Deploy:
+   hl 0--1 LoomworksSection
+105|          ${workspace_root}/out/
+   hl 0--1 Comment
+106|            <- Lib : lib [pre-build]
+   hl 0--1 LoomworksActionable
+   w  enter_label=Edit deploy step on_delete() on_enter()
+107|            <- Lib : x.dat (Debug)
+   hl 0--1 LoomworksActionable
+   w  enter_label=Edit deploy step on_delete() on_enter()
+108|        ▸ Add deploy step
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+109|      Variables:
+   hl 0--1 LoomworksSection
+110|        home  (path) = /h
+   hl 8-12 LoomworksVariant; 12-25 Comment
+   w  enter_label=Edit variable on_delete() on_enter()
+111|        ▸ Add variable
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+112|
+113|  ▼ Lib [cmake]
+   hl 2-6 Comment; 6-6 Comment; 6-9 Comment; 9-17 Comment
+   w  fold_key=project:Lib on_delete() on_describe() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+114|      Path: Lib
+   hl 0--1 Comment
+115|      Configurations:
+   hl 0--1 LoomworksSection
+116|        ── Local ──
+   hl 0--1 NonText
+117|        ▼ variant:Debug
+   hl 8-12 Comment; 12-25 Comment
+   w  enter_label=Edit configuration fold_key=config:Lib:variant:Debug on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
+118|        ▼ variant:Release
+   hl 8-12 Comment; 12-27 Comment
+   w  enter_label=Edit configuration fold_key=config:Lib:variant:Release on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
+119|        ── Shared ──
+   hl 0--1 NonText
+120|        ▼ Debug
+   hl 8-12 Comment; 12-17 Comment
+   w  enter_label=Edit configuration fold_key=config:Lib:Debug on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+121|        ▸ Add configuration
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+122|      Launch:
+   hl 0--1 LoomworksSection
+123|        ▸ Add launch config
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+124|      Deploy:
+   hl 0--1 LoomworksSection
+125|        ▸ Add deploy step
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+126|      Variables:
+   hl 0--1 LoomworksSection
+127|        ▸ Add variable
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+128|
+129|  ▸ Add project
+   hl 0--1 LoomworksAdd
+   w  enter_label=Add project on_enter()
+130|
+131|
+132|  SDKs
+   hl 0--1 Title
+133|
+134|  ▸ Add SDK
+   hl 0--1 LoomworksActionable
+   w  direct=true on_enter()
+135|
