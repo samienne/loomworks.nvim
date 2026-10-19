@@ -199,7 +199,7 @@
       "mutates": true
     },
     "build": {
-      "description": "Build a launch target as the editor's in-process launch build does (API.md §9.4; step 5t): the target resolved as prepare_run resolves it, then its dependencies, the pre-build deploy steps and its own unit, in that order, as one task whose steps (Common/1 TaskMeta.steps, Tasks/1 step) follow each phase. No artifact probe, post-build deploy or launch resolution. A device target ends the task nonzero before the build.",
+      "description": "Build a launch target as the editor's in-process launch build does (API.md §9.4; step 5t): the target resolved as prepare_run resolves it, then its dependencies, the pre-build deploy steps and its own unit, in that order, as one task whose steps (Common/1 TaskMeta.steps, Tasks/1 step) follow each phase. No artifact probe, post-build deploy or launch resolution — except that a device target (step 5n) ends with its post-build deploy steps; its install and launch are Devices/1's.",
       "params": {
         "type": "object",
         "additionalProperties": false,
