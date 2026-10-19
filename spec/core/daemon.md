@@ -2718,7 +2718,7 @@ results parsing, its `ensure_built` and the neotest adapter, unchanged; that
 path is never used in `daemon` mode.
 
 **Devices.** *(Step 5n, plan: part 0 this spec; B2 the daemon side,
-[API.md](../protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use.)*
+[API.md](../protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use — implemented.)*
 In `daemon` mode the editor neither lists nor probes devices, nor installs
 or launches on them. The device list comes only from `Devices/1.list` and
 its `changed` signal. A scan is a `Devices/1.scan` task carrying the

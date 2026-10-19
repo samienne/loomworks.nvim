@@ -312,7 +312,7 @@ may import from its own layer or any layer below it, never above.
 | `sdks/init.lua` | SDK provider registry, lazy loading via rtp discovery (`plugin_loader`). Same strict-equality `api_version` check + one-shot-notify rejection as `modules/init.lua` | Implement provider logic |
 | `plugin_loader.lua` | Loads a configuration-named plugin file (`loomworks.<kind>.<id>`: modules, SDK providers, progress parsers): id must match `^[%w_]+$` (else status `invalid`), file located with `nvim_get_runtime_file` and loaded with `loadfile` (luvi bundle reader for a bundle-relative entry in the standalone host), cached in `package.loaded`. Never `require` — the default `package.path` starts with `./?.lua` (spec §8.0) | Validate the module contract (the registries do) |
 | `sdks/cpp_compiler.lua` | User-declared C/C++ compiler SDK provider. No auto-detection (`detect_all` returns empty); user adds via the SDK section's `▸ Add SDK` action. Calls `cpp_compilers.probe_path` for identification; emits single-compiler cmake caps consumed by `cmake.kits_from_sdk`'s single-compiler branch. Provider-specific key derivation includes a path-derived token so two custom builds of the same family / version at different paths don't collide. See `spec/sdks/cpp_compiler.md` | Contain compiler family knowledge (lives in `cpp_compilers.lua`) |
-| `device_log.lua` | Client-side device-log view: line parser (`MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: msg`), session prefilter (pid OR proc-contains-bundle, applied at receive), soft filter (level / regex / tag / pid, applied at render), ring buffer (5000 records), bottom-split scratch buffer with level-based extmark highlights. Singleton view, one stream at a time. Streaming task runs under `loomworks.overseer.run_streaming_task` (visible in overseer's task list, killable there) | Spawn subprocesses directly (overseer owns the process); persist filter state (in-memory only for v1) |
+| `device_log.lua` | Client-side device-log view: line parser (`MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: msg`), session prefilter (pid OR proc-contains-bundle, applied at receive), soft filter (level / regex / tag / pid, applied at render), ring buffer (5000 records), bottom-split scratch buffer with level-based extmark highlights. Singleton view, one stream at a time. Streaming task runs under `loomworks.overseer.run_streaming_task` (visible in overseer's task list, killable there). In `daemon` mode the stream is not carried yet (step 5n C2): the view says the log is unavailable (`M.unavailable`, `M.refuse_daemon`); a queue overflow is a gap line in the view | Spawn subprocesses directly (overseer owns the process); persist filter state (in-memory only for v1) |
 
 ### Data / IO Layer
 
@@ -377,7 +377,7 @@ may import from its own layer or any layer below it, never above.
 | `lsp.lua` | LSP dispatch layer + plugin-style integration registry. On load, scans every runtime path for `integrations/lsp/*.lua` and requires each — integrations self-register via `register(server, M)`. Exposes generic `cmd(server, base)` / `root_dir(server, fallback)` factories, a `setup_servers(opts)` that installs enabled integrations via `vim.lsp.config` + `vim.lsp.enable`, buffer excludes (`default_excludes()` / `excluded(bufnr)` + `LspAttach` detach autocmd) applied uniformly across all managed integrations, `get_status()` dispatching per-server status fields to integrations, and the **generic restart machinery**: `wrap_on_exit(server, user_on_exit)` distinguishes managed-stop / clean external stop / unexpected death; `mark_managed_stop(client_id)` lets integrations flag their own intentional stops; per-`(server, root_dir)` throttle (4 attempts / 5min sliding window) deferring with `vim.defer_fn`; `is_suppressed` / `clear_suppression` / `reset_attempts` for the UI Reset path; subscribes to `lsp_options_changed` and dispatches to integrations' `on_lsp_options_changed` for cmd-affecting toggles. Reads projects, entries, options and readiness only through `lsp_source.lua` (never the model). **The entries are content-memoized** (in `lsp_config.lua`): on `active_set_changed` every integration iterates every project's entries, so a per-project cache keyed on `{generation, ws.root, project.key, active-profile key, resolved build_dir/config_key/build-state/tool, fallback cached.build_dir + tool_data clangd, hash(type_config)}` returns the prior `module.lsp_configs()` result on a hit — a no-op switch and the second integration on a tick pay nothing. The memo is blown on `workspace_changed` / `workspace_closed` and its keys invalidated (generation bump) on `lsp_options_changed`; the early return-on-hit is structured so a future mtime-guarded side effect inside `lsp_configs` is skipped on hits too | Contain server-specific wiring (lives in `integrations/lsp/<server>.lua`) |
 | `lsp_config.lua` | The LSP configuration state (shared side, host-neutral): the `lsp_configs` content memo (per environment in the daemon: at most `ENV_SLOTS` (4) environments per project, least recently used dropped first, each named by the SHA-256 of its signature), `db_state` derivation, the core `db_dir` / `db_rev` entry fields, `state(ws, opts)` in the `LspConfig/1.get` shape and its `signature` | Use `vim.*`, start servers, decide withhold reasons (integrations do) |
 | `lsp_source.lua` | Where `lsp.lua` and the integrations read the LSP state: in `daemon` mode the daemon's alone (the observer's `lsp_phase`: in use, waiting or unavailable instead of any fallback), the in-process state from the `loomworks` facade only in `in-process` mode until step 6b; the change diff, option writes through the daemon | Let the LSP layer reach into the model any other way; fall back to the in-process state in `daemon` mode |
-| `device_source.lua` | Where the editor reads devices (step 5n part A): the device list and scan, a profile's selected device, selecting and clearing it — for the status page's device row, `lw.scan_devices` / `lw.get_devices` and the session tracker's device prompt. In-process implementation only (the workspace's device registry and the profile's selection); `Devices/1` arrives in 5n C2 | Let those callers read devices from the model any other way |
+| `device_source.lua` | Where the editor reads devices (step 5n parts A and C2): the device list and scan, a profile's chosen device, selecting and clearing it — for the status page's device row, `lw.scan_devices` / `lw.get_devices` and the session tracker's device prompt — as `DeviceRecord`s (the `Devices/1.list` shape). `daemon` mode: only the daemon (`editor_ops.devices` / `scan_devices` / `set_device`: the observer's cached `Devices/1.list`, re-read on `changed`; a `Devices/1.scan` task; `Profiles/1.set_device` / `clear_device`), refused when not carried; `in-process` mode: the workspace's device registry and the profile's selection | Let those callers read devices from the model any other way; run any of it in-process in `daemon` mode |
 | `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement; **always-on `--pch-storage=disk`** + **user-configurable `--clang-tidy`/`--background-index`/`--background-index-priority`/`extra_args`** appended to every cmd (last-wins via LLVM `cl::opt`); reads via `Workspace:get_lsp_options("clangd")` (defaults applied); coalesced restart on `on_lsp_options_changed`; **OOM-adaptive `-j` step-down** via `on_unexpected_exit` (seed `-j 12` on first OOM, halve to 1 floor, give up after); single-retry policy for non-OOM crashes; nvim LSP log snapshot rotation (5 generations) on every (re)start; `reset(root_dir)` clears adaptive state and re-enables clangd | Reference specific modules; read `project.cmake` or other module-specific fields |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
 | `task_tracker.lua` | Overseer component bridging task lifecycle to ConfigUnit, cache recording, and build dir lock release on completion/dispose (idempotent) | Be imported by anything except overseer |
@@ -954,9 +954,20 @@ re-cut onto master step by step; this section is expanded as each step lands.
   daemon mode too.
   Launches (step 5k C2): `session_tracker.start_run` asks
   `editor_ops.prepares(target)` (daemon mode) for a non-device target; a
-  device target's chain runs in the editor unless
-  `editor_ops.device_launch_refusal(target)` (daemon mode, not connected)
-  refuses it (a debug
+  device target (step 5n C2) is refused at once by
+  `editor_ops.device_run_refused(target)` when one of `launch_build`,
+  `device_install`, `device_launch` is not carried, else run by
+  `start_device_run`: `editor_ops.build_target`, the profile's device
+  (`device_source.chosen_for_target`: the cached `Devices/1.list`'s
+  `profiles`; none → `scan_for_target` + a pick + `select_for_target`, i.e.
+  `Devices/1.scan` and `Profiles/1.set_device`), then
+  `editor_ops.device_step("install" | "launch")` — `launch_call` with
+  `device_args(target)` (the profile only: a device target is its default
+  target) and no conflict question — each owned, cancellable through
+  `_preparing`; launched, `_active_run.device_task` (the launch task id)
+  keeps the run "running" until `stop()` sends `editor_ops.device_stop`
+  (`Devices/1.stop { task }`), and `device_log.refuse_daemon()` says the log
+  is unavailable (a debug
   without nvim-dap prepares a launch, as `LaunchTarget:debug` falls back);
   a debug first checks `LaunchTarget:primary_debug_adapter(resolve)` against
   nvim-dap (`debug.adapter_installed` / `adapter_hint`, before the
@@ -991,8 +1002,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `editor_ops.build_target(target, k)` — one owned `Launch/1.build` (the
   observer's call `launch_build`, `WIRE` → `build`;
   `target_build_args` = `launch_args` without `build_scope` / `cwd`), no
-  dependency build, deploy or fallback in the editor; a device target keeps
-  the editor's chain behind `build_refusal`. The preparations and the build
+  dependency build, deploy or fallback in the editor; a device target's
+  build is the same call from step 5n C2. The preparations and the build
   share `launch_call`, which asks the artifact-conflict question
   (`ask_conflict` over `LaunchTarget:existing_build_units()`, never
   materialising a unit) before the call and sends its Yes as `force`. The
@@ -1774,6 +1785,30 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   undo a refused write). `Launch/1.build` of a device target runs its
   post-build deploy (`runner.lua` `plan_target_scope`). The stub module is
   `tests/fixtures/devstub` (the conformance runner's `devices` fixture).
+- *(5n part C2, spec §19.16 "Devices")* The editor's use: the observer's
+  `M.DEVICES` (subscribed to for `changed`; `callable`, `tasks`) and
+  `M.PROFILES` (`call_only`, feature `device choice`), the calls
+  `device_list` / `device_scan` / `device_install` / `device_launch` /
+  `device_stop` (`WIRE` → the Devices/1 method; `device_list` carries no
+  environment) and `set_device` / `clear_device`. `Devices/1.list` is read
+  into a per-connection cache (`Observer:_fetch_devices`, single flight,
+  first on `_connected_note`, again on each `changed`; `devices()` /
+  `with_devices(cb, fresh)`; `daemon_devices` emitted after each read;
+  dropped on a disconnect, a resubscribe or `/devices` removed).
+  `daemon/editor_ops.lua` routes `scan_devices` (owned task, then a fresh
+  read), `set_device` (`Profiles/1.set_device { profile, device = { id } }`
+  / `clear_device`, through `plain`), `device_step` / `device_stop` and
+  `device_run_refused`; `editor_ops.NO_RESTART` includes `device_launch`.
+  `device_source.lua` is their one caller for reads and choices;
+  `session_tracker.start_device_run` the one for a device launch (see
+  "Launches" above). Nothing of it runs in the editor in `daemon` mode; the
+  in-process chain (`LaunchTarget:device_install` / `device_launch` /
+  `device_stop`, `Workspace:scan_devices`) is the deprecated
+  `in-process` mode's only. The device log stream is not carried yet
+  (`Launch/1.device_log`, 5n B3/C3): `device_log.unavailable()` /
+  `refuse_daemon()` say so (one notification after a launch, the note as
+  the view's last line); its dropped-lines notice is a gap line in the view
+  (no workspace reach-in).
 - *(Step 5l; spec §19.16 "LSP configuration", §19.20 `LspConfig/1`, §9.2.)*
   `lsp_config.lua` (shared side, host-neutral, no `vim.*`) — the one builder
   of the LSP configuration state: the `lsp_configs` content memo
