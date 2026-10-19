@@ -74,6 +74,9 @@ M.PROBE_TIMEOUT_MS = 3000
 M.LOG_QUEUE_MAX = 2000
 --- How often the waiting records are sent as one `log` signal.
 M.LOG_FLUSH_MS = 100
+--- The log clear's timeout (the in-process view's too): a clear that does
+--- not end by then is killed, a note line, and the stream starts.
+M.LOG_CLEAR_TIMEOUT_MS = 3000
 --- How often the launched program's pid is probed, and how many misses in
 --- a row end the log (as the in-process session tracker's poll).
 M.LOG_PID_POLL_MS = 3000
@@ -139,14 +142,15 @@ end
 
 --- Spawn `argv` (argv[1] resolved on the caller's PATH) in the caller's
 --- environment plus `o.env`; `o.output(stream, text)` gets its output, and
---- `done(code, stdout, stderr)` (on the main loop, outside any segment) its
---- end. `o.timeout` kills it after that many ms. While it runs it is the
---- run's `child` (a cancel kills its process tree).
+--- `done(code, stdout, stderr, timed_out)` (on the main loop, outside any
+--- segment) its end. `o.timeout` kills it after that many ms (`timed_out`
+--- true). While it runs it is the run's `child` (a cancel kills its process
+--- tree).
 --- @param ctx table the request (its `env`)
 --- @param run table
 --- @param argv string[]
 --- @param o { cwd?: string, env?: table, output?: fun(stream: string, text: string), timeout?: integer }
---- @param done fun(code: integer, stdout: string, stderr: string)
+--- @param done fun(code: integer, stdout: string, stderr: string, timed_out: boolean|nil)
 local function spawn(ctx, run, argv, o, done)
     local runner = require("loomworks.daemon.runner")
     local spec, herr = require("loomworks.exe").harden_spec({ cmd = vim.deepcopy(argv), cwd = o.cwd,
@@ -155,7 +159,7 @@ local function spawn(ctx, run, argv, o, done)
         vim.schedule(function() done(127, "", tostring(herr)) end)
         return
     end
-    local out, err, t = {}, {}, nil
+    local out, err, t, timed_out = {}, {}, nil, false
     local child = {}
     child.obj = runner.spawn(spec, {
         output = function(stream, text)
@@ -165,7 +169,7 @@ local function spawn(ctx, run, argv, o, done)
         done = function(code)
             if t then pcall(function() t:stop(); t:close() end); t = nil end
             if run.child == child then run.child = nil end
-            done(code, table.concat(out), table.concat(err))
+            done(code, table.concat(out), table.concat(err), timed_out)
         end,
     })
     if child.obj then
@@ -174,7 +178,12 @@ local function spawn(ctx, run, argv, o, done)
         run.child = child
         if type(o.timeout) == "number" and o.timeout > 0 then
             t = uv.new_timer()
-            t:start(o.timeout, 0, function() vim.schedule(function() runner.kill(child) end) end)
+            t:start(o.timeout, 0, function()
+                vim.schedule(function()
+                    timed_out = true
+                    runner.kill(child)
+                end)
+            end)
         end
     end
 end
@@ -194,7 +203,8 @@ end
 
 --- Run a module's device command (loomworks.DeviceCommand), its output on
 --- the task (`task` nil: collected only); `k(nil)` on success, `k(err)` on a
---- nonzero exit or a `check_output` failure — in a model segment of `ctx`.
+--- nonzero exit, a `check_output` failure or, with `o.timeout`, no end
+--- within that many ms (the command killed) — in a model segment of `ctx`.
 --- Nothing is called once the run finished or was cancelled (the cancel
 --- ends it).
 --- @param service loomworks.daemon.BuildService
@@ -203,15 +213,20 @@ end
 --- @param command loomworks.DeviceCommand
 --- @param task loomworks.daemon.Task|nil
 --- @param k fun(err: string|nil)
-local function run_command(service, ctx, run, command, task, k)
+--- @param o? { timeout?: integer }
+local function run_command(service, ctx, run, command, task, k, o)
     local argv = { command.cmd }
     for _, a in ipairs(command.args or {}) do argv[#argv + 1] = a end
-    spawn(ctx, run, argv, { cwd = command.cwd, env = command.env,
+    local timeout = o and o.timeout
+    spawn(ctx, run, argv, { cwd = command.cwd, env = command.env, timeout = timeout,
         output = task and function(stream, text) task:output(stream, text) end or nil },
-        function(code, stdout, stderr)
+        function(code, stdout, stderr, timed_out)
             service:with_model(ctx, function()
                 if run.finished then return end
                 if run.cancelled then return run.finish(run.cancel_code, run.stopped()) end
+                if timed_out then
+                    return k(string.format("%s timed out (no answer after %g s)", command.name, timeout / 1000))
+                end
                 if code ~= 0 then
                     if not task and stderr ~= "" then
                         return k(command.name .. " failed (exit " .. code .. "): " .. vim.trim(stderr))
@@ -893,6 +908,8 @@ local function run_device_log(service, ctx, l, command)
         stream()
         return run
     end
+    -- A failed or a timed-out clear is a note line, and the stream starts
+    -- anyway (§9.5).
     take_device_lock(service, ctx, run, serial, function(lerr)
         if lerr then return run.finish(1, lerr) end
         run_command(service, ctx, run, clear, nil, function(cerr)
@@ -900,7 +917,7 @@ local function run_device_log(service, ctx, l, command)
             run.device_lock = nil
             if cerr then task:line("note", "device log not cleared: " .. cerr, "plain") end
             stream()
-        end)
+        end, { timeout = M.LOG_CLEAR_TIMEOUT_MS })
     end)
     return run
 end

@@ -478,11 +478,25 @@ end)
 describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function()
     local s
     local saved = {}
+    local tasks_mod = require("loomworks.daemon.tasks")
+    local daemon_runner = require("loomworks.daemon.runner")
+    local stubbed = {}
+    --- Replace `t[k]` with `v` until the test ends.
+    local function stub(t, k, v)
+        stubbed[#stubbed + 1] = { t, k, t[k] }
+        t[k] = v
+    end
     before_each(function()
-        for _, k in ipairs({ "LOG_QUEUE_MAX", "LOG_FLUSH_MS", "LOG_PID_POLL_MS" }) do saved[k] = devices[k] end
+        for _, k in ipairs({ "LOG_QUEUE_MAX", "LOG_FLUSH_MS", "LOG_PID_POLL_MS", "LOG_LINE_MAX",
+            "LOG_BATCH_BYTES", "LOG_CLEAR_TIMEOUT_MS", "PROBE_TIMEOUT_MS" }) do saved[k] = devices[k] end
     end)
     after_each(function()
         for k, v in pairs(saved) do devices[k] = v end
+        for i = #stubbed, 1, -1 do
+            local e = stubbed[i]
+            e[1][e[2]] = e[3]
+        end
+        stubbed = {}
         L.cleanup()
         if s then s.close(); s = nil end
     end)
@@ -501,9 +515,10 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
         for k, v in pairs(extra) do e[k] = v end
         return e
     end
-    local function subscribe()
+    --- Subscribe to `log` (`args`: its subscribe_args).
+    local function subscribe(args)
         local r = s.call("/", "loomworks.Root", "subscribe",
-            { object = "/launch", iface = "loomworks.Launch", v = 1, signals = { "log" } })
+            { object = "/launch", iface = "loomworks.Launch", v = 1, signals = { "log" }, args = args })
         assert.truthy(r.sub_id)
     end
     local function device_log(task, env)
@@ -516,9 +531,9 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     end
     --- The `log` signals of task `id` until `stop(records)` holds (default:
     --- its `done`): the records, the dropped total, the done frame (when
-    --- reached) and the task's lines.
+    --- reached), the task's lines and each signal's record count.
     local function collect(id, stop, ms)
-        local recs, dropped, lines = {}, 0, {}
+        local recs, dropped, lines, batches = {}, 0, {}, {}
         while true do
             local f = s.wait(function(m)
                 return (m.kind == "signal" and m.object == "/launch" and m.name == "log" and m.args.task == id)
@@ -527,12 +542,13 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
             if f.kind == "signal" then
                 assert.is_true(#f.args.records > 0 or (f.args.dropped or 0) > 0)
                 vim.list_extend(recs, f.args.records)
+                batches[#batches + 1] = #f.args.records
                 dropped = dropped + (f.args.dropped or 0)
-                if stop and stop(recs) then return recs, dropped, nil, lines end
+                if stop and stop(recs) then return recs, dropped, nil, lines, batches end
             elseif f.phase == "line" then
                 lines[#lines + 1] = f.stream .. ": " .. f.text
             else
-                return recs, dropped, f, lines
+                return recs, dropped, f, lines, batches
             end
         end
     end
@@ -639,6 +655,42 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
         -- (Its stderr is read too, as the in-process view reads both streams.)
         assert.equals(4, #recs)
         assert.same({ level = "info", message = "log failed on SER1" }, recs[4])
+    end)
+
+    local function cancel(id)
+        assert.same({ outcome = "ok" }, s.call("/tasks", "loomworks.Tasks", "cancel", { task_id = id }))
+    end
+    --- The next line of task `id`.
+    local function next_line(id)
+        return s.wait(function(m) return m.kind == "task" and m.task_id == id and m.phase == "line" end)
+    end
+    --- Read frames for `ms` into the inbox.
+    local function drain(ms)
+        local until_ = uv.now() + ms
+        while uv.now() < until_ do
+            local f = s.d.recv(50)
+            if f then s.inbox[#s.inbox + 1] = f end
+        end
+    end
+    local function log_signals()
+        local n = 0
+        for _, f in ipairs(s.inbox) do
+            if f.kind == "signal" and f.object == "/launch" and f.name == "log" then n = n + 1 end
+        end
+        return n
+    end
+
+    it("a clear that does not end in 3 s is killed: a note line, then the stream", function()
+        s = session()
+        local launch = launched()
+        subscribe()
+        local t0 = uv.now()
+        local recs, _, done, lines = collect(start_log(launch, env_with({ LW_TEST_DEVICE_SLEEP = "30000" })))
+        assert.is_true(uv.now() - t0 < 15000)
+        assert.equals(0, done.exit_code, vim.inspect(done))
+        assert.truthy(lines[1] and lines[1]:find("^note: device log not cleared: .*timed out"), vim.inspect(lines))
+        assert.equals(3, #recs)
+        assert.is_nil(device_lock.read("SER1"))
     end)
 
     it("is refused as stop is: unknown, running, pid-less; another client's launch is forbidden", function()
