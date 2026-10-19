@@ -302,12 +302,14 @@ end
 -- Runs
 -- ---------------------------------------------------------------------------
 
---- A device task's run: `finish(code, err, result?)` (idempotent) releases
---- its locks and timers and ends the task; `cancel(reason, code)` kills the
---- running command (whose end then finishes the run) or finishes it at once.
+--- A device run: `finish(code, err, result?)` (idempotent) releases its
+--- locks and timers, ends the task (a `stop` has none: its `on_finish(code,
+--- err, result)` answers the call) and leaves `Service.runs`; `cancel(reason,
+--- code)` kills the running command (whose end then finishes the run) or
+--- finishes it at once.
 --- @param service loomworks.daemon.BuildService
 --- @param ctx table
---- @param op "scan"|"install"|"launch"
+--- @param op "scan"|"install"|"launch"|"stop"
 --- @return table run
 local function new_run(service, ctx, op)
     local run = { task = ctx.task, op = op, cancelled = false, held = {}, timers = {}, ctx = ctx }
@@ -342,7 +344,8 @@ local function new_run(service, ctx, op)
         if run.finished then return end
         run.finished = true
         run.release_all()
-        run.task:done(code, err, result and { result = result } or nil)
+        if run.task then run.task:done(code, err, result and { result = result } or nil) end
+        if run.on_finish then run.on_finish(code, err, result) end
         if service.on_run_done then service:on_run_done(run) end
     end
     function run.cancel(reason, code)
@@ -630,35 +633,27 @@ local function stop_method(service)
             service:_before_ack(ctx)
             return cctx.reply(fields)
         end
-        -- A run without a task (nothing is streamed); its locks and child
-        -- are a run's, so a stop the daemon's shutdown interrupts releases them.
-        -- (`ctx.run`: its later segments run even while the daemon stops,
-        -- so the device lock is released.)
-        local run = { op = "stop", held = {}, timers = {}, cancelled = false }
-        ctx.run = run
-        local function answer(fields)
-            if run.finished then return end
-            run.finished = true
-            for t in pairs(run.timers) do pcall(function() t:stop(); t:close() end) end
-            if run.device_lock then require("loomworks.remote.device_lock").release(run.device_lock) end
-            ctx.reply(fields)
+        -- A run without a task (nothing is streamed), in `Service.runs` once
+        -- its workspace is known: the daemon's shutdown or its owner's
+        -- disconnect cancels it (killing the stop command, releasing the
+        -- device lock), and the daemon is busy while it runs. Its end answers
+        -- the call: `answer` fields set before it, else `ok` / `refused`.
+        local run = new_run(service, ctx, "stop")
+        local answer_fields
+        function run.stopped(why) return "stop interrupted: " .. tostring(why or run.cancel_reason) end
+        function run.on_finish(code, err)
+            if ctx.conn.closed then return end
+            if answer_fields then return ctx.reply(answer_fields) end
+            if code == 0 then return ctx.reply({ outcome = "ok" }) end
+            ctx.reply({ outcome = "refused", exit_code = 1, message = tostring(err) })
         end
-        function run.finish(_, err) answer({ outcome = "refused", exit_code = 1, message = tostring(err) }) end
-        function run.stopped() return "stop interrupted" end
-        function run.timer(ms, fn)
-            local t = uv.new_timer()
-            run.timers[t] = true
-            t:start(ms, 0, function()
-                vim.schedule(function()
-                    if not run.timers[t] then return end
-                    run.timers[t] = nil
-                    pcall(function() t:close() end)
-                    fn()
-                end)
-            end)
+        local function answer(fields)
+            answer_fields = fields
+            run.finish(fields.outcome == "ok" and 0 or 1)
         end
         service:with_model(ctx, function()
-            if ctx.conn.closed then return end
+            if run.finished or run.cancelled then return end
+            if ctx.conn.closed then return run.finish(1, "the client disconnected") end
             if service.stopping or service.server.stopped then
                 return answer({ outcome = "declined", reason = "the workspace runtime is stopping" })
             end
@@ -673,12 +668,13 @@ local function stop_method(service)
                 M.launches(service)[id] = nil
                 return answer({ outcome = "ok" })
             end
+            service.runs[run] = true
             take_device_lock(service, ctx, run, l.serial, function(lerr)
                 if lerr then return run.finish(1, lerr) end
                 run_command(service, ctx, run, command, nil, function(cerr)
                     if cerr then return run.finish(1, cerr) end
                     M.launches(service)[id] = nil
-                    answer({ outcome = "ok" })
+                    run.finish(0)
                 end)
             end)
         end)

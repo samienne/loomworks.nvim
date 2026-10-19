@@ -361,6 +361,33 @@ describe("Devices/1 in the workspace daemon (§19.16 Devices)", function()
         assert.truthy(log:find("stop SER1 com.example.app stop", 1, true), log)
     end)
 
+    it("a running stop is a run: its owner's disconnect kills it and releases the device", function()
+        s = session()
+        s.scan()
+        s.set_device("SER1")
+        local id = s.start("launch", DEV)
+        assert.equals(0, s.done(id).exit_code)
+        local slow = vim.tbl_extend("force", s.env, { LW_TEST_DEVICE_SLEEP = "30000" })
+        local req = s.send_call("/devices", "loomworks.Devices", "stop", { task = id }, slow)
+        s.poll(function() return read(s.log):find("stop SER1", 1, true) ~= nil end)
+        local svc = s.service()
+        local stop_run
+        for run in pairs(svc.runs) do
+            if run.op == "stop" then stop_run = run end
+        end
+        assert.is_not_nil(stop_run)
+        -- Busy: the idle work cap does not unload under it.
+        assert.is_false(svc:abandon_background())
+        assert.is_not_nil(device_lock.read("SER1"))
+        local t0 = uv.now()
+        svc:on_conn_closed(devices.launches(svc)[id].owner)
+        local r = s.reply(req, 15000)
+        assert.is_true(uv.now() - t0 < 15000)
+        assert.equals("refused", r.result.outcome, vim.inspect(r))
+        assert.is_nil(device_lock.read("SER1"))
+        assert.is_nil(next(svc.runs))
+    end)
+
     it("a cancel during the launch's pid probe ends the task at once", function()
         s = session({ LW_TEST_PID_SLEEP = "2500" })
         s.scan()
