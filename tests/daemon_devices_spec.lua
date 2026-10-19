@@ -693,6 +693,18 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
         assert.is_nil(device_lock.read("SER1"))
     end)
 
+    it("a device lock it cannot take is a note line, then the stream", function()
+        s = session()
+        local launch = launched()
+        subscribe()
+        stub(device_lock, "try_acquire", function() return nil, "device SER1: the lock is unreadable" end)
+        local recs, _, done, lines = collect(start_log(launch))
+        assert.equals(0, done.exit_code, vim.inspect(done))
+        assert.same({ "note: device log not cleared: device SER1: the lock is unreadable" }, lines)
+        assert.equals(3, #recs)
+        assert.is_nil(read(s.log):find("log_clear", 1, true))
+    end)
+
     it("is refused as stop is: unknown, running, pid-less; another client's launch is forbidden", function()
         s = session({ LW_TEST_DEVICE_SLEEP = "30000" })
         local r = device_log("nope")

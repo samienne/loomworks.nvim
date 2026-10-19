@@ -908,10 +908,13 @@ local function run_device_log(service, ctx, l, command)
         stream()
         return run
     end
-    -- A failed or a timed-out clear is a note line, and the stream starts
-    -- anyway (§9.5).
+    -- A lock not taken, a failed or a timed-out clear is a note line, and
+    -- the stream starts anyway (§9.5).
     take_device_lock(service, ctx, run, serial, function(lerr)
-        if lerr then return run.finish(1, lerr) end
+        if lerr then
+            task:line("note", "device log not cleared: " .. lerr, "plain")
+            return stream()
+        end
         run_command(service, ctx, run, clear, nil, function(cerr)
             require("loomworks.remote.device_lock").release(run.device_lock)
             run.device_lock = nil
