@@ -25,6 +25,22 @@ elseif op == "log" then
             "10-19 12:00:01.000  4242  4242 D A00001/com.example.app/AppTag: flood %d", i)
     end
     if n > 0 then io.write(table.concat(flood, "\n") .. "\n") end
+    io.stdout:flush()
+    local prog = "10-19 12:00:02.000  4242  4242 I A00001/com.example.app/AppTag: "
+    if os.getenv("LW_TEST_LOG_PARTIAL") == "1" then
+        -- A line in two writes, then one the stream ends without a newline.
+        io.write(prog .. "par")
+        io.stdout:flush()
+        vim.uv.sleep(300)
+        io.write("tial\n" .. prog .. "tail")
+        io.stdout:flush()
+    end
+    local long = tonumber(os.getenv("LW_TEST_LOG_LONG") or "")
+    if long then
+        -- A line of `long` x's with no newline (the stream then sleeps).
+        io.write(prog .. string.rep("x", long))
+        io.stdout:flush()
+    end
 else
     io.write(line .. "\n")
 end

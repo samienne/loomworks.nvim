@@ -33,7 +33,10 @@
 ---                     prints its LOG_LINES (two of the launched program,
 ---                     one of another process, one that does not parse) in
 ---                     one write, then `LW_TEST_LOG_COUNT` more of the
----                     program's lines (`flood <i>`), sleeps
+---                     program's lines (`flood <i>`) — with
+---                     `LW_TEST_LOG_PARTIAL=1` a line in two writes and a
+---                     last one with no newline, with `LW_TEST_LOG_LONG=<n>`
+---                     a line of n x's with no newline — sleeps
 ---                     `LW_TEST_LOG_SLEEP` ms (not `LW_TEST_DEVICE_SLEEP`)
 ---                     and exits (1 when `LW_TEST_DEVICE_FAIL` is `log`);
 ---                     its arg is the pid when `device_log_options` asks for
