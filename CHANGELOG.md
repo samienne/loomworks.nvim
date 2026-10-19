@@ -32,19 +32,19 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   unknown option before `--` is a usage error (exit 2) and nothing changes.
   An argument starting with `-` now goes after `--`
   (`lw launch set app run -- --port 1`); bare arguments still work as before
-  (#PR).
+  (#290).
 
 ### Fixed
 
 - `lw launch add <project> <name> --from-target <target> … -- <args>` stored the
   `--` as the first argument. A target-backed add has no command token, so its
   `--` is lw's separator and is dropped; before it an unknown option is a usage
-  error instead of becoming an argument (#PR).
+  error instead of becoming an argument (#290).
 - `lw launch set <project> <name> --description text` (an option `set` does not
   have) replaced the config's arguments with `--description text`. It is now
-  refused with exit 2 and the config is left unchanged (#PR).
+  refused with exit 2 and the config is left unchanged (#290).
 - `lw launch describe -m <para> --project P --launch N` took the paragraph as
-  the project name when `-m` came before the address (#PR).
+  the project name when `-m` came before the address (#290).
 
 ## 0.1.49 - 2026-10-19
 
