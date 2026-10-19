@@ -148,7 +148,8 @@ return {
         -- the observer of its own scope's workspace (editor_ops.scope_workspace),
         -- never the editor's current one after a workspace swap.
         ["lua/loomworks/daemon/editor_ops.lua"] = 1,
-        ["lua/loomworks/device_log.lua"] = 1,
+        -- device_log.lua 1 -> 0: step 5n C2 — the dropped-lines warning
+        -- goes to the view itself, not the workspace's logger.
         ["lua/loomworks/init.lua"] = 59,
         -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
         -- routes the test adapters' reads through test_source.lua; its one
@@ -226,8 +227,13 @@ return {
     -- conn:call(M.LAUNCH.object, M.LAUNCH.iface, ...) for build (the call
     -- `launch_build`) and conn:call(M.TASKS.object, M.TASKS.iface, ...) for
     -- list (the steps re-read after a seq gap) — Launch/1 and Tasks/1.
+    -- 21 -> 28: step 5n C2 adds seven CALLS naming their methods literally:
+    -- conn:call(M.DEVICES.object, M.DEVICES.iface, ...) for list, scan,
+    -- install, launch and stop (the calls `device_<method>`) and
+    -- conn:call(M.PROFILES.object, M.PROFILES.iface, ...) for set_device and
+    -- clear_device — the versioned tables Devices/1 and Profiles/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 21,
+        ["lua/loomworks/daemon/observer.lua"] = 28,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core
