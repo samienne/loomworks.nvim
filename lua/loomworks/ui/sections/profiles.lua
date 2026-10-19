@@ -103,16 +103,19 @@ local function add_tool_action(ws, profile)
 end
 
 --- "Pick device": scan, then choose one of the online devices (or clear).
---- Every device read and choice goes through loomworks.device_source.
+--- Every device read and choice goes through loomworks.device_source — in
+--- `daemon` mode a `Devices/1.scan` task, then `Profiles/1.set_device` /
+--- `clear_device` (step 5n C2); a refused or failed scan was notified.
 local function pick_device_action(ws, profile)
     if not profile then return nil end
     return function()
         local devices = require("loomworks.device_source")
         vim.notify("loomworks: scanning for devices...", vim.log.levels.INFO)
         devices.scan(ws, function(list)
+            if not list then return end
             local online = {}
             for _, d in ipairs(list) do
-                if d:is_online() then
+                if d.state == "online" then
                     online[#online + 1] = d
                 end
             end
@@ -120,23 +123,24 @@ local function pick_device_action(ws, profile)
                 vim.notify("loomworks: no devices found", vim.log.levels.INFO)
                 return
             end
+            local current = devices.chosen_in(ws, profile, list)
             local items = vim.list_extend({}, online)
-            if devices.selected_serial(profile) then
+            if current then
                 items[#items + 1] = { clear = true }
             end
             vim.ui.select(items, {
                 prompt = "Select device for profile:",
                 format_item = function(d)
                     if d.clear then return "(clear selection)" end
-                    local mark = (devices.selected_serial(profile) == d.serial) and " (current)" or ""
-                    return d.display_name .. " (" .. d.serial .. ")" .. mark
+                    local mark = (current == d.key) and " (current)" or ""
+                    return d.label .. " (" .. d.key .. ")" .. mark
                 end,
             }, function(choice)
                 if not choice then return end
                 if choice.clear then
                     devices.clear(ws, profile)
                 else
-                    devices.select(ws, profile, choice.serial)
+                    devices.select(ws, profile, choice)
                 end
             end)
         end)

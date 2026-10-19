@@ -11,9 +11,12 @@
 --- loomworks.daemon.editor_ops); the program is still started here, from
 --- the returned spec. A preparation the daemon cannot carry or declines is
 --- refused, never run in-process (step 5s, "Availability"). A device
---- target's launch runs the chain below in the editor, in `daemon` mode
---- only while connected; in the deprecated `in-process` mode every launch
---- does.
+--- target's launch (step 5n C2, §19.16 "Devices") is the daemon's too:
+--- `Launch/1.build`, then `Devices/1.install` and `Devices/1.launch`, each
+--- a task the editor owns (start_device_run); its stop is `Devices/1.stop`
+--- and its device log is unavailable until the daemon carries it. In the
+--- deprecated `in-process` mode every launch runs the chain below in the
+--- editor.
 
 local Future = require("loomworks.future")
 
@@ -29,6 +32,7 @@ local M = {}
 --- @field device_bundle string|nil
 --- @field device_pid number|nil
 --- @field pidof_timer uv_timer_t|nil
+--- @field device_task any|nil `daemon` mode: the `Devices/1.launch` task that launched the program (a stop names it, step 5n C2)
 
 --- @type loomworks.TrackedRun|nil
 local _active_run = nil
@@ -39,7 +43,8 @@ local _active_run = nil
 --- @class loomworks.PreparingRun
 --- @field target loomworks.LaunchTarget
 --- @field mode "launch"|"debug"
---- @field preparation loomworks.daemon.Preparation|nil the routed call (editor_ops.prepare), once sent
+--- @field preparation loomworks.daemon.Preparation|nil the routed call (editor_ops.prepare), once sent; a device run's current step (step 5n C2)
+--- @field fidget_handle table|nil a device run's progress entry (failed on a stop)
 
 --- @type loomworks.PreparingRun|nil
 local _preparing = nil
@@ -50,12 +55,16 @@ local function cancel_preparing()
     local p = _preparing
     _preparing = nil
     if p and p.preparation then p.preparation:cancel() end
+    if p and p.fidget_handle then require("loomworks.fidget").fail(p.fidget_handle, "stopped") end
 end
 
 --- Check if the active run is still actually running.
 --- @return boolean
 local function is_active_running()
     if not _active_run then return false end
+    -- A program the daemon launched on a device runs until it is stopped
+    -- (the editor cannot see it end).
+    if _active_run.device_task ~= nil then return true end
     if _active_run.mode == "launch" then
         return _active_run.target:is_running()
     else
@@ -219,7 +228,13 @@ local function stop_run()
         _active_run.fidget_handle = nil
     end
     stop_log_session()
-    if _active_run.mode == "launch" then
+    if _active_run.device_task ~= nil then
+        -- `daemon` mode (step 5n C2): the daemon stops the program its
+        -- launch task started (`Devices/1.stop { task }`); a refusal or
+        -- failure is notified, never retried in the editor.
+        local ops = require("loomworks.daemon.editor_ops")
+        ops.device_stop(ops.scope_workspace({ profile = _active_run.target._profile }), _active_run.device_task)
+    elseif _active_run.mode == "launch" then
         -- Device launch: `<target>:stop()` only knows how to kill a
         -- local process; the app is running on the device, so
         -- delegate to the module's `device_stop` RPC. Fire and
@@ -387,14 +402,14 @@ local function start_run_in_process(target, mode, from_deploy)
             -- Device target path: install + launch on device, then return
             if target:requires_device() then
                 local device_source = require("loomworks.device_source")
-                local serial = device_source.selected_serial(target._profile)
+                local serial = device_source.chosen_in(nil, target._profile)
                 if not serial then
                     -- Prompt for device selection
                     return Future.create(function(resolve, reject)
                         device_source.scan_for_target(target, function(devices)
                             local items = {}
-                            for _, d in ipairs(devices) do
-                                if d:is_online() then
+                            for _, d in ipairs(devices or {}) do
+                                if d.state == "online" then
                                     items[#items + 1] = d
                                 end
                             end
@@ -405,15 +420,15 @@ local function start_run_in_process(target, mode, from_deploy)
                             vim.ui.select(items, {
                                 prompt = "Select device:",
                                 format_item = function(d)
-                                    return d.display_name .. " (" .. d.serial .. ")"
+                                    return d.label .. " (" .. d.key .. ")"
                                 end,
                             }, function(choice)
                                 if not choice then
                                     reject("device selection cancelled")
                                     return
                                 end
-                                device_source.select(nil, target._profile, choice.serial)
-                                resolve(choice.serial)
+                                device_source.select_for_target(target, choice)
+                                resolve(choice.key)
                             end)
                         end)
                     end)
@@ -599,6 +614,93 @@ local function start_prepared(target, mode, done)
     end
 end
 
+--- A device target's launch through the workspace daemon (step 5n C2,
+--- §19.16 "Devices"): its build (`Launch/1.build`, the post-build deploy
+--- included), the profile's device — when it has none, a scan
+--- (`Devices/1.scan`) and a choice among the online devices
+--- (`Profiles/1.set_device`) — then `Devices/1.install` and
+--- `Devices/1.launch`, each a task the editor owns. Nothing of it runs in
+--- the editor; a step refused or failed ends it (notified). While it runs
+--- it is `_preparing`: a stop cancels the current step, a second launch asks
+--- first. Launched, the run is tracked by its launch task (a stop sends
+--- `Devices/1.stop`) and the device log is refused (device_log.refuse_daemon:
+--- the daemon does not carry its stream yet).
+--- @param target loomworks.LaunchTarget
+local function start_device_run(target)
+    local ops = require("loomworks.daemon.editor_ops")
+    local device_source = require("loomworks.device_source")
+    local fidget = require("loomworks.fidget")
+    --- @type loomworks.PreparingRun
+    local token = { target = target, mode = "launch" }
+    _preparing = token
+    local handle = fidget.start_action("Launching " .. target:display_name())
+    token.fidget_handle = handle
+    local function live() return _preparing == token end
+    local function fail(err, notified)
+        if not live() then return end
+        _preparing = nil
+        fidget.fail(handle, tostring(err))
+        if not notified then
+            vim.notify("loomworks: " .. tostring(err or "the launch failed"), vim.log.levels.ERROR)
+        end
+    end
+    --- One owned call of the chain; `after(done)` once it ended with exit 0.
+    local function call(start, after)
+        if not live() then return end
+        local _, step = start({
+            resolve = function(done) if live() then after(done) end end,
+            reject = fail,
+        })
+        token.preparation = step
+        -- Stopped before the call returned: nothing more of it may run.
+        if not live() and step then step:cancel() end
+    end
+    local function launched(done)
+        _preparing = nil
+        fidget.finish(handle, "running on device")
+        _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock(),
+            device_task = done.task_id }
+        require("loomworks.device_log").refuse_daemon()
+    end
+    local function install()
+        fidget.report(handle, "installing on device...")
+        call(function(k) return ops.device_step("install", target, k) end, function()
+            fidget.report(handle, "launching on device...")
+            call(function(k) return ops.device_step("launch", target, k) end, launched)
+        end)
+    end
+    local function choose()
+        device_source.chosen_for_target(target, function(serial)
+            if not live() then return end
+            if serial then return install() end
+            fidget.report(handle, "scanning for devices...")
+            device_source.scan_for_target(target, function(devices, err)
+                if not live() then return end
+                if not devices then return fail(err, true) end
+                local items = {}
+                for _, d in ipairs(devices) do
+                    if d.state == "online" then items[#items + 1] = d end
+                end
+                if #items == 0 then return fail("no online devices found") end
+                vim.ui.select(items, {
+                    prompt = "Select device:",
+                    format_item = function(d) return d.label .. " (" .. d.key .. ")" end,
+                }, function(choice)
+                    if not live() then return end
+                    if not choice then return fail("device selection cancelled") end
+                    device_source.select_for_target(target, choice, function(ok, serr)
+                        if not live() then return end
+                        if not ok then return fail(serr, true) end
+                        install()
+                    end)
+                end)
+            end)
+        end)
+    end
+    fidget.report(handle, "building...")
+    call(function(k) return ops.build_target(target, k) end, choose)
+end
+
 --- The build → deploy → launch/debug chain: in `daemon` mode prepared by the
 --- workspace daemon (spec §19.16 "Editor operations") — refused when it
 --- cannot carry it ("Availability") — and a device target's run in the
@@ -616,12 +718,10 @@ end
 local function start_run(target, mode)
     local ops = require("loomworks.daemon.editor_ops")
     if target:requires_device() then
-        local refusal = ops.device_launch_refusal(target)
-        if refusal then
-            vim.notify("loomworks: " .. refusal, vim.log.levels.WARN)
-            return
-        end
-        return start_run_in_process(target, mode)
+        if not ops.prepares(target) then return start_run_in_process(target, mode) end
+        -- Not carried now: refused like any operation, nothing of it run.
+        if ops.device_run_refused(target) then return end
+        return start_device_run(target)
     end
     local debug_mod = require("loomworks.debug")
     local prep = (mode == "debug" and debug_mod.available()) and "debug" or "launch"

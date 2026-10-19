@@ -194,33 +194,33 @@ function LaunchTarget:build(on_complete)
     local overseer = require("loomworks.overseer")
 
     local editor_ops = require("loomworks.daemon.editor_ops")
-    -- `daemon` mode, a non-device target (step 5t, spec §19.16 "Editor
-    -- operations"): ONE `Launch/1.build` the editor owns — the daemon builds
-    -- the dependencies, runs the pre-build deploy and builds the target;
+    -- `daemon` mode (step 5t, spec §19.16 "Editor operations"; a device
+    -- target from step 5n C2, "Devices"): ONE `Launch/1.build` the editor
+    -- owns — the daemon builds the dependencies, runs the pre-build deploy
+    -- and builds the target (a device target's post-build deploy too);
     -- nothing of it runs here, and a build it cannot carry is refused. The
     -- daemon is the single authority: its own buildability checks refuse
     -- (the task ends nonzero with no steps); none are repeated here.
-    if not self:requires_device() then
-        local routed
-        local f = future_mod.create(function(resolve, reject, token)
-            local handle
-            routed, handle = editor_ops.build_target(self, {
-                resolve = function() resolve(true) end,
-                reject = function(err) reject(err) end,
-            })
-            -- Cancelling the Future cancels the daemon's task.
-            if handle then token:on_cancel(function() handle:cancel() end) end
-        end)
-        if routed then
-            if on_complete then
-                f:next(function() on_complete(true) end)
-                 :catch(function() on_complete(false) end)
-            end
-            return f
+    local routed
+    local routed_f = future_mod.create(function(resolve, reject, token)
+        local handle
+        routed, handle = editor_ops.build_target(self, {
+            resolve = function() resolve(true) end,
+            reject = function(err) reject(err) end,
+        })
+        -- Cancelling the Future cancels the daemon's task.
+        if handle then token:on_cancel(function() handle:cancel() end) end
+    end)
+    if routed then
+        if on_complete then
+            routed_f:next(function() on_complete(true) end)
+                    :catch(function() on_complete(false) end)
         end
+        return routed_f
     end
 
-    -- In-process and device builds: buildability gate via :is_valid().
+    -- In-process builds (the deprecated `in-process` mode): buildability
+    -- gate via :is_valid().
     -- Covers profile incompleteness, invalid configurations (stubs, unresolved
     -- inherits), and stale config_set mappings in one check.
     local ok, err = self:assert_valid()
@@ -238,15 +238,6 @@ function LaunchTarget:build(on_complete)
         return future_mod.rejected(abs_err)
     end
 
-    -- `daemon` mode, a device target (its build stays the editor's until
-    -- step 5n): a build the daemon cannot carry now is refused before
-    -- anything runs — its dependencies' builds or its pre-build deploy in
-    -- the editor (spec §19.16 "Availability").
-    local refused = editor_ops.build_refusal(self._workspace)
-    if refused then
-        if on_complete then on_complete(false) end
-        return future_mod.rejected(refused)
-    end
 
     local function build_self()
         if self._target then
@@ -936,12 +927,6 @@ end
 -- Device target operations
 -- ---------------------------------------------------------------------------
 
---- Discover the devices of this target's workspace (Workspace:scan_devices):
---- the device picker of a device launch.
---- @param cb fun(devices: loomworks.Device[])
-function LaunchTarget:scan_devices(cb)
-    return self._workspace:scan_devices(cb)
-end
 
 --- @class loomworks.DeviceCommand
 --- A module's device command (spec §11.4) as this target runs it.

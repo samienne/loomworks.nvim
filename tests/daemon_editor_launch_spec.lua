@@ -6,9 +6,10 @@
 -- `Launch/1.prepare_run` / `prepare_debug` the editor owns; its `done`
 -- starts the program here (task runner / nvim-dap); not carried, declined,
 -- degraded, refused, failed, or the connection lost after `accepted` → no
--- program, never run in-process (step 5s). A device target's launch stays in
--- the editor, only while connected. A preparation's task-runner restart is
--- not sent again.
+-- program, never run in-process (step 5s). A device target's launch is
+-- `Launch/1.build`, then `Devices/1.install` and `launch`, its stop
+-- `Devices/1.stop` (step 5n C2). A preparation's task-runner restart is not
+-- sent again.
 
 local observer = require("loomworks.daemon.observer")
 local editor_ops = require("loomworks.daemon.editor_ops")
@@ -298,14 +299,98 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.equals(0, #created)
     end)
 
-    it("a device target's launch stays in the editor while connected", function()
-        obs = fake_observer()
-        local t = lt("run")
-        t.requires_device = function() return true end
+    -- Step 5n C2 (§19.16 "Devices"): a device target's launch is the
+    -- daemon's — Launch/1.build, then Devices/1.install and launch, each a
+    -- task the editor owns, addressed by the profile alone; its stop is
+    -- Devices/1.stop of the launch task. Nothing runs in the editor.
+    it("a device target's launch is Launch/1.build, Devices/1.install and launch; stop is Devices/1.stop", function()
+        obs = fake_observer({ operations = "available", launch = "available", tasks = "subscribed",
+            devices = "subscribed", ["device choice"] = "available" })
+        local t = require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
+        local st = require("loomworks.session_tracker")
+        st.start(t, "launch")
+        assert.equals(1, #sent)
+        assert.same({ "/launch", "build" }, { sent[1].object, sent[1].method })
+        assert.is_nil(sent[1].args.target)
+        assert.same({ key = profile.key }, sent[1].args.profile)
+        accept(1, "b1")
+        done_frame("b1", 0, { exit_code = 0 })
+        -- The profile's device: read from Devices/1.list (no environment).
+        assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
+        assert.same({ "/devices", "list" }, { sent[2].object, sent[2].method })
+        assert.is_nil(sent[2].env)
+        sent[2].cb({ devices = { { id = "d-1", key = "SER1", label = "Phone", state = "online", provider = "x",
+            profiles = { profile.key } } } }, nil)
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        assert.same({ "/devices", "loomworks.Devices", "install" }, { sent[3].object, sent[3].iface, sent[3].method })
+        assert.same({ profile = { key = profile.key } }, sent[3].args)
+        assert.same({ PATH = "x" }, sent[3].env)
+        accept(3, "i1")
+        done_frame("i1", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 4 end, 10))
+        assert.same({ "/devices", "launch" }, { sent[4].object, sent[4].method })
+        assert.same({ profile = { key = profile.key } }, sent[4].args)
+        accept(4, "l1")
+        start_frame("l1", "launch")
+        done_frame("l1", 0, { exit_code = 0, pid = 42, bundle = "com.x" })
+        assert.is_true(vim.wait(2000, function() return st.is_running() end, 10))
+        assert.equals("l1", st.active_run().device_task)
+        -- The device log is refused (not carried yet), never streamed here.
+        assert.is_true(noted("device log: unavailable in daemon mode"))
+        assert.equals(0, #created)
+        assert.same({}, launched)
+        st.stop()
+        assert.equals(5, #sent)
+        assert.same({ "/devices", "stop" }, { sent[5].object, sent[5].method })
+        assert.same({ task = "l1" }, sent[5].args)
+        sent[5].cb({ outcome = "ok" }, nil)
+        assert.is_false(st.is_running())
+    end)
+
+    it("a device target without a chosen device: a Devices/1.scan task, then Profiles/1.set_device", function()
+        obs = fake_observer({ operations = "available", launch = "available", tasks = "subscribed",
+            devices = "subscribed", ["device choice"] = "available" })
+        local selects = {}
+        stub(vim.ui, "select", function(items, opts, cb) selects[#selects + 1] = { items = items, cb = cb } end)
+        local t = require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
         require("loomworks.session_tracker").start(t, "launch")
-        -- The editor's chain, its build routed (Build/1.build), no preparation.
-        assert.is_true(in_process_chain())
-        assert.equals("build", sent[1].method)
+        accept(1, "b2")
+        done_frame("b2", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
+        sent[2].cb({ devices = {} }, nil)
+        -- None chosen: a scan the editor owns, carrying its environment.
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        assert.same({ "/devices", "scan" }, { sent[3].object, sent[3].method })
+        assert.same({ PATH = "x" }, sent[3].env)
+        accept(3, "s1")
+        done_frame("s1", 0, { exit_code = 0, devices = 2 })
+        -- Then the registry read again.
+        assert.is_true(vim.wait(2000, function() return #sent == 4 end, 10))
+        assert.equals("list", sent[4].method)
+        sent[4].cb({ devices = { { id = "d-1", key = "SER1", label = "Phone", state = "online" },
+            { id = "d-2", key = "SER2", label = "SER2", state = "offline" } } }, nil)
+        assert.is_true(vim.wait(2000, function() return #selects == 1 end, 10))
+        assert.equals(1, #selects[1].items)
+        selects[1].cb(selects[1].items[1])
+        assert.is_true(vim.wait(2000, function() return #sent == 5 end, 10))
+        assert.same({ "/profiles", "loomworks.Profiles", "set_device" },
+            { sent[5].object, sent[5].iface, sent[5].method })
+        assert.same({ profile = { key = profile.key }, device = { id = "d-1" } }, sent[5].args)
+        sent[5].cb({ outcome = "ok" }, nil)
+        assert.is_true(vim.wait(2000, function() return #sent == 6 end, 10))
+        assert.equals("install", sent[6].method)
+        -- Nothing of it in the editor's model.
+        assert.is_nil(profile:device_serial())
+    end)
+
+    it("a device target's launch the daemon cannot carry (no Devices/1) is refused before anything runs", function()
+        obs = fake_observer()
+        local t = require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
+        require("loomworks.session_tracker").start(t, "launch")
+        vim.wait(100)
+        assert.same({}, sent)
+        assert.is_true(noted("loomworks: launch: "))
+        assert.same({}, titles)
     end)
 
     it("a disconnected editor refuses a device target's launch with the Runtime status", function()

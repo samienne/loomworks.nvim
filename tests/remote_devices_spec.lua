@@ -211,7 +211,7 @@ describe("lw device list / select", function()
         local ws = { _active_set = {}, _core = { _deps = { events = { emit = function() emitted = emitted + 1 end } } } }
         local real_notify = vim.notify
         vim.notify = function(msg, level) notified[#notified + 1] = { msg, level } end
-        local ok1, err1 = ds.select(ws, p, "SER9")
+        local ok1, err1 = ds.select(ws, p, { key = "SER9", label = "SER9", state = "online" })
         local ok2, err2 = ds.clear(ws, p)
         vim.notify = real_notify
         assert.is_false(ok1)
