@@ -1511,7 +1511,7 @@ workspace; an editor's connection starts a load right after it (§19.16
 `Snapshot/1.get` over transport 11 since part B (`daemon/calls.lua`); the
 editor views steps 5j–5n, §19.19: `view.Header/1` and `view.ProjectsIndex/1`
 specified ("Views" below, step 5j part 0) and served (part B), the editor's use plan.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
-([API.md](../protocol/API.md) §15), flagged `same_build`: the CLI's read commands and the parity tests
+([API.md](../protocol/API.md) §16), flagged `same_build`: the CLI's read commands and the parity tests
 use it, the editor never does, and `snapshot` stays as its v0 alias. The
 always-warm header is the `loomworks.view.Header/1` interface (and
 `loomworks.Workspace/1.header`); `welcome.header` stays as it is, frozen.
@@ -1567,6 +1567,19 @@ Last results live in the daemon's memory: they survive the editor's
 reconnects, not a daemon restart (persisting them is later, §19.19 5m part
 D).
 
+**The workspace view.** *(Step 5n, plan: part 0 this spec; A the host-neutral
+builder, in-process only; B1 the daemon side; C1 the editor's read path.)*
+`loomworks.view.Workspace/1` ([API.md](../protocol/API.md) §14.4), on `/views`
+like the views above, backs the status page's body: Diagnostics,
+Suggestions, Profiles, Orphaned Configurations, Configuration Sets, Projects
+and SDKs (spec/ui.md §1.1). The header, LSP, Debug Adapters and Tasks
+sections keep their own sources. In `daemon` mode the editor renders these
+sections only from the view; while the view is not offered, each section is
+one line in the warning highlight, `unavailable — <why>`, as the Debug
+Adapters section's is. Its ids are the daemon's alone ("Two sources, one
+shape"). The rows carry what step 5o's command methods take as `{ id }`
+references.
+
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
 while it holds a subscription to the view, otherwise one it builds from its
@@ -1575,7 +1588,7 @@ what only the daemon knows is optional in it and left out in-process: the
 header's `pid`, `lw_version` and `session_generation`, and every opaque id
 (`active_profile_id`, `config_set_id`, a project record's `id` and
 `active.unit_id`, the tests view's `profile_id` and unit `id`; its node ids
-are local keys in-process). A view the daemon does not offer (or offers only at another
+are local keys in-process; the workspace view's row `id`s). A view the daemon does not offer (or offers only at another
 version) is built in-process too, with the one Runtime-line note of §19.16
 "Interface client". In `daemon`
 mode a view is **never** built from the editor's own model: while the
@@ -1771,8 +1784,8 @@ standard error, so standard output carries only the report. Hence:
 from part C2.)* A debug launch takes the same split: the daemon prepares it
 (`Launch/1.prepare_debug`, [API.md](../protocol/API.md) §9.2), the client hands the result to its
 debugger, which starts the program — the program is never the daemon's. The
-editor keeps device targets in-process and never sends one (§19.16 "Editor
-operations").
+editor keeps device targets in-process and never sends one until step 5n
+(§19.16 "Devices").
 
 **Build scope of a launch.** *(Step 5k, part B2: implemented, daemon side;
 its deploy steps' asynchrony and step reports: step 5t, part B.)* The
@@ -2417,9 +2430,11 @@ owner"):
   mapping: while it is not carried, its read failed, or it does not name the
   language, nothing is checked before the call and the debugger checks the
   prepared adapter). A run that ends with
-  `device = true` continues in the editor as its in-process launch does from
-  the post-build deploy, without building again ("Build scope of a launch"
-  above). The program is the editor's, never the daemon's; stopping a run or
+  `device = true` (a target found foreign by probing its artifact, spec
+  §18.1) continues in the editor from the post-build deploy, without
+  building again ("Build scope of a launch" above); runner devices (§18)
+  stay out of step 5n. A device target of spec §11 is launched through
+  `Devices/1` ("Devices" below). The program is the editor's, never the daemon's; stopping a run or
   debug session stops it as in-process. While the preparation runs, a stop
   cancels its task (`Tasks/1.cancel`) and no program is started, and a
   second launch asks, as for a running session, before it replaces it.
@@ -2433,15 +2448,12 @@ owner"):
   `changed`; while it is not carried the section is unavailable and its
   writes fail, as any operation is refused ("Availability" below).
 
-Test runs and discovery go through `Tests/1` (step 5m, "Tests" below).
-Device-target launches **and builds** (build → deploy → install → launch,
-§11) stay in the editor until `Devices/1` (step 5n) — their builds as
-`Build/1` calls, their deploy steps in the editor; so does the post-build
-deploy of a run whose preparation ended with `device = true`. They are the
-only operations the editor
-still runs itself, apart from the transitional configuration mutations below
-(its deletions among them, until step 5o; §19.15), and only while connected (a disconnected editor refuses
-them with the Runtime status like any other operation).
+Test runs and discovery go through `Tests/1` (step 5m, "Tests" below);
+device-target launches through `Launch/1.build` and `Devices/1` (step 5n,
+"Devices" below). The editor runs no operation itself apart from the
+rest of a `device = true` run above and the transitional configuration
+mutations below (its deletions among them, until
+step 5o; §19.15).
 
 *(Transition, until steps 5n and 5o.)* In `daemon` mode the status page's
 body sections and the model's mutations — editing the configuration, the
@@ -2491,8 +2503,9 @@ missing on this connection:
   calls"): the operation fails and is not re-run.
 
 There is no in-process fallback and no opt-out; the editor never runs
-workspace logic itself beyond the device-target launches and the
-transitional model of "Editor operations" above. *(Transition, until step 6b: the deprecated
+workspace logic itself beyond the
+rest of a `device = true` run and the transitional model of "Editor
+operations" above. *(Transition, until step 6b: the deprecated
 `runtime.mode = "in-process"` editor of §19.1 runs every operation
 in-process, never routing; the cross-process build-directory locks (§16.6)
 serialize its operations with a daemon's.)*
@@ -2675,6 +2688,18 @@ editor's — rendering, navigation, the cursor's test, the output window.
 in-process discovery, its RunSpec runs with loomtest's own streaming and
 results parsing, its `ensure_built` and the neotest adapter, unchanged; that
 path is never used in `daemon` mode.
+
+**Devices.** *(Step 5n, plan: part 0 this spec; B2 the daemon side,
+[API.md](../protocol/API.md) §9.4, §11, §15; C2 the editor's use.)*
+In `daemon` mode the editor neither lists nor probes devices, nor installs
+or launches on them. The device list comes only from `Devices/1.list` and
+its `changed` signal. A scan is a `Devices/1.scan` task carrying the
+editor's environment. A device target's launch is a `Launch/1.build` call,
+then `Devices/1.install` and `Devices/1.launch`, each owned by the editor
+like an operation's task. Choosing a profile's device is
+`Profiles/1.set_device`. Device-target launches are no longer an exception
+in "Editor operations"; while the daemon cannot carry them they are refused
+like any operation ("Availability").
 
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, §12) — one per daemon
@@ -3250,8 +3275,9 @@ a test before its routing is enabled.
 
 Device logs travel on the task-stream channel as normalized records
 `{ ts, level, tag, pid, message, fields? }` (unknown level → a default,
-unknown keys → `fields`). Moving a platform module's device logic into the
-runtime is deferred until that module is actively developed.
+unknown keys → `fields`). A module's device listing, install, launch and
+stop run in the daemon from step 5n (§19.16 "Devices"); the log stream is
+`Launch/1.device_log`.
 
 ### 19.19 Transition order
 
@@ -3544,6 +3570,32 @@ runtime is deferred until that module is actively developed.
        editor's until 5n, which extends `Launch/1.build` to device targets
        with the post-build deploy, leaving install and launch to
        `Devices/1`.
+     - **5n — Workspace view and devices through the daemon** (§19.13 "The
+       workspace view"; §19.16 "Devices"; §19.18; §19.20 `view.Workspace/1`,
+       `Devices/1`, `Profiles/1`, `Launch/1`; after 5s and 5t), in parts:
+       0 — spec (this; the `loomworks.view.Workspace/1` schema; the
+       `Devices/1` method schemas land with their handlers in B2, since the
+       interface registry does not mount a schema method without a handler);
+       A — preparation with no behaviour change, in-process only: one
+       host-neutral builder of the view's shape, the status page's sections
+       split into rendering from that table and their actions, a device
+       source seam, the guard ratchet (the status page's rendering
+       byte-identical before and after); B1 — daemon side:
+       `view.Workspace/1` on `/views` (`update` only on a difference, ids
+       daemon-only), schema and transcripts on the `empty` and `shell`
+       fixtures; B2 — daemon side: `Devices/1` on `/devices` (`list`, `scan`,
+       `install`, `launch`, `stop`, the `changed` signal),
+       `Profiles/1.set_device` / `clear_device`, `Launch/1.build` extended to
+       device targets with the post-build deploy, and a tests-only stub
+       device module, schemas and transcripts (B1 and B2 independent after
+       A); C1 — editor side: the status page's body from the view, nothing of
+       it built in-process in `daemon` mode, the `unavailable — <why>` lines;
+       C2 — editor side: the device list, choice and launches through
+       `Devices/1` (refused while disconnected), the device-log reach-in
+       removed, an end-to-end check with the stub module; B3/C3 — the device
+       log stream as `Launch/1.device_log`, daemon and editor sides. Runner
+       devices (§18), `lw device clean` and `lw run --device` stay out of
+       5n.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
@@ -3685,10 +3737,10 @@ roadmap.
 | `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended, step; task frames; `TaskInfo.steps`) |
 | `/toolchains` | `loomworks.Toolchains/1` | list, rescan |
 | `/toolchains` | `loomworks.Sdks/1` | list, add, remove, detect |
-| `/devices` | `loomworks.Devices/1` | list, scan (changed) |
+| `/devices` | `loomworks.Devices/1` | list, scan T, install T, launch T, stop (changed) |
 | `/health` | `loomworks.Health/1` | run |
 | `/maintenance` | `loomworks.Maintenance/1` | orphaned, execute_deletion T, locks, unlock |
-| `/views` | `loomworks.view.Header/1`, `.ProjectsIndex/1`, `.Workspace/1`, `.Tests/1`, `.Devices/1` (one interface each) | get (update; full state on subscribe) |
+| `/views` | `loomworks.view.Header/1`, `.ProjectsIndex/1`, `.Workspace/1`, `.Tests/1` (one interface each) | get (update; full state on subscribe) |
 | `/internal` | `lw.internal.Snapshot/1` (same_build) | get |
 | `/modules/<id>` | `<id>.<Name>/<v>` | defined by the module |
 
@@ -3725,7 +3777,7 @@ A per-file compile-command query (§8.4 `compile_command_for`) is not part of
 `LspConfig/1` (BACKLOG "Per-file compile command over the daemon").
 
 **Module interfaces.** A module's interfaces — its namespace, the mount rule
-and rejection per interface version — are [API.md](../protocol/API.md) §16. A Lua module declares its
+and rejection per interface version — are [API.md](../protocol/API.md) §17. A Lua module declares its
 interfaces in its module table (`interfaces`: per interface name and version,
 the path of its schema relative to the plugin, its method handlers and its
 signals); they are mounted when the module is loaded (§8.0), and a rejected
@@ -3757,7 +3809,7 @@ is also logged (PROTOCOL.md §11.3). The released versions whose snapshots
 
 **Transcripts.** The transcript format, the runner's steps, matchers and
 checks are [PROTOCOL.md](../protocol/PROTOCOL.md) §18; the fixtures the runner prepares (`fixture`) are
-[API.md](../protocol/API.md) §17.
+[API.md](../protocol/API.md) §18.
 
 **Versions and deprecation.** Tolerance of unknown values, new interface
 versions and the support window are [PROTOCOL.md](../protocol/PROTOCOL.md) §17. The daemon serves a
