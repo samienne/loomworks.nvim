@@ -622,11 +622,11 @@ waited for as `install` waits; a failed clear is a `note` line, never a
 failure); then the module's log command, which takes no lock, with the
 process id passed to it when the module asks for strict-pid filtering. Each
 line of its output is parsed as the in-process device-log view parses it,
-and kept only when it passes that view's session prefilter over the
-launch's process id and bundle (a line that does not parse always passes);
-the level filter stays the client's. The task's `start` meta carries
-`level`, the module's default log level, when it has one; a client starts
-its level filter there. A kept line becomes a record of spec
+and kept only when it matches both the launch's process id and its bundle,
+or whichever of them the launch recorded (a line that does not parse is
+always kept); the level filter stays the client's. The task's `start` meta
+carries `level`, the module's default log level, when it has one; a client
+starts its level filter there. A kept line becomes a record of spec
 §19.18: `ts` (the line's time as printed), `level` (`verbose`, `debug`,
 `info`, `warn`, `error` or `fatal`; a client shows an unknown level as
 `info`), `tag`, `pid`, `message`, and `fields` with `tid`, `domain` and
