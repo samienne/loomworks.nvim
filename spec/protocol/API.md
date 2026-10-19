@@ -1318,7 +1318,7 @@ devices its modules found; a client never lists or probes devices itself.
   `forbidden`. A launch is stopped once, and forgotten when its owner
   disconnects.
 - `changed` (signal) — the registry changed (a scan, a device appearing or
-  going away); a client reads `list` again.
+  going away, a profile choosing a device); a client reads `list` again.
 
 A profile's device is chosen with `Profiles/1.set_device` and
 `clear_device` (§11).
