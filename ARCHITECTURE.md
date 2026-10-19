@@ -1690,6 +1690,14 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   subscription only when the state's `view_state.signature` differs from the
   one last sent on it (`sub.view_sig`, set by `initial` too; the registry
   passes the subscription to `initial` and to `emit`'s `accept`).
+  *(5n B1, spec §19.13 "Freshness of views")* `header_check` first runs
+  `Service:check_files` — `Workspace:sync_light`, a file-tracker sync whose
+  `accept` (`Workspace:_change_needs_reload`) leaves a loomworks.json change
+  (it rescans tools) and a refused file (it reloads) pending for the next
+  request's `live` sync — outside model segments and never reentrant; a
+  view's `get` runs `header_check` before building, so another process's
+  write (an in-process editor's, until 5o) reaches the views at the next
+  check, and the editor's `get` after its own write sends the `update`s.
 - `views.lua` (plugin side; step 5j part C) — the editor's view store: one
   table per view (`header`, `projects`), the daemon's while the observer
   holds a subscription (`Observer:_view_subscribed` takes `initial`,

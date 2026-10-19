@@ -8883,6 +8883,36 @@ function Workspace:_on_file_changed(path, content)
     end
 end
 
+--- Would applying this tracked file change reload the workspace or run a
+--- tool detection? A loomworks.json change reassembles and rescans tools; a
+--- working copy not signed by this machine, an invalid cache signature or a
+--- newer schema puts the workspace back into the refused state (a reload),
+--- as `_on_file_changed` decides.
+--- @param path string
+--- @param content string|nil
+--- @return boolean
+function Workspace:_change_needs_reload(path, content)
+    local paths = M.paths(self.root)
+    if path == paths.config then return true end
+    if content == nil or (path ~= paths.user and path ~= paths.cache) then return false end
+    local kind = (path == paths.user) and "user" or "cache"
+    local status, body = self._core._deps.trust.verify(kind, content)
+    if status ~= "valid" then return kind == "user" or status == "invalid" end
+    local _, _, newer = (kind == "user" and user_mod or cache_mod).parse(body)
+    return newer and true or false
+end
+
+--- Apply the changes another process made to the working copy and the
+--- cache that need no reload and no tool detection (the workspace daemon's
+--- view check, spec §19.13 "Freshness of views"); a change that needs either
+--- stays pending, with every file changed with it, for the next
+--- state-changing request's sync, so the model is never half-applied.
+function Workspace:sync_light()
+    local tr = self._tracker
+    if not (tr and tr.sync) then return end
+    tr:sync({ accept = function(path, content) return not self:_change_needs_reload(path, content) end })
+end
+
 --- Force-reload loomworks.json from disk and remerge.
 --- Used after programmatic writes to loomworks.json to avoid waiting
 --- for the file watcher poll interval.

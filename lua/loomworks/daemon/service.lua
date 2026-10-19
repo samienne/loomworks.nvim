@@ -428,6 +428,22 @@ function Service:on_reset(conn, msg)
     return self:_on_operation("reset", conn, msg)
 end
 
+--- Apply another process's changes to the workspace files before the
+--- header and the views are computed (§19.13 "Freshness of views"): the
+--- loaded model's light sync (Workspace:sync_light) — never a load, never a
+--- tool detection; what needs either waits for the next state-changing
+--- request's sync (`live`). Not inside a model segment (its request synced
+--- at its start and may be mid-change) and not reentrant.
+function Service:check_files()
+    if self.current or self._checking_files then return end
+    local ws = self:header_model()
+    if not (ws and ws.sync_light) then return end
+    self._checking_files = true
+    local ok, err = pcall(ws.sync_light, ws)
+    self._checking_files = false
+    if not ok then self.server:log("file check before the views failed: %s", tostring(err)) end
+end
+
 --- The model the header and the views (§19.13) report: the live workspace,
 --- else the host's load failure. Never loads.
 --- @return table|nil ws, loomworks.ViewLoadError|nil err

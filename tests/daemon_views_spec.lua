@@ -407,4 +407,95 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         assert.truthy(p.last_result.message:find("^built in "), p.last_result.message)
         assert.same(p.last_result, profile(s.view(), "dev").last_result)
     end)
+
+    --- Rewrite the working copy as another process would (signed, as an
+    --- in-process editor writes it), changing it with `fn`.
+    local function edit_user(fn)
+        local path = s.root .. "/.nvim/loomworks.user.json"
+        local f = assert(io.open(path, "rb"))
+        local status, body = trust.verify("user", f:read("*a"))
+        f:close()
+        assert.equals("valid", status)
+        local user = vim.json.decode(body)
+        fn(user)
+        local signed = assert(trust.sign("user", trust.encode(user)))
+        f = assert(io.open(path, "wb"))
+        f:write(signed)
+        f:close()
+    end
+
+    it("applies another process's working-copy write before a get, and the update follows (freshness)", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.updates()
+        local function launch(v, key)
+            for _, l in ipairs(v.projects[1].launches) do if l.key == key then return l end end
+        end
+        assert.is_nil(launch(s.view(), "extra"))
+        edit_user(function(user) user.projects.app.launch.extra = { command = "echo" } end)
+        -- No request changed the model: the view's get checks the files first.
+        assert.equals("echo", launch(s.view(), "extra").command)
+        s.drain(200)
+        local u = s.updates()
+        assert.equals(1, #u)
+        assert.is_table(launch(u[1], "extra"))
+    end)
+
+    it("leaves a loomworks.json change to the next request: a view check runs no tool detection", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.updates()
+        local svc = s.d.server.service
+        local detections = 0
+        local scan = svc.ws._scan_tools_async
+        svc.ws._scan_tools_async = function(self, ...)
+            detections = detections + 1
+            return scan(self, ...)
+        end
+        local path = s.root .. "/loomworks.json"
+        local f = assert(io.open(path, "rb"))
+        local cfg = vim.json.decode(f:read("*a"))
+        f:close()
+        cfg.configuration_sets.more = { app = "Debug" }
+        f = assert(io.open(path, "wb"))
+        f:write(vim.json.encode(cfg))
+        f:close()
+        local v = s.view()
+        assert.equals(0, detections)
+        assert.equals(1, #v.config_sets)
+        -- A state-changing request's sync applies it (and rescans tools).
+        s.build()
+        assert.equals(1, detections)
+        assert.equals(2, #s.view().config_sets)
+    end)
+
+    it("leaves the files changed with a loomworks.json change to the next request too: never half-applied", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.updates()
+        local function launch(v, key)
+            for _, l in ipairs(v.projects[1].launches) do if l.key == key then return l end end
+        end
+        local path = s.root .. "/loomworks.json"
+        local f = assert(io.open(path, "rb"))
+        local cfg = vim.json.decode(f:read("*a"))
+        f:close()
+        cfg.configuration_sets.more = { app = "Debug" }
+        f = assert(io.open(path, "wb"))
+        f:write(vim.json.encode(cfg))
+        f:close()
+        edit_user(function(user) user.projects.app.launch.extra = { command = "echo" } end)
+        -- The view check applies neither file.
+        local v = s.view()
+        assert.equals(1, #v.config_sets)
+        assert.is_nil(launch(v, "extra"))
+        -- A state-changing request's sync applies both.
+        s.build()
+        v = s.view()
+        assert.equals(2, #v.config_sets)
+        assert.equals("echo", launch(v, "extra").command)
+    end)
 end)

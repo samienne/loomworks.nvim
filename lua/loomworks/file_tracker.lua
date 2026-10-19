@@ -135,19 +135,33 @@ end
 --- applying and every later one go back to undelivered (their last known
 --- content is restored), so the next sync delivers them again; the error is
 --- then rethrown with its traceback.
-function FileTracker:sync()
+---
+--- `opts.accept(path, content)`: when it refuses any change, the sync delivers
+--- nothing (every last known content kept), so a later sync delivers that
+--- change together with the ones read with it, never half of them — the
+--- workspace daemon's view check leaves what would reload the workspace or
+--- rescan tools, and what changed with it, to the next request's sync
+--- (spec §19.13 "Freshness of views").
+--- @param opts? { accept?: fun(path: string, content: string|nil): boolean }
+function FileTracker:sync(opts)
     if self._paused then return end
+    local accept = opts and opts.accept
     local changed = {}
     for _, path in ipairs(vim.list_extend({}, self._order)) do
         if self._watches[path] ~= nil then
             local new_content = self._read_file(path)
             if new_content ~= self._content[path] then
                 changed[#changed + 1] = { path = path, content = new_content, prev = self._content[path] }
-                self._content[path] = new_content
             end
         end
     end
     if #changed == 0 then return end
+    if accept then
+        for _, c in ipairs(changed) do
+            if not accept(c.path, c.content) then return end
+        end
+    end
+    for _, c in ipairs(changed) do self._content[c.path] = c.content end
     local current = 1
     -- Runs at the error point: un-read the change being applied and the ones
     -- after it. One a callback already reconciled (`mark_written`) or stopped

@@ -86,9 +86,12 @@ end
 
 --- Emit `Workspace.header_changed { header }` when the header's model fields
 --- differ from the last ones seen (the first call only records them), then
---- the views' `update` where a view changed (§19.13 "Views").
+--- the views' `update` where a view changed (§19.13 "Views") — after
+--- applying the file changes another process made (Service:check_files).
 --- @param service loomworks.daemon.BuildService
 function M.header_check(service)
+    -- Another process's file changes first (§19.13 "Freshness of views").
+    if service.check_files then service:check_files() end
     local h = M.header(service)
     local sig = table.concat({ tostring(h.state), tostring(h.name), tostring(h.active_profile),
         tostring(h.error) }, "\n")

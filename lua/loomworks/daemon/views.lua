@@ -19,8 +19,11 @@
 --- committed write, and before the acknowledgement of a request answered
 --- inside its segment) and sends `update` to a subscription only when the
 --- view's state differs from the one last sent on it (`initial` included).
---- The tests view compares its committed state (`{ committed = true }`,
---- loomworks.daemon.test_store: node statuses as of a run's start and end
+--- The views are fresh (§19.13 "Freshness of views"): the header check first
+--- applies the file changes another process made (Service:check_files; no
+--- load, no tool detection), and a view's `get` runs the header check before
+--- building (`initial` only applies the changes). The tests view compares
+--- its committed state (`{ committed = true }`, loomworks.daemon.test_store: node statuses as of a run's start and end
 --- and a collect), so a running run's per-case progress — which travels as
 --- `Tests/1.results` — never causes an `update`; what it sends is the
 --- current state.
@@ -98,9 +101,18 @@ end
 --- @param sig? fun(service: loomworks.daemon.BuildService): string
 --- @return loomworks.daemon.InterfaceImpl
 local function impl(where, build, service, sig)
+    -- Freshness (§19.13): another process's file changes are applied first.
+    -- A `get` runs the header check, so the `update`s of the subscriptions
+    -- follow from it (the editor's `get` after a write of its own); `initial`
+    -- only applies them (its subscription has no baseline yet: the next
+    -- check updates the others).
     return {
-        methods = { get = function() return build(service) end },
+        methods = { get = function()
+            pcall(require("loomworks.daemon.core_interfaces").header_check, service)
+            return build(service)
+        end },
         initial = function(ctx, _, _, sub)
+            if service.check_files then service:check_files() end
             local state = build(service)
             if sub then sub.view_sig = sig and sig(service) or view_state.signature(state) end
             local e = ctx.registry:resolve(where.path, where.iface, where.v)
