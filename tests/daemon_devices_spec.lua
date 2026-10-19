@@ -343,10 +343,22 @@ describe("Devices/1 in the workspace daemon (§19.16 Devices)", function()
         s.call("/tasks", "loomworks.Tasks", "cancel", { task_id = id })
         s.done(id)
         -- Another client's launch.
-        devices.launches(s.service())["T-other"] = { owner = {}, serial = "SER1", profile = "dev" }
+        devices.launches(s.service())["T-other"] = { owner = {}, serial = "SER1", stop = false }
         local fr = s.raw("/devices", "loomworks.Devices", "stop", { task = "T-other" }, s.env)
         assert.equals("error", fr.kind)
         assert.equals("forbidden", fr.error.code)
+    end)
+
+    it("stop stops the program its launch launched, even after the default target changed", function()
+        s = session()
+        s.scan()
+        s.set_device("SER1")
+        local id = s.start("launch", DEV)
+        assert.equals(0, s.done(id).exit_code)
+        s.service().ws._active_profile._default_target_descriptor = nil
+        assert.same({ outcome = "ok" }, s.dev("stop", { task = id }))
+        local log = read(s.log)
+        assert.truthy(log:find("stop SER1 com.example.app stop", 1, true), log)
     end)
 
     it("a cancel during the launch's pid probe ends the task at once", function()

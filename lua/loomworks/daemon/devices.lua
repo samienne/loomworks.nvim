@@ -14,9 +14,10 @@
 ---   launch {…} T     its launch command (LaunchTarget:device_launch_command),
 ---                    then the program's pid (LaunchTarget:device_resolve_pid);
 ---                    `done.result` carries `{ pid?, bundle? }`
----   stop { task }    its stop command (LaunchTarget:device_stop_command) for
----                    the program a finished `launch` task of the caller
----                    launched
+---   stop { task }    its stop command (LaunchTarget:device_stop_command,
+---                    built when the launch was accepted, from the target it
+---                    resolved) for the program a finished `launch` task of
+---                    the caller launched
 ---   changed          the registry's records differ from the last ones
 ---                    signalled (`check`, at the header check: after every
 ---                    model segment and committed write)
@@ -450,6 +451,10 @@ local function run_device_op(service, ctx, op)
         run.finish(1, tostring(info))
         return run
     end
+    local bundle = op == "launch" and type(info) == "table" and info.bundle_name or nil
+    -- The stop command of the program a launch starts, built now from the
+    -- target this launch resolved (a `stop` never resolves it again).
+    local stop_command = op == "launch" and lt:device_stop_command(serial, bundle) or nil
     -- B, then D (§19.3): the artifact's build directory, then the device.
     if op == "install" then
         local unit = lt._config_unit
@@ -476,13 +481,12 @@ local function run_device_op(service, ctx, op)
                 task:line("out", "INSTALL OK: " .. lt:display_name() .. " on " .. serial, "ok")
                 return run.finish(0)
             end
-            local bundle = type(info) == "table" and info.bundle_name or nil
             local function launched(pid)
                 if run.finished then return end
                 if run.cancelled then return run.finish(run.cancel_code, run.stopped()) end
                 -- The program a `stop` of this task stops (§15 `stop`).
-                M.launches(service)[task.id] = { owner = ctx.conn, serial = serial, bundle = bundle,
-                    profile = profile.key, target = ctx.a.target, project = ctx.a.project, kind = ctx.a.kind }
+                M.launches(service)[task.id] = { owner = ctx.conn, serial = serial,
+                    stop = stop_command or false }
                 task:line("out", "LAUNCH OK: " .. lt:display_name() .. " on " .. serial
                     .. (pid and (" (pid " .. pid .. ")") or ""), "ok")
                 run.finish(0, nil, { pid = pid, bundle = bundle })
@@ -501,8 +505,9 @@ end
 -- ---------------------------------------------------------------------------
 
 --- The device launches of this daemon session, by task id: `{ owner,
---- serial, bundle?, profile, target?, project?, kind? }`, kept until stopped
---- or their owner disconnects.
+--- serial, stop }` — `stop` the module's stop command for the launched
+--- program, built at the launch (false: the module has none) — kept until
+--- stopped or their owner disconnects.
 --- @param service loomworks.daemon.BuildService
 --- @return table<string, table>
 function M.launches(service)
@@ -663,14 +668,7 @@ local function stop_method(service)
                 return answer({ outcome = "refused", exit_code = 1, message = refusal })
             end
             ctx.ws = ws
-            local profile
-            for _, p in pairs(ws._profiles or {}) do
-                if not p._removed and p.key == l.profile then profile = p end
-            end
-            if not profile then return run.finish(1, "profile '" .. l.profile .. "' was removed") end
-            local lt, serr = require("loomworks.run_prep").select(ws, profile, l.target, l.project, l.kind)
-            if not lt then return run.finish(1, serr) end
-            local command = lt:device_stop_command(l.serial, l.bundle)
+            local command = l.stop
             if not command then
                 M.launches(service)[id] = nil
                 return answer({ outcome = "ok" })
