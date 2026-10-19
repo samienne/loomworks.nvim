@@ -19,12 +19,15 @@
 
 local M = {}
 
---- @alias loomworks.ViewName "header"|"projects"|"tests"
+--- @alias loomworks.ViewName "header"|"projects"|"tests"|"workspace"
 
 --- `tests` (`loomworks.view.Tests/1`, step 5m C1) is held here only as the
 --- daemon's table: it has no in-process builder (in `in-process` mode the
 --- test adapters read loomworks.test_source's in-process form, and in
---- `daemon` mode it is never built from the model, §19.13).
+--- `daemon` mode it is never built from the model, §19.13). So is
+--- `workspace` (`loomworks.view.Workspace/1`, step 5n C1, the status page's
+--- body, read through loomworks.status_source): in `in-process` mode the
+--- page builds it per render, in `daemon` mode it is only the daemon's.
 
 --- Per view: the daemon's table and the observer that holds it.
 --- @type table<string, { owner: table, state: table }>

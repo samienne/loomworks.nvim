@@ -26,6 +26,15 @@ for _, ev in ipairs({
 }) do
     events.on(ev, function() views.changed() end)
 end
+-- The editor's own state-file writes (Workspace `state_file_written`; until
+-- step 5o moves them to command methods): the written workspace's observer
+-- of the workspace daemon fetches the workspace view (spec §19.13
+-- "Freshness of views"). Never loads the daemon modules.
+events.on("state_file_written", function(data)
+    local mod = package.loaded["loomworks.daemon.observer"]
+    local obs = type(mod) == "table" and type(data) == "table" and mod.of(data.workspace) or nil
+    if obs then obs:_own_write() end
+end)
 
 --- Auto-load mode. Default: "auto".
 --- @type string|false

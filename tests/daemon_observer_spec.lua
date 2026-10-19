@@ -100,6 +100,12 @@ local function mount_views(srv, o)
             methods = { get = function() return VIEW_STATE.tests end },
             initial = function() return VIEW_STATE.tests end,
         }))
+        -- The status page's body (step 5n C1): an unloaded workspace's view.
+        VIEW_STATE.workspace = require("loomworks.view_state").workspace(nil)
+        assert(reg:mount("/views", "core", "loomworks.view.Workspace", 1, {
+            methods = { get = function() return VIEW_STATE.workspace end },
+            initial = function() return VIEW_STATE.workspace end,
+        }))
     end
     assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = H.workspace_stub({
         header = function() return { root = srv.root, pid = srv.pid, lw_version = srv.identity,
@@ -338,7 +344,7 @@ describe("the observer (§19.16)", function()
         assert.same({ "/devices loomworks.Devices", "/lsp loomworks.LspConfig", "/tasks loomworks.Tasks",
             "/tests loomworks.Tests",
             "/views loomworks.view.Header", "/views loomworks.view.ProjectsIndex", "/views loomworks.view.Tests",
-            "/workspace loomworks.Workspace" }, subs)
+            "/views loomworks.view.Workspace", "/workspace loomworks.Workspace" }, subs)
         -- A task another client owns reaches it through the subscription,
         -- with the opaque string id of transport 11.
         local owner_client = assert(client.session(s.srv.address))
@@ -392,6 +398,7 @@ describe("the observer (§19.16)", function()
             .. "statusline: daemon offers no loomworks.view.Header, editor needs /1; "
             .. "project index: daemon offers no loomworks.view.ProjectsIndex, editor needs /1; "
             .. "tests: daemon offers no loomworks.view.Tests, editor needs /1; "
+            .. "workspace view: daemon offers no loomworks.view.Workspace, editor needs /1; "
             .. "operations: daemon offers no loomworks.Build, editor needs /1; "
             .. "launch: daemon offers no loomworks.Launch, editor needs /1; "
             .. "debug adapters: daemon offers no loomworks.DebugConfig, editor needs /1; "
@@ -436,7 +443,7 @@ describe("the observer (§19.16)", function()
             conn.welcome.objects = { { path = "/", interfaces = { { name = "loomworks.Root", versions = { 1 } } } } }
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" },
+        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/views", "/workspace" },
             subs_of(s.srv))
         assert.is_nil(obs.feature_note)
     end)
@@ -451,7 +458,7 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" },
+        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/views", "/workspace" },
             subs_of(s.srv))
     end)
 
@@ -465,7 +472,7 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" },
+        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/views", "/workspace" },
             subs_of(s.srv))
     end)
 
@@ -474,7 +481,7 @@ describe("the observer (§19.16)", function()
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
         mount_views(s.srv)
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 8 end, 10))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 9 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
         assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
@@ -493,13 +500,13 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/devices", "/lsp", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/devices", "/lsp", "/tests", "/views", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
         assert.truthy((obs.feature_note or ""):find("tasks: loomworks.Tasks/1 refused (busy)", 1, true))
         assert(s.srv:registry():mount("/other", "core", "loomworks.Tasks", 1, { methods = {
             list = function() return { tasks = {} } end,
             cancel = function() return { outcome = "ok" } end,
         } }))
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 7 end, 10))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 8 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
     end)
 
@@ -570,10 +577,10 @@ describe("the observer (§19.16)", function()
             return store.source("header") == "in-process" and store.source("projects") == "in-process"
         end, 10))
         table.sort(seen)
-        assert.same({ "header", "projects", "tests" }, seen)
+        assert.same({ "header", "projects", "tests", "workspace" }, seen)
         -- Stopping with nothing held notifies nothing more.
         obs:stop()
-        assert.equals(3, #seen)
+        assert.equals(4, #seen)
     end)
 
     it("stopping while the daemon's views are held notifies the status page once", function()
