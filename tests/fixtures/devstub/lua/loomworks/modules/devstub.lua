@@ -28,6 +28,20 @@
 ---                     `LW_TEST_DEVICE_FAIL` names the op — all of ITS
 ---                     environment (the caller's, plus `LW_TEST_DEVICE_OP`
 ---                     from the command's own variables).
+---   device_log / device_log_clear / device_log_options  (step 5n B3)
+---                     the same script's `log` and `log_clear` ops: `log`
+---                     prints its LOG_LINES (two of the launched program,
+---                     one of another process, one that does not parse) in
+---                     one write, then `LW_TEST_LOG_COUNT` more of the
+---                     program's lines (`flood <i>`) — with
+---                     `LW_TEST_LOG_PARTIAL=1` a line in two writes and a
+---                     last one with no newline, with `LW_TEST_LOG_LONG=<n>`
+---                     a line of n x's with no newline — sleeps
+---                     `LW_TEST_LOG_SLEEP` ms (not `LW_TEST_DEVICE_SLEEP`)
+---                     and exits (1 when `LW_TEST_DEVICE_FAIL` is `log`);
+---                     its arg is the pid when `device_log_options` asks for
+---                     strict-pid filtering (`LW_TEST_LOG_STRICT=1`, read
+---                     when called)
 
 local shell = require("loomworks.modules.shell")
 
@@ -85,5 +99,10 @@ function M.device_install(_, serial, artifact) return command("install", serial,
 function M.device_launch(_, serial, info) return command("launch", serial, info.bundle_name) end
 function M.device_pid(_, serial, bundle) return command("pid", serial, bundle) end
 function M.device_stop(_, serial, bundle) return command("stop", serial, bundle) end
+function M.device_log(_, serial, opts) return command("log", serial, opts and opts.pid and tostring(opts.pid)) end
+function M.device_log_clear(_, serial) return command("log_clear", serial) end
+function M.device_log_options()
+    return { level = "D", strict_pid = os.getenv("LW_TEST_LOG_STRICT") == "1" }
+end
 
 return M

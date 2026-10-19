@@ -8,7 +8,8 @@
 ---   /tests       loomworks.Tests/1        run T, discover T, run_cases T, prepare_debug T, collect,
 ---                                         result (results; loomworks.daemon.test_discover,
 ---                                         loomworks.daemon.test_runs)
----   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T, build T
+---   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T, build T,
+---                                         device_log T (log; loomworks.daemon.devices)
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list
@@ -346,6 +347,9 @@ function M.launch_impl(service)
         prepare_debug = operation(service, "debug", M.LAUNCH, "prepare_debug"),
         -- The build of a launch target (§19.15 "Build of a launch target").
         build = operation(service, "target_build", M.LAUNCH, "build"),
+        -- The log stream of a device launch (API.md §9.5, step 5n B3): its
+        -- records are this interface's `log` signal.
+        device_log = require("loomworks.daemon.devices").device_log_method(service),
     } }
 end
 

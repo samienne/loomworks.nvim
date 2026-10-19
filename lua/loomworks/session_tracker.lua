@@ -82,16 +82,14 @@ end
 --- device-log view doesn't mix in stale entries from previous
 --- sessions. Best-effort: a clear failure doesn't fail the launch.
 --- Runs synchronously (it's one quick RPC to the device connector).
+--- The command is the target's (LaunchTarget:device_log_clear_command, which
+--- the workspace daemon's `Launch/1.device_log` runs too).
 --- @param target loomworks.LaunchTarget
 --- @param device_serial string
 local function clear_device_log(target, device_serial)
-    local mod = target._project and target._project._module
-        and target._project._module.impl
-    if not mod or not mod.device_log_clear then return end
-    local td = target._config_unit and target._config_unit._tool_data or {}
-    local spec = mod.device_log_clear(td, device_serial)
-    if not spec or not spec.cmd then return end
-    local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
+    local command = target:device_log_clear_command(device_serial)
+    if not command then return end
+    local cmd = vim.list_extend({ command.cmd }, command.args or {})
     pcall(function()
         require("loomworks.exe").system(cmd, { text = true, timeout = 3000 }):wait()
     end)
@@ -105,31 +103,24 @@ end
 --- asks device_log to stop during teardown.
 ---
 --- Modules with device-log support own the soft-filter level and any
---- module-specific log-stream options. We read them via the optional
---- `mod.device_log_options(tool_data)` hook (returning `{ level,
---- strict_pid, ... }`) and pass `pid` through when the module asks
---- for strict-pid filtering. The level travels into device_log purely
---- as the initial soft filter — re-rendering only, never restarts.
+--- module-specific log-stream options: the target's
+--- `device_log_command` (shared with the workspace daemon's
+--- `Launch/1.device_log`) reads them via the module's optional
+--- `device_log_options(tool_data)` hook and passes `pid` through when
+--- the module asks for strict-pid filtering. The level travels into
+--- device_log purely as the initial soft filter — re-rendering only,
+--- never restarts.
 ---
 --- @param target loomworks.LaunchTarget
 --- @param device_serial string
 --- @param bundle string
 --- @param pid number
 local function start_device_log_view(target, device_serial, bundle, pid)
-    local mod = target._project and target._project._module
-        and target._project._module.impl
-    if not mod or not mod.device_log then return end
-    local td = target._config_unit and target._config_unit._tool_data or {}
-
-    local log_options = (mod.device_log_options and mod.device_log_options(td))
-        or {}
-    local level = log_options.level or "I"
-    local strict_pid = log_options.strict_pid and true or false
-    local log_opts = {}
-    if strict_pid then log_opts.pid = pid end
-    local spec = mod.device_log(td, device_serial, log_opts)
-    if not spec or not spec.cmd then return end
-    local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
+    local command, log_options = target:device_log_command(device_serial, pid)
+    if not command then return end
+    local level = log_options.level
+    local strict_pid = log_options.strict_pid
+    local cmd = vim.list_extend({ command.cmd }, command.args or {})
 
     -- Clear the on-device log buffer right before starting the stream
     -- so the view doesn't mix in stale entries from previous sessions,
