@@ -306,13 +306,18 @@ end
 --- locks and timers, ends the task (a `stop` has none: its `on_finish(code,
 --- err, result)` answers the call) and leaves `Service.runs`; `cancel(reason,
 --- code)` kills the running command (whose end then finishes the run) or
---- finishes it at once.
+--- finishes it at once. An install, launch or stop `keeps_on_reload`
+--- (§19.16 "Devices"): a reload of the workspace neither cancels it nor is
+--- declined for it — it runs only commands built when it was accepted (from
+--- the workspace of then, which nothing it does writes); a scan merges into
+--- its workspace's registry, so a reload cancels it.
 --- @param service loomworks.daemon.BuildService
 --- @param ctx table
 --- @param op "scan"|"install"|"launch"|"stop"
 --- @return table run
 local function new_run(service, ctx, op)
-    local run = { task = ctx.task, op = op, cancelled = false, held = {}, timers = {}, ctx = ctx }
+    local run = { task = ctx.task, op = op, cancelled = false, held = {}, timers = {}, ctx = ctx,
+        keeps_on_reload = op ~= "scan" }
     ctx.run = run
     function run.timer(ms, fn)
         local t = uv.new_timer()
@@ -363,12 +368,17 @@ local function new_run(service, ctx, op)
     return run
 end
 
---- Is the run's workspace (and profile) still the live one? false + why.
+--- Is the run's workspace still the live one (a scan's; `profile_only`: an
+--- install's or launch's, which a reload does not stop) and its profile not
+--- removed? false + why.
 --- @param service loomworks.daemon.BuildService
 --- @param ctx table
+--- @param profile_only? boolean
 --- @return boolean, string|nil
-local function current(service, ctx)
-    if service.ws ~= ctx.ws then return false, "the workspace was unloaded (refused or reloaded .nvim files)" end
+local function current(service, ctx, profile_only)
+    if not profile_only and service.ws ~= ctx.ws then
+        return false, "the workspace was unloaded (refused or reloaded .nvim files)"
+    end
     if ctx.profile and ctx.profile._removed then return false, "profile '" .. ctx.profile.key .. "' was removed" end
     return true
 end
@@ -473,7 +483,7 @@ local function run_device_op(service, ctx, op)
     local function step_failed(err) return run.finish(1, err) end
     take_device_lock(service, ctx, run, serial, function(lerr)
         if lerr then return step_failed(lerr) end
-        local okc, why = current(service, ctx)
+        local okc, why = current(service, ctx, true)
         if not okc then return run.finish(1, run.stopped(why)) end
         task:line("out", (op == "install" and "installing " or "launching ") .. lt:display_name()
             .. " on " .. serial, "phase")

@@ -11,7 +11,9 @@
 --- `Workspace:_on_file_changed`, including a trust refusal, §17.4), completes
 --- or refuses a commit journal (§19.4) by reloading, and reloads when the
 --- requesting client's environment differs from the one the workspace was
---- loaded in (`envscope.signature`). The workspace's file tracker never polls
+--- loaded in (`envscope.signature`); a reload keeps the device registry and
+--- neither cancels nor waits for device installs, launches and stops
+--- (`_adopt`, `keeps_on_reload`, §19.16 "Devices"). The workspace's file tracker never polls
 --- in the daemon: changes are applied only here, inside a client's
 --- environment.
 ---
@@ -31,7 +33,8 @@
 ---     does not resolve; the client prints it as the in-process host would;
 ---   * "declined" (`reason`) — before any side effect: the daemon does not
 ---     carry this request (interactive profile onboarding; a different
----     environment while another build runs). The client runs in-process.
+---     environment while another build runs — a device install, launch or
+---     stop does not count). The client runs in-process.
 ---
 --- **Request** `{ kind = "test", args = { profile?, junit?, extra?, no_build?, verbose? }, … }` —
 --- the same outcomes (`no_build`: `lw test --no-build`, nothing built, §16.16); the plan checks (test_plan.precheck) refuse as in-process; "declined" when saved test targets would run on a device (§16.16).
@@ -122,6 +125,8 @@ M.LOAD_WAIT_MS = 45000
 --- @field env_sig string|nil the environment signature `ws` was loaded in
 --- @field stopping boolean|nil the server is stopping (`on_stopping`): no new request starts
 --- @field ids loomworks.daemon.IdRegistry the session's opaque-id registry (§19.12)
+--- @field _device_registry table<string, loomworks.Device>|nil the device registry (serial → Device) every
+---   workspace this daemon loads shares (`_adopt`, §19.16 "Devices")
 --- @field _lsp_sig string|nil LspConfig/1 (§19.20): the state (the daemon's own environment) at the last
 ---   `changed`, the baseline the next check compares with; nil while /lsp has no subscriber
 --- @field _lsp_seq integer|nil the `seq` of the last `changed` sent
@@ -313,11 +318,37 @@ function Service:handlers()
 end
 
 --- Running builds bound to a workspace that is no longer the live one are
---- stopped (§19.15: the workspace was unloaded or reloaded under them).
+--- stopped (§19.15: the workspace was unloaded or reloaded under them). A
+--- device install, launch or stop is not (`keeps_on_reload`, §19.16
+--- "Devices").
 function Service:_stop_stale_runs(why)
     for run in pairs(self.runs) do
-        if run.ctx.ws ~= self.ws then run.cancel(why, 1) end
+        if run.ctx.ws ~= self.ws and not run.keeps_on_reload then run.cancel(why, 1) end
     end
+end
+
+--- Does a run bound to the live workspace run (one a reload would cancel)?
+--- @return boolean
+function Service:_workspace_runs()
+    for run in pairs(self.runs) do
+        if not run.keeps_on_reload then return true end
+    end
+    return false
+end
+
+--- Make `ws` the live workspace, loaded in the environment of signature
+--- `sig`. Devices are runtime state (§19.16 "Devices"): the daemon's
+--- registry is the first workspace's, and every workspace loaded after it
+--- shares it, so a reload keeps the device list and its ids.
+--- @param ws table
+--- @param sig string
+function Service:_adopt(ws, sig)
+    if not self._device_registry then
+        self._device_registry = ws._devices
+    elseif ws._devices ~= self._device_registry then
+        ws._devices = self._device_registry
+    end
+    self.ws, self.env_sig = ws, sig
 end
 
 --- Drop the live workspace (teardown through the host).
@@ -351,11 +382,11 @@ function Service:live(ctx, as_is)
         if self.ws then return self.ws end
         local ws, err = self.host.load(root, self:handlers(), { wait_tools = false })
         if not ws then return nil, err or "failed to load workspace" end
-        self.ws, self.env_sig = ws, sig
+        self:_adopt(ws, sig)
         return ws
     end
     if self.ws and self.env_sig ~= sig then
-        if next(self.runs) then
+        if self:_workspace_runs() then
             return nil, nil, "another build runs in the workspace daemon with a different environment"
         end
         self:_unload()
@@ -375,7 +406,7 @@ function Service:live(ctx, as_is)
             if not now then
                 return nil, self.host.setup_error()
             end
-            self.ws, self.env_sig = now, sig
+            self:_adopt(now, sig)
         end
         -- A changed loomworks.json rescans tools: wait for it, as the load does.
         if self.ws._tool_state ~= "scanned" then
@@ -385,7 +416,7 @@ function Service:live(ctx, as_is)
     end
     local ws, err = self.host.load(root, self:handlers())
     if not ws then return nil, err or "failed to load workspace" end
-    self.ws, self.env_sig = ws, sig
+    self:_adopt(ws, sig)
     return ws
 end
 
