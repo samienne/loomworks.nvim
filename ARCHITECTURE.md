@@ -1801,19 +1801,24 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   profile, serial, pid, bundle — kept by `launch` for `stop` and this; a
   launch with no pid is refused, another client's `forbidden`). The commands
   are the domain object's — `LaunchTarget:device_log_clear_command` and
-  `device_log_command` (the module's strict-pid option applied), which the
+  `device_log_command` (the module's strict-pid option applied; its default
+  level, normalized, is the task's `start` meta `level`), which the
   editor's in-process `session_tracker` runs too; the command is built inside
-  the model segment, in the caller's environment. The clear runs under D only
-  (a failure is a `note` line), then the stream under no lock; its stdout and
-  stderr lines are parsed, prefiltered (`make_prefilter{pid, bundle}`) and
-  normalized by the shared `device_log_records`, queued (`LOG_QUEUE_MAX`,
+  the model segment, in the caller's environment. The clear runs under D only,
+  killed after `LOG_CLEAR_TIMEOUT_MS` as in-process (a lock not taken, a
+  failed or timed-out clear is a `note` line), then the stream under no
+  lock; its stdout and stderr lines are parsed, prefiltered
+  (`make_prefilter{pid, bundle}`) and normalized by the shared
+  `device_log_records`, queued (`LOG_QUEUE_MAX`,
   the oldest dropped and counted) and sent every `LOG_FLUSH_MS` as the
   `log { task, records, dropped? }` signal on `/launch` (subscriptions naming
-  the task or none), held while the owner's write queue is above
+  the task or none), at most `LOG_BATCH_BYTES` of JSON per signal (far under
+  `protocol.MAX_FRAME`), held while the owner's write queue is above
   `tasks.OWNER_HIGH`, flushed before the task's `done`. The pid probe
   (`device_resolve_pid`, `tries = 1`, its own child slot so a cancel kills it
-  and the stream) runs every `LOG_PID_POLL_MS`; `LOG_PID_MISSES` misses in a
-  row kill the stream and end the task with 0. A run in `Service.runs`
+  and the stream, and the run's end kills it) runs every
+  `LOG_PID_POLL_MS`; `LOG_PID_MISSES` misses in a row kill the stream and
+  end the task with 0. A run in `Service.runs`
   (`keeps_on_reload`): a cancel or the owner's disconnect ends it.
 - *(5n part C2, spec §19.16 "Devices")* The editor's use: the observer's
   `M.DEVICES` (subscribed to for `changed`; `callable`, `tasks`) and
