@@ -244,6 +244,79 @@ local function read(path)
     return (s:gsub("\r\n", "\n"))
 end
 
+--- A loaded test Core of fixture `name`.
+local function fixture_core(name)
+    local fx = FIXTURES[name]
+    local files = { ["loomworks.json"] = h.make_config_json(fx.config) }
+    if fx.user then files["loomworks.user.json"] = h.make_user_json(fx.user) end
+    if fx.cache then files["loomworks.cache.json"] = h.make_cache_json(fx.cache) end
+    local core = Core.new(h.make_test_deps(files, { modules = modules_dep(fx.tools) }))
+    core:setup({ root = "/root" })
+    return core
+end
+
+describe("view_state.workspace (loomworks.view.Workspace/1)", function()
+    --- Every value plain data: no functions, no objects (metatables other than
+    --- the JSON empty-object marker).
+    local function plain(v, path)
+        if type(v) == "function" then error("function at " .. path) end
+        if type(v) ~= "table" then return end
+        local mt = getmetatable(v)
+        if mt and mt ~= vim._empty_dict_mt then error("object at " .. path) end
+        for k, x in pairs(v) do plain(x, path .. "." .. tostring(k)) end
+    end
+
+    it("is plain data, with ids only from the caller's id function", function()
+        local ws = fixture_core("cmake"):get_workspace()
+        local bound = 0
+        local v = ws:view_workspace({ bind = function() bound = bound + 1 end })
+        plain(v, "view")
+        assert.is_true(bound > 0)
+        assert.is_nil(v.profiles[1].id)
+        assert.is_nil(v.projects[1].id)
+        local ids = ws:view_workspace({ id = function(o) return "id:" .. tostring(o.key or o.name) end })
+        plain(ids, "view")
+        assert.equals("id:" .. ids.profiles[1].key, ids.profiles[1].id)
+        assert.equals("id:" .. ids.config_sets[1].name, ids.config_sets[1].id)
+        assert.equals("id:" .. ids.projects[1].key, ids.projects[1].id)
+    end)
+
+    it("carries intent, removed_upstream and the device shape", function()
+        local v = fixture_core("tools"):get_workspace():view_workspace()
+        local p = v.profiles[1]
+        assert.equals("debug:ninja-gcc-12", p.key)
+        assert.is_false(p.removed_upstream)
+        assert.equals(p.key, p.label)
+        assert.is_nil(p.device) -- no device-capable module
+        assert.is_nil(p.device_capable)
+        assert.equals(1, #p.tools)
+        assert.equals("cmake", p.tools[1].module)
+        assert.equals("ninja-gcc-12", p.tools[1].key)
+        assert.equals("Debug", v.config_sets[1].mappings.App)
+        local cfg = v.projects[1].configurations[1]
+        assert.equals("Debug", cfg.key)
+        assert.equals("Debug", cfg.label)
+        assert.is_false(cfg.removed_upstream)
+        assert.equals("built", p.units[1].state)
+    end)
+end)
+
+describe("view_state.workspace against the view.Workspace/1 schema", function()
+    local documents = require("loomworks.proto.documents")
+    local set = documents.set()
+    for _, name in ipairs({ "cmake", "shell", "empty", "tools" }) do
+        it("the " .. name .. " fixture's view is a valid /$defs/Workspace", function()
+            local n = 0
+            local v = without_path(function()
+                return fixture_core(name):get_workspace():view_workspace({
+                    id = function() n = n + 1; return "o" .. n end })
+            end)
+            local ok, err = set:validate("interfaces/loomworks/view.Workspace.1.json", "/$defs/Workspace", v)
+            assert.is_true(ok, err)
+        end)
+    end
+end)
+
 describe("status page rendering (golden)", function()
     for _, name in ipairs({ "cmake", "shell", "empty", "tools" }) do
         it("renders the " .. name .. " fixture as recorded", function()

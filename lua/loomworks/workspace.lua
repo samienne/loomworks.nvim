@@ -2931,6 +2931,103 @@ function Workspace:diagnostics()
     return result
 end
 
+--- `loomworks.view.Workspace/1`'s state over this workspace (spec §19.13 "The
+--- workspace view"; loomworks.view_state.workspace) with this host's file
+--- checks (`published`, the stray build directories) and the caller's `id` /
+--- `bind`.
+--- @param opts? { id?: fun(obj: table): string, bind?: fun(row: table, obj: table) }
+--- @return table
+function Workspace:view_workspace(opts)
+    opts = opts or {}
+    local uv = vim.uv or vim.loop
+    return require("loomworks.view_state").workspace(self, {
+        published = uv.fs_stat(self.root .. "/loomworks.json") ~= nil,
+        stray_dirs = self:find_stray_build_dirs(),
+        id = opts.id, bind = opts.bind,
+    })
+end
+
+--- Find build directories on disk under {root}/.nvim/build/ that are not
+--- referenced by any cache entry. Uses top-down pruning: reports the
+--- highest-level directory whose entire subtree contains no cache entries.
+--- @return string[] absolute paths of stray directories
+function Workspace:find_stray_build_dirs()
+    local uv = vim.uv or vim.loop
+    local build_root = self.root .. "/.nvim/build"
+    local normalize = self._core._deps.normalize
+
+    -- Collect all normalized build_dirs referenced by ConfigUnit objects
+    local known_dirs = {}
+    for _, unit in pairs(self._config_units) do
+        local bd = unit:build_dir()
+        if bd then
+            known_dirs[#known_dirs + 1] = normalize(bd)
+        end
+    end
+
+    -- Build a set for exact match and a list for prefix checks
+    local known_set = {}
+    for _, d in ipairs(known_dirs) do known_set[d] = true end
+
+    --- Check if any known cache dir is a proper child of the candidate.
+    --- @param candidate string normalized dir path
+    --- @return boolean
+    local function has_cache_entry_below(candidate)
+        local prefix = candidate .. "/"
+        for _, known in ipairs(known_dirs) do
+            if known:sub(1, #prefix) == prefix then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Top-down walk:
+    -- - If this dir IS a cache entry → stop (it's a valid build dir).
+    -- - If no cache entry lives below it → report as stray, stop.
+    -- - Otherwise → recurse into children.
+    local stray = {}
+    local function scan(dir)
+        local normalized = normalize(dir)
+        if known_set[normalized] then
+            return -- this dir is a known build dir, don't touch it
+        end
+        if not has_cache_entry_below(normalized) then
+            stray[#stray + 1] = normalized
+            return
+        end
+        -- Some cache entry lives deeper — recurse into children
+        local handle = uv.fs_scandir(dir)
+        if not handle then return end
+        while true do
+            local name, ftype = uv.fs_scandir_next(handle)
+            if not name then break end
+            if ftype == "directory" then
+                scan(dir .. "/" .. name)
+            end
+        end
+    end
+
+    local norm_root = normalize(build_root)
+    local stat = uv.fs_stat(build_root)
+    if stat and stat.type == "directory" then
+        -- Scan each top-level child (not the build root itself)
+        local handle = uv.fs_scandir(build_root)
+        if handle then
+            while true do
+                local name, ftype = uv.fs_scandir_next(handle)
+                if not name then break end
+                if ftype == "directory" then
+                    scan(norm_root .. "/" .. name)
+                end
+            end
+        end
+    end
+
+    table.sort(stray)
+    return stray
+end
+
 --- Get orphaned BuildDirs: build directories with state not referenced by
 --- any ConfigUnit (and therefore not referenced by any profile).
 --- Orphaned BuildDirs are domain objects, not raw cache entries.

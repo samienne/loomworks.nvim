@@ -3,6 +3,8 @@
 ---
 ---   header(ws, err, opts)          loomworks.view.Header/1
 ---   projects_index(ws, opts)       loomworks.view.ProjectsIndex/1
+---   workspace(ws, opts)            loomworks.view.Workspace/1 (step 5n; the
+---                                  status page body, in-process only so far)
 ---
 --- Pure over the domain model: the daemon builds the views it serves on
 --- `/views` with it (loomworks.daemon.views, which passes the session fields
@@ -175,6 +177,628 @@ function M.projects_index(ws, opts)
     end
     table.sort(out, function(a, b) return a.key < b.key end)
     return { projects = out }
+end
+
+-- ---------------------------------------------------------------------------
+-- loomworks.view.Workspace/1 (step 5n part A: the builder, in-process only)
+-- ---------------------------------------------------------------------------
+
+--- @alias loomworks.ViewIntent "local"|"shared"|"local+shared"
+
+--- @class loomworks.ViewDiagnostic
+--- @field severity string
+--- @field source? string
+--- @field message string
+--- @field target_fold_key? string
+
+--- @class loomworks.ViewProgress
+--- @field current? integer
+--- @field total? integer
+--- @field message? string
+
+--- @class loomworks.ViewTarget
+--- @field type? string
+--- @field artifact? string
+--- @field dependencies? string[]
+
+--- @class loomworks.ViewUnit
+--- @field state string a ConfigUnitState (state-lifecycle.md §3.4), "unconfigured" without a unit
+--- @field deleting_reason? string
+--- @field progress? loomworks.ViewProgress a running step's progress
+--- @field elapsed? number seconds of a running step
+--- @field unit_id? string daemon only
+--- @field project? string project key
+--- @field type? string the project's module type
+--- @field configuration? string the configuration's name
+--- @field missing boolean the configuration is missing
+--- @field compat_error? string
+--- @field overwritten boolean
+--- @field launcher_changed boolean
+--- @field tools? string[] the labels of the unit's tools
+--- @field build_dir? string
+--- @field targets? table<string, loomworks.ViewTarget> target name -> target
+
+--- @class loomworks.ViewProfileTool
+--- @field module string module type
+--- @field key? string
+--- @field label string
+
+--- @class loomworks.ViewToolchainEntry
+--- @field key? string
+--- @field label string
+--- @field resolved boolean
+--- @field languages string[]
+
+--- @class loomworks.ViewDevice
+--- @field id? string daemon only
+--- @field key string the serial
+--- @field label string the display name, else the serial
+--- @field state "online"|"offline"
+--- @field provider? string
+
+--- @class loomworks.ViewProfile
+--- @field id? string daemon only
+--- @field key string
+--- @field label string
+--- @field intent? loomworks.ViewIntent
+--- @field description? string
+--- @field removed_upstream boolean
+--- @field active boolean
+--- @field modified boolean
+--- @field orphaned_set boolean
+--- @field incomplete boolean
+--- @field running boolean
+--- @field busy boolean
+--- @field config_set? string
+--- @field status? string
+--- @field compat_error? string
+--- @field artifact_conflict boolean
+--- @field origin? string a daemon task's origin
+--- @field pct? integer aggregate progress of a busy profile
+--- @field elapsed? number
+--- @field message? string the last operation's message
+--- @field tools loomworks.ViewProfileTool[] one per module type, by module
+--- @field toolchain? loomworks.ViewToolchainEntry[]
+--- @field compiler_cache? { text: string, stale: boolean }
+--- @field device_capable? boolean
+--- @field device? loomworks.ViewDevice
+--- @field default_target? string
+--- @field default_target_valid? boolean
+--- @field default_target_description? string
+--- @field units loomworks.ViewUnit[]
+
+--- @class loomworks.ViewOrphaned
+--- @field configurations { key: string, build_dir?: string }[]
+--- @field stray_dirs string[]
+
+--- @class loomworks.ViewConfigSet
+--- @field id? string daemon only
+--- @field name string
+--- @field intent? loomworks.ViewIntent
+--- @field description? string
+--- @field removed_upstream boolean
+--- @field active boolean
+--- @field modified boolean
+--- @field mappings table<string, string> project key -> configuration name
+--- @field missing table<string, boolean> project keys whose configuration is gone
+
+--- @class loomworks.ViewOption
+--- @field key string
+--- @field value any
+--- @field source? string the providing configuration (nil: own)
+
+--- @class loomworks.ViewVariableValue
+--- @field name string
+--- @field value? any
+--- @field source string "profile", "project" or a configuration's name
+--- @field own boolean
+
+--- @class loomworks.ViewConfiguration
+--- @field id? string daemon only
+--- @field name string
+--- @field key string
+--- @field label string
+--- @field intent? loomworks.ViewIntent
+--- @field removed_upstream boolean
+--- @field modified boolean
+--- @field object boolean a Configuration object exists
+--- @field abstract boolean no variant
+--- @field inherits? string|string[]
+--- @field toolchain_locked? boolean
+--- @field role? string
+--- @field toolchain? string
+--- @field generator? string
+--- @field description? string
+--- @field description_from_module? boolean
+--- @field auto_gen? boolean
+--- @field source_missing? boolean
+--- @field unresolved_inherits? string[]
+--- @field dependents? string[] sorted names of the configurations inheriting this one
+--- @field compiler_overrides? table
+--- @field user? boolean
+--- @field running? boolean
+--- @field overwritten? boolean
+--- @field tools_configured? integer
+--- @field tests? table saved test targets (Project:saved_tests_view)
+--- @field options loomworks.ViewOption[] sorted by key
+--- @field variables? loomworks.ViewVariableValue[] sorted by name
+
+--- @class loomworks.ViewLaunch
+--- @field name string
+--- @field key string
+--- @field label string
+--- @field modified boolean
+--- @field removed_upstream boolean
+--- @field description? string
+--- @field target? string
+--- @field command? string
+--- @field args? string[]
+
+--- @class loomworks.ViewTypeConfigField
+--- @field name string
+--- @field label? string
+--- @field kind? string
+--- @field placeholder? string
+--- @field value? any
+
+--- @class loomworks.ViewProject
+--- @field id? string daemon only
+--- @field key string
+--- @field type string
+--- @field path string
+--- @field intent? loomworks.ViewIntent
+--- @field removed_upstream boolean
+--- @field description? string
+--- @field description_from_module? boolean
+--- @field modified boolean
+--- @field orphaned boolean
+--- @field running boolean
+--- @field needs_refresh boolean
+--- @field refresh_reasons? string[]
+--- @field tests? table saved test targets (Project:saved_tests_view)
+--- @field configurations loomworks.ViewConfiguration[] sorted by name
+--- @field presets? { name: string, generator?: string, toolchain_locked?: boolean }[]
+--- @field launches loomworks.ViewLaunch[] sorted by name
+--- @field deploy { destination: string, sources: table[] }[] sorted by destination
+--- @field variables table<string, { type: string, default?: any }> variable name -> declaration
+--- @field type_config { fields: loomworks.ViewTypeConfigField[] }
+
+--- @class loomworks.ViewSdk
+--- @field key string
+--- @field label string
+--- @field path? string
+--- @field resolved boolean
+--- @field kits string[]
+
+--- `loomworks.view.Workspace/1`'s state (M.workspace).
+--- @class loomworks.ViewWorkspace
+--- @field published boolean
+--- @field modified boolean
+--- @field diagnostics loomworks.ViewDiagnostic[]
+--- @field suggestions integer actionable suggestions
+--- @field profiles loomworks.ViewProfile[] sorted by key
+--- @field orphaned loomworks.ViewOrphaned
+--- @field config_sets loomworks.ViewConfigSet[] sorted by name
+--- @field projects loomworks.ViewProject[] alphabetical, orphaned last
+--- @field sdks loomworks.ViewSdk[]
+--- @field sdk_providers integer
+
+--- @class loomworks.ViewWorkspaceOpts : loomworks.ViewOpts
+--- @field published? boolean loomworks.json is on disk (the host's file check)
+--- @field stray_dirs? string[] absolute build directories on disk no cache entry
+---        references (the host's scan, Workspace:find_stray_build_dirs)
+--- @field bind? fun(row: table, obj: table) in-process only: called with each row
+---        and the domain object it describes, so the editor's actions reach the
+---        object without a key lookup. Never part of the state.
+
+--- `obj.description` when it is a string (a normalised description).
+local function desc_of(obj)
+    local d = obj and obj.description
+    return type(d) == "string" and d or nil
+end
+
+--- The weighted progress of a profile's running units (configure 10%, build
+--- 90%), nil when none reports a count.
+--- @param pps loomworks.ProfileProject[]
+--- @return integer|nil
+local function aggregate_progress(pps)
+    local has_any, total_pct, count = false, 0, 0
+    for _, pp in ipairs(pps) do
+        local status = pp:status()
+        if status == "configuring" or status == "building" then
+            local p = pp._config_unit:progress()
+            if p and p.current and p.total and p.total > 0 then
+                has_any = true
+                local phase_pct = p.current / p.total
+                if status == "configuring" then
+                    total_pct = total_pct + 10 * phase_pct
+                else
+                    total_pct = total_pct + 10 + 90 * phase_pct
+                end
+                count = count + 1
+            end
+        end
+    end
+    if not has_any then return nil end
+    return math.floor(total_pct / count)
+end
+
+--- A unit's live state: `state` (ConfigUnitState), the deleting reason, the
+--- progress `{ current?, total?, message? }` and the elapsed seconds of a
+--- running step. No unit: unconfigured.
+--- @param unit loomworks.ConfigUnit|nil
+--- @return table
+local function unit_state(unit)
+    if not unit then return { state = "unconfigured" } end
+    local s = { state = unit:state() }
+    if s.state == "deleting" then
+        s.deleting_reason = unit:deleting_reason()
+    elseif s.state == "configuring" or s.state == "building" then
+        local p = unit:progress()
+        if p then s.progress = { current = p.current, total = p.total, message = p.message } end
+        s.elapsed = unit:elapsed()
+    end
+    return s
+end
+
+--- A unit's targets, by name: `{ type, artifact?, dependencies? }`.
+local function targets_of(unit)
+    local targets = unit and unit.targets
+    if not targets or not next(targets) then return nil end
+    local out = {}
+    for name, t in pairs(targets) do
+        out[name] = { type = t.type, artifact = t.artifact,
+            dependencies = type(t.dependencies) == "table" and vim.deepcopy(t.dependencies) or nil }
+    end
+    return out
+end
+
+--- One profile's row (`profiles[]`).
+local function profile_row(ws, profile, active, opts)
+    local row = {
+        key = profile.key, label = profile.key, intent = profile._intent, description = desc_of(profile),
+        removed_upstream = profile._removed_upstream and true or false,
+        active = profile == active, modified = ws:is_profile_modified(profile) and true or false,
+        orphaned_set = profile.orphaned_set and true or false,
+        incomplete = not profile:is_complete(),
+        running = profile:is_running() and true or false,
+        busy = profile:has_active_operation() and true or false,
+    }
+    if opts.id then row.id = opts.id(profile) end
+    if row.orphaned_set then
+        row.config_set = profile._configuration_set_name
+    elseif profile._config_set_ref then
+        row.config_set = profile._config_set_ref.name
+    end
+    row.status = profile:status()
+    local pps = profile:projects()
+    for _, pp in ipairs(pps) do
+        if pp._tool_compat_error then row.compat_error = pp._tool_compat_error; break end
+    end
+    row.artifact_conflict = ws.profile_has_artifact_conflict
+        and ws:profile_has_artifact_conflict(profile) and true or false
+    -- A task observed in the workspace daemon counts as the profile's active
+    -- operation (spec/ui.md §1.5), with its origin.
+    local remote = profile:remote_tasks()[1]
+    if remote and #profile:active_operations() == 0 then row.origin = remote:origin_label() end
+    if row.busy then
+        row.pct = aggregate_progress(pps)
+        if not row.pct and remote then row.pct = remote.pct end
+        row.elapsed = profile:operation_elapsed()
+    else
+        local op = profile:operation()
+        row.message = op and op.message or nil
+    end
+
+    -- The tool per module type of the profile's projects.
+    row.tools = {}
+    local seen = {}
+    for _, pp in ipairs(pps) do
+        local mod_type = pp._project and pp._project.type
+        if mod_type and not seen[mod_type] then
+            seen[mod_type] = true
+            local t = profile:tool_for(mod_type)
+            if t then
+                row.tools[#row.tools + 1] = { module = mod_type, key = t.key, label = t.label or t.key or mod_type }
+            end
+        end
+    end
+    table.sort(row.tools, function(a, b) return a.module < b.module end)
+    -- The toolchain list (the status page's Toolchain row): present when a
+    -- module needs a tool or tools are listed.
+    local entries = profile:toolchain_entries()
+    if #profile:tool_needing_modules() > 0 or #entries > 0 then
+        row.toolchain = {}
+        for _, e in ipairs(entries) do
+            row.toolchain[#row.toolchain + 1] = { key = e.key, label = e.label, resolved = e.resolved and true or false,
+                languages = vim.deepcopy(e.languages or {}) }
+        end
+    end
+    local cache_status = profile:compiler_cache_status()
+    if cache_status then
+        row.compiler_cache = { text = cache_status.text, stale = cache_status.stale and true or false }
+    end
+    -- The device (an entity record: `label` its name, else its serial);
+    -- `device_capable` whether the profile has a device-capable module (the
+    -- page shows its device row, "none selected" without a device).
+    if profile:has_device_module() then
+        row.device_capable = true
+        local device = profile:device()
+        if device and device:is_online() then
+            row.device = { key = device.serial, label = device.display_name or device.serial, state = "online",
+                provider = device.provider }
+            if opts.id then row.device.id = opts.id(device) end
+        elseif profile:device_serial() then
+            row.device = { key = profile:device_serial(), label = profile:device_serial(), state = "offline" }
+        end
+    end
+    local lt = profile:default_target()
+    if lt then
+        local project, name = lt._project, lt._launch_name
+        local cfg = project and name and project.launch and project.launch[name]
+        row.default_target = lt:display_name()
+        row.default_target_valid = lt:is_valid() and true or false
+        row.default_target_description = type(cfg) == "table" and cfg.description or nil
+    end
+
+    row.units = {}
+    for _, pp in ipairs(pps) do
+        local unit = pp._config_unit
+        local u = unit_state(unit)
+        u.project = pp._project and pp._project.key or nil
+        u.type = pp._project and pp._project.type or nil
+        u.configuration = pp:variant_name()
+        u.missing = pp:is_configuration_missing() and true or false
+        u.compat_error = pp._tool_compat_error
+        u.overwritten = unit and unit.is_overwritten and unit:is_overwritten() and true or false
+        u.launcher_changed = unit and unit.launcher_changed and unit:launcher_changed(profile) and true or false
+        if unit and opts.id then u.unit_id = opts.id(unit) end
+        local cfg = pp._configuration
+        if cfg and not cfg._removed and profile.tools_for then
+            local tools = profile:tools_for(cfg)
+            if #tools > 0 then
+                u.tools = {}
+                for _, t in ipairs(tools) do u.tools[#u.tools + 1] = t.label or t.key or "?" end
+            end
+        end
+        u.build_dir = unit and unit.build_dir_value or nil
+        u.targets = targets_of(unit)
+        row.units[#row.units + 1] = u
+        if opts.bind then opts.bind(u, pp) end
+    end
+    if opts.bind then opts.bind(row, profile) end
+    return row
+end
+
+--- One configuration set's row (`config_sets[]`).
+local function config_set_row(ws, cs, active, opts)
+    local row = { name = cs.name, intent = cs._intent, description = desc_of(cs),
+        removed_upstream = cs._removed_upstream and true or false,
+        active = active ~= nil and active._config_set_ref == cs,
+        modified = ws:is_config_set_modified(cs) and true or false,
+        -- JSON objects even when empty (an empty Lua table encodes as an array).
+        mappings = vim.empty_dict(), missing = vim.empty_dict() }
+    if opts.id then row.id = opts.id(cs) end
+    for project, config in pairs(cs.mappings or {}) do
+        -- project key -> configuration name; `missing` the projects whose
+        -- configuration was removed or has no source.
+        row.mappings[project.key] = config.name
+        if config._removed or config._source_missing then row.missing[project.key] = true end
+    end
+    if opts.bind then opts.bind(row, cs) end
+    return row
+end
+
+--- The rows of one project configuration (`projects[].configurations[]`).
+local function configuration_row(ws, proj, cname, cdata, opts)
+    local cfg = proj:get_configuration(cname)
+    local row = { name = cname, key = cname, label = cname, intent = cfg and cfg._intent or nil,
+        removed_upstream = cfg and cfg._removed_upstream and true or false, modified = false, object = cfg ~= nil,
+        abstract = not cdata.variant, inherits = cdata.inherits, toolchain_locked = cdata.toolchain_locked or nil,
+        role = cdata.role, toolchain = cdata.toolchain, generator = cdata.generator }
+    if type(row.inherits) == "table" then row.inherits = vim.deepcopy(row.inherits) end
+    if cfg then
+        if opts.id then row.id = opts.id(cfg) end
+        row.description = desc_of(cfg)
+        row.description_from_module = cfg._description_from_module and true or nil
+        row.auto_gen = cfg:is_auto_gen() and true or false
+        row.source_missing = cfg._source_missing and true or false
+        row.unresolved_inherits = cfg:unresolved_inherits_names()
+        row.dependents = {}
+        for _, d in ipairs(cfg:dependents()) do row.dependents[#row.dependents + 1] = d.name end
+        -- Configuration:dependents() walks a registry with no fixed order.
+        table.sort(row.dependents)
+        row.compiler_overrides = cfg:compiler_override_warnings()
+        row.modified = ws:is_config_modified(proj, cfg) and true or false
+        row.user = cfg.is_user and true or false
+        local running, overwritten, configured = false, false, 0
+        for _, cu in ipairs(proj:config_units_for_configuration(cfg) or {}) do
+            if cu:shown_action() then running = true end
+            if cu.is_overwritten and cu:is_overwritten() then overwritten = true end
+            if cu:tool_key() and cu._config_key ~= nil then configured = configured + 1 end
+        end
+        row.running, row.overwritten, row.tools_configured = running, overwritten, configured
+        -- Saved test targets: flagged only when this machine configured a
+        -- unit of the configuration (its targets known).
+        local impl = proj._module and proj._module.impl
+        if impl and impl.parse_targets and cfg.test_targets then
+            local known
+            for _, u in pairs(ws._config_units or {}) do
+                if u._configuration == cfg and u.targets and u:configured_here() then known = u.targets end
+            end
+            row.tests = proj:saved_tests_view(cfg:test_targets(), cfg, known)
+        end
+    end
+    -- Options: own (`source` nil) and inherited (`source` the provider).
+    local mod_impl = proj._module and proj._module.impl or nil
+    local own = cdata.options or {}
+    local list = {}
+    if mod_impl and mod_impl.resolve_options_with_sources then
+        local all = mod_impl.resolve_options_with_sources(proj:_type_config_for_module(),
+            proj.configurations or {}, cname)
+        for k, info in pairs(all) do
+            list[#list + 1] = { key = k, value = info.value, source = (not own[k]) and info.source or nil }
+        end
+    else
+        for k, v in pairs(own) do list[#list + 1] = { key = k, value = v } end
+    end
+    table.sort(list, function(a, b) return a.key < b.key end)
+    row.options = list
+    -- Resolved variables (with the active profile, so a blank variable's fill
+    -- value shows; an unfilled blank has no `value`).
+    if proj.variables and next(proj.variables) and cfg then
+        local resolved = require("loomworks.variables").resolve(proj, cfg, nil, ws._active_profile)
+        local vars = {}
+        for vn, entry in pairs(resolved) do
+            local source = entry.from_profile and "profile"
+                or (entry.source_config and entry.source_config.name) or "project"
+            vars[#vars + 1] = { name = vn, value = entry.value, source = source,
+                own = (entry.value ~= nil and cfg.variables and cfg.variables[vn]) and true or false }
+        end
+        table.sort(vars, function(a, b) return a.name < b.name end)
+        row.variables = vars
+    end
+    if opts.bind and cfg then opts.bind(row, cfg) end
+    return row
+end
+
+--- One project's row (`projects[]`).
+local function project_row(ws, proj, opts)
+    local row = { key = proj.key, type = proj.type, path = proj.path or proj.key, intent = proj._intent,
+        removed_upstream = proj._removed_upstream and true or false,
+        description = desc_of(proj), description_from_module = proj._description_from_module and true or nil,
+        modified = ws:is_project_modified(proj) and true or false, orphaned = proj.orphaned and true or false,
+        running = proj:running_action() ~= nil, needs_refresh = proj.needs_refresh and true or false }
+    if opts.id then row.id = opts.id(proj) end
+    if proj.needs_refresh and proj.refresh_reasons and #proj.refresh_reasons > 0 then
+        row.refresh_reasons = vim.deepcopy(proj.refresh_reasons)
+    end
+    local impl = proj._module and proj._module.impl or nil
+    if proj.own_test_targets and impl and impl.parse_targets then
+        local pw = proj:own_test_targets()
+        row.tests = proj:saved_tests_view(pw and { entries = pw, source = proj,
+            invalid = proj._tests and proj._tests.invalid } or nil, proj, nil)
+    end
+    row.configurations = {}
+    for cname, cdata in pairs(proj.configurations or {}) do
+        row.configurations[#row.configurations + 1] = configuration_row(ws, proj, cname, cdata, opts)
+    end
+    table.sort(row.configurations, function(a, b) return a.name < b.name end)
+    if proj.preset_configurations and next(proj.preset_configurations) then
+        row.presets = {}
+        for name, p in pairs(proj.preset_configurations) do
+            row.presets[#row.presets + 1] = { name = name, generator = p.generator,
+                toolchain_locked = p.toolchain_locked or nil }
+        end
+        table.sort(row.presets, function(a, b) return a.name < b.name end)
+    end
+    row.launches = {}
+    for name, cfg in pairs(proj.launch or {}) do
+        -- Launch configurations carry no intent of their own in the model
+        -- (they publish with their project): `intent` stays absent.
+        local l = { name = name, key = name, label = name, modified = false, removed_upstream = false }
+        if type(cfg) == "table" then
+            l.description = require("loomworks.description").normalize(cfg.description)
+            l.target, l.command = cfg.target, cfg.command
+            l.args = type(cfg.args) == "table" and vim.deepcopy(cfg.args) or nil
+        end
+        row.launches[#row.launches + 1] = l
+    end
+    table.sort(row.launches, function(a, b) return a.name < b.name end)
+    row.deploy = {}
+    if proj.deploy then
+        local deploy_mod = require("loomworks.deploy")
+        for dest, srcs in pairs(proj.deploy) do
+            row.deploy[#row.deploy + 1] = { destination = dest,
+                sources = vim.deepcopy(deploy_mod.normalize_sources(srcs)) }
+        end
+        table.sort(row.deploy, function(a, b) return a.destination < b.destination end)
+    end
+    -- Variable name -> { type, default }.
+    row.variables = vim.empty_dict()
+    for name, decl in pairs(proj.variables or {}) do
+        row.variables[name] = { type = decl.type, default = decl.default }
+    end
+    -- The module's editable type_config fields, with their current values.
+    row.type_config = { fields = {} }
+    for _, f in ipairs(impl and impl.editable_type_config_fields and impl.editable_type_config_fields() or {}) do
+        local v = proj.type_config and proj.type_config[f.name]
+        row.type_config.fields[#row.type_config.fields + 1] = { name = f.name, label = f.label, kind = f.kind,
+            placeholder = f.placeholder, value = type(v) == "table" and vim.deepcopy(v) or v }
+    end
+    if opts.bind then opts.bind(row, proj) end
+    return row
+end
+
+--- `loomworks.view.Workspace/1`'s state: the status page's body (spec/ui.md
+--- §1.1: Diagnostics, Suggestions, Profiles, Orphaned Build Dirs,
+--- Configuration Sets, Projects, SDKs). Pure over the model: the host passes
+--- what needs the file system (`published`, `stray_dirs`).
+--- @param ws table the live workspace
+--- @param opts? loomworks.ViewWorkspaceOpts
+--- @return loomworks.ViewWorkspace
+function M.workspace(ws, opts)
+    opts = opts or {}
+    local out = { published = opts.published ~= false, modified = ws:has_any_modified() and true or false }
+
+    out.diagnostics = {}
+    if type(ws.diagnostics) == "function" then
+        for _, d in ipairs(ws:diagnostics()) do
+            out.diagnostics[#out.diagnostics + 1] = { severity = d.severity, source = d.source,
+                message = d.message, target_fold_key = d.target_fold_key }
+        end
+    end
+    -- Only actionable suggestions count (headless §16.31).
+    local ok_s, n = pcall(function() return require("loomworks.suggestions").count_actionable(ws) end)
+    out.suggestions = ok_s and type(n) == "number" and n or 0
+
+    local active = ws:get_active_profile()
+    out.profiles = {}
+    for _, profile in pairs(ws:get_profiles()) do
+        out.profiles[#out.profiles + 1] = profile_row(ws, profile, active, opts)
+    end
+    table.sort(out.profiles, function(a, b) return a.key < b.key end)
+
+    out.orphaned = { configurations = {}, stray_dirs = {} }
+    for _, o in ipairs(ws:get_orphaned_configs()) do
+        local row = { key = o.build_dir_key or o.config_key,
+            build_dir = o.cached_entry and o.cached_entry.build_dir or nil }
+        out.orphaned.configurations[#out.orphaned.configurations + 1] = row
+        if opts.bind then opts.bind(row, o) end
+    end
+    for _, dir in ipairs(opts.stray_dirs or {}) do out.orphaned.stray_dirs[#out.orphaned.stray_dirs + 1] = dir end
+
+    out.config_sets = {}
+    for _, cs in pairs(ws:get_config_sets()) do
+        out.config_sets[#out.config_sets + 1] = config_set_row(ws, cs, active, opts)
+    end
+    table.sort(out.config_sets, function(a, b) return a.name < b.name end)
+
+    -- Projects: alphabetical, orphaned ones last.
+    local normal, orphaned = {}, {}
+    for _, proj in pairs(ws:get_projects()) do
+        local list = proj.orphaned and orphaned or normal
+        list[#list + 1] = proj
+    end
+    table.sort(normal, function(a, b) return a.key < b.key end)
+    table.sort(orphaned, function(a, b) return a.key < b.key end)
+    out.projects = {}
+    for _, list in ipairs({ normal, orphaned }) do
+        for _, proj in ipairs(list) do out.projects[#out.projects + 1] = project_row(ws, proj, opts) end
+    end
+
+    out.sdks = {}
+    for _, sdk in ipairs(ws:sdks()) do
+        local resolved = sdk:is_resolved() and true or false
+        local row = { key = sdk.key, label = sdk:display_name(), path = sdk:sdk_path(), resolved = resolved, kits = {} }
+        for _, kit in ipairs(resolved and sdk:kits() or {}) do
+            row.kits[#row.kits + 1] = sdk:kit_label(kit.platform, kit.arch)
+        end
+        out.sdks[#out.sdks + 1] = row
+        if opts.bind then opts.bind(row, sdk) end
+    end
+    out.sdk_providers = #require("loomworks.sdks").list()
+    return out
 end
 
 --- A canonical text of a view state (sorted keys): equal states have equal
