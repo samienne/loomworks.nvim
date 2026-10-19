@@ -705,6 +705,30 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
         assert.is_nil(read(s.log):find("log_clear", 1, true))
     end)
 
+    it("kills a running pid probe when the stream ends by itself", function()
+        s = session()
+        local launch = launched()
+        devices.LOG_PID_POLL_MS = 1
+        local proc = require("loomworks.proc")
+        local probes = {}
+        local spawn = daemon_runner.spawn
+        stub(daemon_runner, "spawn", function(spec, sink)
+            local obj = spawn(spec, sink)
+            if obj and obj.pid and vim.tbl_contains(spec.cmd, "pid") then
+                probes[#probes + 1] = { pid = obj.pid, start = proc.start_time(obj.pid) }
+            end
+            return obj
+        end)
+        local id = start_log(launch, env_with({ LW_TEST_PID_SLEEP = "30000", LW_TEST_LOG_SLEEP = "200" }))
+        assert.is_true(vim.wait(10000, function() return #probes == 1 end, 20))
+        assert.is_true(proc.alive(probes[1].pid, probes[1].start))
+        local _, _, done = collect(id)
+        assert.equals(0, done.exit_code, vim.inspect(done))
+        assert.equals(1, #probes)
+        -- (Gone well before its own 3 s timeout would kill it.)
+        assert.is_true(vim.wait(1500, function() return not proc.alive(probes[1].pid, probes[1].start) end, 20))
+    end)
+
     it("is refused as stop is: unknown, running, pid-less; another client's launch is forbidden", function()
         s = session({ LW_TEST_DEVICE_SLEEP = "30000" })
         local r = device_log("nope")

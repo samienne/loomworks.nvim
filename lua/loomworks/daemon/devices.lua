@@ -810,9 +810,15 @@ local function run_device_log(service, ctx, l, command)
             { task = task.id, records = recs, dropped = dropped > 0 and dropped or nil },
             function(sub_args) return sub_args.task == nil or sub_args.task == task.id end)
     end
+
+    -- The pid probes run beside the stream, in their own child slot: a
+    -- cancel kills both, and the run's end a probe still running.
+    local probe_slot = {}
     local finish = run.finish
     function run.finish(code, err, result)
-        if not run.finished then flush(true) end
+        if run.finished then return end
+        if probe_slot.child then runner.kill(probe_slot.child) end
+        flush(true)
         return finish(code, err, result)
     end
 
@@ -843,9 +849,6 @@ local function run_device_log(service, ctx, l, command)
         end
     end
 
-    -- The pid probes run beside the stream, in their own child slot (a
-    -- cancel kills both).
-    local probe_slot = {}
     local cancel = run.cancel
     function run.cancel(reason, code)
         if run.cancelled or run.finished then return end
