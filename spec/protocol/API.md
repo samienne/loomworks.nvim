@@ -607,10 +607,43 @@ included, and its install and launch are left to `Devices/1` (§15).
 
 ### 9.5 `device_log`
 
-*(Step 5n, parts B3 and C3; its document lands with its handler.)* The log
-stream of a program a client launched on a device (`Devices/1.launch`,
-§15), as a task whose records are the normalized device log records of spec
-§19.18 (`{ ts, level, tag, pid, message, fields? }`).
+*(Step 5n, part B3; the editor's use, part C3.)* `device_log { task }` — a
+task (`meta.kind = device_log`) that streams the device log of the program
+a finished `Devices/1.launch` task of the caller launched (`task` its id,
+§15), from what that launch recorded: its target, device, process id and
+bundle, nothing resolved again. It is addressed and refused as `stop` is:
+another client's launch is `forbidden`; a launch that is unknown, still
+running, failed or already stopped, one whose process id was not found, or
+a module with no log command is the `refused` result.
+
+The task runs in the client's environment (§5). First the module's
+log-clear command, when it has one, runs under the device lock (spec §18.7,
+waited for as `install` waits; a failed clear is a `note` line, never a
+failure); then the module's log command, which takes no lock, with the
+process id passed to it when the module asks for strict-pid filtering. Each
+line of its output is parsed as the in-process device-log view parses it,
+and kept only when it passes that view's session prefilter over the
+launch's process id and bundle (a line that does not parse always passes);
+the level filter stays the client's. A kept line becomes a record of spec
+§19.18: `ts` (the line's time as printed), `level` (`verbose`, `debug`,
+`info`, `warn`, `error` or `fatal`; a client shows an unknown level as
+`info`), `tag`, `pid`, `message`, and `fields` with `tid`, `domain` and
+`proc`; a line that does not parse is a record with only `message` (the
+line without its escape sequences) and `level` `info`.
+
+The records travel as this interface's signal `log { task, records,
+dropped? }`, not as task frames, to the subscriptions of `/launch` that
+name this task or none (`subscribe_args { task? }`, as `Tasks/1.step`), in
+order and batched. The server keeps them in a bounded queue, sent at a short
+interval and held back while the owner's connection is behind
+([PROTOCOL.md](PROTOCOL.md) §14.4); when the queue is full the oldest
+records are dropped, and their number is `dropped` on the next `log`, which a
+client shows as a gap. The task ends on a cancel or its owner's disconnect
+(nonzero); when the log command exits (its exit code, the queue sent
+first); or when the program has exited: its process id is probed every 3 s,
+as in-process, and two misses in a row end the task with exit 0 and the
+line `the program exited — log stream closed`. A reload of the workspace
+does not end it.
 
 ## 10. `loomworks.Tests/1`
 

@@ -2718,7 +2718,8 @@ results parsing, its `ensure_built` and the neotest adapter, unchanged; that
 path is never used in `daemon` mode.
 
 **Devices.** *(Step 5n, plan: part 0 this spec; B2 the daemon side,
-[API.md](../protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use — implemented.)*
+[API.md](../protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use — implemented;
+B3 the device log stream, [API.md](../protocol/API.md) §9.5 — implemented; C3 its editor use.)*
 In `daemon` mode the editor neither lists nor probes devices, nor installs
 or launches on them. The device list comes only from `Devices/1.list` and
 its `changed` signal. A scan is a `Devices/1.scan` task carrying the
@@ -2733,7 +2734,10 @@ installs or launches that are running. That includes a reload caused by a
 scan from a client with a different environment. An install takes the build
 directory's lock and then the device's. While it waits for the device lock,
 the build directory stays locked, so a build of that directory fails at once
-in the meantime. A launch and a stop take only the device lock.
+in the meantime. A launch and a stop take only the device lock. A launched
+program's log is a `Launch/1.device_log` task of the client that launched
+it, which holds the device lock only while it clears the device's log; its
+stream takes no lock.
 
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, §12) — one per daemon
@@ -3313,7 +3317,8 @@ Device logs travel on the task-stream channel as normalized records
 `{ ts, level, tag, pid, message, fields? }` (unknown level → a default,
 unknown keys → `fields`). A module's device listing, install, launch and
 stop run in the daemon from step 5n (§19.16 "Devices"); the log stream is
-`Launch/1.device_log`.
+`Launch/1.device_log` ([API.md](../protocol/API.md) §9.5), its records sent
+as that interface's `log` signal.
 
 ### 19.19 Transition order
 
@@ -3769,7 +3774,7 @@ roadmap.
 | `/projects` | `loomworks.ConfigSets/1` | add, update_mapping, generate_defaults |
 | `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
 | `/tests` | `loomworks.Tests/1` | discover T, run T, run_cases T, prepare_debug T, collect, result (results) |
-| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T *(5t, with part B)*, device_log |
+| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T *(5t, with part B)*, device_log T (log) |
 | `/debug` | `loomworks.DebugConfig/1` | adapters, set_adapter, known_languages |
 | `/lsp` | `loomworks.LspConfig/1` | get, set_option (changed) |
 | `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended, step; task frames; `TaskInfo.steps`) |
