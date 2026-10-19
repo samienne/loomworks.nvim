@@ -601,8 +601,9 @@ end
 
 --- `stop { task }` (see the header): the stop command of a launch the
 --- caller owns, run in its environment under the device lock; `ok` once it
---- succeeded (the launch is then forgotten), else `refused`. Another
---- client's launch is `forbidden`.
+--- succeeded (the launch is then forgotten), else `refused` — also while
+--- another stop of the same launch runs. Another client's launch is
+--- `forbidden`.
 --- @param service loomworks.daemon.BuildService
 --- @return function
 local function stop_method(service)
@@ -622,6 +623,10 @@ local function stop_method(service)
             return nil, envelope.err(envelope.ERR.forbidden,
                 string.format("task %s belongs to another client", tostring(id)))
         end
+        if l.stopping then
+            return { outcome = "refused", exit_code = 1, message = "the program launched by task "
+                .. tostring(id) .. " is already being stopped" }
+        end
         local env, eerr = envscope.validate(cctx.env)
         if not env then return { outcome = "declined", reason = eerr } end
         if service.stopping or service.server.stopped then
@@ -639,9 +644,14 @@ local function stop_method(service)
         -- device lock), and the daemon is busy while it runs. Its end answers
         -- the call: `answer` fields set before it, else `ok` / `refused`.
         local run = new_run(service, ctx, "stop")
+        -- A launch is stopped once (§15): a second stop while this one runs
+        -- is refused.
+        l.stopping = true
         local answer_fields
         function run.stopped(why) return "stop interrupted: " .. tostring(why or run.cancel_reason) end
         function run.on_finish(code, err)
+            -- (Stopped: forgotten. Otherwise it can be stopped again.)
+            l.stopping = nil
             if ctx.conn.closed then return end
             if answer_fields then return ctx.reply(answer_fields) end
             if code == 0 then return ctx.reply({ outcome = "ok" }) end
