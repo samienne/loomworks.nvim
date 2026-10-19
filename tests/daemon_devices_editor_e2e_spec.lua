@@ -71,7 +71,9 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         -- The editor's environment, which its calls carry: a fresh device-lock
         -- directory and the stub device's command log.
         log = H.tmp() .. "/device.log"
-        saved_env = { lock = vim.env.LOOMWORKS_DEVICE_LOCK_DIR, log = vim.env.LW_TEST_DEVICE_LOG }
+        saved_env = { lock = vim.env.LOOMWORKS_DEVICE_LOCK_DIR, log = vim.env.LW_TEST_DEVICE_LOG,
+            fail = vim.env.LW_TEST_DEVICE_FAIL, sleep = vim.env.LW_TEST_DEVICE_SLEEP,
+            scan = vim.env.LW_TEST_SCAN_SLEEP, build = vim.env.LW_TEST_SLEEP }
         vim.env.LOOMWORKS_DEVICE_LOCK_DIR = H.tmp() .. "/locks"
         vim.env.LW_TEST_DEVICE_LOG = log
         core = Core.new()
@@ -98,6 +100,10 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         pcall(function() core:shutdown() end)
         vim.env.LOOMWORKS_DEVICE_LOCK_DIR = saved_env.lock
         vim.env.LW_TEST_DEVICE_LOG = saved_env.log
+        vim.env.LW_TEST_DEVICE_FAIL = saved_env.fail
+        vim.env.LW_TEST_DEVICE_SLEEP = saved_env.sleep
+        vim.env.LW_TEST_SCAN_SLEEP = saved_env.scan
+        vim.env.LW_TEST_SLEEP = saved_env.build
         trust._set_key_path(nil)
     end)
 
@@ -115,7 +121,9 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         return false
     end
 
-    it("lists, scans, chooses, launches and stops through Devices/1; refused once disconnected", function()
+    --- The daemon (the real build service) and the editor's observer,
+    --- connected with the device list read.
+    local function serve()
         srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000,
             log = function() end })
         srv:registry()
@@ -127,6 +135,49 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_true(vim.wait(60000, function()
             return obs:can_call("device_scan") and obs:can_call("set_device") and obs._devices ~= nil
         end, 20), obs:runtime_line())
+    end
+
+    --- Scan, then choose SER1 for the profile (Devices/1.scan, Profiles/1.set_device).
+    local function choose_ser1()
+        local scanned
+        device_source.scan(ws, function(list) scanned = list or false end)
+        assert.is_true(vim.wait(60000, function() return scanned ~= nil end, 20))
+        local chosen
+        device_source.select(ws, profile, assert(rec(scanned, "SER1")),
+            function(ok, err) chosen = { ok = ok, err = err } end)
+        assert.is_true(vim.wait(30000, function() return chosen ~= nil end, 20))
+        assert.is_true(chosen.ok, tostring(chosen.err))
+        assert.is_true(vim.wait(30000, function()
+            local d = rec(device_source.list(ws), "SER1")
+            return d ~= nil and d.profiles ~= nil and d.profiles[1] == "dev"
+        end, 20))
+    end
+
+    --- The kinds of the tasks the editor started, in order.
+    local function kinds()
+        local out = {}
+        for _, t in ipairs(started) do out[#out + 1] = t.kind end
+        return out
+    end
+
+    --- The started task of `kind` (the first), or nil.
+    local function task_of(kind)
+        for _, t in ipairs(started) do if t.kind == kind then return t end end
+        return nil
+    end
+
+    --- Start the profile's default target; true when a question was asked.
+    local function start_asked()
+        local asked = false
+        local orig = vim.ui.select
+        vim.ui.select = function() asked = true end
+        session_tracker.start(profile:default_target(), "launch")
+        vim.ui.select = orig
+        return asked
+    end
+
+    it("lists, scans, chooses, launches and stops through Devices/1; refused once disconnected", function()
+        serve()
 
         -- The list comes from Devices/1.list: empty until a scan.
         assert.same({}, device_source.list(ws))
@@ -224,5 +275,101 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.truthy(wrote.err:find("^device choice: "), wrote.err)
         assert.same({}, ws:devices())
         assert.is_nil(editor_ops.devices(ws))
+    end)
+
+    it("an install that fails ends the chain with its error; nothing is launched", function()
+        serve()
+        choose_ser1()
+        vim.env.LW_TEST_DEVICE_FAIL = "install"
+        notes = {}
+        session_tracker.start(profile:default_target(), "launch")
+        assert.is_true(vim.wait(180000, function() return #errors() > 0 end, 20), vim.inspect(notes))
+        vim.wait(300)
+        assert.same({ "scan", "build", "install" }, kinds())
+        assert.is_false(session_tracker.is_running())
+        assert.is_nil(read(log):find("launch SER1", 1, true), read(log))
+        -- Nothing left preparing: a new launch starts at once (no question).
+        vim.env.LW_TEST_DEVICE_FAIL = nil
+        assert.is_false(start_asked())
+        assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
+            vim.inspect(errors()))
+    end)
+
+    it("a launch that fails ends the chain with its error; no run is tracked", function()
+        serve()
+        choose_ser1()
+        vim.env.LW_TEST_DEVICE_FAIL = "launch"
+        notes = {}
+        session_tracker.start(profile:default_target(), "launch")
+        assert.is_true(vim.wait(180000, function() return #errors() > 0 end, 20), vim.inspect(notes))
+        vim.wait(300)
+        assert.same({ "scan", "build", "install", "launch" }, kinds())
+        assert.is_false(session_tracker.is_running())
+        assert.is_nil(session_tracker.active_run())
+    end)
+
+    it("a disconnect during the install ends the chain; nothing runs in-process", function()
+        serve()
+        choose_ser1()
+        vim.env.LW_TEST_DEVICE_SLEEP = "5000"
+        notes = {}
+        session_tracker.start(profile:default_target(), "launch")
+        assert.is_true(vim.wait(180000, function() return task_of("install") ~= nil end, 20), vim.inspect(notes))
+        srv:stop("test", 0)
+        assert.is_true(vim.wait(30000, function() return #errors() > 0 end, 20), vim.inspect(notes))
+        assert.is_nil(task_of("launch"))
+        assert.is_false(session_tracker.is_running())
+        assert.same({}, ws:devices())
+        -- Nothing left preparing: a new launch asks nothing (refused: unloaded).
+        assert.is_false(start_asked())
+        vim.wait(200)
+        assert.is_true(noted("loomworks: cannot run "), vim.inspect(notes))
+    end)
+
+    it("a launched run is forgotten when the daemon disconnects: its stop sends nothing, no error", function()
+        serve()
+        choose_ser1()
+        session_tracker.start(profile:default_target(), "launch")
+        assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
+            vim.inspect(errors()))
+        srv:stop("test", 0)
+        assert.is_true(vim.wait(30000, function() return not session_tracker.is_running() end, 20))
+        notes = {}
+        session_tracker.stop()
+        assert.is_true(noted("no running session"))
+        assert.same({}, errors())
+        assert.is_nil(read(log):find("stop SER1", 1, true), read(log))
+    end)
+
+    it("a stop during a device run's build cancels the build; nothing installed", function()
+        serve()
+        choose_ser1()
+        vim.env.LW_TEST_SLEEP = "20000"
+        notes = {}
+        session_tracker.start(profile:default_target(), "launch")
+        assert.is_true(vim.wait(60000, function() return task_of("build") ~= nil end, 20), vim.inspect(notes))
+        local build = task_of("build")
+        session_tracker.stop()
+        assert.is_true(vim.wait(15000, function() return build.finished end, 20))
+        vim.wait(300)
+        assert.is_nil(task_of("install"))
+        assert.same({}, errors())
+        assert.is_false(session_tracker.is_running())
+    end)
+
+    it("a stop during a device run's scan cancels the scan; no device is chosen", function()
+        serve()
+        vim.env.LW_TEST_SCAN_SLEEP = "hang"
+        notes = {}
+        session_tracker.start(profile:default_target(), "launch")
+        assert.is_true(vim.wait(180000, function() return task_of("scan") ~= nil end, 20), vim.inspect(notes))
+        local scan = task_of("scan")
+        session_tracker.stop()
+        assert.is_true(vim.wait(15000, function() return scan.finished end, 20))
+        vim.wait(300)
+        assert.is_nil(task_of("install"))
+        assert.same({}, errors())
+        assert.is_false(session_tracker.is_running())
+        assert.is_nil(read(root .. "/.nvim/loomworks.user.json"):find('"SER1"', 1, true))
     end)
 end)

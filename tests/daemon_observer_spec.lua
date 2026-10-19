@@ -10,6 +10,7 @@ local server_mod = require("loomworks.daemon.server")
 local client = require("loomworks.daemon.client")
 local tasks_mod = require("loomworks.daemon.tasks")
 local observer = require("loomworks.daemon.observer")
+local editor_ops = require("loomworks.daemon.editor_ops")
 local binary_select = require("loomworks.provision.select")
 local remote_task = require("loomworks.daemon.remote_task")
 local version = require("loomworks.daemon.version")
@@ -75,8 +76,13 @@ local function mount_views(srv, o)
         } }))
         -- The devices (step 5n C2): Devices/1 subscribed to for `changed`,
         -- Profiles/1's device choice called.
+        VIEW_STATE.device_reads = 0
+        VIEW_STATE.devices = {}
         assert(reg:mount("/devices", "core", "loomworks.Devices", 1, { methods = {
-            list = function() return { devices = {} } end,
+            list = function()
+                VIEW_STATE.device_reads = VIEW_STATE.device_reads + 1
+                return { devices = VIEW_STATE.devices }
+            end,
             scan = refused, install = refused, launch = refused,
             stop = function() return { outcome = "refused", message = "stub" } end,
         } }))
@@ -936,6 +942,25 @@ describe("the observer (§19.16)", function()
         assert.is_true(unit:state() ~= "building")
         assert.is_false(profile:has_active_operation())
         owner_client:close()
+    end)
+
+    it("the device list is dropped with the connection and read again on reconnect (step 5n C2)", function()
+        s = new_server(root)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" and obs._devices ~= nil end, 10),
+            obs:runtime_line())
+        assert.equals(1, VIEW_STATE.device_reads)
+        assert.same({}, editor_ops.devices(ws))
+        VIEW_STATE.devices = { { id = "d-9", key = "SER9", label = "SER9", state = "online", provider = "stub" } }
+        obs.conn:close()
+        assert.is_true(vim.wait(5000, function() return obs.conn == nil end, 10))
+        assert.is_nil(obs._devices)
+        assert.is_nil(editor_ops.devices(ws))
+        -- Reconnected: read again, the cache is the new read.
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" and obs._devices ~= nil end, 10),
+            obs:runtime_line())
+        assert.equals(2, VIEW_STATE.device_reads)
+        assert.equals("SER9", editor_ops.devices(ws)[1].key)
     end)
 
     it("model_change applies the files' pending changes at once; an old seq is ignored", function()
