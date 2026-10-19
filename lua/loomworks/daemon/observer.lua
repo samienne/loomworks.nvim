@@ -122,7 +122,7 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _lsp_again boolean|nil a `changed` arrived during that read: read again after it
 --- @field _lsp_get_why string|nil why `LspConfig/1.get` is degraded on this connection (the daemon lacks it): the LSP note's reason
 --- @field _devices { list: loomworks.DeviceRecord[]|nil, reason: string|nil }|nil `Devices/1.list` as last read on this connection (step 5n C2; `list` nil: that read failed or was declined, `reason` says how)
---- @field _dev_fetch { waiters: fun(list: loomworks.DeviceRecord[]|nil)[] }|nil the `list` in flight: its token and waiters (a reply to an older read is ignored)
+--- @field _dev_fetch { waiters: fun(list: loomworks.DeviceRecord[]|nil, reason: string|nil)[] }|nil the `list` in flight: its token and waiters (a reply to an older read is ignored)
 --- @field _dev_again boolean|nil a `changed` arrived during that read: read again after it
 --- @field _lost boolean|nil a connection the editor held was lost: its workspace is unloaded until the daemon reports `loaded` again (§19.16 "Unloaded on disconnect"); kept across connections
 --- @field _relay loomworks.daemon.RelayProc|nil the relay in flight, until its `welcome` or its exit (single flight); after `welcome` the relay is the connection's (`conn.relay`)
@@ -2529,12 +2529,12 @@ end
 --- @field profiles string[]|nil the keys of the profiles that chose it
 
 --- Forget the device list of this connection; a read in flight ends with
---- nothing (its waiters get nil) and its reply is ignored.
+--- nothing (its waiters get nil and why) and its reply is ignored.
 function Observer:_drop_devices()
     local f = self._dev_fetch
     self._devices, self._dev_fetch, self._dev_again = nil, nil, nil
     if f then
-        for _, w in ipairs(f.waiters) do pcall(w, nil) end
+        for _, w in ipairs(f.waiters) do pcall(w, nil, "the device list read ended with its connection") end
     end
 end
 
@@ -2543,7 +2543,7 @@ end
 --- for that read). A failed or declined read is cached as absent (`list`
 --- nil, with its reason) until the next `changed` or reconnect. Every read
 --- that ends emits `daemon_devices`.
---- @param cb? fun(list: loomworks.DeviceRecord[]|nil) called once this read (or the one after it) ended
+--- @param cb? fun(list: loomworks.DeviceRecord[]|nil, reason: string|nil) called once this read (or the one after it) ended; `reason` why `list` is nil
 function Observer:_fetch_devices(cb)
     if self._dev_fetch then
         self._dev_again = true
@@ -2551,7 +2551,7 @@ function Observer:_fetch_devices(cb)
         return
     end
     if not self:can_call("device_list") then
-        if cb then cb(nil) end
+        if cb then cb(nil, self:refusal("device_list")) end
         return
     end
     local conn = self.conn
@@ -2582,33 +2582,36 @@ function Observer:_fetch_devices(cb)
         end
         self:_emit("daemon_devices", {})
         for _, w in ipairs(waiters) do
-            local ok, e = pcall(w, list)
+            local ok, e = pcall(w, list, reason)
             if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
         end
     end)
 end
 
 --- The device registry as `Devices/1.list` last returned it, or nil: not
---- carried, not read yet on this connection (a read is started then), or the
---- last read failed or was declined.
+--- carried, not read yet on this connection (a read is started then, unless
+--- `peek`), or the last read failed or was declined.
+--- @param peek? boolean only the cached read: never start one
 --- @return loomworks.DeviceRecord[]|nil
-function Observer:devices()
+function Observer:devices(peek)
     if not self:can_call("device_list") then return nil end
     if self._devices then return self._devices.list end
-    self:_fetch_devices()
+    if not peek then self:_fetch_devices() end
     return nil
 end
 
---- `cb(list)` on the main loop with the registry once read: the cached read
---- at once (unless `fresh`), else after the read in flight or one started
---- now — `fresh` always waits for a read that starts after this call (a scan
---- just ended). nil when not carried, or the read failed or outlived its
---- connection.
---- @param cb fun(list: loomworks.DeviceRecord[]|nil)
+--- `cb(list, reason)` on the main loop with the registry once read: the
+--- cached read at once (unless `fresh`), else after the read in flight or one
+--- started now — `fresh` always waits for a read that starts after this call
+--- (a scan just ended). `list` nil, with `reason` why, when not carried, or
+--- the read failed or outlived its connection — never an empty registry.
+--- @param cb fun(list: loomworks.DeviceRecord[]|nil, reason: string|nil)
 --- @param fresh? boolean
 function Observer:with_devices(cb, fresh)
-    if not self:can_call("device_list") then return cb(nil) end
-    if self._devices and not fresh and not self._dev_fetch then return cb(self._devices.list) end
+    if not self:can_call("device_list") then return cb(nil, self:refusal("device_list")) end
+    if self._devices and not fresh and not self._dev_fetch then
+        return cb(self._devices.list, self._devices.reason)
+    end
     self:_fetch_devices(cb)
 end
 

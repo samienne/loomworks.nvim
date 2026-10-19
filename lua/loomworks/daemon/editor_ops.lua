@@ -319,21 +319,33 @@ function M.prepares(target)
     return (M.daemon_of(M.scope_workspace({ profile = target._profile })))
 end
 
---- The calls of a device target's launch (§19.16 "Devices"), in order.
-local DEVICE_RUN = { "launch_build", "device_install", "device_launch" }
+--- The calls of a device target's launch (§19.16 "Devices"), in order: its
+--- build, the read of the profile's device, its install and launch.
+local DEVICE_RUN = { "launch_build", "device_list", "device_install", "device_launch" }
+--- The calls it adds when the profile has no device: a scan, then the choice.
+local DEVICE_CHOICE = { "device_scan", "set_device" }
 
 --- In `daemon` mode, refuse a device target's launch at once when the daemon
 --- cannot carry one of its calls now (§19.16 "Availability": refused like
---- any operation, nothing of it run): the refusal notified as `launch: <the
---- first missing call's note>`, then true. False when carried, and always
---- in the `in-process` mode (the caller then runs the in-process chain).
+--- any operation, nothing of it run — a chain that cannot finish is refused
+--- before its build): the refusal notified as `launch: <the first missing
+--- call's note>`, then true. A profile without a device — as the observer's
+--- cached `Devices/1.list` knows it; not read yet, or a failed read, counts
+--- as none — also needs the scan and the choice. False when carried, and
+--- always in the `in-process` mode (the caller then runs the in-process
+--- chain).
 --- @param target loomworks.LaunchTarget
 --- @return boolean refused
 function M.device_run_refused(target)
     local ws = M.scope_workspace({ profile = target._profile })
     local daemon, obs = M.daemon_of(ws)
     if not daemon then return false end
-    for _, method in ipairs(DEVICE_RUN) do
+    local calls = DEVICE_RUN
+    local cached = obs and obs.state ~= "stopped" and obs:can_call("device_list") and obs:devices(true) or nil
+    if not require("loomworks.device_source").chosen_in(ws, target._profile, cached) then
+        calls = vim.list_extend(vim.list_extend({}, DEVICE_RUN), DEVICE_CHOICE)
+    end
+    for _, method in ipairs(calls) do
         if not M.carrier(method, ws) then
             local why = obs and obs.state ~= "stopped" and obs:refusal(method) or "the workspace is no longer loaded"
             vim.notify("loomworks: launch: " .. why, vim.log.levels.WARN)
@@ -381,6 +393,7 @@ local function launch_call(method, target, k)
     --- @class loomworks.daemon.Preparation
     --- @field cancelled boolean|nil cancelled: nothing more reaches its continuation
     --- @field task_id any|nil its owned task, once accepted
+    --- @field conn loomworks.daemon.Conn|nil the connection it was sent on (a device launch is forgotten with it, API.md §15)
     --- @field cancel fun(self: loomworks.daemon.Preparation)
     local p = {}
     function p.cancel(self)
@@ -405,6 +418,7 @@ local function launch_call(method, target, k)
             args = M.launch_args(target)
         end
         if force then args.force = true end
+        p.conn = obs.conn
         obs:start_owned(method, args, {
             on_reply = function(r)
                 if r.outcome == "accepted" then
@@ -503,9 +517,10 @@ end
 --- its profile's device through the daemon (step 5n C2, §19.16 "Devices"):
 --- one `Devices/1.install` / `launch` task the editor owns, under the
 --- availability rule; it ends through `k` as M.prepare does —
---- `k.resolve(done)` (a launch's `{ pid?, bundle? }`, and `task_id`, the id
---- a stop names) once the task ended with exit 0, else `k.reject(message,
---- notified)`. False only in the `in-process` mode.
+--- `k.resolve(done)` (a launch's `{ pid?, bundle? }`, `task_id`, the id a
+--- stop names, and `connection`, the one it was sent on: the daemon forgets
+--- the launch with it, M.launch_forgotten) once the task ended with exit 0,
+--- else `k.reject(message, notified)`. False only in the `in-process` mode.
 --- @param step "install"|"launch"
 --- @param target loomworks.LaunchTarget
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
@@ -518,6 +533,7 @@ function M.device_step(step, target, k)
         resolve = function(done)
             local out = vim.tbl_extend("force", {}, done)
             out.task_id = handle and handle.task_id
+            out.connection = handle and handle.conn
             k.resolve(out)
         end,
         reject = k.reject,
@@ -525,27 +541,45 @@ function M.device_step(step, target, k)
     return routed, handle
 end
 
+--- Has the daemon forgotten a device launch sent on `conn` (a launch's
+--- `done.connection`, M.device_step)? It forgets one when its owner's
+--- connection closes (API.md §15) — a disconnect, a daemon restart — so the
+--- program is no longer the editor's to stop.
+--- @param conn loomworks.daemon.Conn|nil
+--- @return boolean
+function M.launch_forgotten(conn)
+    return conn == nil or conn.closed == true
+end
+
 --- Stop the program a device launch task of the editor launched
---- (`Devices/1.stop { task }`, API.md §15). `cb(ok, err)` once, on the main
---- loop; `err` was notified (a refusal, a stop the daemon cannot carry now,
---- a failure).
+--- (`Devices/1.stop { task }`, API.md §15), sent on `conn`. A launch the
+--- daemon has forgotten (M.launch_forgotten: its connection closed, also
+--- while the stop is in flight) is already stopped: `cb(true)`, nothing
+--- sent or notified. Else `cb(ok, err)` once, on the main loop; `err` was
+--- notified (a refusal, a stop the daemon cannot carry now, a failure).
 --- @param ws loomworks.Workspace|nil
 --- @param task_id any the launch's task id
+--- @param conn loomworks.daemon.Conn|nil the connection the launch was sent on
 --- @param cb? fun(ok: boolean, err: string|nil)
-function M.device_stop(ws, task_id, cb)
+function M.device_stop(ws, task_id, conn, cb)
     cb = cb or function() end
-    M.plain("device_stop", ws, { task = task_id }, cb)
+    local function gone() return M.launch_forgotten(conn) end
+    if gone() then return cb(true) end
+    M.plain("device_stop", ws, { task = task_id }, cb, gone)
 end
 
 --- A plain Devices/1 or Profiles/1 write the editor sends (`device_stop`,
 --- `set_device`, `clear_device`): refused at once when not carried; its
 --- `refused` / `declined` result, a degraded method or a failure end it
---- with that message (notified); `ok` ends it with `cb(true)`.
+--- with that message (notified); `ok` ends it with `cb(true)`. With `moot`,
+--- an answer that arrives once `moot()` holds ends it with `cb(true)`,
+--- unnotified (a device stop whose launch the daemon forgot meanwhile).
 --- @param method "device_stop"|"set_device"|"clear_device"
 --- @param ws loomworks.Workspace|nil
 --- @param args table
 --- @param cb fun(ok: boolean, err: string|nil)
-function M.plain(method, ws, args, cb)
+--- @param moot? fun(): boolean
+function M.plain(method, ws, args, cb, moot)
     local _, mode_obs = M.daemon_of(ws)
     local obs = M.carrier(method, ws)
     if not obs then
@@ -553,6 +587,7 @@ function M.plain(method, ws, args, cb)
     end
     local verb = VERB[method] or method
     obs:request(method, args, function(r)
+        if moot and moot() then return cb(true) end
         local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
         if res and res.outcome == "ok" then return cb(true) end
         if r.outcome == "degraded" then
@@ -581,24 +616,37 @@ function M.devices(ws)
     return obs and obs:devices() or nil
 end
 
---- `cb(list)` with the registry of `ws` once read (see Observer:with_devices);
---- nil when not carried or the read failed.
+--- `cb(list)` with the registry of `ws` once read (see Observer:with_devices,
+--- `fresh` as there); `cb(nil, err)` when not carried (refused) or the read
+--- failed — never an empty list for a failed read — with `err` notified.
 --- @param ws loomworks.Workspace|nil
---- @param cb fun(list: loomworks.DeviceRecord[]|nil)
-function M.with_devices(ws, cb)
+--- @param cb fun(list: loomworks.DeviceRecord[]|nil, err: string|nil)
+--- @param fresh? boolean
+function M.with_devices(ws, cb, fresh)
+    local _, mode_obs = M.daemon_of(ws)
     local obs = M.carrier("device_list", ws)
-    if not obs then return cb(nil) end
-    obs:with_devices(cb)
+    if not obs then
+        return M.refuse("device_list", mode_obs, { reject = function(msg) cb(nil, msg) end })
+    end
+    obs:with_devices(function(list, reason)
+        if list then return cb(list) end
+        local msg = VERB.device_list .. ": " .. tostring(reason or "the device list could not be read")
+        vim.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        cb(nil, msg)
+    end, fresh)
 end
 
 --- Scan for devices through the daemon (step 5n C2): one `Devices/1.scan`
 --- task the editor owns, carrying its environment; then the registry read
 --- again. Ends through `k`: `k.resolve(list)` (the registry after the scan),
---- else `k.reject(message, notified)` — refused at once when not carried.
---- False only in the `in-process` mode.
+--- else `k.reject(message, notified)` — refused at once when not carried, a
+--- failed read of the registry its error (notified), never an empty list.
+--- False only in the `in-process` mode. The handle cancels it (its task
+--- once accepted, `Tasks/1.cancel`); nothing more reaches `k` then.
 --- @param ws loomworks.Workspace|nil
 --- @param k { resolve: fun(list: loomworks.DeviceRecord[]), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
 function M.scan_devices(ws, k)
     local daemon, mode_obs = M.daemon_of(ws)
     if not daemon then return false end
@@ -607,15 +655,36 @@ function M.scan_devices(ws, k)
         M.refuse("device_scan", mode_obs, k)
         return true
     end
+    --- @type loomworks.daemon.Preparation
+    local p = {}
+    function p.cancel(self)
+        if self.cancelled then return end
+        self.cancelled = true
+        if self.task_id ~= nil then obs:cancel_owned_id(self.task_id) end
+    end
+    local function live(fn) return function(...) if not p.cancelled then return fn(...) end end end
+    local kk = { resolve = live(k.resolve), reject = live(k.reject) }
+    local reply = on_reply("device_scan", obs, kk)
+    p.conn = obs.conn
     obs:start_owned("device_scan", {}, {
-        on_reply = on_reply("device_scan", obs, k),
+        on_reply = function(r)
+            if r.outcome == "accepted" then
+                p.task_id = r.task_id
+                if p.cancelled then obs:cancel_owned_id(r.task_id) end
+            end
+            if p.cancelled then return end
+            reply(r)
+        end,
         on_done = function(task, reason)
             local err = failure(VERB.device_scan, task, reason)
-            if err then return k.reject(err) end
-            obs:with_devices(function(list) k.resolve(list or {}) end, true)
+            if err then return kk.reject(err) end
+            M.with_devices(ws, function(list, lerr)
+                if list then return kk.resolve(list) end
+                kk.reject(lerr, true)
+            end, true)
         end,
     })
-    return true
+    return true, p
 end
 
 --- Choose `device` (a record of the registry, by its id) as the profile's

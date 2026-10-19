@@ -33,6 +33,7 @@ local M = {}
 --- @field device_pid number|nil
 --- @field pidof_timer uv_timer_t|nil
 --- @field device_task any|nil `daemon` mode: the `Devices/1.launch` task that launched the program (a stop names it, step 5n C2)
+--- @field device_conn loomworks.daemon.Conn|nil `daemon` mode: the connection that launch was sent on; once it closed the daemon has forgotten the launch (API.md §15) and the run is over
 
 --- @type loomworks.TrackedRun|nil
 local _active_run = nil
@@ -63,8 +64,12 @@ end
 local function is_active_running()
     if not _active_run then return false end
     -- A program the daemon launched on a device runs until it is stopped
-    -- (the editor cannot see it end).
-    if _active_run.device_task ~= nil then return true end
+    -- (the editor cannot see it end) — or until the connection it was
+    -- launched on closes: the daemon forgets the launch with it (API.md §15,
+    -- a disconnect or a restart), and it is no longer the editor's to stop.
+    if _active_run.device_task ~= nil then
+        return not require("loomworks.daemon.editor_ops").launch_forgotten(_active_run.device_conn)
+    end
     if _active_run.mode == "launch" then
         return _active_run.target:is_running()
     else
@@ -231,9 +236,11 @@ local function stop_run()
     if _active_run.device_task ~= nil then
         -- `daemon` mode (step 5n C2): the daemon stops the program its
         -- launch task started (`Devices/1.stop { task }`); a refusal or
-        -- failure is notified, never retried in the editor.
+        -- failure is notified, never retried in the editor. A launch the
+        -- daemon forgot meanwhile (its connection closed) is already stopped.
         local ops = require("loomworks.daemon.editor_ops")
-        ops.device_stop(ops.scope_workspace({ profile = _active_run.target._profile }), _active_run.device_task)
+        ops.device_stop(ops.scope_workspace({ profile = _active_run.target._profile }), _active_run.device_task,
+            _active_run.device_conn)
     elseif _active_run.mode == "launch" then
         -- Device launch: `<target>:stop()` only knows how to kill a
         -- local process; the app is running on the device, so
@@ -621,10 +628,12 @@ end
 --- (`Profiles/1.set_device`) — then `Devices/1.install` and
 --- `Devices/1.launch`, each a task the editor owns. Nothing of it runs in
 --- the editor; a step refused or failed ends it (notified). While it runs
---- it is `_preparing`: a stop cancels the current step, a second launch asks
---- first. Launched, the run is tracked by its launch task (a stop sends
---- `Devices/1.stop`) and the device log is refused (device_log.refuse_daemon:
---- the daemon does not carry its stream yet).
+--- it is `_preparing`: a stop cancels the current step (the scan included;
+--- a stop while the device picker is open ends the chain), a second launch
+--- asks first. Launched, the run is tracked by its launch task (a stop sends
+--- `Devices/1.stop`) until the connection it was sent on closes (the daemon
+--- then forgets the launch), and the device log is refused
+--- (device_log.refuse_daemon: the daemon does not carry its stream yet).
 --- @param target loomworks.LaunchTarget
 local function start_device_run(target)
     local ops = require("loomworks.daemon.editor_ops")
@@ -659,7 +668,7 @@ local function start_device_run(target)
         _preparing = nil
         fidget.finish(handle, "running on device")
         _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock(),
-            device_task = done.task_id }
+            device_task = done.task_id, device_conn = done.connection }
         require("loomworks.device_log").refuse_daemon()
     end
     local function install()
@@ -670,12 +679,17 @@ local function start_device_run(target)
         end)
     end
     local function choose()
-        device_source.chosen_for_target(target, function(serial)
+        device_source.chosen_for_target(target, function(serial, rerr)
             if not live() then return end
+            -- The registry could not be read: its error (notified), never
+            -- taken for "none chosen" (a scan and a new choice).
+            if rerr then return fail(rerr, true) end
             if serial then return install() end
             fidget.report(handle, "scanning for devices...")
-            device_source.scan_for_target(target, function(devices, err)
+            -- The scan is the current step: a stop cancels its task.
+            local scan = device_source.scan_for_target(target, function(devices, err)
                 if not live() then return end
+                token.preparation = nil
                 if not devices then return fail(err, true) end
                 local items = {}
                 for _, d in ipairs(devices) do
@@ -695,6 +709,11 @@ local function start_device_run(target)
                     end)
                 end)
             end)
+            if live() then
+                token.preparation = scan
+            elseif scan then
+                scan:cancel()
+            end
         end)
     end
     fidget.report(handle, "building...")

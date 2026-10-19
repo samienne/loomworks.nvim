@@ -61,15 +61,18 @@ function M.list(ws)
 end
 
 --- Discover the devices of every device-capable module, then call
---- `cb(list)` with the registry. In `daemon` mode a `Devices/1.scan` task;
---- refused (not carried) or failed: notified, then `cb(nil, err)`.
+--- `cb(list)` with the registry. In `daemon` mode a `Devices/1.scan` task,
+--- whose handle is returned (a stop cancels it; `cb` is then not called);
+--- refused (not carried) or failed — its task, or the registry's read after
+--- it: notified, then `cb(nil, err)`.
 --- @param ws loomworks.Workspace|nil
 --- @param cb? fun(devices: loomworks.DeviceRecord[]|nil, err: string|nil)
+--- @return loomworks.daemon.Preparation|nil handle `daemon` mode, the scan sent
 function M.scan(ws, cb)
     cb = cb or function() end
     local ops = daemon_ops(ws)
     if ops then
-        ops.scan_devices(ws, {
+        local _, handle = ops.scan_devices(ws, {
             resolve = function(list) cb(list) end,
             reject = function(err, notified)
                 if not notified then
@@ -78,7 +81,7 @@ function M.scan(ws, cb)
                 cb(nil, tostring(err))
             end,
         })
-        return
+        return handle
     end
     if ws then ws:scan_devices(function(devices) cb(records(devices)) end) end
 end
@@ -93,6 +96,7 @@ end
 --- `scan` for a launch target's workspace (the session tracker's prompt).
 --- @param target loomworks.LaunchTarget
 --- @param cb fun(devices: loomworks.DeviceRecord[]|nil, err: string|nil)
+--- @return loomworks.daemon.Preparation|nil handle `daemon` mode, the scan sent
 function M.scan_for_target(target, cb)
     return M.scan(target_ws(target), cb)
 end
@@ -115,15 +119,19 @@ function M.chosen_in(ws, profile, list)
 end
 
 --- `cb(serial|nil)` with the device a launch target's profile chose: in
---- `daemon` mode once the registry is read (nil also while it cannot be
---- read), at once in-process.
+--- `daemon` mode once the registry is read, at once in-process. A registry
+--- that cannot be read (refused, or its read failed) is `cb(nil, err)`,
+--- `err` notified — never taken for "none chosen".
 --- @param target loomworks.LaunchTarget
---- @param cb fun(serial: string|nil)
+--- @param cb fun(serial: string|nil, err: string|nil)
 function M.chosen_for_target(target, cb)
     local ws = target_ws(target)
     local ops = daemon_ops(ws)
     if not ops then return cb(target._profile:device_serial()) end
-    ops.with_devices(ws, function(list) cb(M.chosen_in(ws, target._profile, list)) end)
+    ops.with_devices(ws, function(list, err)
+        if not list then return cb(nil, err) end
+        cb(M.chosen_in(ws, target._profile, list))
+    end)
 end
 
 --- The choice's write ended: on success, in-process with `ws`, the page is

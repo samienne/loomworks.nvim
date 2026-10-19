@@ -393,6 +393,200 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.same({}, titles)
     end)
 
+    -- Step 5n C2 review fixes: the device run's chain, stop and disconnect.
+    local DEVICE_FEAT = { operations = "available", launch = "available", tasks = "subscribed",
+        devices = "subscribed", ["device choice"] = "available" }
+    local function device_target()
+        return require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
+    end
+    local function errors()
+        local out = {}
+        for _, n in ipairs(notes) do
+            if n.level == vim.log.levels.ERROR then out[#out + 1] = n.msg end
+        end
+        return out
+    end
+    local function sent_method(method)
+        for _, c in ipairs(sent) do if c.method == method then return c end end
+        return nil
+    end
+    local SER1 = { id = "d-1", key = "SER1", label = "Phone", state = "online" }
+    --- Start a device target's launch and run its build; `chosen` the
+    --- profile's device in the list read after it (nil: none).
+    local function device_built(chosen)
+        local st = require("loomworks.session_tracker")
+        local t = device_target()
+        st.start(t, "launch")
+        accept(1, "b1")
+        done_frame("b1", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
+        assert.equals("list", sent[2].method)
+        local d = chosen and vim.tbl_extend("force", {}, SER1, { profiles = { profile.key } }) or SER1
+        sent[2].cb({ devices = { d } }, nil)
+        return st, t
+    end
+    --- A device run launched (its launch task `l1`).
+    local function device_launched()
+        local st, t = device_built(true)
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        accept(3, "i1")
+        done_frame("i1", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 4 end, 10))
+        accept(4, "l1")
+        start_frame("l1", "launch")
+        done_frame("l1", 0, { exit_code = 0, pid = 42 })
+        assert.is_true(vim.wait(2000, function() return st.is_running() end, 10))
+        return st, t
+    end
+
+    it("a device run is forgotten when its connection closes: no question, its stop sends nothing", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local st = device_launched()
+        -- The daemon forgot the launch with the connection (API.md §15).
+        obs.conn:close()
+        assert.is_false(st.is_running())
+        assert.is_nil(st.active_run())
+        st.stop()
+        assert.equals(4, #sent)
+        assert.same({}, errors())
+    end)
+
+    it("a device run's stop the connection's close overtakes ends without an error", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local st = device_launched()
+        st.stop()
+        assert.equals(5, #sent)
+        assert.equals("stop", sent[5].method)
+        obs.conn:close()
+        sent[5].cb(nil, { code = "closed", message = "not connected" })
+        vim.wait(100)
+        assert.same({}, errors())
+        assert.is_false(st.is_running())
+    end)
+
+    it("a device target without a device whose choice the daemon cannot carry is refused before the build", function()
+        local feat = vim.tbl_extend("force", {}, DEVICE_FEAT)
+        feat["device choice"] = nil
+        obs = fake_observer(feat)
+        obs._devices = { list = { SER1 } }
+        require("loomworks.session_tracker").start(device_target(), "launch")
+        vim.wait(100)
+        assert.same({}, sent)
+        assert.is_true(noted("loomworks: launch: "))
+        assert.same({}, titles)
+    end)
+
+    it("a device target without a device whose scan is degraded is refused before the build", function()
+        obs = fake_observer(DEVICE_FEAT)
+        obs._devices = { list = {} }
+        obs._degraded = { device_scan = true }
+        require("loomworks.session_tracker").start(device_target(), "launch")
+        vim.wait(100)
+        assert.same({}, sent)
+        assert.is_true(noted("loomworks: launch: "))
+    end)
+
+    it("a device target with a device needs no scan or choice: not refused without them", function()
+        local feat = vim.tbl_extend("force", {}, DEVICE_FEAT)
+        feat["device choice"] = nil
+        obs = fake_observer(feat)
+        obs._devices = { list = { vim.tbl_extend("force", {}, SER1, { profiles = { profile.key } }) } }
+        require("loomworks.session_tracker").start(device_target(), "launch")
+        assert.equals(1, #sent)
+        assert.equals("build", sent[1].method)
+    end)
+
+    it("a failed list read after the build is its error, not a scan", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local st = require("loomworks.session_tracker")
+        st.start(device_target(), "launch")
+        accept(1, "b1")
+        done_frame("b1", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
+        sent[2].cb(nil, { code = "internal", message = "boom" })
+        assert.is_true(vim.wait(2000, function() return #errors() > 0 end, 10))
+        vim.wait(100)
+        assert.is_nil(sent_method("scan"))
+        assert.truthy(errors()[1]:find("boom", 1, true), errors()[1])
+        assert.is_false(st.is_running())
+    end)
+
+    it("a failed list read after a scan is its error, not \"no online devices\"", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_built(false)
+        -- SER1 not chosen: a scan.
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        assert.equals("scan", sent[3].method)
+        accept(3, "s1")
+        done_frame("s1", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 4 end, 10))
+        assert.equals("list", sent[4].method)
+        sent[4].cb(nil, { code = "internal", message = "boom" })
+        assert.is_true(vim.wait(2000, function() return #errors() > 0 end, 10))
+        assert.is_false(noted("no online devices found"))
+        assert.truthy(errors()[1]:find("boom", 1, true), errors()[1])
+    end)
+
+    it("a stop during a device run's scan cancels the scan task", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local st = device_built(false)
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        accept(3, "s1")
+        st.stop()
+        assert.is_true(vim.wait(2000, function() return sent_method("cancel") ~= nil end, 10))
+        local cancel = sent_method("cancel")
+        assert.same({ task_id = "s1" }, cancel.args)
+        done_frame("s1", 1, { exit_code = 1 })
+        vim.wait(100)
+        assert.same({}, errors())
+        assert.is_nil(sent_method("install"))
+    end)
+
+    it("a stop while the device picker is open ends the chain", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local selects = {}
+        stub(vim.ui, "select", function(items, _, cb) selects[#selects + 1] = { items = items, cb = cb } end)
+        local st = device_built(false)
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        accept(3, "s1")
+        done_frame("s1", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 4 end, 10))
+        sent[4].cb({ devices = { SER1 } }, nil)
+        assert.is_true(vim.wait(2000, function() return #selects == 1 end, 10))
+        st.stop()
+        selects[1].cb(selects[1].items[1])
+        vim.wait(100)
+        assert.equals(4, #sent)
+        assert.is_false(st.is_running())
+        -- Nothing left preparing: a new launch does not ask.
+        st.start(device_target(), "launch")
+        assert.equals(1, #selects)
+    end)
+
+    it("a refused set_device ends the chain with its message; nothing installed", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local selects = {}
+        stub(vim.ui, "select", function(items, _, cb) selects[#selects + 1] = { items = items, cb = cb } end)
+        local st = device_built(false)
+        assert.is_true(vim.wait(2000, function() return #sent == 3 end, 10))
+        accept(3, "s1")
+        done_frame("s1", 0, { exit_code = 0 })
+        assert.is_true(vim.wait(2000, function() return #sent == 4 end, 10))
+        sent[4].cb({ devices = { SER1 } }, nil)
+        assert.is_true(vim.wait(2000, function() return #selects == 1 end, 10))
+        selects[1].cb(selects[1].items[1])
+        assert.is_true(vim.wait(2000, function() return #sent == 5 end, 10))
+        assert.equals("set_device", sent[5].method)
+        sent[5].cb({ outcome = "refused", message = "unknown device d-1" }, nil)
+        assert.is_true(vim.wait(2000, function() return #errors() > 0 end, 10))
+        assert.equals("loomworks: device choice: unknown device d-1", errors()[1])
+        vim.wait(100)
+        assert.equals(5, #sent)
+        assert.is_false(st.is_running())
+        st.start(device_target(), "launch")
+        assert.equals(1, #selects)
+    end)
+
     it("a disconnected editor refuses a device target's launch with the Runtime status", function()
         obs = fake_observer()
         obs.state, obs.note = "waiting", "waiting for the workspace daemon (connecting)"
