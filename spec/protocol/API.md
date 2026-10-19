@@ -1287,6 +1287,10 @@ state: it is the profile's `last_result`, in the view.
 *(Step 5n, part B2.)* The workspace's devices (spec §11), on `/devices`. The server keeps a registry of the
 devices its modules found; a client never lists or probes devices itself.
 
+A device target is reached only as its profile's default target (`target`
+omitted): a name never selects one, since `prepare_run`'s named targets are
+build targets and launch configurations (spec §16.17).
+
 - `list {}` → `{ devices: [{ id, key, label, state, provider, profiles? }] }`
   — the registry as it is; it never probes a device. Each device is an
   entity record (§1.1): `key` its serial, `label` its name (the serial when
