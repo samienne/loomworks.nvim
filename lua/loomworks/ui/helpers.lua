@@ -36,35 +36,6 @@ function M.format_elapsed(seconds)
     return " " .. h .. "h" .. string.format("%02d", m) .. "m"
 end
 
---- Compute weighted percentage across multiple ProfileProjects.
---- Configure counts as 10% of overall work, build as 90%.
---- @param pps loomworks.ProfileProject[]
---- @return number|nil percentage 0-100
-function M.aggregate_progress(pps)
-    local lw = require("loomworks")
-    local has_any = false
-    local total_pct = 0
-    local count = 0
-    for _, pp in ipairs(pps) do
-        local status = pp:status()
-        if status == "configuring" or status == "building" then
-            local p = pp._config_unit:progress()
-            if p and p.current and p.total and p.total > 0 then
-                has_any = true
-                local phase_pct = p.current / p.total
-                if status == "configuring" then
-                    total_pct = total_pct + 10 * phase_pct
-                else
-                    total_pct = total_pct + 10 + 90 * phase_pct
-                end
-                count = count + 1
-            end
-        end
-    end
-    if not has_any then return nil end
-    return math.floor(total_pct / count)
-end
-
 M.STATUS_HL = {
     unconfigured     = "LoomworksUnconfigured",
     configured       = "LoomworksConfigured",
@@ -133,19 +104,18 @@ function M.status_marker(status)
     return (M.STATUS_ICON[status] or "○") .. " "
 end
 
---- Resolve the live status for a ConfigUnit.
---- Used by both profile and project sections — ConfigUnit is the single source of truth.
---- @param unit loomworks.ConfigUnit
+--- The status of a unit as the workspace view carries it (`state`,
+--- `deleting_reason`, `progress`, `elapsed`; view_state.lua): the label, its
+--- highlight, the progress text and whether it spins.
+--- @param u table a unit's live state from `loomworks.view.Workspace/1`
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_unit_status(unit)
-    local state = unit:state()
+function M.unit_status(u)
+    local state = u.state or "unconfigured"
     if state == "deleting" then
-        local label = unit:deleting_reason() or "deleting"
-        return label, M.STATUS_HL.deleting, "", true
+        return u.deleting_reason or "deleting", M.STATUS_HL.deleting, "", true
     end
     if state == "configuring" or state == "building" then
-        local progress_str = M.format_progress(unit:progress())
-                .. M.format_elapsed(unit:elapsed())
+        local progress_str = M.format_progress(u.progress) .. M.format_elapsed(u.elapsed)
         return state, M.STATUS_HL[state] or "DiagnosticWarn", progress_str, true
     end
     -- Map ConfigUnit state names back to cache state names for HL lookup.
@@ -155,46 +125,18 @@ function M.resolve_unit_status(unit)
     return cache_state, M.STATUS_HL[cache_state] or "Comment", "", false
 end
 
---- Resolve the live status for a ProfileProject.
---- @param pp loomworks.ProfileProject
---- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
---- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_config_status(pp, cached)
-    if not pp._config_unit then
-        return "unconfigured", M.STATUS_HL.unconfigured, "", false
-    end
-    return M.resolve_unit_status(pp._config_unit)
-end
-
---- Resolve the live status for a ConfigUnit (profile-agnostic).
---- @param unit loomworks.ConfigUnit
---- @param cached loomworks.CachedConfig|nil (unused, kept for API compat)
---- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.resolve_config_status_global(unit, cached)
-    return M.resolve_unit_status(unit)
-end
-
---- Render cached configuration details as leaf lines.
----
---- Status is *not* rendered here — callers fold it into the parent
---- node's header line (matching the profile-level "(status)" suffix)
---- so the expansion doesn't repeat it.
+--- Render a unit's build directory and targets as leaf lines (its status is
+--- on the parent node's line).
 --- @param tree loomworks.Tree
---- @param config_status string (kept for call-site parity; currently unused)
---- @param status_hl string (likewise unused — see config_status)
---- @param cached loomworks.CachedConfig|nil (deprecated, reads from unit when nil)
+--- @param build_dir string|nil
+--- @param targets table<string, table>|nil by name: { type, artifact?, dependencies? }
 --- @param fold_prefix? string prefix for foldable sub-nodes (e.g. "App:Debug:ninja-gcc-12")
---- @param unit? loomworks.ConfigUnit for runtime-only data (targets) and first-class fields
-function M.render_cached_details(tree, config_status, status_hl, cached, fold_prefix, unit)
-    local build_dir = cached and cached.build_dir or (unit and unit.build_dir_value)
-
+function M.render_unit_details(tree, build_dir, targets, fold_prefix)
     if build_dir then
         tree:leaf("Build dir: " .. build_dir, "Comment")
     end
     -- The toolchain (generator/compiler/SDK kit) is shown once per profile in
     -- the profile-level Toolchain row, so it's not repeated per config here.
-
-    local targets = unit and unit.targets or nil
     if targets and next(targets) then
         M.render_targets(tree, targets, fold_prefix)
     end
@@ -292,38 +234,33 @@ function M.cycle_intent(item)
 end
 
 --- Get the label for the next intent transition.
---- @param item table domain object with _intent field
+--- @param intent string|nil an item's `_intent` (a view row's `intent`)
 --- @return string
-function M.intent_action_label(item)
-    if item._intent == "local" then
+function M.intent_action_label(intent)
+    if intent == "local" then
         return "Share (→ local + shared)"
-    elseif item._intent == "local+shared" then
+    elseif intent == "local+shared" then
         return "Unpin local (→ shared)"
     else
         return "Pin local (→ local)"
     end
 end
 
---- Classify an item into a display group based on _intent.
---- @param item table domain object with _intent field
---- @return "local+shared"|"local"|"shared"
-function M.publish_group(item)
-    return item._intent or "local"
-end
 
 --- Sort items into intent groups and render with separators.
 --- Groups: Local + Shared (with pin icon on user-pinned), Local, Shared (dimmed).
 --- Empty groups are hidden.
 --- @param tree loomworks.Tree
---- @param items table[] array of items to group
+--- @param items table[] view rows to group, by their `intent`
 --- @param render_fn fun(tree: loomworks.Tree, item: table, group: string) render a single item
-function M.render_grouped(tree, items, render_fn)
+--- @param default? string the group of a row without an intent (default "local")
+function M.render_grouped(tree, items, render_fn, default)
     local both = {}
     local local_items = {}
     local shared = {}
 
     for _, item in ipairs(items) do
-        local group = M.publish_group(item)
+        local group = item.intent or default or "local"
         if group == "local+shared" then
             both[#both + 1] = item
         elseif group == "local" then
@@ -461,19 +398,38 @@ end
 --- @return table opts
 function M.with_description(opts, item)
     if not item then return opts end
-    local desc = item.description
+    M.describe(opts, item.description, item._description_from_module)
+    return M.describe_action(opts, item)
+end
+
+--- The render half of `with_description`: the summary on the node line and
+--- `K` showing the full text (only when there is one).
+--- @param opts table node/item opts
+--- @param desc string|nil
+--- @param from_module boolean|nil a module default (read-only)
+--- @return table opts
+function M.describe(opts, desc, from_module)
     opts.description = desc
     if desc then
         opts.hover = function()
             local d = require("loomworks.description")
             local out = vim.split(d.inert(desc), "\n", { plain = true })
-            if item._description_from_module then
+            if from_module then
                 out[#out + 1] = ""
                 out[#out + 1] = "(from the project files; edit them to change it)"
             end
             return out
         end
     end
+    return opts
+end
+
+--- The action half of `with_description`: `e` / "Edit description".
+--- @param opts table node/item opts
+--- @param item table|nil the described domain object (nil: no action)
+--- @return table opts
+function M.describe_action(opts, item)
+    if not item then return opts end
     opts.on_describe = function()
         require("loomworks.ui.description_editor").open(item)
     end

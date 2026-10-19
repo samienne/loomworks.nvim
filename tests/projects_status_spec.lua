@@ -992,19 +992,12 @@ describe("Target rendering", function()
         assert.equals("Interface Libraries (1)", group_headers[4])
     end)
 
-    it("integrates into render_cached_details when ConfigUnit has targets", function()
+    it("integrates into render_unit_details when the unit has targets", function()
         local tree = make_mock_tree()
-        local mock_unit = {
-            targets = {
-                app = { type = "executable", dependencies = { "lib" } },
-                lib = { type = "static_library" },
-            },
-        }
-        helpers.render_cached_details(tree, "built", "LoomworksBuilt", {
-            state = "built",
-            build_dir = "/root/.nvim/build/App/Debug",
-            cmake = { generator = "Ninja" },
-        }, nil, mock_unit)
+        helpers.render_unit_details(tree, "/root/.nvim/build/App/Debug", {
+            app = { type = "executable", dependencies = { "lib" } },
+            lib = { type = "static_library" },
+        }, nil)
 
         -- Should include Targets node with count
         local has_targets = false
@@ -1014,15 +1007,12 @@ describe("Target rendering", function()
                 break
             end
         end
-        assert.is_true(has_targets, "render_cached_details should include Targets node")
+        assert.is_true(has_targets, "render_unit_details should include Targets node")
     end)
 
-    it("does not render Targets when ConfigUnit has no targets", function()
+    it("does not render Targets when the unit has no targets", function()
         local tree = make_mock_tree()
-        helpers.render_cached_details(tree, "built", "LoomworksBuilt", {
-            state = "built",
-            cmake = { generator = "Ninja" },
-        }, nil, { targets = nil })
+        helpers.render_unit_details(tree, nil, nil, nil)
 
         for _, line in ipairs(tree._lines) do
             if line.text then

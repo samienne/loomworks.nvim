@@ -748,7 +748,8 @@ describe("the observer (§19.16)", function()
         -- The display of the transient clean state, as a local clean's.
         assert.equals("deleting", unit:state())
         assert.equals("cleaning", unit:deleting_reason())
-        assert.equals("cleaning", (require("loomworks.ui.helpers").resolve_unit_status(unit)))
+        assert.equals("cleaning", (require("loomworks.ui.helpers").unit_status(
+            { state = unit:state(), deleting_reason = unit:deleting_reason() })))
         assert.is_nil(unit:shown_action())
         assert.is_false(unit:is_deleting())
         assert.equals(before, unit:local_state())
