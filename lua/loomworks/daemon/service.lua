@@ -1040,6 +1040,8 @@ end
 function Service:on_conn_closed(conn)
     -- Its prepared test debug sessions are dropped (§19.15 "Tests").
     pcall(require("loomworks.daemon.test_runs").on_conn_closed, self, conn)
+    -- Its device launches can no longer be stopped through it (§19.16 "Devices").
+    pcall(require("loomworks.daemon.devices").on_conn_closed, self, conn)
     local mine = {}
     for run in pairs(self.runs) do
         if run.ctx.conn == conn then mine[#mine + 1] = run end

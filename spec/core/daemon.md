@@ -1827,7 +1827,8 @@ built in-process, not the whole profile.
 in-process launch build does (§8.8.4 steps 3–5, `LaunchTarget:build`),
 deploy freshness recorded as in-process. The editor keeps device targets'
 builds in-process and never sends one (§19.16 "Editor operations") until
-step 5n extends `Launch/1.build` to them.
+step 5n extends `Launch/1.build` to them (part B2, daemon side: implemented —
+a device target's build ends with its post-build deploy).
 
 **Steps of a task.** *(Step 5t: implemented, daemon side part B, editor side part C.)* The steps a
 target-scoped task announces are [API.md](../protocol/API.md) §4.3; their ordering, `seq` and the
@@ -2717,7 +2718,7 @@ results parsing, its `ensure_built` and the neotest adapter, unchanged; that
 path is never used in `daemon` mode.
 
 **Devices.** *(Step 5n, plan: part 0 this spec; B2 the daemon side,
-[API.md](../protocol/API.md) §9.4, §11, §15; C2 the editor's use.)*
+[API.md](../protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use.)*
 In `daemon` mode the editor neither lists nor probes devices, nor installs
 or launches on them. The device list comes only from `Devices/1.list` and
 its `changed` signal. A scan is a `Devices/1.scan` task carrying the
@@ -3615,7 +3616,9 @@ stop run in the daemon from step 5n (§19.16 "Devices"); the log stream is
        `Profiles/1.set_device` / `clear_device`, `Launch/1.build` extended to
        device targets with the post-build deploy, and a tests-only stub
        device module, schemas and transcripts (B1 and B2 independent after
-       A); C1 — editor side: the status page's body from the view, nothing of
+       A; B2 *done once merged*: an install holds its build directory, then
+       the device lock — §19.3's order — a launch and a stop the device lock
+       only); C1 — editor side: the status page's body from the view, nothing of
        it built in-process in `daemon` mode, the `unavailable — <why>` lines;
        C2 — editor side: the device list, choice and launches through
        `Devices/1` (refused while disconnected), the device-log reach-in

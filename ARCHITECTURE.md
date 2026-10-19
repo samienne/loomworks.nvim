@@ -1745,6 +1745,28 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `Operation.task_outcome`, the one wording shared with
   `RemoteTask:outcome`). The editor still builds it in-process in `daemon`
   mode until 5n C1.
+- *(5n part B2, spec §19.16 "Devices", API.md §15)* `daemon/devices.lua`
+  (binary side) serves `Devices/1` on `/devices`: `list` (the registry,
+  `Workspace:devices`, never loading or probing; records `{ id, key = serial,
+  label, state, provider, profiles? }` with `service.ids`), `changed` (at the
+  header check, on a difference of the records), and the owned tasks `scan`
+  (`Workspace:scan_devices(cb, { resume, cancelled })`, called inside the
+  model segment so the modules run in the caller's environment, merged in a
+  segment), `install` and `launch` (the target resolved as `prepare_run`
+  resolves it; the module command built by the domain object —
+  `LaunchTarget:device_install_command` / `device_launch_command`, which the
+  editor's `device_install` / `device_launch` run as overseer tasks — and
+  spawned with `runner.spawn` in the caller's environment; the pid by
+  `LaunchTarget:device_resolve_pid(…, { system })`) and the plain method
+  `stop` (`device_stop_command`, for a launch the caller owns, remembered per
+  session until stopped or its owner disconnects). Locks: install takes its
+  build directory (B, fail-fast) then the device (D,
+  `remote/device_lock.try_acquire` polled on a timer — never `vim.wait` in the
+  daemon); launch and stop only D. `Profiles/1.set_device` / `clear_device`
+  write through `Profile:set_device` / `clear_device` (which now report and
+  undo a refused write). `Launch/1.build` of a device target runs its
+  post-build deploy (`runner.lua` `plan_target_scope`). The stub module is
+  `tests/fixtures/devstub` (the conformance runner's `devices` fixture).
 - *(Step 5l; spec §19.16 "LSP configuration", §19.20 `LspConfig/1`, §9.2.)*
   `lsp_config.lua` (shared side, host-neutral, no `vim.*`) — the one builder
   of the LSP configuration state: the `lsp_configs` content memo

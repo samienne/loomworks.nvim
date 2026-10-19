@@ -86,7 +86,8 @@ local binary_toplevel = {
 }
 
 local binary_daemon = {
-    "auth", "calls", "client", "command", "connect", "core_interfaces", "descriptor", "discover", "endpoint", "ensure",
+    "auth", "calls", "client", "command", "connect", "core_interfaces", "descriptor", "devices", "discover", "endpoint",
+    "ensure",
     "envscope", "handle", "inspect", "interfaces", "launch", "loopback", "paths", "relay", "rlock", "rlog",
     "runner", "running", "runtime", "server", "service", "snapshot", "stdio", "tasks", "test_discover",
     "test_runs", "test_store", "tests_view", "views",
