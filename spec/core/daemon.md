@@ -1578,7 +1578,29 @@ sections only from the view; while the view is not offered, each section is
 one line in the warning highlight, `unavailable — <why>`, as the Debug
 Adapters section's is. Its ids are the daemon's alone ("Two sources, one
 shape"). The rows carry what step 5o's command methods take as `{ id }`
-references.
+references. The view lists every field the status page reads for these
+sections; it carries no build progress: a profile's or unit's percent,
+elapsed time and progress messages come from `Tasks/1`
+([API.md](../protocol/API.md) §7, §14.4 "Progress is not in the view"),
+which the status page overlays on the view's rows as it shows remote and
+editor-owned tasks (§19.16 "Tasks in the task runner", "Running state",
+"UI"). The outcome of a profile's last finished operation is state, not
+progress: the view carries it as the profile's `last_result`. A unit's
+state change or a `last_result` change sends the view's `update`; a build's
+progress never does.
+
+**Freshness of views.** *(Step 5n part B1.)* The daemon checks for file changes (its file tracker's sync, as at the start of
+a state-changing request) before it computes a view: at each point where
+`header_check` runs, and for a view's `get`. A change another process made
+to `loomworks.json`, `user.json` or the cache — an in-process editor write
+before step 5o — is applied to the model then, so it shows in the views on
+the next check, not only after the next state-changing request. The check
+never loads a workspace and never runs a tool detection; a change that
+needs a reload is applied as the state-changing request's sync applies it.
+A write by another process does not by itself cause a check: until step 5o
+moves the editor's writes to command methods, the editor calls the view's
+`get` after a write of its own, and the daemon's `update`s then follow from
+that check.
 
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
