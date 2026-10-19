@@ -2756,7 +2756,9 @@ follows the task's current step.
   again: its program is started by the editor's launch after the call,
   which a restart of the task alone would not start, so its restart fails
   the task-runner task with the reason (start the launch again from the
-  editor). A stop, or
+  editor). A device target's `Devices/1.launch` task is not restartable
+  either: restarting it would start a second program on the device, which
+  the editor never learns the task of and so cannot stop. A stop, or
   another restart, before a restart's call is accepted cancels the task that
   call starts; it is never shown as a task of its own. A task that ends with
   exit 0 after a cancel is a success.
