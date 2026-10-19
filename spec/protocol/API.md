@@ -1070,69 +1070,217 @@ Output and error locations are not in the view: a client reads them with
 *(Step 5n.)* What the status page's body shows (spec/ui.md §1.1):
 Diagnostics, Suggestions, Profiles, Orphaned Configurations, Configuration
 Sets, Projects and SDKs. The header, LSP, Debug Adapters and Tasks sections
-have their own sources. Its state is `{ published, modified,
-diagnostics, suggestions, profiles, orphaned, config_sets, projects, sdks }`;
-its arrays are empty when the workspace is not loaded. Each `id` is an
-opaque id a client puts in an `{ id }` reference (§1.2), optional because
-the in-process builder leaves it out:
+have their own sources. The view is the body's whole contract: every field
+the status page reads to render these sections is listed here, and the page
+reads nothing else from the model. Its state is `{ published, modified,
+diagnostics, suggestions, profiles, orphaned, config_sets, projects, sdks,
+sdk_providers }`; its arrays are empty when the workspace is not loaded.
+Each `id` is an opaque id a client puts in an `{ id }` reference (§1.2),
+optional because the in-process builder leaves it out:
 
 - `published` (boolean) — whether the workspace has a published
   `loomworks.json` (spec §2.4).
 - `modified` (boolean) — whether the working copy differs from the published
   baseline anywhere (spec §2.4).
 - `diagnostics` (array) — the workspace's structural diagnostics, each
-  `{ severity, message }`, `severity` `error` or `warn`.
+  `{ severity, message, source?, target_fold_key? }`: `severity` `error` or
+  `warn`; `source` (string) what raised it; `target_fold_key` (string) the
+  status page's fold key of the item it is about (the page opens that fold),
+  absent for an informational diagnostic. A client never parses
+  `target_fold_key`.
 - `suggestions` (integer) — the number of actionable suggestions (spec/ui.md
   §1.1); the suggestions themselves are `lw health`'s.
-- `profiles` (array) — one record per profile, in the status page's order:
+- `profiles` (array) — one record per profile, ordered by key:
   - `id` (string, optional), `key` (string), `label` (string, §1.1),
     `description` (string, optional), `config_set` (string, optional; the
-    configuration set's name);
+    configuration set's name, the missing set's name when `orphaned_set`);
   - `active` (boolean), `modified` (boolean), `orphaned_set` (boolean; its
     configuration set no longer exists);
   - `intent` (string, optional) and `removed_upstream` (boolean, optional)
     — its publish state (below);
-  - `tools` (array) — `{ module, key?, label }`, one per module type;
+  - `status` (string) — the profile's overall state as display text,
+    summarised from its units' states (`built`, `configured`,
+    `unconfigured`, `2 building, 1 failed`, `1/3 cleaning`, …; `empty` when
+    it maps no project). A client shows it as it is, never parses it;
+  - `incomplete` (boolean) — a module of the profile has no resolved tool
+    for a language its configurations need (spec/ui.md §1.5);
+  - `busy` (boolean) — an operation runs on the profile: one the server
+    runs for any client, or a task observed in the server (spec/ui.md
+    §1.5);
+  - `running` (boolean) — a unit of the profile has a configure or build of
+    the server's own running;
+  - `origin` (string, optional) — the origin label of the task that keeps
+    the profile busy when it is only a task another client started
+    (spec/core/daemon.md §19.15 `meta.origin`);
+  - `tools` (array) — `{ module, key?, label }`, one per module type of its
+    projects, ordered by module type;
+  - `toolchain` (array, optional) — the Toolchain row (spec/ui.md §1.5): one
+    `{ key, label, resolved, languages }` per tool key the profile selects,
+    `resolved` false for a key no module's registry knows, `languages` the
+    languages the tool provides; present when a module of the profile needs
+    a tool or the profile selects any, so an empty array is `(none —
+    incomplete)`;
+  - `compiler_cache` (object, optional) — the Compiler cache row (spec/ui.md
+    §1.5): `{ text, stale }`, `text` the row's text, `stale` whether a
+    configured unit was configured with another launcher than the one now
+    resolved (it needs a reconfigure); absent when no
+    project of the profile caches C/C++;
   - `compat_error` (string, optional) — why a tool cannot build a project
     of the profile;
   - `artifact_conflict` (boolean) — a unit's output artifact is claimed by
     another profile's (spec §5.9);
-  - `device` (object, optional) — the profile's device: `{ id?, key, label,
-    state, provider? }`, `key` its serial, `label` its name (the serial when
-    it has none), `state` and `provider` as in `Devices/1.list` (§15);
-  - `default_target` (string, optional) — the profile's default launch
-    target;
-  - `units` (array) — one per project the profile maps: `{ project,
-    configuration, unit_id?, state, missing, overwritten, launcher_changed
-    }`, `state` as in §14.2, `missing` (the configuration has no source),
-    `overwritten` (another unit has since overwritten its output artifact,
-    spec §5.9), `launcher_changed` (its compiler launcher changed since it
-    was configured).
-- `orphaned` (object) — `{ configurations, stray_dirs }`: the orphaned
-  cached configurations and the stray build directories (spec/ui.md §1.6).
-- `config_sets` (array) — `{ id?, name, modified, intent?,
-  removed_upstream?, mappings }`, `mappings` the configuration set's project
-  → configuration mapping.
-- `projects` (array) — `{ id?, key, type, path, modified, intent?,
-  removed_upstream?, orphaned, configurations, launches, deploy, variables,
-  type_config }`: the project's declaration as the status page shows it
-  (spec/ui.md §1.8), `orphaned` when its module type is unknown or rejected
-  (spec §8.0). `configurations` and `launches` are arrays of publishable
-  items, each `{ id?, key, label, modified, intent?, removed_upstream? }`
-  (a configuration's `key` its name, a launch's its name).
-- `sdks` (array) — `{ key, label, resolved }`, `resolved` whether the SDK
-  resolves on this machine.
+  - `last_result` (object, optional) — the outcome of the last operation
+    that finished on the profile: `{ status, message? }`, `status` the
+    task's final status as in `Tasks/1` (§7), `message` its end message. It
+    changes only when an operation ends (its change sends `update`), is
+    kept while the next operation runs, and survives a reconnect; absent
+    before the first operation ends;
+  - `device_capable` (boolean, optional) — `true` when a module of the
+    profile has devices (spec §11): the page shows the device row, `none
+    selected` without `device`; absent otherwise;
+  - `device` (object, optional) — the profile's device, only with
+    `device_capable`: `{ id?, key, label, state, provider? }`, `key` its
+    serial, `label` its name (the serial when it has none), `state` and
+    `provider` as in `Devices/1.list` (§15). A chosen device the registry
+    does not have online is `{ key, label, state: "offline" }`, `label` its
+    serial;
+  - `default_target` (string, optional) — the display name of the profile's
+    default launch target; with it `default_target_valid` (boolean) whether
+    it still resolves, and `default_target_description` (string, optional)
+    its launch configuration's description;
+  - `units` (array) — one per project the profile maps, in the profile's
+    order:
+    - `project` (string), `type` (string, the project's module type),
+      `configuration` (string), `unit_id` (string, optional);
+    - `state` as in §14.2, and `deleting_reason` (string, optional) —
+      present when `state` is `deleting`: `cleaning` for a clean, `deleting`
+      for a deletion or reset;
+    - `missing` (boolean) — the configuration has no source;
+    - `compat_error` (string, optional) — why the profile's tool cannot
+      build this project;
+    - `overwritten` (boolean) — another unit has since overwritten its
+      output artifact (spec §5.9);
+    - `launcher_changed` (boolean) — its compiler launcher changed since it
+      was configured;
+    - `tools` (array of strings, optional) — the labels of the tools that
+      build the configuration under the profile;
+    - `build_dir` (string, optional) — the unit's build directory as cached;
+    - `targets` (object, optional) — its parsed build targets, by name, each
+      `{ type, artifact?, dependencies? }`; absent before its first
+      configure on this machine.
+- `orphaned` (object) — `{ configurations, stray_dirs }` (spec/ui.md §1.6):
+  `configurations` one `{ key, build_dir? }` per orphaned cached
+  configuration, `key` its cache key, `build_dir` its cached build
+  directory; `stray_dirs` the stray build directories, as strings.
+- `config_sets` (array) — one record per configuration set, ordered by
+  name: `{ id?, name, description?, active, modified, intent?,
+  removed_upstream?, mappings, missing }`; `active` whether it is the active
+  profile's set; `mappings` an object, project key → configuration name;
+  `missing` an object, project key → `true`, for each mapped configuration
+  that was removed or has no source.
+- `projects` (array) — the project's declaration as the status page shows
+  it (spec/ui.md §1.8), ordered by key with orphaned projects last:
+  - `id` (string, optional), `key` (string), `type` (string), `path`
+    (string, as in §14.2), `description` (string, optional) and
+    `description_from_module` (boolean, optional; `true` when the module
+    supplied the description, spec/ui.md §1.16);
+  - `modified` (boolean), `intent` (string, optional), `removed_upstream`
+    (boolean, optional) — its publish state (below);
+  - `orphaned` (boolean) — its module type is unknown or rejected (spec
+    §8.0);
+  - `running` (boolean) — a unit of the project is shown configuring or
+    building;
+  - `needs_refresh` (boolean) and `refresh_reasons` (array of strings,
+    optional) — the module reports that the project's declaration is out of
+    date with its sources, and why;
+  - `tests` (object, optional) — the project-wide saved test targets line
+    (spec/ui.md "Saved test targets line", spec §1.3.4): `{ source?,
+    invalid?, entries }`, `source` where an inherited list comes from (absent
+    for the item's own), `invalid` when the declared list is malformed (then
+    `entries` is empty), `entries` one `{ label, missing }` per entry;
+    present only for a module that parses targets and when a list applies;
+  - `configurations` (array, optional; absent when the project declares
+    none) — ordered by name (below);
+  - `presets` (array, optional) — the module's preset configurations
+    (`CMakePresets.json`), ordered by name, each `{ name, generator?,
+    toolchain_locked? }`;
+  - `launches` (array) — the launch configurations, ordered by name: `{ id?,
+    key, label, description?, target?, command?, args? }`, `key` and `label`
+    the launch's name, `target` / `command` / `args` as declared. A launch carries **no publish state** of its own (below);
+  - `deploy` (array) — the deploy declarations, ordered by destination, each
+    `{ destination, sources }`, `sources` the normalized source descriptors;
+  - `variables` (object) — variable name → `{ type, default? }`, the
+    project's declarations;
+  - `type_config` (object) — `{ fields }`: the module's editable
+    `type_config` fields **in the module's order**, each `{ name, label?,
+    kind?, placeholder?, value? }`, `value` the project's current value.
+- A configuration (`projects[].configurations[]`):
+  - `id` (string, optional), `key` and `label` (strings, its name);
+  - `modified`, `intent?`, `removed_upstream?` — its publish state (below);
+  - declared fields, as the files and the module give them: `abstract`
+    (boolean; it has no variant, so it is only inherited), `inherits`
+    (string or array of strings), `toolchain_locked` (boolean, optional; its
+    toolchain is fixed by a toolchain file), `role` (string, optional),
+    `toolchain` (string, optional; the toolchain file), `generator`
+    (string, optional);
+  - `description` (string, optional), `description_from_module` (boolean,
+    optional);
+  - `user` (boolean) — declared by the user, not emitted by the module;
+    `auto_gen` (boolean) — emitted by the module;
+  - `source_missing` (boolean) — it exists only in the cache, its source is
+    gone;
+  - `unresolved_inherits` (array of strings) — the names in `inherits` that
+    resolve to no configuration;
+  - `dependents` (array of strings) — the configurations that inherit it;
+  - `compiler_overrides` (array of strings) — the reserved compiler option
+    keys it sets, which are ignored (a non-blocking warning);
+  - `running` (boolean) — a unit of it is shown configuring or building;
+    `overwritten` (boolean) — a unit of it was overwritten (spec §5.9);
+    `tools_configured` (integer) — how many of its units are configured
+    with a tool;
+  - `tests` (object, optional) — its saved test targets line, shaped as the
+    project's; an entry is `missing` only when a unit of the configuration
+    was configured on this machine;
+  - `options` (array) — its resolved options, ordered by key, each `{ key,
+    value, source? }`, `source` the configuration it inherits the option from
+    (absent for its own);
+  - `variables` (array, optional) — the project's variables resolved for it
+    under the active profile, ordered by name, each `{ name, value?, source,
+    own }`: `source` `profile`, `project` or the name of the configuration
+    that sets it, `own` whether the configuration sets it itself, `value`
+    absent for an unfilled blank; present when the project declares
+    variables.
+- `sdks` (array) — `{ key, label, path?, resolved, kits }`: `path` the SDK's
+  path, `resolved` whether the SDK resolves on this machine, `kits` the
+  display labels of its kits (empty unless `resolved`).
+- `sdk_providers` (integer) — how many SDK providers are installed; the SDKs
+  section offers adding an SDK only when there is one.
 
-The publish state of a profile, configuration set, project, configuration
-or launch (spec §2.4): `modified` whether it differs from the published
-baseline; `intent` where it is published — `local` (`user.json` only),
-`shared` (`loomworks.json` only) or `local+shared` (both); `removed_upstream`
-whether it has effective intent `local+shared` and was removed from the
-published file since the baseline (absent means false). A client shows an
-unknown `intent` as neutral.
+The publish state of a profile, configuration set, project or configuration
+(spec §2.4): `modified` whether it differs from the published baseline;
+`intent` where it is published — `local` (`user.json` only), `shared`
+(`loomworks.json` only) or `local+shared` (both); `removed_upstream` whether
+it has effective intent `local+shared` and was removed from the published
+file since the baseline (absent means false). A client shows an unknown
+`intent` as neutral. A launch configuration or a variable declaration has
+no publish state in the model (spec §2.4 "Per-item granularity"): a change
+to it shows as its project's `modified` (spec §2.4 "Modified indicator"),
+and it is published with its project.
 
-`update` is sent under the rule above; a unit's state change sends it, a
-build's progress never does.
+**Progress is not in the view.** The view carries no build progress — no
+percent, elapsed time or progress message, for a profile or a unit. A
+client takes them from `Tasks/1` (§7): the task's `start` meta names the
+profile and units it runs on, its `progress` frames (PROTOCOL.md §14.2)
+give the percent, its `start` and `done` the elapsed time; `Tasks/1.list` gives a late joiner each running
+task's start time and last percent. The status page overlays these on the
+view's rows as the editor's remote and editor-owned tasks
+(spec/core/daemon.md §19.16 "Tasks in the task runner", "Running state",
+"UI"), so a profile row shows the same progress whichever client started
+the task. The outcome of the last finished operation is not progress but
+state: it is the profile's `last_result`, in the view.
+
+`update` is sent under the rule above; a unit's state change or a profile's
+`last_result` change sends it, a build's progress never does.
 
 ## 15. `loomworks.Devices/1`
 

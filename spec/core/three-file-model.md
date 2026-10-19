@@ -102,10 +102,14 @@ data lives only in loomworks.json. Items in `local` or `local+shared` are
 materialized into the working copy.
 
 Per-item granularity: a project carries an intent on its declaration and
-individually on each configuration, launch config, and variable
-declaration. A project can be partly published (some configs `local+shared`,
-others `local`). Configuration sets carry one intent (atomic). Profiles
-carry one intent and default to `local` (profiles are personal by default).
+individually on each configuration. A project can be partly published (some
+configs `local+shared`, others `local`). Launch configurations and variable
+declarations carry no intent of their own: they are part of their project's
+declaration, so a change to one shows on its project ("Modified indicator"
+below) and is published with the project (they still merge per name,
+"Per-configuration merge" below). Configuration sets carry one intent
+(atomic). Profiles carry one intent and default to `local` (profiles are
+personal by default).
 
 **Configuration sets are the portable shared unit.** A profile is a
 configuration set plus a *machine-specific* tool; a published profile may

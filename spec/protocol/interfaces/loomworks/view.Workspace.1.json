@@ -2,7 +2,7 @@
   "interface": "loomworks.view.Workspace",
   "version": 1,
   "status": "draft",
-  "description": "Object /views (API.md §14.4; step 5n): what the status page's body shows - Diagnostics, Suggestions, Profiles, Orphaned Configurations, Configuration Sets, Projects and SDKs; the header, LSP, Debug Adapters and Tasks sections have their own sources. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
+  "description": "Object /views (API.md §14.4; step 5n): what the status page's body shows - Diagnostics, Suggestions, Profiles, Orphaned Configurations, Configuration Sets, Projects and SDKs; the header, LSP, Debug Adapters and Tasks sections have their own sources. It lists every field the status page reads for these sections. It carries no build progress (percent, elapsed time, progress or last-operation messages): a client overlays those from loomworks.Tasks/1. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
   "methods": {
     "get": {
       "description": "The view's full state. Never loads the workspace: an unloaded one has empty arrays.",
@@ -14,7 +14,7 @@
   },
   "signals": {
     "update": {
-      "description": "The view's full state, sent after a model segment or a committed write that changed it (before the acknowledgement of the command that caused the change), only when it differs from the state last sent on the subscription.",
+      "description": "The view's full state, sent after a model segment or a committed write that changed it (before the acknowledgement of the command that caused the change), only when it differs from the state last sent on the subscription. A build's progress never sends it.",
       "initial": true,
       "args": { "$ref": "#/$defs/Workspace" }
     }
@@ -22,7 +22,7 @@
   "$defs": {
     "Workspace": {
       "type": "object",
-      "required": ["published", "modified", "diagnostics", "suggestions", "profiles", "orphaned", "config_sets", "projects", "sdks"],
+      "required": ["published", "modified", "diagnostics", "suggestions", "profiles", "orphaned", "config_sets", "projects", "sdks", "sdk_providers"],
       "properties": {
         "published": { "description": "Whether the workspace has a published loomworks.json (spec 2.4).", "type": "boolean" },
         "modified": { "description": "Whether the working copy differs from the published baseline anywhere (spec 2.4).", "type": "boolean" },
@@ -33,18 +33,18 @@
         },
         "suggestions": { "description": "The number of actionable suggestions (spec/ui.md 1.1); the suggestions themselves are lw health's.", "type": "integer", "minimum": 0 },
         "profiles": {
-          "description": "One record per profile, in the status page's order; empty when the workspace is not loaded.",
+          "description": "One record per profile, ordered by key; empty when the workspace is not loaded.",
           "type": "array",
           "items": { "$ref": "#/$defs/Profile" }
         },
         "orphaned": { "$ref": "#/$defs/Orphaned" },
         "config_sets": {
-          "description": "One record per configuration set; empty when the workspace is not loaded.",
+          "description": "One record per configuration set, ordered by name; empty when the workspace is not loaded.",
           "type": "array",
           "items": { "$ref": "#/$defs/ConfigSet" }
         },
         "projects": {
-          "description": "One record per project of the workspace; empty when the workspace is not loaded.",
+          "description": "One record per project of the workspace, ordered by key with orphaned projects last; empty when the workspace is not loaded.",
           "type": "array",
           "items": { "$ref": "#/$defs/Project" }
         },
@@ -52,7 +52,8 @@
           "description": "One record per SDK; empty when the workspace is not loaded.",
           "type": "array",
           "items": { "$ref": "#/$defs/Sdk" }
-        }
+        },
+        "sdk_providers": { "description": "How many SDK providers are installed; the SDKs section offers adding an SDK only when there is one.", "type": "integer", "minimum": 0 }
       }
     },
     "Diagnostic": {
@@ -60,25 +61,32 @@
       "required": ["severity", "message"],
       "properties": {
         "severity": { "description": "Clients show an unknown severity as neutral.", "enum": ["error", "warn"] },
-        "message": { "type": "string" }
+        "message": { "type": "string" },
+        "source": { "description": "What raised it.", "type": "string" },
+        "target_fold_key": { "description": "The status page's fold key of the item it is about; absent for an informational diagnostic. Clients never parse it.", "type": "string" }
       }
     },
     "Profile": {
       "type": "object",
-      "required": ["key", "label", "active", "modified", "orphaned_set", "tools", "artifact_conflict", "units"],
+      "required": ["key", "label", "active", "modified", "orphaned_set", "status", "incomplete", "busy", "running", "tools", "artifact_conflict", "units"],
       "properties": {
         "id": { "description": "The profile's opaque id (PROTOCOL.md §12.1): always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "label": { "description": "The profile's display text (API.md §1.1). Clients show it, never derive it.", "type": "string" },
         "description": { "description": "The profile's description (spec/ui.md 1.16).", "type": "string" },
-        "config_set": { "description": "The name of the profile's configuration set.", "type": "string" },
+        "config_set": { "description": "The name of the profile's configuration set (the missing set's name when orphaned_set).", "type": "string" },
         "active": { "type": "boolean" },
         "modified": { "description": "Whether the profile differs from the published baseline.", "type": "boolean" },
         "intent": { "$ref": "#/$defs/Intent" },
         "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
         "orphaned_set": { "description": "Its configuration set no longer exists.", "type": "boolean" },
+        "status": { "description": "The profile's overall state as display text, summarised from its units' states (built, 2 building, 1 failed, empty, ...). Clients show it as it is, never parse it.", "type": "string" },
+        "incomplete": { "description": "A module of the profile has no resolved tool for a language its configurations need (spec/ui.md 1.5).", "type": "boolean" },
+        "busy": { "description": "An operation runs on the profile: one the server runs for any client, or a task observed in the server (spec/ui.md 1.5).", "type": "boolean" },
+        "running": { "description": "A unit of the profile has a configure or build of the server's own running.", "type": "boolean" },
+        "origin": { "description": "The origin label of the task keeping the profile busy when it is only a task another client started (daemon.md 19.15 meta.origin).", "type": "string" },
         "tools": {
-          "description": "One record per module type.",
+          "description": "One record per module type of its projects, ordered by module type.",
           "type": "array",
           "items": {
             "type": "object",
@@ -90,23 +98,58 @@
             }
           }
         },
+        "toolchain": {
+          "description": "The Toolchain row (spec/ui.md 1.5): one entry per tool key the profile selects; present when a module of the profile needs a tool or the profile selects any (empty means none, incomplete).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "label", "resolved", "languages"],
+            "properties": {
+              "key": { "type": "string" },
+              "label": { "type": "string" },
+              "resolved": { "description": "False for a key no module's registry knows.", "type": "boolean" },
+              "languages": { "description": "The languages the tool provides.", "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "compiler_cache": {
+          "description": "The Compiler cache row (spec/ui.md 1.5); absent when no project of the profile caches C/C++.",
+          "type": "object",
+          "required": ["text", "stale"],
+          "properties": {
+            "text": { "description": "The row's text.", "type": "string" },
+            "stale": { "description": "A configured unit was configured with another launcher than the one now resolved.", "type": "boolean" }
+          }
+        },
         "compat_error": { "description": "Why a tool cannot build a project of the profile.", "type": "string" },
         "artifact_conflict": { "description": "A unit's output artifact is claimed by another profile's (spec 5.9).", "type": "boolean" },
+        "last_result": {
+          "description": "The outcome of the last operation that finished on the profile (API.md 14.4): changes only when an operation ends (sends update), kept while the next runs, survives a reconnect; absent before the first ends.",
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": { "description": "The task's final status as in Tasks/1 (API.md 7).", "type": "string" },
+            "message": { "description": "The task's end message.", "type": "string" }
+          }
+        },
+        "device_capable": { "description": "True when a module of the profile has devices (spec 11): the page shows the device row, none selected without device. Absent otherwise.", "type": "boolean" },
         "device": {
-          "description": "The profile's device, an entity record (API.md 1.1).",
+          "description": "The profile's device, an entity record (API.md 1.1), only with device_capable. A chosen device the registry does not have online is { key, label, state: offline }, label its serial.",
           "type": "object",
           "required": ["key", "label", "state"],
           "properties": {
-            "id": { "description": "The device's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+            "id": { "description": "The device's opaque id: always sent by the daemon for an online device, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
             "key": { "description": "The device's serial.", "type": "string" },
             "label": { "description": "The device's name; its serial when it has none.", "type": "string" },
             "state": { "description": "As in Devices/1 list. Clients show an unknown state as neutral.", "type": "string" },
             "provider": { "description": "The module that found it, as in Devices/1 list.", "type": "string" }
           }
         },
-        "default_target": { "description": "The profile's default launch target.", "type": "string" },
+        "default_target": { "description": "The display name of the profile's default launch target.", "type": "string" },
+        "default_target_valid": { "description": "Present with default_target: whether it still resolves.", "type": "boolean" },
+        "default_target_description": { "description": "The default target's launch configuration's description.", "type": "string" },
         "units": {
-          "description": "One record per project the profile maps.",
+          "description": "One record per project the profile maps, in the profile's order.",
           "type": "array",
           "items": { "$ref": "#/$defs/Unit" }
         }
@@ -117,15 +160,33 @@
       "required": ["project", "configuration", "state", "missing", "overwritten", "launcher_changed"],
       "properties": {
         "project": { "description": "The project's key.", "type": "string" },
+        "type": { "description": "The project's module type.", "type": "string" },
         "configuration": { "description": "The configuration's name.", "type": "string" },
         "unit_id": { "description": "The configuration unit's opaque id; absent when the profile has no unit for the project yet, and always in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "state": {
           "description": "As view.ProjectsIndex/1's active.state. Clients show an unknown state as neutral.",
           "enum": ["unconfigured", "configured", "built", "configure_failed", "build_failed", "unknown", "configuring", "building", "deleting"]
         },
+        "deleting_reason": { "description": "Present when state is deleting: cleaning for a clean, deleting for a deletion or reset. Clients show an unknown reason as deleting.", "type": "string" },
         "missing": { "description": "The configuration has no source.", "type": "boolean" },
+        "compat_error": { "description": "Why the profile's tool cannot build this project.", "type": "string" },
         "overwritten": { "description": "Another unit has since overwritten its output artifact (spec 5.9).", "type": "boolean" },
-        "launcher_changed": { "description": "Its compiler launcher changed since it was configured.", "type": "boolean" }
+        "launcher_changed": { "description": "Its compiler launcher changed since it was configured.", "type": "boolean" },
+        "tools": { "description": "The labels of the tools that build the configuration under the profile.", "type": "array", "items": { "type": "string" } },
+        "build_dir": { "description": "The unit's build directory as cached.", "type": "string" },
+        "targets": {
+          "description": "Its parsed build targets, by name; absent before its first configure on this machine.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string" },
+              "artifact": { "type": "string" },
+              "dependencies": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
       }
     },
     "Orphaned": {
@@ -133,73 +194,228 @@
       "type": "object",
       "required": ["configurations", "stray_dirs"],
       "properties": {
-        "configurations": { "type": "array" },
-        "stray_dirs": { "type": "array" }
+        "configurations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key"],
+            "properties": {
+              "key": { "description": "Its cache key.", "type": "string" },
+              "build_dir": { "description": "Its cached build directory.", "type": "string" }
+            }
+          }
+        },
+        "stray_dirs": { "type": "array", "items": { "type": "string" } }
       }
     },
     "ConfigSet": {
       "type": "object",
-      "required": ["name", "modified", "mappings"],
+      "required": ["name", "active", "modified", "mappings", "missing"],
       "properties": {
         "id": { "description": "The configuration set's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "name": { "type": "string" },
+        "description": { "description": "Its description (spec/ui.md 1.16).", "type": "string" },
+        "active": { "description": "Whether it is the active profile's configuration set.", "type": "boolean" },
         "modified": { "type": "boolean" },
         "intent": { "$ref": "#/$defs/Intent" },
         "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
-        "mappings": { "description": "The configuration set's project to configuration mapping.", "type": "object" }
+        "mappings": { "description": "Project key to configuration name.", "type": "object", "additionalProperties": { "type": "string" } },
+        "missing": { "description": "Project key to true, for each mapped configuration that was removed or has no source.", "type": "object", "additionalProperties": { "const": true } }
       }
     },
     "Project": {
       "type": "object",
-      "required": ["key", "type", "path", "modified", "orphaned", "configurations", "launches", "deploy", "variables", "type_config"],
+      "required": ["key", "type", "path", "modified", "orphaned", "running", "needs_refresh", "launches", "deploy", "variables", "type_config"],
       "properties": {
         "id": { "description": "The project's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "type": { "description": "The project's module type.", "type": "string" },
         "path": { "description": "As in view.ProjectsIndex/1.", "type": "string" },
+        "description": { "description": "Its description (spec/ui.md 1.16).", "type": "string" },
+        "description_from_module": { "description": "True when the module supplied the description.", "type": "boolean" },
         "modified": { "type": "boolean" },
         "intent": { "$ref": "#/$defs/Intent" },
         "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
         "orphaned": { "description": "Its module type is unknown or rejected (spec 8.0).", "type": "boolean" },
+        "running": { "description": "A unit of the project is shown configuring or building.", "type": "boolean" },
+        "needs_refresh": { "description": "The module reports the project's declaration out of date with its sources.", "type": "boolean" },
+        "refresh_reasons": { "description": "Why, with needs_refresh.", "type": "array", "items": { "type": "string" } },
+        "tests": { "$ref": "#/$defs/SavedTests" },
         "configurations": {
-          "description": "The project's configurations; key is the configuration's name.",
+          "description": "The project's configurations, ordered by name; absent when it declares none.",
           "type": "array",
-          "items": { "$ref": "#/$defs/Item" }
+          "items": { "$ref": "#/$defs/Configuration" }
+        },
+        "presets": {
+          "description": "The module's preset configurations (CMakePresets.json), ordered by name.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "generator": { "type": "string" },
+              "toolchain_locked": { "type": "boolean" }
+            }
+          }
         },
         "launches": {
-          "description": "The project's launch configurations; key is the launch's name.",
+          "description": "The project's launch configurations, ordered by name. A launch has no publish state of its own: a change to it shows as the project's modified (spec 2.4).",
           "type": "array",
-          "items": { "$ref": "#/$defs/Item" }
+          "items": { "$ref": "#/$defs/Launch" }
         },
-        "deploy": { "description": "The project's deploy declarations as the status page shows them." },
-        "variables": { "type": "object" },
-        "type_config": { "type": "object" }
+        "deploy": {
+          "description": "The project's deploy declarations, ordered by destination.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["destination", "sources"],
+            "properties": {
+              "destination": { "type": "string" },
+              "sources": { "description": "The normalized source descriptors.", "type": "array" }
+            }
+          }
+        },
+        "variables": {
+          "description": "Variable name to its declaration.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string" },
+              "default": {}
+            }
+          }
+        },
+        "type_config": {
+          "type": "object",
+          "required": ["fields"],
+          "properties": {
+            "fields": {
+              "description": "The module's editable type_config fields in the module's order, with the project's current values.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "label": { "type": "string" },
+                  "kind": { "type": "string" },
+                  "placeholder": { "type": "string" },
+                  "value": {}
+                }
+              }
+            }
+          }
+        }
       }
     },
     "Intent": {
       "description": "Where the item is published (spec 2.4): local (user.json only), shared (loomworks.json only) or local+shared (both). Clients show an unknown intent as neutral.",
       "enum": ["local", "shared", "local+shared"]
     },
-    "Item": {
-      "description": "A publishable item of a project (a configuration or a launch) with its publish state (spec 2.4).",
+    "SavedTests": {
+      "description": "A saved test targets line (spec/ui.md, spec 1.3.4).",
       "type": "object",
-      "required": ["key", "label", "modified"],
+      "required": ["entries"],
       "properties": {
-        "id": { "description": "The item's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
-        "key": { "type": "string" },
-        "label": { "type": "string" },
+        "source": { "description": "Where an inherited list comes from; absent for the item's own.", "type": "string" },
+        "invalid": { "description": "The declared list is malformed; entries is then empty.", "type": "boolean" },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "missing"],
+            "properties": {
+              "label": { "type": "string" },
+              "missing": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "Configuration": {
+      "description": "A project's configuration with its publish state (spec 2.4).",
+      "type": "object",
+      "required": ["key", "label", "modified", "abstract", "options"],
+      "properties": {
+        "id": { "description": "Its opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "key": { "description": "Its name.", "type": "string" },
+        "label": { "description": "Its name.", "type": "string" },
         "modified": { "description": "Whether it differs from the published baseline.", "type": "boolean" },
         "intent": { "$ref": "#/$defs/Intent" },
-        "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" }
+        "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
+        "abstract": { "description": "It has no variant, so it is only inherited.", "type": "boolean" },
+        "inherits": { "oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
+        "toolchain_locked": { "description": "Its toolchain is fixed by a toolchain file.", "type": "boolean" },
+        "role": { "type": "string" },
+        "toolchain": { "description": "Its toolchain file.", "type": "string" },
+        "generator": { "type": "string" },
+        "description": { "type": "string" },
+        "description_from_module": { "type": "boolean" },
+        "user": { "description": "Declared by the user, not emitted by the module.", "type": "boolean" },
+        "auto_gen": { "description": "Emitted by the module.", "type": "boolean" },
+        "source_missing": { "description": "It exists only in the cache; its source is gone.", "type": "boolean" },
+        "unresolved_inherits": { "description": "The names in inherits that resolve to no configuration.", "type": "array", "items": { "type": "string" } },
+        "dependents": { "description": "The configurations that inherit it.", "type": "array", "items": { "type": "string" } },
+        "compiler_overrides": { "description": "The reserved compiler option keys it sets, which are ignored.", "type": "array", "items": { "type": "string" } },
+        "running": { "description": "A unit of it is shown configuring or building.", "type": "boolean" },
+        "overwritten": { "description": "A unit of it was overwritten (spec 5.9).", "type": "boolean" },
+        "tools_configured": { "description": "How many of its units are configured with a tool.", "type": "integer", "minimum": 0 },
+        "tests": { "$ref": "#/$defs/SavedTests" },
+        "options": {
+          "description": "Its resolved options, ordered by key.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key"],
+            "properties": {
+              "key": { "type": "string" },
+              "value": {},
+              "source": { "description": "The configuration it inherits the option from; absent for its own.", "type": "string" }
+            }
+          }
+        },
+        "variables": {
+          "description": "The project's variables resolved for it under the active profile, ordered by name; present when the project declares variables.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "source", "own"],
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "description": "Absent for an unfilled blank." },
+              "source": { "description": "profile, project, or the name of the configuration that sets it.", "type": "string" },
+              "own": { "description": "Whether the configuration sets it itself.", "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "Launch": {
+      "description": "A launch configuration of a project. It carries no publish state (API.md 14.4).",
+      "type": "object",
+      "required": ["key", "label"],
+      "properties": {
+        "id": { "description": "Its opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "key": { "description": "Its name.", "type": "string" },
+        "label": { "description": "Its name.", "type": "string" },
+        "description": { "type": "string" },
+        "target": { "type": "string" },
+        "command": { "type": "string" },
+        "args": { "type": "array" }
       }
     },
     "Sdk": {
       "type": "object",
-      "required": ["key", "label", "resolved"],
+      "required": ["key", "label", "resolved", "kits"],
       "properties": {
         "key": { "type": "string" },
         "label": { "type": "string" },
-        "resolved": { "description": "Whether the SDK resolves on this machine.", "type": "boolean" }
+        "path": { "description": "The SDK's path.", "type": "string" },
+        "resolved": { "description": "Whether the SDK resolves on this machine.", "type": "boolean" },
+        "kits": { "description": "The display labels of its kits; empty unless resolved.", "type": "array", "items": { "type": "string" } }
       }
     }
   }
