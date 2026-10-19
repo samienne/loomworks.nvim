@@ -943,27 +943,31 @@ function LaunchTarget:scan_devices(cb)
     return self._workspace:scan_devices(cb)
 end
 
---- Install the built artifact onto a device. Returns a Future.
---- Resolves the artifact path via the module, then runs the install command.
---- @param device_serial string
---- @return loomworks.Future
-function LaunchTarget:device_install(device_serial)
-    local future_mod = require("loomworks.future")
-    local overseer = require("loomworks.overseer")
+--- @class loomworks.DeviceCommand
+--- A module's device command (spec §11.4) as this target runs it.
+--- @field name string the task name (`<project>: install on <serial>`)
+--- @field cmd string the program
+--- @field args? string[]
+--- @field cwd? string
+--- @field env? table<string, string> the command's own variables
+--- @field check_output? fun(lines: string[]): string|nil a failure despite exit 0
 
+--- The command that installs the built artifact on a device: the module's
+--- `device_install` over the artifact its `resolve_artifact` names. One
+--- builder for the editor (`device_install`) and the workspace daemon
+--- (`Devices/1.install`, daemon.md §19.16 "Devices").
+--- @param device_serial string
+--- @return loomworks.DeviceCommand|nil cmd, string|nil err
+function LaunchTarget:device_install_command(device_serial)
     local mod = self._project and self._project._module and self._project._module.impl
     if not mod or not mod.device_install or not mod.resolve_artifact then
-        return future_mod.rejected("module does not support device install")
+        return nil, "module does not support device install"
     end
-
     local unit = self._config_unit
-    if not unit then
-        return future_mod.rejected("no config unit for device install")
-    end
+    if not unit then return nil, "no config unit for device install" end
 
     -- Build module context for resolve_artifact
     local ws = self._workspace
-    local pp = self._profile:project(self._project.key)
     local config_info = unit._configuration and unit._configuration.module_config or {}
     local project_ctx = {
         path = self._project.path or self._project.key,
@@ -975,24 +979,28 @@ function LaunchTarget:device_install(device_serial)
     }
 
     local artifact = mod.resolve_artifact(project_ctx, project_ctx.configuration_key)
-    if not artifact then
-        return future_mod.rejected("could not resolve artifact for device install")
-    end
+    if not artifact then return nil, "could not resolve artifact for device install" end
 
     local spec = mod.device_install(project_ctx.tool_data, device_serial, artifact)
-    if not spec or not spec.cmd then
-        return future_mod.rejected("module returned invalid device_install spec")
-    end
-
-    local task_name = self._project.key .. ": install on " .. device_serial
-    return overseer.run_cmd_task({
-        name = task_name,
+    if not spec or not spec.cmd then return nil, "module returned invalid device_install spec" end
+    return {
+        name = self._project.key .. ": install on " .. device_serial,
         cmd = spec.cmd,
         args = spec.args,
         cwd = ws.root .. "/" .. (self._project.path or self._project.key),
         env = spec.env,
         check_output = spec.check_output,
-    })
+    }
+end
+
+--- Install the built artifact onto a device. Returns a Future.
+--- Runs `device_install_command` as an overseer task.
+--- @param device_serial string
+--- @return loomworks.Future
+function LaunchTarget:device_install(device_serial)
+    local command, err = self:device_install_command(device_serial)
+    if not command then return require("loomworks.future").rejected(err) end
+    return require("loomworks.overseer").run_cmd_task(command)
 end
 
 --- Resolve module-specific launch info (bundle_name, ability_name) for
@@ -1011,46 +1019,42 @@ function LaunchTarget:device_launch_info()
     return mod.resolve_launch_info(project_path, config_info, unit._tool_data or {})
 end
 
+--- The command that launches the app on a device: the module's
+--- `device_launch` over its `resolve_launch_info` (one builder for the
+--- editor and the workspace daemon, as `device_install_command`). Also
+--- returns the launch info (its `bundle_name` finds the program's pid).
+--- @param device_serial string
+--- @return loomworks.DeviceCommand|nil cmd, table|string launch_info_or_err
+function LaunchTarget:device_launch_command(device_serial)
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_launch or not mod.resolve_launch_info then
+        return nil, "module does not support device launch"
+    end
+    local unit = self._config_unit
+    if not unit then return nil, "no config unit for device launch" end
+    local launch_info = self:device_launch_info()
+    if not launch_info then return nil, "could not resolve launch info for device" end
+    local ws = self._workspace
+    local spec = mod.device_launch(unit._tool_data or {}, device_serial, launch_info)
+    if not spec or not spec.cmd then return nil, "module returned invalid device_launch spec" end
+    return {
+        name = self._project.key .. ": launch on " .. device_serial,
+        cmd = spec.cmd,
+        args = spec.args,
+        cwd = ws.root .. "/" .. (self._project.path or self._project.key),
+        env = spec.env,
+        check_output = spec.check_output,
+    }, launch_info
+end
+
 --- Launch the app on a device. Returns a Future.
---- Resolves launch info via the module, then runs the launch command.
+--- Runs `device_launch_command` as an overseer task.
 --- @param device_serial string
 --- @return loomworks.Future
 function LaunchTarget:device_launch(device_serial)
-    local future_mod = require("loomworks.future")
-    local overseer = require("loomworks.overseer")
-
-    local mod = self._project and self._project._module and self._project._module.impl
-    if not mod or not mod.device_launch or not mod.resolve_launch_info then
-        return future_mod.rejected("module does not support device launch")
-    end
-
-    local unit = self._config_unit
-    if not unit then
-        return future_mod.rejected("no config unit for device launch")
-    end
-
-    local launch_info = self:device_launch_info()
-    if not launch_info then
-        return future_mod.rejected("could not resolve launch info for device")
-    end
-
-    local ws = self._workspace
-    local project_path = ws.root .. "/" .. (self._project.path or self._project.key)
-
-    local spec = mod.device_launch(unit._tool_data or {}, device_serial, launch_info)
-    if not spec or not spec.cmd then
-        return future_mod.rejected("module returned invalid device_launch spec")
-    end
-
-    local task_name = self._project.key .. ": launch on " .. device_serial
-    return overseer.run_cmd_task({
-        name = task_name,
-        cmd = spec.cmd,
-        args = spec.args,
-        cwd = project_path,
-        env = spec.env,
-        check_output = spec.check_output,
-    })
+    local command, err = self:device_launch_command(device_serial)
+    if not command then return require("loomworks.future").rejected(err) end
+    return require("loomworks.overseer").run_cmd_task(command)
 end
 
 --- Resolve the PID of the launched app on the device. Polls the
@@ -1059,7 +1063,9 @@ end
 --- yields nothing.
 --- @param device_serial string
 --- @param bundle_name string
---- @param opts? { tries?: number, interval_ms?: number }
+--- `opts.system` spawns each probe (`loomworks.exe.system`'s signature;
+--- the workspace daemon passes its own spawner, in the client's environment).
+--- @param opts? { tries?: number, interval_ms?: number, system?: fun(cmd: string[], opts: table, on_exit: fun(res: table)) }
 --- @return loomworks.Future resolves with number (pid) or nil (app never appeared)
 function LaunchTarget:device_resolve_pid(device_serial, bundle_name, opts)
     local future_mod = require("loomworks.future")
@@ -1080,12 +1086,13 @@ function LaunchTarget:device_resolve_pid(device_serial, bundle_name, opts)
     local interval_ms = opts.interval_ms or 300
 
     local cmd = vim.list_extend({ pid_spec.cmd }, pid_spec.args or {})
+    local system = opts.system or require("loomworks.exe").system
 
     return future_mod.create(function(resolve)
         local attempt = 0
         local function try_once()
             attempt = attempt + 1
-            require("loomworks.exe").system(cmd, { text = true, timeout = 3000 }, function(result)
+            system(cmd, { text = true, timeout = 3000 }, function(result)
                 vim.schedule(function()
                     local pid
                     if result.code == 0 and result.stdout then
@@ -1108,8 +1115,29 @@ function LaunchTarget:device_resolve_pid(device_serial, bundle_name, opts)
     end)
 end
 
+--- The command that stops the app on a device: the module's `device_stop`
+--- (nil when the module has none, or it returns no command: nothing to run).
+--- @param device_serial string
+--- @param bundle_name string|nil
+--- @return loomworks.DeviceCommand|nil
+function LaunchTarget:device_stop_command(device_serial, bundle_name)
+    local mod = self._project and self._project._module and self._project._module.impl
+    if not mod or not mod.device_stop then return nil end
+    local unit = self._config_unit
+    local td = unit and unit._tool_data or {}
+    local spec = mod.device_stop(td, device_serial, bundle_name)
+    if not spec or not spec.cmd then return nil end
+    return {
+        name = self._project.key .. ": stop on " .. device_serial,
+        cmd = spec.cmd,
+        args = spec.args,
+        env = spec.env,
+        check_output = spec.check_output,
+    }
+end
+
 --- Stop the app on a device. Returns a Future.
---- Delegates to the module's `device_stop` RPC. Session tracker calls
+--- Runs `device_stop_command` as an overseer task. Session tracker calls
 --- this from `stop_run()` when it knows the active run is a
 --- device launch; it's fire-and-forget from the user's
 --- perspective — we don't block teardown on the RPC.
@@ -1117,26 +1145,9 @@ end
 --- @param bundle_name string
 --- @return loomworks.Future
 function LaunchTarget:device_stop(device_serial, bundle_name)
-    local future_mod = require("loomworks.future")
-    local overseer = require("loomworks.overseer")
-
-    local mod = self._project and self._project._module and self._project._module.impl
-    if not mod or not mod.device_stop then
-        return future_mod.resolved(true)
-    end
-    local unit = self._config_unit
-    local td = unit and unit._tool_data or {}
-    local spec = mod.device_stop(td, device_serial, bundle_name)
-    if not spec or not spec.cmd then
-        return future_mod.resolved(true)
-    end
-
-    return overseer.run_cmd_task({
-        name = self._project.key .. ": stop on " .. device_serial,
-        cmd = spec.cmd,
-        args = spec.args,
-        check_output = spec.check_output,
-    })
+    local command = self:device_stop_command(device_serial, bundle_name)
+    if not command then return require("loomworks.future").resolved(true) end
+    return require("loomworks.overseer").run_cmd_task(command)
 end
 
 -- ---------------------------------------------------------------------------

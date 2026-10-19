@@ -900,17 +900,32 @@ function Profile:device_serial()
     return self._device_serial
 end
 
+--- Write the profile's device selection to the working copy. A refused or
+--- failed write leaves the selection as it was (unless the refusal re-read
+--- the working copy: a new baseline), as Workspace:set_debug_adapter does.
+--- @param serial string|nil
+--- @return boolean ok, string|nil err
+function Profile:_write_device(serial)
+    local ws = self._workspace
+    local before = self._device_serial
+    self._device_serial = serial
+    local base = ws._disk_baseline and ws._disk_baseline.user
+    local ok, err = ws:_save_user()
+    if not ok and (ws._disk_baseline and ws._disk_baseline.user) == base then self._device_serial = before end
+    return ok == true, err
+end
+
 --- Set the selected device for this profile.
 --- @param serial string device serial
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:set_device(serial)
-    self._device_serial = serial
-    self._workspace:_save_user()
+    return self:_write_device(serial)
 end
 
 --- Clear the selected device for this profile.
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:clear_device()
-    self._device_serial = nil
-    self._workspace:_save_user()
+    return self:_write_device(nil)
 end
 
 --- Get the Device domain object for the selected device serial.

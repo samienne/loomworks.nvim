@@ -1854,8 +1854,13 @@ end
 --- Scan for connected devices from all device-capable modules.
 --- Merges results into the _devices registry (identity-preserving).
 --- Calls callback(devices) when all modules have reported.
+--- `opts.resume(fn)` runs the merge (default: vim.schedule; the workspace
+--- daemon passes a model segment of the scan's request); with
+--- `opts.cancelled()` true by then, nothing is merged and `callback` is not
+--- called.
 --- @param callback? fun(devices: loomworks.Device[])
-function Workspace:scan_devices(callback)
+--- @param opts? { resume?: fun(fn: fun()), cancelled?: fun(): boolean }
+function Workspace:scan_devices(callback, opts)
     -- Collect modules that support devices with their tool_data.
     -- For each module, find a tool_data entry that has meaningful fields
     -- (at minimum, non-empty). Source preference:
@@ -1910,7 +1915,12 @@ function Workspace:scan_devices(callback)
             end
             pending = pending - 1
             if pending == 0 then
-                vim.schedule(function()
+                local resume = opts and opts.resume or vim.schedule
+                resume(function()
+                    if opts and opts.cancelled and opts.cancelled() then
+                        self._device_scan_state = "done"
+                        return
+                    end
                     self:_merge_device_results(all_results)
                     self._device_scan_state = "done"
                     self._core._deps.events.emit("devices_changed", self:devices())

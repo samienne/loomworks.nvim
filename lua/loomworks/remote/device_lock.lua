@@ -160,6 +160,44 @@ function M.remove_leftover(serial)
     return uv.fs_unlink(path) and true or false
 end
 
+--- One attempt at the device lock, never waiting: the handle; or nil and
+--- the refusal (a hung holder, a failed `--break-locks`); or nil, nil and
+--- the holder line when a live holder has it (the caller waits and tries
+--- again — `acquire` with vim.wait, the workspace daemon on a timer, so its
+--- endpoint keeps serving). `state` carries what one acquisition remembers
+--- across its attempts (`broke`: the holder was already broken once).
+--- opts: as `acquire` (`action`, `workspace`, `break_locks`, `command`,
+--- `on_break`).
+--- @param serial string
+--- @param opts? table
+--- @param state? { broke?: boolean }
+--- @return table|nil handle, string|nil err, string|nil held
+function M.try_acquire(serial, opts, state)
+    opts, state = opts or {}, state or {}
+    local extra = { serial = serial, workspace = opts.workspace }
+    local lock_break = require("loomworks.lock_break")
+    local break_mode = opts.break_locks or lock_break.requested
+    local ctx = { what = "device " .. tostring(serial), command = opts.command or lock_break.command,
+        unlock = "--device " .. tostring(serial) }
+    local h, info = build_lock.try_acquire_path(M.path(serial), opts.action or "run", extra)
+    if h then
+        h.serial = serial
+        h.leftover = M.leftover_of(h.reclaimed)
+        return h
+    end
+    if break_mode and not state.broke and (info.state == "hung" or info.state == "live") then
+        local ok, berr = lock_break.break_holder(info, ctx,
+            { mode = break_mode, report = opts.on_break })
+        if not ok then return nil, berr end
+        state.broke = true
+        return M.try_acquire(serial, opts, state)
+    end
+    if info.state == "hung" then
+        return nil, require("loomworks.lock_record").busy_message(info, ctx)
+    end
+    return nil, nil, holder(info, serial)
+end
+
 --- Acquire the device lock.
 --- opts:
 ---   wait        boolean (default true) — false fails fast naming the holder
@@ -179,38 +217,19 @@ end
 --- @return table|nil handle, string|nil err
 function M.acquire(serial, opts)
     opts = opts or {}
-    local path = M.path(serial)
-    local extra = { serial = serial, workspace = opts.workspace }
-    local announced, broke = false, false
-    local lock_break = require("loomworks.lock_break")
-    local break_mode = opts.break_locks or lock_break.requested
-    local ctx = { what = "device " .. tostring(serial), command = opts.command or lock_break.command,
-        unlock = "--device " .. tostring(serial) }
+    local announced, state = false, {}
     while true do
-        local h, info = build_lock.try_acquire_path(path, opts.action or "run", extra)
-        if h then
-            h.serial = serial
-            h.leftover = M.leftover_of(h.reclaimed)
-            return h
+        local h, err, msg = M.try_acquire(serial, opts, state)
+        if h then return h end
+        if err then return nil, err end
+        if opts.wait == false then
+            return nil, msg .. " — retry later, or `lw unlock --device " .. tostring(serial) .. "`"
         end
-        if break_mode and not broke and (info.state == "hung" or info.state == "live") then
-            local ok, berr = lock_break.break_holder(info, ctx,
-                { mode = break_mode, report = opts.on_break })
-            if not ok then return nil, berr end
-            broke = true
-        elseif info.state == "hung" then
-            return nil, require("loomworks.lock_record").busy_message(info, ctx)
-        else
-            local msg = holder(info, serial)
-            if opts.wait == false then
-                return nil, msg .. " — retry later, or `lw unlock --device " .. tostring(serial) .. "`"
-            end
-            if not announced then
-                announced = true
-                if opts.on_wait then opts.on_wait(msg .. " — waiting for it") end
-            end
-            vim.wait(opts.poll_ms or M.POLL_MS)
+        if not announced then
+            announced = true
+            if opts.on_wait then opts.on_wait(msg .. " — waiting for it") end
         end
+        vim.wait(opts.poll_ms or M.POLL_MS)
     end
 end
 
