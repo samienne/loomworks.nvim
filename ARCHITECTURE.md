@@ -1678,7 +1678,8 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   the scope refused).
 - `daemon/views.lua` (binary side; step 5j part B) — the editor views on
   `/views`: `loomworks.view.Header/1` and `loomworks.view.ProjectsIndex/1`
-  (spec §19.13 "Views"), each `get` (never loading; built from
+  (spec §19.13 "Views"; later `view.Tests/1`, 5m, and `view.Workspace/1`,
+  5n B1), each `get` (never loading; built from
   `Service:header_model()`) and `update` (declared `initial`, full state).
   The state comes from `view_state.lua`, the one builder (binary side, pure
   over the model, reading no files) that the editor also calls in-process
@@ -1727,8 +1728,15 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   last finished operation's outcome is state, the row's `last_result`
   (`Profile:set_last_result`, set by an Operation's completion, an observed
   daemon task's end, and in the daemon by its own run's end). Rendering is pinned byte for byte by
-  `tests/status_render_golden_spec.lua`. Not yet on `/views` (5n B1) and
-  still built in-process in `daemon` mode until 5n C1.
+  `tests/status_render_golden_spec.lua`. *(5n part B1)* The daemon serves
+  it on `/views` (`daemon/views.lua` `M.workspace`: `Workspace:view_workspace`
+  with `service.ids`, `view_state.workspace(nil)` — every array empty — while
+  unloaded), `update` only on a difference like the other views; the
+  daemon's own run's end sets the profile's last result
+  (`Service:on_run_done`, `BuildRun.profile`, the end message from
+  `Operation.task_outcome`, the one wording shared with
+  `RemoteTask:outcome`). The editor still builds it in-process in `daemon`
+  mode until 5n C1.
 - *(Step 5l; spec §19.16 "LSP configuration", §19.20 `LspConfig/1`, §9.2.)*
   `lsp_config.lua` (shared side, host-neutral, no `vim.*`) — the one builder
   of the LSP configuration state: the `lsp_configs` content memo

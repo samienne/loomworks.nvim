@@ -509,7 +509,7 @@ end
 --- @param registry loomworks.daemon.Registry
 --- @param service loomworks.daemon.BuildService
 function M.mount(registry, service)
-    for _, m in ipairs({
+    local mounts = {
         { M.WORKSPACE, M.workspace_impl },
         { M.TASKS, M.tasks_impl },
         { M.SNAPSHOT, M.snapshot_impl },
@@ -520,10 +520,9 @@ function M.mount(registry, service)
         { M.PROFILES, M.profiles_impl },
         { M.DEBUG, M.debug_impl },
         { M.LSP, M.lsp_impl },
-        require("loomworks.daemon.views").MOUNTS[1],
-        require("loomworks.daemon.views").MOUNTS[2],
-        require("loomworks.daemon.views").MOUNTS[3],
-    }) do
+    }
+    vim.list_extend(mounts, require("loomworks.daemon.views").MOUNTS)
+    for _, m in ipairs(mounts) do
         local where, make = m[1], m[2]
         local ok, err = registry:mount(where.path, "core", where.iface, where.v, make(service))
         if not ok then registry:_log("interface %s/%d not mounted: %s", where.iface, where.v, tostring(err)) end

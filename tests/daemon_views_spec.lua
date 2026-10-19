@@ -266,3 +266,145 @@ describe("daemon /views (§19.13 Views)", function()
         assert.is_true(upd < ack, "the update must be written before the acknowledgement")
     end)
 end)
+
+describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
+    local uv = vim.uv or vim.loop
+    local trust = require("loomworks.trust")
+    _G.LW_CONFORMANCE_LIB = true
+    local runner = dofile(H.REPO .. "/scripts/conformance.lua")
+    local s
+
+    --- A loopback daemon on a fresh `shell` fixture, handshaken, subscribed
+    --- to the workspace view (`s.initial` its initial state).
+    local function session()
+        local key = (vim.fn.tempname():gsub("\\", "/")) .. "/trust.key"
+        vim.fn.mkdir(vim.fn.fnamemodify(key, ":h"), "p")
+        local root = runner.fixture("shell", key)
+        trust._set_key_path(key)
+        local d = runner.loopback_driver(root)
+        local o = { d = d, root = root, env = runner.wire_env(uv.os_environ()), inbox = {}, req = 0 }
+        function o.wait(pred, ms)
+            local deadline = uv.now() + (ms or 30000)
+            while true do
+                for i, f in ipairs(o.inbox) do
+                    if pred(f) then table.remove(o.inbox, i); return f end
+                end
+                local left = deadline - uv.now()
+                assert(left > 0, "timed out waiting for a frame")
+                local f = d.recv(math.min(left, 50))
+                if f then o.inbox[#o.inbox + 1] = f end
+            end
+        end
+        --- Every frame that arrives within `ms`, into the inbox.
+        function o.drain(ms)
+            local deadline = uv.now() + ms
+            while uv.now() < deadline do
+                local f = d.recv(math.max(1, math.min(50, deadline - uv.now())))
+                if f then o.inbox[#o.inbox + 1] = f end
+            end
+        end
+        function o.call(object, iface, method, args, env)
+            o.req = o.req + 1
+            local id = o.req
+            assert(d.send({ kind = "call", req_id = id, object = object, iface = iface, v = 1, method = method,
+                args = args or vim.empty_dict(), env = env }))
+            local f = o.wait(function(m) return m.req_id == id end)
+            assert.equals("ok", f.kind, vim.inspect(f))
+            return f.result
+        end
+        --- The workspace view's `update`s received so far (taken out of the inbox).
+        function o.updates()
+            local out, keep = {}, {}
+            for _, f in ipairs(o.inbox) do
+                if f.kind == "signal" and f.iface == "loomworks.view.Workspace" and f.name == "update" then
+                    out[#out + 1] = f.args
+                else
+                    keep[#keep + 1] = f
+                end
+            end
+            o.inbox = keep
+            return out
+        end
+        function o.view() return o.call("/views", "loomworks.view.Workspace", "get") end
+        function o.load() o.call("/toolchains", "loomworks.Toolchains", "list", nil, o.env) end
+        function o.build()
+            local r = o.call("/build", "loomworks.Build", "build", { profile = { key = "dev" } }, o.env)
+            assert.equals("accepted", r.outcome, vim.inspect(r))
+            local f = o.wait(function(m) return m.kind == "task" and m.task_id == r.task_id and m.phase == "done" end,
+                120000)
+            assert.equals(0, f.exit_code)
+        end
+        function o.close()
+            pcall(d.close)
+            trust._set_key_path(nil)
+        end
+        assert(d.send({ kind = "hello", protocol = 11, client = "editor",
+            lw_version = require("loomworks.daemon.version").identity() }))
+        o.wait(function(m) return m.kind == "welcome" end)
+        o.initial = o.call("/", "loomworks.Root", "subscribe", { object = "/views",
+            iface = "loomworks.view.Workspace", v = 1, signals = { "update" } }).initial
+        return o
+    end
+
+    after_each(function()
+        if s then s.close(); s = nil end
+    end)
+
+    local function profile(v, key)
+        for _, p in ipairs(v.profiles) do if p.key == key then return p end end
+    end
+
+    it("is empty before the load; a load sends one update, with the daemon's ids", function()
+        s = session()
+        assert.same({}, s.initial.profiles)
+        assert.same({}, s.initial.projects)
+        assert.same({}, s.view().profiles)
+        s.load()
+        s.drain(200)
+        local u = s.updates()
+        assert.equals(1, #u)
+        local v = u[1]
+        local p = assert(profile(v, "dev"))
+        assert.is_string(p.id)
+        assert.is_string(v.config_sets[1].id)
+        for _, proj in ipairs(v.projects) do
+            assert.is_string(proj.id)
+            for _, c in ipairs(proj.configurations or {}) do assert.is_string(c.id) end
+        end
+        -- The same objects, the same ids; nothing changed: no update.
+        local again = s.view()
+        assert.equals(p.id, profile(again, "dev").id)
+        assert.same(v, again)
+        s.load()
+        s.drain(200)
+        assert.equals(0, #s.updates())
+    end)
+
+    it("a build sends updates only on a change, without progress, ending with the last result", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.updates()
+        s.build()
+        s.drain(300)
+        local u = s.updates()
+        assert.is_true(#u >= 1)
+        for i, v in ipairs(u) do
+            if i > 1 then
+                assert.are_not.equal(view_state.signature(u[i - 1]), view_state.signature(v))
+            end
+            local p = profile(v, "dev")
+            for _, k in ipairs({ "pct", "elapsed", "message" }) do assert.is_nil(p[k], k) end
+            for _, unit in ipairs(p.units) do
+                assert.is_nil(unit.progress)
+                assert.is_nil(unit.elapsed)
+            end
+        end
+        local p = profile(u[#u], "dev")
+        assert.equals("built", p.units[1].state)
+        assert.is_string(p.units[1].unit_id)
+        assert.equals("ok", p.last_result.status)
+        assert.truthy(p.last_result.message:find("^built in "), p.last_result.message)
+        assert.same(p.last_result, profile(s.view(), "dev").last_result)
+    end)
+end)

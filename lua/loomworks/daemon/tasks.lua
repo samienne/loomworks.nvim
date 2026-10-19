@@ -72,6 +72,9 @@ M._queued = queued
 --- @field n integer the per-session counter (a protocol-10 connection's task id)
 --- @field owner table the owning connection
 --- @field finished boolean
+--- @field exit_code integer|nil its `done` exit code, once finished
+--- @field error string|nil its `done` refusal or failure, once finished
+--- @field ended_at integer|nil wall-clock seconds (os.time) it finished
 --- @field paused boolean the step's output is paused for the owner to catch up
 --- @field flow table|nil the running step's output control (`pause`, `resume`)
 --- @field obs table<table, { bytes: integer, truncated: boolean }> per observer
@@ -371,6 +374,7 @@ end
 function Task:done(exit_code, err, fields)
     if self.finished then return end
     self.finished = true
+    self.exit_code, self.error, self.ended_at = exit_code, err, os.time()
     local msg = { phase = "done", exit_code = exit_code, error = err }
     local extra
     for k, v in pairs(fields or {}) do

@@ -693,11 +693,17 @@ end
 --- §1.1: Diagnostics, Suggestions, Profiles, Orphaned Build Dirs,
 --- Configuration Sets, Projects, SDKs). Pure over the model: the host passes
 --- what needs the file system (`published`, `stray_dirs`).
---- @param ws table the live workspace
+--- @param ws table|nil the live workspace (nil: not loaded, every array empty)
 --- @param opts? loomworks.ViewWorkspaceOpts
 --- @return loomworks.ViewWorkspace
 function M.workspace(ws, opts)
     opts = opts or {}
+    if not ws then
+        -- Not loaded: nothing of a workspace is known, every array empty.
+        return { published = false, modified = false, diagnostics = {}, suggestions = 0, profiles = {},
+            orphaned = { configurations = {}, stray_dirs = {} }, config_sets = {}, projects = {}, sdks = {},
+            sdk_providers = #require("loomworks.sdks").list() }
+    end
     local out = { published = opts.published ~= false, modified = ws:has_any_modified() and true or false }
 
     out.diagnostics = {}

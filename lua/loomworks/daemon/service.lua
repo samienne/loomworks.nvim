@@ -939,6 +939,18 @@ function Service:on_run_done(run)
         self.server:log("%s task %s ended%s", run.op or "build", run.task.id,
             run.cancelled and (": " .. tostring(run.cancel_reason)) or "")
     end
+    -- The profile's last result (view.Workspace/1 `last_result`, API.md
+    -- §14.4): state of the daemon's session, kept while the next run runs
+    -- and across reconnects; the view's `update` follows at the segment's
+    -- header check (here, for a run that ended outside a segment).
+    local t = run.task
+    if run.profile and t and t.finished then
+        local status = run.cancelled and "cancelled" or (t.exit_code == 0 and "ok" or "failed")
+        local duration = t.started_at and t.ended_at and (t.ended_at - t.started_at) or nil
+        run.profile:set_last_result(status, require("loomworks.operation").task_outcome(
+            t.meta and t.meta.kind or run.op, t.exit_code, duration, t.error))
+        if not self.current then pcall(require("loomworks.daemon.core_interfaces").header_check, self) end
+    end
     -- A reset whose deletion outlived its task kept the server busy.
     if run.deleting then self:_update_busy() end
     -- The tests view: the units the run covered may no longer match their
