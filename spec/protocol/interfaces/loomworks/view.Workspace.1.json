@@ -1,0 +1,173 @@
+{
+  "interface": "loomworks.view.Workspace",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /views (API.md §14.4; step 5n): what the status page's body shows - Diagnostics, Suggestions, Profiles, Orphaned Configurations, Configuration Sets, Projects and SDKs; the header, LSP, Debug Adapters and Tasks sections have their own sources. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
+  "methods": {
+    "get": {
+      "description": "The view's full state. Never loads the workspace: an unloaded one has empty arrays.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": { "$ref": "#/$defs/Workspace" },
+      "needs_env": false,
+      "mutates": false
+    }
+  },
+  "signals": {
+    "update": {
+      "description": "The view's full state, sent after a model segment or a committed write that changed it (before the acknowledgement of the command that caused the change), only when it differs from the state last sent on the subscription.",
+      "initial": true,
+      "args": { "$ref": "#/$defs/Workspace" }
+    }
+  },
+  "$defs": {
+    "Workspace": {
+      "type": "object",
+      "required": ["published", "modified", "diagnostics", "suggestions", "profiles", "orphaned", "config_sets", "projects", "sdks"],
+      "properties": {
+        "published": { "description": "Whether the workspace has a published loomworks.json (spec 2.4).", "type": "boolean" },
+        "modified": { "description": "Whether the working copy differs from the published baseline anywhere (spec 2.4).", "type": "boolean" },
+        "diagnostics": {
+          "description": "The workspace's structural diagnostics; empty when there are none or the workspace is not loaded.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Diagnostic" }
+        },
+        "suggestions": { "description": "The number of actionable suggestions (spec/ui.md 1.1); the suggestions themselves are lw health's.", "type": "integer", "minimum": 0 },
+        "profiles": {
+          "description": "One record per profile, in the status page's order; empty when the workspace is not loaded.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Profile" }
+        },
+        "orphaned": { "$ref": "#/$defs/Orphaned" },
+        "config_sets": {
+          "description": "One record per configuration set; empty when the workspace is not loaded.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/ConfigSet" }
+        },
+        "projects": {
+          "description": "One record per project of the workspace; empty when the workspace is not loaded.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Project" }
+        },
+        "sdks": {
+          "description": "One record per SDK; empty when the workspace is not loaded.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Sdk" }
+        }
+      }
+    },
+    "Diagnostic": {
+      "type": "object",
+      "required": ["severity", "message"],
+      "properties": {
+        "severity": { "description": "Clients show an unknown severity as neutral.", "enum": ["error", "warn"] },
+        "message": { "type": "string" }
+      }
+    },
+    "Profile": {
+      "type": "object",
+      "required": ["key", "label", "active", "modified", "orphaned_set", "tools", "artifact_conflict", "units"],
+      "properties": {
+        "id": { "description": "The profile's opaque id (PROTOCOL.md §12.1): always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "key": { "type": "string" },
+        "label": { "description": "The profile's display text (API.md §1.1). Clients show it, never derive it.", "type": "string" },
+        "description": { "description": "The profile's description (spec/ui.md 1.16).", "type": "string" },
+        "config_set": { "description": "The name of the profile's configuration set.", "type": "string" },
+        "active": { "type": "boolean" },
+        "modified": { "description": "Whether the profile differs from the published baseline.", "type": "boolean" },
+        "orphaned_set": { "description": "Its configuration set no longer exists.", "type": "boolean" },
+        "tools": {
+          "description": "One record per module type.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["module", "label"],
+            "properties": {
+              "module": { "description": "The module type.", "type": "string" },
+              "key": { "description": "The tool's key; absent for a module whose single toolchain has none.", "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        },
+        "compat_error": { "description": "Why a tool cannot build a project of the profile.", "type": "string" },
+        "artifact_conflict": { "description": "A unit's output artifact is claimed by another profile's (spec 5.9).", "type": "boolean" },
+        "device": {
+          "description": "The profile's device.",
+          "type": "object",
+          "required": ["serial", "state"],
+          "properties": {
+            "serial": { "type": "string" },
+            "name": { "type": "string" },
+            "state": { "description": "As in Devices/1 list. Clients show an unknown state as neutral.", "type": "string" }
+          }
+        },
+        "default_target": { "description": "The profile's default launch target.", "type": "string" },
+        "units": {
+          "description": "One record per project the profile maps.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Unit" }
+        }
+      }
+    },
+    "Unit": {
+      "type": "object",
+      "required": ["project", "configuration", "state", "missing", "overwritten", "launcher_changed"],
+      "properties": {
+        "project": { "description": "The project's key.", "type": "string" },
+        "configuration": { "description": "The configuration's name.", "type": "string" },
+        "unit_id": { "description": "The configuration unit's opaque id; absent when the profile has no unit for the project yet, and always in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "state": {
+          "description": "As view.ProjectsIndex/1's active.state. Clients show an unknown state as neutral.",
+          "enum": ["unconfigured", "configured", "built", "configure_failed", "build_failed", "unknown", "configuring", "building", "deleting"]
+        },
+        "missing": { "description": "The configuration has no source.", "type": "boolean" },
+        "overwritten": { "description": "Another unit has since overwritten its output artifact (spec 5.9).", "type": "boolean" },
+        "launcher_changed": { "description": "Its compiler launcher changed since it was configured.", "type": "boolean" }
+      }
+    },
+    "Orphaned": {
+      "description": "The orphaned cached configurations and the stray build directories (spec/ui.md 1.6).",
+      "type": "object",
+      "required": ["configurations", "stray_dirs"],
+      "properties": {
+        "configurations": { "type": "array" },
+        "stray_dirs": { "type": "array" }
+      }
+    },
+    "ConfigSet": {
+      "type": "object",
+      "required": ["name", "modified", "mappings"],
+      "properties": {
+        "id": { "description": "The configuration set's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "name": { "type": "string" },
+        "modified": { "type": "boolean" },
+        "mappings": { "description": "The configuration set's project to configuration mapping.", "type": "object" }
+      }
+    },
+    "Project": {
+      "type": "object",
+      "required": ["key", "type", "path", "modified", "orphaned", "configurations", "launches", "deploy", "variables", "type_config"],
+      "properties": {
+        "id": { "description": "The project's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "key": { "type": "string" },
+        "type": { "description": "The project's module type.", "type": "string" },
+        "path": { "description": "As in view.ProjectsIndex/1.", "type": "string" },
+        "modified": { "type": "boolean" },
+        "orphaned": { "description": "Its module type is unknown or rejected (spec 8.0).", "type": "boolean" },
+        "configurations": { "type": "array" },
+        "launches": { "type": "array" },
+        "deploy": { "description": "The project's deploy declarations as the status page shows them." },
+        "variables": { "type": "object" },
+        "type_config": { "type": "object" }
+      }
+    },
+    "Sdk": {
+      "type": "object",
+      "required": ["key", "label", "resolved"],
+      "properties": {
+        "key": { "type": "string" },
+        "label": { "type": "string" },
+        "resolved": { "description": "Whether the SDK resolves on this machine.", "type": "boolean" }
+      }
+    }
+  }
+}

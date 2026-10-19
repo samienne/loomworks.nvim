@@ -70,7 +70,7 @@ PROTOCOL.md §5 and §7 leave these values to the suite:
 
 The core services are `/workspace`, `/profiles`, `/build`, `/tests`,
 `/launch`, `/lsp`, `/debug`, `/tasks`, `/toolchains`, `/views`, `/internal`,
-and `/modules/<id>` for each module (§16). A module's namespace is its module
+and `/modules/<id>` for each module (§17). A module's namespace is its module
 id.
 
 In `loomworks.Root/1` (PROTOCOL.md §10): `describe().binary` is
@@ -602,7 +602,16 @@ step succeeded the task closes with the plain build's line `BUILD OK:
 0. A cancel (`Tasks/1.cancel`) kills a running build step and stops a deploy
 between two copies; the steps not reached are not run. A device target
 (spec §11) ends the task nonzero, before the build, with `'<target>' is a
-device target; …` as its failure line.
+device target; …` as its failure line. *(Step 5n, part B2.)* From step 5n a
+device target is built like any other, its post-build deploy steps
+included, and its install and launch are left to `Devices/1` (§15).
+
+### 9.5 `device_log`
+
+*(Step 5n, parts B3 and C3; its document lands with its handler.)* The log
+stream of a program a client launched on a device (`Devices/1.launch`,
+§15), as a task whose records are the normalized device log records of spec
+§19.18 (`{ ts, level, tag, pid, message, fields? }`).
 
 ## 10. `loomworks.Tests/1`
 
@@ -804,6 +813,18 @@ none is loaded, never unloading it for another environment). A failed query, or 
   project's module does not cache C/C++. It probes the client's `PATH`. An
   unknown profile, a project the profile does not map, or a stale id is
   `refused`.
+
+*(Step 5n, part B2; their documents land with their handlers.)* A profile's
+device is chosen with two writes, not queries:
+
+- **`Profiles/1.set_device { profile, serial }`** — sets the profile's
+  device (its `device` serial, persisted in the working copy) to one of
+  `Devices/1.list`'s devices (§15);
+- **`Profiles/1.clear_device { profile }`** — removes it.
+
+Each reaches subscribers as `Workspace/1` `changed` and in
+`view.Workspace/1` (§14.4); a write that is refused or fails changes neither
+`user.json` nor the model and is the `refused` result with its message.
 
 ## 12. `loomworks.DebugConfig/1`
 
@@ -1041,13 +1062,90 @@ discovering?, units }`:
 Output and error locations are not in the view: a client reads them with
 `Tests/1.result { id }` (§10.2) when it shows them.
 
-## 15. `lw.internal.Snapshot/1`
+### 14.4 `loomworks.view.Workspace/1`
+
+*(Step 5n.)* What the status page's body shows (spec/ui.md §1.1):
+Diagnostics, Suggestions, Profiles, Orphaned Configurations, Configuration
+Sets, Projects and SDKs. The header, LSP, Debug Adapters and Tasks sections
+have their own sources. Its state is `{ published, modified,
+diagnostics, suggestions, profiles, orphaned, config_sets, projects, sdks }`;
+its arrays are empty when the workspace is not loaded. Each `id` is an
+opaque id a client puts in an `{ id }` reference (§1.2), optional because
+the in-process builder leaves it out:
+
+- `published` (boolean) — whether the workspace has a published
+  `loomworks.json` (spec §2.4).
+- `modified` (boolean) — whether the working copy differs from the published
+  baseline anywhere (spec §2.4).
+- `diagnostics` (array) — the workspace's structural diagnostics, each
+  `{ severity, message }`, `severity` `error` or `warn`.
+- `suggestions` (integer) — the number of actionable suggestions (spec/ui.md
+  §1.1); the suggestions themselves are `lw health`'s.
+- `profiles` (array) — one record per profile, in the status page's order:
+  - `id` (string, optional), `key` (string), `label` (string, §1.1),
+    `description` (string, optional), `config_set` (string, optional; the
+    configuration set's name);
+  - `active` (boolean), `modified` (boolean), `orphaned_set` (boolean; its
+    configuration set no longer exists);
+  - `tools` (array) — `{ module, key?, label }`, one per module type;
+  - `compat_error` (string, optional) — why a tool cannot build a project
+    of the profile;
+  - `artifact_conflict` (boolean) — a unit's output artifact is claimed by
+    another profile's (spec §5.9);
+  - `device` (object, optional) — the profile's device: `{ serial, name?,
+    state }`, `state` as in `Devices/1.list` (§15);
+  - `default_target` (string, optional) — the profile's default launch
+    target;
+  - `units` (array) — one per project the profile maps: `{ project,
+    configuration, unit_id?, state, missing, overwritten, launcher_changed
+    }`, `state` as in §14.2, `missing` (the configuration has no source),
+    `overwritten` (another unit has since overwritten its output artifact,
+    spec §5.9), `launcher_changed` (its compiler launcher changed since it
+    was configured).
+- `orphaned` (object) — `{ configurations, stray_dirs }`: the orphaned
+  cached configurations and the stray build directories (spec/ui.md §1.6).
+- `config_sets` (array) — `{ id?, name, modified, mappings }`, `mappings`
+  the configuration set's project → configuration mapping.
+- `projects` (array) — `{ id?, key, type, path, modified, orphaned,
+  configurations, launches, deploy, variables, type_config }`: the project's
+  declaration as the status page shows it (spec/ui.md §1.8), `orphaned` when
+  its module type is unknown or rejected (spec §8.0).
+- `sdks` (array) — `{ key, label, resolved }`, `resolved` whether the SDK
+  resolves on this machine.
+
+`update` is sent under the rule above; a unit's state change sends it, a
+build's progress never does.
+
+## 15. `loomworks.Devices/1`
+
+*(Step 5n, part B2; its document lands with its handlers.)* The workspace's
+devices (spec §11), on `/devices`. The server keeps a registry of the
+devices its modules found; a client never lists or probes devices itself.
+
+- `list {}` → `{ devices: [{ serial, name, state, provider, profiles? }] }`
+  — the registry as it is; it never probes a device. `state` is `online` or
+  `offline` (a client shows an unknown state as neutral), `provider` the
+  module that found it, `profiles` the keys of the profiles that chose it.
+- `scan {}` — a task that asks each module that has devices to list them,
+  in the client's environment (§5), and updates the registry.
+- `install` — a task that installs a built device target, addressed as
+  `Launch/1.build` addresses it (§9.4), on its profile's device.
+- `launch` — a task that launches that target there, addressed likewise;
+  its `done` carries `{ pid?, bundle? }`.
+- `stop` — stops the program launched there.
+- `changed` (signal) — the registry changed (a scan, a device appearing or
+  going away); a client reads `list` again.
+
+A profile's device is chosen with `Profiles/1.set_device` and
+`clear_device` (§11).
+
+## 16. `lw.internal.Snapshot/1`
 
 On `/internal`, flagged `same_build` (PROTOCOL.md §9.4): `get { scope }`
 returns the workspace's file-shaped state for a client of the same build. It
 is a same-build facility, never a stable contract, and not specified here.
 
-## 16. Module interfaces
+## 17. Module interfaces
 
 A module provides an interface only for a feature core has no abstraction
 for (a device log stream, signing setup); a feature core abstracts (devices,
@@ -1060,7 +1158,7 @@ handler and every handler a method in its schema; a mismatch rejects that
 interface version, not the module. The wire version of a module interface is
 independent of the in-process module API version (spec §8.0).
 
-## 17. Conformance fixtures
+## 18. Conformance fixtures
 
 The fixtures a transcript names (PROTOCOL.md §18, `fixture`) are `empty`,
 the default; `shell`, a shell project `app` with configuration `Debug`, the
