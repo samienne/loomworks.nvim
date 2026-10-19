@@ -215,7 +215,7 @@ end
 
 --- Render a profile's project row (one of `row.units`).
 local function render_unit(tree, ctx, row, u)
-    local config_status, _, progress_str, is_spinning = helpers.unit_status(u)
+    local config_status, _, progress_str, is_spinning = helpers.unit_status(u, ctx.unit_progress(u))
     local type_tag = u.type and (" [" .. u.type .. "]") or ""
     local pp_pkey = u.project or "?"
     local variant_display = u.configuration or "?"
@@ -522,13 +522,17 @@ return function(tree, ctx)
         -- A task observed in the workspace daemon counts as the profile's
         -- active Operation (spec/ui.md §1.5), plus its origin marker.
         local origin = row.origin
+        -- A running operation's percent and elapsed time are not in the view
+        -- (API.md §14.4): the page's progress source gives them. Otherwise
+        -- the last finished operation's end message.
         if row.busy then
-            if row.pct then
-                tail = tail .. " " .. row.pct .. "%"
+            local prog = ctx.profile_progress(row) or {}
+            if prog.pct then
+                tail = tail .. " " .. prog.pct .. "%"
             end
-            tail = tail .. helpers.format_elapsed(row.elapsed)
-        elseif row.message then
-            tail = tail .. " — " .. row.message
+            tail = tail .. helpers.format_elapsed(prog.elapsed)
+        elseif row.last_result and row.last_result.message then
+            tail = tail .. " — " .. row.last_result.message
         end
 
         -- Profile rows: active profile gets bold green

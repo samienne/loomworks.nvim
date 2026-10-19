@@ -1718,7 +1718,15 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   passes `opts.bind`, which records each row's domain object outside the
   state, so the sections (`ui/sections/*.lua`) render only from the rows and
   keep their actions apart, reaching the objects by `ctx.ref(row)` and the
-  workspace by `ctx.ws`. Rendering is pinned byte for byte by
+  workspace by `ctx.ws`. The view carries no progress (API.md §14.4): a busy
+  profile's percent and elapsed time and a running unit's step progress
+  reach the sections through `ctx.profile_progress(row)` /
+  `ctx.unit_progress(u)`, which status.lua answers in-process from the rows'
+  domain objects (`Profile:operation_pct` / `operation_elapsed`,
+  `ConfigUnit:progress` / `elapsed` — the in-process task tracking); the
+  last finished operation's outcome is state, the row's `last_result`
+  (`Profile:set_last_result`, set by an Operation's completion, an observed
+  daemon task's end, and in the daemon by its own run's end). Rendering is pinned byte for byte by
   `tests/status_render_golden_spec.lua`. Not yet on `/views` (5n B1) and
   still built in-process in `daemon` mode until 5n C1.
 - *(Step 5l; spec §19.16 "LSP configuration", §19.20 `LspConfig/1`, §9.2.)*

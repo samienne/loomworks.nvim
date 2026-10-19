@@ -15,6 +15,7 @@
 --- @field started_at number
 --- @field completed boolean
 --- @field success boolean|nil nil while running, true/false when completed
+--- @field cancelled boolean|nil it ended by `cancel`
 --- @field message string|nil result message (set on completion)
 --- @field _mode "rank"|"deletion"|"tasks" completion check mode
 --- @field _unit_done table<loomworks.ConfigUnit, boolean> tracks which units are done
@@ -271,6 +272,7 @@ function Operation:cancel(message)
     if self.completed then return end
     self.completed = true
     self.success = false
+    self.cancelled = true
     self.message = message or "cancelled"
     for _, unsub in ipairs(self._unsubscribers) do
         unsub()

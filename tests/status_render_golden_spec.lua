@@ -299,6 +299,33 @@ describe("view_state.workspace (loomworks.view.Workspace/1)", function()
         assert.is_false(cfg.removed_upstream)
         assert.equals("built", p.units[1].state)
     end)
+
+    it("carries no progress and no publish state of a launch; the last result is state", function()
+        local ws = fixture_core("cmake"):get_workspace()
+        local profile = ws:get_active_profile()
+        local v = ws:view_workspace()
+        local p
+        for _, row in ipairs(v.profiles) do if row.key == profile.key then p = row end end
+        assert.is_nil(p.last_result)
+        for _, k in ipairs({ "pct", "elapsed", "message" }) do assert.is_nil(p[k], k) end
+        for _, u in ipairs(p.units) do
+            assert.is_nil(u.progress)
+            assert.is_nil(u.elapsed)
+        end
+        local proj = v.projects[1]
+        assert.is_true(#proj.launches > 0)
+        for _, l in ipairs(proj.launches) do
+            for _, k in ipairs({ "name", "modified", "intent", "removed_upstream" }) do assert.is_nil(l[k], k) end
+        end
+        for _, c in ipairs(proj.configurations) do
+            assert.is_nil(c.object)
+            assert.is_nil(c.name)
+        end
+        profile:set_last_result("failed", "build failed in 3s")
+        v = ws:view_workspace()
+        for _, row in ipairs(v.profiles) do if row.key == profile.key then p = row end end
+        assert.same({ status = "failed", message = "build failed in 3s" }, p.last_result)
+    end)
 end)
 
 describe("view_state.workspace against the view.Workspace/1 schema", function()

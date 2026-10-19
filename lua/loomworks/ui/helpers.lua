@@ -105,17 +105,21 @@ function M.status_marker(status)
 end
 
 --- The status of a unit as the workspace view carries it (`state`,
---- `deleting_reason`, `progress`, `elapsed`; view_state.lua): the label, its
---- highlight, the progress text and whether it spins.
+--- `deleting_reason`; view_state.lua) with its running step's progress,
+--- which is not in the view (API.md §14.4): the label, its highlight, the
+--- progress text and whether it spins.
 --- @param u table a unit's live state from `loomworks.view.Workspace/1`
+--- @param prog? { progress?: { current?: integer, total?: integer, message?: string }, elapsed?: number }
+---        the running step's progress and elapsed seconds (the page's progress source)
 --- @return string status, string hl_group, string progress_str, boolean is_spinning
-function M.unit_status(u)
+function M.unit_status(u, prog)
     local state = u.state or "unconfigured"
     if state == "deleting" then
         return u.deleting_reason or "deleting", M.STATUS_HL.deleting, "", true
     end
     if state == "configuring" or state == "building" then
-        local progress_str = M.format_progress(u.progress) .. M.format_elapsed(u.elapsed)
+        prog = prog or {}
+        local progress_str = M.format_progress(prog.progress) .. M.format_elapsed(prog.elapsed)
         return state, M.STATUS_HL[state] or "DiagnosticWarn", progress_str, true
     end
     -- Map ConfigUnit state names back to cache state names for HL lookup.

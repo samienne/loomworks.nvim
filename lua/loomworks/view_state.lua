@@ -191,11 +191,6 @@ end
 --- @field message string
 --- @field target_fold_key? string
 
---- @class loomworks.ViewProgress
---- @field current? integer
---- @field total? integer
---- @field message? string
-
 --- @class loomworks.ViewTarget
 --- @field type? string
 --- @field artifact? string
@@ -204,8 +199,6 @@ end
 --- @class loomworks.ViewUnit
 --- @field state string a ConfigUnitState (state-lifecycle.md §3.4), "unconfigured" without a unit
 --- @field deleting_reason? string
---- @field progress? loomworks.ViewProgress a running step's progress
---- @field elapsed? number seconds of a running step
 --- @field unit_id? string daemon only
 --- @field project? string project key
 --- @field type? string the project's module type
@@ -236,6 +229,13 @@ end
 --- @field state "online"|"offline"
 --- @field provider? string
 
+--- The outcome of a profile's last finished operation (API.md §14.4):
+--- `status` a Tasks/1 final status (`ok`, `failed`, `cancelled`), `message`
+--- its end message.
+--- @class loomworks.ViewLastResult
+--- @field status string
+--- @field message? string
+
 --- @class loomworks.ViewProfile
 --- @field id? string daemon only
 --- @field key string
@@ -254,9 +254,7 @@ end
 --- @field compat_error? string
 --- @field artifact_conflict boolean
 --- @field origin? string a daemon task's origin
---- @field pct? integer aggregate progress of a busy profile
---- @field elapsed? number
---- @field message? string the last operation's message
+--- @field last_result? loomworks.ViewLastResult the last finished operation's outcome
 --- @field tools loomworks.ViewProfileTool[] one per module type, by module
 --- @field toolchain? loomworks.ViewToolchainEntry[]
 --- @field compiler_cache? { text: string, stale: boolean }
@@ -295,13 +293,11 @@ end
 
 --- @class loomworks.ViewConfiguration
 --- @field id? string daemon only
---- @field name string
---- @field key string
+--- @field key string the configuration's name
 --- @field label string
 --- @field intent? loomworks.ViewIntent
 --- @field removed_upstream boolean
 --- @field modified boolean
---- @field object boolean a Configuration object exists
 --- @field abstract boolean no variant
 --- @field inherits? string|string[]
 --- @field toolchain_locked? boolean
@@ -323,12 +319,11 @@ end
 --- @field options loomworks.ViewOption[] sorted by key
 --- @field variables? loomworks.ViewVariableValue[] sorted by name
 
+--- A launch configuration: no publish state of its own (it publishes with
+--- its project, spec §2.4).
 --- @class loomworks.ViewLaunch
---- @field name string
---- @field key string
+--- @field key string the launch's name
 --- @field label string
---- @field modified boolean
---- @field removed_upstream boolean
 --- @field description? string
 --- @field target? string
 --- @field command? string
@@ -397,47 +392,15 @@ local function desc_of(obj)
     return type(d) == "string" and d or nil
 end
 
---- The weighted progress of a profile's running units (configure 10%, build
---- 90%), nil when none reports a count.
---- @param pps loomworks.ProfileProject[]
---- @return integer|nil
-local function aggregate_progress(pps)
-    local has_any, total_pct, count = false, 0, 0
-    for _, pp in ipairs(pps) do
-        local status = pp:status()
-        if status == "configuring" or status == "building" then
-            local p = pp._config_unit:progress()
-            if p and p.current and p.total and p.total > 0 then
-                has_any = true
-                local phase_pct = p.current / p.total
-                if status == "configuring" then
-                    total_pct = total_pct + 10 * phase_pct
-                else
-                    total_pct = total_pct + 10 + 90 * phase_pct
-                end
-                count = count + 1
-            end
-        end
-    end
-    if not has_any then return nil end
-    return math.floor(total_pct / count)
-end
-
---- A unit's live state: `state` (ConfigUnitState), the deleting reason, the
---- progress `{ current?, total?, message? }` and the elapsed seconds of a
---- running step. No unit: unconfigured.
+--- A unit's live state: `state` (ConfigUnitState) and the deleting reason.
+--- No unit: unconfigured. A running step's progress is not state but the
+--- task's (API.md §14.4 "Progress is not in the view").
 --- @param unit loomworks.ConfigUnit|nil
 --- @return table
 local function unit_state(unit)
     if not unit then return { state = "unconfigured" } end
     local s = { state = unit:state() }
-    if s.state == "deleting" then
-        s.deleting_reason = unit:deleting_reason()
-    elseif s.state == "configuring" or s.state == "building" then
-        local p = unit:progress()
-        if p then s.progress = { current = p.current, total = p.total, message = p.message } end
-        s.elapsed = unit:elapsed()
-    end
+    if s.state == "deleting" then s.deleting_reason = unit:deleting_reason() end
     return s
 end
 
@@ -481,14 +444,10 @@ local function profile_row(ws, profile, active, opts)
     -- operation (spec/ui.md §1.5), with its origin.
     local remote = profile:remote_tasks()[1]
     if remote and #profile:active_operations() == 0 then row.origin = remote:origin_label() end
-    if row.busy then
-        row.pct = aggregate_progress(pps)
-        if not row.pct and remote then row.pct = remote.pct end
-        row.elapsed = profile:operation_elapsed()
-    else
-        local op = profile:operation()
-        row.message = op and op.message or nil
-    end
+    -- The last finished operation's outcome: state, kept while the next one
+    -- runs (a running one's progress is its task's, never the view's).
+    local last = profile:operation()
+    if last then row.last_result = { status = last.status, message = last.message } end
 
     -- The tool per module type of the profile's projects.
     row.tools = {}
@@ -592,8 +551,8 @@ end
 --- The rows of one project configuration (`projects[].configurations[]`).
 local function configuration_row(ws, proj, cname, cdata, opts)
     local cfg = proj:get_configuration(cname)
-    local row = { name = cname, key = cname, label = cname, intent = cfg and cfg._intent or nil,
-        removed_upstream = cfg and cfg._removed_upstream and true or false, modified = false, object = cfg ~= nil,
+    local row = { key = cname, label = cname, intent = cfg and cfg._intent or nil,
+        removed_upstream = cfg and cfg._removed_upstream and true or false, modified = false,
         abstract = not cdata.variant, inherits = cdata.inherits, toolchain_locked = cdata.toolchain_locked or nil,
         role = cdata.role, toolchain = cdata.toolchain, generator = cdata.generator }
     if type(row.inherits) == "table" then row.inherits = vim.deepcopy(row.inherits) end
@@ -683,7 +642,7 @@ local function project_row(ws, proj, opts)
     for cname, cdata in pairs(proj.configurations or {}) do
         row.configurations[#row.configurations + 1] = configuration_row(ws, proj, cname, cdata, opts)
     end
-    table.sort(row.configurations, function(a, b) return a.name < b.name end)
+    table.sort(row.configurations, function(a, b) return a.key < b.key end)
     if proj.preset_configurations and next(proj.preset_configurations) then
         row.presets = {}
         for name, p in pairs(proj.preset_configurations) do
@@ -694,9 +653,9 @@ local function project_row(ws, proj, opts)
     end
     row.launches = {}
     for name, cfg in pairs(proj.launch or {}) do
-        -- Launch configurations carry no intent of their own in the model
-        -- (they publish with their project): `intent` stays absent.
-        local l = { name = name, key = name, label = name, modified = false, removed_upstream = false }
+        -- Launch configurations carry no publish state of their own in the
+        -- model (they publish with their project, spec §2.4).
+        local l = { key = name, label = name }
         if type(cfg) == "table" then
             l.description = require("loomworks.description").normalize(cfg.description)
             l.target, l.command = cfg.target, cfg.command
@@ -704,7 +663,7 @@ local function project_row(ws, proj, opts)
         end
         row.launches[#row.launches + 1] = l
     end
-    table.sort(row.launches, function(a, b) return a.name < b.name end)
+    table.sort(row.launches, function(a, b) return a.key < b.key end)
     row.deploy = {}
     if proj.deploy then
         local deploy_mod = require("loomworks.deploy")
