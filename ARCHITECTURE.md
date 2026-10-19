@@ -956,17 +956,25 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `editor_ops.prepares(target)` (daemon mode) for a non-device target; a
   device target (step 5n C2) is refused at once by
   `editor_ops.device_run_refused(target)` when one of `launch_build`,
-  `device_install`, `device_launch` is not carried, else run by
+  `device_list`, `device_install`, `device_launch` — and, when the cached
+  `Devices/1.list` (`Observer:devices(true)`, never a read; unread or failed
+  counts as none) shows no device for the profile, `device_scan` and
+  `set_device` — is not carried, else run by
   `start_device_run`: `editor_ops.build_target`, the profile's device
   (`device_source.chosen_for_target`: the cached `Devices/1.list`'s
-  `profiles`; none → `scan_for_target` + a pick + `select_for_target`, i.e.
-  `Devices/1.scan` and `Profiles/1.set_device`), then
+  `profiles`; a failed read is its error, never "none chosen"; none →
+  `scan_for_target` + a pick + `select_for_target`, i.e.
+  `Devices/1.scan` — its handle the current step, so a stop cancels it — and
+  `Profiles/1.set_device`), then
   `editor_ops.device_step("install" | "launch")` — `launch_call` with
   `device_args(target)` (the profile only: a device target is its default
   target) and no conflict question — each owned, cancellable through
   `_preparing`; launched, `_active_run.device_task` (the launch task id)
   keeps the run "running" until `stop()` sends `editor_ops.device_stop`
-  (`Devices/1.stop { task }`), and `device_log.refuse_daemon()` says the log
+  (`Devices/1.stop { task }`) or `_active_run.device_conn` (the connection
+  the launch was sent on) closes — the daemon forgets the launch with it
+  (`editor_ops.launch_forgotten`), so the run is over and a stop sends
+  nothing — and `device_log.refuse_daemon()` says the log
   is unavailable (a debug
   without nvim-dap prepares a launch, as `LaunchTarget:debug` falls back);
   a debug first checks `LaunchTarget:primary_debug_adapter(resolve)` against
