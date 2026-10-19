@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Launch",
   "version": 1,
-  "description": "Object /launch (API.md §9): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts; build (step 5t), a launch target's build as one task with its steps.",
+  "description": "Object /launch (API.md §9): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts; build (step 5t), a launch target's build as one task with its steps; device_log (step 5n part B3), the log of a program Devices/1.launch launched, its records as the log signal.",
   "cases": [
     {
       "name": "prepare_run of a launch configuration ends with its launch spec",
@@ -194,6 +194,44 @@
         { "send": { "kind": "call", "req_id": 2, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "target": "hello", "extra": ["x"] }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "prepare_run", "args": { "target": "hello", "force": "yes" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "device_log streams a launch's log as records of the log signal, prefiltered by its pid and bundle",
+      "fixture": "devices",
+      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "scan", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "scan" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" }, "device": { "key": "SER1" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "launch", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "launch" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "launch" }, "phase": "done", "exit_code": 0, "result": { "pid": 4242 } }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 4, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/launch", "iface": "loomworks.Launch", "v": 1, "signals": [ "log" ] } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "sub_id": { "$bind": "sub" } } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": { "task": { "$var": "launch" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "accepted", "task_id": { "$bind": "log" }, "profile_key": "dev" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "log" }, "phase": "start", "meta": { "name": "app: app app log on SER1", "kind": "device_log", "profile": "dev", "object": "/launch", "iface": "loomworks.Launch", "method": "device_log" } } },
+        { "expect": { "kind": "signal", "object": "/launch", "iface": "loomworks.Launch", "v": 1, "name": "log", "sub_id": { "$var": "sub" }, "args": { "task": { "$var": "log" }, "dropped": { "$absent": true }, "records": [
+          { "ts": "10-19 12:00:00.001", "level": "info", "tag": "AppTag", "pid": 4242, "message": "hello from the app", "fields": { "tid": 4243, "domain": "A00001", "proc": "com.example.app" } },
+          { "$exact": { "level": "info", "message": "not a device log line" } },
+          { "ts": "10-19 12:00:00.003", "level": "error", "tag": "AppTag", "pid": 4242, "message": "something failed" }
+        ] } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "log" }, "phase": "done", "exit_code": 0, "result": { "$exact": { "exit_code": 0 } } }, "timeout_ms": 60000 }
+      ]
+    },
+    {
+      "name": "device_log addresses a launch the caller finished: an unknown one is refused; the task id is required",
+      "fixture": "devices",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": { "task": "t-none" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": "no program launched by task t-none" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": { "task": "t-none" } } },
         { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
       ]
     }

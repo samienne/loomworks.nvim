@@ -6,7 +6,9 @@
 -- commands, a cancel killing a command, the tasks owned by their
 -- connection, the lock order B → D (an install holds its build directory
 -- while it waits for the device), a device held by another process, and a
--- stop of another client's launch.
+-- stop of another client's launch. Then `Launch/1.device_log` (API.md
+-- §9.5; step 5n part B3): the records of the `log` signal, the prefilter,
+-- the dropped count, cancel, disconnect, the pid-gone end and its refusals.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 _G.LW_CONFORMANCE_LIB = true
@@ -468,5 +470,201 @@ describe("Devices/1 in the workspace daemon (§19.16 Devices)", function()
         local f = s.done(r.task_id, 120000)
         assert.equals(0, f.exit_code, vim.inspect(f))
         assert.is_nil(f.result.device)
+    end)
+end)
+
+-- `Launch/1.device_log` (API.md §9.5; step 5n part B3): the log stream of
+-- a device launch, its records as the `log` signal.
+describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function()
+    local s
+    local saved = {}
+    before_each(function()
+        for _, k in ipairs({ "LOG_QUEUE_MAX", "LOG_FLUSH_MS", "LOG_PID_POLL_MS" }) do saved[k] = devices[k] end
+    end)
+    after_each(function()
+        for k, v in pairs(saved) do devices[k] = v end
+        L.cleanup()
+        if s then s.close(); s = nil end
+    end)
+
+    --- A finished launch of the fixture's device target on SER1; its task id.
+    local function launched()
+        s.scan()
+        s.set_device("SER1")
+        local f = s.done(s.start("launch", DEV))
+        assert.equals(0, f.exit_code, vim.inspect(f))
+        return f.task_id
+    end
+    --- The caller's environment with `extra`.
+    local function env_with(extra)
+        local e = vim.deepcopy(s.env)
+        for k, v in pairs(extra) do e[k] = v end
+        return e
+    end
+    local function subscribe()
+        local r = s.call("/", "loomworks.Root", "subscribe",
+            { object = "/launch", iface = "loomworks.Launch", v = 1, signals = { "log" } })
+        assert.truthy(r.sub_id)
+    end
+    local function device_log(task, env)
+        return s.call("/launch", "loomworks.Launch", "device_log", { task = task }, env or s.env)
+    end
+    local function start_log(task, env)
+        local r = device_log(task, env)
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        return r.task_id
+    end
+    --- The `log` signals of task `id` until `stop(records)` holds (default:
+    --- its `done`): the records, the dropped total, the done frame (when
+    --- reached) and the task's lines.
+    local function collect(id, stop, ms)
+        local recs, dropped, lines = {}, 0, {}
+        while true do
+            local f = s.wait(function(m)
+                return (m.kind == "signal" and m.object == "/launch" and m.name == "log" and m.args.task == id)
+                    or (m.kind == "task" and m.task_id == id and (m.phase == "line" or m.phase == "done"))
+            end, ms)
+            if f.kind == "signal" then
+                assert.is_true(#f.args.records > 0 or (f.args.dropped or 0) > 0)
+                vim.list_extend(recs, f.args.records)
+                dropped = dropped + (f.args.dropped or 0)
+                if stop and stop(recs) then return recs, dropped, nil, lines end
+            elseif f.phase == "line" then
+                lines[#lines + 1] = f.stream .. ": " .. f.text
+            else
+                return recs, dropped, f, lines
+            end
+        end
+    end
+
+    local APP = { tid = 4243, domain = "A00001", proc = "com.example.app" }
+
+    it("streams the launch's lines as records, prefiltered and normalized, after the clear", function()
+        s = session()
+        local launch = launched()
+        subscribe()
+        local id = start_log(launch)
+        local recs, dropped, done = collect(id)
+        assert.same({
+            { ts = "10-19 12:00:00.001", level = "info", tag = "AppTag", pid = 4242,
+                message = "hello from the app", fields = APP },
+            { level = "info", message = "not a device log line" },
+            { ts = "10-19 12:00:00.003", level = "error", tag = "AppTag", pid = 4242,
+                message = "something failed", fields = { tid = 4242, domain = "A00001", proc = "com.example.app" } },
+        }, recs)
+        assert.equals(0, dropped)
+        assert.equals(0, done.exit_code, vim.inspect(done))
+        assert.same({ exit_code = 0 }, done.result)
+        -- The clear ran first, in the caller's environment; the stream got no
+        -- pid (the module did not ask for strict-pid filtering).
+        local log = read(s.log)
+        local c, l = log:find("log_clear SER1 - log_clear", 1, true), log:find("\nlog SER1 - log", 1, true)
+        assert.truthy(c and l and c < l, log)
+        assert.is_nil(device_lock.read("SER1"))
+        -- The launch can still be logged again, and stopped.
+        assert.equals("accepted", device_log(launch).outcome)
+    end)
+
+    it("passes the pid to the module's command when it asks for strict-pid filtering", function()
+        s = session()
+        local launch = launched()
+        local _, _, done = collect(start_log(launch, env_with({ LW_TEST_LOG_STRICT = "1" })))
+        assert.equals(0, done.exit_code)
+        assert.truthy(read(s.log):find("log SER1 4242 log", 1, true), read(s.log))
+    end)
+
+    it("a full queue drops the oldest records and counts them on the next log", function()
+        s = session()
+        local launch = launched()
+        subscribe()
+        devices.LOG_QUEUE_MAX = 5
+        devices.LOG_FLUSH_MS = 60000
+        local recs, dropped, done = collect(start_log(launch, env_with({ LW_TEST_LOG_COUNT = "20" })))
+        assert.equals(0, done.exit_code)
+        assert.equals(5, #recs)
+        assert.equals(23 - 5, dropped)
+        assert.equals("flood 20", recs[5].message)
+    end)
+
+    it("a cancel or the owner's disconnect ends it at once", function()
+        s = session()
+        local launch = launched()
+        subscribe()
+        local slow = env_with({ LW_TEST_LOG_SLEEP = "30000" })
+        local id = start_log(launch, slow)
+        collect(id, function(r) return #r >= 3 end)
+        local rows = s.call("/tasks", "loomworks.Tasks", "list").tasks
+        local row
+        for _, t in ipairs(rows) do if t.task_id == id then row = t end end
+        assert.equals("device_log", row.kind)
+        assert.is_true(row.owned)
+        local t0 = uv.now()
+        assert.same({ outcome = "ok" }, s.call("/tasks", "loomworks.Tasks", "cancel", { task_id = id }))
+        local _, _, done = collect(id)
+        assert.is_true(uv.now() - t0 < 15000)
+        assert.equals(130, done.exit_code)
+        assert.truthy(done.error:find("^device_log stopped: cancelled by the client"), done.error)
+        id = start_log(launch, slow)
+        collect(id, function(r) return #r >= 3 end)
+        local svc = s.service()
+        svc:on_conn_closed(svc.tasks.tasks[id].owner)
+        _, _, done = collect(id)
+        assert.equals(130, done.exit_code)
+        assert.truthy(done.error:find("disconnected", 1, true), done.error)
+    end)
+
+    it("ends with exit 0 once the program's pid is gone from two probes", function()
+        s = session()
+        local launch = launched()
+        devices.LOG_PID_POLL_MS = 100
+        local id = start_log(launch, env_with({ LW_TEST_LOG_SLEEP = "30000", LW_TEST_DEVICE_PID = "0" }))
+        local t0 = uv.now()
+        local _, _, done, lines = collect(id)
+        assert.is_true(uv.now() - t0 < 15000)
+        assert.equals(0, done.exit_code, vim.inspect(done))
+        assert.same({ "out: the program exited — log stream closed" }, lines)
+    end)
+
+    it("a failed clear is a note; a failed stream ends the task with its exit", function()
+        s = session()
+        local launch = launched()
+        local _, _, done, lines = collect(start_log(launch, env_with({ LW_TEST_DEVICE_FAIL = "log_clear" })))
+        assert.equals(0, done.exit_code)
+        assert.truthy(lines[1]:find("^note: device log not cleared: "), vim.inspect(lines))
+        subscribe()
+        local recs
+        recs, _, done = collect(start_log(launch, env_with({ LW_TEST_DEVICE_FAIL = "log" })))
+        assert.equals(1, done.exit_code)
+        assert.equals("device log stream ended (exit 1)", done.error)
+        -- (Its stderr is read too, as the in-process view reads both streams.)
+        assert.equals(4, #recs)
+        assert.same({ level = "info", message = "log failed on SER1" }, recs[4])
+    end)
+
+    it("is refused as stop is: unknown, running, pid-less; another client's launch is forbidden", function()
+        s = session({ LW_TEST_DEVICE_SLEEP = "30000" })
+        local r = device_log("nope")
+        assert.same({ outcome = "refused", exit_code = 1, message = "no program launched by task nope" }, r)
+        s.scan()
+        s.set_device("SER1")
+        local id = s.start("launch", DEV)
+        s.wait(function(m) return m.kind == "task" and m.task_id == id and m.phase == "output" end)
+        r = device_log(id)
+        assert.equals("refused", r.outcome)
+        assert.truthy(r.message:find("still running", 1, true), r.message)
+        local svc = s.service()
+        local owner = svc.tasks.tasks[id].owner
+        s.call("/tasks", "loomworks.Tasks", "cancel", { task_id = id })
+        s.done(id)
+        local lt = require("loomworks.run_prep").select(svc.ws, svc.ws._active_profile)
+        devices.launches(svc)["T-nopid"] = { owner = owner, serial = "SER1", stop = false,
+            target = lt }
+        r = device_log("T-nopid")
+        assert.equals("refused", r.outcome)
+        assert.truthy(r.message:find("has no process id", 1, true), r.message)
+        devices.launches(svc)["T-other"] = { owner = {}, serial = "SER1", stop = false, target = lt, pid = 1 }
+        local fr = s.raw("/launch", "loomworks.Launch", "device_log", { task = "T-other" }, s.env)
+        assert.equals("error", fr.kind)
+        assert.equals("forbidden", fr.error.code)
     end)
 end)

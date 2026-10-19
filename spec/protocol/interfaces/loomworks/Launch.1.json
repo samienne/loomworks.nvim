@@ -2,7 +2,7 @@
   "interface": "loomworks.Launch",
   "version": 1,
   "status": "draft",
-  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. device_log lands in a later step. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler.",
+  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. Step 5n part B3 (API.md §9.5) adds device_log, the log stream of a program Devices/1.launch launched, its records sent as the log signal. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler.",
   "methods": {
     "prepare_run": {
       "description": "Build (unless no_build), deploy and resolve the launch of the profile's target or launch configuration; the task result carries the launch spec, or device for a program that runs on a device in the client.",
@@ -262,6 +262,132 @@
       },
       "needs_env": true,
       "mutates": true
+    },
+    "device_log": {
+      "description": "A task (meta.kind device_log) streaming the device log of the program a finished Devices/1.launch task of the caller launched, from what that launch recorded (its target, device, process id and bundle). The module's log-clear command runs first under the device lock (a failed clear is a note line); the log command then runs without a lock in the caller's environment, each line parsed and prefiltered (the launch's process id and bundle) as the in-process device-log view does, the kept lines sent as the log signal. Refused as Devices/1.stop is: another client's launch is forbidden; an unknown, still running, failed or stopped launch, one whose process id was not found, or a module with no log command is the refused result. Ends on a cancel or the owner's disconnect, when the log command exits (its exit code), or with exit 0 once the program's process id is missing from two probes in a row (every 3 s).",
+      "params": {
+        "type": "object",
+        "required": [
+          "task"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "description": "The launch's task id (Devices/1.launch).",
+            "$ref": "loomworks.Common/1#/$defs/TaskId"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The log stream's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "errors": [
+        "forbidden"
+      ],
+      "needs_env": true,
+      "mutates": true
+    }
+  },
+  "signals": {
+    "log": {
+      "description": "Records of a device_log task (API.md §9.5), in order and batched, to the subscriptions naming this task or none; sent after the task's start and before its done. dropped counts the records the server's bounded queue dropped (the oldest) since the previous log: a client shows it as a gap.",
+      "args": {
+        "type": "object",
+        "required": [
+          "task",
+          "records"
+        ],
+        "properties": {
+          "task": {
+            "$ref": "loomworks.Common/1#/$defs/TaskId"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/DeviceLogRecord"
+            }
+          },
+          "dropped": {
+            "description": "Records dropped before these since the previous log.",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  },
+  "subscribe_args": {
+    "description": "Optionally only one device_log task's records.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "task": {
+        "$ref": "loomworks.Common/1#/$defs/TaskId"
+      }
+    }
+  },
+  "$defs": {
+    "DeviceLogRecord": {
+      "description": "A normalized device log record (spec §19.18): an unparsed line is only its message, at level info.",
+      "type": "object",
+      "required": [
+        "level",
+        "message"
+      ],
+      "properties": {
+        "ts": {
+          "description": "The line's time as the device printed it.",
+          "type": "string"
+        },
+        "level": {
+          "description": "verbose, debug, info, warn, error or fatal; a client shows an unknown level as info.",
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "fields": {
+          "description": "The line's other columns.",
+          "type": "object",
+          "properties": {
+            "tid": {
+              "type": "integer"
+            },
+            "domain": {
+              "type": "string"
+            },
+            "proc": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   }
 }

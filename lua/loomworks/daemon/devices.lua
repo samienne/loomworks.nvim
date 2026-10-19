@@ -41,6 +41,15 @@
 --- serving — for a live holder, printing it once; a hung holder fails); a
 --- launch and a stop take only D. Each is held for the command only.
 ---
+--- `Launch/1.device_log { task }` (API.md §9.5; step 5n part B3) is served
+--- here too (`device_log_method`, mounted on /launch): the log stream of the
+--- program a finished launch of the caller launched, from the launch's record
+--- (`launches`: its target, device, pid and bundle). The module's log clear
+--- runs under D only; the stream takes no lock. Its lines are parsed and
+--- prefiltered by loomworks.device_log_records, as the in-process view does,
+--- and sent as the `log` signal from a bounded queue (the oldest dropped and
+--- counted when full); the pid probe ends it once the program is gone.
+---
 --- No deletion: runner devices (§18), `lw device clean` and `lw run
 --- --device` stay out of step 5n.
 
@@ -60,6 +69,17 @@ M.SCAN_TIMEOUT_MS = 60 * 1000
 M.LOCK_POLL_MS = 500
 --- A pid probe's own timeout (as LaunchTarget:device_resolve_pid asks).
 M.PROBE_TIMEOUT_MS = 3000
+--- A device log (Launch/1.device_log): records waiting to be sent, at most
+--- (the oldest dropped beyond, counted in the next `log` signal's `dropped`).
+M.LOG_QUEUE_MAX = 2000
+--- How often the waiting records are sent as one `log` signal.
+M.LOG_FLUSH_MS = 100
+--- How often the launched program's pid is probed, and how many misses in
+--- a row end the log (as the in-process session tracker's poll).
+M.LOG_PID_POLL_MS = 3000
+M.LOG_PID_MISSES = 2
+--- A line longer than this with no newline yet is taken as a line.
+M.LOG_LINE_MAX = 64 * 1024
 
 -- ---------------------------------------------------------------------------
 -- The registry's records
@@ -313,7 +333,7 @@ end
 --- its workspace's registry, so a reload cancels it.
 --- @param service loomworks.daemon.BuildService
 --- @param ctx table
---- @param op "scan"|"install"|"launch"|"stop"
+--- @param op "scan"|"install"|"launch"|"stop"|"device_log"
 --- @return table run
 local function new_run(service, ctx, op)
     local run = { task = ctx.task, op = op, cancelled = false, held = {}, timers = {}, ctx = ctx,
@@ -497,9 +517,11 @@ local function run_device_op(service, ctx, op)
             local function launched(pid)
                 if run.finished then return end
                 if run.cancelled then return run.finish(run.cancel_code, run.stopped()) end
-                -- The program a `stop` of this task stops (§15 `stop`).
+                -- The program a `stop` of this task stops (§15 `stop`), and
+                -- whose log a `Launch/1.device_log` of it streams (§9.5).
                 M.launches(service)[task.id] = { owner = ctx.conn, serial = serial,
-                    stop = stop_command or false }
+                    stop = stop_command or false, target = lt, profile = profile, pid = pid,
+                    bundle = bundle }
                 task:line("out", "LAUNCH OK: " .. lt:display_name() .. " on " .. serial
                     .. (pid and (" (pid " .. pid .. ")") or ""), "ok")
                 run.finish(0, nil, { pid = pid, bundle = bundle })
@@ -514,15 +536,24 @@ local function run_device_op(service, ctx, op)
 end
 
 -- ---------------------------------------------------------------------------
--- Launches a `stop` addresses
+-- Launches a `stop` and a `Launch/1.device_log` address
 -- ---------------------------------------------------------------------------
 
---- The device launches of this daemon session, by task id: `{ owner,
---- serial, stop }` — `stop` the module's stop command for the launched
---- program, built at the launch (false: the module has none) — kept until
---- stopped or their owner disconnects.
+--- @class loomworks.daemon.DeviceLaunch
+--- @field owner table the connection whose launch task it was
+--- @field serial string the device
+--- @field stop loomworks.DeviceCommand|false the module's stop command, built at the launch (false: none)
+--- @field target loomworks.LaunchTarget the device target the launch resolved
+--- @field profile loomworks.Profile its profile
+--- @field pid integer|nil the program's process id, when it was found
+--- @field bundle string|nil the program's bundle, when the module names one
+--- @field stopping? boolean a `stop` of it runs
+
+--- The device launches of this daemon session, by task id
+--- (loomworks.daemon.DeviceLaunch), kept until stopped or their owner
+--- disconnects.
 --- @param service loomworks.daemon.BuildService
---- @return table<string, table>
+--- @return table<string, loomworks.daemon.DeviceLaunch>
 function M.launches(service)
     service._device_launches = service._device_launches or {}
     return service._device_launches
@@ -697,6 +728,248 @@ local function stop_method(service)
                     run.finish(0)
                 end)
             end)
+        end)
+        return interfaces.ASYNC
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Launch/1.device_log: the log stream of a launched program (API.md §9.5)
+-- ---------------------------------------------------------------------------
+
+--- The records waiting to be sent of one log stream, at most LOG_QUEUE_MAX:
+--- `push` drops the oldest when full, counting it in `dropped`.
+--- @return table
+local function log_queue()
+    local q = { items = {}, head = 1, tail = 0, dropped = 0 }
+    function q.size() return q.tail - q.head + 1 end
+    function q.push(rec)
+        q.tail = q.tail + 1
+        q.items[q.tail] = rec
+        if q.size() > M.LOG_QUEUE_MAX then
+            q.items[q.head] = nil
+            q.head = q.head + 1
+            q.dropped = q.dropped + 1
+        end
+    end
+    --- Everything waiting, and the number dropped since the last take.
+    function q.take()
+        local out = {}
+        for i = q.head, q.tail do out[#out + 1] = q.items[i] end
+        local dropped = q.dropped
+        q.items, q.head, q.tail, q.dropped = {}, 1, 0, 0
+        return out, dropped
+    end
+    return q
+end
+
+--- Run an accepted device log of launch `l` (see `device_log_method`): the
+--- module's log clear under the device lock, then its log stream (no lock),
+--- each kept line queued as a record and sent as the `log` signal; the pid
+--- probe ends it once the program is gone.
+--- @param service loomworks.daemon.BuildService
+--- @param ctx table
+--- @param l loomworks.daemon.DeviceLaunch
+--- @param command loomworks.DeviceCommand the log stream's command
+--- @return table run
+local function run_device_log(service, ctx, l, command)
+    local runner = require("loomworks.daemon.runner")
+    local records = require("loomworks.device_log_records")
+    local core_ifaces = require("loomworks.daemon.core_interfaces")
+    local run = new_run(service, ctx, "device_log")
+    local task, lt, serial = ctx.task, l.target, l.serial
+    task:start({ name = lt:display_name() .. " log on " .. serial, kind = "device_log",
+        profile = l.profile and l.profile.key or nil })
+
+    -- The records, sent every LOG_FLUSH_MS while the owner keeps up
+    -- (PROTOCOL.md §14.4); all of them before the task's `done`.
+    local queue = log_queue()
+    local function flush(force)
+        if queue.size() == 0 and queue.dropped == 0 then return end
+        if not force and tasks_mod._queued(task.owner) > tasks_mod.OWNER_HIGH then return end
+        local recs, dropped = queue.take()
+        local reg = service.server and service.server.interfaces
+        if not reg then return end
+        local where = core_ifaces.LAUNCH
+        reg:emit(where.path, where.iface, where.v, "log",
+            { task = task.id, records = recs, dropped = dropped > 0 and dropped or nil },
+            function(sub_args) return sub_args.task == nil or sub_args.task == task.id end)
+    end
+    local finish = run.finish
+    function run.finish(code, err, result)
+        if not run.finished then flush(true) end
+        return finish(code, err, result)
+    end
+
+    -- Lines → records: parsed and prefiltered as the in-process view does.
+    local prefilter = records.make_prefilter({ pid = l.pid, bundle = l.bundle })
+    local function ingest(line)
+        local rec, cleaned = records.parse_line(line)
+        if not rec then
+            if not cleaned or cleaned == "" then return end
+            rec = { raw = cleaned }
+        end
+        if prefilter(rec) then queue.push(records.normalize(rec)) end
+    end
+    local partial = {}
+    local function chunk(stream, text)
+        local buf = (partial[stream] or "") .. text
+        local start = 1
+        while true do
+            local e = buf:find("\n", start, true)
+            if not e then break end
+            ingest(buf:sub(start, e - 1))
+            start = e + 1
+        end
+        partial[stream] = buf:sub(start)
+        if #partial[stream] > M.LOG_LINE_MAX then
+            ingest(partial[stream])
+            partial[stream] = ""
+        end
+    end
+
+    -- The pid probes run beside the stream, in their own child slot (a
+    -- cancel kills both).
+    local probe_slot = {}
+    local cancel = run.cancel
+    function run.cancel(reason, code)
+        if run.cancelled or run.finished then return end
+        if probe_slot.child then runner.kill(probe_slot.child) end
+        return cancel(reason, code)
+    end
+    local function probe(cmd, so, on_exit)
+        so = so or {}
+        if run.cancelled or run.finished then
+            vim.schedule(function() on_exit({ code = 127, signal = 0, stdout = "", stderr = "stopped" }) end)
+            return
+        end
+        spawn(ctx, probe_slot, cmd, { cwd = so.cwd, env = so.env, timeout = so.timeout or M.PROBE_TIMEOUT_MS },
+            function(code, stdout, stderr) on_exit({ code = code, signal = 0, stdout = stdout, stderr = stderr }) end)
+    end
+    local misses = 0
+    local function poll()
+        if run.finished or run.cancelled or run.program_gone then return end
+        lt:device_resolve_pid(serial, l.bundle, { tries = 1, interval_ms = 0, system = probe })
+            :next(function(pid)
+                service:with_model(ctx, function()
+                    if run.finished or run.cancelled or run.program_gone then return end
+                    misses = pid and 0 or misses + 1
+                    if misses < M.LOG_PID_MISSES then return run.timer(M.LOG_PID_POLL_MS, poll) end
+                    run.program_gone = true
+                    task:line("out", "the program exited — log stream closed", "plain")
+                    -- (The stream's end then finishes the run.)
+                    if run.child then runner.kill(run.child) else run.finish(0) end
+                end)
+            end)
+    end
+
+    local function stream()
+        if run.finished then return end
+        if run.cancelled then return run.finish(run.cancel_code, run.stopped()) end
+        local argv = { command.cmd }
+        for _, a in ipairs(command.args or {}) do argv[#argv + 1] = a end
+        local flusher = uv.new_timer()
+        run.timers[flusher] = true
+        flusher:start(M.LOG_FLUSH_MS, M.LOG_FLUSH_MS, vim.schedule_wrap(function()
+            if not run.finished then flush(false) end
+        end))
+        run.timer(M.LOG_PID_POLL_MS, poll)
+        spawn(ctx, run, argv, { cwd = command.cwd, env = command.env, output = chunk }, function(code)
+            service:with_model(ctx, function()
+                if run.finished then return end
+                for _, rest in pairs(partial) do if rest ~= "" then ingest(rest) end end
+                partial = {}
+                if run.cancelled then return run.finish(run.cancel_code, run.stopped()) end
+                if run.program_gone then return run.finish(0) end
+                if code ~= 0 then return run.finish(code, "device log stream ended (exit " .. code .. ")") end
+                run.finish(0)
+            end)
+        end)
+    end
+
+    -- The device's log cleared first, under the device lock for that only.
+    local clear = lt:device_log_clear_command(serial)
+    if not clear then
+        stream()
+        return run
+    end
+    take_device_lock(service, ctx, run, serial, function(lerr)
+        if lerr then return run.finish(1, lerr) end
+        run_command(service, ctx, run, clear, nil, function(cerr)
+            require("loomworks.remote.device_lock").release(run.device_lock)
+            run.device_lock = nil
+            if cerr then task:line("note", "device log not cleared: " .. cerr, "plain") end
+            stream()
+        end)
+    end)
+    return run
+end
+
+--- `Launch/1.device_log { task }` (API.md §9.5): a task streaming the log
+--- of the program a finished `launch` task of the caller launched — its
+--- recorded target, device, pid and bundle (loomworks.daemon.DeviceLaunch),
+--- nothing resolved again. Refused as `stop` is (another client's launch
+--- is `forbidden`), and also for a launch whose pid was not found or a
+--- module with no log command. Owned by the caller: a cancel or its
+--- disconnect ends it; a reload does not (`keeps_on_reload`).
+--- @param service loomworks.daemon.BuildService
+--- @return function
+function M.device_log_method(service)
+    local interfaces = require("loomworks.daemon.interfaces")
+    local core_ifaces = require("loomworks.daemon.core_interfaces")
+    return function(cctx, args)
+        local id = args.task
+        local l = M.launches(service)[id]
+        if not l then
+            local t = service.tasks.tasks[id]
+            if t and not t.finished then
+                return { outcome = "refused", exit_code = 1, message = "task " .. tostring(id)
+                    .. " is still running — its program's log follows its launch" }
+            end
+            return { outcome = "refused", exit_code = 1, message = "no program launched by task " .. tostring(id) }
+        end
+        if l.owner ~= cctx.conn then
+            return nil, envelope.err(envelope.ERR.forbidden,
+                string.format("task %s belongs to another client", tostring(id)))
+        end
+        if not l.pid then
+            return { outcome = "refused", exit_code = 1, message = "the program launched by task "
+                .. tostring(id) .. " has no process id — no log stream" }
+        end
+        local env, eerr = envscope.validate(cctx.env)
+        if not env then return { outcome = "declined", reason = eerr } end
+        local srv = service.server
+        if service.stopping or srv.stopped then
+            return { outcome = "declined", reason = "the workspace runtime is stopping" }
+        end
+        if srv.retiring then return { outcome = "declined", reason = "the daemon is retiring" } end
+        local ctx = { op = "device_log", conn = cctx.conn, env = env, args = args, command = "lw run",
+            call = core_ifaces.task_call(cctx.registry, core_ifaces.LAUNCH, "device_log") }
+        function ctx.reply(fields)
+            ctx.replied = true
+            service:_before_ack(ctx)
+            return cctx.reply(fields)
+        end
+        service:with_model(ctx, function()
+            if ctx.conn.closed then return end
+            local ws, refusal, decline = service:live(ctx)
+            if not ws then
+                if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
+                return ctx.reply({ outcome = "refused", exit_code = 1, message = refusal })
+            end
+            -- (Built in the caller's environment, as the launch's commands.)
+            local command = l.target:device_log_command(l.serial, l.pid)
+            if not command then
+                return ctx.reply({ outcome = "refused", exit_code = 1, message = "module does not support device logs" })
+            end
+            local task = service.tasks:create(ctx.conn)
+            task.call = ctx.call
+            ctx.task, ctx.ws = task, ws
+            ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn),
+                profile_key = l.profile and l.profile.key or nil, pid = srv.pid })
+            local run = run_device_log(service, ctx, l, command)
+            srv:log("device log (task %s) of launch %s accepted", task.id, tostring(id))
+            if not run.finished then service.runs[run] = true end
         end)
         return interfaces.ASYNC
     end
