@@ -345,11 +345,11 @@ end
 --- locks and timers, ends the task (a `stop` has none: its `on_finish(code,
 --- err, result)` answers the call) and leaves `Service.runs`; `cancel(reason,
 --- code)` kills the running command (whose end then finishes the run) or
---- finishes it at once. An install, launch or stop `keeps_on_reload`
---- (§19.16 "Devices"): a reload of the workspace neither cancels it nor is
---- declined for it — it runs only commands built when it was accepted (from
---- the workspace of then, which nothing it does writes); a scan merges into
---- its workspace's registry, so a reload cancels it.
+--- finishes it at once. An install, launch, stop or device_log
+--- `keeps_on_reload` (§19.16 "Devices"): a reload of the workspace neither
+--- cancels it nor is declined for it — it runs only commands built when it
+--- was accepted (from the workspace of then, which nothing it does writes);
+--- a scan merges into its workspace's registry, so a reload cancels it.
 --- @param service loomworks.daemon.BuildService
 --- @param ctx table
 --- @param op "scan"|"install"|"launch"|"stop"|"device_log"
