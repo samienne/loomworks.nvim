@@ -376,4 +376,23 @@ describe("device_log view notes", function()
         assert.truthy(text:find("after the gap", 1, true), text)
         assert.equals(0, view._pending_dropped)
     end)
+
+    it("the gap line is not in the ring: a re-render shows every kept record and no gap", function()
+        local view = dl._LogView.new()
+        view:append_record({ raw = "first" })
+        view:append_record({ raw = "second" })
+        -- `first` and `second` were dropped from the queue (still in the ring).
+        view._pending = {}
+        view._pending_dropped = 2
+        view:append_record({ raw = "third" })
+        view:_flush()
+        local text = table.concat(vim.api.nvim_buf_get_lines(view._buf, 0, -1, false), "\n")
+        assert.truthy(text:find("2 lines dropped", 1, true), text)
+        assert.equals(3, #view._records)
+        view:_rerender()
+        text = table.concat(vim.api.nvim_buf_get_lines(view._buf, 0, -1, false), "\n")
+        assert.is_nil(text:find("lines dropped", 1, true), text)
+        local a, b, c = text:find("first", 1, true), text:find("second", 1, true), text:find("third", 1, true)
+        assert.is_true(a ~= nil and b ~= nil and c ~= nil and a < b and b < c, text)
+    end)
 end)

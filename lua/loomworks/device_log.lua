@@ -556,13 +556,13 @@ function LogView:_flush()
     -- If we dropped pending records to stay under the cap, tell the
     -- user in the view itself — silent drops would hide a real
     -- problem. One gap line per flush regardless of drop count, ahead
-    -- of the records that follow the gap (and kept in the ring, so a
-    -- re-render shows it too).
+    -- of the records that follow the gap. It is NOT kept in the ring:
+    -- the dropped records are still there, so a re-render shows them all
+    -- in order and the gap no longer applies.
     if self._pending_dropped and self._pending_dropped > 0 then
         local gap = { header = string.format("── %d lines dropped (the view fell behind the stream) ──",
             self._pending_dropped) }
         self._pending_dropped = 0
-        self._records[#self._records + 1] = gap
         table.insert(batch, 1, gap)
     end
 
