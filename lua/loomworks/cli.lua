@@ -2147,11 +2147,13 @@ function M._device_select(ws, args)
       out("profile '" .. profile.key .. "' has no device selected")
       return 0
     end
-    profile:clear_device()
+    local ok, err = profile:clear_device()
+    if not ok then die("could not clear the device of profile '" .. profile.key .. "': " .. tostring(err)) end
     out("cleared the device of profile '" .. profile.key .. "'")
     return 0
   end
-  profile:set_device(serial)
+  local ok, err = profile:set_device(serial)
+  if not ok then die("could not save the device of profile '" .. profile.key .. "': " .. tostring(err)) end
   out("device for profile '" .. profile.key .. "': " .. serial)
   return 0
 end
