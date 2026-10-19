@@ -121,6 +121,9 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _lsp_fetch table|nil the `get` in flight: its token (a reply to an older read — before a reconnect, or `/lsp` removed and re-added — is ignored)
 --- @field _lsp_again boolean|nil a `changed` arrived during that read: read again after it
 --- @field _lsp_get_why string|nil why `LspConfig/1.get` is degraded on this connection (the daemon lacks it): the LSP note's reason
+--- @field _devices { list: loomworks.DeviceRecord[]|nil, reason: string|nil }|nil `Devices/1.list` as last read on this connection (step 5n C2; `list` nil: that read failed or was declined, `reason` says how)
+--- @field _dev_fetch { waiters: fun(list: loomworks.DeviceRecord[]|nil)[] }|nil the `list` in flight: its token and waiters (a reply to an older read is ignored)
+--- @field _dev_again boolean|nil a `changed` arrived during that read: read again after it
 --- @field _lost boolean|nil a connection the editor held was lost: its workspace is unloaded until the daemon reports `loaded` again (§19.16 "Unloaded on disconnect"); kept across connections
 --- @field _relay loomworks.daemon.RelayProc|nil the relay in flight, until its `welcome` or its exit (single flight); after `welcome` the relay is the connection's (`conn.relay`)
 --- @field _relay_token table|nil identifies that relay's callback: `{ form, answer, conn }` (one after a stop or a replacement is ignored)
@@ -240,9 +243,25 @@ M.TESTS = {
     methods = { "discover", "run_cases", "prepare_debug", "collect", "result" }, signals = { "results" },
     callable = true, tasks = true, unavailable = "tests unavailable",
 }
+-- The devices (step 5n C2, §19.16 "Devices", API.md §15): subscribed to for
+-- its thin `changed`; `list` is read into a per-connection cache on subscribe
+-- and on each `changed` (the editor never lists or probes devices itself);
+-- `scan`, `install` and `launch` are tasks the editor owns, `stop` a plain
+-- call. Never in-process: a missing one refuses the device actions.
+M.DEVICES = {
+    object = "/devices", iface = "loomworks.Devices", v = 1, feature = "devices",
+    methods = { "list", "scan", "install", "launch", "stop" }, signals = { "changed" },
+    callable = true, tasks = true, unavailable = "devices unavailable",
+}
+-- A profile's device (step 5n C2, API.md §11): two plain writes, called,
+-- never subscribed to.
+M.PROFILES = {
+    object = "/profiles", iface = "loomworks.Profiles", v = 1, feature = "device choice",
+    methods = { "set_device", "clear_device" }, signals = {}, call_only = true,
+}
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS }
 M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.BUILD, M.LAUNCH, M.DEBUG,
-    M.LSP, M.TESTS }
+    M.LSP, M.TESTS, M.DEVICES, M.PROFILES }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -1379,6 +1398,11 @@ function Observer:_connected_note()
     if self.feature_note then note = note .. " — " .. self.feature_note end
     if self.incompat_note then note = note .. " — " .. self.incompat_note end
     self:_set("connected", note)
+    -- The device registry's first read on this connection (step 5n C2,
+    -- §19.16 "Devices"); later reads follow its `changed`.
+    if not self._devices and not self._dev_fetch and self:can_call("device_list") then
+        self:_fetch_devices()
+    end
     -- The LSP state's first read on this connection, once discovered (§19.16
     -- "LSP configuration"); a feature found missing makes it unavailable.
     if not self._lsp_read and not self._lsp_fetch and self:can_call("get") then
@@ -1435,6 +1459,7 @@ function Observer:_subscribe(conn, done)
     self._degraded, self._method_notes, self._method_why, self._lsp_get_why = nil, nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
+    self:_drop_devices()
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
@@ -1539,6 +1564,7 @@ function Observer:_on_objects_changed(args)
                     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
                     self:_lsp_changed()
                 end
+                if want == M.DEVICES then self:_drop_devices() end
             end
         end
     end
@@ -1825,6 +1851,7 @@ function Observer:_on_closed(c)
     self._degraded, self._method_notes, self._method_why, self._lsp_get_why = nil, nil, nil, nil
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
+    self:_drop_devices()
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
@@ -1873,6 +1900,9 @@ function Observer:_on_message(msg)
         elseif msg.object == M.LSP.object and msg.iface == M.LSP.iface and msg.name == "changed" then
             -- Thin (§19.20): read the state again with the editor's environment.
             return self:_fetch_lsp()
+        elseif msg.object == M.DEVICES.object and msg.iface == M.DEVICES.iface and msg.name == "changed" then
+            -- Thin (API.md §15): read the registry again.
+            return self:_fetch_devices()
         elseif msg.object == M.TESTS.object and msg.iface == M.TESTS.iface and msg.name == "results" then
             return self:_test_results(args)
         elseif msg.object == M.TASKS.object and msg.iface == M.TASKS.iface then
@@ -2017,6 +2047,9 @@ local METHOD_IFACE = {
     get = M.LSP, set_option = M.LSP,
     cancel = M.TASKS, list = M.TASKS,
     discover = M.TESTS, run_cases = M.TESTS, prepare_test_debug = M.TESTS, collect = M.TESTS, result = M.TESTS,
+    device_list = M.DEVICES, device_scan = M.DEVICES, device_install = M.DEVICES, device_launch = M.DEVICES,
+    device_stop = M.DEVICES,
+    set_device = M.PROFILES, clear_device = M.PROFILES,
 }
 
 --- The wire method of a call whose editor-side name differs (step 5m C2):
@@ -2024,8 +2057,10 @@ local METHOD_IFACE = {
 --- call `prepare_test_debug` here — METHOD_IFACE, CALLS and the degraded
 --- methods are keyed by the call's name, the daemon is sent `prepare_debug`.
 --- Likewise Build/1 and Launch/1 both have a `build`: the launch target's is
---- the call `launch_build` (step 5t).
-local WIRE = { prepare_test_debug = "prepare_debug", launch_build = "build" }
+--- the call `launch_build` (step 5t). The Devices/1 methods are the calls
+--- `device_<method>` (step 5n C2: `list` is also Tasks/1's).
+local WIRE = { prepare_test_debug = "prepare_debug", launch_build = "build", device_list = "list",
+    device_scan = "scan", device_install = "install", device_launch = "launch", device_stop = "stop" }
 
 --- The calls the editor makes (step 5k), each naming its method literally
 --- (the guard checks them against the `methods` of M.BUILD, M.LAUNCH,
@@ -2082,6 +2117,27 @@ local CALLS = {
     result = function(conn, args, cb, env)
         conn:call(M.TESTS.object, M.TESTS.iface, M.TESTS.v, "result", args, cb, env)
     end,
+    device_list = function(conn, args, cb, env)
+        conn:call(M.DEVICES.object, M.DEVICES.iface, M.DEVICES.v, "list", args, cb, env)
+    end,
+    device_scan = function(conn, args, cb, env)
+        conn:call(M.DEVICES.object, M.DEVICES.iface, M.DEVICES.v, "scan", args, cb, env)
+    end,
+    device_install = function(conn, args, cb, env)
+        conn:call(M.DEVICES.object, M.DEVICES.iface, M.DEVICES.v, "install", args, cb, env)
+    end,
+    device_launch = function(conn, args, cb, env)
+        conn:call(M.DEVICES.object, M.DEVICES.iface, M.DEVICES.v, "launch", args, cb, env)
+    end,
+    device_stop = function(conn, args, cb, env)
+        conn:call(M.DEVICES.object, M.DEVICES.iface, M.DEVICES.v, "stop", args, cb, env)
+    end,
+    set_device = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "set_device", args, cb, env)
+    end,
+    clear_device = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "clear_device", args, cb, env)
+    end,
 }
 
 --- An interface call of CALLS on the observed connection; every call but
@@ -2089,7 +2145,7 @@ local CALLS = {
 --- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"set_device"|"clear_device"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -2100,7 +2156,10 @@ function Observer:_icall(name, args, cb)
         return cb(nil, { code = "closed", message = "not connected" })
     end
     local env = nil
-    if name ~= "cancel" and name ~= "list" then env = (self.opts.environ or vim.fn.environ)() end
+    -- (`Devices/1.list` reads the registry as it is: no environment.)
+    if name ~= "cancel" and name ~= "list" and name ~= "device_list" then
+        env = (self.opts.environ or vim.fn.environ)()
+    end
     send(conn, args, cb, env)
 end
 
@@ -2219,7 +2278,7 @@ end
 ---   { outcome = "failed", reason }     it may have started (an internal
 ---                                      error, the connection lost before
 ---                                      the reply): never re-run.
---- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"|"launch_build"|"device_scan"|"device_install"|"device_launch"
 --- @param args table the call's arguments (§19.15)
 --- `h.units`: the call's configuration units (a clean pre-empts the task by
 --- them before its `start` arrives).
@@ -2305,7 +2364,7 @@ M.VALUE_CHECKED = { set_option = true }
 ---   { outcome = "invalid", reason }   `invalid_args` of a VALUE_CHECKED method
 ---   { outcome = "degraded", reason }  the daemon lacks the method (noted)
 ---   { outcome = "failed", reason }    any other error
---- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"
+--- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"|"device_list"|"device_stop"|"set_device"|"clear_device"
 --- @param args table
 --- @param cb fun(r: table)
 function Observer:request(method, args, cb)
@@ -2453,6 +2512,104 @@ function Observer:_fetch_lsp()
         end
         self:_lsp_changed()
     end)
+end
+
+-- ---------------------------------------------------------------------------
+-- The devices on Devices/1 (step 5n C2, §19.16 "Devices", API.md §15)
+-- ---------------------------------------------------------------------------
+
+--- @class loomworks.DeviceRecord
+--- A device as `Devices/1.list` reports it (API.md §15; the in-process
+--- source builds the same shape from its model, loomworks.device_source).
+--- @field id string|nil the daemon's opaque id (absent in-process)
+--- @field key string the serial
+--- @field label string its name (the serial when it has none)
+--- @field state string `online` or `offline` (anything else: shown neutral)
+--- @field provider string|nil the module that found it
+--- @field profiles string[]|nil the keys of the profiles that chose it
+
+--- Forget the device list of this connection; a read in flight ends with
+--- nothing (its waiters get nil) and its reply is ignored.
+function Observer:_drop_devices()
+    local f = self._dev_fetch
+    self._devices, self._dev_fetch, self._dev_again = nil, nil, nil
+    if f then
+        for _, w in ipairs(f.waiters) do pcall(w, nil) end
+    end
+end
+
+--- Read `Devices/1.list` into the per-connection cache (single flight: a
+--- `changed` during a read reads once more after it, and its waiters wait
+--- for that read). A failed or declined read is cached as absent (`list`
+--- nil, with its reason) until the next `changed` or reconnect. Every read
+--- that ends emits `daemon_devices`.
+--- @param cb? fun(list: loomworks.DeviceRecord[]|nil) called once this read (or the one after it) ended
+function Observer:_fetch_devices(cb)
+    if self._dev_fetch then
+        self._dev_again = true
+        if cb then table.insert(self._dev_fetch.waiters, cb) end
+        return
+    end
+    if not self:can_call("device_list") then
+        if cb then cb(nil) end
+        return
+    end
+    local conn = self.conn
+    local token = { waiters = { cb } }
+    self._dev_fetch = token
+    self:request("device_list", {}, function(r)
+        if self.conn ~= conn or self.state == "stopped" or self._dev_fetch ~= token then return end
+        self._dev_fetch = nil
+        local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
+        local list = res and type(res.devices) == "table" and res.devices or nil
+        local reason = nil
+        if not list then
+            reason = "Devices/1.list " .. (r.outcome ~= "ok" and ("failed: " .. tostring(r.reason or r.outcome))
+                or ("answered " .. tostring(res and (res.message or res.reason or res.outcome) or "nothing usable")))
+            self:_debug("devices: " .. reason)
+        end
+        self._devices = { list = list, reason = reason }
+        local waiters = token.waiters
+        if self._dev_again then
+            -- A change while this read was in flight: read again; its
+            -- waiters wait for that read (this one may predate the change).
+            self._dev_again = nil
+            self:_fetch_devices()
+            if self._dev_fetch then
+                for _, w in ipairs(waiters) do table.insert(self._dev_fetch.waiters, w) end
+                waiters = {}
+            end
+        end
+        self:_emit("daemon_devices", {})
+        for _, w in ipairs(waiters) do
+            local ok, e = pcall(w, list)
+            if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
+        end
+    end)
+end
+
+--- The device registry as `Devices/1.list` last returned it, or nil: not
+--- carried, not read yet on this connection (a read is started then), or the
+--- last read failed or was declined.
+--- @return loomworks.DeviceRecord[]|nil
+function Observer:devices()
+    if not self:can_call("device_list") then return nil end
+    if self._devices then return self._devices.list end
+    self:_fetch_devices()
+    return nil
+end
+
+--- `cb(list)` on the main loop with the registry once read: the cached read
+--- at once (unless `fresh`), else after the read in flight or one started
+--- now — `fresh` always waits for a read that starts after this call (a scan
+--- just ended). nil when not carried, or the read failed or outlived its
+--- connection.
+--- @param cb fun(list: loomworks.DeviceRecord[]|nil)
+--- @param fresh? boolean
+function Observer:with_devices(cb, fresh)
+    if not self:can_call("device_list") then return cb(nil) end
+    if self._devices and not fresh and not self._dev_fetch then return cb(self._devices.list) end
+    self:_fetch_devices(cb)
 end
 
 --- A debug-log line (the editor's log, when it has one).

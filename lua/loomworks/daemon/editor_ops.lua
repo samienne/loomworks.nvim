@@ -45,18 +45,31 @@
 --- `Launch/1.build` the editor owns (M.build_target) — no dependency build
 --- or deploy in the editor; it and the preparations ask the
 --- artifact-conflict question before the call, its Yes sent as `force`.
+---
+--- Step 5n part C2 (§19.16 "Devices"): the editor neither lists nor probes
+--- devices, nor installs or launches on them. A device target's build is
+--- the same `Launch/1.build` (its post-build deploy included); its install
+--- and launch are `Devices/1.install` / `launch` tasks the editor owns
+--- (M.device_step), a stop `Devices/1.stop { task }` (M.device_stop); a
+--- scan is a `Devices/1.scan` task (M.scan_devices), the list the
+--- observer's cache of `Devices/1.list` (M.devices), and a profile's device
+--- `Profiles/1.set_device` / `clear_device` (M.set_device). All under the
+--- same availability rule: refused when not carried, never in-process.
 
 local M = {}
 
 local VERB = { build = "build", configure = "configure", clean = "clean",
     prepare_run = "launch", prepare_debug = "debug launch", launch_build = "build", discover = "test discovery",
-    run_cases = "test run", prepare_test_debug = "test debug preparation" }
+    run_cases = "test run", prepare_test_debug = "test debug preparation",
+    device_list = "devices", device_scan = "device scan", device_install = "install", device_launch = "launch",
+    device_stop = "device stop", set_device = "device choice", clear_device = "device choice" }
 
 --- The calls whose task-runner restart is not sent again (§19.16 "Tasks in
 --- the task runner", step 5k C2): a launch's preparation ends in a program
 --- the editor starts after the call, which a restart of the task alone
---- would never start.
-M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true }
+--- would never start. A device launch (step 5n C2) likewise: its program
+--- is the session tracker's to stop, which a restart alone would not tell.
+M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true, device_launch = true }
 
 --- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil) }
 
@@ -64,7 +77,7 @@ M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = 
 --- workspace's own observer carries its operations: a step chained from a
 --- workspace the editor has since swapped away from is never sent to another
 --- workspace's daemon.
---- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"launch_build"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"launch_build"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"set_device"|"clear_device"
 --- @param ws loomworks.Workspace|nil
 --- @return loomworks.daemon.Observer|nil
 function M.carrier(method, ws)
@@ -100,20 +113,6 @@ function M.refuse(method, obs, k)
     k.reject(msg, true)
 end
 
---- In `daemon` mode, the refusal of a build of `ws` the daemon cannot carry
---- now (M.refuse's message, notified), or nil — carried, or the `in-process`
---- mode. A device target's build (still the editor's until step 5n) asks it
---- first, so that nothing of it (its pre-build deploy) runs in the editor
---- when its build would be refused.
---- @param ws loomworks.Workspace|nil
---- @return string|nil
-function M.build_refusal(ws)
-    local daemon, obs = M.daemon_of(ws)
-    if not daemon or M.carrier("build", ws) then return nil end
-    local msg
-    M.refuse("build", obs, { reject = function(m) msg = m end })
-    return msg
-end
 
 --- A configuration unit as a `units` item (§19.15: by project key and
 --- configuration-unit key).
@@ -320,17 +319,28 @@ function M.prepares(target)
     return (M.daemon_of(M.scope_workspace({ profile = target._profile })))
 end
 
---- Why the editor refuses now a launch it runs itself — a device target's
---- (§19.16 "Editor operations": only while connected) — in `daemon` mode:
---- not connected, the observer's Runtime-line note; nil while connected,
---- and always in the `in-process` mode.
+--- The calls of a device target's launch (§19.16 "Devices"), in order.
+local DEVICE_RUN = { "launch_build", "device_install", "device_launch" }
+
+--- In `daemon` mode, refuse a device target's launch at once when the daemon
+--- cannot carry one of its calls now (§19.16 "Availability": refused like
+--- any operation, nothing of it run): the refusal notified as `launch: <the
+--- first missing call's note>`, then true. False when carried, and always
+--- in the `in-process` mode (the caller then runs the in-process chain).
 --- @param target loomworks.LaunchTarget
---- @return string|nil
-function M.device_launch_refusal(target)
-    local daemon, obs = M.daemon_of(M.scope_workspace({ profile = target._profile }))
-    if not daemon then return nil end
-    if obs and obs.state == "connected" and obs.conn and not obs.conn.closed and not obs._lost then return nil end
-    return "launch: " .. (obs and obs.state ~= "stopped" and obs:refusal("build") or "the workspace is no longer loaded")
+--- @return boolean refused
+function M.device_run_refused(target)
+    local ws = M.scope_workspace({ profile = target._profile })
+    local daemon, obs = M.daemon_of(ws)
+    if not daemon then return false end
+    for _, method in ipairs(DEVICE_RUN) do
+        if not M.carrier(method, ws) then
+            local why = obs and obs.state ~= "stopped" and obs:refusal(method) or "the workspace is no longer loaded"
+            vim.notify("loomworks: launch: " .. why, vim.log.levels.WARN)
+            return true
+        end
+    end
+    return false
 end
 
 --- A `Launch/1` call the editor owns on a non-device launch target (§19.16
@@ -349,7 +359,11 @@ end
 --- program is started — a call not yet sent is never sent, one not yet
 --- answered is cancelled once accepted, an accepted one at once
 --- (`Tasks/1.cancel` of the owned task, Observer:cancel_owned_id).
---- @param method "prepare_run"|"prepare_debug"|"launch_build"
+--- Step 5n C2: a device target's install and launch (`device_install`,
+--- `device_launch`) go the same way, addressed by the profile alone (the
+--- device target is its default target, API.md §15), without the question
+--- (they build nothing).
+--- @param method "prepare_run"|"prepare_debug"|"launch_build"|"device_install"|"device_launch"
 --- @param target loomworks.LaunchTarget
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
@@ -382,7 +396,14 @@ local function launch_call(method, target, k)
     local function send(force)
         if p.cancelled then return end
         if not obs:can_call(method) then return M.refuse(method, obs, kk) end
-        local args = method == "launch_build" and M.target_build_args(target) or M.launch_args(target)
+        local args
+        if method == "launch_build" then
+            args = M.target_build_args(target)
+        elseif method == "device_install" or method == "device_launch" then
+            args = M.device_args(target)
+        else
+            args = M.launch_args(target)
+        end
         if force then args.force = true end
         obs:start_owned(method, args, {
             on_reply = function(r)
@@ -394,6 +415,9 @@ local function launch_call(method, target, k)
                 reply(r)
             end,
             on_done = function(task, reason, done)
+                -- Its id also from its task (a `done` handled before the
+                -- reply's scheduled `on_reply`): a device launch's stop names it.
+                if p.task_id == nil and type(task) == "table" and task.id ~= nil then p.task_id = task.id end
                 local err = failure(verb, task, reason)
                 if err then return kk.reject(err) end
                 kk.resolve(type(done) == "table" and done or {})
@@ -404,6 +428,7 @@ local function launch_call(method, target, k)
     -- build builds, before the call; its Yes travels as `force` (step 5t).
     local function go()
         if p.cancelled then return end
+        if method == "device_install" or method == "device_launch" then return send(false) end
         ask_conflict(obs.ws, target:existing_build_units(), function(force, err)
             if err then
                 if p.cancelled then return end
@@ -462,6 +487,149 @@ end
 --- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
 function M.build_target(target, k)
     return launch_call("launch_build", target, k)
+end
+
+--- The arguments of a device target's install or launch (API.md §15
+--- `TargetParams`): its profile only — a device target is reached only as
+--- its profile's default target, so `target` (and `project`, which only
+--- scopes a name) is omitted.
+--- @param target loomworks.LaunchTarget
+--- @return table
+function M.device_args(target)
+    return { profile = { key = target._profile.key } }
+end
+
+--- Install (`"install"`) or launch (`"launch"`) a built device target on
+--- its profile's device through the daemon (step 5n C2, §19.16 "Devices"):
+--- one `Devices/1.install` / `launch` task the editor owns, under the
+--- availability rule; it ends through `k` as M.prepare does —
+--- `k.resolve(done)` (a launch's `{ pid?, bundle? }`, and `task_id`, the id
+--- a stop names) once the task ended with exit 0, else `k.reject(message,
+--- notified)`. False only in the `in-process` mode.
+--- @param step "install"|"launch"
+--- @param target loomworks.LaunchTarget
+--- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+--- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
+function M.device_step(step, target, k)
+    local handle
+    local routed
+    routed, handle = launch_call("device_" .. step, target, {
+        resolve = function(done)
+            local out = vim.tbl_extend("force", {}, done)
+            out.task_id = handle and handle.task_id
+            k.resolve(out)
+        end,
+        reject = k.reject,
+    })
+    return routed, handle
+end
+
+--- Stop the program a device launch task of the editor launched
+--- (`Devices/1.stop { task }`, API.md §15). `cb(ok, err)` once, on the main
+--- loop; `err` was notified (a refusal, a stop the daemon cannot carry now,
+--- a failure).
+--- @param ws loomworks.Workspace|nil
+--- @param task_id any the launch's task id
+--- @param cb? fun(ok: boolean, err: string|nil)
+function M.device_stop(ws, task_id, cb)
+    cb = cb or function() end
+    M.plain("device_stop", ws, { task = task_id }, cb)
+end
+
+--- A plain Devices/1 or Profiles/1 write the editor sends (`device_stop`,
+--- `set_device`, `clear_device`): refused at once when not carried; its
+--- `refused` / `declined` result, a degraded method or a failure end it
+--- with that message (notified); `ok` ends it with `cb(true)`.
+--- @param method "device_stop"|"set_device"|"clear_device"
+--- @param ws loomworks.Workspace|nil
+--- @param args table
+--- @param cb fun(ok: boolean, err: string|nil)
+function M.plain(method, ws, args, cb)
+    local _, mode_obs = M.daemon_of(ws)
+    local obs = M.carrier(method, ws)
+    if not obs then
+        return M.refuse(method, mode_obs, { reject = function(msg) cb(false, msg) end })
+    end
+    local verb = VERB[method] or method
+    obs:request(method, args, function(r)
+        local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
+        if res and res.outcome == "ok" then return cb(true) end
+        if r.outcome == "degraded" then
+            return M.refuse(method, obs, { reject = function(msg) cb(false, msg) end })
+        end
+        local msg
+        if res and res.outcome == "refused" then
+            msg = verb .. ": " .. tostring(res.message)
+        elseif res and res.outcome == "declined" then
+            msg = string.format("the workspace daemon declined the %s (%s)", verb, tostring(res.reason))
+        else
+            msg = string.format("the %s failed: %s", verb, tostring(r.reason or (res and res.outcome) or "?"))
+        end
+        vim.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        cb(false, msg)
+    end)
+end
+
+--- The device registry of `ws` as the daemon last reported it
+--- (`Devices/1.list`, the observer's cache), or nil while not carried or
+--- not read yet (a read is started then; its end emits `daemon_devices`).
+--- @param ws loomworks.Workspace|nil
+--- @return loomworks.DeviceRecord[]|nil
+function M.devices(ws)
+    local obs = M.carrier("device_list", ws)
+    return obs and obs:devices() or nil
+end
+
+--- `cb(list)` with the registry of `ws` once read (see Observer:with_devices);
+--- nil when not carried or the read failed.
+--- @param ws loomworks.Workspace|nil
+--- @param cb fun(list: loomworks.DeviceRecord[]|nil)
+function M.with_devices(ws, cb)
+    local obs = M.carrier("device_list", ws)
+    if not obs then return cb(nil) end
+    obs:with_devices(cb)
+end
+
+--- Scan for devices through the daemon (step 5n C2): one `Devices/1.scan`
+--- task the editor owns, carrying its environment; then the registry read
+--- again. Ends through `k`: `k.resolve(list)` (the registry after the scan),
+--- else `k.reject(message, notified)` — refused at once when not carried.
+--- False only in the `in-process` mode.
+--- @param ws loomworks.Workspace|nil
+--- @param k { resolve: fun(list: loomworks.DeviceRecord[]), reject: fun(err: any, notified: boolean|nil) }
+--- @return boolean routed
+function M.scan_devices(ws, k)
+    local daemon, mode_obs = M.daemon_of(ws)
+    if not daemon then return false end
+    local obs = M.carrier("device_scan", ws)
+    if not obs then
+        M.refuse("device_scan", mode_obs, k)
+        return true
+    end
+    obs:start_owned("device_scan", {}, {
+        on_reply = on_reply("device_scan", obs, k),
+        on_done = function(task, reason)
+            local err = failure(VERB.device_scan, task, reason)
+            if err then return k.reject(err) end
+            obs:with_devices(function(list) k.resolve(list or {}) end, true)
+        end,
+    })
+    return true
+end
+
+--- Choose `device` (a record of the registry, by its id) as the profile's
+--- device (`Profiles/1.set_device`), or clear the choice (`device` nil:
+--- `clear_device`). `cb(ok, err)` once; `err` was notified.
+--- @param ws loomworks.Workspace|nil
+--- @param profile loomworks.Profile
+--- @param device loomworks.DeviceRecord|nil
+--- @param cb fun(ok: boolean, err: string|nil)
+function M.set_device(ws, profile, device, cb)
+    if device then
+        return M.plain("set_device", ws, { profile = { key = profile.key }, device = { id = device.id } }, cb)
+    end
+    M.plain("clear_device", ws, { profile = { key = profile.key } }, cb)
 end
 
 --- The discovery of the active profile's tests through the daemon (step 5m

@@ -73,6 +73,18 @@ local function mount_views(srv, o)
             collect = function() return { outcome = "ok" } end,
             result = function() return {} end,
         } }))
+        -- The devices (step 5n C2): Devices/1 subscribed to for `changed`,
+        -- Profiles/1's device choice called.
+        assert(reg:mount("/devices", "core", "loomworks.Devices", 1, { methods = {
+            list = function() return { devices = {} } end,
+            scan = refused, install = refused, launch = refused,
+            stop = function() return { outcome = "refused", message = "stub" } end,
+        } }))
+        assert(reg:mount("/profiles", "core", "loomworks.Profiles", 1, { methods = {
+            set_device = function() return { outcome = "ok" } end,
+            clear_device = function() return { outcome = "ok" } end,
+            compiler_cache = function() return { outcome = "ok" } end,
+        } }))
         VIEW_STATE.tests = { state = "unloaded", stale = false, units = {} }
         assert(reg:mount("/views", "core", "loomworks.view.Tests", 1, {
             methods = { get = function() return VIEW_STATE.tests end },
@@ -313,7 +325,8 @@ describe("the observer (§19.16)", function()
         local subs = {}
         for _, sub in ipairs(s.srv.interfaces:subscriptions_of(sc)) do subs[#subs + 1] = sub.object .. " " .. sub.iface end
         table.sort(subs)
-        assert.same({ "/lsp loomworks.LspConfig", "/tasks loomworks.Tasks", "/tests loomworks.Tests",
+        assert.same({ "/devices loomworks.Devices", "/lsp loomworks.LspConfig", "/tasks loomworks.Tasks",
+            "/tests loomworks.Tests",
             "/views loomworks.view.Header", "/views loomworks.view.ProjectsIndex", "/views loomworks.view.Tests",
             "/workspace loomworks.Workspace" }, subs)
         -- A task another client owns reaches it through the subscription,
@@ -372,7 +385,9 @@ describe("the observer (§19.16)", function()
             .. "operations: daemon offers no loomworks.Build, editor needs /1; "
             .. "launch: daemon offers no loomworks.Launch, editor needs /1; "
             .. "debug adapters: daemon offers no loomworks.DebugConfig, editor needs /1; "
-            .. "tests: daemon offers no loomworks.Tests, editor needs /1 — tests unavailable",
+            .. "tests: daemon offers no loomworks.Tests, editor needs /1 — tests unavailable; "
+            .. "devices: daemon offers no loomworks.Devices, editor needs /1 — devices unavailable; "
+            .. "device choice: daemon offers no loomworks.Profiles, editor needs /1",
             obs.feature_note)
         -- The LSP configuration is never run in-process: its own note
         -- (§19.16 "LSP configuration" Unavailable).
@@ -411,7 +426,8 @@ describe("the observer (§19.16)", function()
             conn.welcome.objects = { { path = "/", interfaces = { { name = "loomworks.Root", versions = { 1 } } } } }
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" },
+            subs_of(s.srv))
         assert.is_nil(obs.feature_note)
     end)
 
@@ -425,7 +441,8 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" },
+            subs_of(s.srv))
     end)
 
     it("falls back to welcome.objects when describe never answers (bounded)", function()
@@ -438,7 +455,8 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/devices", "/lsp", "/tasks", "/tests", "/views", "/views", "/views", "/workspace" },
+            subs_of(s.srv))
     end)
 
     it("subscribes when /tasks and /workspace appear later (objects_changed); the note clears", function()
@@ -446,7 +464,7 @@ describe("the observer (§19.16)", function()
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
         mount_views(s.srv)
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 7 end, 10))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 8 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
         assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
@@ -465,7 +483,7 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/lsp", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/devices", "/lsp", "/tests", "/views", "/views", "/views", "/workspace" }, subs_of(s.srv))
         assert.truthy((obs.feature_note or ""):find("tasks: loomworks.Tasks/1 refused (busy)", 1, true))
         assert(s.srv:registry():mount("/other", "core", "loomworks.Tasks", 1, { methods = {
             list = function() return { tasks = {} } end,
