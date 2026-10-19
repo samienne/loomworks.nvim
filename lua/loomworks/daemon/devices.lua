@@ -802,15 +802,19 @@ end
 --- @param ctx table
 --- @param l loomworks.daemon.DeviceLaunch
 --- @param command loomworks.DeviceCommand the log stream's command
+--- @param log_options? { level: string, strict_pid: boolean } its options (LaunchTarget:device_log_command)
 --- @return table run
-local function run_device_log(service, ctx, l, command)
+local function run_device_log(service, ctx, l, command, log_options)
     local runner = require("loomworks.daemon.runner")
     local records = require("loomworks.device_log_records")
     local core_ifaces = require("loomworks.daemon.core_interfaces")
     local run = new_run(service, ctx, "device_log")
     local task, lt, serial = ctx.task, l.target, l.serial
+    -- (`level`: the module's default level, where the client's level
+    -- filter starts; none for a letter that is not a level.)
     task:start({ name = lt:display_name() .. " log on " .. serial, kind = "device_log",
-        profile = l.profile and l.profile.key or nil })
+        profile = l.profile and l.profile.key or nil,
+        level = log_options and records.LEVELS[log_options.level] or nil })
 
     -- The records, one signal of at most LOG_BATCH_BYTES every LOG_FLUSH_MS
     -- while the owner keeps up (PROTOCOL.md §14.4); all of them, in signals
@@ -1000,7 +1004,7 @@ function M.device_log_method(service)
                 return ctx.reply({ outcome = "refused", exit_code = 1, message = refusal })
             end
             -- (Built in the caller's environment, as the launch's commands.)
-            local command = l.target:device_log_command(l.serial, l.pid)
+            local command, log_options = l.target:device_log_command(l.serial, l.pid)
             if not command then
                 return ctx.reply({ outcome = "refused", exit_code = 1, message = "module does not support device logs" })
             end
@@ -1009,7 +1013,7 @@ function M.device_log_method(service)
             ctx.task, ctx.ws = task, ws
             ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn),
                 profile_key = l.profile and l.profile.key or nil, pid = srv.pid })
-            local run = run_device_log(service, ctx, l, command)
+            local run = run_device_log(service, ctx, l, command, log_options)
             srv:log("device log (task %s) of launch %s accepted", task.id, tostring(id))
             if not run.finished then service.runs[run] = true end
         end)

@@ -214,7 +214,7 @@
         { "expect": { "kind": "ok", "req_id": 4, "result": { "sub_id": { "$bind": "sub" } } } },
         { "send": { "kind": "call", "req_id": 5, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": { "task": { "$var": "launch" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "accepted", "task_id": { "$bind": "log" }, "profile_key": "dev" } } },
-        { "expect": { "kind": "task", "task_id": { "$var": "log" }, "phase": "start", "meta": { "name": "app: app app log on SER1", "kind": "device_log", "profile": "dev", "object": "/launch", "iface": "loomworks.Launch", "method": "device_log" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "log" }, "phase": "start", "meta": { "name": "app: app app log on SER1", "kind": "device_log", "profile": "dev", "level": "debug", "object": "/launch", "iface": "loomworks.Launch", "method": "device_log" } } },
         { "expect": { "kind": "signal", "object": "/launch", "iface": "loomworks.Launch", "v": 1, "name": "log", "sub_id": { "$var": "sub" }, "args": { "task": { "$var": "log" }, "dropped": { "$absent": true }, "records": [
           { "ts": "10-19 12:00:00.001", "level": "info", "tag": "AppTag", "pid": 4242, "message": "hello from the app", "fields": { "tid": 4243, "domain": "A00001", "proc": "com.example.app" } },
           { "$exact": { "level": "info", "message": "not a device log line" } },

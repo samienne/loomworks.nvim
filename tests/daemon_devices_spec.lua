@@ -584,9 +584,13 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("passes the pid to the module's command when it asks for strict-pid filtering", function()
         s = session()
         local launch = launched()
-        local _, _, done = collect(start_log(launch, env_with({ LW_TEST_LOG_STRICT = "1" })))
+        local id = start_log(launch, env_with({ LW_TEST_LOG_STRICT = "1" }))
+        local _, _, done = collect(id)
         assert.equals(0, done.exit_code)
         assert.truthy(read(s.log):find("log SER1 4242 log", 1, true), read(s.log))
+        -- The start meta carries the module's default level (its `D`).
+        local start = s.wait(function(m) return m.kind == "task" and m.task_id == id and m.phase == "start" end)
+        assert.equals("debug", start.meta.level)
     end)
 
     it("a full queue drops the oldest records and counts them on the next log", function()

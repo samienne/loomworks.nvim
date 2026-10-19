@@ -158,6 +158,10 @@
         "iface": { "type": "string" },
         "v": { "type": "integer" },
         "method": { "type": "string" },
+        "level": {
+          "description": "A Launch/1.device_log task's module default log level (API.md §9.5; step 5n part B3), when it has one: where a client starts its level filter. A level of its records (verbose, debug, info, warn, error or fatal); a client takes an unknown one as info.",
+          "type": "string"
+        },
         "steps": {
           "description": "The step plan of a target-scoped task (API.md §4.3; step 5t), each pending; absent for other tasks and for a preparation with no_build.",
           "type": "array",

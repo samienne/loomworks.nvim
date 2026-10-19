@@ -624,7 +624,9 @@ process id passed to it when the module asks for strict-pid filtering. Each
 line of its output is parsed as the in-process device-log view parses it,
 and kept only when it passes that view's session prefilter over the
 launch's process id and bundle (a line that does not parse always passes);
-the level filter stays the client's. A kept line becomes a record of spec
+the level filter stays the client's. The task's `start` meta carries
+`level`, the module's default log level, when it has one; a client starts
+its level filter there. A kept line becomes a record of spec
 §19.18: `ts` (the line's time as printed), `level` (`verbose`, `debug`,
 `info`, `warn`, `error` or `fatal`; a client shows an unknown level as
 `info`), `tag`, `pid`, `message`, and `fields` with `tid`, `domain` and
