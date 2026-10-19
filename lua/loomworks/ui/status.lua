@@ -100,6 +100,21 @@ local function render_fn(tree)
         lw = lw,
         view = view,
         ref = function(row) return refs[row] end,
+        -- Progress is not in the view (API.md §14.4 "Progress is not in the
+        -- view"): a busy profile's percent and elapsed time and a running
+        -- unit's step progress come from the in-process task tracking — the
+        -- rows' domain objects (their operations, units and observed tasks).
+        profile_progress = function(row)
+            local profile = refs[row]
+            if not profile then return nil end
+            return { pct = profile:operation_pct(), elapsed = profile:operation_elapsed() }
+        end,
+        unit_progress = function(u)
+            local pp = refs[u]
+            local unit = pp and pp._config_unit
+            if not unit then return nil end
+            return { progress = unit:progress(), elapsed = unit:elapsed() }
+        end,
         -- For the sections' actions only (the in-process model they act on).
         ws = ws,
         all_profiles = lw.get_profiles(),

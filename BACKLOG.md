@@ -205,6 +205,20 @@ diagnostics that every request reports. The parity tests do not cover it:
 the read-only `parity()` restarts the daemon for each case and `three_way`
 stops it, so every daemon case loads a cold workspace.
 
+## Workspace view follow-ups (step 5n part B1, PR #285)
+
+- **View check cost.** Every `views.check` with a `view.Workspace/1`
+  subscriber rebuilds the view, which runs `find_stray_build_dirs` (a disk
+  scan) and `fs_stat` calls at each `header_check`, `on_run_done` and `get`.
+  Cache the stray scan (invalidate on build-dir changes) or bound how often
+  it runs.
+- **Cancelled by another client shows "failed".** The in-process mirror's
+  `remove_remote_task` (`profile.lua`) records `cancelled` only when
+  `task.cancelling` is set, i.e. when this client asked for the cancel. A
+  daemon task cancelled by another client is recorded as `failed` while the
+  daemon's `last_result` says `cancelled`; take the outcome from the
+  daemon's task end instead.
+
 ## Direct `vim.notify` calls bypass `core._deps.notify`
 
 `config.lua:199` ("project 'x' directory not found") and about 45 other files

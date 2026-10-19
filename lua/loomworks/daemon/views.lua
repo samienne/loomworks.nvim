@@ -5,6 +5,7 @@
 ---   /views   loomworks.view.Header/1          get (update)
 ---   /views   loomworks.view.ProjectsIndex/1   get (update)
 ---   /views   loomworks.view.Tests/1           get (update; loomworks.daemon.tests_view, step 5m)
+---   /views   loomworks.view.Workspace/1       get (update; the status page's body, step 5n)
 ---
 --- Each view has one method, `get` (its full state; never loads the
 --- workspace: an unloaded one is the unloaded state), and one signal,
@@ -18,8 +19,11 @@
 --- committed write, and before the acknowledgement of a request answered
 --- inside its segment) and sends `update` to a subscription only when the
 --- view's state differs from the one last sent on it (`initial` included).
---- The tests view compares its committed state (`{ committed = true }`,
---- loomworks.daemon.test_store: node statuses as of a run's start and end
+--- The views are fresh (§19.13 "Freshness of views"): the header check first
+--- applies the file changes another process made (Service:check_files; no
+--- load, no tool detection), and a view's `get` runs the header check before
+--- building (`initial` only applies the changes). The tests view compares
+--- its committed state (`{ committed = true }`, loomworks.daemon.test_store: node statuses as of a run's start and end
 --- and a collect), so a running run's per-case progress — which travels as
 --- `Tests/1.results` — never causes an `update`; what it sends is the
 --- current state.
@@ -31,6 +35,7 @@ local M = {}
 M.HEADER = { path = "/views", iface = "loomworks.view.Header", v = 1 }
 M.PROJECTS = { path = "/views", iface = "loomworks.view.ProjectsIndex", v = 1 }
 M.TESTS = { path = "/views", iface = "loomworks.view.Tests", v = 1 }
+M.WORKSPACE = { path = "/views", iface = "loomworks.view.Workspace", v = 1 }
 
 --- The builder options of the daemon: its session fields and its ids.
 --- @param service loomworks.daemon.BuildService
@@ -67,6 +72,19 @@ function M.tests(service)
     return require("loomworks.daemon.tests_view").state(service)
 end
 
+--- `loomworks.view.Workspace/1`'s state (§19.13 "The workspace view"): the
+--- status page's body, with the daemon's ids (a row's `id`, a unit's
+--- `unit_id`, a device's `id`). Never loads: an unloaded workspace has
+--- every array empty. No progress (API.md §14.4): a build's progress never
+--- changes it, a unit's state or a profile's `last_result` does.
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.ViewWorkspace
+function M.workspace(service)
+    local ws = service:header_model()
+    if not ws then return view_state.workspace(nil) end
+    return ws:view_workspace({ id = function(obj) return service.ids:id(obj) end })
+end
+
 --- The signature `check` compares for the tests view: its committed state's.
 --- @param service loomworks.daemon.BuildService
 --- @return string
@@ -83,9 +101,18 @@ end
 --- @param sig? fun(service: loomworks.daemon.BuildService): string
 --- @return loomworks.daemon.InterfaceImpl
 local function impl(where, build, service, sig)
+    -- Freshness (§19.13): another process's file changes are applied first.
+    -- A `get` runs the header check, so the `update`s of the subscriptions
+    -- follow from it (the editor's `get` after a write of its own); `initial`
+    -- only applies them (its subscription has no baseline yet: the next
+    -- check updates the others).
     return {
-        methods = { get = function() return build(service) end },
+        methods = { get = function()
+            pcall(require("loomworks.daemon.core_interfaces").header_check, service)
+            return build(service)
+        end },
         initial = function(ctx, _, _, sub)
+            if service.check_files then service:check_files() end
             local state = build(service)
             if sub then sub.view_sig = sig and sig(service) or view_state.signature(state) end
             local e = ctx.registry:resolve(where.path, where.iface, where.v)
@@ -110,11 +137,17 @@ function M.projects_impl(service) return impl(M.PROJECTS, M.projects_index, serv
 --- @return loomworks.daemon.InterfaceImpl
 function M.tests_impl(service) return impl(M.TESTS, M.tests, service, M.tests_signature) end
 
+--- The `loomworks.view.Workspace/1` handlers.
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.daemon.InterfaceImpl
+function M.workspace_impl(service) return impl(M.WORKSPACE, M.workspace, service) end
+
 --- The views and their handler factories, in mount order.
 M.MOUNTS = {
     { M.HEADER, M.header_impl },
     { M.PROJECTS, M.projects_impl },
     { M.TESTS, M.tests_impl },
+    { M.WORKSPACE, M.workspace_impl },
 }
 
 --- Send `update` to every subscription of a view whose state differs from
@@ -124,7 +157,7 @@ function M.check(service)
     local reg = service.server and service.server.interfaces
     if not reg then return end
     for _, v in ipairs({ { M.HEADER, M.header }, { M.PROJECTS, M.projects_index },
-        { M.TESTS, M.tests, M.tests_signature } }) do
+        { M.TESTS, M.tests, M.tests_signature }, { M.WORKSPACE, M.workspace } }) do
         local where, build, sig_of = v[1], v[2], v[3]
         if reg:has_subscribers(where.path, where.iface, where.v, "update") then
             local state, sig

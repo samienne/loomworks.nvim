@@ -334,33 +334,13 @@ function RemoteTask:finish(exit_code, err, reason, clock)
     for _, fn in ipairs({ unpack(self._listeners) }) do pcall(fn, self, nil) end
 end
 
---- Verbs of the end message by kind: success, failure (as a local
---- operation's, loomworks.Operation).
-local VERBS = {
-    build = { "built", "build failed" },
-    configure = { "configured", "configure failed" },
-    test = { "tested", "test failed" },
-    run = { "prepared", "run failed" },
-    clean = { "cleaned", "clean failed" },
-    reset = { "reset", "reset failed" },
-}
-
 --- One line describing how it ended (fidget, the profile row, the output
 --- view) — a local operation's end message (`built in 12s`), or why it
 --- ended without `done`.
 --- @return string
 function RemoteTask:outcome()
     if self.end_reason then return self.end_reason end
-    local v = VERBS[self.kind] or { "done", "failed" }
-    local ok = self.exit_code == 0
-    local msg = ok and v[1] or v[2]
-    if self.duration then
-        msg = msg .. " in " .. require("loomworks.operation").format_duration(self.duration)
-    end
-    if not ok then
-        msg = msg .. (self.error and (": " .. self.error) or (" (exit " .. tostring(self.exit_code) .. ")"))
-    end
-    return msg
+    return require("loomworks.operation").task_outcome(self.kind, self.exit_code, self.duration, self.error)
 end
 
 M.RemoteTask = RemoteTask

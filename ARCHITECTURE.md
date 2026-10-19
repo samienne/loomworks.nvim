@@ -1678,7 +1678,8 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   the scope refused).
 - `daemon/views.lua` (binary side; step 5j part B) — the editor views on
   `/views`: `loomworks.view.Header/1` and `loomworks.view.ProjectsIndex/1`
-  (spec §19.13 "Views"), each `get` (never loading; built from
+  (spec §19.13 "Views"; later `view.Tests/1`, 5m, and `view.Workspace/1`,
+  5n B1), each `get` (never loading; built from
   `Service:header_model()`) and `update` (declared `initial`, full state).
   The state comes from `view_state.lua`, the one builder (binary side, pure
   over the model, reading no files) that the editor also calls in-process
@@ -1689,6 +1690,14 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   subscription only when the state's `view_state.signature` differs from the
   one last sent on it (`sub.view_sig`, set by `initial` too; the registry
   passes the subscription to `initial` and to `emit`'s `accept`).
+  *(5n B1, spec §19.13 "Freshness of views")* `header_check` first runs
+  `Service:check_files` — `Workspace:sync_light`, a file-tracker sync whose
+  `accept` (`Workspace:_change_needs_reload`) leaves a loomworks.json change
+  (it rescans tools) and a refused file (it reloads) pending for the next
+  request's `live` sync — outside model segments and never reentrant; a
+  view's `get` runs `header_check` before building, so another process's
+  write (an in-process editor's, until 5o) reaches the views at the next
+  check, and the editor's `get` after its own write sends the `update`s.
 - `views.lua` (plugin side; step 5j part C) — the editor's view store: one
   table per view (`header`, `projects`), the daemon's while the observer
   holds a subscription (`Observer:_view_subscribed` takes `initial`,
@@ -1718,9 +1727,24 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   passes `opts.bind`, which records each row's domain object outside the
   state, so the sections (`ui/sections/*.lua`) render only from the rows and
   keep their actions apart, reaching the objects by `ctx.ref(row)` and the
-  workspace by `ctx.ws`. Rendering is pinned byte for byte by
-  `tests/status_render_golden_spec.lua`. Not yet on `/views` (5n B1) and
-  still built in-process in `daemon` mode until 5n C1.
+  workspace by `ctx.ws`. The view carries no progress (API.md §14.4): a busy
+  profile's percent and elapsed time and a running unit's step progress
+  reach the sections through `ctx.profile_progress(row)` /
+  `ctx.unit_progress(u)`, which status.lua answers in-process from the rows'
+  domain objects (`Profile:operation_pct` / `operation_elapsed`,
+  `ConfigUnit:progress` / `elapsed` — the in-process task tracking); the
+  last finished operation's outcome is state, the row's `last_result`
+  (`Profile:set_last_result`, set by an Operation's completion, an observed
+  daemon task's end, and in the daemon by its own run's end). Rendering is pinned byte for byte by
+  `tests/status_render_golden_spec.lua`. *(5n part B1)* The daemon serves
+  it on `/views` (`daemon/views.lua` `M.workspace`: `Workspace:view_workspace`
+  with `service.ids`, `view_state.workspace(nil)` — every array empty — while
+  unloaded), `update` only on a difference like the other views; the
+  daemon's own run's end sets the profile's last result
+  (`Service:on_run_done`, `BuildRun.profile`, the end message from
+  `Operation.task_outcome`, the one wording shared with
+  `RemoteTask:outcome`). The editor still builds it in-process in `daemon`
+  mode until 5n C1.
 - *(Step 5l; spec §19.16 "LSP configuration", §19.20 `LspConfig/1`, §9.2.)*
   `lsp_config.lua` (shared side, host-neutral, no `vim.*`) — the one builder
   of the LSP configuration state: the `lsp_configs` content memo

@@ -86,9 +86,12 @@ end
 
 --- Emit `Workspace.header_changed { header }` when the header's model fields
 --- differ from the last ones seen (the first call only records them), then
---- the views' `update` where a view changed (§19.13 "Views").
+--- the views' `update` where a view changed (§19.13 "Views") — after
+--- applying the file changes another process made (Service:check_files).
 --- @param service loomworks.daemon.BuildService
 function M.header_check(service)
+    -- Another process's file changes first (§19.13 "Freshness of views").
+    if service.check_files then service:check_files() end
     local h = M.header(service)
     local sig = table.concat({ tostring(h.state), tostring(h.name), tostring(h.active_profile),
         tostring(h.error) }, "\n")
@@ -509,7 +512,7 @@ end
 --- @param registry loomworks.daemon.Registry
 --- @param service loomworks.daemon.BuildService
 function M.mount(registry, service)
-    for _, m in ipairs({
+    local mounts = {
         { M.WORKSPACE, M.workspace_impl },
         { M.TASKS, M.tasks_impl },
         { M.SNAPSHOT, M.snapshot_impl },
@@ -520,10 +523,9 @@ function M.mount(registry, service)
         { M.PROFILES, M.profiles_impl },
         { M.DEBUG, M.debug_impl },
         { M.LSP, M.lsp_impl },
-        require("loomworks.daemon.views").MOUNTS[1],
-        require("loomworks.daemon.views").MOUNTS[2],
-        require("loomworks.daemon.views").MOUNTS[3],
-    }) do
+    }
+    vim.list_extend(mounts, require("loomworks.daemon.views").MOUNTS)
+    for _, m in ipairs(mounts) do
         local where, make = m[1], m[2]
         local ok, err = registry:mount(where.path, "core", where.iface, where.v, make(service))
         if not ok then registry:_log("interface %s/%d not mounted: %s", where.iface, where.v, tostring(err)) end

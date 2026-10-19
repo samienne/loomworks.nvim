@@ -1576,7 +1576,10 @@ and SDKs (spec/ui.md §1.1). The header, LSP, Debug Adapters and Tasks
 sections keep their own sources. In `daemon` mode the editor renders these
 sections only from the view; while the view is not offered, each section is
 one line in the warning highlight, `unavailable — <why>`, as the Debug
-Adapters section's is. Its ids are the daemon's alone ("Two sources, one
+Adapters section's is. In `daemon` mode the status page takes whether the
+workspace is loaded from `view.Header/1`'s `state`, so an unloaded
+workspace's `published = false` never shows the "loomworks.json not on
+disk" banner. Its ids are the daemon's alone ("Two sources, one
 shape"). The rows carry what step 5o's command methods take as `{ id }`
 references. The view lists every field the status page reads for these
 sections; it carries no build progress: a profile's or unit's percent,
@@ -1595,8 +1598,10 @@ a state-changing request) before it computes a view: at each point where
 to `loomworks.json`, `user.json` or the cache — an in-process editor write
 before step 5o — is applied to the model then, so it shows in the views on
 the next check, not only after the next state-changing request. The check
-never loads a workspace and never runs a tool detection; a change that
-needs a reload is applied as the state-changing request's sync applies it.
+never loads a workspace and never runs a tool detection: a change to
+`loomworks.json` (which can need a tool detection) or one that needs a
+reload, and the files changed with it, are not applied at a view check;
+they wait for the next state-changing request's sync.
 A write by another process does not by itself cause a check: until step 5o
 moves the editor's writes to command methods, the editor calls the view's
 `get` after a write of its own, and the daemon's `update`s then follow from

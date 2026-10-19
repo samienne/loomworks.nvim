@@ -15,6 +15,7 @@
 --- @field started_at number
 --- @field completed boolean
 --- @field success boolean|nil nil while running, true/false when completed
+--- @field cancelled boolean|nil it ended by `cancel`
 --- @field message string|nil result message (set on completion)
 --- @field _mode "rank"|"deletion"|"tasks" completion check mode
 --- @field _unit_done table<loomworks.ConfigUnit, boolean> tracks which units are done
@@ -271,6 +272,7 @@ function Operation:cancel(message)
     if self.completed then return end
     self.completed = true
     self.success = false
+    self.cancelled = true
     self.message = message or "cancelled"
     for _, unsub in ipairs(self._unsubscribers) do
         unsub()
@@ -294,5 +296,36 @@ end
 --- The compact duration of an operation's end message (`1m05s`), shared with
 --- the remote tasks observed in the workspace daemon (spec §19.16).
 Operation.format_duration = format_duration
+
+--- Verbs of a task's end message by kind: success, failure (as a local
+--- operation's).
+local TASK_VERBS = {
+    build = { "built", "build failed" },
+    configure = { "configured", "configure failed" },
+    test = { "tested", "test failed" },
+    run = { "prepared", "run failed" },
+    clean = { "cleaned", "clean failed" },
+    reset = { "reset", "reset failed" },
+}
+
+--- The end message of a task of the workspace daemon (`built in 12s`,
+--- `build failed in 3s: <error>`), as a local operation's: the one wording
+--- of a task observed in the editor (loomworks.daemon.remote_task) and of
+--- the daemon's own run (a profile's `last_result`, API.md §14.4).
+--- @param kind string the task's `meta.kind`
+--- @param exit_code integer|nil
+--- @param duration number|nil seconds it ran
+--- @param err string|nil its refusal or failure
+--- @return string
+function Operation.task_outcome(kind, exit_code, duration, err)
+    local v = TASK_VERBS[kind] or { "done", "failed" }
+    local ok = exit_code == 0
+    local msg = ok and v[1] or v[2]
+    if duration then msg = msg .. " in " .. format_duration(duration) end
+    if not ok then
+        msg = msg .. (err and (": " .. err) or (" (exit " .. tostring(exit_code) .. ")"))
+    end
+    return msg
+end
 
 return Operation

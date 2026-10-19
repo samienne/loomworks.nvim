@@ -161,6 +161,25 @@ describe("FileTracker", function()
             assert.same({ { "/a", "a2" } }, seen)
         end)
 
+        it("a change `accept` refuses keeps the whole sync pending for a later one (spec §19.13 Freshness of views)", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1" }
+            local seen = {}
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a")
+            tracker:watch("/b")
+            disk["/a"], disk["/b"] = "a2", "b2"
+            tracker:sync({ accept = function(path) return path ~= "/a" end })
+            assert.same({}, seen)
+            assert.equals("a1", tracker:content("/a"))
+            assert.equals("b1", tracker:content("/b"))
+            tracker:sync()
+            assert.same({ { "/a", "a2" }, { "/b", "b2" } }, seen)
+        end)
+
         it("a change seen while paused is delivered after resume, with no further change", function()
             local disk = { ["/a"] = "a1" }
             local seen, queued = {}, {}

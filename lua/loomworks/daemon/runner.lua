@@ -223,6 +223,7 @@ end
 --- @field task loomworks.daemon.Task
 --- @field op "build"|"test"|"run"|"debug"|"clean"|"configure"|"cases" the operation
 --- @field cancelled boolean
+--- @field profile loomworks.Profile|nil the profile it runs on: its end is the profile's `last_result` (Service:on_run_done)
 --- @field cancel_reason string|nil
 --- @field cancel_code integer|nil
 --- @field finished boolean|nil
@@ -289,7 +290,7 @@ function M.run(svc, ctx)
     -- `lw run --print` / `--dry-run` keep the build's lines off stdout (§16.17).
     local out_stream = (running and args.quiet) and "note" or "out"
     local build_lock = require("loomworks.build_lock")
-    local run = { task = task, op = op, cancelled = false, held = {} }
+    local run = { task = task, op = op, cancelled = false, held = {}, profile = profile }
     ctx.run = run
     if ctx.on_run then ctx.on_run(run) end
 
@@ -1041,7 +1042,7 @@ function M.reset(svc, ctx)
     local reset_plan = require("loomworks.reset_plan")
     local build_lock = require("loomworks.build_lock")
     local task, ws, plan = ctx.task, ctx.ws, ctx.plan
-    local run = { task = task, op = "reset", cancelled = false, held = {} }
+    local run = { task = task, op = "reset", cancelled = false, held = {}, profile = plan.profile }
     ctx.run = run
     -- run.deleting: the deletion started; run.deletion_settled: it ended. The
     -- service keeps the daemon busy in between, also after a timeout ended

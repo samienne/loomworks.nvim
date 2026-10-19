@@ -159,6 +159,12 @@ end
 
 -- ========================== Profile ==========================
 
+--- The outcome of the last operation that finished on a profile.
+--- @class loomworks.ProfileLastResult
+--- @field status "ok"|"failed"|"cancelled"
+--- @field message? string its end message (`built in 12s`)
+--- @field success boolean status == "ok"
+
 --- @class loomworks.Profile
 --- @field key string profile key — derived from data, never set externally
 --- @field _workspace loomworks.Workspace
@@ -192,7 +198,7 @@ end
 --- @field _projects_by_key table<string, loomworks.ProfileProject> project_key -> PP
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
---- @field _last_operation { message: string, success: boolean }|nil
+--- @field _last_operation loomworks.ProfileLastResult|nil the last finished operation's outcome
 --- @field _remote_tasks loomworks.RemoteTask[]|nil tasks observed in the workspace daemon that run this profile (spec §19.16); runtime only
 --- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
 local Profile = {}
@@ -1159,10 +1165,8 @@ end
 --- from the active list.
 --- @param operation loomworks.Operation
 function Profile:complete_operation(operation)
-    self._last_operation = {
-        message = operation.message,
-        success = operation.success,
-    }
+    self:set_last_result(operation.success and "ok" or (operation.cancelled and "cancelled" or "failed"),
+        operation.message)
     -- Remove from active list
     if self._operations then
         for i, op in ipairs(self._operations) do
@@ -1204,7 +1208,8 @@ function Profile:remove_remote_task(task)
         if t == task then
             table.remove(list, i)
             if task.finished and not task.cleared then
-                self._last_operation = { message = task:outcome(), success = task.exit_code == 0 }
+                self:set_last_result(task.exit_code == 0 and "ok" or (task.cancelling and "cancelled" or "failed"),
+                    task:outcome())
             end
             break
         end
@@ -1227,9 +1232,48 @@ function Profile:has_active_operation()
 end
 
 --- Get the last completed operation result.
---- @return { message: string, success: boolean }|nil
+--- @return loomworks.ProfileLastResult|nil
 function Profile:operation()
     return self._last_operation
+end
+
+--- Record the outcome of an operation that finished on this profile (the
+--- view's `last_result`, API.md §14.4): an Operation's, a task observed in
+--- the workspace daemon, or — in the daemon — its own run's
+--- (Service:on_run_done). Kept until the next one ends. Runtime only.
+--- @param status "ok"|"failed"|"cancelled" the final status, as a Tasks/1 step's
+--- @param message? string its end message
+function Profile:set_last_result(status, message)
+    self._last_operation = { status = status, message = message, success = status == "ok" }
+end
+
+--- The percent of the running operation: the weighted progress of the
+--- units shown configuring (10%) or building (90%) that report a count,
+--- else the last tick of a task observed in the workspace daemon; nil when
+--- none reports one. In-process task tracking, never view state (API.md
+--- §14.4 "Progress is not in the view").
+--- @return integer|nil
+function Profile:operation_pct()
+    local has_any, total_pct, count = false, 0, 0
+    for _, pp in ipairs(self:projects()) do
+        local status = pp:status()
+        if status == "configuring" or status == "building" then
+            local p = pp._config_unit:progress()
+            if p and p.current and p.total and p.total > 0 then
+                has_any = true
+                local phase_pct = p.current / p.total
+                if status == "configuring" then
+                    total_pct = total_pct + 10 * phase_pct
+                else
+                    total_pct = total_pct + 10 + 90 * phase_pct
+                end
+                count = count + 1
+            end
+        end
+    end
+    if has_any then return math.floor(total_pct / count) end
+    local remote = self._remote_tasks and self._remote_tasks[1]
+    return remote and remote.pct or nil
 end
 
 --- Get elapsed seconds for the first active operation.

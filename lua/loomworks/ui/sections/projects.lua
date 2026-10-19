@@ -401,7 +401,7 @@ end
 --- @param crow table the configuration's view row
 local function configuration_actions(ws, project, cfg, crow)
     if not project then return {} end
-    local cfg_name = crow.name
+    local cfg_name = crow.key
     local acts = {
         on_enter = function() edit_project_configuration(project, cfg_name) end,
         on_delete = crow.user and function() delete_project_configuration(project, cfg_name) end or nil,
@@ -690,7 +690,7 @@ end
 --- Render one configuration of a project (`prow.configurations[]`).
 local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
     local key = prow.key
-    local cname = crow.name
+    local cname = crow.key
     local project = ctx.ref(prow)
     local cfg = ctx.ref(crow)
 
@@ -792,16 +792,19 @@ local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
             { " [overwritten]", "LoomworksConflict" }
     end
 
+    -- The row carries `auto_gen` (and `user`, ...) exactly when the
+    -- Configuration object exists, on both sources ("Two sources, one shape").
+    local has_object = crow.auto_gen ~= nil
     local opts = {
         fold_key = "config:" .. key .. ":" .. cname,
         spinning = not is_abstract and crow.running or false,
         hl = variant_hl,
         enter_label = "Edit configuration",
-        publish_label = crow.object and helpers.intent_action_label(crow.intent) or nil,
+        publish_label = has_object and helpers.intent_action_label(crow.intent) or nil,
     }
-    if crow.object then helpers.describe(opts, crow.description, crow.description_from_module) end
+    if has_object then helpers.describe(opts, crow.description, crow.description_from_module) end
     ct:node(config_chunks, with(opts, configuration_actions(ctx.ws, project, cfg, crow)), function()
-        if crow.object then
+        if has_object then
             tree:description(crow.description, crow.description_from_module)
             -- Saved test targets (read-only, ui "Saved test
             -- targets line"): flagged only when this machine
@@ -917,13 +920,13 @@ local function render_project_details(tree, t, ctx, prow)
             -- the open-ended command line, which is cut to the window.
             local entries = {}
             for _, l in ipairs(launches) do
-                entries[#entries + 1] = { name = l.name, config = { description = l.description,
+                entries[#entries + 1] = { name = l.key, config = { description = l.description,
                     target = l.target, command = l.command, args = l.args } }
             end
             local rows = helpers.launch_row_chunks(entries,
                 (tree.width or 100) - vim.fn.strdisplaywidth(tree:_pad()))
             for _, l in ipairs(launches) do
-                local lname = l.name
+                local lname = l.key
                 local full = (l.target and ("target:" .. l.target) or (l.command or ""))
                     .. ((type(l.args) == "table" and #l.args > 0)
                         and (" " .. table.concat(l.args, " ")) or "")
