@@ -329,3 +329,70 @@ describe("device_log make_prefilter — all mode", function()
         assert.is_true(pre({ raw = "garbage" }))
     end)
 end)
+
+-- Step 5n C2 (spec §19.16 "Devices"): in `daemon` mode the device log is
+-- refused — the daemon does not carry its stream yet — and the view says so;
+-- a gap in the stream is reported in the view, not the workspace's logger.
+describe("device_log view notes", function()
+    local saved_obs
+    before_each(function()
+        dl._reset_for_tests()
+        saved_obs = package.loaded["loomworks.daemon.observer"]
+    end)
+    after_each(function()
+        package.loaded["loomworks.daemon.observer"] = saved_obs
+        dl._reset_for_tests()
+    end)
+
+    local function lines()
+        local buf = vim.fn.bufnr("loomworks://device-log")
+        return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+    end
+
+    it("in daemon mode the view says the log is unavailable; in-process it does not", function()
+        package.loaded["loomworks.daemon.observer"] = { current = function() return nil end }
+        assert.is_nil(dl.unavailable())
+        package.loaded["loomworks.daemon.observer"] = { current = function() return {} end }
+        assert.equals(dl.DAEMON_NOTE, dl.unavailable())
+        local notes = {}
+        local orig = vim.notify
+        vim.notify = function(msg) notes[#notes + 1] = msg end
+        dl.show()
+        dl.refuse_daemon()
+        vim.notify = orig
+        assert.truthy(lines():find("unavailable in daemon mode", 1, true), lines())
+        assert.equals(1, #notes)
+        assert.truthy(notes[1]:find("Launch/1.device_log", 1, true), notes[1])
+        dl.hide()
+    end)
+
+    it("a saturated queue reports the dropped lines in the view", function()
+        local view = dl._LogView.new()
+        view._pending_dropped = 3
+        view:append_record({ raw = "after the gap" })
+        view:_flush()
+        local text = table.concat(vim.api.nvim_buf_get_lines(view._buf, 0, -1, false), "\n")
+        assert.truthy(text:find("3 lines dropped", 1, true), text)
+        assert.truthy(text:find("after the gap", 1, true), text)
+        assert.equals(0, view._pending_dropped)
+    end)
+
+    it("the gap line is not in the ring: a re-render shows every kept record and no gap", function()
+        local view = dl._LogView.new()
+        view:append_record({ raw = "first" })
+        view:append_record({ raw = "second" })
+        -- `first` and `second` were dropped from the queue (still in the ring).
+        view._pending = {}
+        view._pending_dropped = 2
+        view:append_record({ raw = "third" })
+        view:_flush()
+        local text = table.concat(vim.api.nvim_buf_get_lines(view._buf, 0, -1, false), "\n")
+        assert.truthy(text:find("2 lines dropped", 1, true), text)
+        assert.equals(3, #view._records)
+        view:_rerender()
+        text = table.concat(vim.api.nvim_buf_get_lines(view._buf, 0, -1, false), "\n")
+        assert.is_nil(text:find("lines dropped", 1, true), text)
+        local a, b, c = text:find("first", 1, true), text:find("second", 1, true), text:find("third", 1, true)
+        assert.is_true(a ~= nil and b ~= nil and c ~= nil and a < b and b < c, text)
+    end)
+end)

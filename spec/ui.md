@@ -339,7 +339,13 @@ scope (profile-level) benefits from the explicit pick.
 - Device selection (only when the profile contains a project from a
   device-capable module) — shows `Device: <name> (<serial>)` (online),
   `Device: <serial> (offline)` (offline/stale), or
-  `Device: (none selected)`. `<CR>` opens device picker.
+  `Device: (none selected)`. `<CR>` scans, then opens the device picker
+  (the online devices, and `(clear selection)` when one is chosen). In
+  `daemon` mode the scan is a `Devices/1.scan` task the editor owns, the
+  list the daemon's `Devices/1.list`, and the choice
+  `Profiles/1.set_device` / `clear_device` (spec §19.16 "Devices"); while
+  the daemon cannot carry them, the scan or choice is refused with the
+  Runtime line's note, never run in-process.
 - (The last-operation message is shown in the profile header line via
   the `— <message>` suffix, not repeated here.)
 - Projects sub-group:

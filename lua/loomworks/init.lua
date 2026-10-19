@@ -355,14 +355,17 @@ function M.rescan_tools()
     core:rescan_tools()
 end
 
---- Scan for connected devices from all device-capable modules.
---- @param callback? fun(devices: loomworks.Device[])
+--- Scan for connected devices from all device-capable modules (in `daemon`
+--- mode a `Devices/1.scan` task of the workspace daemon; refused or failed:
+--- notified, `callback(nil, err)`).
+--- @param callback? fun(devices: loomworks.DeviceRecord[]|nil, err: string|nil)
 function M.scan_devices(callback)
     require("loomworks.device_source").scan(M.get_workspace(), callback)
 end
 
---- Get the current list of discovered devices.
---- @return loomworks.Device[]
+--- Get the current list of discovered devices (in `daemon` mode the
+--- daemon's registry, `Devices/1.list`, as last read).
+--- @return loomworks.DeviceRecord[]
 function M.get_devices()
     return require("loomworks.device_source").list(M.get_workspace())
 end

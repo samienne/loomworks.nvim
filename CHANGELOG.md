@@ -478,6 +478,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- With the workspace daemon, the editor's devices are the daemon's: the
+  status page's device picker and `lw.scan_devices` scan through it (one
+  task), `lw.get_devices` returns its device list, and choosing a profile's
+  device is saved by it. Launching a device target builds, installs and
+  launches it there as tasks the editor owns, and stopping it stops the app
+  through the daemon. When the daemon cannot do these they are refused with
+  the reason; they never run in the editor. The device log is not available
+  with the daemon yet: the editor says so after a device launch. A
+  device-log view that falls behind its stream now shows the gap in the
+  view. (#288)
 - With the workspace daemon, the editor's *Build default target* of a
   non-device target is one daemon task: the daemon builds the target's
   dependencies, runs its pre-build deploy and builds it (the editor no longer

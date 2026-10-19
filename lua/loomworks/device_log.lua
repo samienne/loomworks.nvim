@@ -378,7 +378,7 @@ local MAX_LINES_PER_FLUSH = 200
 --- pending records start dropping at the append point — bounds
 --- memory and stops the queue from growing unboundedly if we're
 --- persistently behind. Dropped records are still counted and
---- reported via the logger so the user knows there's a gap.
+--- reported in the view (a gap line) so the user knows there's a gap.
 local MAX_PENDING = 2000
 
 --- Create the singleton view. Lazy — nothing materialises until
@@ -553,6 +553,19 @@ function LogView:_flush()
     end
     self._pending = remainder
 
+    -- If we dropped pending records to stay under the cap, tell the
+    -- user in the view itself — silent drops would hide a real
+    -- problem. One gap line per flush regardless of drop count, ahead
+    -- of the records that follow the gap. It is NOT kept in the ring:
+    -- the dropped records are still there, so a re-render shows them all
+    -- in order and the gap no longer applies.
+    if self._pending_dropped and self._pending_dropped > 0 then
+        local gap = { header = string.format("── %d lines dropped (the view fell behind the stream) ──",
+            self._pending_dropped) }
+        self._pending_dropped = 0
+        table.insert(batch, 1, gap)
+    end
+
     local lines = {}
     local hl_records = {}
     for _, rec in ipairs(batch) do
@@ -565,23 +578,6 @@ function LogView:_flush()
         end
     end
 
-    -- If we dropped pending records to stay under the cap, tell the
-    -- user (via the loomworks logger) — silent drops would hide a
-    -- real problem. Emit once per flush regardless of drop count
-    -- so we don't spam the log file.
-    if self._pending_dropped and self._pending_dropped > 0 then
-        local ok_lw, lw = pcall(require, "loomworks")
-        if ok_lw then
-            local ws = lw.get_workspace()
-            local log = ws and ws._core and ws._core._deps
-                and ws._core._deps.log
-            if log then
-                log:warn("device_log: dropped %d pending lines (UI behind stream)",
-                    self._pending_dropped)
-            end
-        end
-        self._pending_dropped = 0
-    end
 
     -- Schedule the next flush early when there's still a remainder
     -- so we work down the queue promptly instead of waiting a full
@@ -889,6 +885,50 @@ local function ensure_view()
     return _view
 end
 
+--- Why there is no device log here (spec §19.16 "Devices", step 5n C2):
+--- in `daemon` mode a device program is launched by the workspace daemon,
+--- and its log stream (`Launch/1.device_log`, a later step) is not carried
+--- yet — the editor never streams it itself.
+M.DAEMON_NOTE = "device log: unavailable in daemon mode — the workspace daemon does not carry it yet "
+    .. "(loomworks.Launch/1.device_log)"
+
+--- The device log's refusal now, or nil: `daemon` mode — the editor has an
+--- observer of the workspace daemon (never loads the daemon modules: in
+--- `in-process` mode there is none) — and no stream of this view running.
+--- @return string|nil
+function M.unavailable()
+    if _task then return nil end
+    local mod = package.loaded["loomworks.daemon.observer"]
+    if type(mod) == "table" and type(mod.current) == "function" and mod.current() then
+        return M.DAEMON_NOTE
+    end
+    return nil
+end
+
+--- The view, with the refusal as its last line while the log is
+--- unavailable (once: not repeated while it is still the last note).
+--- @return table LogView
+local function view_with_note()
+    local view = ensure_view()
+    local why = M.unavailable()
+    if why and view._noted ~= why then
+        view._noted = why
+        view:_inject_header(why)
+    end
+    return view
+end
+
+--- A device program was launched through the workspace daemon (step 5n
+--- C2): the log is refused as a feature the daemon does not carry yet — one
+--- notification line, and the note in the view — never streamed here.
+function M.refuse_daemon()
+    vim.notify("loomworks: " .. M.DAEMON_NOTE, vim.log.levels.INFO)
+    if _view then
+        _view._noted = nil
+        view_with_note()
+    end
+end
+
 --- Start a new device-log stream. Disposes any previous stream first so
 --- the "one active session" invariant holds.
 ---
@@ -912,6 +952,7 @@ end
 function M.start(opts)
     M.stop()
     _prefilter = opts.prefilter
+    if _view then _view._noted = nil end
 
     local view_existed = _view ~= nil
     local view = ensure_view()
@@ -969,12 +1010,13 @@ end
 --- first call so `<leader>wO` works before a device session has
 --- ever started — the buffer is just empty until something streams
 --- into it.
+--- In `daemon` mode the view says why it is empty (M.unavailable).
 function M.toggle()
-    ensure_view():toggle()
+    view_with_note():toggle()
 end
 
 function M.show()
-    ensure_view():show()
+    view_with_note():show()
 end
 
 function M.hide()

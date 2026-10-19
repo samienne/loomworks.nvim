@@ -7,7 +7,8 @@
 -- preparation's), its Yes sent as `force`; the task's progress entry, its
 -- status row and its task-runner row follow the current step from
 -- `TaskInfo.steps` / `start.meta.steps` and the `Tasks/1.step` signal (a seq
--- gap re-reads `Tasks/1.list`). A device target's build stays the editor's.
+-- gap re-reads `Tasks/1.list`). A device target's build is the same call
+-- (step 5n C2, §19.16 "Devices"), addressed by its profile alone.
 
 local observer = require("loomworks.daemon.observer")
 local editor_ops = require("loomworks.daemon.editor_ops")
@@ -202,13 +203,16 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
         assert.equals(0, #created)
     end)
 
-    it("a device target's build stays the editor's (its own unit's build as Build/1.build)", function()
+    it("a device target's build is one Launch/1.build too, addressed by its profile alone", function()
         obs = fake_observer()
-        local t = lt("run")
-        t.requires_device = function() return true end
+        local t = require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
         t:build()
         assert.is_true(vim.wait(2000, function() return #sent >= 1 end, 10))
-        assert.same({ "/build", "build" }, { sent[1].object, sent[1].method })
+        assert.equals(1, #sent)
+        assert.same({ "/launch", "build" }, { sent[1].object, sent[1].method })
+        assert.is_nil(sent[1].args.target)
+        assert.same({ key = profile.key }, sent[1].args.profile)
+        assert.equals(0, #created)
     end)
 
     describe("the artifact-conflict question", function()
