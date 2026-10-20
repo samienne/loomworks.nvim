@@ -3675,11 +3675,18 @@ function Workspace:mark_cached_configs_cleaned(items)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
---- Set cache state to "unknown" for items that have build directories.
+--- Set cache state to "unknown" for items that have build directories. An
+--- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
+--- its BuildDir as `build_dir_obj`, which is marked directly: the cache
+--- serializes it from the BuildDir (`_serialize_cache`).
 --- @param items loomworks.DeletionItem[]
 function Workspace:_mark_cache_unknown(items)
     for _, item in ipairs(items) do
-        if not item.unit then goto continue end
+        if not item.unit then
+            local bd = item.build_dir_obj
+            if bd and bd:has_state() then bd.state = "unknown" end
+            goto continue
+        end
         if item.unit.build_dir_value then
             item.unit.state_value = "unknown"
         end
@@ -4130,7 +4137,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                         end
                     end
                     dirs[#dirs + 1] = normalized
-                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit, item.unit and item.unit._build_dir)
+                    -- An orphaned entry (no unit) carries its BuildDir.
+                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
+                        item.unit and item.unit._build_dir or item.build_dir_obj)
                     ::skip_dir::
                 end
             end
