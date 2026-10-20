@@ -620,9 +620,48 @@ end
 -- Orphan Cleanup
 -- =========================================================================
 
+--- Canonical forms (ws:_canonicalize_boundary_path: 8.3 short<->long + case
+--- reconciled, symlinks resolved) of every build dir referenced by a
+--- ConfigUnit. Stray detection and stray deletion compare DIRECTORY IDENTITY
+--- through these, never raw path spelling: a unit's build dir can be recorded
+--- in a different spelling of the same location than ws.root (e.g. an 8.3
+--- short temp path on a Windows runner), and a spelling mismatch would make a
+--- live build dir's parent look stray — and orphan cleanup would delete it.
+--- @param ws loomworks.Workspace
+--- @return string[]
+local function live_build_dirs_canonical(ws)
+    local known = {}
+    for _, unit in pairs(ws._config_units) do
+        local bd = unit:build_dir()
+        if bd and bd ~= "" then
+            known[#known + 1] = ws:_canonicalize_boundary_path(bd)
+        end
+    end
+    return known
+end
+
+--- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (canonical,
+--- separator-bounded comparison) — such a dir must never be deleted as stray.
+--- @param ws loomworks.Workspace
+--- @param dir string
+--- @param known? string[] precomputed live_build_dirs_canonical(ws)
+--- @return boolean
+local function overlaps_live_build_dir(ws, dir, known)
+    known = known or live_build_dirs_canonical(ws)
+    local c = ws:_canonicalize_boundary_path(dir)
+    for _, k in ipairs(known) do
+        if k == c or k:sub(1, #c + 1) == c .. "/" or c:sub(1, #k + 1) == k .. "/" then
+            return true
+        end
+    end
+    return false
+end
+
 --- Find build directories on disk under {root}/.nvim/build/ that are not
 --- referenced by any cache entry. Uses top-down pruning: reports the
 --- highest-level directory whose entire subtree contains no cache entries.
+--- Comparisons use canonical paths (live_build_dirs_canonical); reported paths
+--- keep the scanned (normalized) spelling under ws.root for display.
 --- @param ws loomworks.Workspace
 --- @return string[] absolute paths of stray directories
 function M.find_stray_build_dirs(ws)
@@ -630,21 +669,15 @@ function M.find_stray_build_dirs(ws)
     local build_root = ws.root .. "/.nvim/build"
     local normalize = ws._core._deps.normalize
 
-    -- Collect all normalized build_dirs referenced by ConfigUnit objects
-    local known_dirs = {}
-    for _, unit in pairs(ws._config_units) do
-        local bd = unit:build_dir()
-        if bd then
-            known_dirs[#known_dirs + 1] = normalize(bd)
-        end
-    end
+    -- Canonical build_dirs referenced by ConfigUnit objects
+    local known_dirs = live_build_dirs_canonical(ws)
 
     -- Build a set for exact match and a list for prefix checks
     local known_set = {}
     for _, d in ipairs(known_dirs) do known_set[d] = true end
 
     --- Check if any known cache dir is a proper child of the candidate.
-    --- @param candidate string normalized dir path
+    --- @param candidate string canonical dir path
     --- @return boolean
     local function has_cache_entry_below(candidate)
         local prefix = candidate .. "/"
@@ -663,10 +696,11 @@ function M.find_stray_build_dirs(ws)
     local stray = {}
     local function scan(dir)
         local normalized = normalize(dir)
-        if known_set[normalized] then
+        local canonical = ws:_canonicalize_boundary_path(dir)
+        if known_set[canonical] then
             return -- this dir is a known build dir, don't touch it
         end
-        if not has_cache_entry_below(normalized) then
+        if not has_cache_entry_below(canonical) then
             stray[#stray + 1] = normalized
             return
         end
@@ -786,9 +820,15 @@ function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
             return
         end
         local safe_prefix = ws._core._deps.normalize(ws.root)
+        -- Re-check against the live build dirs at deletion time (the list may
+        -- be stale); identity is compared canonically, never by spelling.
+        local known = live_build_dirs_canonical(ws)
         local valid_dirs = {}
         for _, dir in ipairs(stray_dirs) do
-            if ws:_validate_build_dir(dir, safe_prefix) then
+            if overlaps_live_build_dir(ws, dir, known) then
+                ws._core._deps.notify("loomworks: refusing to delete stray dir holding a live build dir: " .. dir,
+                    vim.log.levels.ERROR)
+            elseif ws:_validate_build_dir(dir, safe_prefix) then
                 valid_dirs[#valid_dirs + 1] = dir
             end
         end
@@ -805,10 +845,16 @@ function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
         -- Collect build dirs to delete
         local dirs = {}
         local safe_prefix = ws._core._deps.normalize(ws.root)
+        -- An orphaned entry's build dir (from the cache, never trusted) may be
+        -- the same directory as a live unit's under another spelling: keep it.
+        local known = live_build_dirs_canonical(ws)
         for _, item in ipairs(orphaned_configs) do
             if item.build_dir then
                 local normalized = ws._core._deps.normalize(item.build_dir)
-                if ws:_validate_build_dir(normalized, safe_prefix) then
+                if overlaps_live_build_dir(ws, normalized, known) then
+                    ws._core._deps.notify("loomworks: skipped deleting " .. normalized
+                        .. " — it holds a live build dir", vim.log.levels.INFO)
+                elseif ws:_validate_build_dir(normalized, safe_prefix) then
                     dirs[#dirs + 1] = normalized
                 end
             end
@@ -1135,6 +1181,10 @@ end
 function M.execute_delete_stray_dir(ws, dir, on_done)
     on_done = on_done or function() end
     local safe_prefix = ws._core._deps.normalize(ws.root)
+    if overlaps_live_build_dir(ws, dir) then
+        on_done(false, "directory holds a live build dir")
+        return
+    end
     if not ws:_validate_build_dir(dir, safe_prefix) then
         on_done(false, "path outside workspace")
         return
