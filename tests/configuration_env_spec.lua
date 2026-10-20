@@ -333,7 +333,7 @@ describe("lw config param grammar: env", function()
     it("rejects bare env, overrides.<family>.env without NAME, and unknown dotted params", function()
         for _, p in ipairs({ "env", "overrides.msvc.env", "foo.bar", "overrides.msvc.x.y" }) do
             local r = capture(function() cli._apply_param({}, p, "v") end)
-            assert.equals(1, r.exit_code, p)
+            assert.equals(2, r.exit_code, p)
         end
         local r = capture(function() cli._apply_param({}, "foo.bar", "v") end)
         assert.matches("unknown parameter 'foo.bar'", r.stderr, 1, true)

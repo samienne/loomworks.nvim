@@ -116,7 +116,7 @@ describe("launch rename", function()
     end
   end)
 
-  it("refuses an unknown old name, an existing new name and an invalid name", function()
+  it("refuses an unknown old name, an existing new name (exit 1) and an invalid name (exit 2)", function()
     local root = make_ws()
     launch(root, "add", "App", "a", "node", "x.js")
     launch(root, "add", "App", "b", "node", "y.js")
@@ -126,7 +126,7 @@ describe("launch rename", function()
     assert.is_truthy(col.stderr:find("already exists", 1, true))
     for _, bad in ipairs({ "-x", " padded", "tab\tname", "" }) do
       local r = launch(root, "rename", "App", "a", bad)
-      assert.equals(1, r.exit_code, bad)
+      assert.equals(2, r.exit_code, bad) -- a malformed name is a usage error
     end
     local l = user_json(root).projects.App.launch
     assert.is_truthy(l.a); assert.is_truthy(l.b)
@@ -325,18 +325,19 @@ describe("launch add --description / describe", function()
 
   it("new launch names are validated on add", function()
     local root = make_ws()
-    assert.equals(1, launch(root, "add", "App", "-bad", "node").exit_code)
+    assert.equals(2, launch(root, "add", "App", "-bad", "node").exit_code)
   end)
 
   -- Tightened rule (v0.1.40-beta.2, spec §8.7): no whitespace anywhere and no
   -- '/' or '\' in a NEW name, on add and on rename; the error says what is allowed.
+  -- A malformed name is a usage error: exit 2 (spec §16.7 "Option values").
   local BAD = { "bad name", "a/b", "a\\b", "tab\tname", "", "-lead", " padded" }
 
   it("add refuses whitespace, slashes, empty and a leading '-', naming what is allowed", function()
     local root = make_ws()
     for _, bad in ipairs(BAD) do
       local r = launch(root, "add", "App", bad, "node", "x.js")
-      assert.equals(1, r.exit_code, "accepted " .. vim.inspect(bad))
+      assert.equals(2, r.exit_code, "accepted " .. vim.inspect(bad))
       assert.is_truthy(r.stderr:find("invalid launch name", 1, true), r.stderr)
       assert.is_truthy(r.stderr:find("allowed", 1, true), r.stderr)
     end
@@ -351,7 +352,7 @@ describe("launch add --description / describe", function()
     launch(root, "add", "App", "a", "node", "x.js")
     for _, bad in ipairs(BAD) do
       local r = launch(root, "rename", "App", "a", bad)
-      assert.equals(1, r.exit_code, "accepted " .. vim.inspect(bad))
+      assert.equals(2, r.exit_code, "accepted " .. vim.inspect(bad))
       assert.is_truthy(r.stderr:find("allowed", 1, true), r.stderr)
     end
     assert.is_truthy(user_json(root).projects.App.launch.a)
@@ -368,11 +369,11 @@ describe("launch add --description / describe", function()
       return r
     end
     local r = run_main("launch", "add", "App", "", "node", "x.js")
-    assert.equals(1, r.exit_code, r.stdout)
+    assert.equals(2, r.exit_code, r.stdout)
     assert.is_truthy(r.stderr:find("cannot be empty", 1, true), r.stderr)
     assert.is_nil(run_main("launch", "add", "App", "a", "node", "x.js").exit_code == 1 or nil)
     r = run_main("launch", "rename", "App", "a", "")
-    assert.equals(1, r.exit_code, r.stdout)
+    assert.equals(2, r.exit_code, r.stdout)
     assert.is_truthy(r.stderr:find("cannot be empty", 1, true), r.stderr)
     assert.is_truthy(user_json(root).projects.App.launch.a)
   end)

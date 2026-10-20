@@ -965,7 +965,7 @@ local function resolve_profile(ws, name, opts)
       "  pass one explicitly (a unique substring works): " ..
       (opts and opts.usage or "lw <command> <profile>") .. "\n" ..
       "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
-      "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically")
+      "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically", 2)
   end
   local active = ws._active_profile_key
   if active then
@@ -1429,7 +1429,7 @@ function M.cmd_reset(ws, args)
     end
   end
   if all and profile_name then
-    die("`lw reset --all` resets every profile — drop the profile argument")
+    die("`lw reset --all` resets every profile — drop the profile argument", 2)
   end
 
   -- Three sets:
@@ -1838,7 +1838,7 @@ end
 --- Parse a positive number option value (`--timeout 30`).
 function DEV.parse_seconds(flag, v)
   local n = tonumber(v)
-  if not n or n <= 0 then die(flag .. " requires a positive number of seconds (got '" .. tostring(v) .. "')") end
+  if not n or n <= 0 then die(flag .. " requires a positive number of seconds (got '" .. tostring(v) .. "')", 2) end
   return n
 end
 M._parse_seconds = DEV.parse_seconds
@@ -1880,7 +1880,7 @@ function DEV.parse_device_opt(argv, i, o)
   elseif v == "--transfer-timeout" then o.timeouts.transfer = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
   elseif v == "--log" then
     local k, val = require("loomworks.remote.run").parse_log_arg(argv[i + 1] or "")
-    if not k then die(val) end
+    if not k then die(val, 2) end
     o.log_options = o.log_options or {}
     o.log_options[k] = val
     o._next = i + 2
@@ -1971,7 +1971,7 @@ function M._device_select(ws, args)
     if not serial or #positionals > 2 then
       die("usage: lw device select <serial> [profile] | lw device select --clear [profile]", 2)
     end
-    if serial:find("[%c]") then die("invalid device serial") end
+    if serial:find("[%c]") then die("invalid device serial", 2) end
   end
   local profile = resolve_profile(ws, profile_name, { usage = "lw device select <serial> <profile>" })
   if clear then
@@ -2032,7 +2032,7 @@ function DEV.project_device_set(root, pos)
   local values = {}
   for i = 3, #pos do values[#values + 1] = pos[i] end
   local sub, name = field:match("^device%.([%w_]+)%.?(.*)$")
-  if not sub or #values == 0 then die(DEV.BLOCK_USAGE) end
+  if not sub or #values == 0 then die(DEV.BLOCK_USAGE, 2) end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local block = vim.deepcopy(proj.device or {})
@@ -2044,7 +2044,7 @@ function DEV.project_device_set(root, pos)
     block.env = type(block.env) == "table" and block.env or {}
     block.env[name] = values[1]
   else
-    die("cannot set '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+    die("cannot set '" .. field .. "'\n" .. DEV.BLOCK_USAGE, 2)
   end
   local ok, err = proj:save_device(block)
   if not ok then die(err or "failed to update the device block") end
@@ -2072,7 +2072,7 @@ function DEV.project_device_unset(root, proj_name, field)
     if block[sub] == nil then die("project '" .. proj.key .. "' sets no device." .. sub) end
     block[sub] = nil
   else
-    die("cannot unset '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+    die("cannot unset '" .. field .. "'\n" .. DEV.BLOCK_USAGE, 2)
   end
   local ok, err = proj:save_device(block)
   if not ok then die(err or "failed to update the device block") end
@@ -2402,7 +2402,7 @@ end
 ---                    resolved cwd/env, on the real terminal (so interactive
 ---                    gdb/valgrind work). Repeatable and shell-word split, so
 ---                    `--prefix 'valgrind --leak-check=full'` and
----                    `--prefix gdb --prefix --args` both give multiple tokens.
+---                    `--prefix gdb --prefix=--args` both give multiple tokens.
 ---   --print[=sh|json] build (quietly), then resolve the launch but do NOT
 ---                     execute; report it and exit 0. `sh` (default) is a single
 ---                     POSIX-sh-quoted line; `json` is `{cmd:[argv], cwd, env:{overrides}}`.
@@ -3769,7 +3769,7 @@ function M.cmd_launch_add(root, args)
 
   -- A new launch name must be valid (spec §8.7).
   local vok, verr = require("loomworks.project").validate_launch_name(name)
-  if not vok then die("invalid launch name '" .. name .. "': " .. verr) end
+  if not vok then die("invalid launch name '" .. name .. "': " .. verr, 2) end
 
   -- `--description <para>` (repeatable) — not `-m`: everything after the
   -- command is the program's own args, where `-m` is common (§16.35).
@@ -4205,6 +4205,10 @@ function M.cmd_launch_rename(root, args)
   if not (proj_name and old and new) then
     die("usage: lw launch rename <project> <old> <new>", 2)
   end
+  -- A malformed new name is a usage error (spec §16.7); an unknown old or a
+  -- taken new name is the workspace's state (exit 1).
+  local vok, verr = require("loomworks.project").validate_launch_name(new)
+  if not vok then die("invalid launch name '" .. new .. "': " .. verr, 2) end
   local ws = load_workspace(root, false)
   return M._launch_rename(ws, resolve_project(ws, proj_name), old, new)
 end
@@ -5040,7 +5044,7 @@ local function pick_type(detected)
   if #options == 0 then die("no modules available to add a project as") end
   if not interactive() then
     die("could not determine the project type — pass it explicitly:\n" ..
-      "  lw project add <path> <type>   (types: " .. table.concat(options, ", ") .. ")")
+      "  lw project add <path> <type>   (types: " .. table.concat(options, ", ") .. ")", 2)
   end
   out(detected and "Multiple project types detected:" or
     "No type detected — select one:")
@@ -5362,16 +5366,16 @@ local PROJECT_SET_USAGE =
 function M.cmd_project_set(root, argv)
   local pos, var_type = parse_project_set_args(argv)
   local proj_name, var_name, default_val = pos[1], pos[2], pos[3]
-  if not proj_name or not var_name then die(PROJECT_SET_USAGE) end
+  if not proj_name or not var_name then die(PROJECT_SET_USAGE, 2) end
   -- `device.<field>`: the project's device block (spec §18.9).
   if var_name == "device" or var_name:match("^device%.") then
     if var_type then die("--type does not apply to the device block\n" .. DEV.BLOCK_USAGE, 2) end
     return DEV.project_device_set(root, pos)
   end
-  if #pos > 3 then die("too many arguments\n" .. PROJECT_SET_USAGE) end
+  if #pos > 3 then die("too many arguments\n" .. PROJECT_SET_USAGE, 2) end
   var_type = var_type or "string"
   if var_type ~= "string" and var_type ~= "path" then
-    die("invalid --type '" .. tostring(var_type) .. "' — use 'string' or 'path'")
+    die("invalid --type '" .. tostring(var_type) .. "' — use 'string' or 'path'", 2)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -5487,7 +5491,7 @@ end
 --- @return string[] replaced
 local function apply_param(data, param, value)
   if param == "options" or param == "variables" or param == "env" then
-    die("specify a key: " .. param .. ".<KEY>")
+    die("specify a key: " .. param .. ".<KEY>", 2)
   end
   -- Compiler-family override: overrides.<family>.<name> (three segments,
   -- mirroring the nested shape) or overrides.<family>.env.<NAME> (the
@@ -5499,23 +5503,23 @@ local function apply_param(data, param, value)
   -- save_configuration.
   if param == "overrides" then
     die("specify a family and name: overrides.<family>.<name> or "
-      .. "overrides.<family>.env.<NAME> (family ∈ clang|gcc|msvc)")
+      .. "overrides.<family>.env.<NAME> (family ∈ clang|gcc|msvc)", 2)
   end
   local ov_family, ov_name = param:match("^overrides%.([^.]+)%.(.+)$")
   if not ov_family and param:match("^overrides%.") then
     die("malformed override param '" .. param .. "' — expected "
       .. "overrides.<family>.<name> or overrides.<family>.env.<NAME> "
-      .. "(family ∈ clang|gcc|msvc)")
+      .. "(family ∈ clang|gcc|msvc)", 2)
   end
   if ov_family then
     if ov_family ~= "clang" and ov_family ~= "gcc" and ov_family ~= "msvc" then
       die("unknown compiler family '" .. ov_family
-        .. "' — expected clang, gcc, or msvc")
+        .. "' — expected clang, gcc, or msvc", 2)
     end
     data.overrides = data.overrides or {}
     local fam = data.overrides[ov_family] or {}
     if ov_name == "env" then
-      die("specify a variable: overrides." .. ov_family .. ".env.<NAME>")
+      die("specify a variable: overrides." .. ov_family .. ".env.<NAME>", 2)
     end
     local env_name = ov_name:match("^env%.(.+)$")
     local replaced = {}
@@ -5523,7 +5527,7 @@ local function apply_param(data, param, value)
       local env = type(fam.env) == "table" and fam.env or nil
       fam.env, replaced = set_env_ci(env, env_name, value)
     elseif ov_name:find(".", 1, true) then
-      die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+      die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS, 2)
     else
       -- A nil (unset) or empty value clears the entry.
       fam[ov_name] = (value ~= nil and value ~= "") and value or nil
@@ -5559,7 +5563,7 @@ local function apply_param(data, param, value)
     data.languages = (value and value ~= "") and split_csv(value) or nil
   elseif param:find(".", 1, true) then
     -- Unknown dotted param: never store a literal dotted module-field name.
-    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS, 2)
   else
     data[param] = value -- module field (variant, toolchain, generator, ...)
   end
@@ -5598,7 +5602,7 @@ local function get_param(cfg, param)
   ov_family = param:match("^overrides%.([^.]+)$")
   if ov_family then return cfg._overrides and cfg._overrides[ov_family] end
   if param:find(".", 1, true) then
-    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS, 2)
   end
   return cfg.module_config and cfg.module_config[param]
 end
@@ -5666,7 +5670,7 @@ local function reject_variant_param(proj, value)
     "    lw config set " .. proj.key .. " <name> inherits "
       .. (base or "variant:<Name>"),
     "  `lw config list " .. proj.key .. "` shows the available bases.",
-  }, "\n"))
+  }, "\n"), 2)
 end
 
 --- Whether configuration `name` of `proj` would reach the shared
@@ -5920,7 +5924,7 @@ end
 function M._refuse_tests_param(param)
   if param == "tests" or (type(param) == "string" and param:match("^tests%.")) then
     die("saved test targets are edited with `lw test-target` (add | remove | clear), " ..
-      "not `lw config set/unset` — see `lw help test-target`")
+      "not `lw config set/unset` — see `lw help test-target`", 2)
   end
 end
 
@@ -6169,7 +6173,7 @@ function M.cmd_cset_create(root, args)
     -- Positional `<project> <config>` pairs (matching `configset map`).
     if #rest % 2 ~= 0 then
       die("positional mappings must come in <project> <config> pairs: " ..
-        table.concat(rest, " "))
+        table.concat(rest, " "), 2)
     end
     for i = 1, #rest, 2 do
       local project = resolve_project(ws, rest[i])
@@ -6776,7 +6780,7 @@ function M.select_profile(ws, args)
     end
   end
   if none and name then
-    die("`--none` clears the active profile; it takes no profile name")
+    die("`--none` clears the active profile; it takes no profile name", 2)
   end
   if none then return clear_active_profile(ws) end
   local profiles = ws._profiles or {}
@@ -6798,7 +6802,7 @@ function M.select_profile(ws, args)
     die("`lw profile select` without a profile is an interactive picker.\n" ..
       "  name the profile (a unique substring works): lw profile select <profile>\n" ..
       "  or clear the selection: lw profile select --none\n" ..
-      "  profiles: " .. table.concat(keys, ", "))
+      "  profiles: " .. table.concat(keys, ", "), 2)
   end
   local active = ws._active_profile_key
   out("Select a profile:")
@@ -6856,7 +6860,7 @@ local function pick_tool(mod, qualify)
   if not interactive() then
     die("no " .. mod.id .. " toolchain specified — pass one:\n  lw profile create <set> " ..
       (qualify and (mod.id .. ":") or "") .. "<tool>   (available: " ..
-      table.concat(tool_keys_of(mod), ", ") .. ")")
+      table.concat(tool_keys_of(mod), ", ") .. ")", 2)
   end
   out("Select a " .. mod.id .. " toolchain:")
   for i, t in ipairs(tools) do
@@ -6907,9 +6911,9 @@ function M.cmd_profile_create(root, args)
   end
   if #order > 1 and #bare > 0 then
     die("this set needs multiple toolchains (" .. table.concat(order, ", ") ..
-      ") — qualify each: e.g. " .. order[1] .. ":<tool>")
+      ") — qualify each: e.g. " .. order[1] .. ":<tool>", 2)
   end
-  if #bare > 1 then die("too many toolchains for one module — pass a single tool key") end
+  if #bare > 1 then die("too many toolchains for one module — pass a single tool key", 2) end
 
   -- Resolve one Tool per required keyed module.
   local resolved = {}
@@ -7787,7 +7791,7 @@ local function pick_detected_sdk(ws, sdk_type)
         (inst.version and ("   (" .. tostring(inst.version) .. ")") or "")
     end
     die(#fresh .. " " .. sdk_type .. " installations detected — pass one explicitly:\n" ..
-      table.concat(lines, "\n"))
+      table.concat(lines, "\n"), 2)
   end
   local display = sdk_display_name(sdk_type)
   out("Several " .. sdk_type .. " installations detected — select one:")
@@ -8001,7 +8005,7 @@ function M.cmd_profile_query(root, args)
       value = entry.value or ""
     else
       die("unknown field '" .. field
-        .. "' — use build-dir | config | state | tool | cache | variables | variables.<name>")
+        .. "' — use build-dir | config | state | tool | cache | variables | variables.<name>", 2)
     end
   end
   out(value or "")
@@ -8204,10 +8208,10 @@ function M.cmd_settings(sub, key, value)
     -- Validate constrained keys up front so a typo is caught here, not silently
     -- at the next self-update (the channel is re-validated by the host too).
     if key == "channel" and value ~= "stable" and value ~= "unstable" then
-      die("invalid channel '" .. value .. "' — use 'stable' or 'unstable'")
+      die("invalid channel '" .. value .. "' — use 'stable' or 'unstable'", 2)
     end
     if key == "release-notes" and value ~= "on" and value ~= "off" then
-      die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'")
+      die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'", 2)
     end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
@@ -11295,7 +11299,7 @@ Wrapping and inspecting the launch:
                         on the real terminal (interactive gdb/valgrind work).
                         Repeatable and shell-word split, so
                         `--prefix 'valgrind --leak-check=full'` and
-                        `--prefix gdb --prefix --args` both give many tokens.
+                        `--prefix gdb --prefix=--args` both give many tokens.
                         This is the faithful way to run under a wrapper —
                         `valgrind $(lw run --print)` cannot carry the cwd/env.
   --print[=sh|json]     build (+deploy) first, then resolve the launch but DO
@@ -12777,8 +12781,8 @@ local function main()
   -- An option the command does not know is a usage error (spec §16.7), checked
   -- before any handler runs — so a mistyped option can never start a build.
   -- Nothing after `--` is checked (a program's / native tool's arguments).
-  -- A missing value or a single-valued option given twice (spec §16.7
-  -- "Option values") is found the same way; it precedes any unknown option
+  -- A missing or empty value or a single-valued option given twice (spec
+  -- §16.7 "Option values") is found the same way; it precedes any unknown option
   -- (the walk stops there). Then every `--opt=value` is split, so the handlers
   -- only see `--opt value`.
   do
@@ -12881,7 +12885,7 @@ local function main()
     local areas, unknown = M._health_areas(names)
     if not areas then
       die("unknown health area '" .. unknown .. "' — areas: "
-        .. table.concat(require("loomworks.inventory").AREAS, ", ") .. " (lw help health)")
+        .. table.concat(require("loomworks.inventory").AREAS, ", ") .. " (lw help health)", 2)
     end
     finish(M.cmd_health(root, { json = json, verbose = verbose, all = all, areas = areas }))
   end

@@ -250,6 +250,63 @@ describe("cli.cmd_run — --prefix / --print / --no-build parsing", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- The real dispatcher (`cli.main`): option-value checks, `--opt=value`
+-- splitting and global-option removal all happen before cmd_run, so a
+-- repeatable `--prefix` must survive them (spec §16.7 "Option values", §16.16).
+-- ---------------------------------------------------------------------------
+
+describe("lw run --prefix through the dispatcher", function()
+    local function make_root()
+        local root = vim.fn.tempname():gsub("\\", "/")
+        vim.fn.mkdir(root .. "/App", "p")
+        local t = assert(io.open(root .. "/App/tsconfig.json", "w")); t:write("{}"); t:close()
+        local f = assert(io.open(root .. "/loomworks.json", "w"))
+        f:write(vim.json.encode({ projects = { App = { typescript = vim.empty_dict() } } })); f:close()
+        return root
+    end
+
+    local function dispatch(root, argv)
+        local seen = {}
+        local real_sel, real_disp = cli._run_selection, cli._run_launch_target
+        cli._run_selection = function(ws, positionals)
+            seen.positionals = positionals
+            return {
+                key = "p",
+                projects = function() return {} end,
+                default_target = function() return {} end,
+            }, nil, ws
+        end
+        cli._run_launch_target = function(_, _, opts)
+            seen.opts = opts
+            return 0
+        end
+        local saved_arg, saved_root = _G.arg, vim.env.LW_ROOT
+        _G.arg, vim.env.LW_ROOT = argv, root
+        local res = capture(function() return cli.main() end)
+        _G.arg, vim.env.LW_ROOT = saved_arg, saved_root
+        cli._run_selection, cli._run_launch_target = real_sel, real_disp
+        seen.res = res
+        return seen
+    end
+
+    it("accumulates --prefix gdb --prefix=--args and forwards the args after --", function()
+        local s = dispatch(make_root(), { "run", "--no-build", "--prefix", "gdb", "--prefix=--args",
+            "app", "--", "x" })
+        assert.equals(0, s.res.exit_code or 0, s.res.stderr)
+        assert.same({ "app" }, s.positionals)
+        assert.same({ "gdb", "--args" }, s.opts.prefix_tokens)
+        assert.same({ "x" }, s.opts.extra_args)
+    end)
+
+    it("a bare --prefix followed by --args is a missing value (exit 2)", function()
+        local s = dispatch(make_root(), { "run", "--prefix", "gdb", "--prefix", "--args", "app" })
+        assert.equals(2, s.res.exit_code, s.res.stderr)
+        assert.is_truthy(s.res.stderr:find("--prefix", 1, true), s.res.stderr)
+        assert.is_nil(s.opts)
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- cmd_run end-to-end — --dry-run never builds, --print still builds
 -- ---------------------------------------------------------------------------
 

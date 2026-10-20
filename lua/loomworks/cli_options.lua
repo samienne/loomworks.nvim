@@ -50,7 +50,8 @@ end
 
 --- Valued options that may be given more than once (spec §16.7 "Option
 --- values"): every other valued option holds one value.
-M.REPEATABLE = set({ "--env", "--unset-env", "--description", "-m", "--message", "--target", "--log" })
+M.REPEATABLE = set({ "--env", "--unset-env", "--description", "-m", "--message", "--prefix", "--target",
+  "--log" })
 
 --- Spellings of one option: given together they set the same value twice.
 local ALIASES_ONE = { { "--working-dir", "--cwd" }, { "-F", "--file" }, { "-o", "--output" } }
@@ -73,6 +74,7 @@ local function spec(t)
     eq = t.eq or {},
     free_after = t.free_after,
     binds = set(t.binds),
+    empty_ok = set(t.empty_ok),
     permissive = t.permissive,
     verbatim = t.verbatim,
   }
@@ -96,8 +98,10 @@ local CREATE = spec({ valued = { "-m", "--message" }, eq = { "-m=", "--message="
 local CREATE_PROFILE = spec({ flags = { "--activate", "-a" }, valued = { "-m", "--message" },
   eq = { "-m=", "--message=" } })
 -- `describe` text sources (M._describe_parse). A lone `-` is an operand (stdin).
+-- `-m ""` clears the description, like `--clear` (§16.35).
 local DESCRIBE = spec({ flags = { "-e", "--edit", "--clear", "--json" },
-  valued = { "-m", "--message", "-F", "--file" }, eq = { "-m=", "--message=" } })
+  valued = { "-m", "--message", "-F", "--file" }, eq = { "-m=", "--message=" },
+  empty_ok = { "-m", "--message" } })
 -- The `--project` / `--launch` launch address (consume_launch_address).
 local LAUNCH_ADDR = spec({ valued = { "--project", "--launch" } })
 
@@ -216,21 +220,23 @@ M.COMMANDS = {
       -- the program's. `--from-target <t>` has no command token: lw's options
       -- run to the first `--` and only what follows it is the program's.
       add = spec({ valued = { "--working-dir", "--cwd", "--env", "--from-target", "--description" },
-        eq = { "--description=" }, binds = { "--from-target" }, free_after = 3, verbatim = true }),
+        eq = { "--description=" }, binds = { "--from-target" }, free_after = 3, verbatim = true,
+        empty_ok = { "--working-dir", "--cwd" } }),
       -- Bare tokens are the new arguments; an unknown option before `--` is
       -- refused (an argument starting with `-` goes after `--`). A global
       -- option is lw's own up to `--` (`lw launch set App demo -- --dev`).
       set = spec({ flags = { "--clear-working-dir", "--clear-args" },
         valued = { "--project", "--launch", "--working-dir", "--cwd", "--env", "--unset-env",
           "--command", "--from-target", "--description" },
-        one = { { "--working-dir", "--cwd", "--clear-working-dir" }, { "--command", "--from-target" } } }),
+        one = { { "--working-dir", "--cwd", "--clear-working-dir" }, { "--command", "--from-target" } },
+        empty_ok = { "--working-dir", "--cwd", "--description" } }),
       show = spec({ flags = { "--json" }, valued = { "--project", "--launch" } }),
       remove = LAUNCH_ADDR,
       rename = NONE,
       -- `<project> <name>` or `--project`/`--launch`, then the describe sources.
       describe = spec({ flags = { "-e", "--edit", "--clear", "--json" },
         valued = { "-m", "--message", "-F", "--file", "--project", "--launch" },
-        eq = { "-m=", "--message=" } }),
+        eq = { "-m=", "--message=" }, empty_ok = { "-m", "--message" } }),
     },
     aliases = { create = "add", edit = "set", rm = "remove", mv = "rename" },
     default = NONE,
@@ -318,7 +324,7 @@ end
 --- options count as known flags. Returns the first unknown option and the
 --- command label (or nil), the index where lw's own arguments end (see
 --- `own_end`), the first option-value problem before them (a usage message
---- or nil: a missing value, a single-valued option given twice) and the
+--- or nil: a missing or empty value, a single-valued option given twice) and the
 --- indices of the `--opt=value` tokens to split (`normalize`).
 --- @param argv string[]
 --- @return string|nil option, string|nil label, integer own_end, string|nil problem, table splits
@@ -368,6 +374,13 @@ local function walk(argv)
     end
     held[key] = prev or o
   end
+  -- An empty value is a usage error except where "" clears (a launch edit's
+  -- `--working-dir ""` / `--description ""`, spec §16.7 "Option values").
+  local function check_empty(o, val)
+    if val == "" and not s.empty_ok[o] then
+      problem = problem or ("option '" .. o .. "' for `lw " .. label .. "` needs a non-empty value")
+    end
+  end
   local npos, i, free_after = 0, start, s.free_after
   while argv[i] ~= nil do
     local v = argv[i]
@@ -380,8 +393,9 @@ local function walk(argv)
       if M.is_global(v) then
         i = i + 1
       elseif eo then
-        -- `--opt=value`: the value may be anything, `--…` and "" included.
+        -- `--opt=value`: the value may be anything, `--…` included.
         hold(eo)
+        check_empty(eo, v:sub(#eo + 2))
         if s.binds[eo] then free_after = nil end
         splits[i] = true
         i = i + 1
@@ -393,6 +407,7 @@ local function walk(argv)
             .. " (a value starting with `--` is given as " .. v .. "=<value>)")
           i = i + 1
         else
+          check_empty(v, argv[i + 1])
           i = i + 2
         end
       elseif s.flags[v] then
