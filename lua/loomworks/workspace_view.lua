@@ -852,63 +852,84 @@ function M.compute_orphan_cleanup_context(ws)
     }
 end
 
---- Execute orphan cleanup: delete orphaned cache entries + build dirs,
---- then delete stray build dirs.
+--- Execute orphan cleanup: delete the orphaned configurations' build dirs and
+--- drop their entries, then delete the stray build dirs.
+--- The orphans go through `Workspace:_run_deletion` like every cache-backed
+--- deletion (spec §4.6, §5.7; spec/ui.md §1.6): their entries are marked
+--- `unknown` on disk before any tree is removed, a directory a live
+--- configuration still references is kept (the shared-dir refs check, plus
+--- `overlaps_live_build_dir` for any other spelling of a live dir), and the
+--- entries are dropped only when every removal succeeded — a failed removal
+--- keeps them (`unknown`, reported). Confirmed-deleted orphan dirs hand their
+--- module to the owned LSP database cleanup. A failed stray removal is
+--- reported too.
 --- @param ws loomworks.Workspace
---- @param orphaned_configs table[] { project_key, config_key, build_dir? }
+--- @param orphaned_configs table[] { project_key, config_key, build_dir?, build_dir_obj? }
 --- @param stray_dirs string[] absolute paths
---- @param on_done? fun()
+--- @param on_done? fun(ok: boolean) false when a removal failed or the cleanup raised an error (reported)
 function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
     on_done = on_done or function() end
+    local future_mod = require("loomworks.future")
+    local deps = ws._core._deps
+    local normalize = deps.normalize
 
+    --- @return loomworks.Future resolving true when every stray dir was removed
     local function delete_stray()
-        if #stray_dirs == 0 then
-            on_done()
-            return
-        end
-        local safe_prefix = ws._core._deps.normalize(ws.root)
+        if #stray_dirs == 0 then return future_mod.resolved(true) end
+        local safe_prefix = normalize(ws.root)
         -- Re-check against the live build dirs at deletion time (the list may
         -- be stale); identity is compared canonically, never by spelling.
         local known = live_build_dirs_canonical(ws)
         local valid_dirs = {}
         for _, dir in ipairs(stray_dirs) do
             if overlaps_live_build_dir(ws, dir, known) then
-                ws._core._deps.notify("loomworks: refusing to delete stray dir holding a live build dir: " .. dir,
+                deps.notify("loomworks: refusing to delete stray dir holding a live build dir: " .. dir,
                     vim.log.levels.ERROR)
             elseif ws:_validate_build_dir(dir, safe_prefix) then
                 valid_dirs[#valid_dirs + 1] = dir
             end
         end
-        if #valid_dirs == 0 then
-            on_done()
-            return
-        end
-        ws:_delete_build_dirs_async(valid_dirs, function()
-            on_done()
+        if #valid_dirs == 0 then return future_mod.resolved(true) end
+        return ws:_delete_build_dirs_async(valid_dirs):next(function(results)
+            local ok = true
+            for _, r in ipairs(results) do
+                if not r.ok then
+                    ok = false
+                    deps.notify("loomworks: failed to delete " .. tostring(r.dir) .. ": "
+                        .. (r.err or "unknown"), vim.log.levels.ERROR)
+                end
+            end
+            return ok
         end)
     end
 
-    if #orphaned_configs > 0 then
-        -- Collect build dirs to delete
-        local dirs = {}
-        local safe_prefix = ws._core._deps.normalize(ws.root)
+    --- @return loomworks.Future resolving true when every orphan was removed
+    local function delete_orphans()
+        if #orphaned_configs == 0 then return future_mod.resolved(true) end
         -- An orphaned entry's build dir (from the cache, never trusted) may be
-        -- the same directory as a live unit's under another spelling: keep it.
+        -- the same directory as a live unit's under another spelling: keep the
+        -- tree (no build_dir handed to the deletion), drop only the entry.
         local known = live_build_dirs_canonical(ws)
+        local items = {}
         for _, item in ipairs(orphaned_configs) do
-            if item.build_dir then
-                local normalized = ws._core._deps.normalize(item.build_dir)
-                if overlaps_live_build_dir(ws, normalized, known) then
-                    ws._core._deps.notify("loomworks: skipped deleting " .. normalized
-                        .. " — it holds a live build dir", vim.log.levels.INFO)
-                elseif ws:_validate_build_dir(normalized, safe_prefix) then
-                    dirs[#dirs + 1] = normalized
-                end
+            local dir = item.build_dir and normalize(item.build_dir) or nil
+            if dir and overlaps_live_build_dir(ws, dir, known) then
+                deps.notify("loomworks: skipped deleting " .. dir
+                    .. " — it holds a live build dir", vim.log.levels.INFO)
+                dir = nil
             end
+            items[#items + 1] = {
+                project_key = item.project_key, config_key = item.config_key,
+                build_dir = dir, build_dir_obj = item.build_dir_obj,
+                disposition = "clean",
+            }
         end
 
+        -- Runs only once every removal succeeded (`_run_deletion`), which
+        -- then saves the cache and resyncs the refs.
+        local removed = false
         local function remove_build_dir_objects()
-            -- Remove BuildDir objects and clear their state
+            removed = true
             local deploy = require("loomworks.deploy")
             for _, item in ipairs(orphaned_configs) do
                 local bd = item.build_dir_obj
@@ -916,7 +937,6 @@ function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
                     -- Clean deploy records sourced from this build dir
                     deploy.clean_deploy_records(ws._deploy_records, bd.rel_path)
                     bd:clear_state()
-                    -- Remove from _build_dirs array
                     for i, b in ipairs(ws._build_dirs) do
                         if b == bd then
                             table.remove(ws._build_dirs, i)
@@ -925,23 +945,29 @@ function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
                     end
                 end
             end
-            ws:_save_cache()
-            ws:_sync_build_dir_refs()
-            ws._core._deps.events.emit("active_set_changed", ws._active_set)
         end
 
-        if #dirs > 0 then
-            ws:_delete_build_dirs_async(dirs, function()
-                remove_build_dir_objects()
-                delete_stray()
-            end)
-        else
-            remove_build_dir_objects()
-            delete_stray()
-        end
-    else
-        delete_stray()
+        return ws:_run_deletion(items, remove_build_dir_objects)
+            :next(function() return removed end)
     end
+
+    local function failed(err)
+        deps.notify("loomworks: orphan cleanup failed: " .. tostring(err), vim.log.levels.ERROR)
+        on_done(false)
+    end
+
+    local ok, f = pcall(function()
+        return delete_orphans():next(function(orphans_ok)
+            return delete_stray():next(function(stray_ok)
+                return orphans_ok ~= false and stray_ok ~= false
+            end)
+        end)
+    end)
+    if not ok then
+        failed(f)
+        return
+    end
+    f:next(function(done_ok) on_done(done_ok) end, failed)
 end
 
 -- =========================================================================

@@ -74,6 +74,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   short name like `RUNNER~1`): its parent under `.nvim/build` was listed as a
   stray directory. Stray detection now compares directory identity, and
   cleanup refuses any directory that holds a live build dir (#293).
+- Orphan cleanup on the status page dropped the orphaned entries even when
+  removing their build directories failed, and reported success. It now marks
+  the entries `unknown` before removing anything, keeps them when a removal
+  fails, never removes a directory a live configuration still uses, reports a
+  failed stray-directory removal (the status page no longer says "cleaned"
+  after a failure), and also removes the owned LSP database of each orphan it
+  deleted. Deleting or cleaning an ordinary configuration also
+  left its cache entry in its old state on disk while the build directory was
+  being removed, so a crash mid-removal could not be recognized; the entry is
+  now `unknown` on disk first (#298).
 - `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
   the `--` as the first argument. A target-backed add has no command token, so
   its `--` is lw's separator and is dropped; before it an unknown option or a

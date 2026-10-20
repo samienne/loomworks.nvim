@@ -3675,13 +3675,35 @@ function Workspace:mark_cached_configs_cleaned(items)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
---- Set cache state to "unknown" for items that have build directories.
+--- Set cache state to "unknown" for items that have build directories. An
+--- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
+--- its BuildDir as `build_dir_obj`, which is marked directly: the cache
+--- serializes it from the BuildDir (`_serialize_cache`). A unit's BuildDir is
+--- marked too, for the same reason: marking only the unit would leave the
+--- persisted entry claiming its old state during the rm-rf (spec §4.6).
+--- Only items whose build dir is in `to_remove` (the dirs actually handed to
+--- rm-rf) are marked: a skipped dir (shared with a live unit, or failing
+--- validation) stays as it is, since nothing would restore it if another
+--- removal in the batch failed — a shared BuildDir left `unknown` would block
+--- the surviving unit from configure/build.
 --- @param items loomworks.DeletionItem[]
-function Workspace:_mark_cache_unknown(items)
+--- @param to_remove? table<string, true> normalized build dirs handed to
+---   rm-rf; nil marks every item (no skip set known)
+function Workspace:_mark_cache_unknown(items, to_remove)
+    local normalize = self._core._deps.normalize
     for _, item in ipairs(items) do
-        if not item.unit then goto continue end
+        if to_remove and not (item.build_dir and to_remove[normalize(item.build_dir)]) then
+            goto continue
+        end
+        if not item.unit then
+            local bd = item.build_dir_obj
+            if bd and bd:has_state() then bd.state = "unknown" end
+            goto continue
+        end
         if item.unit.build_dir_value then
             item.unit.state_value = "unknown"
+            local bd = item.unit._build_dir
+            if bd and bd:has_state() then bd.state = "unknown" end
         end
         ::continue::
     end
@@ -4099,9 +4121,6 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         return out
     end
     local f = self:stop_tasks_then(task_ids):next(function()
-        ws:_mark_cache_unknown(items)
-        ws:_save_cache()
-
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
 
@@ -4130,11 +4149,20 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                         end
                     end
                     dirs[#dirs + 1] = normalized
-                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit, item.unit and item.unit._build_dir)
+                    -- An orphaned entry (no unit) carries its BuildDir.
+                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
+                        item.unit and item.unit._build_dir or item.build_dir_obj)
                     ::skip_dir::
                 end
             end
         end
+
+        -- Crash safety (spec §4.6): every dir about to be removed is `unknown`
+        -- on disk before the async rm-rf starts; skipped dirs are untouched.
+        local to_remove = {}
+        for _, d in ipairs(dirs) do to_remove[d] = true end
+        ws:_mark_cache_unknown(items, to_remove)
+        ws:_save_cache()
 
         return ws:_delete_build_dirs_async(dirs)
     end):next(function(results)

@@ -31,9 +31,16 @@ local function clean_all_orphans()
             y = function(self)
                 self:close()
                 workspace_view.execute_orphan_cleanup(
-                    ws, ctx.orphaned_configs, ctx.stray_dirs, function()
-                    vim.notify("loomworks: orphaned build dirs cleaned",
-                        vim.log.levels.INFO)
+                    ws, ctx.orphaned_configs, ctx.stray_dirs, function(ok)
+                    -- Each failed removal was already reported as an error;
+                    -- this is the summary, so never claim success after one.
+                    if ok then
+                        vim.notify("loomworks: orphaned build dirs cleaned",
+                            vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: orphan cleanup incomplete — some build dirs were not removed",
+                            vim.log.levels.WARN)
+                    end
                 end)
             end,
         },

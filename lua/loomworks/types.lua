@@ -361,6 +361,7 @@
 --- @class loomworks.DeletionItem
 --- @field unit? loomworks.ConfigUnit the config unit (nil for unmaterialized combos)
 --- @field build_dir? string
+--- @field build_dir_obj? loomworks.BuildDir an orphaned entry's BuildDir (no unit): marked `unknown` before removal, owner of its owned LSP database
 --- @field disposition loomworks.DeletionDisposition "clean" removes entry, "reset" clears state, "keep" untouched
 
 -- ========================== Orphaned Configs ==========================
