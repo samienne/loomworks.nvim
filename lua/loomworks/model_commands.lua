@@ -208,9 +208,10 @@ function M.set_intent(item, intent)
     local ws = workspace_of(item)
     local old = item._intent
     item._intent = intent
-    local saved, err = ws:_save_user()
+    local saved, err, reason = ws:_save_user()
     if not saved then
-        item._intent = old
+        -- A stale refusal reloaded from disk: undoing would overwrite it.
+        if reason ~= "stale" then item._intent = old end
         return refused(err or "user.json was not written")
     end
     signal_changed(ws)
@@ -333,19 +334,23 @@ function M.profile_create(ws, set, tool_entry, activate)
     local old_intent = profile._intent
     local old_active, old_active_key = ws._active_profile, ws._active_profile_key
     if not existing then profile._intent = "local" end
-    local saved, err
+    local saved, err, reason
     if activate then
-        saved, err = profile:activate()
+        saved, err, reason = profile:activate()
     else
-        saved, err = ws:_save_user()
+        saved, err, reason = ws:_save_user()
     end
     if not saved then
         -- Nothing was written: undo the in-memory change (a failed first
-        -- save is refused, as set_intent).
-        profile._intent = old_intent
-        ws._active_profile, ws._active_profile_key = old_active, old_active_key
-        if not existing then ws:_remove_profile(profile) end
-        if activate then ws:remerge() end
+        -- save is refused, as set_intent) — unless the refusal was the stale
+        -- one, which already reloaded from disk (the undo would put back
+        -- pre-reload state, e.g. an active profile the reload removed).
+        if reason ~= "stale" then
+            profile._intent = old_intent
+            ws._active_profile, ws._active_profile_key = old_active, old_active_key
+            if not existing then ws:_remove_profile(profile) end
+            if activate then ws:remerge() end
+        end
         err = err or "user.json was not written"
         if cs ~= set then
             -- The automatic set was added first (its own write): that
@@ -369,8 +374,10 @@ end
 --- restores the profile as `snapshot` had it (nothing was written).
 local function save_profile_tools(profile, snapshot)
     local ws = profile._workspace
-    local saved, err = ws:_save_user()
+    local saved, err, reason = ws:_save_user()
     if not saved then
+        -- A stale refusal reloaded from disk: nothing to undo.
+        if reason == "stale" then return refused(err) end
         local changed_key = profile.key
         profile._tool_keys = snapshot.tool_keys
         profile._sdk, profile._sdk_key = snapshot.sdk, snapshot.sdk_key

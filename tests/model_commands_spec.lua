@@ -5,6 +5,9 @@
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
 local mc = require("loomworks.model_commands")
+local io_mod = require("loomworks.io")
+local user_mod = require("loomworks.user")
+local trust = require("loomworks.trust")
 
 local function capture(fn)
   local rw, rs, rex = io.write, io.stderr, os.exit
@@ -44,6 +47,13 @@ end
 
 local function load(root) return assert(cli._load_workspace(root, false)) end
 local function user_json(root) return read_json(root .. "/.nvim/loomworks.user.json") end
+
+local function read_signed(path, kind)
+  local text = assert(io_mod.read_file(path))
+  local status, body = trust.verify(kind, text)
+  assert.equals("valid", status)
+  return vim.json.decode(body)
+end
 
 local function find(list, field, value)
   for _, o in pairs(list) do if o[field] == value then return o end end
@@ -109,6 +119,40 @@ describe("model_commands", function()
   end)
 
   describe("Profiles/1", function()
+    it("a save refused as stale keeps the reloaded state (no undo over it): create --activate", function()
+      -- Another writer removed profile Dev (the active one) and cleared the
+      -- active profile; this editor still has Dev active in memory.
+      ws._core._deps.on_save_refused = function() end -- the CLI's would exit
+      local path = user_mod.filepath(root)
+      local data = read_signed(path, "user")
+      data.profiles.Dev = nil
+      data.active_profile = nil
+      assert(io_mod.write_json_signed(path, "user", data))
+      local other_set = find(ws._config_sets, "name", "Other")
+      local r = mc.profile_create(ws, other_set, nil, true)
+      assert_refused(r, "changed on disk")
+      -- The refusal reloaded from disk: the undo must not put back the
+      -- pre-reload active profile (Dev, now removed).
+      assert.is_nil(ws._active_profile_key)
+      assert.is_true(ws._active_profile == nil or not ws._active_profile._removed)
+      assert.is_nil(find(ws._profiles, "_configuration_set_name", "Dev"))
+      assert.is_nil(read_signed(path, "user").active_profile)
+    end)
+
+    it("a save refused as stale keeps the reloaded state (no undo over it): set_intent", function()
+      ws._core._deps.on_save_refused = function() end -- the CLI's would exit
+      local path = user_mod.filepath(root)
+      local data = read_signed(path, "user")
+      data.intent.configuration_sets.Dev = "local"
+      assert(io_mod.write_json_signed(path, "user", data))
+      local dev = find(ws._config_sets, "name", "Dev")
+      assert.equals("local+shared", dev._intent)
+      assert_refused(mc.set_intent(dev, "shared"), "changed on disk")
+      local now = find(ws._config_sets, "name", "Dev")
+      assert.equals("local", now._intent)
+      assert.equals("local", read_signed(path, "user").intent.configuration_sets.Dev)
+    end)
+
     it("set_active makes the profile active; a removed one is refused", function()
       local other = find(ws._profiles, "_configuration_set_name", "Other")
       assert_ok(mc.profile_set_active(other))

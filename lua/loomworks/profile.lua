@@ -779,7 +779,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate this profile and set it as active.
---- @return boolean|nil saved, string|nil err the working copy's save
+--- @return boolean|nil saved, string|nil err, "stale"|nil reason the working copy's save
 function Profile:activate()
     self._workspace._active_profile = self
     self._workspace._active_profile_key = self.key
@@ -795,9 +795,9 @@ function Profile:activate()
             end
         end
     end
-    local saved, err = self._workspace:_save_user()
+    local saved, err, reason = self._workspace:_save_user()
     self._workspace:remerge()
-    return saved, err
+    return saved, err, reason
 end
 
 --- Deactivate this profile if it is currently active.
