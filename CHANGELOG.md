@@ -827,6 +827,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   options, so a description may start with `-` (#290).
 - `lw launch show --json <project> <name>` refused `--json` before the
   address (#290).
+- Through the workspace daemon, an editor build, run, reset or device
+  install of a profile whose key is a number (e.g. a configuration set named
+  `2`) now acts on that profile; it could act on the profile at that
+  position in the profile list instead. (#294)
 - `lw device select` fails with the reason when it cannot save the profile's
   device, instead of reporting it saved; choosing a device in the editor
   shows the error likewise. (#287)
