@@ -491,7 +491,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   with the daemon). The view starts at the log level the device's module
   suggests, shows records the daemon had to drop as a gap line, and says when
   the stream ended. Closing the view or stopping the run stops the stream;
-  opening the view again while the app runs starts a new one. (#PRNUM)
+  opening the view again while the app runs starts a new one. (#291)
 - With the workspace daemon, the editor's *Build default target* of a
   non-device target is one daemon task: the daemon builds the target's
   dependencies, runs its pre-build deploy and builds it (the editor no longer
