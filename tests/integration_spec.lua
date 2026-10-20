@@ -1172,7 +1172,10 @@ describe("config set rename", function()
             }
         )
 
-        local ok = wv.execute_rename_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"debug"), "Debug")
+        local cs = h.find_config_set_in(ws:get_config_sets(), "debug")
+        local mappings = {}
+        for _, p in pairs(ws._projects) do mappings[p] = cs:configuration(p) end
+        local ok = wv.execute_edit_config_set(cs, "Debug", mappings)
         assert.is_true(ok)
 
         -- Old set gone, new set exists

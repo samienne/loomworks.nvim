@@ -35,7 +35,10 @@ end
 --- @param tool_entry? table
 function M.activate_new(config_set, tool_entry)
     return function()
-        config_set:activate(tool_entry)
+        local profile, err = require("loomworks.workspace_view").execute_create_profile(config_set, tool_entry, true)
+        if not profile then
+            vim.notify("loomworks: " .. tostring(err or "the profile was not activated"), vim.log.levels.ERROR)
+        end
     end
 end
 

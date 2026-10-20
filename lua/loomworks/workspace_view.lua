@@ -23,7 +23,6 @@ local function as_result(r)
     end
     return true
 end
-M.as_result = as_result
 
 --- The candidate token of an automatic configuration set
 --- (model_commands.candidate_token).
@@ -622,29 +621,6 @@ end
 --- @return boolean ok, string|nil err
 function M.execute_edit_config_set(cs, new_name, new_mappings)
     return as_result(commands.config_set_update(cs, new_name, new_mappings))
-end
-
---- The set's current mappings (Project → Configuration).
---- @param cs loomworks.ConfigurationSet
---- @return table<loomworks.Project, loomworks.Configuration>
-local function current_mappings(cs)
-    local m = {}
-    for _, project in pairs(cs._workspace._projects) do
-        m[project] = cs:configuration(project)
-    end
-    return m
-end
-
---- Rename a configuration set in place (the same atomic mutation `lw
---- configset rename` uses): the set object, its mappings, description and
---- intent are kept and the profiles that reference it re-derive their keys.
---- The active profile follows the rename.
---- @param _ws loomworks.Workspace unused (the set's own)
---- @param cs loomworks.ConfigurationSet configuration set being renamed
---- @param new_name string
---- @return boolean ok, string|nil err
-function M.execute_rename_config_set(_ws, cs, new_name)
-    return as_result(commands.config_set_update(cs, new_name, current_mappings(cs)))
 end
 
 --- Context for deleting a config set: affected profiles, warning lines.
@@ -1268,7 +1244,10 @@ end
 --- @return loomworks.Profile|nil profile, string|nil err
 function M.execute_create_profile(cs, tool_entry, activate)
     local r = commands.profile_create(cs._workspace, cs, tool_entry, activate)
-    if r.outcome ~= "ok" then return nil, r.message end
+    if not r.profile then
+        local _, err = as_result(r)
+        return nil, err
+    end
     return r.profile
 end
 

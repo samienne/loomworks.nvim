@@ -152,6 +152,39 @@ describe("model_commands", function()
       assert.equals(before, dev.key)
       assert_refused(mc.profile_add_tool(dev, ""), "no toolchain", 2)
     end)
+
+    it("add_tool / remove_tool whose save fails are refused and leave the profile unchanged", function()
+      local dev = find(ws._profiles, "_configuration_set_name", "Dev")
+      local before = dev.key
+      local remerged = 0
+      local real_remerge = ws.remerge
+      ws.remerge = function(...) remerged = remerged + 1; return real_remerge(...) end
+      ws._no_write = "read-only working copy"
+      assert_refused(mc.profile_add_tool(dev, "gcc-x"), "read-only working copy")
+      assert.same({}, dev._tool_keys or {})
+      assert.equals(before, dev.key)
+      ws._no_write = nil
+      assert_ok(mc.profile_add_tool(dev, "gcc-x"))
+      local with_tool = dev.key
+      ws._no_write = "read-only working copy"
+      remerged = 0
+      assert_refused(mc.profile_remove_tool(dev, "gcc-x"), "read-only working copy")
+      assert.same({ "gcc-x" }, dev._tool_keys)
+      assert.equals(with_tool, dev.key)
+      assert.equals(0, remerged)
+    end)
+
+    it("create whose save fails is refused and adds no profile", function()
+      local cs = assert(mc.config_set_add(ws, "Third", { [app] = app:get_configuration("Debug") }).config_set)
+      local count = #ws._profiles
+      local active = ws._active_profile
+      ws._no_write = "read-only working copy"
+      assert_refused(mc.profile_create(ws, cs, nil, false), "read-only working copy")
+      assert.equals(count, #ws._profiles)
+      assert_refused(mc.profile_create(ws, cs, nil, true), "read-only working copy")
+      assert.equals(count, #ws._profiles)
+      assert.equals(active, ws._active_profile)
+    end)
   end)
 
   describe("Projects/1", function()
@@ -172,9 +205,11 @@ describe("model_commands", function()
       assert.same({ "warn" }, r.note_roles)
       assert.is_truthy(r.notes[1]:find("not upgraded to the tool: workspace busy", 1, true), r.notes[1])
       -- The editor's adapter still reports it as the error it was.
-      local ok, err = require("loomworks.workspace_view").as_result(r)
+      local ok, err, project = require("loomworks.workspace_view").execute_add_project(ws, "C", "typescript", "B",
+        { mappings = {}, tool_entry = { tool_key = "t", tool_mod_type = "typescript" } })
       assert.is_false(ok)
-      assert.equals(r.notes[1], err)
+      assert.equals("C", project.key)
+      assert.is_truthy(err:find("not upgraded to the tool: workspace busy", 1, true), err)
     end)
 
     it("launch_save creates, renames keeping the object, and refuses foreign/removed launches", function()
@@ -242,6 +277,27 @@ describe("model_commands", function()
       assert_refused(mc.config_set_add(ws, "New", {}))
     end)
 
+    it("add / update refuse a removed project or configuration in the mappings, writing nothing", function()
+      local dev = find(ws._config_sets, "name", "Dev")
+      local cfg = app:get_configuration("Debug")
+      local path = root .. "/.nvim/loomworks.user.json"
+      local function text() local f = assert(io.open(path, "r")); local c = f:read("*a"); f:close(); return c end
+      local before = text()
+      -- An external change removed App's configuration while the editor
+      -- had it listed: accepting App → it must not write.
+      cfg._removed = true
+      assert_refused(mc.config_set_update(dev, "Develop", { [app] = cfg }), "configuration 'App/Debug' has been removed")
+      assert_refused(mc.config_set_add(ws, "New", { [app] = cfg }), "configuration 'App/Debug' has been removed")
+      cfg._removed = false
+      app._removed = true
+      assert_refused(mc.config_set_update(dev, nil, { [app] = cfg }), "has been removed")
+      assert_refused(mc.config_set_add(ws, "New", { [app] = false }), "project 'App' has been removed")
+      app._removed = false
+      assert.equals("Dev", dev.name)
+      assert.is_nil(find(ws._config_sets, "name", "New"))
+      assert.equals(before, text())
+    end)
+
     it("update renames (the active profile follows) and replaces the mappings", function()
       local dev = find(ws._config_sets, "name", "Dev")
       assert_ok(mc.config_set_update(dev, "Develop", { [app] = app:get_configuration("Debug") }))
@@ -276,8 +332,9 @@ describe("model_commands", function()
   end)
 
   -- Guard ratchet (5o A1): the status page's sections and dialogs write the
-  -- model only through the command layer, never `_save_user` / `remerge`.
-  it("ui/ never saves the working copy or remerges itself", function()
+  -- model only through the command layer, never `_save_user` / `remerge` or
+  -- a direct persisting mutation of a domain object.
+  it("ui/ never saves the working copy, remerges, or mutates a domain object itself", function()
     local found = {}
     local base = vim.fn.getcwd() .. "/lua/loomworks/ui"
     for _, path in ipairs(vim.fn.globpath(base, "**/*.lua", false, true)) do
@@ -285,7 +342,9 @@ describe("model_commands", function()
       local n = 0
       for line in fh:lines() do
         n = n + 1
-        if line:find("_save_user%(") or line:find(":remerge%(") then
+        if line:find("_save_user%(") or line:find(":remerge%(") or line:find(":activate%(")
+            or line:find(":deactivate%(") or line:find(":add_tool%(") or line:find(":remove_tool%(")
+            or line:find(":update_mapping%(") then
           found[#found + 1] = path:gsub("\\", "/"):match("lua/loomworks/ui/.*$") .. ":" .. n
         end
       end

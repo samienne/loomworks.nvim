@@ -391,6 +391,9 @@ end
 --- @param crow table the configuration's view row
 local function configuration_actions(ws, project, cfg, crow)
     if not project then return {} end
+    -- `cfg` is always bound in practice: every declared configuration has a
+    -- Configuration object (Project:_sync_configurations), so the nil guards
+    -- only keep a row without one inert rather than acting on a name.
     local acts = {
         on_enter = cfg and function() edit_project_configuration(project, cfg) end or nil,
         on_delete = (crow.user and cfg) and function() delete_project_configuration(project, cfg) end or nil,
@@ -925,6 +928,8 @@ local function render_project_details(tree, t, ctx, prow)
                     hl = "LoomworksVariant",
                     enter_label = "Edit launch config",
                 }, l.description)
+                -- Every launch row is bound to its LaunchConfiguration
+                -- (view_state project_row); the guard is defensive only.
                 local launch = ctx.ref(l)
                 if project and launch then
                     opts.on_enter = function() edit_launch_config(project, launch) end

@@ -112,6 +112,18 @@ local function stale(item, kind)
     return nil
 end
 
+--- nil when every Project and Configuration of `mappings` is live, else the
+--- refusal: a set is never written with a mapping to a removed object.
+--- @param mappings table<loomworks.Project, loomworks.Configuration|false|nil>|nil
+--- @return loomworks.CommandOutcome|nil
+local function stale_mappings(mappings)
+    for project, cfg in pairs(mappings or {}) do
+        local r = stale(project, "project") or (cfg and stale(cfg, "configuration")) or nil
+        if r then return r end
+    end
+    return nil
+end
+
 --- The workspace an item belongs to.
 local function workspace_of(item)
     if item._workspace then return item._workspace end
@@ -295,7 +307,9 @@ end
 --- `create { config_set, tool?, activate? }` — materialize a profile of a
 --- configuration set (spec §4.1): `set` the set, or `{ candidate = token }`
 --- for an automatic one (added first). An existing profile of that set and
---- toolchain is returned. A new profile's intent is `local`.
+--- toolchain is returned. A new profile's intent is `local`. A failed save
+--- is refused with the profile (and the active one) as before; an automatic
+--- set added first stays, with a warn note.
 --- @param ws loomworks.Workspace
 --- @param set loomworks.ConfigurationSet|{ candidate: string }
 --- @param tool_entry table|nil { tool_key, tool_data, tool_label, tool_mod_type }; nil: no toolchain
@@ -311,25 +325,60 @@ function M.profile_create(ws, set, tool_entry, activate)
         local r = stale(set, "configuration set")
         if r then return r end
     end
+    local existing = cs:find_profile(tool_entry)
     local profile = cs:ensure_profile(tool_entry)
     if not profile then
         return refused("no profile could be made of configuration set '" .. cs.name .. "'")
     end
-    profile._intent = "local"
+    local old_intent = profile._intent
+    local old_active, old_active_key = ws._active_profile, ws._active_profile_key
+    if not existing then profile._intent = "local" end
+    local saved, err
     if activate then
-        profile:activate()
+        saved, err = profile:activate()
     else
-        ws:_save_user()
+        saved, err = ws:_save_user()
+    end
+    if not saved then
+        -- Nothing was written: undo the in-memory change (a failed first
+        -- save is refused, as set_intent).
+        profile._intent = old_intent
+        ws._active_profile, ws._active_profile_key = old_active, old_active_key
+        if not existing then ws:_remove_profile(profile) end
+        if activate then ws:remerge() end
+        err = err or "user.json was not written"
+        if cs ~= set then
+            -- The automatic set was added first (its own write): that
+            -- stays, the profile is a warn note (D1).
+            local r = ok({ config_set = cs })
+            warn(r, "configuration set '" .. cs.name .. "' added, but no profile was made of it: " .. tostring(err))
+            return r
+        end
+        return refused(err)
     end
     return ok({ profile = profile, config_set = cs })
 end
 
---- Re-derive and save after a toolchain change of a profile.
-local function save_profile_tools(profile)
+--- The toolchain state of a profile that a toolchain change alters.
+local function profile_tools_snapshot(profile)
+    return { tool_keys = profile._tool_keys and vim.deepcopy(profile._tool_keys) or nil,
+        sdk = profile._sdk, sdk_key = profile._sdk_key }
+end
+
+--- Save after a toolchain change of a profile and re-derive; a failed save
+--- restores the profile as `snapshot` had it (nothing was written).
+local function save_profile_tools(profile, snapshot)
     local ws = profile._workspace
     local saved, err = ws:_save_user()
+    if not saved then
+        local changed_key = profile.key
+        profile._tool_keys = snapshot.tool_keys
+        profile._sdk, profile._sdk_key = snapshot.sdk, snapshot.sdk_key
+        profile:_derive_key()
+        profile:_after_key_rename(changed_key)
+        return refused(err or "user.json was not written")
+    end
     ws:remerge()
-    if saved == false then return refused(err or "user.json was not written") end
     return ok()
 end
 
@@ -342,8 +391,9 @@ function M.profile_add_tool(profile, tool_key)
     local r = stale(profile, "profile")
     if r then return r end
     if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
+    local snapshot = profile_tools_snapshot(profile)
     profile:add_tool(tool_key)
-    return save_profile_tools(profile)
+    return save_profile_tools(profile, snapshot)
 end
 
 --- `remove_tool { profile, tool }` — remove a toolchain from a profile.
@@ -354,8 +404,9 @@ function M.profile_remove_tool(profile, tool_key)
     local r = stale(profile, "profile")
     if r then return r end
     if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
+    local snapshot = profile_tools_snapshot(profile)
     profile:remove_tool(tool_key)
-    return save_profile_tools(profile)
+    return save_profile_tools(profile, snapshot)
 end
 
 -- ---------------------------------------------------------------------------
@@ -622,6 +673,8 @@ end
 --- @param mappings table<loomworks.Project, loomworks.Configuration|false|nil>
 --- @return loomworks.CommandOutcome config_set: loomworks.ConfigurationSet
 function M.config_set_add(ws, name, mappings)
+    local r = stale_mappings(mappings)
+    if r then return r end
     -- add_configuration_set takes the persisted form
     -- ({ project key → configuration name }).
     local raw = {}
@@ -663,7 +716,7 @@ end
 --- @param mappings table<loomworks.Project, loomworks.Configuration|false|nil>
 --- @return loomworks.CommandOutcome
 function M.config_set_update(cs, name, mappings)
-    local r = stale(cs, "configuration set")
+    local r = stale(cs, "configuration set") or stale_mappings(mappings)
     if r then return r end
     -- Each step commits on its own: a failure after the first is `ok` with a
     -- warn note naming what was not done (D1).

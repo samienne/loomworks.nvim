@@ -179,7 +179,7 @@ return {
         ["lua/loomworks/ui/sections/projects.lua"] = 5,
         ["lua/loomworks/ui/status.lua"] = 6,
         ["lua/loomworks/ui/tree.lua"] = 4,
-        ["lua/loomworks/workspace_view.lua"] = 3,
+        ["lua/loomworks/workspace_view.lua"] = 2,
         ["plugin/loomworks.lua"] = 1,
     },
     -- Plugin-side files: the editor's own starts. Binary-side files
