@@ -224,7 +224,10 @@ removes a workspace file or a build tree as part of a larger change:
 
 - publish and per-item publish (§2.4: published snapshot + working copy);
 - import (§16.39) and working-copy pull (§16.25);
-- renames that propagate into the cache (project, configuration, set, profile);
+- renames that propagate into the cache (project, configuration, set,
+  profile — a profile's key derived again when a toolchain is added or
+  removed included; a launch configuration's rename writes only the working
+  copy and is not one);
 - profile / configuration deletion that removes build directories;
 - reset, single-profile and all-scope (§16.30);
 - nuke (`lw nuke`, the editor's nuke) — which additionally takes the **build
@@ -253,8 +256,10 @@ refused one prints only its refusal: with `-y` / `--yes` the locks are held
 from then until the deletion ends; a confirmation (the CLI prompt, the
 editor's dialog) only checks them — taken and released, never breaking a
 holder — and the locks are taken again once confirmed (`--break-locks` acts
-then). The editor's check passes over its own builds, which its nuke stops
-before taking the locks. `lw unlock --workspace`
+then). The in-process editor's check passes over its own builds, which its
+nuke stops before taking the locks; the daemon's nuke (`Maintenance/1.nuke`,
+step 5o) passes over none of its own tasks — while any runs it refuses,
+listing them. `lw unlock --workspace`
 (and `lw unlock --all`, §16.6) also clears an O lock whose holder is gone, and
 `--force` one whose holder runs; dead and hung holders of every class are
 handled by §19.5 (`--break-locks`, accepted by every command above).
@@ -1602,10 +1607,10 @@ never loads a workspace and never runs a tool detection: a change to
 `loomworks.json` (which can need a tool detection) or one that needs a
 reload, and the files changed with it, are not applied at a view check;
 they wait for the next state-changing request's sync.
-A write by another process does not by itself cause a check: until step 5o
-moves the editor's writes to command methods, the editor calls the view's
-`get` after a write of its own, and the daemon's `update`s then follow from
-that check.
+A write by another process does not by itself cause a check: the CLI's
+in-process writes reach the views at the next check. The editor in `daemon`
+mode writes only through command methods (step 5o, §19.16 "Model writes"),
+whose `update`s precede their replies.
 
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
@@ -1638,18 +1643,18 @@ layer in every mode (`lw.lsp_buf_state`).
 
 ### 19.14 Commands
 
-*Status: #88 (mutation commands); the set of commands grows per §19.19.
-Master for the `query` request with the `tools` and `profile_cache` queries
-(`daemon/snapshot.lua` `QUERIES`, `daemon/service.lua` `on_query`; protocol
-10); `lw health` still probes in-process.*
+*Status: master for the `query` request with the `tools` and
+`profile_cache` queries (`daemon/snapshot.lua` `QUERIES`,
+`daemon/service.lua` `on_query`; protocol 10); `lw health` still probes
+in-process. Commands are interface methods only ("As interfaces" below,
+step 5o); protocol 10 gets none.*
 
 A mutation is a **command** the daemon applies to its model with the
 operation's locks (§19.3) and persists. Commands are FIFO-serialized: a
-command's `model_change` broadcast precedes any later command's and precedes
-its own acknowledgement, which carries only the outcome (`ok`, `rolled-back`,
-`partially-applied`) or an error. Wire arguments (semantic keys) are resolved
-to domain objects at the serialization boundary; domain logic stays
-reference-based.
+command's `changed` signal precedes any later command's and precedes its own
+reply. Wire references are resolved to domain objects once, at the
+serialization boundary, and the objects are passed down; domain logic stays
+reference-based and never turns an object back into a key to find it again.
 
 Read-only queries run on the client's projection, except queries that probe
 the host (health, tools, sdk detect, profile query), which are `query {name,
@@ -1667,12 +1672,24 @@ failed query or a workspace the daemon cannot load; `outcome = "declined"`
 
 **As interfaces.** *(The query registry: implemented, step 5g.2 part B
 (`Toolchains/1.list`, `Profiles/1.compiler_cache`; the CLI calls them over
-transport 11); command methods: plan, step 5o, §19.19.)* Commands are the **mutating methods** of the model
-interfaces (`loomworks.Workspace/1`, `Profiles/1`, `Projects/1`,
-`ConfigSets/1`, `Sdks/1`, `Maintenance/1`; §19.20), declared mutating in their
-schemas, with the rules above unchanged: FIFO, the `changed` signal (and the
-affected views' `update`s) before the acknowledgement, outcome `ok`,
-`rolled-back` or `partially-applied`. The query registry becomes interface
+transport 11); command methods: plan, step 5o, §19.19.)* Commands are the
+**mutating methods** of the model interfaces (`loomworks.Workspace/1`,
+`Profiles/1`, `Projects/1`, `ConfigSets/1`, `Sdks/1`, `Maintenance/1`,
+`Toolchains/1.rescan`; §19.20), declared mutating in their schemas, with the
+rules above unchanged: FIFO, the `changed` signal (and the affected views'
+`update`s) before the reply. A command's result is an outcome of
+[API.md](../protocol/API.md) §4.1: `ok` (with `notes` for what it applied
+with a warning), `refused` (nothing written, the model unchanged),
+`declined`, or `confirm` for a deletion, a nuke, a trust review and the
+removal of the working copy (§8.6 there). There is no rolled-back or
+partially-applied outcome: a command refused before its first write changed
+nothing, and one that performs a user action in several steps and fails a
+later one after an earlier one was committed is `ok` with a `warn` note
+naming what was not done. One user action is one command: a command that
+changes several things (adding a project with its mappings and its
+profiles' toolchain, creating a profile from an automatic configuration
+set, removing a project with its build state) does them in the daemon,
+never as a client's sequence of calls. The query registry becomes interface
 methods — `tools` is `loomworks.Toolchains/1.list`, `profile_cache` is
 `loomworks.Profiles/1.compiler_cache` — and `query { name }` stays as their v0
 alias. Wire arguments that name entities are references (`{ id }` or
@@ -2134,16 +2151,19 @@ daemon line, and their cross-process locks (§16.6, §19.3) serialize them with
 the daemon's operations as with any other process:
 
 - `lw nuke` — removes the workspace's build state (`.nvim/build/`, the build
-  and health caches), taking every build-directory lock first (§19.3);
+  and health caches), taking every build-directory lock first (§19.3); the
+  editor's nuke is `Maintenance/1.nuke` from step 5o *(optional part B6)*;
 - `lw device clean` (§16.34) — its device locks and the device's staging stay
   with the client process, as for a device run;
 - the editor's own operations, including its clean, delete and configure
   actions (§19.16) — until step 5k, which routes its builds, configures,
   module cleans and launch preparations (§19.16 "Editor operations"); its
-  deletions (delete a profile, a configuration, an orphaned build directory)
-  stay here until step 5o (`Maintenance/1.execute_deletion`), and its
-  device-target launches until `Devices/1` (step 5n, §19.16 "Editor
-  operations"). Its test discovery, test runs
+  deletions (a profile, a configuration unit, an orphaned or stray build
+  directory, all orphans, a project with its build state) stay here until
+  step 5o, which makes them `Maintenance/1.execute_deletion` tasks holding
+  the workspace operation lock and the build-directory locks of §19.3 like
+  every other deletion path (§4.6); its device-target launches until
+  `Devices/1` (step 5n, §19.16 "Editor operations"). Its test discovery, test runs
   and test debug preparations move to `Tests/1` in step 5m (§19.16 "Tests").
 
 ### 19.16 The editor as a client
@@ -2479,18 +2499,23 @@ owner"):
 Test runs and discovery go through `Tests/1` (step 5m, "Tests" below);
 device-target launches through `Launch/1.build` and `Devices/1` (step 5n,
 "Devices" below). The editor runs no operation itself apart from the
-rest of a `device = true` run above and the transitional configuration
-mutations below (its deletions among them, until
-step 5o; §19.15).
+rest of a `device = true` run above.
 
-*(Transition, until steps 5n and 5o.)* In `daemon` mode the status page's
-body sections and the model's mutations — editing the configuration, the
-deletions (a profile, a configuration, an orphaned build directory; step 5o
-keeps one reviewed deletion path, §4.6) and model commands such as
-materializing a profile from a configuration set (the build that follows it
-is routed) — still work on the editor's in-process model. They are
-transitional, not fallbacks: the reads move to the daemon's views in step 5n
-(`view.Workspace/1`), the writes to its command methods in step 5o.
+**Model writes.** *(Step 5o.)* In `daemon` mode the editor writes nothing
+to the workspace's files and runs no deletion: every status-page action and
+editor dialog that changes the model is a call to a command method of
+§19.14, naming its entities by the ids of `view.Workspace/1` — for a
+project's variable, deploy destination or `type_config` field, the
+project's id and the entry's name. A dialog reads what it edits with
+`Projects/1.declaration` when it opens; a confirmation (a deletion, a nuke,
+trust, the removal of the working copy) shows the `confirm` lines and sends
+back their `plan`. A refused call (a stale id after a reload, a changed
+plan, a held lock) is an error notification and changes nothing; the page
+shows the views' next `update`. The editor never keeps an id across a
+`header_changed` that reloaded the workspace. While a method's interface is
+not carried the action is refused ("Availability"), never run in-process.
+*(Until step 5o part C1 the status page's actions still work on the
+editor's in-process model, as transitional, not fallbacks.)*
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the
@@ -3645,6 +3670,32 @@ as that interface's `log` signal.
        log stream as `Launch/1.device_log`, daemon and editor sides. Runner
        devices (§18), `lw device clean` and `lw run --device` stay out of
        5n.
+     - **5o — Model writes through the daemon** (§19.14 "As interfaces";
+       §19.16 "Model writes"; §19.20 `Workspace/1`, `Profiles/1`,
+       `Projects/1`, `ConfigSets/1`, `Sdks/1`, `Maintenance/1`,
+       `Toolchains/1.rescan`; after 5n), in parts: 0 — spec, and references
+       by id resolved straight to their objects (no key round-trip in the
+       daemon's operation path); A0 — launch configurations as domain
+       objects with ids (spec §1.2.1), no behaviour change; A1 — a
+       host-neutral command layer with one function per command, the
+       editor's orchestration moved into it, no behaviour change; A2 —
+       deletion plans with tokens for every deletion target, on top of the
+       fix that makes every in-process deletion take the operation and
+       build-directory locks (its own PR on `staging/daemon`, merged
+       first); B1 — `Workspace/1` commands; B2 — `Profiles/1` and
+       `ConfigSets/1`; B3 — `Projects/1`; B4 — `Sdks/1` and
+       `Toolchains/1.rescan`; B5 — `Maintenance/1.execute_deletion`; B6
+       *(optional)* — `Maintenance/1.nuke`; C0 — the status page's actions
+       and dialogs behind one seam, no behaviour change; C2 — the seam as
+       calls by id; C1 — the status page's body from the view (5n part C1,
+       rebased: its transitional key resolution removed), last.
+       `Profiles/1.list` and `query`, `Maintenance/1.orphaned`, `locks` and
+       `unlock`, `Sdks/1.list` and `Workspace/1.create` stay out of 5o; the
+       CLI's model commands are not routed in 5o (their `Ref` arguments
+       accept keys for later routing; an `ItemRef` is id-only). Publish and
+       every rename that propagates into the cache take the workspace
+       operation lock (§19.3) in the daemon and in-process alike; a launch
+       rename writes only the working copy and takes none.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
@@ -3758,6 +3809,9 @@ method it runs in-process.
 **References.** References (`{ id }` or `{ key }`) are [API.md](../protocol/API.md) §1.2. The
 editor sends ids taken from results and views; the CLI sends the key the
 user typed, which the daemon resolves with the in-process matcher (§16.9).
+Either is resolved once, in the model segment, to the live object, and the
+object is what the handler passes on: an id is never turned into its key to
+be looked up again (step 5o part 0).
 
 **Signals, subscriptions and tasks.** Subscriptions, `initial` state,
 `seq` and session generation, and the task stream of task-streamed methods
@@ -3774,10 +3828,10 @@ roadmap.
 |--|--|--|
 | `/` | `loomworks.Root/1` (frozen) | describe, schema, subscribe, unsubscribe (objects_changed, retiring) |
 | — | `loomworks.Common/1` | shared types only: reference, id, outcome, environment, launch spec, debug spec, task meta |
-| `/workspace` | `loomworks.Workspace/1` | header, trust_accept, publish, publish_one, revert_to_baseline, revert_one, set_intent, create, delete_user_prefs (changed, header_changed) |
-| `/profiles` | `loomworks.Profiles/1` | list, set_active, add_tool, remove_tool, set_device, clear_device, query, compiler_cache |
-| `/projects` | `loomworks.Projects/1` | add, remove, configuration add / rename / remove / save, launch_save, deploy_save, variable_set, description_set, type_config_set, expand_preview, candidates |
-| `/projects` | `loomworks.ConfigSets/1` | add, update_mapping, generate_defaults |
+| `/workspace` | `loomworks.Workspace/1` | header, publish, publish_one, revert_to_baseline, revert_one, set_intent, set_description, trust_accept, delete_user_prefs (changed, header_changed); create deferred |
+| `/profiles` | `loomworks.Profiles/1` | list, set_active, create, tool_choices, add_tool, remove_tool, set_device, clear_device, query, compiler_cache |
+| `/projects` | `loomworks.Projects/1` | candidates, add, declaration, configuration_save, configuration_remove, options_save, launch_save, launch_remove, deploy_save, variable_save, variable_remove, type_config_set, expand_preview |
+| `/projects` | `loomworks.ConfigSets/1` | candidates, add, update, remove, generate_defaults |
 | `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
 | `/tests` | `loomworks.Tests/1` | discover T, run T, run_cases T, prepare_debug T, collect, result (results) |
 | `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T *(5t, with part B)*, device_log T (log) |
@@ -3785,10 +3839,10 @@ roadmap.
 | `/lsp` | `loomworks.LspConfig/1` | get, set_option (changed) |
 | `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended, step; task frames; `TaskInfo.steps`) |
 | `/toolchains` | `loomworks.Toolchains/1` | list, rescan |
-| `/toolchains` | `loomworks.Sdks/1` | list, add, remove, detect |
+| `/toolchains` | `loomworks.Sdks/1` | list, detect, add, remove |
 | `/devices` | `loomworks.Devices/1` | list, scan T, install T, launch T, stop (changed) |
 | `/health` | `loomworks.Health/1` | run |
-| `/maintenance` | `loomworks.Maintenance/1` | orphaned, execute_deletion T, locks, unlock |
+| `/maintenance` | `loomworks.Maintenance/1` | orphaned, execute_deletion T, nuke T *(optional)*, locks, unlock |
 | `/views` | `loomworks.view.Header/1`, `.ProjectsIndex/1`, `.Workspace/1`, `.Tests/1` (one interface each) | get (update; full state on subscribe) |
 | `/internal` | `lw.internal.Snapshot/1` (same_build) | get |
 | `/modules/<id>` | `<id>.<Name>/<v>` | defined by the module |

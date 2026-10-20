@@ -66,6 +66,31 @@ typescript, etc.). Projects are declared in `loomworks.json` and/or
   config (both loomworks.json and user.json). Orphaned projects are shown at
   the end of the Projects section with an "(orphaned)" label.
 
+### 1.2.1 Launch Configuration
+
+*(Implemented in step 5o part A0; until then a project holds its launch
+configurations as plain tables keyed by name.)* A launch configuration is a named way to run something of a project
+(§8.7), declared under the project's `"launch"` (name → table) in
+`loomworks.json` and/or `loomworks.user.json`, merged per name (§2.4).
+
+- Key: its name, unique within its project.
+- Owned by its project; it is a domain object like a configuration:
+  identity-preserving across refreshes (the same object is updated, matched
+  by name within the project), kept across a rename (§8.7), marked removed
+  when its declaration goes. Its declared fields (target or command, args,
+  working directory, environment, debug, deploy, device log, description)
+  are its data; it serializes back to the same table, so the files do not
+  change shape.
+- It has no publish state of its own: it is published, reverted and shown
+  modified with its project (§2.4 "Per-item granularity").
+- A host that hands out entity ids (§19.12) gives it one, like every other
+  domain object; the id follows the object, so it survives a rename and a
+  refresh.
+
+A project's variables (§1.3.1), deploy destinations and `type_config`
+fields are not domain objects: they are fields of the project, edited as
+such.
+
 ### 1.3 Configuration
 
 Configurations live in two tiers, distinguished by canonical name
@@ -1004,13 +1029,12 @@ change or a set rename), a working-copy pull (§16.25), and publish or revert
 (§2.4). Deleting an item
 deletes its description, including the sidecar entry of a configuration set.
 
-**Domain objects.** `Project`, `Configuration`, `ConfigurationSet` and `Profile`
-each carry a first-class `description` field (a string or nil), set in `_apply`
-from the deserialised data. No raw table is retained. Launch configurations
-are not domain objects: a project holds them as tables keyed by name (§8.7). A
-launch configuration's description is the `description` key of that table,
-normalised on write. Its owning `Project` performs the mutations: setting the
-description, and renaming (§8.7). On `Configuration`,
+**Domain objects.** `Project`, `Configuration`, `ConfigurationSet`, `Profile`
+and `LaunchConfiguration` (§1.2.1) each carry a first-class `description`
+field (a string or nil), set in `_apply` from the deserialised data. No raw
+table is retained. A launch configuration's description is written back as
+the `description` key of its table, normalised on write; renaming a launch
+configuration is its project's mutation (§8.7), which keeps the object. On `Configuration`,
 `description` is a **generic** field and never part of `module_config`, so a
 description change never makes a configured unit stale (§5.1) and never reaches
 the module's task context.

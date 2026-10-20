@@ -274,7 +274,8 @@ may import from its own layer or any layer below it, never above.
 | `merge.lua` | Three-file merge algorithm, profile collection, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua or workspace.lua |
 | `configuration_set.lua` | ConfigurationSet class: identity-preserving with `_update()`, owns activation (`activate()`/`ensure_profile()`), property-based profile lookup (`find_profile()`), resolves Project references internally. `update_mapping()` cascades `_mark_user_owned` to the set, the project, and the new config (specification.md §2.4 implicit cascade-on-use). References Workspace via `_workspace` | Own state beyond config data; do I/O |
 | `profile.lua` | Profile and ProfileProject classes. Profile owns `_tool_keys` (flat string array, user-ordered, first-match-per-language resolution wins), `tools_for(configuration)` for language-keyed effective tools, `tool_for(mod_type)` compat shim, `add_tool(key)` / `remove_tool(key)` mutators, `toolchain_entries()` UI surface, `missing_languages_for(configuration)` / `language_gaps()` / `unused_tools()` validity probes, status aggregation, plan_deletion, activate/deactivate. `Profile:activate()` cascades `_mark_user_owned` through the profile, its config set, and the set's mappings — so user.json is self-contained for the active profile. Profile also holds per-machine **fill values for blank project variables** (`_profile_variables`, project_key → name → value): `variable_value` / `set_variable_value` / `clear_variable_value` / `variables_data` accessors, `blank_variables()` enumerates the profile's still-blank declared variables, and `assert_buildable()` refuses configure/build while any is unfilled (core §1.3.1). Fill values live in user.json only (top-level `profile_variables`, mirrored on the Workspace as `_profile_variables_data` so they survive remerge) and are NEVER serialized to loomworks.json. Profile resolves mappings + ConfigurationSet reference in `_apply()`. Profile.key derives from `<set>:<sorted-deduped-tool-keys>` — no separate SDK component (kit_id prefix carries it). ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
-| `project.lua` | Project class, config_cache_key computation, mutation methods (save_options, save_type_config_field, save_variable, save_launch_config, etc.). References Workspace via `_workspace` | Own state beyond what workspace provides |
+| `project.lua` | Project class, config_cache_key computation, mutation methods (save_options, save_type_config_field, save_variable, save_launch_config, etc.). Owns the `LaunchConfiguration` registry (`_launches`, name → object; step 5o part A0). References Workspace via `_workspace` | Own state beyond what workspace provides |
+| `launch_configuration.lua` *(step 5o part A0)* | LaunchConfiguration class (spec §1.2.1): a project's launch configuration as a domain object — `_apply(data, ctx)`, identity by name within the project, kept across a rename, `_removed` on removal, `_project` back-reference, `description`, the declared fields, `serialize()` to the declared table | Own state beyond its declaration; do I/O |
 | `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag (with reason: "deleting"/"cleaning"), queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()`, `active_compiler_family()`, `context_profile(profile?)` (the profile whose fills a resolution uses — the caller's, else the active one; spec §5.1 *Resolution context*: every staleness method below takes an optional `profile`, and the build gate (`overseer` `lw_meta.profile` / plan-step `profile`), `record_task_result` (`result.profile`), `Profile:compiler_cache_status` and the status page pass the profile being built / shown, so a non-active profile's `cache` or variable fill is never judged against the active profile's), `resolved_option_fingerprint(profile?)` (options merged across inheritance + expanded through built-ins and family-aware project variables, including the context profile's blank-fill values — the RESOLVED `-D` values `is_stale()` compares against the snapshot taken at configure time; changing a profile fill value therefore makes the unit stale and forces a reconfigure). `build_dir_present()` / `missing_build_dir_needs_reconfigure()` — the build-gate re-check for a build directory removed out of band (spec §3.1 rule 7); the plain directory stat comes from the injected `dir_exists` dep, and `unknown`/`deleting` are exempt. `is_stale()` also folds in a **compiler-cache launcher axis** via `launcher_changed(profile?, lookup?)` (injectable detection for deterministic tests): it recomputes the launcher `compiler_cache.resolve_for` would produce now (policy + family + live PATH presence) (or `"none"` when the module's optional `cache_launcher_applicable({configuration, tool_data})` hook returns false — e.g. a cmake preset, which cannot take the launcher) and compares to the value frozen at configure in `module_info.cache_launcher` — an appeared/disappeared/changed launcher marks the unit stale so the build gate reconfigures. A `nil` recorded value is not compared (the module records no launcher); a configure with no cache records the sentinel `"none"`, so a later-installed cache still differs and fires. **Configure-record migration** (spec §5.1): `record_outdated()` — a configured unit (`_was_configured()`: snapshot, or a configured/built/failed_build state) whose `module_info.record_version` differs from its module's `configure_record_version` (stamped by `Workspace:record_task_result` after a SUCCESSFUL configure only) was recorded by an older lw → stale, and the module takes the full reconfigure; modules without the field skip the check. `stale_reason()` returns the first applicable reason (`configure record from an older lw`, `options changed (FOO removed)`, `module configuration changed`, `configuration environment changed`, `compiler launcher changed`) and `is_stale()` is `stale_reason() ~= nil`; `configure_reason(forced?, profile?)` is the build gate's full reason (first configure / forced / previous configure failed / stale reason / project files changed / build directory missing). **Configuration environment** (spec §1.3.3): `configuration_env()` resolves the configuration's `env` through `config_env.resolve` (chain + family overrides, expanded with the same context as the option fingerprint, reserved names stripped); `env_changed()` compares it with core's record `module_info.configure_env` (absent ⇒ empty — no env was applied before the field existed) and is folded into `is_stale()`, so an env change makes the unit stale and the module takes a full reconfigure. `refresh_cache_compat()` keeps the recorded compat scan (`module_info.cache_compat`) in step with the build's current compile data: when the module's `cache_compat_stamp` (via `cache_compat_stamp()`, from `_compat_scan_ctx()` — the recorded build dir, tool and `configure_env`) differs from the record's `source_stamp`, it re-runs the scan against the recorded launcher and replaces the record in memory (keeping `policy_source`); `Workspace:record_task_result` calls it for every build (persisted with the result, a changed record reported via `_notify_cache_compat` like a configure's) and the health provider before reporting. References Workspace via `_workspace` | Persist anything (runtime only) |
 | `device.lua` | Device domain object: physical/emulated deployment target with serial, display_name, provider (module id or device-runner id, §18.2), state (online/offline), properties. Runtime-only (not persisted). Workspace-level registry, discovered via a module's `list_devices()` or a device runner (`remote/devices.lua`) | Persist anything (runtime only) |
 | `launch_target.lua` | LaunchTarget class: resolves profile's default target descriptor into object references (Project, ConfigUnit, Target). Three target types: module targets, command launches, device targets. `build()` builds deps → pre-build deploy → build self. `deploy()` executes post-build deploy steps. Both phases merge project-level + launch-level deploy. `launch()`/`debug()` for local targets. `device_install()`/`device_launch()` for device targets, and the device commands shared with the daemon (`device_*_command`, including `device_log_command` / `device_log_clear_command`). `requires_device()` returns true for device targets | Own state beyond resolution; do I/O directly |
@@ -1626,7 +1627,9 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `/launch` `loomworks.Launch/1` (`prepare_run`): each handler turns its
   wire args into the v0 request (`operation_args`: a `{ key }` reference
   becomes the key, an `{ id }` one `profile_id` / `project_id`, resolved in
-  the model segment by `Service:_resolve_ids`, a stale id refused) and calls
+  the model segment by `Service:_resolve_ids` straight to the live object,
+  which the operation then uses — never turned back into its key (step 5o
+  part 0) — a stale id refused) and calls
   `Service:_on_operation(op, conn, msg, deliver, call)`. `call`
   (`task_call`) becomes the task's `Task.call`: `Task:start` adds `object`,
   `iface`, `v`, `method` to the start meta and `Task:done` adds `result`,
@@ -1719,8 +1722,9 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   (it rescans tools) and a refused file (it reloads) pending for the next
   request's `live` sync — outside model segments and never reentrant; a
   view's `get` runs `header_check` before building, so another process's
-  write (an in-process editor's, until 5o) reaches the views at the next
-  check, and the editor's `get` after its own write sends the `update`s.
+  write (the in-process CLI's) reaches the views at the next check. From 5o
+  the editor in daemon mode writes only through command methods, whose
+  model segments send the `update`s before the reply.
 - `views.lua` (plugin side; step 5j part C) — the editor's view store: one
   table per view (`header`, `projects`), the daemon's while the observer
   holds a subscription (`Observer:_view_subscribed` takes `initial`,
@@ -2213,6 +2217,9 @@ User action (b/c key or API call)
 
 ```
 User presses D → actions.delete_profile/config/orphaned (closure)
+  (daemon mode, step 5o: Maintenance/1.execute_deletion { target } →
+   confirm { lines, plan } → dialog → again with yes + plan → the steps
+   below run in the daemon's task, under O + every B, re-planned under them)
   → show confirmation dialog (floating window)
   → on confirm:
     → mark ConfigUnits as deleting
@@ -2296,7 +2303,8 @@ Core (singleton via init.lua)
         ├── ProfileProject[]    ← registered, one per (profile, project) pair
         ├── Project[]           ← from active set, identity-preserving
         │     ├── Configuration[] ← from module.info() + user overrides
-        │     └── variables{}     ← user-defined variable declarations
+        │     ├── LaunchConfiguration[] ← from the merged `launch` tables
+        │     └── variables{}     ← user-defined variable declarations (fields)
         ├── ConfigUnit{}        ← synced during remerge + lazy fallback
         │     └── Target{}      ← runtime, from module detection (set_targets)
         ├── BuildDir[]          ← cache artifacts, may be orphaned
@@ -2389,17 +2397,23 @@ not a module field, and is serialized with the configuration. Inheritance uses C
 within the project. ConfigUnit carries `_configuration` reference. Accessor:
 `unit:configuration()`, `pp:configuration()`.
 
-**Launch configurations** stay tables in `Project.launch` (name → table, spec
-§8.7), not domain objects. `Project:set_launch_description(name, text)` and
-`Project:rename_launch_config(old, new)` are the mutations for their
-description and name. The rename moves the table as is, re-points every
-profile's `_default_target_descriptor` naming it, re-keys the unit target
-entries (`launch:<name>`), then saves with rollback. The launch editor and
-`lw launch rename` both call it; the editor no longer does a delete plus a
-save. The description editor edits a launch through a small handle
-(`ui/helpers.launch_handle(project, name)`: `{ description, set_description,
-_kind, _label }`), and the Projects section renders launch rows with
-`helpers.launch_row_chunks` (a summary column before the command line). In the
+**LaunchConfiguration** (`launch_configuration.lua`, spec §1.2.1; step 5o
+part A0 — until then launch configurations are tables in `Project.launch`)
+is a project's launch configuration as a domain object, owned by
+`Project._launches` (name → object), built by `_apply` from the merged
+`launch` tables and serialized back to the same table shape. Callers reach
+it through the project's registry; a name is matched only where a user or a
+file supplies one (CLI arguments, a profile's persisted default-target
+descriptor, a saved test-target entry). `LaunchConfiguration:set_description(text)`
+and `Project:rename_launch_config(launch, new)` are the mutations for its
+description and name. The rename keeps the object (so its daemon id),
+re-points every profile's `_default_target_descriptor` naming it, re-keys
+the unit target entries (`launch:<name>`, runtime-only, not cached), then
+saves the working copy with rollback — it writes no other file, so it takes
+no workspace operation lock. The launch editor and `lw launch rename` both
+call it. The description editor edits the object itself, and the Projects
+section renders launch rows with `helpers.launch_row_chunks` (a summary
+column before the command line). In the
 CLI, `cmd_launch_describe` reuses `_describe_item` through the same kind of
 handle, and `_launch_rename` reports the profiles whose default target
 followed, warning when the new name is also a build target.

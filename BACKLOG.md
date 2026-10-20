@@ -23,6 +23,21 @@ lockfile only for configure/build/clean/reset per §16.6) — needs spec-first
 design if ever fixed on stable. (staging/daemon takes O + B on every editor
 deletion, §19.3, `Workspace:_locked_deletion`.)
 
+## Publish and propagating renames do not take the workspace operation lock
+
+Spec §19.3 (daemon.md) has publish, per-item publish and every rename that
+propagates into the cache (project, configuration, configuration set,
+profile — a profile key derived again by adding or removing a toolchain
+included) take the workspace operation lock O. The in-process code does not:
+`Workspace:publish` / `publish_one` and the rename paths
+(`rename_project_configuration`, the set and profile renames,
+`compute_profile_renames` / `apply_profile_renames`) never call `_op_lock`;
+only clean, reset, migrate, `lw trust --discard` and `_locked_deletion` do.
+On `staging/daemon` a later step 5o part fixes this (the daemon's commands
+and the in-process paths alike). **Master** (and the stable line) keep the
+gap: their in-process publish and renames take no O — port the fix there
+or record the divergence.
+
 ## `working_dir`: Windows UNC / rooted forms, backslashes, `..`
 
 `working_dir` (saved test entries, §1.3.4, and a launch's `working_dir`,
