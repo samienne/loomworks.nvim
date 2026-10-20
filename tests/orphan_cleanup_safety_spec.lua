@@ -173,4 +173,27 @@ describe("orphan cleanup deletion safety", function()
         assert.is_not_nil(deleted[1].mod, "an orphan's owned LSP database is never considered")
         assert.is_true(ok)
     end)
+
+    -- Not an orphan, but the same crash rule (spec §4.6): a configured
+    -- unit's cache entry is serialized from its BuildDir, so marking only the
+    -- unit left the on-disk entry `built` while its tree was being removed.
+    it("marks a configured unit's cache entry unknown on disk before removing its tree", function()
+        local entry_state
+        io_mod.rm_rf_async = function(d, cb)
+            if not entry_state then
+                local cache = vim.json.decode(read(root .. "/.nvim/loomworks.cache.json") or "{}")
+                entry_state = "<missing>"
+                for _, e in pairs(cache.build_dirs or {}) do
+                    if e.project_key == "App" and e.config_key == "Debug" then entry_state = e.state end
+                end
+            end
+            return real_rm(d, cb)
+        end
+        local done = false
+        ws._profiles[1]:reset(function() done = true end)
+        assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+        assert.equals("unknown", entry_state,
+            "the configured unit's entry was not unknown on disk before its removal")
+        assert.is_nil(uv.fs_stat(built))
+    end)
 end)

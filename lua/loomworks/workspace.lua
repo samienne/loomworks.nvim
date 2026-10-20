@@ -3678,7 +3678,9 @@ end
 --- Set cache state to "unknown" for items that have build directories. An
 --- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
 --- its BuildDir as `build_dir_obj`, which is marked directly: the cache
---- serializes it from the BuildDir (`_serialize_cache`).
+--- serializes it from the BuildDir (`_serialize_cache`). A unit's BuildDir is
+--- marked too, for the same reason: marking only the unit would leave the
+--- persisted entry claiming its old state during the rm-rf (spec §4.6).
 --- @param items loomworks.DeletionItem[]
 function Workspace:_mark_cache_unknown(items)
     for _, item in ipairs(items) do
@@ -3689,6 +3691,8 @@ function Workspace:_mark_cache_unknown(items)
         end
         if item.unit.build_dir_value then
             item.unit.state_value = "unknown"
+            local bd = item.unit._build_dir
+            if bd and bd:has_state() then bd.state = "unknown" end
         end
         ::continue::
     end

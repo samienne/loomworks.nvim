@@ -79,7 +79,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   the entries `unknown` before removing anything, keeps them when a removal
   fails, never removes a directory a live configuration still uses, reports a
   failed stray-directory removal, and also removes the owned LSP database of
-  each orphan it deleted (#298).
+  each orphan it deleted. Deleting or cleaning an ordinary configuration also
+  left its cache entry in its old state on disk while the build directory was
+  being removed, so a crash mid-removal could not be recognized; the entry is
+  now `unknown` on disk first (#298).
 - `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
   the `--` as the first argument. A target-backed add has no command token, so
   its `--` is lw's separator and is dropped; before it an unknown option or a
