@@ -388,8 +388,11 @@ end
 --- configuration of the project in the model first, otherwise an executable
 --- build target of the unit. A launch the trust filter ignored as a whole is
 --- missing — never resolved to a same-named build target.
+--- The entry's name is matched against `ctx.project`'s launch configurations
+--- (a saved entry is a name a file supplies), or against the plain
+--- `ctx.launches` declarations (name → declared table) when no project is given.
 --- @param e loomworks.SavedTestEntry
---- @param ctx { launches: table<string, table>|nil, launch_ignored: (fun(name: string): boolean)|nil, targets: table<string, loomworks.Target>|nil, level: string|nil }
+--- @param ctx { project: loomworks.Project|nil, launches: table<string, table>|nil, launch_ignored: (fun(name: string): boolean)|nil, targets: table<string, loomworks.Target>|nil, level: string|nil }
 --- @return loomworks.SavedTestResolution
 function M.resolve_entry(e, ctx)
     local level = ctx.level or "?"
@@ -399,7 +402,13 @@ function M.resolve_entry(e, ctx)
     end
     local name = e.name
     local targets = type(ctx.targets) == "table" and ctx.targets or nil
-    local l = type(ctx.launches) == "table" and ctx.launches[name] or nil
+    local l
+    if ctx.project then
+        local launch = ctx.project:find_launch(name)
+        l = launch and launch:declaration()
+    else
+        l = type(ctx.launches) == "table" and ctx.launches[name] or nil
+    end
     if type(l) == "table" then
         -- A launch of the model is the launch, whatever its shape: one with
         -- neither `command` nor `target` is missing, never the same-named
@@ -448,7 +457,7 @@ end
 --- @param name string
 --- @return boolean
 function M.launch_ignored(ignored, project, name)
-    if type(project.launch) == "table" and project.launch[name] ~= nil then return false end
+    if project:find_launch(name) ~= nil then return false end
     for _, ig in ipairs(ignored or {}) do
         if ig.kind == "launch" and type(ig.path) == "table" and ig.path[2] == project.key
                 and ig.path[4] == name then

@@ -135,7 +135,7 @@ function SavedTargetsTestUnit:_resolve_entries()
     local profile = self:_profile()
     local expand = require("loomworks.expand")
     local rctx = {
-        launches = project and project.launch or nil,
+        project = project,
         launch_ignored = function(n)
             return test_targets.launch_ignored(ws and ws._shared_ignored, project, n)
         end,

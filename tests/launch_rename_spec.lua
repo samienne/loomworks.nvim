@@ -76,7 +76,7 @@ describe("launch rename", function()
     -- a hand-written file would), then save.
     local ws = load(root)
     local proj = find_project(ws, "App")
-    local cfg = proj.launch["schema-test"]
+    local cfg = proj:find_launch("schema-test"):declaration()
     cfg.device = { stage = { "assets/**" } }
     cfg.deploy = { ["${build_dir}/x.dll"] = { project = "App", path = "x.dll" } }
     cfg.debug = { "c++" }
@@ -384,8 +384,9 @@ describe("launch add --description / describe", function()
     -- A name written before the rule (hand-edited / older loomworks).
     local ws = load(root)
     local proj = find_project(ws, "App")
-    proj.launch["my demo"] = proj.launch.old
-    proj.launch.old = nil
+    local decls = proj:serialize_launches()
+    decls["my demo"], decls.old = decls.old, nil
+    proj:_sync_launches(decls)
     assert.is_true(ws:_save_user())
     ws = load(root)
     local profile
@@ -445,7 +446,7 @@ describe("editor: launch rows, launch editor rename and description", function()
     point_all_profiles_at(root, "editor")
     local ws = load(root)
     local proj = find_project(ws, "App")
-    proj.launch.editor.device = { stage = { "a/**" } }
+    proj:find_launch("editor"):declaration().device = { stage = { "a/**" } }
     assert.is_true(ws:_save_user())
     local ok, err = wv.execute_save_launch_config(proj, "editor", "main",
       { command = "", args = { "--x" } })
@@ -483,12 +484,12 @@ describe("editor: launch rows, launch editor rename and description", function()
     assert.is_nil(b:find("body", 1, true))
   end)
 
-  it("the launch handle edits the description through the project", function()
+  it("the launch configuration edits its own description", function()
     local root = make_ws()
     launch(root, "add", "App", "demo", "node", "x.js")
     local ws = load(root)
     local proj = find_project(ws, "App")
-    local h = helpers.launch_handle(proj, "demo")
+    local h = proj:find_launch("demo")
     assert.is_nil(h.description)
     assert.is_true(h:set_description("From the editor"))
     assert.equals("From the editor", h.description)

@@ -17,8 +17,8 @@ local ns = vim.api.nvim_create_namespace("loomworks_description_editor")
 --- @param item table
 --- @return string kind, string name
 function M.describe_item(item)
-    -- A handle for an item that is not a domain object (a launch
-    -- configuration, spec §8.7) names its own kind and label.
+    -- A handle for an item that is not a domain object names its own kind
+    -- and label.
     if item._kind then return item._kind, item._label or "?" end
     local mt = getmetatable(item)
     if mt == require("loomworks.profile") then return "profile", tostring(item.key) end
@@ -26,6 +26,9 @@ function M.describe_item(item)
     if mt == require("loomworks.project") then return "project", item.key end
     if mt == require("loomworks.configuration") then
         return "configuration", (item._project and (item._project.key .. "/") or "") .. item.name
+    end
+    if mt == require("loomworks.launch_configuration") then
+        return "launch configuration", (item._project and (item._project.key .. ":") or "") .. item.name
     end
     return "item", tostring(item.key or item.name)
 end

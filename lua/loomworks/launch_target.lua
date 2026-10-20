@@ -13,7 +13,8 @@ local debug_mod = require("loomworks.debug")
 --- @field _config_unit loomworks.ConfigUnit|nil direct reference
 --- @field _target loomworks.Target|nil direct reference (module targets)
 --- @field _target_id string|nil fallback identifier for re-resolution
---- @field _launch_config table|nil launch config from loomworks.json
+--- @field _launch loomworks.LaunchConfiguration|nil the launch configuration the descriptor names
+--- @field _launch_config table|nil its declaration (`_launch:declaration()`)
 --- @field _config_target loomworks.Target|nil target a target-backed launch config references
 --- @field _launch_name string|nil name of the launch config
 --- @field _working_dir string|nil descriptor working-dir override (module targets)
@@ -73,11 +74,14 @@ function LaunchTarget:_update(descriptor)
     -- Resolve launch config from project domain object. A launch config may be
     -- command-type (`command`) or target-backed (`target`); resolve the
     -- referenced target for the latter.
+    self._launch = nil
     self._launch_config = nil
     self._config_target = nil
     if self._launch_name and self._project then
-        local cfg = self._project.launch and self._project.launch[self._launch_name]
+        local launch = self._project:find_launch(self._launch_name)
+        local cfg = launch and launch:declaration()
         if cfg then
+            self._launch = launch
             self._launch_config = cfg
             if cfg.target and self._config_unit then
                 self._config_target = self:_resolve_target_ref(cfg.target)

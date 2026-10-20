@@ -3309,7 +3309,7 @@ end
 function M.cmd_launch_list(ws, proj_name)
   local projs = {}
   for _, p in pairs(ws._projects) do
-    if (not proj_name or p.key == proj_name) and type(p.launch) == "table" and next(p.launch) then
+    if (not proj_name or p.key == proj_name) and p:has_launches() then
       projs[#projs + 1] = p
     end
   end
@@ -3319,11 +3319,8 @@ function M.cmd_launch_list(ws, proj_name)
   -- order you pass them to `lw launch show|set <project> <name>`.
   local rows = {}
   for _, p in ipairs(projs) do
-    local names = {}
-    for n in pairs(p.launch) do names[#names + 1] = n end
-    table.sort(names)
-    for _, n in ipairs(names) do
-      local cfg = p.launch[n]
+    for _, launch in ipairs(p:launch_configs()) do
+      local n, cfg = launch.name, launch:declaration()
       local runs
       if type(cfg) == "table" and cfg.target then
         runs = "target:" .. cfg.target
@@ -3557,7 +3554,8 @@ function M.cmd_launch_set(root, args)
   local proj_name, name, next_i = consume_launch_address(ws, args, 3)
   if not (proj_name and name) then die(usage, 2) end
   local project = resolve_project(ws, proj_name)
-  local cur = project.launch and project.launch[name]
+  local cur_launch = project:find_launch(name)
+  local cur = cur_launch and cur_launch:declaration()
   if type(cur) ~= "table" then
     die("no launch config '" .. name .. "' on project '" .. project.key ..
       "' — create it with `lw launch add`")
@@ -3648,7 +3646,8 @@ end
 --- Print one launch config, given a resolved project + name. Shared by
 --- `launch show` and the confirmation `launch set` prints after a save.
 function launch_show_resolved(project, name)
-  local cfg = project.launch and project.launch[name]
+  local launch = project:find_launch(name)
+  local cfg = launch and launch:declaration()
   if not cfg then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   out("launch config '" .. name .. "'  (project " .. project.key .. ")")
   if type(cfg.description) == "string" then
@@ -3694,7 +3693,8 @@ end
 --- @param name string
 --- @return integer
 function M._launch_show_json(project, name)
-  local cfg = project.launch and project.launch[name]
+  local launch = project:find_launch(name)
+  local cfg = launch and launch:declaration()
   if type(cfg) ~= "table" then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   local d = require("loomworks.description")
   local desc = type(cfg.description) == "string" and cfg.description or nil
@@ -3742,7 +3742,9 @@ function M.cmd_launch_remove(root, args)
     die("usage: lw launch remove [<project>] <name>  (also <project>:<name> / --project P --launch N)", 2)
   end
   local project = resolve_project(ws, proj_name)
-  local ok, err = project:delete_launch_config(name)
+  local launch = project:find_launch(name)
+  if not launch then die("launch config '" .. name .. "' not found") end
+  local ok, err = project:delete_launch_config(launch)
   if not ok then die(tostring(err)) end
   out("removed launch config '" .. name .. "' from project '" .. project.key .. "'")
   return 0
@@ -3801,7 +3803,12 @@ end
 --- @return integer
 function M._launch_rename(ws, project, old, new, opts)
   opts = opts or {}
-  local changed, err, moved = project:rename_launch_config(old, new)
+  local launch = project:find_launch(old)
+  if not launch then
+    die("could not rename launch config: no launch config '" .. tostring(old) .. "' on project '"
+      .. project.key .. "'")
+  end
+  local changed, err, moved = project:rename_launch_config(launch, new)
   if changed == nil then die("could not rename launch config: " .. tostring(err)) end
   if changed == false then
     out("launch configuration '" .. project.key .. ":" .. old .. "' (unchanged)")
@@ -3879,20 +3886,18 @@ function M.cmd_launch_describe(root, args)
   local o = M._describe_parse(rest, usage)
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
-  local cfg = project.launch and project.launch[name]
-  if type(cfg) ~= "table" then
+  local launch = project:find_launch(name)
+  if not launch or type(launch:declaration()) ~= "table" then
     die("no launch config '" .. name .. "' on project '" .. project.key .. "'")
   end
   local handle = {
-    description = type(cfg.description) == "string"
-      and require("loomworks.description").normalize(cfg.description) or nil,
+    description = launch.description,
     _json_extra = { project = project.key, name = name },
     _shared_item = project,
   }
   function handle:set_description(text)
-    local changed, err = project:set_launch_description(name, text)
-    local c = project.launch and project.launch[name]
-    self.description = c and c.description or nil
+    local changed, err = launch:set_description(text)
+    self.description = launch:declaration().description
     return changed, err
   end
   return M._describe_item(ws, handle, "launch configuration", project.key .. ":" .. name,
@@ -6662,7 +6667,7 @@ local function collect_targets(ws, profile)
   for _, c in ipairs(cands) do
     local is_default = candidate_is_default(desc, c)
     if is_default then seen_default = true end
-    local lcfg = c.kind == "launch" and c.project.launch and c.project.launch[c.name]
+    local lcfg = c.launch and c.launch:declaration()
     rows[#rows + 1] = {
       label = c.project.key .. ":" .. c.name,
       kind_label = target_kind_label(c.kind),
@@ -11556,8 +11561,8 @@ local function comp_launch_names(ws, project_key)
   local t = {}
   if ws then
     for _, p in pairs(ws._projects or {}) do
-      if (not project_key or p.key == project_key) and type(p.launch) == "table" then
-        for n in pairs(p.launch) do t[#t + 1] = n end
+      if not project_key or p.key == project_key then
+        for _, launch in ipairs(p:launch_configs()) do t[#t + 1] = launch.name end
       end
     end
   end

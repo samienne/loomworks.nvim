@@ -43,7 +43,7 @@ local function edit_launch_config(project, launch_name)
         original_name = launch_name,
         validate = function(result)
             if result.name ~= (launch_name or "") then
-                if project.launch and project.launch[result.name] then
+                if project:find_launch(result.name) then
                     return false, "launch config '" .. result.name .. "' already exists"
                 end
                 -- A new name must be valid (spec §8.7).
@@ -937,7 +937,8 @@ local function render_project_details(tree, t, ctx, prow)
                 if project then
                     opts.on_enter = function() edit_launch_config(project, lname) end
                     opts.on_delete = function() delete_launch_config(project, lname) end
-                    helpers.describe_action(opts, helpers.launch_handle(project, lname))
+                    local launch = project:find_launch(lname)
+                    if launch then helpers.describe_action(opts, launch) end
                 end
                 -- The summary is rendered as a column above, not appended.
                 opts.description = nil

@@ -151,7 +151,8 @@ end
 --- The project's launch configurations in the model, for messages.
 function M.launches_of(project)
     local labels = {}
-    for name, cfg in pairs(type(project.launch) == "table" and project.launch or {}) do
+    for _, launch in ipairs(project:launch_configs()) do
+        local name, cfg = launch.name, launch:declaration()
         if type(cfg) == "table" and (cfg.command or cfg.target) then labels[#labels + 1] = project.key .. ":" .. name end
     end
     table.sort(labels)
@@ -164,7 +165,7 @@ end
 function M.rctx(ws, unit, project, level)
     local test_targets = require("loomworks.test_targets")
     return {
-        launches = project.launch,
+        project = project,
         launch_ignored = function(n) return test_targets.launch_ignored(ws._shared_ignored, project, n) end,
         targets = unit and type(unit.targets) == "table" and unit.targets or nil,
         level = level,

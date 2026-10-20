@@ -79,7 +79,7 @@ local binary_toplevel = {
     "configuration_set", "core", "cpp_compilers", "data_model", "dependency",
     "deploy", "description", "device", "dir_identity", "env_policy", "events",
     "exe", "expand", "file_tracker", "future", "gtest", "health_cache",
-    "housekeeping", "inventory", "io", "languages", "launch_target",
+    "housekeeping", "inventory", "io", "languages", "launch_configuration", "launch_target",
     "launcher_health", "lock_break", "lock_record", "log", "lsp_db_cleanup", "merge", "migrate",
     "module", "msvc", "nice", "op_lock", "operation", "paths", "plugin_loader",
     "proc", "profile", "program_fields", "project", "release_notes",

@@ -18,6 +18,7 @@ local function build_run() return require("loomworks.build_run") end
 --- @field project loomworks.Project
 --- @field name string the display name the operand is matched against
 --- @field target_id? string the module target id (kind "target")
+--- @field launch? loomworks.LaunchConfiguration the launch configuration (kind "launch")
 
 --- Enumerate the launchable targets of a profile: command / target-backed
 --- launch configurations and executable build targets across the profile's
@@ -32,14 +33,10 @@ function M.launchable_targets(ws, profile)
         local unit = pp._config_unit
         local project = unit and unit._project
         if project then
-            if type(project.launch) == "table" then
-                local names = {}
-                for lname, cfg in pairs(project.launch) do
-                    if type(cfg) == "table" and (cfg.command or cfg.target) then names[#names + 1] = lname end
-                end
-                table.sort(names)
-                for _, lname in ipairs(names) do
-                    list[#list + 1] = { kind = "launch", project = project, name = lname }
+            for _, launch in ipairs(project:launch_configs()) do
+                local cfg = launch:declaration()
+                if type(cfg) == "table" and (cfg.command or cfg.target) then
+                    list[#list + 1] = { kind = "launch", project = project, name = launch.name, launch = launch }
                 end
             end
             build_run().ensure_unit_targets(ws, unit)

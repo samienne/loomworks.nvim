@@ -2836,7 +2836,7 @@ describe("Core", function()
                 refresh_lsp_database = function(_, done) captured[#captured + 1] = done end,
             } }
             local unit = {
-                _project = { key = "App", path = "app", _module = mod },
+                _project = require("tests.helpers").set_launches({ key = "App", path = "app", _module = mod }),
                 _tool_data = nil,
                 build_dir = function() return opts.build_dir end,
                 -- A build dir this machine configured (signed cache, §17.8).

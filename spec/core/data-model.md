@@ -68,8 +68,7 @@ typescript, etc.). Projects are declared in `loomworks.json` and/or
 
 ### 1.2.1 Launch Configuration
 
-*(Implemented in step 5o part A0; until then a project holds its launch
-configurations as plain tables keyed by name.)* A launch configuration is a named way to run something of a project
+A launch configuration is a named way to run something of a project
 (§8.7), declared under the project's `"launch"` (name → table) in
 `loomworks.json` and/or `loomworks.user.json`, merged per name (§2.4).
 

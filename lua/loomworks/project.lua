@@ -2,6 +2,7 @@
 --- Provides query methods for running/deleting/cached state.
 
 local Configuration = require("loomworks.configuration")
+local LaunchConfiguration = require("loomworks.launch_configuration")
 local description_mod = require("loomworks.description")
 local test_targets_mod = require("loomworks.test_targets")
 
@@ -10,7 +11,11 @@ local test_targets_mod = require("loomworks.test_targets")
 --- @field type string module type ("cmake", "typescript")
 --- @field path? string relative path from workspace root
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
---- @field launch? table<string, table> launch configurations
+--- @field _launches table<string, loomworks.LaunchConfiguration> launch
+---        configurations (spec §1.2.1), name → object; reach them through
+---        `launch_configs()` / `find_launch(name)`
+--- @field _launch_empty_decl table|nil the empty `launch` table the files
+---        declared, written back as declared while the project has no launch
 --- @field deploy? table<string, table|table[]> project-level deploy steps
 --- @field device? { stage?: string[], archive?: string[], env?: table<string,string>, working_dir?: string } remote-execution block (spec §18.9); stored in the module section of the files (`projects.<p>.<type>.device`), never in `type_config`
 --- @field variables? table<string, { type: string, default: string }> user-defined variable declarations
@@ -63,6 +68,8 @@ function Project.new(workspace, key, data)
     -- explicitly before saving.
     self._intent = nil
     self._configurations = {}
+    self._launches = {}
+    self._launch_empty_decl = nil
     if data then self:_update(data) end
     return self
 end
@@ -88,7 +95,7 @@ function Project:_update(data)
     else
         self.type_config = data.type_config
     end
-    self.launch = data.launch
+    self:_sync_launches(data.launch)
     self.deploy = data.deploy
     self.device = data.device
     self.description, self._description_invalid = description_mod.from_file(data.description)
@@ -191,6 +198,67 @@ function Project:_sync_configurations()
     for _, cfg in ipairs(self._configurations) do
         cfg:_resolve_inherits()
     end
+end
+
+--- Sync the LaunchConfiguration registry with the merged `launch` dict
+--- (spec §1.2.1): an existing object is updated in place (matched by name
+--- within this project), a new name gets a new object, and an object whose
+--- declaration is gone is marked `_removed` and dropped.
+--- @param decls table<string, any>|nil
+function Project:_sync_launches(decls)
+    local new = {}
+    if type(decls) == "table" then
+        for name, decl in pairs(decls) do
+            local existing = self._launches[name]
+            if existing and not existing._removed then
+                existing:_apply(decl)
+                new[name] = existing
+            else
+                new[name] = LaunchConfiguration.new(self, name, decl)
+            end
+        end
+    end
+    for name, launch in pairs(self._launches) do
+        if new[name] ~= launch then launch._removed = true end
+    end
+    self._launches = new
+    self._launch_empty_decl = (type(decls) == "table" and next(decls) == nil) and decls or nil
+end
+
+--- This project's launch configurations, sorted by name.
+--- @return loomworks.LaunchConfiguration[]
+function Project:launch_configs()
+    local out = {}
+    for _, launch in pairs(self._launches) do out[#out + 1] = launch end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return out
+end
+
+--- Whether this project has any launch configuration.
+--- @return boolean
+function Project:has_launches()
+    return next(self._launches) ~= nil
+end
+
+--- The launch configuration a user or a file names (a CLI argument, a
+--- profile's persisted default-target descriptor, a saved test-target entry).
+--- @param name string|nil
+--- @return loomworks.LaunchConfiguration|nil
+function Project:find_launch(name)
+    if name == nil then return nil end
+    return self._launches[name]
+end
+
+--- The `launch` dict as written to the files (name → declared table), nil
+--- when the project has none (an empty declared dict is written back as is).
+--- @return table<string, any>|nil
+function Project:serialize_launches()
+    if next(self._launches) == nil then
+        return self._launch_empty_decl
+    end
+    local out = {}
+    for name, launch in pairs(self._launches) do out[name] = launch:serialize() end
+    return out
 end
 
 --- Get a Configuration domain object by name.
@@ -1009,7 +1077,7 @@ function Project:saved_tests_view(eff, item, targets)
     if eff.invalid then view.invalid = true; return view end
     local project = self
     local rctx = {
-        launches = self.launch,
+        project = self,
         launch_ignored = function(n) return project:launch_ignored(n) end,
         targets = targets,
     }
@@ -1105,10 +1173,12 @@ function Project:delete_variable(var_name)
     return true
 end
 
---- Save a launch configuration for this project.
+--- Save a launch configuration for this project: the declaration of the
+--- launch named `launch_name` (updated in place when it exists, so its
+--- identity is kept; created otherwise).
 --- @param launch_name string
 --- @param config table { command, args?, working_dir?, env? }
---- @return boolean ok, string|nil err
+--- @return boolean ok, string|nil err, loomworks.LaunchConfiguration|nil launch
 function Project:save_launch_config(launch_name, config)
     local ws = self._workspace
     if self._removed then
@@ -1125,20 +1195,31 @@ function Project:save_launch_config(launch_name, config)
     end
     self:_mark_user_owned()
 
-    if not self.launch then
-        self.launch = {}
+    local launch = self._launches[launch_name]
+    local old_decl = launch and launch:declaration()
+    if launch then
+        launch:_apply(config)
+    else
+        launch = LaunchConfiguration.new(self, launch_name, config)
+        self._launches[launch_name] = launch
     end
-    self.launch[launch_name] = config
+    local old_empty = self._launch_empty_decl
+    self._launch_empty_decl = nil
 
     local ok, err = ws:_save_user()
     if not ok then
-        self.launch[launch_name] = nil
-        if not next(self.launch) then self.launch = nil end
+        if old_decl ~= nil then
+            launch:_apply(old_decl)
+        else
+            self._launches[launch_name] = nil
+            launch._removed = true
+        end
+        self._launch_empty_decl = old_empty
         return false, err
     end
 
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
-    return true
+    return true, nil, launch
 end
 
 --- Save the project-level deploy dict.
@@ -1198,69 +1279,41 @@ function Project.validate_launch_name(name)
     return true, nil
 end
 
---- Set or clear a launch configuration's description (spec §1.10, §8.7): the
---- `description` key of the launch's own table, normalised; an empty text
---- removes it. Implicit cascade on use (the project is materialised).
---- @param launch_name string
---- @param text string|nil
---- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
---- @return string|nil err
-function Project:set_launch_description(launch_name, text)
-    local ws = self._workspace
-    local cfg = self.launch and self.launch[launch_name]
-    if type(cfg) ~= "table" then
-        return nil, "no launch config '" .. tostring(launch_name) .. "' on project '" .. self.key .. "'"
-    end
-    local d = require("loomworks.description")
-    local ok, value, err = d.prepare(text)
-    if not ok then return nil, err end
-    if value == cfg.description then return false end
-    local old = cfg.description
-    local old_intent, old_source = self._intent, self._source
-    self:_mark_user_owned()
-    cfg.description = value
-    local saved, save_err = ws:_save_user()
-    if not saved then
-        cfg.description = old
-        self._intent, self._source = old_intent, old_source
-        return nil, save_err
-    end
-    ws._core._deps.events.emit("active_set_changed", ws._active_set)
-    return true
-end
-
---- Rename a launch configuration in place (spec §8.7): the whole table moves
---- (every field, known or not), every profile's default-target descriptor
+--- Rename a launch configuration in place (spec §8.7): the object keeps its
+--- identity (so its id) and its whole declaration (every field, known or
+--- not), every profile's default-target descriptor
 --- `{ project = <this>, launch = old }` follows (other descriptor fields kept),
 --- the per-unit `launch:<name>` target entries are re-keyed, and every saved
 --- test entry of this project (the project-wide list and each configuration's)
 --- named `old` is renamed, keeping its args and position. Atomic: on a failed
 --- save everything is restored.
---- @param old_name string
+--- @param launch loomworks.LaunchConfiguration a launch of this project
 --- @param new_name string
 --- @return boolean|nil changed true when renamed, false when unchanged, nil on refusal
 --- @return string|nil err
 --- @return string[]|nil profiles keys of the profiles whose default target followed
-function Project:rename_launch_config(old_name, new_name)
+function Project:rename_launch_config(launch, new_name)
     local ws = self._workspace
     if self._removed then
         return nil, "project '" .. self.key .. "' has been removed"
     end
-    local cfg = self.launch and self.launch[old_name]
-    if type(cfg) ~= "table" then
-        return nil, "no launch config '" .. tostring(old_name) .. "' on project '" .. self.key .. "'"
+    if not launch or launch._removed or launch._project ~= self
+            or self._launches[launch.name] ~= launch or type(launch:declaration()) ~= "table" then
+        return nil, "no launch config '" .. tostring(launch and launch.name) .. "' on project '" .. self.key .. "'"
     end
+    local old_name = launch.name
     if new_name == old_name then return false, nil, {} end
     local valid, verr = Project.validate_launch_name(new_name)
     if not valid then return nil, "invalid launch name: " .. verr end
-    if self.launch[new_name] ~= nil then
+    if self._launches[new_name] ~= nil then
         return nil, "launch config '" .. new_name .. "' already exists on project '" .. self.key .. "'"
     end
 
     local old_intent, old_source = self._intent, self._source
     self:_mark_user_owned()
-    self.launch[new_name] = cfg
-    self.launch[old_name] = nil
+    self._launches[new_name] = launch
+    self._launches[old_name] = nil
+    launch.name = new_name
 
     -- Default targets that name this launch, in every profile.
     local moved = {}
@@ -1311,8 +1364,9 @@ function Project:rename_launch_config(old_name, new_name)
 
     local ok, err = ws:_save_user()
     if not ok then
-        self.launch[old_name] = cfg
-        self.launch[new_name] = nil
+        self._launches[old_name] = launch
+        self._launches[new_name] = nil
+        launch.name = old_name
         for _, r in ipairs(retests) do
             r.holder._tests, r.holder._intent, r.holder._source = r.decl, r.intent, r.source
         end
@@ -1334,27 +1388,30 @@ function Project:rename_launch_config(old_name, new_name)
     return true, nil, keys
 end
 
---- Delete a launch configuration from this project.
---- @param launch_name string
+--- Delete a launch configuration from this project; the object is marked
+--- `_removed` once the working copy is saved.
+--- @param launch loomworks.LaunchConfiguration a launch of this project
 --- @return boolean ok, string|nil err
-function Project:delete_launch_config(launch_name)
+function Project:delete_launch_config(launch)
     local ws = self._workspace
     self:_mark_user_owned()
 
-    if not self.launch or not self.launch[launch_name] then
-        return false, "launch config '" .. launch_name .. "' not found"
+    if not launch or launch._removed or self._launches[launch.name] ~= launch then
+        return false, "launch config '" .. tostring(launch and launch.name) .. "' not found"
     end
 
-    local old = self.launch[launch_name]
-    self.launch[launch_name] = nil
-    if not next(self.launch) then self.launch = nil end
+    local name = launch.name
+    self._launches[name] = nil
+    local old_empty = self._launch_empty_decl
+    self._launch_empty_decl = nil
 
     local ok, err = ws:_save_user()
     if not ok then
-        if not self.launch then self.launch = {} end
-        self.launch[launch_name] = old
+        self._launches[name] = launch
+        self._launch_empty_decl = old_empty
         return false, err
     end
+    launch._removed = true
 
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
