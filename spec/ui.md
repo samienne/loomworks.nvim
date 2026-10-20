@@ -447,6 +447,9 @@ Enter shows a confirmation dialog listing:
 
 On confirm: deletes orphaned cache entries + build dirs via `_run_deletion`,
 then deletes stray build dirs. If nothing to clean, shows a notification.
+A stray build dir (here or via `D`) is re-checked once the deletion holds its
+locks: one that stopped being stray since the list was shown (another process
+configured into it) is kept.
 
 ### 1.7 Configuration Sets Section
 

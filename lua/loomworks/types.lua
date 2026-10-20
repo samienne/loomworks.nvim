@@ -362,6 +362,7 @@
 --- @class loomworks.DeletionItem
 --- @field unit? loomworks.ConfigUnit the config unit (nil for unmaterialized combos)
 --- @field build_dir? string
+--- @field build_dir_obj? loomworks.BuildDir an orphaned entry's BuildDir (no unit); marked `unknown` before removal
 --- @field disposition loomworks.DeletionDisposition "clean" removes entry, "reset" clears state, "keep" untouched
 
 -- ========================== Orphaned Configs ==========================
@@ -370,7 +371,9 @@
 --- @class loomworks.OrphanedConfig
 --- @field project_key string
 --- @field config_key string
---- @field unit loomworks.ConfigUnit the config unit with state
+--- @field build_dir_key string the BuildDir's rel_path
+--- @field cached_entry table the BuildDir serialized as a cache entry
+--- @field build_dir_obj loomworks.BuildDir the orphaned BuildDir (no ConfigUnit references it)
 
 -- ========================== UI Data ==========================
 

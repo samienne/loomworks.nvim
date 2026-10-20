@@ -2960,19 +2960,35 @@ end
 --- Find build directories on disk under {root}/.nvim/build/ that are not
 --- referenced by any cache entry. Uses top-down pruning: reports the
 --- highest-level directory whose entire subtree contains no cache entries.
+--- Directory identity is compared through every form of each side: the plain
+--- normalized spelling AND the canonical one (`_canonicalize_boundary_path`:
+--- 8.3 short<->long + case reconciled, links resolved). A unit's build dir can
+--- be recorded under another spelling of the same location than `self.root`
+--- (an 8.3 short temp path on a Windows runner); compared by spelling alone,
+--- a live build dir's parent looks stray and orphan cleanup would delete it.
+--- Reported paths keep the scanned (normalized) spelling under `self.root`.
 --- @return string[] absolute paths of stray directories
 function Workspace:find_stray_build_dirs()
     local uv = vim.uv or vim.loop
     local build_root = self.root .. "/.nvim/build"
     local normalize = self._core._deps.normalize
 
-    -- Collect all normalized build_dirs referenced by ConfigUnit objects
-    local known_dirs = {}
+    -- Every form of every build dir referenced by a ConfigUnit object
+    local known_dirs, seen = {}, {}
+    local function add(p)
+        if not seen[p] then seen[p] = true; known_dirs[#known_dirs + 1] = p end
+    end
     for _, unit in pairs(self._config_units) do
         local bd = unit:build_dir()
-        if bd then
-            known_dirs[#known_dirs + 1] = normalize(bd)
+        if bd and bd ~= "" then
+            add(normalize(bd))
+            add(self:_canonicalize_boundary_path(bd))
         end
+    end
+    local function forms(dir)
+        local n, c = normalize(dir), self:_canonicalize_boundary_path(dir)
+        if n == c then return { n } end
+        return { n, c }
     end
 
     -- Build a set for exact match and a list for prefix checks
@@ -2999,10 +3015,17 @@ function Workspace:find_stray_build_dirs()
     local stray = {}
     local function scan(dir)
         local normalized = normalize(dir)
-        if known_set[normalized] then
-            return -- this dir is a known build dir, don't touch it
+        local fs = forms(dir)
+        for _, f in ipairs(fs) do
+            if known_set[f] then
+                return -- this dir is a known build dir, don't touch it
+            end
         end
-        if not has_cache_entry_below(normalized) then
+        local below = false
+        for _, f in ipairs(fs) do
+            if has_cache_entry_below(f) then below = true; break end
+        end
+        if not below then
             stray[#stray + 1] = normalized
             return
         end
@@ -4103,11 +4126,17 @@ end
 --- Set cache state to "unknown" for items that have build directories. The
 --- unit's BuildDir is marked too: the cache serializes a unit that has one
 --- from the BuildDir (`_serialize_cache`), so marking only the unit would
---- leave the persisted entry claiming its old state (spec §4.7, §5.7).
+--- leave the persisted entry claiming its old state (spec §4.7, §5.7). An
+--- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
+--- its BuildDir as `build_dir_obj`, which is marked directly.
 --- @param items loomworks.DeletionItem[]
 function Workspace:_mark_cache_unknown(items)
     for _, item in ipairs(items) do
-        if not item.unit then goto continue end
+        if not item.unit then
+            local bd = item.build_dir_obj
+            if bd and bd:has_state() then bd.state = "unknown" end
+            goto continue
+        end
         if item.unit.build_dir_value then
             item.unit.state_value = "unknown"
             local bd = item.unit._build_dir
@@ -4628,7 +4657,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                         end
                     end
                     dirs[#dirs + 1] = normalized
-                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit, item.unit and item.unit._build_dir)
+                    -- An orphaned entry (no unit) carries its BuildDir.
+                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
+                        item.unit and item.unit._build_dir or item.build_dir_obj)
                     ::skip_dir::
                 end
             end
@@ -4959,10 +4990,12 @@ end
 
 --- Run `start()` (-> Future) holding O and the build locks of `dirs`; both are
 --- released when the future settles. A refused lock calls `on_done` and
---- resolves false without running anything.
+--- resolves false without running anything. A `start` that finished
+--- synchronously returns its outcome as a boolean instead of a Future: the
+--- locks are released at once and the result resolves to it.
 --- @param operation string
 --- @param dirs string[]
---- @param start fun(): loomworks.Future
+--- @param start fun(): loomworks.Future|boolean
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:_locked_deletion(operation, dirs, start, on_done)
@@ -4988,6 +5021,14 @@ function Workspace:_locked_deletion(operation, dirs, start, on_done)
     end
     local ok, f = pcall(start)
     if not ok then release(); error(f, 0) end
+    if type(f) == "boolean" then
+        release()
+        return future_mod.resolved(f)
+    end
+    if f == nil then
+        release()
+        error("loomworks: _locked_deletion: start returned neither a Future nor an outcome", 0)
+    end
     self._deletions = self._deletions or {}
     self._deletions[f] = true
     local function settle()

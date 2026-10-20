@@ -831,6 +831,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   install of a profile whose key is a number (e.g. a configuration set named
   `2`) now acts on that profile; it could act on the profile at that
   position in the profile list instead. (#294)
+- The editor's orphan cleanup no longer drops an orphaned configuration's
+  cache entry when removing its build directory failed, no longer removes a
+  build directory a live configuration still uses, and marks the entries
+  `unknown` before removing anything; it reports a failed removal instead of
+  success. A stray build directory that another process configured into after
+  the list was shown is kept, and project removal without cached
+  configurations now takes the workspace operation lock. (#296)
 - `lw device select` fails with the reason when it cannot save the profile's
   device, instead of reporting it saved; choosing a device in the editor
   shows the error likewise. (#287)
