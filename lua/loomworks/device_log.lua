@@ -736,7 +736,7 @@ local _prefilter = nil
 --- @type loomworks.DeviceLogRemote|nil the daemon-carried stream feeding the view
 local _remote = nil
 
---- @type fun()|nil starts the active run's daemon-carried stream again (M.set_source)
+--- @type (fun(): boolean)|nil starts the active run's daemon-carried stream again (M.set_source)
 local _source = nil
 
 local function ensure_view()
@@ -838,8 +838,10 @@ end
 --- What opening the view does while no stream runs (`daemon` mode): start
 --- the active device run's stream again. The session tracker sets it for a
 --- run the daemon launched and clears it when the run ends or its stream
---- ended on its own. nil: opening only shows the view.
---- @param fn fun()|nil
+--- ended on its own. nil: opening only shows the view. It returns true when
+--- it started a stream; false (its run no longer active) and opening only
+--- shows the view.
+--- @param fn (fun(): boolean)|nil
 function M.set_source(fn)
     _source = fn
 end
@@ -849,8 +851,7 @@ end
 --- @return boolean
 local function open_source()
     if _source and not _task and not _remote and not (_view and _view:is_visible()) then
-        _source()
-        return true
+        return _source() == true
     end
     return false
 end

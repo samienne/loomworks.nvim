@@ -569,6 +569,23 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.same({}, errors())
     end)
 
+    it("reopening the view after the run was dropped (its connection gone) only shows it", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        local st = device_log_streaming()
+        dl.hide()
+        assert.is_false(dl.is_visible())
+        -- The run is forgotten with its connection; active_run() drops it.
+        obs.conn:close()
+        assert.is_nil(st.active_run())
+        local n = #sent
+        dl.toggle()
+        assert.is_true(dl.is_visible())
+        vim.wait(100)
+        assert.equals(n, #sent)
+        assert.is_false(dl.is_running())
+    end)
+
     it("stopping the run cancels its device log", function()
         obs = fake_observer(DEVICE_FEAT)
         local dl = require("loomworks.device_log")

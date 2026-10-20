@@ -426,12 +426,24 @@ describe("device_log view notes", function()
 
     it("opening the view while nothing streams starts the set source", function()
         local opened = 0
-        dl.set_source(function() opened = opened + 1 end)
+        dl.set_source(function() opened = opened + 1; return true end)
         dl.toggle()
         assert.equals(1, opened)
         dl.set_source(nil)
         dl.toggle()
         assert.equals(1, opened)
+        assert.is_true(dl.is_visible())
+    end)
+
+    it("a source that starts nothing (its run gone) leaves opening to show the view", function()
+        local opened = 0
+        dl.set_source(function() opened = opened + 1; return false end)
+        dl.toggle()
+        assert.equals(1, opened)
+        assert.is_true(dl.is_visible())
+        dl.hide()
+        dl.show()
+        assert.equals(2, opened)
         assert.is_true(dl.is_visible())
     end)
 

@@ -229,8 +229,14 @@ end
 local function open_daemon_device_log(run)
     local device_log = require("loomworks.device_log")
     local target = run.target
+    --- @return boolean started false when the run is no longer active (it
+    --- was dropped without its log session torn down): the source clears,
+    --- and opening the view only shows it.
     local function open()
-        if _active_run ~= run then return end
+        if _active_run ~= run or not is_active_running() then
+            device_log.set_source(nil)
+            return false
+        end
         device_log.start_remote({
             banner = string.format("device-log session: %s  (streamed by the workspace daemon)",
                 target:display_name()),
@@ -243,6 +249,7 @@ local function open_daemon_device_log(run)
                 if _active_run == run then device_log.set_source(nil) end
             end,
         })
+        return true
     end
     device_log.set_source(open)
     open()
