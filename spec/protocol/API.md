@@ -124,18 +124,21 @@ errors (PROTOCOL.md §11.1):
   the operation runs as a task owned by this connection (PROTOCOL.md §14.3);
 - `refused` (`message`, `exit_code`) — before any side effect: the workspace
   is refused (spec §17.4, a journal it cannot complete, a newer schema
-  spec §2.7) or an argument does not resolve (§1.2). A client prints the
-  message and ends with that code; with `stream = "out"` the message is the
-  command's ordinary standard-output line, not an error;
+  spec §2.7) or an argument does not resolve (§1.2). A non-interactive call
+  that omits a required operand (the profile) is refused too; `exit_code` is
+  the in-process code — 2 for a usage error (§16.7), 1 for a state refusal. A
+  client prints the message and ends with that code; with `stream = "out"` the
+  message is the command's ordinary standard-output line, not an error;
 - `declined` (`reason`) — before any side effect: the server does not carry
   this request; a client may run the operation another way (the CLI runs it
   itself);
 - `confirm` (`lines`, `plan`) — the operation needs the user's confirmation
   of a plan first (§8.6).
 
-`ok`, `accepted`, `refused` and `confirm` may carry `notes`: lines the server wrote for the call before any task of it
-started (a warning or error the workspace raised while loading, a test plan's
-pre-build notes, §10.1), in order. A client writes each to standard error
+`ok`, `accepted`, `refused` and `confirm` may carry `notes`: lines the server
+wrote for the call before any task of it started (a warning or error the
+workspace raised while loading, a test plan's pre-build notes, §10.1), in
+order. A client writes each to standard error
 before anything else of the call, the refusal's message included. With them
 `note_roles` (`NoteRoles`) gives each note its role (`LineRole`, §4.2) by
 index: the role the CLI gives that line in-process (a workspace error `fail`,
