@@ -698,7 +698,7 @@ so interactive tools drive the tty:
 ```sh
 lw run --prefix valgrind                       # valgrind <app> …
 lw run --prefix 'valgrind --leak-check=full'   # a tokenized string, quote-aware
-lw run --prefix gdb --prefix --args app -- x   # gdb --args <app> x   (repeatable)
+lw run --prefix gdb --prefix=--args app -- x   # gdb --args <app> x   (repeatable; a value starting with -- takes =)
 ```
 
 The prefix is **multiple tokens**, supplied two combinable ways: a single string

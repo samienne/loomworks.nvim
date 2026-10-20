@@ -35,9 +35,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Changed
 
-- Every usage error now exits 2 (it was 1 for many of them): a missing or
-  extra operand, a missing option value, an unknown option and the other
-  ways of calling a command wrongly. Other failures still exit 1 (#290).
+- Every usage error now exits 2 (it was 1 for many of them): an unknown,
+  repeated or misplaced option, a missing or malformed value (`--timeout 0`,
+  an invalid launch name, an unknown `lw config set` parameter or health
+  area), an empty value, an extra operand, and a missing operand lw cannot
+  ask for, such as no profile named in non-interactive mode. An error about
+  the workspace's state, such as no unambiguous default profile, still exits
+  1 (#290).
 - Every option that takes a value now also accepts it joined with `=`, on
   every command: `--working-dir=build`, `--env=PORT=8080`, `--cwd=out`
   (the split is at the first `=`) (#290).
@@ -45,10 +49,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   instead of the last one winning. This includes `--cwd` with `--working-dir`,
   `--working-dir` with `--clear-working-dir`, and `--command` with
   `--from-target` on `lw launch set`. `--env`, `--unset-env`, `--description`,
-  `-m`, `--target` and `--log` may still repeat (#290).
+  `-m`, `--prefix`, `--target` and `--log` may still repeat (#290).
+- An empty option value is refused (exit 2), as in `lw run --cwd= app`, except
+  where `""` clears: `--working-dir ""` and `--description ""` on
+  `lw launch set`, `--working-dir ""` on `lw launch add` (no working
+  directory), and `-m ""` on `describe` (#290).
 - A value that starts with `--` must now be joined with `=`
-  (`--working-dir=--odd`): a valued option followed by `--`, by another
-  `--` token or by nothing is a missing value (exit 2) (#290).
+  (`--working-dir=--odd`, `lw run --prefix gdb --prefix=--args`): a valued
+  option followed by `--`, by another `--` token or by nothing is a missing
+  value (exit 2) (#290).
 - On `lw launch add <project> <name> <command>`, every token after the command
   is the program's, including lw's own options: `--env`, `--working-dir` and
   `--description` go before the command (#290).
