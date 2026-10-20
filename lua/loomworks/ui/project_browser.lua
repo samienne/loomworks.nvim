@@ -107,7 +107,7 @@ function M.open(root)
             inherited_tool = ctx.inherited_tool,
             no_tool_profiles = ctx.no_tool_profiles,
             on_accept = function(result)
-                local ok, err = workspace_view.execute_add_project(ws, key, type_info.type, path, result, has_keyed)
+                local ok, err = workspace_view.execute_add_project(ws, key, type_info.type, path, result)
                 if not ok then
                     vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
                 end
@@ -133,7 +133,7 @@ function M.open(root)
         -- Config set mappings and tool/SDK selection happen separately
         -- via the status page.
         local ok, err = workspace_view.execute_add_project(
-            ws, prep.key, prep.mod_type, prep.path, { mappings = {} }, false)
+            ws, prep.key, prep.mod_type, prep.path, { mappings = {} })
         if not ok then
             vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
         end

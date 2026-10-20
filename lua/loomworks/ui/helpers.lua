@@ -224,16 +224,41 @@ function M.render_targets(tree, targets, fold_prefix)
     end)
 end
 
---- Cycle the intent: local → local+shared → shared → local.
+--- The next intent of the `P` cycle: local → local+shared → shared → local.
 --- All three states always available. Data stays in user.json while cycling.
---- @param item table domain object with _intent field
+--- @param intent string|nil an item's current intent
+--- @return "local"|"shared"|"local+shared"
+function M.next_intent(intent)
+    if intent == "local" then return "local+shared" end
+    if intent == "local+shared" then return "shared" end
+    return "local"
+end
+
+--- Cycle an item's intent (`P`) through the model command; a refusal is
+--- notified.
+--- @param item table a profile, configuration set, project or configuration
 function M.cycle_intent(item)
-    if item._intent == "local" then
-        item._intent = "local+shared"
-    elseif item._intent == "local+shared" then
-        item._intent = "shared"
-    else
-        item._intent = "local"
+    local ok, err = require("loomworks.workspace_view").set_intent(item, M.next_intent(item._intent))
+    if not ok then
+        vim.notify("loomworks: " .. tostring(err or "the intent was not saved"), vim.log.levels.ERROR)
+    end
+end
+
+--- Publish one item now; a refusal is notified.
+--- @param item table
+function M.publish_one(item)
+    local ok, err = require("loomworks.workspace_view").publish_one(item)
+    if not ok then
+        vim.notify("loomworks: " .. tostring(err or "publish failed: unknown"), vim.log.levels.ERROR)
+    end
+end
+
+--- Revert one item to its baseline; a refusal is notified.
+--- @param item table
+function M.revert_one(item)
+    local ok, err = require("loomworks.workspace_view").revert_one(item)
+    if not ok then
+        vim.notify("loomworks: " .. tostring(err or "revert failed: unknown"), vim.log.levels.ERROR)
     end
 end
 

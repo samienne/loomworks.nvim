@@ -16,11 +16,12 @@ local workspace_view = require("loomworks.workspace_view")
 
 --- Open the launch editor for an existing or new launch config.
 --- @param project loomworks.Project
---- @param launch_name? string nil for new config
-local function edit_launch_config(project, launch_name)
+--- @param launch? loomworks.LaunchConfiguration nil for new config
+local function edit_launch_config(project, launch)
     local project_key = project.key
+    local launch_name = launch and launch.name or nil
 
-    local ctx = workspace_view.compute_edit_launch_context(project, launch_name)
+    local ctx = workspace_view.compute_edit_launch_context(project, launch)
 
     local lw = require("loomworks")
     local ws = lw.get_workspace()
@@ -54,7 +55,7 @@ local function edit_launch_config(project, launch_name)
         end,
         on_accept = function(result)
             local ok, err = workspace_view.execute_save_launch_config(
-                project, launch_name, result.name, {
+                project, launch, result.name, {
                     command = result.command,
                     args = result.args,
                     working_dir = result.working_dir,
@@ -77,9 +78,10 @@ end
 
 --- Delete a launch config with confirmation.
 --- @param project loomworks.Project
---- @param launch_name string
-local function delete_launch_config(project, launch_name)
+--- @param launch loomworks.LaunchConfiguration
+local function delete_launch_config(project, launch)
     local project_key = project.key
+    local launch_name = launch.name
 
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
@@ -99,7 +101,7 @@ local function delete_launch_config(project, launch_name)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_launch_config(project, launch_name)
+                local ok, err = workspace_view.execute_delete_launch_config(project, launch)
                 if ok then
                     vim.notify("loomworks: launch config '" .. launch_name .. "' deleted",
                         vim.log.levels.INFO)
@@ -195,9 +197,10 @@ end
 
 --- Open the configuration editor for a project configuration.
 --- @param project loomworks.Project
---- @param config_name? string nil for new configuration
-local function edit_project_configuration(project, config_name)
+--- @param cfg? loomworks.Configuration nil for new configuration
+local function edit_project_configuration(project, cfg)
     local project_key = project.key
+    local config_name = cfg and cfg.name or nil
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return end
@@ -206,7 +209,7 @@ local function edit_project_configuration(project, config_name)
     if not ctx then return end
 
     require("loomworks.ui.config_editor_dialog").open({
-        item = config_name and project:get_configuration(config_name) or nil,
+        item = cfg,
         title = config_name
             and ('Edit "' .. config_name .. '" — ' .. project_key)
             or ("New configuration — " .. project_key),
@@ -264,7 +267,7 @@ local function edit_project_configuration(project, config_name)
             -- The save changes only the fields the dialog edits; every other
             -- declared field (env, overrides, description, …) is kept.
             local ok, err = workspace_view.execute_save_configuration(
-                project, config_name, result.name, result)
+                project, cfg, result.name, result)
             if ok then
                 local verb = config_name and "updated" or "created"
                 vim.notify("loomworks: configuration '" .. result.name .. "' " .. verb,
@@ -280,9 +283,10 @@ end
 
 --- Delete a user-defined project configuration with confirmation.
 --- @param project loomworks.Project
---- @param config_name string
-local function delete_project_configuration(project, config_name)
+--- @param cfg loomworks.Configuration
+local function delete_project_configuration(project, cfg)
     local project_key = project.key
+    local config_name = cfg.name
 
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
@@ -304,7 +308,7 @@ local function delete_project_configuration(project, config_name)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_configuration(project, config_name)
+                local ok, err = workspace_view.execute_delete_configuration(project, cfg)
                 if ok then
                     vim.notify("loomworks: configuration '" .. config_name .. "' deleted",
                         vim.log.levels.INFO)
@@ -336,37 +340,23 @@ end
 --- Save a type_config field of `project` (nil project: no action).
 local function field_saver(project, name)
     if not project then return nil end
-    return function(value) project:save_type_config_field(name, value) end
+    return function(value)
+        local ok, err = workspace_view.save_type_config_field(project, name, value)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "failed to save " .. name), vim.log.levels.ERROR)
+        end
+    end
 end
 
 --- The publish / revert actions shared by project and configuration rows.
 --- @param ws loomworks.Workspace|nil
 --- @param item table the Project or Configuration
 local function publish_actions(ws, item)
+    if not ws then return {} end
     return {
-        on_publish = function()
-            helpers.cycle_intent(item)
-            if ws then
-                ws:_save_user()
-                ws._core._deps.events.emit("active_set_changed", ws._active_set)
-            end
-        end,
-        on_publish_now = function()
-            if not ws then return end
-            local ok, err = ws:publish_one(item)
-            if not ok then
-                vim.notify("loomworks: publish failed: " ..
-                    (err or "unknown"), vim.log.levels.ERROR)
-            end
-        end,
-        on_revert_one = function()
-            if not ws then return end
-            local ok, err = ws:revert_one(item)
-            if not ok then
-                vim.notify("loomworks: revert failed: " ..
-                    (err or "unknown"), vim.log.levels.ERROR)
-            end
-        end,
+        on_publish = function() helpers.cycle_intent(item) end,
+        on_publish_now = function() helpers.publish_one(item) end,
+        on_revert_one = function() helpers.revert_one(item) end,
     }
 end
 
@@ -401,10 +391,9 @@ end
 --- @param crow table the configuration's view row
 local function configuration_actions(ws, project, cfg, crow)
     if not project then return {} end
-    local cfg_name = crow.key
     local acts = {
-        on_enter = function() edit_project_configuration(project, cfg_name) end,
-        on_delete = crow.user and function() delete_project_configuration(project, cfg_name) end or nil,
+        on_enter = cfg and function() edit_project_configuration(project, cfg) end or nil,
+        on_delete = (crow.user and cfg) and function() delete_project_configuration(project, cfg) end or nil,
     }
     if cfg then helpers.describe_action(with(acts, publish_actions(ws, cfg)), cfg) end
     return acts
@@ -416,8 +405,10 @@ local function deploy_editing(project)
         return project.deploy and vim.deepcopy(project.deploy) or {}
     end
     local function save(new_deploy)
-        if not next(new_deploy) then new_deploy = nil end
-        project:save_deploy(new_deploy)
+        local ok, err = workspace_view.save_deploy(project, new_deploy)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "failed to save deploy steps"), vim.log.levels.ERROR)
+        end
     end
     return get_editable_copy, save
 end
@@ -934,11 +925,11 @@ local function render_project_details(tree, t, ctx, prow)
                     hl = "LoomworksVariant",
                     enter_label = "Edit launch config",
                 }, l.description)
-                if project then
-                    opts.on_enter = function() edit_launch_config(project, lname) end
-                    opts.on_delete = function() delete_launch_config(project, lname) end
-                    local launch = project:find_launch(lname)
-                    if launch then helpers.describe_action(opts, launch) end
+                local launch = ctx.ref(l)
+                if project and launch then
+                    opts.on_enter = function() edit_launch_config(project, launch) end
+                    opts.on_delete = function() delete_launch_config(project, launch) end
+                    helpers.describe_action(opts, launch)
                 end
                 -- The summary is rendered as a column above, not appended.
                 opts.description = nil

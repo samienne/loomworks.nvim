@@ -37,7 +37,10 @@ return function(tree, ctx)
                     prompt = "Remove SDK '" .. row.label .. "'?",
                 }, function(choice)
                     if choice ~= "Yes" then return end
-                    ws:remove_sdk(ctx.ref(row).key)
+                    local ok, err = require("loomworks.workspace_view").remove_sdk(ws, ctx.ref(row))
+                    if not ok then
+                        vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+                    end
                     require("loomworks.ui.status").refresh()
                 end)
             end or nil,
@@ -123,7 +126,7 @@ return function(tree, ctx)
                             prompt = prompt .. ": ",
                         }, function(path)
                             if not path or path == "" then return end
-                            local sdk2, err = ws:add_sdk(choice.provider_id, path)
+                            local sdk2, err = require("loomworks.workspace_view").add_sdk(ws, choice.provider_id, path)
                             if sdk2 then
                                 vim.notify("loomworks: SDK '" .. sdk2:display_name() .. "' added",
                                     vim.log.levels.INFO)
@@ -134,7 +137,7 @@ return function(tree, ctx)
                             require("loomworks.ui.status").refresh()
                         end)
                     else
-                        local sdk2, err = ws:add_sdk(choice.provider_id, choice.path)
+                        local sdk2, err = require("loomworks.workspace_view").add_sdk(ws, choice.provider_id, choice.path)
                         if sdk2 then
                             vim.notify("loomworks: SDK '" .. sdk2:display_name() .. "' added",
                                 vim.log.levels.INFO)

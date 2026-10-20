@@ -7,6 +7,7 @@
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
+local workspace_view = require("loomworks.workspace_view")
 
 -- ---------------------------------------------------------------------------
 -- Actions (keymaps / mutations)
@@ -25,20 +26,21 @@ local function contains(list, item)
 end
 
 --- Remove a tool from a profile's toolchain.
-local function remove_tool(ws, profile, key)
-    profile:remove_tool(key)
-    ws:_save_user()
-    ws:remerge()
+local function remove_tool(profile, key)
+    local ok, err = workspace_view.remove_profile_tool(profile, key)
+    if not ok then
+        vim.notify("loomworks: " .. tostring(err or "the tool was not removed"), vim.log.levels.ERROR)
+    end
 end
 
 --- The actions of a toolchain entry row.
-local function tool_actions(ws, profile, entry)
+local function tool_actions(profile, entry)
     if not profile then return {} end
     return {
         on_enter = function()
             local key = entry.key
             local choices = {
-                { label = "Delete tool", do_it = function() remove_tool(ws, profile, key) end },
+                { label = "Delete tool", do_it = function() remove_tool(profile, key) end },
                 { label = "Cancel", do_it = function() end },
             }
             vim.ui.select(choices, {
@@ -48,7 +50,7 @@ local function tool_actions(ws, profile, entry)
                 if choice and choice.do_it then choice.do_it() end
             end)
         end,
-        on_delete = function() remove_tool(ws, profile, entry.key) end,
+        on_delete = function() remove_tool(profile, entry.key) end,
     }
 end
 
@@ -95,9 +97,10 @@ local function add_tool_action(ws, profile)
             end,
         }, function(choice)
             if not choice then return end
-            profile:add_tool(choice.key)
-            ws:_save_user()
-            ws:remerge()
+            local ok, err = workspace_view.add_profile_tool(profile, choice.key)
+            if not ok then
+                vim.notify("loomworks: " .. tostring(err or "the tool was not added"), vim.log.levels.ERROR)
+            end
         end)
     end
 end
@@ -179,13 +182,7 @@ local function profile_actions(lw, ws, profile, row)
     if not profile then return {} end
     return helpers.describe_action({
         on_enter = actions.activate(profile),
-        on_publish = function()
-            helpers.cycle_intent(profile)
-            if ws then
-                ws:_save_user()
-                ws._core._deps.events.emit("active_set_changed", ws._active_set)
-            end
-        end,
+        on_publish = function() helpers.cycle_intent(profile) end,
         on_build = actions.build(profile),
         on_build_serial = actions.build_serial(profile),
         on_rebuild = actions.rebuild(profile),
@@ -381,7 +378,7 @@ local function render_profile_details(tree, ctx, row)
                     hl = hl,
                     direct = true,
                     enter_label = "Tool actions",
-                }, tool_actions(ws, profile, entry)))
+                }, tool_actions(profile, entry)))
             end
 
             tree:item("+ Add tool", {

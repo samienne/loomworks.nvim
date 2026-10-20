@@ -448,7 +448,7 @@ describe("editor: launch rows, launch editor rename and description", function()
     local proj = find_project(ws, "App")
     proj:find_launch("editor").device = { stage = { "a/**" } }
     assert.is_true(ws:_save_user())
-    local ok, err = wv.execute_save_launch_config(proj, "editor", "main",
+    local ok, err = wv.execute_save_launch_config(proj, proj:find_launch("editor"), "main",
       { command = "", args = { "--x" } })
     assert.is_true(ok, err)
     local u = user_json(root)

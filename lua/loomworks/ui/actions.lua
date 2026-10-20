@@ -22,7 +22,12 @@ end
 --- Activate an existing profile.
 --- @param profile loomworks.Profile
 function M.activate(profile)
-    return function() profile:activate() end
+    return function()
+        local ok, err = require("loomworks.workspace_view").activate_profile(profile)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "the profile was not activated"), vim.log.levels.ERROR)
+        end
+    end
 end
 
 --- Activate a profile that may not exist yet (config_sets UI).
@@ -394,8 +399,10 @@ function M._create_profile_step2(cs, set_name, activate)
     }, function(choice)
         if not choice then return end
         local tool = choice._none and nil or choice
-        local profile = wv.execute_create_profile(cs, tool, activate)
-        if profile and not activate then
+        local profile, err = wv.execute_create_profile(cs, tool, activate)
+        if not profile then
+            vim.notify("loomworks: " .. tostring(err or "the profile was not created"), vim.log.levels.ERROR)
+        elseif not activate then
             vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
         end
     end)
