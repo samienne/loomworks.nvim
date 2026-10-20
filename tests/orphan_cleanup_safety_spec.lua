@@ -235,7 +235,12 @@ describe("view deletion safety", function()
             local stray = root .. "/.nvim/build/App/Stray"
             vim.fn.mkdir(stray, "p")
             local n = ws._core._deps.normalize(stray)
-            assert.same({ n }, ws:find_stray_build_dirs(), "test setup: one stray dir")
+            -- The scan reports the spelling under ws.root, which may differ
+            -- from the test root's (8.3 short temp path on a Windows runner).
+            local found = ws:find_stray_build_dirs()
+            assert.equals(1, #found, "test setup: one stray dir")
+            assert.equals(ws:_canonicalize_boundary_path(n), ws:_canonicalize_boundary_path(found[1]),
+                "test setup: one stray dir")
             on_sync(function()
                 local unit = ws._profiles[1]:projects()[1]._config_unit
                 unit.build_dir_value = stray

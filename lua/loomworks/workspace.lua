@@ -2960,19 +2960,35 @@ end
 --- Find build directories on disk under {root}/.nvim/build/ that are not
 --- referenced by any cache entry. Uses top-down pruning: reports the
 --- highest-level directory whose entire subtree contains no cache entries.
+--- Directory identity is compared through every form of each side: the plain
+--- normalized spelling AND the canonical one (`_canonicalize_boundary_path`:
+--- 8.3 short<->long + case reconciled, links resolved). A unit's build dir can
+--- be recorded under another spelling of the same location than `self.root`
+--- (an 8.3 short temp path on a Windows runner); compared by spelling alone,
+--- a live build dir's parent looks stray and orphan cleanup would delete it.
+--- Reported paths keep the scanned (normalized) spelling under `self.root`.
 --- @return string[] absolute paths of stray directories
 function Workspace:find_stray_build_dirs()
     local uv = vim.uv or vim.loop
     local build_root = self.root .. "/.nvim/build"
     local normalize = self._core._deps.normalize
 
-    -- Collect all normalized build_dirs referenced by ConfigUnit objects
-    local known_dirs = {}
+    -- Every form of every build dir referenced by a ConfigUnit object
+    local known_dirs, seen = {}, {}
+    local function add(p)
+        if not seen[p] then seen[p] = true; known_dirs[#known_dirs + 1] = p end
+    end
     for _, unit in pairs(self._config_units) do
         local bd = unit:build_dir()
-        if bd then
-            known_dirs[#known_dirs + 1] = normalize(bd)
+        if bd and bd ~= "" then
+            add(normalize(bd))
+            add(self:_canonicalize_boundary_path(bd))
         end
+    end
+    local function forms(dir)
+        local n, c = normalize(dir), self:_canonicalize_boundary_path(dir)
+        if n == c then return { n } end
+        return { n, c }
     end
 
     -- Build a set for exact match and a list for prefix checks
@@ -2999,10 +3015,17 @@ function Workspace:find_stray_build_dirs()
     local stray = {}
     local function scan(dir)
         local normalized = normalize(dir)
-        if known_set[normalized] then
-            return -- this dir is a known build dir, don't touch it
+        local fs = forms(dir)
+        for _, f in ipairs(fs) do
+            if known_set[f] then
+                return -- this dir is a known build dir, don't touch it
+            end
         end
-        if not has_cache_entry_below(normalized) then
+        local below = false
+        for _, f in ipairs(fs) do
+            if has_cache_entry_below(f) then below = true; break end
+        end
+        if not below then
             stray[#stray + 1] = normalized
             return
         end

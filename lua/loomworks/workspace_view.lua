@@ -303,12 +303,15 @@ end
 --- @return string[]
 local function recheck_stray(ws, dirs)
     if #dirs == 0 then return {} end
-    local norm = ws._core._deps.normalize
+    -- Directory identity, not spelling: `dirs` may name a directory under
+    -- another spelling (8.3 short vs long on Windows) than the scan, which
+    -- walks `ws.root`. Exact equality of canonical forms — never a prefix.
+    local function canon(p) return ws:_canonicalize_boundary_path(p) end
     local current = {}
-    for _, d in ipairs(ws:find_stray_build_dirs()) do current[norm(d)] = true end
+    for _, d in ipairs(ws:find_stray_build_dirs()) do current[canon(d)] = true end
     local out = {}
     for _, d in ipairs(dirs) do
-        if current[norm(d)] then
+        if current[canon(d)] then
             out[#out + 1] = d
         else
             ws._core._deps.notify("loomworks: kept " .. d .. " — no longer a stray build directory",
@@ -327,7 +330,8 @@ end
 --- @return table[]
 local function recheck_orphans(ws, orphans)
     if #orphans == 0 then return {} end
-    local norm = ws._core._deps.normalize
+    -- Same directory by identity (8.3 short vs long spelling on Windows).
+    local function canon(p) return ws:_canonicalize_boundary_path(p) end
     local current = {}
     for _, o in ipairs(ws:get_orphaned_configs()) do
         if o.build_dir_obj then current[o.build_dir_obj] = true end
@@ -336,7 +340,7 @@ local function recheck_orphans(ws, orphans)
     for _, item in ipairs(orphans) do
         local bd = item.build_dir_obj
         local same_dir = bd and (item.build_dir == nil or bd.path == nil
-            or norm(bd.path) == norm(item.build_dir))
+            or canon(bd.path) == canon(item.build_dir))
         if bd and current[bd] and same_dir then
             out[#out + 1] = item
         else
