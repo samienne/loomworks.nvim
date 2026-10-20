@@ -118,7 +118,7 @@ local function open_config_editor(ws, name, on_saved)
     project_variables = ctx.project_variables,
     resolved_variables = ctx.resolved_variables,
     on_accept = function(result)
-      on_saved(wv.execute_save_configuration(project, name, result.name, result))
+      on_saved(wv.execute_save_configuration(project, name and project:get_configuration(name), result.name, result))
     end,
     on_cancel = function() end,
   })
@@ -203,7 +203,7 @@ describe("launch editor dialog save", function()
     }))
     ws = load(root)
     project = find_project(ws, "App")
-    local ctx = wv.compute_edit_launch_context(project, "run")
+    local ctx = wv.compute_edit_launch_context(project, project:find_launch("run"))
     local saved
     local tree = open_dialog("loomworks.ui.launch_editor", {
       title = "Edit", name = ctx.name, command = ctx.command, args = ctx.args,
@@ -211,7 +211,7 @@ describe("launch editor dialog save", function()
       debug = ctx.debug, projects = ws:get_projects(), workspace = ws,
       launch_project = project,
       on_accept = function(result)
-        saved = { wv.execute_save_launch_config(project, "run", result.name, result) }
+        saved = { wv.execute_save_launch_config(project, project:find_launch("run"), result.name, result) }
       end,
       on_cancel = function() end,
     })
@@ -272,7 +272,7 @@ describe("configuration save rollback", function()
     local dev = project:get_configuration("Dev")
     local before = dev:declared_data()
     ws._save_user = function() return false, "disk full" end
-    local ok, err = wv.execute_save_configuration(project, "Dev", "Dev", {
+    local ok, err = wv.execute_save_configuration(project, project:get_configuration("Dev"), "Dev", {
       inherits = "variant:Debug", options = { OPT = "2" }, variables = { out = "y" },
       languages = { "c", "c++" }, toolchain = "tc.cmake",
     })
@@ -291,8 +291,8 @@ describe("launch save of a target-backed launch", function()
     assert(project:save_launch_config("tgt", { target = "app", args = { "-v" } }))
     ws = load(root)
     project = find_project(ws, "App")
-    local ctx = wv.compute_edit_launch_context(project, "tgt")
-    local ok, err = wv.execute_save_launch_config(project, "tgt", "tgt", {
+    local ctx = wv.compute_edit_launch_context(project, project:find_launch("tgt"))
+    local ok, err = wv.execute_save_launch_config(project, project:find_launch("tgt"), "tgt", {
       command = ctx.command, args = {}, working_dir = "", env = {},
       deploy = {}, debug = {},
     })

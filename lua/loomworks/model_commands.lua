@@ -1,0 +1,817 @@
+--- loomworks/model_commands.lua — the model's commands, host-neutral.
+---
+--- One function per user action that changes the model (spec §19.14 "As
+--- interfaces", §19.16 "Model writes"; API.md §6, §11, §19–§21): the
+--- in-process editor (through workspace_view) and the daemon's interface
+--- handlers (step 5o parts B) call the same function. Each takes resolved
+--- domain objects — never keys: a caller resolves a reference (an id, or a
+--- name a user or a file supplied) once at its input boundary — plus plain
+--- arguments, and answers an outcome (API.md §4.1):
+---
+---   { outcome = "ok", notes?, note_roles?, <created entity>? }
+---   { outcome = "refused", message, exit_code }  -- nothing written
+---
+--- A composite action (one user action in several model writes) whose later
+--- step fails after the first was committed is `ok` with a `warn` note
+--- naming what was not done (decision D1). A removed object (a stale
+--- reference the caller still holds) is refused before any write.
+---
+--- Deletions (`Maintenance/1.execute_deletion`) are not here yet (step 5o
+--- part A2). Locks: single-file working-copy writes take only the save
+--- guard of `_save_user` (spec §2.7); the operation lock of publish and
+--- propagating renames (spec §19.3) is taken where the Workspace methods
+--- take it.
+
+local M = {}
+
+-- ---------------------------------------------------------------------------
+-- Outcomes
+-- ---------------------------------------------------------------------------
+
+--- @class loomworks.CommandOutcome
+--- @field outcome "ok"|"refused"
+--- @field message string|nil the refusal (outcome "refused")
+--- @field exit_code integer|nil 1 for a state refusal, 2 for a usage error
+--- @field notes string[]|nil lines written for the call (outcome "ok")
+--- @field note_roles string[]|nil each note's role by index ("warn", ...)
+
+--- @param fields table|nil extra result fields (a created entity, ...)
+--- @return loomworks.CommandOutcome
+local function ok(fields)
+    local r = { outcome = "ok" }
+    for k, v in pairs(fields or {}) do r[k] = v end
+    return r
+end
+
+--- @param message any
+--- @param code integer|nil exit code (default 1)
+--- @return loomworks.CommandOutcome
+local function refused(message, code)
+    return { outcome = "refused", message = tostring(message or "refused"), exit_code = code or 1 }
+end
+M.refused = refused
+
+--- Add a `warn` note to an outcome.
+--- @param r loomworks.CommandOutcome
+--- @param line string
+local function warn(r, line)
+    r.notes = r.notes or {}
+    r.note_roles = r.note_roles or {}
+    r.notes[#r.notes + 1] = line
+    r.note_roles[#r.notes] = "warn"
+end
+
+-- ---------------------------------------------------------------------------
+-- Items
+-- ---------------------------------------------------------------------------
+
+--- The kind of a domain object, as a message names it.
+--- @param item table
+--- @return string
+local function kind_of(item)
+    local mt = getmetatable(item)
+    if mt == require("loomworks.profile").Profile then return "profile" end
+    if mt == require("loomworks.configuration_set") then return "configuration set" end
+    if mt == require("loomworks.project") then return "project" end
+    if mt == require("loomworks.configuration") then return "configuration" end
+    if mt == require("loomworks.launch_configuration") then return "launch configuration" end
+    return "item"
+end
+
+--- Whether `item` is a LaunchConfiguration.
+local function is_launch(item)
+    return getmetatable(item) == require("loomworks.launch_configuration")
+end
+
+--- The display name of an item.
+local function name_of(item)
+    if is_launch(item) or getmetatable(item) == require("loomworks.configuration") then
+        return (item._project and (item._project.key .. (is_launch(item) and ":" or "/")) or "")
+            .. tostring(item.name)
+    end
+    return tostring(item.key or item.name)
+end
+
+--- Whether the object (or the project that owns it) has been removed.
+local function removed(item)
+    if item == nil then return true end
+    if item._removed then return true end
+    local owner = item._project
+    return owner ~= nil and owner._removed == true
+end
+
+--- nil when `item` is live, else the refusal.
+--- @param item table|nil
+--- @param kind string|nil the expected kind, for a nil item
+--- @return loomworks.CommandOutcome|nil
+local function stale(item, kind)
+    if item == nil then return refused("no " .. (kind or "item") .. " given", 2) end
+    if removed(item) then
+        return refused(kind_of(item) .. " '" .. name_of(item) .. "' has been removed")
+    end
+    return nil
+end
+
+--- nil when every Project and Configuration of `mappings` is live, else the
+--- refusal: a set is never written with a mapping to a removed object.
+--- @param mappings table<loomworks.Project, loomworks.Configuration|false|nil>|nil
+--- @return loomworks.CommandOutcome|nil
+local function stale_mappings(mappings)
+    for project, cfg in pairs(mappings or {}) do
+        local r = stale(project, "project") or (cfg and stale(cfg, "configuration")) or nil
+        if r then return r end
+    end
+    return nil
+end
+
+--- The workspace an item belongs to.
+local function workspace_of(item)
+    if item._workspace then return item._workspace end
+    local p = item._project
+    return p and p._workspace or nil
+end
+
+--- The status page's re-render signal after a working-copy edit made here
+--- (what the in-process paths emitted inline).
+local function signal_changed(ws)
+    local core = ws and ws._core
+    local events = core and core._deps and core._deps.events
+    if events then events.emit("active_set_changed", ws._active_set) end
+end
+
+-- ---------------------------------------------------------------------------
+-- Workspace/1 (API.md §6)
+-- ---------------------------------------------------------------------------
+
+--- `publish {}` — regenerate loomworks.json from the working copy (`:w`).
+--- @param ws loomworks.Workspace
+--- @return loomworks.CommandOutcome
+function M.publish(ws)
+    local done, err = ws:publish()
+    if not done then return refused("publish failed: " .. tostring(err or "unknown")) end
+    return ok()
+end
+
+--- `revert_to_baseline {}` — the working copy back to the published
+--- baseline (`:e!`).
+--- @param ws loomworks.Workspace
+--- @return loomworks.CommandOutcome
+function M.revert_to_baseline(ws)
+    local done, err = ws:revert_to_baseline()
+    if not done then return refused("revert failed: " .. tostring(err or "unknown")) end
+    return ok()
+end
+
+--- A launch configuration has no publish state of its own (API.md §6).
+local function launch_publish_refusal(item)
+    if not is_launch(item) then return nil end
+    return refused("a launch configuration is published with its project "
+        .. tostring(item._project and item._project.key))
+end
+
+--- `publish_one { item }` — publish one profile, configuration set, project
+--- or configuration.
+--- @param item table
+--- @return loomworks.CommandOutcome
+function M.publish_one(item)
+    local r = stale(item) or launch_publish_refusal(item)
+    if r then return r end
+    local done, err = workspace_of(item):publish_one(item)
+    if not done then return refused("publish failed: " .. tostring(err or "unknown")) end
+    return ok()
+end
+
+--- `revert_one { item }` — one item back to its published baseline.
+--- @param item table
+--- @return loomworks.CommandOutcome
+function M.revert_one(item)
+    local r = stale(item) or launch_publish_refusal(item)
+    if r then return r end
+    local done, err = workspace_of(item):revert_one(item)
+    if not done then return refused("revert failed: " .. tostring(err or "unknown")) end
+    return ok()
+end
+
+local INTENTS = { ["local"] = true, shared = true, ["local+shared"] = true }
+
+--- `set_intent { item, intent }` — the item's intent, recorded as the user's
+--- choice (spec §2.4, sticky). A failed save restores it.
+--- @param item table
+--- @param intent "local"|"shared"|"local+shared"
+--- @return loomworks.CommandOutcome
+function M.set_intent(item, intent)
+    local r = stale(item) or launch_publish_refusal(item)
+    if r then return r end
+    if not INTENTS[intent] then
+        return refused("unknown intent '" .. tostring(intent) .. "' (local, shared or local+shared)", 2)
+    end
+    local ws = workspace_of(item)
+    local old = item._intent
+    item._intent = intent
+    local saved, err, reason = ws:_save_user()
+    if not saved then
+        -- A stale refusal reloaded from disk: undoing would overwrite it.
+        if reason ~= "stale" then item._intent = old end
+        return refused(err or "user.json was not written")
+    end
+    signal_changed(ws)
+    return ok()
+end
+
+--- `set_description { item, text? }` — the item's description (spec §1.10),
+--- a launch configuration included; no text removes it. `changed` is false
+--- when the description was already that.
+--- @param item table
+--- @param text string|nil
+--- @return loomworks.CommandOutcome
+function M.set_description(item, text)
+    local r = stale(item)
+    if r then return r end
+    local changed, err = item:set_description(text)
+    if changed == nil then return refused(err or "the description was not saved") end
+    return ok({ changed = changed and true or false })
+end
+
+-- ---------------------------------------------------------------------------
+-- Profiles/1 (API.md §11)
+-- ---------------------------------------------------------------------------
+
+--- `set_active { profile }` — make it the active profile (spec §4.2).
+--- @param profile loomworks.Profile
+--- @return loomworks.CommandOutcome
+function M.profile_set_active(profile)
+    local r = stale(profile, "profile")
+    if r then return r end
+    profile:activate()
+    return ok()
+end
+
+--- The token of an automatic configuration set: its name and mappings, so
+--- a token outlives no change of the set it stands for.
+--- @param name string
+--- @param mappings table<string, string> project key → configuration name
+--- @return string
+function M.candidate_token(name, mappings)
+    local keys = {}
+    for k in pairs(mappings or {}) do keys[#keys + 1] = k end
+    table.sort(keys)
+    local parts = { name }
+    for _, k in ipairs(keys) do parts[#parts + 1] = k .. "\1" .. tostring(mappings[k]) end
+    return "auto:" .. vim.fn.sha256(table.concat(parts, "\0")):sub(1, 16)
+end
+
+--- `ConfigSets/1.candidates {}` — the declared configuration sets and the
+--- automatic ones the projects allow (each with its `candidate` token).
+--- @param ws loomworks.Workspace
+--- @return loomworks.CommandOutcome sets: { config_set?: loomworks.ConfigurationSet, name: string, auto: boolean, description?: string, candidate?: string, mappings?: table<string, string> }[]
+function M.config_set_candidates(ws)
+    local sets, declared = {}, {}
+    for _, cs in pairs(ws._config_sets or {}) do
+        if not cs._removed then
+            declared[cs.name] = true
+            sets[#sets + 1] = { config_set = cs, name = cs.name, auto = false, description = cs.description }
+        end
+    end
+    table.sort(sets, function(a, b) return a.name < b.name end)
+    local auto = {}
+    for name, mappings in pairs(ws:generate_default_config_sets() or {}) do
+        if not declared[name] then
+            auto[#auto + 1] = { name = name, auto = true, mappings = mappings,
+                candidate = M.candidate_token(name, mappings) }
+        end
+    end
+    table.sort(auto, function(a, b) return a.name < b.name end)
+    for _, a in ipairs(auto) do sets[#sets + 1] = a end
+    return ok({ sets = sets })
+end
+
+--- Add the automatic configuration set a candidate token stands for (the
+--- first step of `Profiles/1.create { config_set = { candidate } }`; the
+--- in-process template pick). A token whose set changed or was added since
+--- is refused.
+--- @param ws loomworks.Workspace
+--- @param token string
+--- @return loomworks.CommandOutcome config_set: loomworks.ConfigurationSet
+function M.config_set_add_candidate(ws, token)
+    local found
+    for _, s in ipairs(M.config_set_candidates(ws).sets) do
+        if s.auto and s.candidate == token then found = s; break end
+    end
+    if not found then
+        return refused("the automatic configuration set changed since it was listed — choose it again")
+    end
+    local cs, err = ws:add_configuration_set(found.name, found.mappings)
+    if not cs then return refused(err or "failed to add config set") end
+    return ok({ config_set = cs })
+end
+
+--- `create { config_set, tool?, activate? }` — materialize a profile of a
+--- configuration set (spec §4.1): `set` the set, or `{ candidate = token }`
+--- for an automatic one (added first). An existing profile of that set and
+--- toolchain is returned. A new profile's intent is `local`. A failed save
+--- is refused with the profile (and the active one) as before; an automatic
+--- set added first stays, with a warn note.
+--- @param ws loomworks.Workspace
+--- @param set loomworks.ConfigurationSet|{ candidate: string }
+--- @param tool_entry table|nil { tool_key, tool_data, tool_label, tool_mod_type }; nil: no toolchain
+--- @param activate boolean|nil
+--- @return loomworks.CommandOutcome profile: loomworks.Profile, config_set: loomworks.ConfigurationSet
+function M.profile_create(ws, set, tool_entry, activate)
+    local cs = set
+    if type(set) == "table" and set.candidate ~= nil and getmetatable(set) == nil then
+        local r = M.config_set_add_candidate(ws, set.candidate)
+        if r.outcome ~= "ok" then return r end
+        cs = r.config_set
+    else
+        local r = stale(set, "configuration set")
+        if r then return r end
+    end
+    local existing = cs:find_profile(tool_entry)
+    local profile = cs:ensure_profile(tool_entry)
+    if not profile then
+        return refused("no profile could be made of configuration set '" .. cs.name .. "'")
+    end
+    local old_intent = profile._intent
+    local old_active, old_active_key = ws._active_profile, ws._active_profile_key
+    if not existing then profile._intent = "local" end
+    local saved, err, reason
+    if activate then
+        saved, err, reason = profile:activate()
+    else
+        saved, err, reason = ws:_save_user()
+    end
+    if not saved then
+        -- Nothing was written: undo the in-memory change (a failed first
+        -- save is refused, as set_intent) — unless the refusal was the stale
+        -- one, which already reloaded from disk (the undo would put back
+        -- pre-reload state, e.g. an active profile the reload removed).
+        if reason ~= "stale" then
+            profile._intent = old_intent
+            ws._active_profile, ws._active_profile_key = old_active, old_active_key
+            if not existing then ws:_remove_profile(profile) end
+            if activate then ws:remerge() end
+        end
+        err = err or "user.json was not written"
+        if cs ~= set then
+            -- The automatic set was added first (its own write): that
+            -- stays, the profile is a warn note (D1).
+            local r = ok({ config_set = cs })
+            warn(r, "configuration set '" .. cs.name .. "' added, but no profile was made of it: " .. tostring(err))
+            return r
+        end
+        return refused(err)
+    end
+    return ok({ profile = profile, config_set = cs })
+end
+
+--- The toolchain state of a profile that a toolchain change alters.
+local function profile_tools_snapshot(profile)
+    return { tool_keys = profile._tool_keys and vim.deepcopy(profile._tool_keys) or nil,
+        sdk = profile._sdk, sdk_key = profile._sdk_key }
+end
+
+--- Save after a toolchain change of a profile and re-derive; a failed save
+--- restores the profile as `snapshot` had it (nothing was written).
+local function save_profile_tools(profile, snapshot)
+    local ws = profile._workspace
+    local saved, err, reason = ws:_save_user()
+    if not saved then
+        -- A stale refusal reloaded from disk: nothing to undo.
+        if reason == "stale" then return refused(err) end
+        local changed_key = profile.key
+        profile._tool_keys = snapshot.tool_keys
+        profile._sdk, profile._sdk_key = snapshot.sdk, snapshot.sdk_key
+        profile:_derive_key()
+        profile:_after_key_rename(changed_key)
+        return refused(err or "user.json was not written")
+    end
+    ws:remerge()
+    return ok()
+end
+
+--- `add_tool { profile, tool }` — add a toolchain (its key, a value) to a
+--- profile; its key is derived again (spec §1.6).
+--- @param profile loomworks.Profile
+--- @param tool_key string
+--- @return loomworks.CommandOutcome
+function M.profile_add_tool(profile, tool_key)
+    local r = stale(profile, "profile")
+    if r then return r end
+    if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
+    local snapshot = profile_tools_snapshot(profile)
+    profile:add_tool(tool_key)
+    return save_profile_tools(profile, snapshot)
+end
+
+--- `remove_tool { profile, tool }` — remove a toolchain from a profile.
+--- @param profile loomworks.Profile
+--- @param tool_key string
+--- @return loomworks.CommandOutcome
+function M.profile_remove_tool(profile, tool_key)
+    local r = stale(profile, "profile")
+    if r then return r end
+    if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
+    local snapshot = profile_tools_snapshot(profile)
+    profile:remove_tool(tool_key)
+    return save_profile_tools(profile, snapshot)
+end
+
+-- ---------------------------------------------------------------------------
+-- Projects/1 (API.md §19)
+-- ---------------------------------------------------------------------------
+
+--- `add { key, type, path, mappings?, tool? }` — declare a project, map it
+--- into each configuration set, and with a toolchain upgrade the affected
+--- profiles to it. A keyed module's project without a toolchain is added
+--- unmapped (it is mapped once a toolchain is chosen). A failed upgrade
+--- after the project was added is a `warn` note (D1).
+--- @param ws loomworks.Workspace
+--- @param key string
+--- @param mod_type string
+--- @param path string|nil relative path
+--- @param mappings table<string, string>|nil configuration set name → configuration name
+--- @param tool_entry table|nil { tool_key, tool_data, tool_label, tool_mod_type }
+--- @return loomworks.CommandOutcome project: loomworks.Project
+function M.project_add(ws, key, mod_type, path, mappings, tool_entry)
+    local project, err = ws:add_project(key, mod_type, path)
+    if not project then return refused(err or "failed to add project") end
+    local result = ok({ project = project })
+
+    local mod = require("loomworks.modules").get(mod_type)
+    local has_keyed = mod and mod.has_keyed_tools or false
+    if has_keyed and not tool_entry then return result end
+
+    for _, cs in pairs(ws._config_sets) do
+        local variant = mappings and mappings[cs.name]
+        if variant then
+            local cfg = project:get_configuration(variant) or project:ensure_configuration(variant)
+            cs:update_mapping(project, cfg)
+        end
+    end
+
+    if tool_entry then
+        local up_ok, up_err = ws:upgrade_profiles_for_tool(tool_entry)
+        if up_ok == false then
+            warn(result, "project added, but its profiles were not upgraded to the tool: " .. tostring(up_err))
+        end
+    end
+    return result
+end
+
+--- The configuration fields the configuration editor dialog edits. Saving
+--- from the dialog replaces exactly these; every other declared field of the
+--- configuration (env, overrides, description, role, other module fields, …)
+--- is carried over unchanged.
+M.CONFIG_DIALOG_FIELDS = {
+    "inherits", "options", "variables", "languages", "toolchain", "generator",
+}
+
+--- `configuration_save { project, configuration?, name, fields }` — create a
+--- user configuration (`cfg` nil) or update one, changing only the dialog's
+--- fields; a new name renames it (propagated to configuration sets, the
+--- cache and profiles, spec §4.8).
+--- @param project loomworks.Project
+--- @param cfg loomworks.Configuration|nil
+--- @param name string
+--- @param fields table { inherits?, options?, variables?, languages?, toolchain?, generator? }
+--- @return loomworks.CommandOutcome configuration: loomworks.Configuration
+function M.configuration_save(project, cfg, name, fields)
+    local r = stale(project, "project") or (cfg and stale(cfg))
+    if r then return r end
+    if cfg and cfg._project ~= project then
+        return refused("configuration '" .. cfg.name .. "' is not of project '" .. project.key .. "'")
+    end
+    local data = (cfg and cfg.is_user) and cfg:declared_data() or {}
+    for _, field in ipairs(M.CONFIG_DIALOG_FIELDS) do
+        data[field] = fields[field]
+    end
+    local done, err
+    if cfg and cfg.is_user and cfg.name ~= name then
+        done, err = project:rename_configuration(cfg.name, name, data)
+    else
+        done, err = project:save_configuration(name, data)
+    end
+    if not done then return refused(err or "failed to save configuration") end
+    return ok({ configuration = project:get_configuration(name) })
+end
+
+--- `configuration_remove { project, configuration }` — remove the
+--- declaration; its build state stays, orphaned (spec §4.5).
+--- @param project loomworks.Project
+--- @param cfg loomworks.Configuration
+--- @return loomworks.CommandOutcome
+function M.configuration_remove(project, cfg)
+    local r = stale(project, "project") or stale(cfg, "configuration")
+    if r then return r end
+    if cfg._project ~= project then
+        return refused("configuration '" .. cfg.name .. "' is not of project '" .. project.key .. "'")
+    end
+    local done, err = project:delete_configuration(cfg.name)
+    if not done then return refused(err or "failed to delete configuration") end
+    return ok()
+end
+
+--- Wrap a Project `ok, err` mutator as a command.
+local function project_write(project, fn, fallback)
+    local r = stale(project, "project")
+    if r then return r end
+    local done, err = fn()
+    if not done then return refused(err or fallback) end
+    return ok()
+end
+
+--- `options_save { project, options }` — the project's options.
+--- @param project loomworks.Project
+--- @param options table<string, string>
+--- @return loomworks.CommandOutcome
+function M.options_save(project, options)
+    return project_write(project, function() return project:save_options(options) end,
+        "failed to save project options")
+end
+
+--- The launch's declared table after the launch editor's fields replaced
+--- its own: fields the editor does not show (the `device` block, spec
+--- §18.9, …) are kept; empty fields are omitted.
+--- @param launch loomworks.LaunchConfiguration|nil
+--- @param data table
+--- @return table
+local function launch_declaration(launch, data)
+    local config = (launch and not launch:is_invalid()) and vim.deepcopy(launch:serialize()) or {}
+    -- An empty command means "no command": the key is absent, never `""` (a
+    -- target-backed launch carries only `target`). A command makes this a
+    -- command-type launch: it no longer runs a target (as `lw launch set
+    -- --command`).
+    if data.command and data.command ~= "" then
+        config.command = data.command
+        config.target = nil
+    else
+        config.command = nil
+    end
+    config.args = (data.args and #data.args > 0) and data.args or nil
+    config.working_dir = (data.working_dir and data.working_dir ~= "") and data.working_dir or nil
+    config.env = (data.env and next(data.env)) and data.env or nil
+    config.deploy = (data.deploy and next(data.deploy)) and data.deploy or nil
+    config.debug = (data.debug and #data.debug > 0) and data.debug or nil
+    return config
+end
+
+--- `launch_save { project, launch?, name, data }` — create a launch
+--- configuration (`launch` nil) or replace the editor's fields of one; a
+--- name other than its own renames it (spec §8.7: profiles' default
+--- targets, units' target entries and saved test entries follow), the
+--- object — so its id — kept. Working copy only; no operation lock.
+--- @param project loomworks.Project
+--- @param launch loomworks.LaunchConfiguration|nil
+--- @param name string
+--- @param data { command?: string, args?: string[], working_dir?: string, env?: table<string, string>, deploy?: table, debug?: string[] }
+--- @return loomworks.CommandOutcome launch: loomworks.LaunchConfiguration
+function M.launch_save(project, launch, name, data)
+    local r = stale(project, "project")
+    if r then return r end
+    if launch then
+        if launch:is_removed() or launch._project ~= project then
+            return refused("no launch config '" .. tostring(launch.name) .. "' on project '" .. project.key .. "'")
+        end
+    end
+    local config = launch_declaration(launch, data)
+    local renamed = false
+    if launch and launch.name ~= name then
+        -- A rename (spec §8.7): the atomic operation that moves the whole
+        -- launch and re-points every default target — never a delete plus a
+        -- re-create. The edited fields are then saved on the new name.
+        local changed, err = project:rename_launch_config(launch, name)
+        if changed == nil then return refused(err) end
+        renamed = changed == true
+    elseif not launch then
+        local vok, verr = require("loomworks.project").validate_launch_name(name)
+        if not vok then return refused("invalid launch name: " .. verr, 2) end
+    end
+    local done, err, saved = project:save_launch_config(name, config)
+    if not done then
+        if not renamed then return refused(err or "failed to save launch config") end
+        -- The rename was committed: a composite's later step (D1).
+        local r = ok({ launch = launch })
+        warn(r, "launch config renamed to '" .. name .. "', but its fields were not saved: "
+            .. tostring(err))
+        return r
+    end
+    return ok({ launch = saved })
+end
+
+--- `launch_remove { project, launch }`.
+--- @param project loomworks.Project
+--- @param launch loomworks.LaunchConfiguration
+--- @return loomworks.CommandOutcome
+function M.launch_remove(project, launch)
+    local r = stale(project, "project")
+    if r then return r end
+    if not launch or launch:is_removed() or launch._project ~= project then
+        return refused("launch config '" .. tostring(launch and launch.name) .. "' not found")
+    end
+    local done, err = project:delete_launch_config(launch)
+    if not done then return refused(err or "failed to delete launch config") end
+    return ok()
+end
+
+--- `deploy_save { project, deploy? }` — the whole deploy declaration; nil or
+--- an empty dict removes it.
+--- @param project loomworks.Project
+--- @param deploy table<string, table|table[]>|nil
+--- @return loomworks.CommandOutcome
+function M.deploy_save(project, deploy)
+    if deploy ~= nil and next(deploy) == nil then deploy = nil end
+    return project_write(project, function() return project:save_deploy(deploy) end,
+        "failed to save deploy steps")
+end
+
+--- `variable_save { project, variable?, name, data }` — declare a variable
+--- (`var_name` nil) or replace one; a different `name` renames it.
+--- @param project loomworks.Project
+--- @param var_name string|nil the variable's current name
+--- @param name string
+--- @param data { type: string, default: string }
+--- @return loomworks.CommandOutcome
+function M.variable_save(project, var_name, name, data)
+    local r = stale(project, "project")
+    if r then return r end
+    local renamed = var_name ~= nil and var_name ~= name
+    if renamed then
+        local done, err = project:delete_variable(var_name)
+        if not done then return refused(err or "failed to rename variable") end
+    end
+    local done, err = project:save_variable(name, { type = data.type, default = data.default })
+    if not done then
+        if not renamed then return refused(err or "failed to save variable") end
+        -- The old name's removal was committed: a composite's later step (D1).
+        r = ok()
+        warn(r, "variable '" .. var_name .. "' removed, but '" .. name .. "' was not saved: " .. tostring(err))
+        return r
+    end
+    return ok()
+end
+
+--- `variable_remove { project, variable }`.
+--- @param project loomworks.Project
+--- @param var_name string
+--- @return loomworks.CommandOutcome
+function M.variable_remove(project, var_name)
+    return project_write(project, function() return project:delete_variable(var_name) end,
+        "failed to delete variable")
+end
+
+--- `type_config_set { project, field, value? }` — one of the module's
+--- editable `type_config` fields; nil clears it.
+--- @param project loomworks.Project
+--- @param field string
+--- @param value any
+--- @return loomworks.CommandOutcome
+function M.type_config_set(project, field, value)
+    return project_write(project, function() return project:save_type_config_field(field, value) end,
+        "failed to save " .. tostring(field))
+end
+
+-- ---------------------------------------------------------------------------
+-- ConfigSets/1 (API.md §20)
+-- ---------------------------------------------------------------------------
+
+--- `add { name, mappings }`.
+--- @param ws loomworks.Workspace
+--- @param name string
+--- @param mappings table<loomworks.Project, loomworks.Configuration|false|nil>
+--- @return loomworks.CommandOutcome config_set: loomworks.ConfigurationSet
+function M.config_set_add(ws, name, mappings)
+    local r = stale_mappings(mappings)
+    if r then return r end
+    -- add_configuration_set takes the persisted form
+    -- ({ project key → configuration name }).
+    local raw = {}
+    for project, cfg in pairs(mappings or {}) do
+        if cfg then raw[project.key] = cfg.name end
+    end
+    local cs, err = ws:add_configuration_set(name, raw)
+    if not cs then return refused(err or "failed to create config set") end
+    return ok({ config_set = cs })
+end
+
+--- Rename a configuration set in place (Workspace:rename_configuration_set,
+--- as `lw configset rename`): its mappings, description and intent are kept
+--- and the profiles that reference it re-derive their keys; the active
+--- profile follows the rename.
+--- @param cs loomworks.ConfigurationSet
+--- @param new_name string
+--- @return boolean ok, string|nil err
+local function rename_config_set(cs, new_name)
+    local ws = cs._workspace
+    local old_keys = {}
+    for _, profile in pairs(ws._profiles) do old_keys[profile] = profile.key end
+    local done, err = ws:rename_configuration_set(cs, new_name)
+    if not done then return false, err end
+    for profile, old_key in pairs(old_keys) do
+        if ws._active_profile_key == old_key and profile.key ~= old_key then
+            ws._active_profile_key = profile.key
+            break
+        end
+    end
+    return true
+end
+
+--- `update { config_set, name?, mappings }` — replace the set's mappings
+--- (a project absent from `mappings`, or mapped to false, is unmapped); a
+--- different name renames it first (spec §4.10).
+--- @param cs loomworks.ConfigurationSet
+--- @param name string|nil
+--- @param mappings table<loomworks.Project, loomworks.Configuration|false|nil>
+--- @return loomworks.CommandOutcome
+function M.config_set_update(cs, name, mappings)
+    local r = stale(cs, "configuration set") or stale_mappings(mappings)
+    if r then return r end
+    -- Each step commits on its own: a failure after the first is `ok` with a
+    -- warn note naming what was not done (D1).
+    local wrote = false
+    if name and name ~= cs.name then
+        local done, err = rename_config_set(cs, name)
+        if not done then return refused(err) end
+        wrote = true
+    end
+    local ws = cs._workspace
+    mappings = mappings or {}
+    for _, project in pairs(ws._projects) do
+        local new_cfg = mappings[project] or nil
+        if new_cfg ~= cs:configuration(project) then
+            local done, err = cs:update_mapping(project, new_cfg)
+            if not done then
+                if not wrote then return refused(err) end
+                local r = ok()
+                warn(r, "configuration set '" .. cs.name .. "' updated, but its mapping of project '"
+                    .. project.key .. "' was not: " .. tostring(err))
+                return r
+            end
+            wrote = true
+        end
+    end
+    return ok()
+end
+
+--- `remove { config_set }` — the declaration only; its profiles stay, shown
+--- with a missing set (spec §4.4).
+--- @param cs loomworks.ConfigurationSet
+--- @return loomworks.CommandOutcome
+function M.config_set_remove(cs)
+    local r = stale(cs, "configuration set")
+    if r then return r end
+    local done, err = cs._workspace:remove_configuration_set(cs)
+    if not done then return refused(err or "failed to delete config set") end
+    return ok()
+end
+
+--- `generate_defaults {}` — add every set the projects' configurations
+--- suggest that does not exist yet; the notes name the sets added.
+--- @param ws loomworks.Workspace
+--- @return loomworks.CommandOutcome
+function M.config_set_generate_defaults(ws)
+    local result = ok({ config_sets = {} })
+    for _, s in ipairs(M.config_set_candidates(ws).sets) do
+        if s.auto then
+            local cs, err = ws:add_configuration_set(s.name, s.mappings)
+            if not cs then
+                if #result.config_sets == 0 then return refused(err or "failed to add config set") end
+                warn(result, "configuration set '" .. s.name .. "' was not added: " .. tostring(err))
+            else
+                result.config_sets[#result.config_sets + 1] = cs
+                result.notes = result.notes or {}
+                result.note_roles = result.note_roles or {}
+                result.notes[#result.notes + 1] = "added configuration set '" .. s.name .. "'"
+                result.note_roles[#result.notes] = "plain"
+            end
+        end
+    end
+    return result
+end
+
+-- ---------------------------------------------------------------------------
+-- Sdks/1 (API.md §21)
+-- ---------------------------------------------------------------------------
+
+--- `add { provider, path }` — declare an SDK.
+--- @param ws loomworks.Workspace
+--- @param provider string provider id
+--- @param path string|nil installation path (nil: the first detected)
+--- @return loomworks.CommandOutcome sdk: loomworks.SDK
+function M.sdk_add(ws, provider, path)
+    local sdk, err = ws:add_sdk(provider, path)
+    if not sdk then return refused(err or "failed to add SDK") end
+    return ok({ sdk = sdk })
+end
+
+--- `remove { sdk }` — remove its declaration.
+--- @param sdk loomworks.SDK
+--- @return loomworks.CommandOutcome
+function M.sdk_remove(ws, sdk)
+    if sdk == nil or sdk._removed then return refused("no such SDK (a stale reference)") end
+    if not ws:remove_sdk(sdk.key) then
+        return refused("SDK '" .. tostring(sdk.key) .. "' is not declared")
+    end
+    return ok()
+end
+
+return M

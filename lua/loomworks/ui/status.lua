@@ -218,9 +218,9 @@ local view = View.new({
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end
-        local ok, err = ws:publish()
+        local ok, err = require("loomworks.workspace_view").publish(ws)
         if not ok then
-            vim.notify("loomworks: publish failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+            vim.notify("loomworks: " .. (err or "publish failed: unknown"), vim.log.levels.ERROR)
         end
     end,
     on_revert = function()
@@ -230,9 +230,9 @@ local view = View.new({
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end
-        local ok, err = ws:revert_to_baseline()
+        local ok, err = require("loomworks.workspace_view").revert_to_baseline(ws)
         if not ok then
-            vim.notify("loomworks: revert failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+            vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
         else
             vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
         end

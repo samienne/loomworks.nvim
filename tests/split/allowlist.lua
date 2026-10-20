@@ -130,11 +130,15 @@ return {
         ["lua/loomworks/ui/view.lua"] = {
             "loomworks.events",
         },
+        -- loomworks.project -> loomworks.model_commands: step 5o A1 moves the
+        -- view's model writes into the host-neutral command layer (the
+        -- daemon's interfaces call it too); the view keeps only the editor's
+        -- `ok, err` adapters, until C0/C2 route the actions as calls.
         ["lua/loomworks/workspace_view.lua"] = {
             "loomworks.cpp_compilers",
             "loomworks.deploy",
+            "loomworks.model_commands",
             "loomworks.modules",
-            "loomworks.project",
             "loomworks.variables",
         },
     },
@@ -175,7 +179,7 @@ return {
         ["lua/loomworks/ui/sections/projects.lua"] = 5,
         ["lua/loomworks/ui/status.lua"] = 6,
         ["lua/loomworks/ui/tree.lua"] = 4,
-        ["lua/loomworks/workspace_view.lua"] = 3,
+        ["lua/loomworks/workspace_view.lua"] = 2,
         ["plugin/loomworks.lua"] = 1,
     },
     -- Plugin-side files: the editor's own starts. Binary-side files

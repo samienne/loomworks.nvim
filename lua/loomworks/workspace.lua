@@ -7812,7 +7812,9 @@ end
 --- change is discarded) and the refusal is reported (editor: error
 --- notification; CLI: `lw: …`, exit 1). Item-level replay is not attempted:
 --- working-copy mutations are cross-item (renames, cascade, self-containment).
---- @return boolean ok, string|nil err
+--- The third return is `"stale"` for that refusal: the in-memory state is then
+--- the reloaded one, so a caller must not undo its change over it.
+--- @return boolean ok, string|nil err, "stale"|nil reason
 function Workspace:_save_user()
     if self._torn_down then return false, "the workspace was unloaded" end
     if self._no_write then return false, self._no_write end
@@ -7838,7 +7840,7 @@ function Workspace:_save_user()
             if self._tracker then self._tracker:mark_written(path, disk) end
             self:_on_file_changed(path, disk)
             self:_report_save_refused(M.STALE_USER_MESSAGE)
-            return false, M.STALE_USER_MESSAGE
+            return false, M.STALE_USER_MESSAGE, "stale"
         end
     end
     local ok, err, _, written = deps.user.save(self.root, data)

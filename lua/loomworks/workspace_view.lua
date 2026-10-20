@@ -6,8 +6,27 @@
 --- composes them.
 
 local modules = require("loomworks.modules")
+local commands = require("loomworks.model_commands")
 
 local M = {}
+
+--- A command's outcome (model_commands, API.md §4.1) as the editor's
+--- `ok, err`: refused is `false, message`. A `warn` note of an `ok` composite
+--- (D1) is reported as the error it was before the command layer, so the
+--- editor still shows it as one.
+--- @param r loomworks.CommandOutcome
+--- @return boolean ok, string|nil err
+local function as_result(r)
+    if r.outcome ~= "ok" then return false, r.message end
+    for i, role in ipairs(r.note_roles or {}) do
+        if role == "warn" then return false, r.notes[i] end
+    end
+    return true
+end
+
+--- The candidate token of an automatic configuration set
+--- (model_commands.candidate_token).
+M.candidate_token = commands.candidate_token
 
 --- Extract display-friendly project_key and config_key from a DeletionItem.
 --- Reads from the unit's resolved references, with fallbacks.
@@ -118,37 +137,13 @@ end
 --- @param mod_type string module type
 --- @param path string|nil relative path
 --- @param result { mappings: table, tool_entry: table|nil }
---- @param has_keyed boolean whether module has keyed tools
 --- @return boolean ok, string|nil err
-function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
-    local project, err = ws:add_project(key, mod_type, path)
-    if not project then
-        return false, err
-    end
-
-    -- Skip mappings when keyed module has no tool selected —
-    -- the project is added unmapped until a tool is chosen.
-    if has_keyed and not result.tool_entry then
-        return true
-    end
-    for _, cs in pairs(ws._config_sets) do
-        local variant = result.mappings[cs.name]
-        if variant and project then
-            local cfg = project:get_configuration(variant)
-                or project:ensure_configuration(variant)
-            cs:update_mapping(project, cfg)
-        end
-    end
-
-    if result.tool_entry then
-        local up_ok, up_err = ws:upgrade_profiles_for_tool(result.tool_entry)
-        if up_ok == false then
-            return false, "project added, but its profiles were not upgraded to the tool: "
-                .. tostring(up_err)
-        end
-    end
-
-    return true
+function M.execute_add_project(ws, key, mod_type, path, result)
+    -- The module's keyed-ness is the command's own (a keyed module's
+    -- project without a toolchain is added unmapped).
+    local r = commands.project_add(ws, key, mod_type, path, result.mappings, result.tool_entry)
+    local ok, err = as_result(r)
+    return ok, err, r.project
 end
 
 -- =========================================================================
@@ -490,7 +485,7 @@ end
 --- Combines existing sets with auto-detected candidates.
 --- @param ws loomworks.Workspace
 --- @param config_sets table<string, loomworks.ConfigurationSet> existing config sets
---- @return table[] items array of { name, real_name?, mappings?, cs?, auto, desc? }
+--- @return table[] items array of { name, real_name?, mappings?, candidate?, cs?, auto, desc? }
 function M.compute_config_set_candidates(ws, config_sets)
     local existing = {}
     for name, cs in pairs(config_sets) do
@@ -514,6 +509,7 @@ function M.compute_config_set_candidates(ws, config_sets)
                     name = name .. " (auto-detected)",
                     real_name = name,
                     mappings = set_mappings,
+                    candidate = commands.candidate_token(name, set_mappings),
                     cs = nil,
                     auto = true,
                     desc = table.concat(parts, ", "),
@@ -570,14 +566,9 @@ end
 --- @param mappings table<loomworks.Project, loomworks.Configuration|nil>
 --- @return loomworks.ConfigurationSet|nil cs, string|nil err
 function M.execute_create_config_set(ws, name, mappings)
-    -- Serialize to {project_key → variant_name} for add_configuration_set
-    local raw = {}
-    for project, config in pairs(mappings) do
-        if config then
-            raw[project.key] = config.name
-        end
-    end
-    return ws:add_configuration_set(name, raw)
+    local r = commands.config_set_add(ws, name, mappings)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.config_set
 end
 
 --- Context for editing a config set: current mappings, available configs
@@ -621,62 +612,15 @@ function M.compute_edit_config_set_context(ws, set_name)
     }
 end
 
---- Execute config set edit: apply changed mappings, optionally rename.
+--- Execute config set edit: replace the mappings (a project absent from
+--- `new_mappings` is unmapped), renaming first when the name changed
+--- (model_commands.config_set_update).
 --- @param cs loomworks.ConfigurationSet the config set to edit
 --- @param new_name string new name (same as cs.name if not renamed)
 --- @param new_mappings table<loomworks.Project, loomworks.Configuration|nil>
---- @param old_mappings table<loomworks.Project, loomworks.Configuration|nil>
 --- @return boolean ok, string|nil err
-function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
-    local ws = cs._workspace
-    local old_name = cs.name
-    local renamed = new_name ~= old_name
-
-    if renamed then
-        -- Rename in place first, then apply the mapping changes below: the
-        -- set keeps its description, intent and every other field.
-        local ok, err = M.execute_rename_config_set(ws, cs, new_name)
-        if not ok then return false, err end
-    end
-
-    -- Apply mapping changes to existing set
-    for project, new_config in pairs(new_mappings) do
-        local old_config = old_mappings[project]
-        if new_config ~= old_config then
-            local ok, err = cs:update_mapping(project, new_config)
-            if not ok then return false, err end
-        end
-    end
-    -- Handle projects that were mapped but now removed
-    for project, old_config in pairs(old_mappings) do
-        if old_config and not new_mappings[project] then
-            local ok, err = cs:update_mapping(project, nil)
-            if not ok then return false, err end
-        end
-    end
-    return true
-end
-
---- Rename a configuration set in place (Workspace:rename_configuration_set,
---- the same atomic mutation `lw configset rename` uses): the set object, its
---- mappings, description and intent are kept and the profiles that reference
---- it re-derive their keys. The active profile follows the rename.
---- @param ws loomworks.Workspace
---- @param cs loomworks.ConfigurationSet configuration set being renamed
---- @param new_name string
---- @return boolean ok, string|nil err
-function M.execute_rename_config_set(ws, cs, new_name)
-    local old_keys = {}
-    for _, profile in pairs(ws._profiles) do old_keys[profile] = profile.key end
-    local ok, err = ws:rename_configuration_set(cs, new_name)
-    if not ok then return false, err end
-    for profile, old_key in pairs(old_keys) do
-        if ws._active_profile_key == old_key and profile.key ~= old_key then
-            ws._active_profile_key = profile.key
-            break
-        end
-    end
-    return true
+function M.execute_edit_config_set(cs, new_name, new_mappings)
+    return as_result(commands.config_set_update(cs, new_name, new_mappings))
 end
 
 --- Context for deleting a config set: affected profiles, warning lines.
@@ -735,11 +679,22 @@ function M.compute_delete_config_set_context(ws, cs)
 end
 
 --- Execute config set deletion (orphans profiles, does not delete caches).
---- @param ws loomworks.Workspace
+--- @param _ws loomworks.Workspace unused (the set's own)
 --- @param cs loomworks.ConfigurationSet
 --- @return boolean ok, string|nil err
-function M.execute_delete_config_set(ws, cs)
-    return ws:remove_configuration_set(cs)
+function M.execute_delete_config_set(_ws, cs)
+    return as_result(commands.config_set_remove(cs))
+end
+
+--- Add the automatic configuration set of a template / candidate (its
+--- `candidate` token from compute_config_set_candidates).
+--- @param ws loomworks.Workspace
+--- @param candidate string
+--- @return loomworks.ConfigurationSet|nil cs, string|nil err
+function M.execute_create_config_set_from_candidate(ws, candidate)
+    local r = commands.config_set_add_candidate(ws, candidate)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.config_set
 end
 
 -- =========================================================================
@@ -1269,39 +1224,31 @@ end
 -- Create Profile
 -- =========================================================================
 
---- Handle a config set choice for profile creation: materialize auto-detected
---- sets, resolve the ConfigurationSet object.
+--- Handle a config set choice for profile creation: materialize an
+--- auto-detected set (by its candidate token), resolve the
+--- ConfigurationSet object.
 --- @param ws loomworks.Workspace
---- @param choice { cs?: loomworks.ConfigurationSet, auto: boolean, real_name?: string, mappings?: table }
+--- @param choice { cs?: loomworks.ConfigurationSet, auto: boolean, candidate?: string, real_name?: string, mappings?: table }
 --- @return loomworks.ConfigurationSet|nil cs, string|nil err
 function M.resolve_config_set_choice(ws, choice)
-    local cs = choice.cs
-    if choice.auto then
-        local created, err = ws:add_configuration_set(choice.real_name, choice.mappings)
-        if not created then
-            return nil, err or "failed to add config set"
-        end
-        cs = created
-    end
-    return cs
+    if not choice.auto then return choice.cs end
+    return M.execute_create_config_set_from_candidate(ws,
+        choice.candidate or commands.candidate_token(choice.real_name, choice.mappings))
 end
 
---- Execute profile creation: materialize or activate.
+--- Execute profile creation: materialize, or return the existing profile of
+--- that set and tool; optionally activate.
 --- @param cs loomworks.ConfigurationSet
 --- @param tool_entry? table { tool_key, tool_data, tool_label, tool_mod_type }
 --- @param activate boolean
---- @return loomworks.Profile|nil
+--- @return loomworks.Profile|nil profile, string|nil err
 function M.execute_create_profile(cs, tool_entry, activate)
-    local profile = cs:ensure_profile(tool_entry)
-    if profile then
-        profile._intent = "local"
-        if activate then
-            profile:activate()
-        else
-            profile._workspace:_save_user()
-        end
+    local r = commands.profile_create(cs._workspace, cs, tool_entry, activate)
+    if not r.profile then
+        local _, err = as_result(r)
+        return nil, err
     end
-    return profile
+    return r.profile
 end
 
 -- =========================================================================
@@ -1472,44 +1419,24 @@ function M.compute_edit_configuration_context(project, config_name)
     }
 end
 
---- The configuration fields the configuration editor dialog edits. Saving
---- from the dialog replaces exactly these; every other declared field of the
---- configuration (env, overrides, description, role, other module fields, …)
---- is carried over unchanged.
-local CONFIG_DIALOG_FIELDS = {
-    "inherits", "options", "variables", "languages", "toolchain", "generator",
-}
-
 --- Save a project configuration from the configuration editor dialog (create,
---- edit, or rename). `edits` holds the dialog's fields (`CONFIG_DIALOG_FIELDS`;
---- nil clears one); an existing user configuration's other declared fields
---- are preserved, so the save changes only what the dialog edits.
+--- update, or rename): only the dialog's fields change; every other declared
+--- field is kept (model_commands.configuration_save).
 --- @param project loomworks.Project
---- @param old_name string|nil nil for new
+--- @param cfg loomworks.Configuration|nil the configuration edited; nil for new
 --- @param new_name string
 --- @param edits table { inherits?, options?, variables?, languages?, toolchain?, generator? }
 --- @return boolean ok, string|nil err
-function M.execute_save_configuration(project, old_name, new_name, edits)
-    local cfg = old_name and project:get_configuration(old_name) or nil
-    local data = (cfg and cfg.is_user) and cfg:declared_data() or {}
-    for _, field in ipairs(CONFIG_DIALOG_FIELDS) do
-        data[field] = edits[field]
-    end
-
-    -- Rename: atomic propagation to config sets, cache entries, and profiles
-    if old_name and old_name ~= new_name and cfg and cfg.is_user then
-        return project:rename_configuration(old_name, new_name, data)
-    end
-
-    return project:save_configuration(new_name, data)
+function M.execute_save_configuration(project, cfg, new_name, edits)
+    return as_result(commands.configuration_save(project, cfg, new_name, edits))
 end
 
 --- Delete a project configuration.
 --- @param project loomworks.Project
---- @param config_name string
+--- @param cfg loomworks.Configuration
 --- @return boolean ok, string|nil err
-function M.execute_delete_configuration(project, config_name)
-    return project:delete_configuration(config_name)
+function M.execute_delete_configuration(project, cfg)
+    return as_result(commands.configuration_remove(project, cfg))
 end
 
 --- Save project-wide options.
@@ -1517,7 +1444,7 @@ end
 --- @param options table<string, string>
 --- @return boolean ok, string|nil err
 function M.execute_save_project_options(project, options)
-    return project:save_options(options)
+    return as_result(commands.options_save(project, options))
 end
 
 -- =========================================================================
@@ -1537,14 +1464,14 @@ end
 
 --- Context for editing a launch config.
 --- @param project loomworks.Project
---- @param launch_name string|nil nil for new config
+--- @param launch loomworks.LaunchConfiguration|nil nil for a new config
 --- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table, debug: table }
-function M.compute_edit_launch_context(project, launch_name)
-    local config = project:find_launch(launch_name) or {}
+function M.compute_edit_launch_context(project, launch)
+    local config = launch or {}
 
     return {
         project_key = project.key,
-        name = launch_name or "",
+        name = launch and launch.name or "",
         command = config.command or "",
         args = config.args or {},
         working_dir = config.working_dir or "",
@@ -1554,61 +1481,25 @@ function M.compute_edit_launch_context(project, launch_name)
     }
 end
 
---- Save a launch config (create or update, with optional rename).
+--- Save a launch config (create or update, with optional rename;
+--- model_commands.launch_save).
 --- @param project loomworks.Project
---- @param old_name string|nil nil for new config
+--- @param launch loomworks.LaunchConfiguration|nil nil for a new config
 --- @param new_name string
 --- @param data { command: string, args: string[], working_dir: string, env: table<string, string>, deploy?: table, debug?: string[] }
---- @return boolean ok, string|nil err
-function M.execute_save_launch_config(project, old_name, new_name, data)
-    -- Start from the existing config so the fields the launch editor does not
-    -- show (the `device` block, spec §18.9, and any other declared field)
-    -- survive; replace only the editor's fields, omitting empty ones.
-    local old_launch = project:find_launch(old_name)
-    local config = (old_launch and not old_launch:is_invalid())
-        and vim.deepcopy(old_launch:serialize()) or {}
-    -- An empty command field means "no command": the key is absent, never
-    -- `""` (a target-backed launch carries only `target`). A command makes
-    -- this a command-type launch: it no longer runs a target (as
-    -- `lw launch set --command`).
-    if data.command and data.command ~= "" then
-        config.command = data.command
-        config.target = nil
-    else
-        config.command = nil
-    end
-    config.args = (data.args and #data.args > 0) and data.args or nil
-    config.working_dir = (data.working_dir and data.working_dir ~= "")
-        and data.working_dir or nil
-    config.env = (data.env and next(data.env)) and data.env or nil
-    config.deploy = (data.deploy and next(data.deploy)) and data.deploy or nil
-    config.debug = (data.debug and #data.debug > 0) and data.debug or nil
-
-    -- A name change is a rename (spec §8.7): the atomic operation that moves
-    -- the whole launch and re-points every profile's default target — never
-    -- a delete plus re-create. The edited fields are then saved on the new name.
-    if old_name and old_name ~= new_name then
-        if not old_launch then
-            return false, "no launch config '" .. tostring(old_name) .. "' on project '" .. project.key .. "'"
-        end
-        local changed, err = project:rename_launch_config(old_launch, new_name)
-        if changed == nil then return false, err end
-    elseif not old_name then
-        local vok, verr = require("loomworks.project").validate_launch_name(new_name)
-        if not vok then return false, "invalid launch name: " .. verr end
-    end
-
-    return project:save_launch_config(new_name, config)
+--- @return boolean ok, string|nil err, loomworks.LaunchConfiguration|nil launch
+function M.execute_save_launch_config(project, launch, new_name, data)
+    local r = commands.launch_save(project, launch, new_name, data)
+    local ok, err = as_result(r)
+    return ok, err, r.launch
 end
 
 --- Delete a launch config.
 --- @param project loomworks.Project
---- @param launch_name string
+--- @param launch loomworks.LaunchConfiguration
 --- @return boolean ok, string|nil err
-function M.execute_delete_launch_config(project, launch_name)
-    local launch = project:find_launch(launch_name)
-    if not launch then return false, "launch config '" .. tostring(launch_name) .. "' not found" end
-    return project:delete_launch_config(launch)
+function M.execute_delete_launch_config(project, launch)
+    return as_result(commands.launch_remove(project, launch))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1651,12 +1542,7 @@ end
 --- @param data { type: string, default: string }
 --- @return boolean ok, string|nil err
 function M.execute_save_variable(project, old_name, new_name, data)
-    -- If renamed, delete old first
-    if old_name and old_name ~= new_name then
-        local ok, err = project:delete_variable(old_name)
-        if not ok then return false, err end
-    end
-    return project:save_variable(new_name, { type = data.type, default = data.default })
+    return as_result(commands.variable_save(project, old_name, new_name, data))
 end
 
 --- Delete a variable declaration.
@@ -1664,7 +1550,100 @@ end
 --- @param var_name string
 --- @return boolean ok, string|nil err
 function M.execute_delete_variable(project, var_name)
-    return project:delete_variable(var_name)
+    return as_result(commands.variable_remove(project, var_name))
 end
+
+-- ---------------------------------------------------------------------------
+-- Other model writes (model_commands): publish state, descriptions,
+-- profiles' toolchains, deploy, type_config fields, SDKs
+-- ---------------------------------------------------------------------------
+
+--- Publish the working copy (`:w`).
+--- @param ws loomworks.Workspace
+--- @return boolean ok, string|nil err
+function M.publish(ws) return as_result(commands.publish(ws)) end
+
+--- Revert the working copy to the published baseline (`:e!`).
+--- @param ws loomworks.Workspace
+--- @return boolean ok, string|nil err
+function M.revert_to_baseline(ws) return as_result(commands.revert_to_baseline(ws)) end
+
+--- Publish one item.
+--- @param item table a profile, configuration set, project or configuration
+--- @return boolean ok, string|nil err
+function M.publish_one(item) return as_result(commands.publish_one(item)) end
+
+--- Revert one item to its published baseline.
+--- @param item table
+--- @return boolean ok, string|nil err
+function M.revert_one(item) return as_result(commands.revert_one(item)) end
+
+--- Set an item's intent (`P` cycles it; the next value is the caller's).
+--- @param item table
+--- @param intent "local"|"shared"|"local+shared"
+--- @return boolean ok, string|nil err
+function M.set_intent(item, intent) return as_result(commands.set_intent(item, intent)) end
+
+--- Set or clear an item's description (a launch configuration included).
+--- @param item table
+--- @param text string|nil
+--- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
+--- @return string|nil err
+function M.set_description(item, text)
+    local r = commands.set_description(item, text)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.changed
+end
+
+--- Make a profile the active one.
+--- @param profile loomworks.Profile
+--- @return boolean ok, string|nil err
+function M.activate_profile(profile) return as_result(commands.profile_set_active(profile)) end
+
+--- Add a toolchain (its key) to a profile.
+--- @param profile loomworks.Profile
+--- @param tool_key string
+--- @return boolean ok, string|nil err
+function M.add_profile_tool(profile, tool_key) return as_result(commands.profile_add_tool(profile, tool_key)) end
+
+--- Remove a toolchain (its key) from a profile.
+--- @param profile loomworks.Profile
+--- @param tool_key string
+--- @return boolean ok, string|nil err
+function M.remove_profile_tool(profile, tool_key)
+    return as_result(commands.profile_remove_tool(profile, tool_key))
+end
+
+--- Save a project's whole deploy declaration (nil or empty removes it).
+--- @param project loomworks.Project
+--- @param deploy table|nil
+--- @return boolean ok, string|nil err
+function M.save_deploy(project, deploy) return as_result(commands.deploy_save(project, deploy)) end
+
+--- Set or clear one of a project's editable type_config fields.
+--- @param project loomworks.Project
+--- @param field string
+--- @param value any
+--- @return boolean ok, string|nil err
+function M.save_type_config_field(project, field, value)
+    return as_result(commands.type_config_set(project, field, value))
+end
+
+--- Declare an SDK.
+--- @param ws loomworks.Workspace
+--- @param provider string
+--- @param path string|nil
+--- @return loomworks.SDK|nil sdk, string|nil err
+function M.add_sdk(ws, provider, path)
+    local r = commands.sdk_add(ws, provider, path)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.sdk
+end
+
+--- Remove an SDK's declaration.
+--- @param ws loomworks.Workspace
+--- @param sdk loomworks.SDK
+--- @return boolean ok, string|nil err
+function M.remove_sdk(ws, sdk) return as_result(commands.sdk_remove(ws, sdk)) end
 
 return M

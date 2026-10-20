@@ -44,11 +44,6 @@ local function edit_config_set(cs)
     local ctx = workspace_view.compute_edit_config_set_context(ws, set_name)
     if not ctx then return end
 
-    local old_mappings = {}
-    for project, config in pairs(ctx.mappings) do
-        old_mappings[project] = config
-    end
-
     require("loomworks.ui.config_set_editor").open({
         title = "Edit configuration set",
         item = cs,
@@ -69,7 +64,7 @@ local function edit_config_set(cs)
         on_accept = function(result)
             local new_name = result.name
             local ok, err = workspace_view.execute_edit_config_set(
-                cs, new_name, result.mappings, old_mappings)
+                cs, new_name, result.mappings)
             if not ok then
                 vim.notify("loomworks: " .. (err or "failed to edit config set"),
                     vim.log.levels.ERROR)
@@ -115,15 +110,13 @@ local function delete_config_set(cs)
     })
 end
 
---- Create a config set from a template (auto-detected mappings).
---- Template mappings are already raw {project_key → variant_name} strings
---- so we call add_configuration_set directly (not execute_create_config_set
---- which expects domain objects).
+--- Create a config set from a template (an auto-detected set, named by its
+--- candidate token).
 --- @param ws loomworks.Workspace
 --- @param name string set name
---- @param mappings table<string, string> project_key → variant
-local function create_from_template(ws, name, mappings)
-    local cs_new, err = ws:add_configuration_set(name, mappings)
+--- @param candidate string the template's candidate token
+local function create_from_template(ws, name, candidate)
+    local cs_new, err = require("loomworks.workspace_view").execute_create_config_set_from_candidate(ws, candidate)
     if cs_new then
         vim.notify("loomworks: configuration set '" .. name .. "' created",
             vim.log.levels.INFO)
@@ -195,7 +188,8 @@ local function create_config_set()
                 end
                 local desc = table.concat(parts, ", ")
                 choices[#choices + 1] = name .. " (" .. desc .. ")"
-                template_data[choices[#choices]] = { name = name, mappings = mappings }
+                template_data[choices[#choices]] = { name = name,
+                    candidate = require("loomworks.workspace_view").candidate_token(name, mappings) }
             end
         end
         table.sort(choices)
@@ -217,7 +211,7 @@ local function create_config_set()
         else
             local data = template_data[choice]
             if data then
-                create_from_template(ws, data.name, data.mappings)
+                create_from_template(ws, data.name, data.candidate)
             end
         end
     end)
@@ -233,29 +227,9 @@ local function set_actions(ctx, cs)
     local sname = cs.name
     return helpers.describe_action({
         on_enter = function() edit_config_set(cs) end,
-        on_publish = function()
-            helpers.cycle_intent(cs)
-            if ws then
-                ws:_save_user()
-                ws._core._deps.events.emit("active_set_changed", ws._active_set)
-            end
-        end,
-        on_publish_now = function()
-            if not ws then return end
-            local ok, err = ws:publish_one(cs)
-            if not ok then
-                vim.notify("loomworks: publish failed: " ..
-                    (err or "unknown"), vim.log.levels.ERROR)
-            end
-        end,
-        on_revert_one = function()
-            if not ws then return end
-            local ok, err = ws:revert_one(cs)
-            if not ok then
-                vim.notify("loomworks: revert failed: " ..
-                    (err or "unknown"), vim.log.levels.ERROR)
-            end
-        end,
+        on_publish = function() helpers.cycle_intent(cs) end,
+        on_publish_now = function() helpers.publish_one(cs) end,
+        on_revert_one = function() helpers.revert_one(cs) end,
         on_create = function()
             local all_tool_entries = lw.get_tool_entries()
             local is_first = not next(all_profiles)

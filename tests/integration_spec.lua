@@ -545,11 +545,12 @@ describe("profile lifecycle", function()
             projects = { App = { cmake = {} } },
         })
 
-        local choice = {
-            auto = true,
-            real_name = "Debug",
-            mappings = { App = "Debug" },
-        }
+        -- The choice comes from the picker's candidates (its token names
+        -- the automatic set as listed; model_commands refuses a stale one).
+        ws.generate_default_config_sets = function() return { Debug = { App = "Debug" } } end
+        local choice = wv.compute_config_set_candidates(ws, {})[1]
+        assert.is_true(choice.auto)
+        assert.is_string(choice.candidate)
 
         local cs, err = wv.resolve_config_set_choice(ws, choice)
         assert.is_not_nil(cs)
@@ -1171,7 +1172,10 @@ describe("config set rename", function()
             }
         )
 
-        local ok = wv.execute_rename_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"debug"), "Debug")
+        local cs = h.find_config_set_in(ws:get_config_sets(), "debug")
+        local mappings = {}
+        for _, p in pairs(ws._projects) do mappings[p] = cs:configuration(p) end
+        local ok = wv.execute_edit_config_set(cs, "Debug", mappings)
         assert.is_true(ok)
 
         -- Old set gone, new set exists
@@ -2560,7 +2564,8 @@ describe("configuration rename propagation", function()
             },
         })
 
-        local ok = wv.execute_save_configuration(h.find_project_in(ws:get_projects(), "App"), "old_cfg", "new_cfg", {
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ok = wv.execute_save_configuration(app, app:get_configuration("old_cfg"), "new_cfg", {
             options = { A = "1" },
         })
         assert.is_true(ok)
@@ -2659,7 +2664,7 @@ describe("launch config lifecycle", function()
         assert.equals("debug", configs[1].name)
 
         -- 3. Edit: change command and add env var
-        ok = wv.execute_save_launch_config(app, "debug", "debug", {
+        ok = wv.execute_save_launch_config(app, app:find_launch("debug"), "debug", {
             command = "npx",
             args = { "ts-node", "app.ts" },
             working_dir = "${workspace_root}/App",
@@ -2670,7 +2675,7 @@ describe("launch config lifecycle", function()
         assert.equals("true", h.find_project_in(ws:get_projects(), "App"):find_launch("debug").env.DEBUG)
 
         -- 4. Rename: debug → dev
-        ok = wv.execute_save_launch_config(app, "debug", "dev", {
+        ok = wv.execute_save_launch_config(app, app:find_launch("debug"), "dev", {
             command = "npx",
             args = { "ts-node", "app.ts" },
             working_dir = "",
@@ -2681,7 +2686,7 @@ describe("launch config lifecycle", function()
         assert.is_not_nil(h.find_project_in(ws:get_projects(), "App"):find_launch("dev"))
 
         -- 5. Delete
-        ok = wv.execute_delete_launch_config(app, "dev")
+        ok = wv.execute_delete_launch_config(app, app:find_launch("dev"))
         assert.is_true(ok)
         -- launch key cleaned up when empty
         assert.is_false(h.find_project_in(ws:get_projects(), "App"):has_launches())
@@ -2718,7 +2723,8 @@ describe("launch config lifecycle", function()
         }
         local ws = make_ws(cfg, cfg)
 
-        local ctx = wv.compute_edit_launch_context(h.find_project_in(ws:get_projects(), "App"), "debug")
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ctx = wv.compute_edit_launch_context(app, app:find_launch("debug"))
         assert.equals("debug", ctx.name)
         assert.equals("node", ctx.command)
         assert.equals(2, #ctx.args)
@@ -2766,8 +2772,8 @@ describe("launch config lifecycle", function()
         }
         local ws = make_ws(cfg, cfg)
 
-        local ctx = wv.compute_edit_launch_context(
-            h.find_project_in(ws:get_projects(), "App"), "debug")
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ctx = wv.compute_edit_launch_context(app, app:find_launch("debug"))
         assert.is_not_nil(ctx.deploy)
         assert.is_not_nil(ctx.deploy["${build_dir}/native.node"])
         assert.equals("NativeLib", ctx.deploy["${build_dir}/native.node"].project)
@@ -2794,7 +2800,7 @@ describe("launch config lifecycle", function()
         assert.is_not_nil(saved.deploy["${build_dir}/lib.node"])
 
         -- Save without deploy (empty)
-        wv.execute_save_launch_config(app, "debug", "debug", {
+        wv.execute_save_launch_config(app, app:find_launch("debug"), "debug", {
             command = "node",
             deploy = {},
         })
@@ -2908,9 +2914,9 @@ describe("project configuration lifecycle", function()
             },
         })
 
+        local app = h.find_project_in(ws:get_projects(), "App")
         local ok = wv.execute_save_configuration(
-            h.find_project_in(ws:get_projects(), "App"),
-            "my-debug", "my-debug",
+            app, app:get_configuration("my-debug"), "my-debug",
             { options = { ENABLE_TESTS = "OFF", VERBOSE = "ON" } })
         assert.is_true(ok)
         local app = h.find_project_in(ws:get_projects(), "App")
@@ -2933,7 +2939,8 @@ describe("project configuration lifecycle", function()
             },
         })
 
-        local ok = wv.execute_save_configuration(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN", "Debug-Sanitized", {
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ok = wv.execute_save_configuration(app, app:get_configuration("Debug-ASAN"), "Debug-Sanitized", {
             inherits = "Debug",
             options = { ASAN = "ON" },
         })
@@ -2958,7 +2965,8 @@ describe("project configuration lifecycle", function()
             },
         })
 
-        local ok = wv.execute_delete_configuration(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN")
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local ok = wv.execute_delete_configuration(app, app:get_configuration("Debug-ASAN"))
         assert.is_true(ok)
         -- Configuration domain object removed
         local app = h.find_project_in(ws:get_projects(), "App")

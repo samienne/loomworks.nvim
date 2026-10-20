@@ -662,6 +662,7 @@ local function project_row(ws, proj, opts)
             l.args = type(launch.args) == "table" and vim.deepcopy(launch.args) or nil
         end
         row.launches[#row.launches + 1] = l
+        if opts.bind then opts.bind(l, launch) end
     end
     row.deploy = {}
     if proj.deploy then
