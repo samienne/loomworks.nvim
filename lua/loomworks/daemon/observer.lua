@@ -1858,6 +1858,7 @@ function Observer:_on_closed(c)
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self:_drop_devices()
+    self._log_subs = nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
@@ -2378,19 +2379,21 @@ end
 --- @field conn loomworks.daemon.Conn the connection it was made on
 --- @field on_log fun(args: table) a `log` signal's args `{ task, records, dropped? }`
 --- @field sub_id any|nil once the subscribe was answered
---- @field dropped boolean|nil unsubscribed before the subscribe was answered
+--- @field dropped boolean|nil unsubscribed (M.unsubscribe_log); an answer still due is unsubscribed at once
 
---- Subscribe to the `log` signal of `Launch/1` on `/launch` for the
---- device_log task `task_id` (`args = { task }`, Launch/1 `subscribe_args`):
+--- Subscribe, on `conn` (the connection the device_log task was started
+--- on), to the `log` signal of `Launch/1` on `/launch` for the device_log
+--- task `task_id` (`args = { task }`, Launch/1 `subscribe_args`):
 --- `on_log(args)` for each, on the main loop, until M.unsubscribe_log. A
 --- refused subscribe calls `on_error(message)` (on the main loop); nothing
---- arrives then. Not connected: `on_error` at once.
+--- arrives then. `conn` no longer the observer's (closed or replaced — the
+--- task went with it): `on_error` at once, nothing sent.
+--- @param conn loomworks.daemon.Conn
 --- @param task_id any
 --- @param on_log fun(args: table)
 --- @param on_error fun(message: string)
-function Observer:subscribe_log(task_id, on_log, on_error)
-    local conn = self.conn
-    if not conn or conn.closed or type(conn.call) ~= "function" then
+function Observer:subscribe_log(conn, task_id, on_log, on_error)
+    if not conn or conn ~= self.conn or conn.closed or type(conn.call) ~= "function" then
         return on_error("the workspace daemon disconnected")
     end
     self._log_subs = self._log_subs or {}

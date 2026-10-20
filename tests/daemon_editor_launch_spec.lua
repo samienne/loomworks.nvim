@@ -586,6 +586,50 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.is_false(dl.is_running())
     end)
 
+    it("a device log accepted after its connection was replaced subscribes on neither", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        device_launched()
+        assert.equals("device_log", sent[5].method)
+        -- A reconnect's new connection: the old one's task is not its.
+        local fresh = { transport = 11, closed = false }
+        local on_fresh = {}
+        function fresh.call(_, object, iface, v, method, args, cb)
+            on_fresh[#on_fresh + 1] = { object = object, method = method, args = args, cb = cb }
+        end
+        obs.conn.closed = true
+        obs.conn = fresh
+        sent[5].cb({ outcome = "accepted", task_id = "g1" }, nil)
+        vim.wait(200)
+        assert.same({}, on_fresh)
+        assert.is_nil(sent_call("/", "subscribe"))
+        assert.is_true(obs._log_subs == nil or obs._log_subs.g1 == nil)
+        assert.is_false(dl.is_running())
+        assert.is_true(has_line("device log stream ended: the workspace daemon disconnected"),
+            table.concat(view_lines(), "\n"))
+        assert.same({}, errors())
+    end)
+
+    it("a refused subscribe ends the view with its message once, no error notification", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_launched()
+        accept(5, "g1")
+        assert.is_true(vim.wait(2000, function() return #sent == 6 end, 10))
+        sent[6].cb(nil, { code = "invalid_args", message = "nope" })
+        assert.is_true(vim.wait(2000, function()
+            return has_line("device log stream ended: could not subscribe to the device log: nope")
+        end, 10))
+        assert.same({}, errors())
+        assert.equals("cancel", sent[7].method)
+    end)
+
+    it("a closed connection drops its log subscriptions", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_log_streaming()
+        obs:_on_closed(obs.conn)
+        assert.is_nil(obs._log_subs)
+    end)
+
     it("stopping the run cancels its device log", function()
         obs = fake_observer(DEVICE_FEAT)
         local dl = require("loomworks.device_log")

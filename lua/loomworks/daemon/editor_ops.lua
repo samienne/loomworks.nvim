@@ -632,13 +632,14 @@ function M.device_log(ws, launch_task, conn, sink)
             if r.outcome == "accepted" then
                 h.task_id = r.task_id
                 if h.cancelled then return obs:cancel_owned_id(r.task_id) end
-                return obs:subscribe_log(r.task_id, function(args)
+                return obs:subscribe_log(conn, r.task_id, function(args)
                     if not (h.cancelled or ended) then sink.records(args.records, args.dropped) end
                 end, function(msg)
                     if h.cancelled or ended then return end
-                    vim.notify("loomworks: " .. msg, vim.log.levels.ERROR)
-                    -- No records can arrive: the task is of no use.
-                    obs:cancel_owned_id(r.task_id)
+                    -- No records can arrive: the task is of no use (gone
+                    -- already with a connection no longer the observer's).
+                    -- The message is the view's end line only.
+                    if obs.conn == conn and not conn.closed then obs:cancel_owned_id(r.task_id) end
                     finish(msg)
                 end)
             end

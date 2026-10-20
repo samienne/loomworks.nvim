@@ -1851,11 +1851,12 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `editor_ops.device_log(ws, launch_task, conn, sink)`: a
   `Launch/1.device_log { task }` the editor owns (`NO_RESTART`), refused when
   not carried or when the launch's connection is gone
-  (`launch_forgotten`); accepted, `Observer:subscribe_log(task_id, ...)`
+  (`launch_forgotten`); accepted, `Observer:subscribe_log(conn, task_id, ...)`
+  (refused unless `conn` is still the observer's: the task went with it)
   sends Root `subscribe { object = "/launch", signals = { "log" }, args =
   { task } }` and `_on_message` routes each `/launch` `log` signal to it
   (`_log_signal`, by its task on this connection; `_log_subs` reset on a
-  resubscribe); `start_owned`'s `on_start(meta)` / `on_line(text)` feed the
+  resubscribe or a close); `start_owned`'s `on_start(meta)` / `on_line(text)` feed the
   sink the meta level and the task's lines; its end, or the handle's
   `cancel` (`unsubscribe_log` — Root `unsubscribe { sub_id }` — then
   `cancel_owned_id`), ends it. The view (`device_log.start_remote`) shows
