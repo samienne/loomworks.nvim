@@ -212,7 +212,47 @@ local function stop_log_session()
         _active_run.pidof_timer = nil
     end
     local ok, device_log = pcall(require, "loomworks.device_log")
-    if ok then pcall(device_log.stop) end
+    if ok then
+        pcall(device_log.set_source, nil)
+        pcall(device_log.stop)
+    end
+end
+
+--- Open the device log of a run the workspace daemon launched (step 5n C3,
+--- API.md §9.5): the view streams `Launch/1.device_log` of the run's launch
+--- task (editor_ops.device_log) — nothing of it runs in the editor. While
+--- the run is active, opening the view again after it was closed (which
+--- cancels the stream) starts a new one (device_log.set_source), until the
+--- stream ends on its own (the program exited, or an error): the view then
+--- keeps what it showed.
+--- @param run table the active run (`device_task`, `device_conn`)
+local function open_daemon_device_log(run)
+    local device_log = require("loomworks.device_log")
+    local target = run.target
+    --- @return boolean started false when the run is no longer active (it
+    --- was dropped without its log session torn down): the source clears,
+    --- and opening the view only shows it.
+    local function open()
+        if _active_run ~= run or not is_active_running() then
+            device_log.set_source(nil)
+            return false
+        end
+        device_log.start_remote({
+            banner = string.format("device-log session: %s  (streamed by the workspace daemon)",
+                target:display_name()),
+            open = function(sink)
+                local ops = require("loomworks.daemon.editor_ops")
+                return ops.device_log(ops.scope_workspace({ profile = target._profile }), run.device_task,
+                    run.device_conn, sink)
+            end,
+            on_end = function()
+                if _active_run == run then device_log.set_source(nil) end
+            end,
+        })
+        return true
+    end
+    device_log.set_source(open)
+    open()
 end
 
 --- Stop the active run.
@@ -623,8 +663,8 @@ end
 --- a stop while the device picker is open ends the chain), a second launch
 --- asks first. Launched, the run is tracked by its launch task (a stop sends
 --- `Devices/1.stop`) until the connection it was sent on closes (the daemon
---- then forgets the launch), and the device log is refused
---- (device_log.refuse_daemon: the daemon does not carry its stream yet).
+--- then forgets the launch), and its device log opens, streamed by the
+--- daemon (`Launch/1.device_log`, step 5n C3: open_daemon_device_log).
 --- @param target loomworks.LaunchTarget
 local function start_device_run(target)
     local ops = require("loomworks.daemon.editor_ops")
@@ -660,7 +700,7 @@ local function start_device_run(target)
         fidget.finish(handle, "running on device")
         _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock(),
             device_task = done.task_id, device_conn = done.connection }
-        require("loomworks.device_log").refuse_daemon()
+        open_daemon_device_log(_active_run)
     end
     local function install()
         fidget.report(handle, "installing on device...")

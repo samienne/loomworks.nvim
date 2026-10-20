@@ -107,6 +107,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     after_each(function()
         pcall(function() require("loomworks.session_tracker").stop() end)
+        require("loomworks.device_log")._reset_for_tests()
         for i = #saved, 1, -1 do
             local s = saved[i]
             s[1][s[2]] = s[3]
@@ -335,15 +336,19 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         done_frame("l1", 0, { exit_code = 0, pid = 42, bundle = "com.x" })
         assert.is_true(vim.wait(2000, function() return st.is_running() end, 10))
         assert.equals("l1", st.active_run().device_task)
-        -- The device log is refused (not carried yet), never streamed here.
-        assert.is_true(noted("device log: unavailable in daemon mode"))
+        -- Its device log: Launch/1.device_log of the launch task (step 5n
+        -- C3), never streamed here.
+        assert.equals(5, #sent)
+        assert.same({ "/launch", "loomworks.Launch", "device_log" }, { sent[5].object, sent[5].iface, sent[5].method })
+        assert.same({ task = "l1" }, sent[5].args)
+        assert.same({ PATH = "x" }, sent[5].env)
         assert.equals(0, #created)
         assert.same({}, launched)
         st.stop()
-        assert.equals(5, #sent)
-        assert.same({ "/devices", "stop" }, { sent[5].object, sent[5].method })
-        assert.same({ task = "l1" }, sent[5].args)
-        sent[5].cb({ outcome = "ok" }, nil)
+        assert.equals(6, #sent)
+        assert.same({ "/devices", "stop" }, { sent[6].object, sent[6].method })
+        assert.same({ task = "l1" }, sent[6].args)
+        sent[6].cb({ outcome = "ok" }, nil)
         assert.is_false(st.is_running())
     end)
 
@@ -447,7 +452,9 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.is_false(st.is_running())
         assert.is_nil(st.active_run())
         st.stop()
-        assert.equals(4, #sent)
+        -- (Its device log's call, sent at the launch, is the fifth.)
+        assert.equals(5, #sent)
+        assert.equals("device_log", sent[5].method)
         assert.same({}, errors())
     end)
 
@@ -455,13 +462,209 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         obs = fake_observer(DEVICE_FEAT)
         local st = device_launched()
         st.stop()
-        assert.equals(5, #sent)
-        assert.equals("stop", sent[5].method)
+        assert.equals(6, #sent)
+        assert.equals("stop", sent[6].method)
         obs.conn:close()
-        sent[5].cb(nil, { code = "closed", message = "not connected" })
+        sent[6].cb(nil, { code = "closed", message = "not connected" })
         vim.wait(100)
         assert.same({}, errors())
         assert.is_false(st.is_running())
+    end)
+
+    -- Step 5n C3 (API.md §9.5): the device run's log is a
+    -- Launch/1.device_log task the editor owns; its records arrive as the
+    -- `/launch` `log` signal of a Root subscription naming that task.
+    local function view_lines() return require("loomworks.device_log")._lines_for_tests() end
+    local function has_line(text)
+        for _, l in ipairs(view_lines()) do
+            if l:find(text, 1, true) then return true end
+        end
+        return false
+    end
+    local function log_signal(args)
+        obs:_on_message({ kind = "signal", object = "/launch", iface = "loomworks.Launch", name = "log", args = args })
+    end
+    --- A device run launched, its device log accepted (task `g1`) and
+    --- subscribed (`s1`).
+    local function device_log_streaming()
+        local st, t = device_launched()
+        assert.equals("device_log", sent[5].method)
+        accept(5, "g1")
+        assert.is_true(vim.wait(2000, function() return #sent == 6 end, 10))
+        assert.same({ "/", "loomworks.Root", "subscribe" }, { sent[6].object, sent[6].iface, sent[6].method })
+        assert.same({ object = "/launch", iface = "loomworks.Launch", v = 1, signals = { "log" },
+            args = { task = "g1" } }, sent[6].args)
+        sent[6].cb({ sub_id = "s1", seq = 0 }, nil)
+        assert.is_true(vim.wait(2000, function() return obs._log_subs.g1.sub_id == "s1" end, 10))
+        return st, t
+    end
+    local function sent_call(object, method)
+        for i, c in ipairs(sent) do
+            if c.object == object and c.method == method then return c, i end
+        end
+        return nil
+    end
+
+    it("a device run's log streams the subscription's records into the view", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        device_log_streaming()
+        assert.is_true(dl.is_running())
+        assert.is_true(has_line("streamed by the workspace daemon"))
+        log_signal({ task = "g1", records = {
+            { ts = "10-19 12:00:00.001", level = "info", tag = "T", pid = 42, message = "hi",
+                fields = { proc = "com.x" } },
+            { level = "info", message = "raw" } } })
+        assert.is_true(has_line("hi"))
+        assert.is_true(has_line("[UNPARSED] raw"))
+        -- Another task's records are not this view's.
+        log_signal({ task = "other", records = { { level = "info", message = "not mine" } } })
+        assert.is_false(has_line("not mine"))
+        assert.same({}, errors())
+    end)
+
+    it("a device log's `start` meta level sets the new view's level filter", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_log_streaming()
+        obs:_on_task({ kind = "task", task_id = "g1", phase = "start",
+            meta = { kind = "device_log", name = "log", level = "warn" } })
+        log_signal({ task = "g1", records = {
+            { ts = "10-19 12:00:00.001", level = "info", tag = "T", pid = 1, message = "lowinfo" },
+            { ts = "10-19 12:00:00.002", level = "warn", tag = "T", pid = 1, message = "highwarn" } } })
+        assert.is_true(has_line("highwarn"))
+        assert.is_false(has_line("lowinfo"))
+    end)
+
+    it("records the daemon dropped are a gap line in the view", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_log_streaming()
+        log_signal({ task = "g1", dropped = 3, records = { { level = "info", message = "after" } } })
+        assert.is_true(has_line("… 3 records dropped"))
+        assert.is_true(has_line("after"))
+    end)
+
+    it("closing the view cancels the device log and drops its subscription; reopening starts a new one", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        local st = device_log_streaming()
+        dl.hide()
+        local unsub = sent_call("/", "unsubscribe")
+        assert.is_not_nil(unsub)
+        assert.same({ sub_id = "s1" }, unsub.args)
+        local cancel = sent_call("/tasks", "cancel")
+        assert.is_not_nil(cancel)
+        assert.same({ task_id = "g1" }, cancel.args)
+        assert.is_false(dl.is_running())
+        assert.is_true(st.is_running())
+        -- Nothing more reaches the view from it.
+        log_signal({ task = "g1", records = { { level = "info", message = "late" } } })
+        assert.is_false(has_line("late"))
+        -- Reopened while the run is active: a new device_log of the launch.
+        local n = #sent
+        dl.toggle()
+        assert.is_true(vim.wait(2000, function() return #sent == n + 1 end, 10))
+        assert.equals("device_log", sent[n + 1].method)
+        assert.same({ task = "l1" }, sent[n + 1].args)
+        assert.is_true(dl.is_running())
+        assert.same({}, errors())
+    end)
+
+    it("reopening the view after the run was dropped (its connection gone) only shows it", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        local st = device_log_streaming()
+        dl.hide()
+        assert.is_false(dl.is_visible())
+        -- The run is forgotten with its connection; active_run() drops it.
+        obs.conn:close()
+        assert.is_nil(st.active_run())
+        local n = #sent
+        dl.toggle()
+        assert.is_true(dl.is_visible())
+        vim.wait(100)
+        assert.equals(n, #sent)
+        assert.is_false(dl.is_running())
+    end)
+
+    it("a device log accepted after its connection was replaced subscribes on neither", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        device_launched()
+        assert.equals("device_log", sent[5].method)
+        -- A reconnect's new connection: the old one's task is not its.
+        local fresh = { transport = 11, closed = false }
+        local on_fresh = {}
+        function fresh.call(_, object, iface, v, method, args, cb)
+            on_fresh[#on_fresh + 1] = { object = object, method = method, args = args, cb = cb }
+        end
+        obs.conn.closed = true
+        obs.conn = fresh
+        sent[5].cb({ outcome = "accepted", task_id = "g1" }, nil)
+        vim.wait(200)
+        assert.same({}, on_fresh)
+        assert.is_nil(sent_call("/", "subscribe"))
+        assert.is_true(obs._log_subs == nil or obs._log_subs.g1 == nil)
+        assert.is_false(dl.is_running())
+        assert.is_true(has_line("device log stream ended: the workspace daemon disconnected"),
+            table.concat(view_lines(), "\n"))
+        assert.same({}, errors())
+    end)
+
+    it("a refused subscribe ends the view with its message once, no error notification", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_launched()
+        accept(5, "g1")
+        assert.is_true(vim.wait(2000, function() return #sent == 6 end, 10))
+        sent[6].cb(nil, { code = "invalid_args", message = "nope" })
+        assert.is_true(vim.wait(2000, function()
+            return has_line("device log stream ended: could not subscribe to the device log: nope")
+        end, 10))
+        assert.same({}, errors())
+        assert.equals("cancel", sent[7].method)
+    end)
+
+    it("a closed connection drops its log subscriptions", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_log_streaming()
+        obs:_on_closed(obs.conn)
+        assert.is_nil(obs._log_subs)
+    end)
+
+    it("stopping the run cancels its device log", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        local st = device_log_streaming()
+        st.stop()
+        local cancel = sent_call("/tasks", "cancel")
+        assert.is_not_nil(cancel)
+        assert.same({ task_id = "g1" }, cancel.args)
+        assert.is_not_nil(sent_call("/", "unsubscribe"))
+        assert.is_not_nil(sent_call("/devices", "stop"))
+        assert.is_false(dl.is_running())
+    end)
+
+    it("the device log's end is the view's last line; the view stays", function()
+        obs = fake_observer(DEVICE_FEAT)
+        local dl = require("loomworks.device_log")
+        device_log_streaming()
+        done_frame("g1", 0)
+        assert.is_true(vim.wait(2000, function() return has_line("device log stream ended ──") end, 10))
+        assert.is_false(dl.is_running())
+        assert.is_true(dl.is_visible())
+        assert.same({ sub_id = "s1" }, sent_call("/", "unsubscribe").args)
+        -- Ended on its own: reopening only shows the view.
+        dl.hide()
+        local n = #sent
+        dl.toggle()
+        vim.wait(100)
+        assert.equals(n, #sent)
+    end)
+
+    it("a failing device log ends with its error in the view", function()
+        obs = fake_observer(DEVICE_FEAT)
+        device_log_streaming()
+        done_frame("g1", 1, nil, "boom")
+        assert.is_true(vim.wait(2000, function() return has_line("device log stream ended: boom") end, 10))
     end)
 
     it("a device target without a device whose choice the daemon cannot carry is refused before the build", function()

@@ -313,7 +313,7 @@ may import from its own layer or any layer below it, never above.
 | `plugin_loader.lua` | Loads a configuration-named plugin file (`loomworks.<kind>.<id>`: modules, SDK providers, progress parsers): id must match `^[%w_]+$` (else status `invalid`), file located with `nvim_get_runtime_file` and loaded with `loadfile` (luvi bundle reader for a bundle-relative entry in the standalone host), cached in `package.loaded`. Never `require` — the default `package.path` starts with `./?.lua` (spec §8.0) | Validate the module contract (the registries do) |
 | `sdks/cpp_compiler.lua` | User-declared C/C++ compiler SDK provider. No auto-detection (`detect_all` returns empty); user adds via the SDK section's `▸ Add SDK` action. Calls `cpp_compilers.probe_path` for identification; emits single-compiler cmake caps consumed by `cmake.kits_from_sdk`'s single-compiler branch. Provider-specific key derivation includes a path-derived token so two custom builds of the same family / version at different paths don't collide. See `spec/sdks/cpp_compiler.md` | Contain compiler family knowledge (lives in `cpp_compilers.lua`) |
 | `device_log_records.lua` | A device log's lines as records (shared side, pure Lua): line sanitiser and parser (`MM-DD HH:MM:SS.mmm PID TID LEVEL DOMAIN/PROC/TAG: msg`), the session prefilter (`make_prefilter`: strict = the pid AND the bundle, whichever the launch resolved; unparsed lines pass), `normalize` to the §19.18 record (`ts`, `level` word, `tag`, `pid`, `message`, `fields`). Used by the editor's view and the daemon's `Launch/1.device_log` | Use `vim.*`, spawn anything |
-| `device_log.lua` | Client-side device-log view: the parser and session prefilter of `device_log_records` (re-exported; the prefilter applied at receive), soft filter (level / regex / tag / pid, applied at render), ring buffer (5000 records), bottom-split scratch buffer with level-based extmark highlights. Singleton view, one stream at a time. Streaming task runs under `loomworks.overseer.run_streaming_task` (visible in overseer's task list, killable there). In `daemon` mode the stream is not carried yet (step 5n C2): the view says the log is unavailable (`M.unavailable`, `M.refuse_daemon`); a queue overflow is a gap line in the view | Spawn subprocesses directly (overseer owns the process); persist filter state (in-memory only for v1) |
+| `device_log.lua` | Client-side device-log view: the parser and session prefilter of `device_log_records` (re-exported; the prefilter applied at receive), soft filter (level / regex / tag / pid, applied at render), ring buffer (5000 records), bottom-split scratch buffer with level-based extmark highlights. Singleton view, one stream at a time. Streaming task runs under `loomworks.overseer.run_streaming_task` (visible in overseer's task list, killable there). In `daemon` mode (step 5n C3) nothing streams here: `M.start_remote({ banner, open(sink), on_end })` shows a stream the workspace daemon carries — the sink takes the task's `start` meta level (the filter of a new view only), the `log` signal's records (`device_log_records.denormalize`) and `dropped` count (a gap line), its lines and its end (a last line); closing the view (`on_close`, also on `WinClosed`), `M.stop` or `M.stop_remote` cancel it; `M.set_source(fn)` is what opening the view does while nothing streams (the session tracker's: start the active run's stream again); a queue overflow is a gap line in the view | Spawn subprocesses directly (overseer owns the process); persist filter state (in-memory only for v1) |
 
 ### Data / IO Layer
 
@@ -975,8 +975,11 @@ re-cut onto master step by step; this section is expanded as each step lands.
   (`Devices/1.stop { task }`) or `_active_run.device_conn` (the connection
   the launch was sent on) closes — the daemon forgets the launch with it
   (`editor_ops.launch_forgotten`), so the run is over and a stop sends
-  nothing — and `device_log.refuse_daemon()` says the log
-  is unavailable (a debug
+  nothing — and `open_daemon_device_log` opens its log: `device_log.start_remote`
+  whose `open` is `editor_ops.device_log` (`Launch/1.device_log { task }` of
+  the launch task, on its connection), set as the view's source while the run
+  is active so reopening a closed view streams again; `stop_log_session`
+  clears the source and cancels the stream (a debug
   without nvim-dap prepares a launch, as `LaunchTarget:debug` falls back);
   a debug first checks `LaunchTarget:primary_debug_adapter(resolve)` against
   nvim-dap (`debug.adapter_installed` / `adapter_hint`, before the
@@ -1814,7 +1817,12 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `log { task, records, dropped? }` signal on `/launch` (subscriptions naming
   the task or none), at most `LOG_BATCH_BYTES` of JSON per signal (far under
   `protocol.MAX_FRAME`), held while the owner's write queue is above
-  `tasks.OWNER_HIGH`, flushed before the task's `done`. The pid probe
+  `tasks.OWNER_HIGH`, flushed before the task's `done`. Nothing is sent
+  while no subscription names the task (`Registry:has_subscribers` with an
+  `accept`): the queue holds the records (its bound and `dropped` still
+  apply) and the first `log` to a subscription naming it carries them, so
+  the editor's subscribe after `accepted` misses none; records still
+  unnamed at the task's end go with the run. The pid probe
   (`device_resolve_pid`, `tries = 1`, its own child slot so a cancel kills it
   and the stream, and the run's end kills it) runs every
   `LOG_PID_POLL_MS`; `LOG_PID_MISSES` misses in a row kill the stream and
@@ -1839,10 +1847,20 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   "Launches" above). Nothing of it runs in the editor in `daemon` mode; the
   in-process chain (`LaunchTarget:device_install` / `device_launch` /
   `device_stop`, `Workspace:scan_devices`) is the deprecated
-  `in-process` mode's only. The device log stream is not carried yet
-  (`Launch/1.device_log`, 5n B3/C3): `device_log.unavailable()` /
-  `refuse_daemon()` say so (one notification after a launch, the note as
-  the view's last line); its dropped-lines notice is a gap line in the view
+  `in-process` mode's only. The device log (5n C3, API.md §9.5) is
+  `editor_ops.device_log(ws, launch_task, conn, sink)`: a
+  `Launch/1.device_log { task }` the editor owns (`NO_RESTART`), refused when
+  not carried or when the launch's connection is gone
+  (`launch_forgotten`); accepted, `Observer:subscribe_log(conn, task_id, ...)`
+  (refused unless `conn` is still the observer's: the task went with it)
+  sends Root `subscribe { object = "/launch", signals = { "log" }, args =
+  { task } }` and `_on_message` routes each `/launch` `log` signal to it
+  (`_log_signal`, by its task on this connection; `_log_subs` reset on a
+  resubscribe or a close); `start_owned`'s `on_start(meta)` / `on_line(text)` feed the
+  sink the meta level and the task's lines; its end, or the handle's
+  `cancel` (`unsubscribe_log` — Root `unsubscribe { sub_id }` — then
+  `cancel_owned_id`), ends it. The view (`device_log.start_remote`) shows
+  the records, a gap line for `dropped`, and a last line for the end
   (no workspace reach-in).
 - *(Step 5l; spec §19.16 "LSP configuration", §19.20 `LspConfig/1`, §9.2.)*
   `lsp_config.lua` (shared side, host-neutral, no `vim.*`) — the one builder

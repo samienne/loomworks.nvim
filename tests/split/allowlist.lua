@@ -232,8 +232,15 @@ return {
     -- install, launch and stop (the calls `device_<method>`) and
     -- conn:call(M.PROFILES.object, M.PROFILES.iface, ...) for set_device and
     -- clear_device — the versioned tables Devices/1 and Profiles/1.
+    -- 28 -> 32: step 5n C3 (the device log) adds one CALL naming its method
+    -- literally, conn:call(M.LAUNCH.object, M.LAUNCH.iface, ...) for
+    -- device_log; the `log` subscription's Root subscribe and unsubscribe,
+    -- conn:call(M.ROOT.object, M.ROOT.iface, ...) x2, whose subscribe names
+    -- { object = M.LAUNCH.object, iface = M.LAUNCH.iface, v = M.LAUNCH.v };
+    -- and _on_message's match of the `log` signal on M.LAUNCH.iface — the
+    -- versioned tables Root/1 and Launch/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 28,
+        ["lua/loomworks/daemon/observer.lua"] = 32,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

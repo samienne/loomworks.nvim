@@ -330,40 +330,133 @@ describe("device_log make_prefilter — all mode", function()
     end)
 end)
 
--- Step 5n C2 (spec §19.16 "Devices"): in `daemon` mode the device log is
--- refused — the daemon does not carry its stream yet — and the view says so;
--- a gap in the stream is reported in the view, not the workspace's logger.
+-- Step 5n C3 (API.md §9.5): in `daemon` mode the view shows a stream the
+-- workspace daemon carries (M.start_remote); a gap in the stream is reported
+-- in the view, not the workspace's logger.
 describe("device_log view notes", function()
-    local saved_obs
     before_each(function()
         dl._reset_for_tests()
-        saved_obs = package.loaded["loomworks.daemon.observer"]
     end)
     after_each(function()
-        package.loaded["loomworks.daemon.observer"] = saved_obs
         dl._reset_for_tests()
     end)
 
     local function lines()
-        local buf = vim.fn.bufnr("loomworks://device-log")
-        return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+        return table.concat(dl._lines_for_tests(), "\n")
     end
 
-    it("in daemon mode the view says the log is unavailable; in-process it does not", function()
-        package.loaded["loomworks.daemon.observer"] = { current = function() return nil end }
-        assert.is_nil(dl.unavailable())
-        package.loaded["loomworks.daemon.observer"] = { current = function() return {} end }
-        assert.equals(dl.DAEMON_NOTE, dl.unavailable())
-        local notes = {}
-        local orig = vim.notify
-        vim.notify = function(msg) notes[#notes + 1] = msg end
-        dl.show()
-        dl.refuse_daemon()
-        vim.notify = orig
-        assert.truthy(lines():find("unavailable in daemon mode", 1, true), lines())
-        assert.equals(1, #notes)
-        assert.truthy(notes[1]:find("Launch/1.device_log", 1, true), notes[1])
+    -- Step 5n C3 (API.md §9.5): a stream the workspace daemon carries.
+    --- start_remote with a fake `open`: the sink and the handle's cancels.
+    local function remote(opts)
+        local h = { cancels = 0 }
+        function h.cancel(self) self.cancels = self.cancels + 1 end
+        local sink
+        local ends = {}
+        dl.start_remote(vim.tbl_extend("force", {
+            banner = "the banner",
+            open = function(s) sink = s; return h end,
+            on_end = function(err) ends[#ends + 1] = err or "ok" end,
+        }, opts or {}))
+        return sink, h, ends
+    end
+
+    it("a daemon-carried stream shows its records, gap and lines in the view", function()
+        local sink = remote()
+        assert.is_true(dl.is_running())
+        assert.is_true(dl.is_visible())
+        sink.records({ { ts = "10-19 12:00:00.001", level = "error", tag = "T", pid = 7, message = "parsed one" },
+            { level = "info", message = "raw one" } })
+        sink.records({ { level = "info", message = "after gap" } }, 4)
+        sink.line("a task line")
+        local text = lines()
+        assert.truthy(text:find("the banner", 1, true), text)
+        assert.truthy(text:find("parsed one", 1, true), text)
+        assert.truthy(text:find("[UNPARSED] raw one", 1, true), text)
+        assert.truthy(text:find("… 4 records dropped", 1, true), text)
+        assert.truthy(text:find("a task line", 1, true), text)
+    end)
+
+    it("the `start` meta level is the filter of a new view only", function()
+        local sink = remote()
+        sink.level("warn")
+        sink.records({ { ts = "10-19 12:00:00.001", level = "info", tag = "T", pid = 1, message = "lowinfo" },
+            { ts = "10-19 12:00:00.002", level = "warn", tag = "T", pid = 1, message = "highwarn" } })
+        assert.falsy(lines():find("lowinfo", 1, true))
+        assert.truthy(lines():find("highwarn", 1, true))
+        -- The view exists now: a later stream's level keeps the user's.
+        local sink2 = remote()
+        sink2.level("fatal")
+        sink2.records({ { ts = "10-19 12:00:00.003", level = "error", tag = "T", pid = 1, message = "anerror" } })
+        assert.truthy(lines():find("anerror", 1, true))
+    end)
+
+    it("its end is the view's last line and calls on_end; nothing reaches the view after", function()
+        local sink, h, ends = remote()
+        sink.ended("boom")
+        assert.truthy(lines():find("device log stream ended: boom", 1, true), lines())
+        assert.same({ "boom" }, ends)
+        assert.is_false(dl.is_running())
+        assert.is_true(dl.is_visible())
+        sink.records({ { level = "info", message = "too late" } })
+        assert.falsy(lines():find("too late", 1, true))
+        assert.equals(0, h.cancels)
+    end)
+
+    it("closing the view (hide or :close) or stop cancels it once; on_end is not called", function()
+        local _, h, ends = remote()
         dl.hide()
+        assert.equals(1, h.cancels)
+        assert.is_false(dl.is_running())
+        local sink2, h2 = remote()
+        local win
+        for _, w in ipairs(vim.api.nvim_list_wins()) do
+            if vim.bo[vim.api.nvim_win_get_buf(w)].filetype == "loomworks-device-log" then win = w end
+        end
+        assert.is_not_nil(win)
+        vim.api.nvim_win_close(win, true)
+        assert.equals(1, h2.cancels)
+        sink2.records({ { level = "info", message = "after close" } })
+        assert.falsy(lines():find("after close", 1, true))
+        local _, h3 = remote()
+        dl.stop()
+        assert.equals(1, h3.cancels)
+        assert.truthy(lines():find("device log stream stopped", 1, true), lines())
+        assert.same({}, ends)
+    end)
+
+    it("opening the view while nothing streams starts the set source", function()
+        local opened = 0
+        dl.set_source(function() opened = opened + 1; return true end)
+        dl.toggle()
+        assert.equals(1, opened)
+        dl.set_source(nil)
+        dl.toggle()
+        assert.equals(1, opened)
+        assert.is_true(dl.is_visible())
+    end)
+
+    it("a source that starts nothing (its run gone) leaves opening to show the view", function()
+        local opened = 0
+        dl.set_source(function() opened = opened + 1; return false end)
+        dl.toggle()
+        assert.equals(1, opened)
+        assert.is_true(dl.is_visible())
+        dl.hide()
+        dl.show()
+        assert.equals(2, opened)
+        assert.is_true(dl.is_visible())
+    end)
+
+    it("denormalize is the inverse of normalize for the view's records", function()
+        local R = require("loomworks.device_log_records")
+        assert.same({ raw = "plain" }, R.denormalize({ level = "info", message = "plain" }))
+        local r = R.denormalize({ ts = "10-19 12:00:00.001", level = "warn", tag = "T", pid = 9, message = "m",
+            fields = { tid = "11", domain = "D0", proc = "com.x" } })
+        assert.same({ time = "10-19 12:00:00.001", pid = 9, tid = 11, level = "W", domain = "D0", proc = "com.x",
+            tag = "T", msg = "m" }, r)
+        assert.equals("I", R.denormalize({ ts = "t", level = "nonsense", message = "" }).level)
+        assert.equals("D", R.level_letter("debug"))
+        assert.is_nil(R.level_letter("nonsense"))
     end)
 
     it("a saturated queue reports the dropped lines in the view", function()

@@ -2719,7 +2719,7 @@ path is never used in `daemon` mode.
 
 **Devices.** *(Step 5n, plan: part 0 this spec; B2 the daemon side,
 [API.md](../protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use — implemented;
-B3 the device log stream, [API.md](../protocol/API.md) §9.5 — implemented; C3 its editor use.)*
+B3 the device log stream, [API.md](../protocol/API.md) §9.5 — implemented; C3 its editor use — implemented.)*
 In `daemon` mode the editor neither lists nor probes devices, nor installs
 or launches on them. The device list comes only from `Devices/1.list` and
 its `changed` signal. A scan is a `Devices/1.scan` task carrying the
@@ -2737,7 +2737,13 @@ the build directory stays locked, so a build of that directory fails at once
 in the meantime. A launch and a stop take only the device lock. A launched
 program's log is a `Launch/1.device_log` task of the client that launched
 it, which holds the device lock only while it clears the device's log; its
-stream takes no lock.
+stream takes no lock. The editor starts it when the launch is done and shows
+its records in the device-log view, through a subscription to that task's
+`log` signal. Closing the view, or stopping the run, cancels the task and
+drops the subscription.
+Opening the view again while the run is active starts a new one. When the
+task ends, the view keeps what it showed and its last line says the stream
+ended.
 
 **Tasks in the task runner.** Every daemon task the editor knows becomes
 **one** task in the editor's task runner (overseer, §12) — one per daemon

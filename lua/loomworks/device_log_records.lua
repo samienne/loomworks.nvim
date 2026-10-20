@@ -227,4 +227,39 @@ function M.normalize(rec)
     }
 end
 
+--- A normalized level name's letter (the inverse of M.LEVELS).
+local LETTERS = {}
+for letter, name in pairs(M.LEVELS) do LETTERS[name] = letter end
+
+--- The level letter of a normalized level name, or nil for an unknown one.
+--- @param name any
+--- @return string|nil
+function M.level_letter(name)
+    return LETTERS[name]
+end
+
+--- A normalized record (a `Launch/1.device_log` record of the workspace
+--- daemon, API.md §9.5) as a record of `parse_line`, the shape the device-log
+--- view renders and filters — the inverse of M.normalize. A record without
+--- `ts` is an unparsed line (`{ raw = message }`); an unknown level shows as
+--- `info` (§9.5).
+--- @param rec loomworks.DeviceLogRecord
+--- @return table
+function M.denormalize(rec)
+    if type(rec) ~= "table" then return { raw = "" } end
+    local message = type(rec.message) == "string" and rec.message or ""
+    if rec.ts == nil then return { raw = message } end
+    local fields = type(rec.fields) == "table" and rec.fields or {}
+    return {
+        time = tostring(rec.ts),
+        pid = tonumber(rec.pid),
+        tid = tonumber(fields.tid),
+        level = LETTERS[rec.level] or LETTERS[M.DEFAULT_LEVEL],
+        domain = fields.domain,
+        proc = fields.proc,
+        tag = rec.tag,
+        msg = message,
+    }
+end
+
 return M

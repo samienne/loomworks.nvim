@@ -484,10 +484,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   device is saved by it. Launching a device target builds, installs and
   launches it there as tasks the editor owns, and stopping it stops the app
   through the daemon. When the daemon cannot do these they are refused with
-  the reason; they never run in the editor. The device log is not available
-  with the daemon yet: the editor says so after a device launch. A
-  device-log view that falls behind its stream now shows the gap in the
-  view. (#288)
+  the reason; they never run in the editor. A device-log view that falls
+  behind its stream now shows the gap in the view. (#288)
+- With the workspace daemon, a device launch opens the device-log view with
+  the app's log, streamed by the daemon (before, the log was not available
+  with the daemon). The view starts at the log level the device's module
+  suggests, shows records the daemon had to drop as a gap line, and says when
+  the stream ended. Closing the view or stopping the run stops the stream;
+  opening the view again while the app runs starts a new one; once the run
+  is over it only shows the view. The daemon keeps the log's first lines
+  until the view has subscribed, so none is lost at the start. (#291)
 - With the workspace daemon, the editor's *Build default target* of a
   non-device target is one daemon task: the daemon builds the target's
   dependencies, runs its pre-build deploy and builds it (the editor no longer

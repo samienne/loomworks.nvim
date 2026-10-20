@@ -111,6 +111,7 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
 --- @field _owned table<any, loomworks.daemon.OwnedCall> the editor's own tasks by daemon task id, from the call's `accepted` until they end (step 5k)
+--- @field _log_subs table<any, loomworks.daemon.LogSub>|nil the `/launch` `log` subscriptions of this connection by device_log task id (step 5n C3)
 --- @field _degraded table<string, boolean>|nil Build/1, Launch/1 and DebugConfig/1 methods this connection's daemon lacks (or a parameter of): their operations are refused
 --- @field _method_notes string[]|nil the Runtime-line notes of those methods
 --- @field _method_why table<string, string>|nil each of those methods' note (an operation's refusal)
@@ -167,7 +168,7 @@ Observer.__index = Observer
 --- 5j). Keep `signals` in step with `_on_message`.
 M.ROOT = {
     object = "/", iface = "loomworks.Root", v = 1,
-    methods = { "describe", "subscribe" }, signals = { "retiring", "objects_changed" },
+    methods = { "describe", "subscribe", "unsubscribe" }, signals = { "retiring", "objects_changed" },
 }
 -- `cancel` for the tasks the editor owns (step 5k, §19.15 "The editor as
 -- owner"); `list` re-reads the steps of target-scoped tasks after a seq gap
@@ -206,10 +207,14 @@ M.BUILD = {
 -- §19.16 "Editor operations"): task-streamed like M.BUILD; the editor then
 -- starts the returned program itself. `build`: the build of a non-device
 -- launch target (step 5t, §19.15 "Build of a launch target"), the call
--- `launch_build` here (WIRE).
+-- `launch_build` here (WIRE). `device_log` (step 5n C3, API.md §9.5): the
+-- log of a device run, a task the editor owns whose records arrive as the
+-- `log` signal of a subscription naming that task (Observer:subscribe_log)
+-- — the feature itself is still called, never subscribed to.
 M.LAUNCH = {
     object = "/launch", iface = "loomworks.Launch", v = 1, feature = "launch",
-    methods = { "prepare_run", "prepare_debug", "build" }, signals = {}, call_only = true, tasks = true,
+    methods = { "prepare_run", "prepare_debug", "build", "device_log" }, signals = { "log" }, call_only = true,
+    tasks = true,
 }
 -- The debug adapters section (step 5k C2, §19.20 `DebugConfig/1`): plain
 -- calls, no task; re-read on `Workspace/1` `changed` (it has no signal).
@@ -1460,6 +1465,7 @@ function Observer:_subscribe(conn, done)
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self:_drop_devices()
+    self._log_subs = nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
@@ -1852,6 +1858,7 @@ function Observer:_on_closed(c)
     self._debug_adapters, self._debug_fetch, self._debug_again = nil, nil, nil
     self._lsp_read, self._lsp_fetch, self._lsp_again = nil, nil, nil
     self:_drop_devices()
+    self._log_subs = nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
@@ -1905,6 +1912,8 @@ function Observer:_on_message(msg)
             return self:_fetch_devices()
         elseif msg.object == M.TESTS.object and msg.iface == M.TESTS.iface and msg.name == "results" then
             return self:_test_results(args)
+        elseif msg.object == M.LAUNCH.object and msg.iface == M.LAUNCH.iface and msg.name == "log" then
+            return self:_log_signal(args)
         elseif msg.object == M.TASKS.object and msg.iface == M.TASKS.iface then
             return self:_tasks_signal(msg, args)
         elseif msg.name == "update" then
@@ -1968,7 +1977,13 @@ function Observer:_on_task(msg)
             task.cancelling = owned.cancelling
             owned.task = task
         end
-        return self:_add(task, owned and owned.runner)
+        self:_add(task, owned and owned.runner)
+        -- Its operation sees the `start` meta (a device log's `level`).
+        if owned and owned.on_start then
+            local ok, e = pcall(owned.on_start, type(msg.meta) == "table" and msg.meta or {})
+            if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
+        end
+        return
     end
     if not task then
         -- An owned task that ended before its `start` arrived still ends its
@@ -1981,6 +1996,8 @@ function Observer:_on_task(msg)
     end
     if msg.phase == "line" or msg.phase == "output" then
         task:append(tostring(msg.text or ""))
+        local owned = msg.phase == "line" and self._owned[id] or nil
+        if owned and owned.on_line then pcall(owned.on_line, tostring(msg.text or "")) end
     elseif msg.phase == "progress" then
         task.pct = tonumber(msg.pct)
         self:_emit("daemon_task_progress", { task = task })
@@ -2042,7 +2059,7 @@ M.DECLINED_CODES = { same_build_required = true, stopping = true, retiring = tru
 --- Tasks/1, to be cancelled).
 local METHOD_IFACE = {
     build = M.BUILD, configure = M.BUILD, clean = M.BUILD,
-    prepare_run = M.LAUNCH, prepare_debug = M.LAUNCH, launch_build = M.LAUNCH,
+    prepare_run = M.LAUNCH, prepare_debug = M.LAUNCH, launch_build = M.LAUNCH, device_log = M.LAUNCH,
     adapters = M.DEBUG, set_adapter = M.DEBUG,
     get = M.LSP, set_option = M.LSP,
     cancel = M.TASKS, list = M.TASKS,
@@ -2083,6 +2100,9 @@ local CALLS = {
     end,
     launch_build = function(conn, args, cb, env)
         conn:call(M.LAUNCH.object, M.LAUNCH.iface, M.LAUNCH.v, "build", args, cb, env)
+    end,
+    device_log = function(conn, args, cb, env)
+        conn:call(M.LAUNCH.object, M.LAUNCH.iface, M.LAUNCH.v, "device_log", args, cb, env)
     end,
     adapters = function(conn, args, cb, env)
         conn:call(M.DEBUG.object, M.DEBUG.iface, M.DEBUG.v, "adapters", args, cb, env)
@@ -2145,7 +2165,7 @@ local CALLS = {
 --- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"set_device"|"clear_device"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"set_device"|"clear_device"|"device_log"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -2259,6 +2279,8 @@ end
 --- @field runner loomworks.daemon.RunnerStrategy|nil the task-runner task of a restart, which its task continues
 --- @field cancelling boolean|nil the editor asked to cancel it
 --- @field units loomworks.ConfigUnit[]|nil the call's units, before its `start` names them
+--- @field on_start fun(meta: table)|nil its `start` arrived (its meta)
+--- @field on_line fun(text: string)|nil a `line` of its task
 --- @field task loomworks.RemoteTask|nil once its `start` arrived
 --- @field on_done fun(task: loomworks.RemoteTask|nil, reason: string|nil, done: table|nil)
 --- @field waiters fun()[] called once it ended (a cancel waiting for it)
@@ -2278,13 +2300,15 @@ end
 ---   { outcome = "failed", reason }     it may have started (an internal
 ---                                      error, the connection lost before
 ---                                      the reply): never re-run.
---- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"|"launch_build"|"device_scan"|"device_install"|"device_launch"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"|"launch_build"|"device_scan"|"device_install"|"device_launch"|"device_log"
 --- @param args table the call's arguments (§19.15)
 --- `h.units`: the call's configuration units (a clean pre-empts the task by
 --- them before its `start` arrives).
 --- `h.runner`: the task-runner task an overseer restart continues (step 5k
 --- C1b): the task's `start` binds to it instead of a new one.
---- @param h { units?: loomworks.ConfigUnit[], runner?: loomworks.daemon.RunnerStrategy, on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil, done: table|nil) }
+--- `h.on_start(meta)` / `h.on_line(text)`: its `start` meta and each of its
+--- `line`s, as they arrive (a device log's level and notes, step 5n C3).
+--- @param h { units?: loomworks.ConfigUnit[], runner?: loomworks.daemon.RunnerStrategy, on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil, done: table|nil), on_start?: fun(meta: table), on_line?: fun(text: string) }
 function Observer:start_owned(method, args, h)
     local conn = self.conn
     self:_icall(method, args, function(result, err)
@@ -2294,7 +2318,7 @@ function Observer:start_owned(method, args, h)
         local registered = false
         if id ~= nil and self.conn == conn then
             self._owned[id] = { method = method, args = args, units = h.units, runner = h.runner,
-                on_done = h.on_done, waiters = {} }
+                on_done = h.on_done, on_start = h.on_start, on_line = h.on_line, waiters = {} }
             registered = true
         end
         vim.schedule(function()
@@ -2344,6 +2368,88 @@ end
 --- @return table
 function M.done_result(msg)
     return type(msg.result) == "table" and msg.result or msg
+end
+
+-- ---------------------------------------------------------------------------
+-- A device log's records (step 5n C3, API.md §9.5): the `/launch` `log`
+-- signal of a subscription naming one device_log task
+-- ---------------------------------------------------------------------------
+
+--- @class loomworks.daemon.LogSub
+--- @field conn loomworks.daemon.Conn the connection it was made on
+--- @field on_log fun(args: table) a `log` signal's args `{ task, records, dropped? }`
+--- @field sub_id any|nil once the subscribe was answered
+--- @field dropped boolean|nil unsubscribed (M.unsubscribe_log); an answer still due is unsubscribed at once
+
+--- Subscribe, on `conn` (the connection the device_log task was started
+--- on), to the `log` signal of `Launch/1` on `/launch` for the device_log
+--- task `task_id` (`args = { task }`, Launch/1 `subscribe_args`):
+--- `on_log(args)` for each, on the main loop, until M.unsubscribe_log. A
+--- refused subscribe calls `on_error(message)` (on the main loop); nothing
+--- arrives then. `conn` no longer the observer's (closed or replaced — the
+--- task went with it): `on_error` at once, nothing sent.
+--- @param conn loomworks.daemon.Conn
+--- @param task_id any
+--- @param on_log fun(args: table)
+--- @param on_error fun(message: string)
+function Observer:subscribe_log(conn, task_id, on_log, on_error)
+    if not conn or conn ~= self.conn or conn.closed or type(conn.call) ~= "function" then
+        return on_error("the workspace daemon disconnected")
+    end
+    self._log_subs = self._log_subs or {}
+    --- @type loomworks.daemon.LogSub
+    local sub = { conn = conn, on_log = on_log }
+    self._log_subs[task_id] = sub
+    conn:call(M.ROOT.object, M.ROOT.iface, M.ROOT.v, "subscribe",
+        { object = M.LAUNCH.object, iface = M.LAUNCH.iface, v = M.LAUNCH.v, signals = { "log" },
+            args = { task = task_id } },
+        function(result, err)
+            vim.schedule(function()
+                if sub.dropped then
+                    if not err and type(result) == "table" and result.sub_id ~= nil then
+                        sub.sub_id = result.sub_id
+                        self:_send_unsubscribe(sub)
+                    end
+                    return
+                end
+                if err or type(result) ~= "table" then
+                    if self._log_subs and self._log_subs[task_id] == sub then self._log_subs[task_id] = nil end
+                    local text = type(err) == "table" and (err.message or tostring(err.code)) or tostring(err or "?")
+                    return on_error("could not subscribe to the device log: " .. text)
+                end
+                sub.sub_id = result.sub_id
+            end)
+        end)
+end
+
+--- Drop the `log` subscription of device_log task `task_id` (Root
+--- `unsubscribe`, once its subscribe was answered); nothing more of it
+--- reaches its `on_log`. Unknown or already dropped: nothing.
+--- @param task_id any
+function Observer:unsubscribe_log(task_id)
+    local sub = self._log_subs and self._log_subs[task_id]
+    if not sub then return end
+    self._log_subs[task_id] = nil
+    sub.dropped = true
+    if sub.sub_id ~= nil then self:_send_unsubscribe(sub) end
+end
+
+--- Send Root `unsubscribe` for `sub` on its connection, when still open.
+--- @param sub loomworks.daemon.LogSub
+function Observer:_send_unsubscribe(sub)
+    local conn = sub.conn
+    if not conn or conn.closed or type(conn.call) ~= "function" then return end
+    conn:call(M.ROOT.object, M.ROOT.iface, M.ROOT.v, "unsubscribe", { sub_id = sub.sub_id }, function() end)
+end
+
+--- A `/launch` `log` signal: to the subscription of its task on this
+--- connection (none: dropped — a subscription already ended).
+--- @param args table `{ task, records, dropped? }`
+function Observer:_log_signal(args)
+    local sub = self._log_subs and self._log_subs[args.task]
+    if not sub or sub.conn ~= self.conn then return end
+    local ok, e = pcall(sub.on_log, args)
+    if not ok then vim.notify("loomworks: " .. tostring(e), vim.log.levels.ERROR) end
 end
 
 -- ---------------------------------------------------------------------------

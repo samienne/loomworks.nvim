@@ -640,7 +640,7 @@ order and batched. The server keeps them in a bounded queue, sent at a short
 interval and held back while the owner's connection is behind
 ([PROTOCOL.md](PROTOCOL.md) §14.4); when the queue is full the oldest
 records are dropped, and their number is `dropped` on the next `log`, which a
-client shows as a gap. The task ends on a cancel or its owner's disconnect
+client shows as a gap. Until a subscription names the task, its records stay in the queue (bounded as above; overflow counts toward `dropped`) and the first `log` signal to a subscription naming it carries them. The task ends on a cancel or its owner's disconnect
 (nonzero); when the log command exits (its exit code, the queue sent
 first); or when the program has exited: its process id is probed every 3 s,
 as in-process, and two misses in a row end the task with exit 0 and the
