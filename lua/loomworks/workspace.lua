@@ -4634,7 +4634,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                         end
                     end
                     dirs[#dirs + 1] = normalized
-                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit, item.unit and item.unit._build_dir)
+                    -- An orphaned entry (no unit) carries its BuildDir.
+                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
+                        item.unit and item.unit._build_dir or item.build_dir_obj)
                     ::skip_dir::
                 end
             end
@@ -4966,10 +4968,11 @@ end
 --- Run `start()` (-> Future) holding O and the build locks of `dirs`; both are
 --- released when the future settles. A refused lock calls `on_done` and
 --- resolves false without running anything. A `start` that finished
---- synchronously may return nothing: the locks are released at once.
+--- synchronously returns its outcome as a boolean instead of a Future: the
+--- locks are released at once and the result resolves to it.
 --- @param operation string
 --- @param dirs string[]
---- @param start fun(): loomworks.Future|nil
+--- @param start fun(): loomworks.Future|boolean
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:_locked_deletion(operation, dirs, start, on_done)
@@ -4995,9 +4998,13 @@ function Workspace:_locked_deletion(operation, dirs, start, on_done)
     end
     local ok, f = pcall(start)
     if not ok then release(); error(f, 0) end
+    if type(f) == "boolean" then
+        release()
+        return future_mod.resolved(f)
+    end
     if f == nil then
         release()
-        return future_mod.resolved(true)
+        error("loomworks: _locked_deletion: start returned neither a Future nor an outcome", 0)
     end
     self._deletions = self._deletions or {}
     self._deletions[f] = true
