@@ -843,6 +843,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   short name like `RUNNER~1`): its parent under `.nvim/build` was listed as a
   stray directory. Stray detection now compares directory identity, and
   cleanup refuses any directory that holds a live build dir (#293).
+- The status page's *Clean all* of orphaned build directories no longer says
+  "cleaned" after a removal failed or was refused; it warns that the cleanup
+  is incomplete. A deletion that skips a directory (still used by a live
+  configuration) no longer leaves that directory's cache entry `unknown` when
+  another removal in the same batch fails (#298).
 - `lw device select` fails with the reason when it cannot save the profile's
   device, instead of reporting it saved; choosing a device in the editor
   shows the error likewise. (#287)

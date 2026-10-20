@@ -4175,9 +4175,20 @@ end
 --- leave the persisted entry claiming its old state (spec §4.7, §5.7). An
 --- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
 --- its BuildDir as `build_dir_obj`, which is marked directly.
+--- Only items whose build dir is in `to_remove` (the dirs actually handed to
+--- rm-rf) are marked: a skipped dir (shared with a live unit, overlapping a
+--- live build dir, or failing validation) stays as it is, since nothing would
+--- restore it if another removal in the batch failed — a shared BuildDir left
+--- `unknown` would block the surviving unit from configure/build.
 --- @param items loomworks.DeletionItem[]
-function Workspace:_mark_cache_unknown(items)
+--- @param to_remove? table<string, true> normalized build dirs handed to
+---   rm-rf; nil marks every item (no skip set known)
+function Workspace:_mark_cache_unknown(items, to_remove)
+    local normalize = self._core._deps.normalize
     for _, item in ipairs(items) do
+        if to_remove and not (item.build_dir and to_remove[normalize(item.build_dir)]) then
+            goto continue
+        end
         if not item.unit then
             local bd = item.build_dir_obj
             if bd and bd:has_state() then bd.state = "unknown" end
@@ -4674,19 +4685,13 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         return out
     end
     local f = self:stop_tasks_then(task_ids):next(function()
-        -- The `unknown` marks must reach the disk before any tree is removed
-        -- (§5.7): never staged in an open transaction (spec §19.4).
-        assert(not require("loomworks.txn").active(),
-            "loomworks: a deletion's cache write ran inside a transaction")
-        ws:_mark_cache_unknown(items)
-        ws:_save_cache()
-
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
 
         local safe_prefix = ws._core._deps.normalize(ws.root)
         local dirs = {}
         local seen_dirs = {}
+        local live_forms -- lazily, only when an orphaned entry is present
         for _, item in ipairs(items) do
             if item.build_dir then
                 local normalized = ws._core._deps.normalize(item.build_dir)
@@ -4702,6 +4707,18 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                             goto skip_dir
                         end
                     end
+                    -- An orphaned entry (no unit): its dir comes from the
+                    -- cache (never trusted) and may be, contain or lie inside
+                    -- a live build dir under another spelling (#293) — keep
+                    -- the tree; the entry itself is still dropped.
+                    if not item.unit then
+                        live_forms = live_forms or ws:_live_build_dir_forms()
+                        if ws:_overlaps_live_build_dir(normalized, live_forms) then
+                            ws._core._deps.notify("loomworks: skipped deleting " .. normalized
+                                .. " — it holds a live build dir", vim.log.levels.INFO)
+                            goto skip_dir
+                        end
+                    end
                     dirs[#dirs + 1] = normalized
                     -- An orphaned entry (no unit) carries its BuildDir.
                     dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
@@ -4710,6 +4727,16 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                 end
             end
         end
+
+        -- Crash safety (spec §5.7): every dir about to be removed is `unknown`
+        -- on disk before the async rm-rf starts; skipped dirs are untouched.
+        -- Never staged in an open transaction (spec §19.4).
+        assert(not require("loomworks.txn").active(),
+            "loomworks: a deletion's cache write ran inside a transaction")
+        local to_remove = {}
+        for _, d in ipairs(dirs) do to_remove[d] = true end
+        ws:_mark_cache_unknown(items, to_remove)
+        ws:_save_cache()
 
         return ws:_delete_build_dirs_async(dirs, nil, { stop = opts and opts.stop or nil })
     end):next(function(results)

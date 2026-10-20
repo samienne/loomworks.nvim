@@ -837,8 +837,12 @@ end
 --- The orphans go through `Workspace:_run_deletion` like every cache-backed
 --- deletion (spec §4.6, §5.7): their entries are marked `unknown` on disk
 --- before any tree is removed, a directory a live configuration still
---- references is kept, and the entries are dropped only when every removal
---- succeeded — a failed removal keeps them (`unknown`, reported).
+--- references is kept (the shared-dir refs check, plus
+--- `Workspace:_overlaps_live_build_dir` for a dir that is, contains or lies
+--- inside a live build dir under any spelling), and the entries are dropped
+--- only when every removal succeeded — a failed removal keeps them
+--- (`unknown`, reported). Confirmed-deleted orphan dirs hand their module to
+--- the owned LSP database cleanup.
 --- Returns a Future resolving `true` when everything was removed, `false`
 --- when a removal failed.
 --- @param ws loomworks.Workspace
