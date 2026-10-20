@@ -5,6 +5,13 @@ they don't get lost.
 
 ---
 
+## master: in-process deletions take no locks
+
+master: in-process deletions take no locks (no operation lock; cross-process
+lockfile only for configure/build/clean/reset per §16.6) — needs spec-first
+design if ever fixed on stable. (staging/daemon takes O + B on every editor
+deletion, §19.3, `Workspace:_locked_deletion`.)
+
 ## `working_dir`: Windows UNC / rooted forms, backslashes, `..`
 
 `working_dir` (saved test entries, §1.3.4, and a launch's `working_dir`,

@@ -268,8 +268,8 @@ function M.delete_stray_dir(dir)
             wv.execute_delete_stray_dir(ws, dir, function(ok, err)
                 if ok then
                     vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
-                else
-                    vim.notify("loomworks: failed to delete: " .. (err or "unknown"), vim.log.levels.ERROR)
+                elseif err then -- nil: the lock was refused (already reported)
+                    vim.notify("loomworks: failed to delete: " .. err, vim.log.levels.ERROR)
                 end
             end)
         end)
