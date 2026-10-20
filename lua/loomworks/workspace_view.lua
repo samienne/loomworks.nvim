@@ -620,38 +620,79 @@ end
 -- Orphan Cleanup
 -- =========================================================================
 
---- Canonical forms (ws:_canonicalize_boundary_path: 8.3 short<->long + case
---- reconciled, symlinks resolved) of every build dir referenced by a
---- ConfigUnit. Stray detection and stray deletion compare DIRECTORY IDENTITY
---- through these, never raw path spelling: a unit's build dir can be recorded
---- in a different spelling of the same location than ws.root (e.g. an 8.3
---- short temp path on a Windows runner), and a spelling mismatch would make a
---- live build dir's parent look stray — and orphan cleanup would delete it.
+--- Every form of every build dir referenced by a ConfigUnit: its canonical
+--- form (ws:_canonicalize_boundary_path: 8.3 short<->long + case reconciled,
+--- symlinks resolved) AND its plain normalized spelling. Stray detection and
+--- stray deletion compare DIRECTORY IDENTITY through these, never one raw
+--- spelling: a unit's build dir can be recorded in a different spelling of the
+--- same location than ws.root (e.g. an 8.3 short temp path on a Windows
+--- runner), and a mismatch would make a live build dir's parent look stray —
+--- and orphan cleanup would delete it. The normalized spelling is kept too
+--- because a build dir reached through a link/junction canonicalizes OUTSIDE
+--- .nvim/build, where only its recorded spelling still sits under its parent.
+--- Resolves (realpath) once per unit per call — i.e. per render/cleanup.
 --- @param ws loomworks.Workspace
 --- @return string[]
 local function live_build_dirs_canonical(ws)
-    local known = {}
+    local normalize = ws._core._deps.normalize
+    local known, seen = {}, {}
+    local function add(p)
+        if not seen[p] then
+            seen[p] = true
+            known[#known + 1] = p
+        end
+    end
     for _, unit in pairs(ws._config_units) do
         local bd = unit:build_dir()
         if bd and bd ~= "" then
-            known[#known + 1] = ws:_canonicalize_boundary_path(bd)
+            add(normalize(bd))
+            add(ws:_canonicalize_boundary_path(bd))
         end
     end
     return known
 end
 
---- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (canonical,
---- separator-bounded comparison) — such a dir must never be deleted as stray.
+--- Both comparable forms (normalized spelling, canonical) of `dir`.
+--- @param ws loomworks.Workspace
+--- @param dir string
+--- @return string[]
+local function path_forms(ws, dir)
+    local n = ws._core._deps.normalize(dir)
+    local c = ws:_canonicalize_boundary_path(dir)
+    if n == c then return { n } end
+    return { n, c }
+end
+
+--- True when `a` is a strict, separator-bounded ancestor of `b`.
+local function is_ancestor(a, b)
+    return b:sub(1, #a + 1) == a .. "/"
+end
+
+--- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
+--- of each side, separator-bounded) — such a dir must never be deleted as
+--- stray/orphaned. "Lies inside" only counts for a live dir that is not a
+--- strict ancestor of `<root>/.nvim/build`: an in-source unit (build_dir ==
+--- workspace root, allowed by _pre_configure_reset) contains the whole build
+--- tree without owning any of it, and must not shield every stray dir.
 --- @param ws loomworks.Workspace
 --- @param dir string
 --- @param known? string[] precomputed live_build_dirs_canonical(ws)
 --- @return boolean
 local function overlaps_live_build_dir(ws, dir, known)
     known = known or live_build_dirs_canonical(ws)
-    local c = ws:_canonicalize_boundary_path(dir)
-    for _, k in ipairs(known) do
-        if k == c or k:sub(1, #c + 1) == c .. "/" or c:sub(1, #k + 1) == k .. "/" then
-            return true
+    local build_roots = path_forms(ws, ws.root .. "/.nvim/build")
+    local function contains_build_root(k)
+        for _, br in ipairs(build_roots) do
+            if is_ancestor(k, br) then return true end
+        end
+        return false
+    end
+    for _, c in ipairs(path_forms(ws, dir)) do
+        for _, k in ipairs(known) do
+            if k == c or is_ancestor(c, k)
+                or (is_ancestor(k, c) and not contains_build_root(k)) then
+                return true
+            end
         end
     end
     return false
@@ -660,7 +701,7 @@ end
 --- Find build directories on disk under {root}/.nvim/build/ that are not
 --- referenced by any cache entry. Uses top-down pruning: reports the
 --- highest-level directory whose entire subtree contains no cache entries.
---- Comparisons use canonical paths (live_build_dirs_canonical); reported paths
+--- Comparisons use every path form (live_build_dirs_canonical); reported paths
 --- keep the scanned (normalized) spelling under ws.root for display.
 --- @param ws loomworks.Workspace
 --- @return string[] absolute paths of stray directories
@@ -669,7 +710,7 @@ function M.find_stray_build_dirs(ws)
     local build_root = ws.root .. "/.nvim/build"
     local normalize = ws._core._deps.normalize
 
-    -- Canonical build_dirs referenced by ConfigUnit objects
+    -- Build dirs (all forms) referenced by ConfigUnit objects
     local known_dirs = live_build_dirs_canonical(ws)
 
     -- Build a set for exact match and a list for prefix checks
@@ -677,7 +718,7 @@ function M.find_stray_build_dirs(ws)
     for _, d in ipairs(known_dirs) do known_set[d] = true end
 
     --- Check if any known cache dir is a proper child of the candidate.
-    --- @param candidate string canonical dir path
+    --- @param candidate string dir path (one of path_forms)
     --- @return boolean
     local function has_cache_entry_below(candidate)
         local prefix = candidate .. "/"
@@ -696,11 +737,17 @@ function M.find_stray_build_dirs(ws)
     local stray = {}
     local function scan(dir)
         local normalized = normalize(dir)
-        local canonical = ws:_canonicalize_boundary_path(dir)
-        if known_set[canonical] then
-            return -- this dir is a known build dir, don't touch it
+        local forms = path_forms(ws, dir)
+        for _, f in ipairs(forms) do
+            if known_set[f] then
+                return -- this dir is a known build dir, don't touch it
+            end
         end
-        if not has_cache_entry_below(canonical) then
+        local below = false
+        for _, f in ipairs(forms) do
+            if has_cache_entry_below(f) then below = true; break end
+        end
+        if not below then
             stray[#stray + 1] = normalized
             return
         end

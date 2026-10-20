@@ -150,5 +150,100 @@ describe("find_stray_build_dirs: directory identity, not spelling", function()
       assert.is_true(vim.wait(5000, function() return uv.fs_stat(root .. "/.nvim/build/Old") == nil end, 20))
       assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/marker.txt"))
     end)
+
+    it("refuses to delete a dir lying inside a live build dir under .nvim/build", function()
+      vim.fn.mkdir(root .. "/.nvim/build/App/Debug/sub", "p")
+      local done, ok_res = false, nil
+      wv.execute_delete_stray_dir(ws, root .. "/.nvim/build/App/Debug/sub", function(ok)
+        done, ok_res = true, ok
+      end)
+      assert.is_true(vim.wait(5000, function() return done end, 20))
+      assert.is_false(ok_res)
+      assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/sub"))
+    end)
+  end)
+
+  -- An in-source unit (build_dir == workspace root, allowed by
+  -- _pre_configure_reset) is an ancestor of all of .nvim/build. That must not
+  -- make every stray dir look like it "lies inside a live build dir".
+  describe("in-source live build dir", function()
+    local ws, root
+
+    before_each(function()
+      root = vim.fn.tempname():gsub("\\", "/")
+      vim.fn.mkdir(root, "p")
+      local profile
+      ws, profile = make_ws(root)
+      root = ws.root
+      live_build_dir(ws, profile, root, root)
+      vim.fn.mkdir(root .. "/.nvim/build/Old/x", "p")
+    end)
+
+    it("reports the genuinely stray dir", function()
+      local stray = wv.find_stray_build_dirs(ws)
+      assert.equals(1, #stray, vim.inspect(stray))
+      assert.is_truthy(stray[1]:lower():find("/%.nvim/build/old$"), vim.inspect(stray))
+    end)
+
+    it("orphan cleanup deletes the stray dir", function()
+      local done = false
+      wv.execute_orphan_cleanup(ws, {}, wv.find_stray_build_dirs(ws), function() done = true end)
+      assert.is_true(vim.wait(5000, function() return done end, 20))
+      assert.is_true(vim.wait(5000, function() return uv.fs_stat(root .. "/.nvim/build/Old") == nil end, 20))
+      assert.is_not_nil(uv.fs_stat(root .. "/marker.txt"))
+    end)
+
+    it("execute_delete_stray_dir deletes the stray dir", function()
+      local done, ok_res, err_res = false, nil, nil
+      wv.execute_delete_stray_dir(ws, root .. "/.nvim/build/Old", function(ok, err)
+        done, ok_res, err_res = true, ok, err
+      end)
+      assert.is_true(vim.wait(5000, function() return done end, 20))
+      assert.is_true(ok_res, tostring(err_res))
+      assert.is_nil(uv.fs_stat(root .. "/.nvim/build/Old"))
+    end)
+  end)
+
+  -- A live build dir whose path goes through a link/junction canonicalizes
+  -- OUTSIDE .nvim/build; its recorded spelling must still protect its parent.
+  describe("live build dir behind a link", function()
+    local ws, root
+
+    before_each(function()
+      root = vim.fn.tempname():gsub("\\", "/")
+      vim.fn.mkdir(root, "p")
+      local profile
+      ws, profile = make_ws(root)
+      root = ws.root
+      local link = (root .. "/.nvim/build/App/Debug"):lower()
+      local target = root:gsub("/[^/]+$", "/linktarget")
+      local real = ws._core._deps.realpath or uv.fs_realpath
+      ws._core._deps.realpath = function(p)
+        p = p:gsub("\\", "/")
+        local lp = p:lower()
+        if lp == link or lp:sub(1, #link + 1) == link .. "/" then
+          return target .. p:sub(#link + 1)
+        end
+        return real(p)
+      end
+      live_build_dir(ws, profile, root .. "/.nvim/build/App/Debug", root .. "/.nvim/build/App/Debug")
+      vim.fn.mkdir(root .. "/.nvim/build/Old", "p")
+    end)
+
+    it("does not report the link's parent as stray", function()
+      local stray = wv.find_stray_build_dirs(ws)
+      assert.equals(1, #stray, vim.inspect(stray))
+      assert.is_truthy(stray[1]:lower():find("/%.nvim/build/old$"), vim.inspect(stray))
+    end)
+
+    it("refuses to delete the link's parent", function()
+      local done, ok_res = false, nil
+      wv.execute_delete_stray_dir(ws, root .. "/.nvim/build/App", function(ok)
+        done, ok_res = true, ok
+      end)
+      assert.is_true(vim.wait(5000, function() return done end, 20))
+      assert.is_false(ok_res)
+      assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/marker.txt"))
+    end)
   end)
 end)
