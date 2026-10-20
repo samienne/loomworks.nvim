@@ -315,10 +315,13 @@ control, create intent, source selection, pin bypass, color — `--color`,
 `--no-color`, *Highlighting* above) are known to every
 command, and are recognised before the command and among its own arguments,
 up to the first `--` — never after it. After a launch configuration's command,
-when one is added, every token is the program's, verbatim, a global option or a
-`--` included; only a `--` before the command ends lw's options there. A
+when one is added, every token is the program's, verbatim, including lw's own
+options (`--env`, `--working-dir`, `--description`), a global option or a `--`.
+lw's options go before the command; only a `--` before the command ends lw's
+options there. A
 target-backed add (`--from-target <target>`) has no command token: until its
-first `--`, tokens are lw's options (an unknown one is a usage error); that
+first `--`, tokens are lw's options. An unknown option, or a bare token, is a
+usage error (exit 2) with a hint to put the program's arguments after `--`; that
 `--` is not kept, and every token after it is the program's, verbatim. When a launch configuration's arguments are edited and
 on the set-value commands (a configuration parameter, a project variable's
 default, a profile fill, a setting), a global option before `--` is lw's own
@@ -336,6 +339,22 @@ When a launch configuration's arguments are edited, bare tokens before `--` and
 every token after it are the new arguments; an unknown option before `--` is a
 usage error (exit 2) and nothing is changed — an argument starting with `-`
 goes after `--`.
+
+**Option values.** An lw option that takes a value accepts it as the next token
+or joined with `=` (`--working-dir=build`, `--env=PORT=8080`; the split is at
+the first `=`). A value is required: a valued option that is the last token, or
+is followed by `--` or by another token starting with `--`, is a usage error
+(exit 2) and nothing changes; a value that itself starts with `--` is given with
+`=`. An empty value is written `""`, and on a launch edit it clears that field:
+`--working-dir ""` is the same as `--clear-working-dir`, and `--description ""`
+on `set` clears the description. `--command ""` and `--from-target ""` are usage
+errors, since a launch configuration needs one of them. An option that holds one
+value is a usage error (exit 2), and nothing changes, when it is given twice.
+This covers `--working-dir`, including the alias pair `--cwd` / `--working-dir`,
+and `--working-dir` given together with `--clear-working-dir`. It also covers
+`--command` and `--from-target`, which are one choice, so giving both is a usage
+error. Repeatable options (`--env`, `--unset-env`, `--description`, `-m`) may be
+given more than once. Every usage error exits 2.
 
 **Unknown commands.** A command name the runner does not know is likewise a
 **usage error** (exit 2) that names it and points at the command index
@@ -3029,8 +3048,9 @@ lw launch    describe <project> <name>   [same]
 - Item-creating verbs (`project add`, `config add`, `configset create`,
   `profile create`) accept `-m <para>` (repeatable) to create the item already
   described.
-- `lw launch add` takes the description as `--description <para>`
-  (repeatable, joined like `-m`). It does **not** take `-m`. Everything after a
+- `lw launch add` and `lw launch set` take the description as
+  `--description <para>` (repeatable, joined like `-m`). On `set` it replaces
+  the whole description. Neither takes `-m`. Everything after a
   launch's command operand is the program's own arguments, where `-m` is
   common (`python -m http.server`), so `-m` there would change what runs.
 
@@ -3065,6 +3085,8 @@ bytes, not the terminal rendering.
 
 Combining two sources, or `--clear` with a source, is a usage error. `-e` may be
 combined with `-m`, `-F` or `<text>`, which then pre-fill the editor, as in git.
+In every `describe`, `--` ends lw's options: the token after it is the `<text>`
+operand, even when it starts with `-`.
 
 **Editor.** `-e` opens `$VISUAL`, then `$EDITOR`, on a temporary file. The file
 is pre-filled with the current description (or the pre-fill), followed by
