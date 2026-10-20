@@ -774,7 +774,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   locks, like every other deletion: they are refused, with the holder named
   and nothing removed, while another process (an `lw` command or another
   editor) is configuring or building the directory or holds the workspace,
-  instead of deleting a directory still being created. (#PR)
+  instead of deleting a directory still being created. (#292)
 - `lw device select` fails with the reason when it cannot save the profile's
   device, instead of reporting it saved; choosing a device in the editor
   shows the error likewise. (#287)
