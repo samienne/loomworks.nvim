@@ -55,6 +55,10 @@
 --- observer's cache of `Devices/1.list` (M.devices), and a profile's device
 --- `Profiles/1.set_device` / `clear_device` (M.set_device). All under the
 --- same availability rule: refused when not carried, never in-process.
+---
+--- Step 5n part C3 (API.md §9.5): a device run's log is a
+--- `Launch/1.device_log { task }` task the editor owns (M.device_log), its
+--- records the `/launch` `log` signal of a subscription naming that task.
 
 local M = {}
 
@@ -62,14 +66,18 @@ local VERB = { build = "build", configure = "configure", clean = "clean",
     prepare_run = "launch", prepare_debug = "debug launch", launch_build = "build", discover = "test discovery",
     run_cases = "test run", prepare_test_debug = "test debug preparation",
     device_list = "devices", device_scan = "device scan", device_install = "install", device_launch = "launch",
-    device_stop = "device stop", set_device = "device choice", clear_device = "device choice" }
+    device_stop = "device stop", set_device = "device choice", clear_device = "device choice",
+    device_log = "device log" }
 
 --- The calls whose task-runner restart is not sent again (§19.16 "Tasks in
 --- the task runner", step 5k C2): a launch's preparation ends in a program
 --- the editor starts after the call, which a restart of the task alone
 --- would never start. A device launch (step 5n C2) likewise: its program
 --- is the session tracker's to stop, which a restart alone would not tell.
-M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true, device_launch = true }
+--- A device log (step 5n C3) likewise: its records go to the view that
+--- started it, which a restart alone would not feed.
+M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true, device_launch = true,
+    device_log = true }
 
 --- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil) }
 
@@ -566,6 +574,89 @@ function M.device_stop(ws, task_id, conn, cb)
     local function gone() return M.launch_forgotten(conn) end
     if gone() then return cb(true) end
     M.plain("device_stop", ws, { task = task_id }, cb, gone)
+end
+
+--- Stream the log of the program a device launch task of the editor
+--- launched (`Launch/1.device_log { task }`, API.md §9.5; step 5n C3): one
+--- task the editor owns, sent on the launch's connection `conn`, under the
+--- availability rule. Accepted, its records arrive through a subscription
+--- to the `/launch` `log` signal naming the task (Observer:subscribe_log)
+--- and go to `sink.records(records, dropped)`; its `start` meta `level` to
+--- `sink.level`, its lines to `sink.line`. `sink.ended(err)` once: the task
+--- ended (`err` nil for exit 0), was refused or failed (notified), the
+--- launch was forgotten (its connection closed, M.launch_forgotten), or the
+--- connection was lost. The handle's `cancel()` (the view closed, the run
+--- stopped) cancels the task and drops the subscription; nothing more
+--- reaches the sink then. nil handle: ended at once.
+--- @param ws loomworks.Workspace|nil
+--- @param launch_task any the launch's task id
+--- @param conn loomworks.daemon.Conn|nil the connection the launch was sent on
+--- @param sink loomworks.DeviceLogSink
+--- @return { cancel: fun(self: table), task_id: any }|nil handle
+function M.device_log(ws, launch_task, conn, sink)
+    local daemon, mode_obs = M.daemon_of(ws)
+    if not daemon then
+        sink.ended("the workspace is not run by the workspace daemon")
+        return nil
+    end
+    local obs = M.carrier("device_log", ws)
+    if not obs then
+        M.refuse("device_log", mode_obs, { reject = function(msg) sink.ended(msg) end })
+        return nil
+    end
+    -- The daemon forgets a launch with its owner's connection (API.md §15):
+    -- a log of it from another connection is another client's — never sent.
+    if M.launch_forgotten(conn) or obs.conn ~= conn then
+        sink.ended("the program's launch was forgotten (the workspace daemon disconnected)")
+        return nil
+    end
+    local h = {}
+    local ended = false
+    local function finish(err)
+        if ended or h.cancelled then return end
+        ended = true
+        if h.task_id ~= nil then obs:unsubscribe_log(h.task_id) end
+        sink.ended(err)
+    end
+    function h.cancel(self)
+        if self.cancelled or ended then return end
+        self.cancelled = true
+        if self.task_id ~= nil then
+            obs:unsubscribe_log(self.task_id)
+            obs:cancel_owned_id(self.task_id)
+        end
+    end
+    local reply = on_reply("device_log", obs, { resolve = function() end, reject = function(err) finish(err) end })
+    obs:start_owned("device_log", { task = launch_task }, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then
+                h.task_id = r.task_id
+                if h.cancelled then return obs:cancel_owned_id(r.task_id) end
+                return obs:subscribe_log(r.task_id, function(args)
+                    if not (h.cancelled or ended) then sink.records(args.records, args.dropped) end
+                end, function(msg)
+                    if h.cancelled or ended then return end
+                    vim.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+                    -- No records can arrive: the task is of no use.
+                    obs:cancel_owned_id(r.task_id)
+                    finish(msg)
+                end)
+            end
+            if h.cancelled then return end
+            reply(r)
+        end,
+        on_start = function(meta)
+            if not (h.cancelled or ended) then sink.level(meta.level) end
+        end,
+        on_line = function(text)
+            if not (h.cancelled or ended) then sink.line(text) end
+        end,
+        on_done = function(task, reason)
+            if h.task_id == nil and type(task) == "table" and task.id ~= nil then h.task_id = task.id end
+            finish(failure("device log", task, reason))
+        end,
+    })
+    return h
 end
 
 --- A plain Devices/1 or Profiles/1 write the editor sends (`device_stop`,

@@ -266,6 +266,17 @@ function LogView:show(opts)
     vim.wo[self._win].wrap = false
     vim.wo[self._win].winfixheight = true
 
+    -- Its window closed any way (`q`, `:q`, `<C-w>c`): `on_close`, which
+    -- ends a stream the workspace daemon carries (M.start_remote).
+    local win = self._win
+    vim.api.nvim_create_autocmd("WinClosed", {
+        pattern = tostring(win), once = true,
+        callback = function()
+            if self._win == win then self._win = nil end
+            if self.on_close then self.on_close() end
+        end,
+    })
+
     if vim.api.nvim_win_is_valid(prev) then
         vim.api.nvim_set_current_win(prev)
     end
@@ -275,10 +286,13 @@ function LogView:show(opts)
 end
 
 function LogView:hide()
+    local was = self._win
     if self._win and vim.api.nvim_win_is_valid(self._win) then
         vim.api.nvim_win_close(self._win, true)
     end
     self._win = nil
+    -- (WinClosed calls it too; `on_close` is idempotent.)
+    if was and self.on_close then self.on_close() end
 end
 
 function LogView:toggle()
@@ -714,53 +728,131 @@ local _task = nil
 --- @type fun(record: table): boolean|nil
 local _prefilter = nil
 
+--- @class loomworks.DeviceLogRemote
+--- A stream the workspace daemon carries (`Launch/1.device_log`, step 5n
+--- C3): `handle` cancels it (nil when it was refused at once).
+--- @field handle { cancel: fun(self: table) }|nil
+
+--- @type loomworks.DeviceLogRemote|nil the daemon-carried stream feeding the view
+local _remote = nil
+
+--- @type fun()|nil starts the active run's daemon-carried stream again (M.set_source)
+local _source = nil
+
 local function ensure_view()
-    if not _view then _view = LogView.new() end
+    if not _view then
+        _view = LogView.new()
+        -- Closing the view ends a daemon-carried stream (its task is
+        -- cancelled, its subscription dropped); an in-process stream keeps
+        -- running hidden, as before.
+        _view.on_close = function()
+            if _remote then M.stop_remote() end
+        end
+    end
     return _view
 end
 
---- Why there is no device log here (spec §19.16 "Devices", step 5n C2):
---- in `daemon` mode a device program is launched by the workspace daemon,
---- and its log stream (`Launch/1.device_log`, a later step) is not carried
---- yet — the editor never streams it itself.
-M.DAEMON_NOTE = "device log: unavailable in daemon mode — the workspace daemon does not carry it yet "
-    .. "(loomworks.Launch/1.device_log)"
+--- The sink of a daemon-carried stream (M.start_remote): what the daemon's
+--- `Launch/1.device_log` task delivers (API.md §9.5), fed into the view.
+--- @class loomworks.DeviceLogSink
+--- @field level fun(name: string|nil) the task's `start` meta `level`
+--- @field records fun(records: loomworks.DeviceLogRecord[], dropped: integer|nil) a `log` signal
+--- @field line fun(text: string) a line of the task
+--- @field ended fun(err: string|nil) the task ended (nil: exit 0) or could not start
 
---- The device log's refusal now, or nil: `daemon` mode — the editor has an
---- observer of the workspace daemon (never loads the daemon modules: in
---- `in-process` mode there is none) — and no stream of this view running.
---- @return string|nil
-function M.unavailable()
-    if _task then return nil end
-    local mod = package.loaded["loomworks.daemon.observer"]
-    if type(mod) == "table" and type(mod.current) == "function" and mod.current() then
-        return M.DAEMON_NOTE
-    end
-    return nil
-end
-
---- The view, with the refusal as its last line while the log is
---- unavailable (once: not repeated while it is still the last note).
---- @return table LogView
-local function view_with_note()
+--- Show a device log the workspace daemon streams (`daemon` mode, step 5n
+--- C3; API.md §9.5). Ends any previous stream, clears the view, shows it
+--- with `opts.banner`, then `opts.open(sink)` starts the stream and returns
+--- its handle (`handle:cancel()`; nil when refused at once). The sink feeds
+--- the view the daemon's records (normalized records, rendered as parsed
+--- lines); the task's `start` meta `level` sets the soft level filter as
+--- `default_soft_filter` does in-process — only when the view is new, so a
+--- level the user tuned is kept across runs; `dropped` is a gap line; the
+--- task's lines and its end are lines of the view, which stays readable.
+--- Closing the view, M.stop or M.stop_remote cancel the stream; nothing more
+--- reaches the view from it then. `opts.on_end(err)` follows the stream's
+--- own end (never a cancel).
+--- @param opts { banner?: string, open: fun(sink: loomworks.DeviceLogSink): table|nil, on_end?: fun(err: string|nil) }
+--- @return loomworks.DeviceLogRemote
+function M.start_remote(opts)
+    M.stop()
+    local view_existed = _view ~= nil
     local view = ensure_view()
-    local why = M.unavailable()
-    if why and view._noted ~= why then
-        view._noted = why
-        view:_inject_header(why)
-    end
-    return view
+    view:clear()
+    if opts.banner and opts.banner ~= "" then view:_inject_header(opts.banner) end
+    view:show()
+
+    --- @type loomworks.DeviceLogRemote
+    local remote = {}
+    _remote = remote
+    local function live() return _remote == remote end
+    --- @type loomworks.DeviceLogSink
+    local sink = {
+        level = function(name)
+            if not live() or view_existed then return end
+            local letter = records.level_letter(name)
+            if letter then
+                local f = vim.tbl_extend("force", {}, view._filter or {})
+                f.level = letter
+                view:set_filter(f)
+            end
+        end,
+        records = function(list, dropped)
+            if not live() then return end
+            -- Records the daemon's queue dropped are gone: the gap stays
+            -- in the ring (a re-render keeps it in place).
+            if type(dropped) == "number" and dropped > 0 then
+                view:append_record({ header = string.format("… %d records dropped", dropped) })
+            end
+            for _, r in ipairs(type(list) == "table" and list or {}) do
+                view:append_record(records.denormalize(r))
+            end
+        end,
+        line = function(text)
+            if not live() or type(text) ~= "string" or text == "" then return end
+            view:append_record({ header = text })
+        end,
+        ended = function(err)
+            if not live() then return end
+            _remote = nil
+            view:append_record({ header = "── device log stream ended"
+                .. (err and (": " .. tostring(err)) or "") .. " ──" })
+            if opts.on_end then opts.on_end(err) end
+        end,
+    }
+    local handle = opts.open(sink)
+    if live() then remote.handle = handle end
+    return remote
 end
 
---- A device program was launched through the workspace daemon (step 5n
---- C2): the log is refused as a feature the daemon does not carry yet — one
---- notification line, and the note in the view — never streamed here.
-function M.refuse_daemon()
-    vim.notify("loomworks: " .. M.DAEMON_NOTE, vim.log.levels.INFO)
-    if _view then
-        _view._noted = nil
-        view_with_note()
+--- End the daemon-carried stream, if any: its task cancelled and its
+--- subscription dropped (the handle's `cancel`), a last line in the view.
+function M.stop_remote()
+    local r = _remote
+    if not r then return end
+    _remote = nil
+    if r.handle then pcall(r.handle.cancel, r.handle) end
+    if _view then _view:append_record({ header = "── device log stream stopped ──" }) end
+end
+
+--- What opening the view does while no stream runs (`daemon` mode): start
+--- the active device run's stream again. The session tracker sets it for a
+--- run the daemon launched and clears it when the run ends or its stream
+--- ended on its own. nil: opening only shows the view.
+--- @param fn fun()|nil
+function M.set_source(fn)
+    _source = fn
+end
+
+--- Opening the view starts the active run's stream when none runs
+--- (M.set_source); true when it did (the stream shows the view).
+--- @return boolean
+local function open_source()
+    if _source and not _task and not _remote and not (_view and _view:is_visible()) then
+        _source()
+        return true
     end
+    return false
 end
 
 --- Start a new device-log stream. Disposes any previous stream first so
@@ -786,7 +878,6 @@ end
 function M.start(opts)
     M.stop()
     _prefilter = opts.prefilter
-    if _view then _view._noted = nil end
 
     local view_existed = _view ~= nil
     local view = ensure_view()
@@ -830,8 +921,10 @@ function M.start(opts)
     return _task
 end
 
---- Stop the current stream. Safe to call when nothing's running.
+--- Stop the current stream (in-process, or carried by the workspace
+--- daemon: M.stop_remote). Safe to call when nothing's running.
 function M.stop()
+    M.stop_remote()
     if _task then
         pcall(function() _task:stop() end)
         pcall(function() _task:dispose() end)
@@ -844,17 +937,26 @@ end
 --- first call so `<leader>wO` works before a device session has
 --- ever started — the buffer is just empty until something streams
 --- into it.
---- In `daemon` mode the view says why it is empty (M.unavailable).
+--- In `daemon` mode, opening it while no stream runs starts the active
+--- device run's stream again (M.set_source).
 function M.toggle()
-    view_with_note():toggle()
+    if open_source() then return end
+    ensure_view():toggle()
 end
 
 function M.show()
-    view_with_note():show()
+    if open_source() then return end
+    ensure_view():show()
 end
 
 function M.hide()
     if _view then _view:hide() end
+end
+
+--- Is the view shown?
+--- @return boolean
+function M.is_visible()
+    return _view ~= nil and _view:is_visible()
 end
 
 function M.set_filter(filter)
@@ -887,13 +989,30 @@ function M.clear()
     if _view then _view:clear() end
 end
 
-function M.is_running() return _task ~= nil end
+--- Is a stream running — in-process, or carried by the workspace daemon?
+function M.is_running() return _task ~= nil or _remote ~= nil end
 function M.task() return _task end
 
 --- Test-only: reset module singletons between spec runs.
 function M._reset_for_tests()
     M.stop()
+    _source = nil
+    if _view then _view.on_close = nil; _view:hide() end
     _view = nil
+end
+
+--- Test-only: the view's rendered lines (empty without a view).
+--- @return string[]
+function M._lines_for_tests()
+    if not _view or not vim.api.nvim_buf_is_valid(_view._buf) then return {} end
+    _view:_flush()
+    return vim.api.nvim_buf_get_lines(_view._buf, 0, -1, false)
+end
+
+--- Test-only: the view's filter (nil without a view).
+--- @return table|nil
+function M._filter_for_tests()
+    return _view and _view._filter
 end
 
 -- Expose LogView for tests.

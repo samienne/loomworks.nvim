@@ -24,6 +24,8 @@ local events = require("loomworks.events")
 local device_source = require("loomworks.device_source")
 local editor_ops = require("loomworks.daemon.editor_ops")
 local session_tracker = require("loomworks.session_tracker")
+local dl = require("loomworks.device_log")
+local devices_mod = require("loomworks.daemon.devices")
 local H = require("tests.daemon_helpers")
 local FR = require("tests.daemon_fake_relay")
 
@@ -73,7 +75,10 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         log = H.tmp() .. "/device.log"
         saved_env = { lock = vim.env.LOOMWORKS_DEVICE_LOCK_DIR, log = vim.env.LW_TEST_DEVICE_LOG,
             fail = vim.env.LW_TEST_DEVICE_FAIL, sleep = vim.env.LW_TEST_DEVICE_SLEEP,
-            scan = vim.env.LW_TEST_SCAN_SLEEP, build = vim.env.LW_TEST_SLEEP }
+            scan = vim.env.LW_TEST_SCAN_SLEEP, build = vim.env.LW_TEST_SLEEP,
+            log_count = vim.env.LW_TEST_LOG_COUNT, log_sleep = vim.env.LW_TEST_LOG_SLEEP,
+            queue_max = devices_mod.LOG_QUEUE_MAX }
+        dl._reset_for_tests()
         vim.env.LOOMWORKS_DEVICE_LOCK_DIR = H.tmp() .. "/locks"
         vim.env.LW_TEST_DEVICE_LOG = log
         core = Core.new()
@@ -104,6 +109,10 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         vim.env.LW_TEST_DEVICE_SLEEP = saved_env.sleep
         vim.env.LW_TEST_SCAN_SLEEP = saved_env.scan
         vim.env.LW_TEST_SLEEP = saved_env.build
+        vim.env.LW_TEST_LOG_COUNT = saved_env.log_count
+        vim.env.LW_TEST_LOG_SLEEP = saved_env.log_sleep
+        devices_mod.LOG_QUEUE_MAX = saved_env.queue_max
+        dl._reset_for_tests()
         trust._set_key_path(nil)
     end)
 
@@ -117,6 +126,14 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
     local function noted(text)
         for _, n in ipairs(notes) do
             if n.msg:find(text, 1, true) then return true end
+        end
+        return false
+    end
+
+    --- Does a line of the device-log view contain `text`?
+    local function view_has(text)
+        for _, l in ipairs(dl._lines_for_tests()) do
+            if l:find(text, 1, true) then return true end
         end
         return false
     end
@@ -235,7 +252,8 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         local kinds = {}
         for _, t in ipairs(started) do
             assert.is_true(t.owned)
-            kinds[#kinds + 1] = t.kind
+            -- (Its device log, started at the launch, is checked below.)
+            if t.kind ~= "device_log" then kinds[#kinds + 1] = t.kind end
         end
         assert.same({ "scan", "build", "install", "launch" }, kinds)
         local id = session_tracker.active_run().device_task
@@ -243,9 +261,15 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         local lines = read(log)
         assert.truthy(lines:find("install SER1", 1, true), lines)
         assert.truthy(lines:find("launch SER1 com.example.app", 1, true), lines)
-        -- The device log is refused, never streamed here.
-        assert.is_true(noted("device log: unavailable in daemon mode"))
-        assert.is_false(require("loomworks.device_log").is_running())
+        -- Its device log: a Launch/1.device_log task the editor owns, its
+        -- records in the view; the stub's log exits at once, so it ends.
+        assert.is_true(vim.wait(60000, function()
+            return view_has("hello from the app") and view_has("device log stream ended ──")
+        end, 20), table.concat(dl._lines_for_tests(), "\n"))
+        assert.is_true(task_of("device_log").owned)
+        assert.is_false(dl.is_running())
+        assert.is_true(dl.is_visible())
+        assert.same({}, errors())
 
         -- Stop: Devices/1.stop of the launch task.
         session_tracker.stop()
@@ -371,5 +395,54 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.same({}, errors())
         assert.is_false(session_tracker.is_running())
         assert.is_nil(read(root .. "/.nvim/loomworks.user.json"):find('"SER1"', 1, true))
+    end)
+
+    -- Step 5n C3 (API.md §9.5): the run's device log through the real
+    -- daemon — a Launch/1.device_log task the editor owns, its records the
+    -- `/launch` `log` signal of a subscription naming it.
+    --- A device run of SER1 launched; its device log's task once started.
+    local function launched_with_log()
+        serve()
+        choose_ser1()
+        session_tracker.start(profile:default_target(), "launch")
+        assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
+            vim.inspect(errors()))
+        assert.is_true(vim.wait(60000, function() return task_of("device_log") ~= nil end, 20))
+        return task_of("device_log")
+    end
+
+    it("the device log's `start` level is the new view's filter", function()
+        launched_with_log()
+        assert.is_true(vim.wait(60000, function() return view_has("hello from the app") end, 20))
+        -- The devstub's options: level D.
+        assert.equals("D", dl._filter_for_tests().level)
+    end)
+
+    it("records the daemon's queue dropped are a gap line in the view", function()
+        devices_mod.LOG_QUEUE_MAX = 5
+        vim.env.LW_TEST_LOG_COUNT = "20"
+        launched_with_log()
+        assert.is_true(vim.wait(60000, function() return view_has("device log stream ended ──") end, 20),
+            table.concat(dl._lines_for_tests(), "\n"))
+        assert.is_true(view_has("records dropped"), table.concat(dl._lines_for_tests(), "\n"))
+        assert.is_true(view_has("flood 20"))
+        assert.same({}, errors())
+    end)
+
+    it("closing the view cancels the device log task; the run goes on", function()
+        vim.env.LW_TEST_LOG_SLEEP = "20000"
+        local task = launched_with_log()
+        assert.is_true(vim.wait(60000, function() return view_has("hello from the app") end, 20))
+        assert.is_true(dl.is_running())
+        local stopped
+        on("daemon_task_stopped", function(d) if d.task == task then stopped = d.task end end)
+        dl.hide()
+        assert.is_false(dl.is_running())
+        assert.is_true(vim.wait(15000, function() return stopped ~= nil end, 20))
+        assert.is_true(task.finished)
+        assert.is_true(session_tracker.is_running())
+        assert.is_false(view_has("device log stream ended"))
+        assert.is_true(view_has("device log stream stopped"))
+        assert.same({}, errors())
     end)
 end)
