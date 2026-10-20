@@ -167,8 +167,10 @@ function M.open(root)
                 y = function(self)
                     self:close()
                     workspace_view.execute_remove_project(ws, project, ctx, function(ok, err)
-                        if not ok then
-                            vim.notify("loomworks: " .. (err or "failed to remove"), vim.log.levels.ERROR)
+                        -- err is nil when the deletion's lock was refused
+                        -- (already reported by the workspace)
+                        if not ok and err then
+                            vim.notify("loomworks: " .. err, vim.log.levels.ERROR)
                         end
                     end)
                 end,

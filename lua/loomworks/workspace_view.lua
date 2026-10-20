@@ -260,9 +260,32 @@ function M.compute_remove_context(ws, project)
     }
 end
 
+--- The directories among `paths` that lie within the workspace root
+--- (`_validate_build_dir`), normalized — the ones a deletion may remove and
+--- so the ones whose build locks it takes.
+--- @param ws loomworks.Workspace
+--- @param paths (string|nil)[]
+--- @return string[]
+local function validated_dirs(ws, paths)
+    local norm = ws._core._deps.normalize
+    local safe_prefix = norm(ws.root)
+    local dirs = {}
+    for _, p in pairs(paths) do
+        if p then
+            local n = norm(p)
+            if ws:_validate_build_dir(n, safe_prefix) then dirs[#dirs + 1] = n end
+        end
+    end
+    return dirs
+end
+
 --- Execute remove: delete cached configs + build dirs, remove project,
 --- downgrade profiles. The deletion is async (build dirs deleted via
 --- subprocess), so on_done is called when complete.
+--- The deletion and the removal run holding the workspace operation lock and
+--- the build locks of the removed directories (spec §19.3,
+--- `Workspace:_locked_deletion`); a refused lock is reported there and
+--- `on_done(false, nil)` is called with nothing removed.
 --- @param ws loomworks.Workspace
 --- @param project loomworks.Project project to remove
 --- @param ctx { project_type: string, cached_configs: table[], downgrade_preview: table[] }
@@ -273,27 +296,31 @@ function M.execute_remove_project(ws, project, ctx, on_done)
     -- Step 1: Delete cached configs and build dirs (async)
     local configs = ctx.cached_configs or {}
     if #configs > 0 then
-        ws:_run_deletion(configs, function()
-            ws:delete_cached_configs(configs)
-            ws:_save_cache()
-            ws:remerge()
-        end, function()
-            -- Step 2: Remove project from config (after deletion completes)
-            local ok, err = ws:remove_project(project)
-            if not ok then
-                on_done(false, err)
-                return
-            end
-            -- Step 3: Downgrade profiles if needed
-            if #ctx.downgrade_preview > 0 then
-                local d_ok, d_err = ws:downgrade_profiles_from_tool(ctx.project_type)
-                if d_ok == false then
-                    on_done(false, "project removed, but its profiles were not downgraded: " .. tostring(d_err))
+        local paths = {}
+        for _, item in ipairs(configs) do paths[#paths + 1] = item.build_dir end
+        ws:_locked_deletion("delete", validated_dirs(ws, paths), function()
+            return ws:_run_deletion(configs, function()
+                ws:delete_cached_configs(configs)
+                ws:_save_cache()
+                ws:remerge()
+            end, function()
+                -- Step 2: Remove project from config (after deletion completes)
+                local ok, err = ws:remove_project(project)
+                if not ok then
+                    on_done(false, err)
                     return
                 end
-            end
-            on_done(true)
-        end)
+                -- Step 3: Downgrade profiles if needed
+                if #ctx.downgrade_preview > 0 then
+                    local d_ok, d_err = ws:downgrade_profiles_from_tool(ctx.project_type)
+                    if d_ok == false then
+                        on_done(false, "project removed, but its profiles were not downgraded: " .. tostring(d_err))
+                        return
+                    end
+                end
+                on_done(true)
+            end)
+        end, function() on_done(false, nil) end)
     else
         -- No cached configs to delete — remove directly
         local ok, err = ws:remove_project(project)
@@ -709,84 +736,82 @@ function M.compute_orphan_cleanup_context(ws)
     }
 end
 
---- Execute orphan cleanup: delete orphaned cache entries + build dirs,
---- then delete stray build dirs.
+--- Orphan cleanup without the locks (the caller holds them): delete the
+--- orphaned configurations' build dirs, drop their BuildDir objects, then
+--- delete the stray dirs. Returns a Future settling when all is done.
 --- @param ws loomworks.Workspace
---- @param orphaned_configs table[] { project_key, config_key, build_dir? }
---- @param stray_dirs string[] absolute paths
---- @param on_done? fun()
-function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
-    on_done = on_done or function() end
+--- @param orphaned_configs table[]
+--- @param stray_dirs string[]
+--- @return loomworks.Future
+local function orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs)
+    local safe_prefix = ws._core._deps.normalize(ws.root)
 
-    local function delete_stray()
-        if #stray_dirs == 0 then
-            on_done()
-            return
-        end
-        local safe_prefix = ws._core._deps.normalize(ws.root)
-        local valid_dirs = {}
-        for _, dir in ipairs(stray_dirs) do
-            if ws:_validate_build_dir(dir, safe_prefix) then
-                valid_dirs[#valid_dirs + 1] = dir
+    -- Orphaned configurations' build dirs
+    local dirs = {}
+    for _, item in ipairs(orphaned_configs) do
+        if item.build_dir then
+            local normalized = ws._core._deps.normalize(item.build_dir)
+            if ws:_validate_build_dir(normalized, safe_prefix) then
+                dirs[#dirs + 1] = normalized
             end
         end
-        if #valid_dirs == 0 then
-            on_done()
-            return
-        end
-        ws:_delete_build_dirs_async(valid_dirs, function()
-            on_done()
-        end)
     end
 
-    if #orphaned_configs > 0 then
-        -- Collect build dirs to delete
-        local dirs = {}
-        local safe_prefix = ws._core._deps.normalize(ws.root)
+    local function remove_build_dir_objects()
+        -- Remove BuildDir objects and clear their state
+        local deploy = require("loomworks.deploy")
         for _, item in ipairs(orphaned_configs) do
-            if item.build_dir then
-                local normalized = ws._core._deps.normalize(item.build_dir)
-                if ws:_validate_build_dir(normalized, safe_prefix) then
-                    dirs[#dirs + 1] = normalized
-                end
-            end
-        end
-
-        local function remove_build_dir_objects()
-            -- Remove BuildDir objects and clear their state
-            local deploy = require("loomworks.deploy")
-            for _, item in ipairs(orphaned_configs) do
-                local bd = item.build_dir_obj
-                if bd then
-                    -- Clean deploy records sourced from this build dir
-                    deploy.clean_deploy_records(ws._deploy_records, bd.rel_path)
-                    bd:clear_state()
-                    -- Remove from _build_dirs array
-                    for i, b in ipairs(ws._build_dirs) do
-                        if b == bd then
-                            table.remove(ws._build_dirs, i)
-                            break
-                        end
+            local bd = item.build_dir_obj
+            if bd then
+                -- Clean deploy records sourced from this build dir
+                deploy.clean_deploy_records(ws._deploy_records, bd.rel_path)
+                bd:clear_state()
+                -- Remove from _build_dirs array
+                for i, b in ipairs(ws._build_dirs) do
+                    if b == bd then
+                        table.remove(ws._build_dirs, i)
+                        break
                     end
                 end
             end
-            ws:_save_cache()
-            ws:_sync_build_dir_refs()
-            ws._core._deps.events.emit("active_set_changed", ws._active_set)
         end
-
-        if #dirs > 0 then
-            ws:_delete_build_dirs_async(dirs, function()
-                remove_build_dir_objects()
-                delete_stray()
-            end)
-        else
-            remove_build_dir_objects()
-            delete_stray()
-        end
-    else
-        delete_stray()
+        ws:_save_cache()
+        ws:_sync_build_dir_refs()
+        ws._core._deps.events.emit("active_set_changed", ws._active_set)
     end
+
+    -- Stray dirs
+    local valid_stray = {}
+    for _, dir in ipairs(stray_dirs) do
+        if ws:_validate_build_dir(dir, safe_prefix) then
+            valid_stray[#valid_stray + 1] = dir
+        end
+    end
+
+    return ws:_delete_build_dirs_async(dirs):next(function()
+        if #orphaned_configs > 0 then remove_build_dir_objects() end
+        return ws:_delete_build_dirs_async(valid_stray)
+    end)
+end
+
+--- Execute orphan cleanup: delete orphaned cache entries + build dirs,
+--- then delete stray build dirs.
+--- Runs holding the workspace operation lock and the build locks of every
+--- directory it removes (spec §19.3, `Workspace:_locked_deletion`); a refused
+--- lock is reported there and `on_done(false)` is called with nothing removed.
+--- @param ws loomworks.Workspace
+--- @param orphaned_configs table[] { project_key, config_key, build_dir? }
+--- @param stray_dirs string[] absolute paths
+--- @param on_done? fun(ok: boolean)
+function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
+    on_done = on_done or function() end
+    local paths = {}
+    for _, item in ipairs(orphaned_configs) do paths[#paths + 1] = item.build_dir end
+    for _, dir in ipairs(stray_dirs) do paths[#paths + 1] = dir end
+    ws:_locked_deletion("delete", validated_dirs(ws, paths), function()
+        return orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs)
+            :next(function() on_done(true) end)
+    end, function() on_done(false) end)
 end
 
 -- =========================================================================
@@ -1069,6 +1094,9 @@ end
 --- Execute stray build dir deletion.
 --- @param ws loomworks.Workspace
 --- @param dir string absolute normalized path
+--- Runs holding the workspace operation lock and the directory's build lock
+--- (spec §19.3, `Workspace:_locked_deletion`); a refused lock is reported
+--- there and `on_done(false, nil)` is called with nothing removed.
 --- @param on_done? fun(ok: boolean, err: string|nil)
 function M.execute_delete_stray_dir(ws, dir, on_done)
     on_done = on_done or function() end
@@ -1077,15 +1105,17 @@ function M.execute_delete_stray_dir(ws, dir, on_done)
         on_done(false, "path outside workspace")
         return
     end
-    ws:_delete_build_dirs_async({ dir }, function(results)
-        if results[1] and results[1].ok then
-            ws._core._deps.events.emit("deletion_completed", {})
-            on_done(true)
-        else
-            local err = results[1] and results[1].err or "unknown"
-            on_done(false, err)
-        end
-    end)
+    ws:_locked_deletion("delete", { dir }, function()
+        return ws:_delete_build_dirs_async({ dir }, function(results)
+            if results[1] and results[1].ok then
+                ws._core._deps.events.emit("deletion_completed", {})
+                on_done(true)
+            else
+                local err = results[1] and results[1].err or "unknown"
+                on_done(false, err)
+            end
+        end)
+    end, function() on_done(false, nil) end)
 end
 
 -- =========================================================================
