@@ -1003,8 +1003,8 @@ M._match_profile_arg = match_profile_arg
 local function resolve_profile(ws, name, opts)
   -- loomworks.build_run.resolve_profile; the refusals are its messages.
   local o = { no_number = opts and opts.no_number, usage = opts and opts.usage, interactive = interactive() }
-  local p, err = require("loomworks.build_run").resolve_profile(ws, name, o)
-  if not p then die(err, require("loomworks.build_run").is_usage_refusal(err) and 2 or 1) end
+  local p, err, code = require("loomworks.build_run").resolve_profile(ws, name, o)
+  if not p then die(err, code or 1) end
   return p
 end
 M._resolve_profile = resolve_profile
@@ -1103,10 +1103,10 @@ local function resolve_build_target(ws, name, usage)
   usage = usage or "lw build <profile>"
   -- The match / refusal rules are loomworks.build_run.resolve_target's (shared
   -- with the workspace daemon, spec §19.15); only onboarding is this host's.
-  local p, err = require("loomworks.build_run").resolve_target(ws, name,
+  local p, err, _, code = require("loomworks.build_run").resolve_target(ws, name,
     { usage = usage, interactive = interactive() })
   if p then return p, ws end
-  if err then die(err, require("loomworks.build_run").is_usage_refusal(err) and 2 or 1) end
+  if err then die(err, code or 1) end
 
   -- Onboard: build a config set by creating a profile for it.
   local sets = ws._config_sets or {}

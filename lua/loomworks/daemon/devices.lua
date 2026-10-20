@@ -604,8 +604,8 @@ local function task_method(service, op, run_fn)
     local build_run = require("loomworks.build_run")
     local function accept(ctx)
         if ctx.conn.closed then return end
-        local function refused(msg)
-            return ctx.reply({ outcome = "refused", message = msg, exit_code = build_run.is_usage_refusal(msg) and 2 or 1,
+        local function refused(msg, code)
+            return ctx.reply({ outcome = "refused", message = msg, exit_code = code or 1,
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
         local ws, refusal, decline = service:live(ctx)
@@ -618,12 +618,12 @@ local function task_method(service, op, run_fn)
             local a = core_ifaces.operation_args(ctx.args)
             local stale = service:_resolve_ids(ws, a)
             if stale then return refused(stale) end
-            local profile, err, action = build_run.resolve_target(ws, a.profile,
+            local profile, err, action, code = build_run.resolve_target(ws, a.profile,
                 { interactive = false, usage = "lw run <profile> <target>" })
             if action == "onboard" then
                 return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
             end
-            if not profile then return refused(err) end
+            if not profile then return refused(err, code) end
             ctx.a, ctx.profile = a, profile
         end
         local task = service.tasks:create(ctx.conn)

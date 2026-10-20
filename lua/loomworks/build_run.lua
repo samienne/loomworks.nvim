@@ -66,21 +66,13 @@ end
 --- Resolve the profile a command operates on: the named one, else — only when
 --- interactive — the active profile, else the only one. Non-interactive mode
 --- never uses the active profile nor infers one (a deterministic CI result).
---- Returns the profile or nil + the refusal.
+--- Returns the profile, or nil + the refusal + its exit code: 2 for no profile
+--- named in non-interactive mode (a usage error, spec 16.7), nil (exit 1) for
+--- the workspace-state refusals.
 --- @param ws table
 --- @param name string|nil
 --- @param opts? { no_number?: boolean, usage?: string, interactive?: boolean }
---- @return table|nil profile, string|nil err
---- The start of the refusal for no profile named in non-interactive mode: a
---- usage error (exit 2, spec 16.7), unlike the workspace-state refusals.
-M.NO_PROFILE_NON_INTERACTIVE = "no profile specified — non-interactive mode"
-
---- @param err string a `resolve_profile` / `resolve_target` refusal
---- @return boolean
-function M.is_usage_refusal(err)
-    return type(err) == "string" and err:sub(1, #M.NO_PROFILE_NON_INTERACTIVE) == M.NO_PROFILE_NON_INTERACTIVE
-end
-
+--- @return table|nil profile, string|nil err, integer|nil code
 function M.resolve_profile(ws, name, opts)
     opts = opts or {}
     local profiles = ws._profiles or {}
@@ -94,12 +86,12 @@ function M.resolve_profile(ws, name, opts)
         local keys = {}
         for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
         table.sort(keys)
-        return nil, M.NO_PROFILE_NON_INTERACTIVE .. " never uses the active profile\n" ..
+        return nil, "no profile specified — non-interactive mode never uses the active profile\n" ..
             "  and never infers one (not even when only one profile exists).\n" ..
             "  pass one explicitly (a unique substring works): " ..
             (opts.usage or "lw <command> <profile>") .. "\n" ..
             "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
-            "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically"
+            "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically", 2
     end
     local active = ws._active_profile_key
     if active then
@@ -112,13 +104,14 @@ function M.resolve_profile(ws, name, opts)
 end
 
 --- Resolve the profile a build (and clean / test / reset / run) targets
---- (§16.9). Returns the profile; or nil + the refusal; or nil, nil, "onboard"
---- when no profile matches and the caller is interactive — the host then
---- onboards a profile from a configuration set (prompts; never in a daemon).
+--- (§16.9). Returns the profile; or nil + the refusal + nil + its exit code
+--- (2 for a usage error, see `resolve_profile`; nil = exit 1); or nil, nil,
+--- "onboard" when no profile matches and the caller is interactive — the host
+--- then onboards a profile from a configuration set (prompts; never in a daemon).
 --- @param ws table
 --- @param name string|nil
 --- @param opts? { usage?: string, interactive?: boolean }
---- @return table|nil profile, string|nil err, string|nil action
+--- @return table|nil profile, string|nil err, "onboard"|nil action, integer|nil code
 function M.resolve_target(ws, name, opts)
     opts = opts or {}
     local profiles = ws._profiles or {}
@@ -130,7 +123,10 @@ function M.resolve_target(ws, name, opts)
         if err then return nil, err end
         if hit then return hit end
     else
-        if not opts.interactive then return M.resolve_profile(ws, nil, { usage = usage }) end
+        if not opts.interactive then
+            local p, err, code = M.resolve_profile(ws, nil, { usage = usage })
+            return p, err, nil, code
+        end
         local active = ws._active_profile_key
         if active then for _, p in ipairs(profiles) do if p.key == active then return p end end end
         if #profiles == 1 then return profiles[1] end
@@ -148,7 +144,8 @@ function M.resolve_target(ws, name, opts)
                 end
             end
         end
-        return M.resolve_profile(ws, name, { usage = usage })
+        local p, err, code = M.resolve_profile(ws, name, { usage = usage })
+        return p, err, nil, code
     end
     return nil, nil, "onboard"
 end
