@@ -230,7 +230,8 @@ function M.command_words(args)
 end
 
 -- `lw launch add|create` hands the line to a program after its command
--- operand (or `--from-target <t>`): every token there is a program argument.
+-- operand: every token there is a program argument. `--from-target <t>` has
+-- no command token, so lw's options then run to the first `--`.
 local LAUNCH_ADD = { add = true, create = true }
 local LAUNCH_ADD_VALUED = { ["--working-dir"] = true, ["--cwd"] = true, ["--env"] = true,
   ["--description"] = true }
@@ -267,13 +268,22 @@ function M.own_end(args)
   if not (args[c] == "launch" and LAUNCH_ADD[args[c + 1] or ""]) then
     return to_dashdash(c + 1), c
   end
+  -- A valued option takes the next token unless that is missing, `--` or
+  -- starts with `--` (spec §16.7 "Option values": the bundle refuses those);
+  -- `--opt=value` is one token.
+  local function step(k)
+    local nx = args[k + 1]
+    if nx == nil or nx:sub(1, 2) == "--" then return k + 1 end
+    return k + 2
+  end
   local npos, k = 0, c + 2
   while k <= #args do
     local v = args[k]
     if v == "--" or npos >= 3 then return k, c end
-    if v == "--from-target" then return math.min(k + 2, n), c end
+    if v == "--from-target" then return to_dashdash(step(k)), c end
+    if v:sub(1, 14) == "--from-target=" then return to_dashdash(k + 1), c end
     if LAUNCH_ADD_VALUED[v] then
-      k = k + 2
+      k = step(k)
     else
       if v:sub(1, 1) ~= "-" then npos = npos + 1 end
       k = k + 1

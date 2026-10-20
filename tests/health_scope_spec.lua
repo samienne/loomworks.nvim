@@ -323,7 +323,7 @@ describe("health scope — CLI (§16.36)", function()
         _G.arg = { "health", "compilers" }
         local r = capture(function() cli.main() end)
         _G.arg = saved_arg
-        assert.equals(1, r.exit_code)
+        assert.equals(2, r.exit_code)
         assert.matches("unknown health area 'compilers'", r.stderr, 1, true)
         assert.matches("toolchains", r.stderr, 1, true)
     end)

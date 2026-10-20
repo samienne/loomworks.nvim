@@ -822,8 +822,8 @@ function Service:_accept(ctx)
         if not units then return ctx.reply({ outcome = "refused", message = uerr, exit_code = 1,
             notes = ctx.notes, note_roles = ctx.note_roles }) end
     else
-        local err, action
-        profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
+        local err, action, code
+        profile, err, action, code = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
             -- (No `lw configure`: a configure's refusal names `lw build`.)
             usage = launching and "lw run <profile> <target>"
                 or ("lw " .. (ctx.op == "configure" and "build" or ctx.op) .. " <profile>") })
@@ -831,7 +831,7 @@ function Service:_accept(ctx)
             return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
         end
         if not profile then
-            return ctx.reply({ outcome = "refused", message = err, exit_code = 1,
+            return ctx.reply({ outcome = "refused", message = err, exit_code = code or 1,
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
     end
@@ -933,13 +933,13 @@ function Service:_accept_reset(ctx, ws)
     if a.all then
         scope = { all = true }
     else
-        local profile, err, action = build_run.resolve_target(ws, a.profile,
+        local profile, err, action, code = build_run.resolve_target(ws, a.profile,
             { interactive = ctx.interactive, usage = "lw reset <profile>" })
         if action == "onboard" then
             return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
         end
         if not profile then
-            return ctx.reply({ outcome = "refused", message = err, exit_code = 1,
+            return ctx.reply({ outcome = "refused", message = err, exit_code = code or 1,
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
         scope = { profile = profile }

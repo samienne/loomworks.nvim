@@ -29,7 +29,7 @@ end
 
 local function refusal(fn)
   local r = capture(fn)
-  assert.equals(1, r.exit_code)
+  assert.equals(2, r.exit_code)
   assert.is_truthy(r.stderr:find("no profile specified", 1, true), r.stderr)
   return r.stderr
 end

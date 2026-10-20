@@ -1003,8 +1003,8 @@ M._match_profile_arg = match_profile_arg
 local function resolve_profile(ws, name, opts)
   -- loomworks.build_run.resolve_profile; the refusals are its messages.
   local o = { no_number = opts and opts.no_number, usage = opts and opts.usage, interactive = interactive() }
-  local p, err = require("loomworks.build_run").resolve_profile(ws, name, o)
-  if not p then die(err) end
+  local p, err, code = require("loomworks.build_run").resolve_profile(ws, name, o)
+  if not p then die(err, code or 1) end
   return p
 end
 M._resolve_profile = resolve_profile
@@ -1103,10 +1103,10 @@ local function resolve_build_target(ws, name, usage)
   usage = usage or "lw build <profile>"
   -- The match / refusal rules are loomworks.build_run.resolve_target's (shared
   -- with the workspace daemon, spec §19.15); only onboarding is this host's.
-  local p, err = require("loomworks.build_run").resolve_target(ws, name,
+  local p, err, _, code = require("loomworks.build_run").resolve_target(ws, name,
     { usage = usage, interactive = interactive() })
   if p then return p, ws end
-  if err then die(err) end
+  if err then die(err, code or 1) end
 
   -- Onboard: build a config set by creating a profile for it.
   local sets = ws._config_sets or {}
@@ -1322,14 +1322,14 @@ function M.cmd_build(ws, args)
       local name = a:match("^%-%-target=(.*)$")
       if not name then i = i + 1; name = args[i] end
       if not name or name == "" or name == "--" or name:sub(1, 1) == "-" then
-        die("--target needs a target name — " .. usage)
+        die("--target needs a target name — " .. usage, 2)
       end
       targets[#targets + 1] = name
     else pre[#pre + 1] = a end
     i = i + 1
   end
   if pre[2] then
-    die("unexpected argument '" .. tostring(pre[2]) .. "' — " .. usage)
+    die("unexpected argument '" .. tostring(pre[2]) .. "' — " .. usage, 2)
   end
   local profile
   profile, ws = resolve_build_target(ws, pre[1])
@@ -1444,14 +1444,14 @@ function M.cmd_reset(ws, args, opts)
     if a == "--all" then all = true
     elseif a == "-y" or a == "--yes" then yes = true
     elseif a:sub(1, 1) == "-" then
-      die("unknown flag '" .. a .. "' — usage: lw reset [profile] [--all] [-y]")
+      die("unknown flag '" .. a .. "' — usage: lw reset [profile] [--all] [-y]", 2)
     elseif not profile_name then profile_name = a
     else
-      die("unexpected argument '" .. a .. "' — usage: lw reset [profile] [--all] [-y]")
+      die("unexpected argument '" .. a .. "' — usage: lw reset [profile] [--all] [-y]", 2)
     end
   end
   if all and profile_name then
-    die("`lw reset --all` resets every profile — drop the profile argument")
+    die("`lw reset --all` resets every profile — drop the profile argument", 2)
   end
 
   -- The plan (spec §16.30) is loomworks.reset_plan's, shared with the
@@ -1563,7 +1563,7 @@ function M.cmd_trust(root, args)
     local v = args[i]
     if v == "-y" or v == "--yes" then yes = true
     elseif v == "--discard" then discard = true
-    else die("unknown argument '" .. v .. "' — usage: lw trust [--yes] [--discard]") end
+    else die("unknown argument '" .. v .. "' — usage: lw trust [--yes] [--discard]", 2) end
   end
   local trust = require("loomworks.trust")
   local io_mod = require("loomworks.io")
@@ -1666,7 +1666,7 @@ function M.cmd_nuke(root, args)
   for i = 2, #args do
     local v = args[i]
     if v == "-y" or v == "--yes" then yes = true
-    else die("unknown argument '" .. v .. "' — usage: lw nuke [-y]") end
+    else die("unknown argument '" .. v .. "' — usage: lw nuke [-y]", 2) end
   end
   local core = require("loomworks")._core()
   -- The locks first (spec §19.3), BEFORE the list of what would go and any
@@ -1760,7 +1760,7 @@ function M.cmd_unlock(ws, args, root)
     elseif args[i] == "--workspace" then workspace = true; i = i + 1
     elseif args[i] == "--device" then
       device_serial = args[i + 1]
-      if not device_serial then die("--device requires a serial") end
+      if not device_serial then die("--device requires a serial", 2) end
       i = i + 2
     elseif not profile_name then profile_name = args[i]; i = i + 1
     else i = i + 1 end
@@ -1901,7 +1901,7 @@ function M._unlock_build_dirs(ws, all, name, force)
     end
   else
     if not name then
-      die("usage: lw unlock <profile> | <build dir> | --all [--force] | --device <serial>")
+      die("usage: lw unlock <profile> | <build dir> | --all [--force] | --device <serial>", 2)
     end
     -- A name with a path separator is a build directory; else a profile.
     local is_path = name:find("[/\\]") ~= nil
@@ -2006,7 +2006,7 @@ end
 --- Parse a positive number option value (`--timeout 30`).
 function DEV.parse_seconds(flag, v)
   local n = tonumber(v)
-  if not n or n <= 0 then die(flag .. " requires a positive number of seconds (got '" .. tostring(v) .. "')") end
+  if not n or n <= 0 then die(flag .. " requires a positive number of seconds (got '" .. tostring(v) .. "')", 2) end
   return n
 end
 M._parse_seconds = DEV.parse_seconds
@@ -2039,7 +2039,7 @@ function DEV.parse_device_opt(argv, i, o)
   local v = argv[i]
   if v == "--device" then
     o.device = argv[i + 1]
-    if not o.device or o.device == "" then die("--device requires a serial") end
+    if not o.device or o.device == "" then die("--device requires a serial", 2) end
     o._next = i + 2
   elseif v == "--fresh" then o.fresh = true; o._next = i + 1
   elseif v == "--no-wait" then o.no_wait = true; o._next = i + 1
@@ -2048,7 +2048,7 @@ function DEV.parse_device_opt(argv, i, o)
   elseif v == "--transfer-timeout" then o.timeouts.transfer = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
   elseif v == "--log" then
     local k, val = require("loomworks.remote.run").parse_log_arg(argv[i + 1] or "")
-    if not k then die(val) end
+    if not k then die(val, 2) end
     o.log_options = o.log_options or {}
     o.log_options[k] = val
     o._next = i + 2
@@ -2133,13 +2133,13 @@ function M._device_select(ws, args)
   local serial, profile_name
   if clear then
     profile_name = positionals[1]
-    if #positionals > 1 then die("usage: lw device select --clear [profile]") end
+    if #positionals > 1 then die("usage: lw device select --clear [profile]", 2) end
   else
     serial, profile_name = positionals[1], positionals[2]
     if not serial or #positionals > 2 then
-      die("usage: lw device select <serial> [profile] | lw device select --clear [profile]")
+      die("usage: lw device select <serial> [profile] | lw device select --clear [profile]", 2)
     end
-    if serial:find("[%c]") then die("invalid device serial") end
+    if serial:find("[%c]") then die("invalid device serial", 2) end
   end
   local profile = resolve_profile(ws, profile_name, { usage = "lw device select <serial> <profile>" })
   if clear then
@@ -2202,7 +2202,7 @@ function DEV.project_device_set(root, pos)
   local values = {}
   for i = 3, #pos do values[#values + 1] = pos[i] end
   local sub, name = field:match("^device%.([%w_]+)%.?(.*)$")
-  if not sub or #values == 0 then die(DEV.BLOCK_USAGE) end
+  if not sub or #values == 0 then die(DEV.BLOCK_USAGE, 2) end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local block = vim.deepcopy(proj.device or {})
@@ -2214,7 +2214,7 @@ function DEV.project_device_set(root, pos)
     block.env = type(block.env) == "table" and block.env or {}
     block.env[name] = values[1]
   else
-    die("cannot set '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+    die("cannot set '" .. field .. "'\n" .. DEV.BLOCK_USAGE, 2)
   end
   local ok, err = proj:save_device(block)
   if not ok then die(err or "failed to update the device block") end
@@ -2242,7 +2242,7 @@ function DEV.project_device_unset(root, proj_name, field)
     if block[sub] == nil then die("project '" .. proj.key .. "' sets no device." .. sub) end
     block[sub] = nil
   else
-    die("cannot unset '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+    die("cannot unset '" .. field .. "'\n" .. DEV.BLOCK_USAGE, 2)
   end
   local ok, err = proj:save_device(block)
   if not ok then die(err or "failed to update the device block") end
@@ -2263,7 +2263,7 @@ function M._device_clean(ws, args, deps)
     elseif v == "--no-wait" then no_wait = true; i = i + 1
     elseif v == "--query-timeout" then opts.timeouts.query = DEV.parse_seconds(v, args[i + 1]); i = i + 2
     elseif not profile_name and not v:match("^%-") then profile_name = v; i = i + 1
-    else die("usage: lw device clean [--device <serial>] [--no-wait] [profile]") end
+    else die("usage: lw device clean [--device <serial>] [--no-wait] [profile]", 2) end
   end
   local profile = DEV.soft_profile(ws, profile_name)
   local runner, serial = DEV.pick_device(ws, profile, explicit, opts, deps)
@@ -2314,7 +2314,7 @@ function M.cmd_device(sub, root, args)
       if v == "--json" then opts.json = true; i = i + 1
       elseif v == "--query-timeout" then opts.timeouts.query = DEV.parse_seconds(v, rest[i + 1]); i = i + 2
       elseif not opts.profile and not v:match("^%-") then opts.profile = v; i = i + 1
-      else die("unexpected argument '" .. v .. "' — usage: lw device list [--json] [profile]") end
+      else die("unexpected argument '" .. v .. "' — usage: lw device list [--json] [profile]", 2) end
     end
     local ws = load_workspace(root, false)
     return M._device_list(ws, opts)
@@ -2326,7 +2326,7 @@ function M.cmd_device(sub, root, args)
     return M._device_clean(ws, rest)
   end
   die("usage: lw device list [--json] | lw device select <serial> [profile] [--clear] | " ..
-    "lw device clean [--device <serial>]")
+    "lw device clean [--device <serial>]", 2)
 end
 
 --- Ensure a config unit's build targets are parsed (loomworks.build_run).
@@ -2363,10 +2363,10 @@ function M.cmd_test(ws, args)
   while pre[i] do
     if pre[i] == "--junit" then
       junit = pre[i + 1]
-      if not junit then die("--junit requires a file path") end
+      if not junit then die("--junit requires a file path", 2) end
       i = i + 2
     elseif pre[i] == "--target" then
-      if not pre[i + 1] then die("--target requires a test executable name") end
+      if not pre[i + 1] then die("--target requires a test executable name", 2) end
       if #names == 0 then selectors = selectors + 1 end
       names[#names + 1] = pre[i + 1]
       i = i + 2
@@ -2388,7 +2388,7 @@ function M.cmd_test(ws, args)
       profile_name = pre[i]; i = i + 1
     else
       die("unexpected argument '" .. tostring(pre[i]) ..
-        "' — usage: lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--no-build] [-v|--verbose] [--junit <file>] [-- args…]")
+        "' — usage: lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--no-build] [-v|--verbose] [--junit <file>] [-- args…]", 2)
     end
   end
   if selectors > 1 then
@@ -2543,7 +2543,7 @@ function M._parse_run_args(args, fail, device)
       local val = pre[i + 1]
       if val == nil then
         return fail("--prefix requires a wrapper command (e.g. `--prefix valgrind` or " ..
-          "`--prefix 'valgrind --leak-check=full'`)")
+          "`--prefix 'valgrind --leak-check=full'`)", 2)
       end
       for _, tok in ipairs(shell_split(val)) do r.prefix_tokens[#r.prefix_tokens + 1] = tok end
       i = i + 2
@@ -2553,7 +2553,7 @@ function M._parse_run_args(args, fail, device)
       r.dry_run = r.dry_run or pre[i]:match("^%-%-dry%-run=") ~= nil
       local fmt = pre[i]:gsub("^%-%-[%w%-]+=", "")
       if fmt ~= "sh" and fmt ~= "json" then
-        return fail("--print format must be 'sh' or 'json' (got '" .. fmt .. "')")
+        return fail("--print format must be 'sh' or 'json' (got '" .. fmt .. "')", 2)
       end
       r.print_mode = fmt; i = i + 1
     elseif pre[i] == "--no-build" then r.no_build = true; i = i + 1
@@ -2567,7 +2567,7 @@ function M._parse_run_args(args, fail, device)
     -- --print reports the bare resolved command; a wrapper is a run-execution
     -- concern. Combining them is contradictory — reject rather than guess.
     return fail("--print and --prefix are mutually exclusive: --print reports the " ..
-      "resolved command (compose your own wrapper), --prefix runs under one.")
+      "resolved command (compose your own wrapper), --prefix runs under one.", 2)
   end
   return r
 end
@@ -2606,7 +2606,7 @@ end
 ---                    resolved cwd/env, on the real terminal (so interactive
 ---                    gdb/valgrind work). Repeatable and shell-word split, so
 ---                    `--prefix 'valgrind --leak-check=full'` and
----                    `--prefix gdb --prefix --args` both give multiple tokens.
+---                    `--prefix gdb --prefix=--args` both give multiple tokens.
 ---   --print[=sh|json] build (quietly), then resolve the launch but do NOT
 ---                     execute; report it and exit 0. `sh` (default) is a single
 ---                     POSIX-sh-quoted line; `json` is `{cmd:[argv], cwd, env:{overrides}}`.
@@ -3389,64 +3389,91 @@ end
 --- the build-tree run environment; args/env/working_dir layer on top).
 function M.cmd_launch_add(root, args)
   local proj_name, name = args[3], args[4]
-  local usage = "usage: lw launch add <project> <name> <command> [args…] [--working-dir D] [--env K=V]\n" ..
-    "   or: lw launch add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]"
-  if not (proj_name and name) then die(usage) end
+  local usage = "usage: lw launch add <project> <name> [--working-dir D] [--env K=V] [--description <para>] <command> [args…]\n" ..
+    "   or: lw launch add <project> <name> --from-target <target> [--working-dir D] [--env K=V] [-- args…]"
+  if not (proj_name and name) then die(usage, 2) end
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
 
   -- A new launch name must be valid (spec §8.7).
   local vok, verr = require("loomworks.project").validate_launch_name(name)
-  if not vok then die("invalid launch name '" .. name .. "': " .. verr) end
+  if not vok then die("invalid launch name '" .. name .. "': " .. verr, 2) end
 
   -- `--description <para>` (repeatable) — not `-m`: everything after the
   -- command is the program's own args, where `-m` is common (§16.35).
-  local positionals, from_target, working_dir, env = {}, nil, nil, nil
+  -- lw's options go before the command: from the command on, every token is
+  -- the program's, verbatim, lw's own options included (spec §16.7).
+  -- `--opt=value`, a missing value and a single-valued option given twice are
+  -- settled by the dispatcher (cli_options, "Option values"); a missing value
+  -- here is still refused for direct callers.
+  local function value(i, what)
+    local v = args[i + 1]
+    if v == nil or v == "--" then die(args[i] .. " needs " .. what .. "\n" .. usage, 2) end
+    return v
+  end
+  local command, prog, from_target, working_dir, env = nil, {}, nil, nil, nil
   local paras = {}
+  local stray -- the first token before `--` that is not lw's on a target-backed add
   local i = 5
   while args[i] do
     local v = args[i]
-    if v == "--" then
-      -- Before the command (or the target), `--` ends lw's options: the rest
-      -- is the command and its arguments. After it the `--` is itself a
-      -- program argument (`npm run dev -- --port 3000`). Either way every
-      -- token after it is the program's, verbatim (spec §16.7).
-      local from = (#positionals == 0 and not from_target) and i + 1 or i
-      for k = from, #args do positionals[#positionals + 1] = args[k] end
+    if command then
+      prog[#prog + 1] = v; i = i + 1
+    elseif v == "--" then
+      -- Before the command `--` ends lw's options: the rest is the command
+      -- and its arguments. A target-backed add has no command token, so its
+      -- `--` is lw's and is dropped; every token after it is the program's.
+      local rest = {}
+      for k = i + 1, #args do rest[#rest + 1] = args[k] end
+      if from_target then
+        prog = rest
+      else
+        command = table.remove(rest, 1)
+        prog = rest
+      end
       break
     elseif v == "--description" then
-      if args[i + 1] == nil then die("--description needs a paragraph") end
-      paras[#paras + 1] = args[i + 1]; i = i + 2
-    elseif v:sub(1, 14) == "--description=" then
-      paras[#paras + 1] = v:sub(15); i = i + 1
-    elseif v == "--working-dir" or v == "--cwd" then working_dir = args[i + 1]; i = i + 2
-    elseif v == "--from-target" then from_target = args[i + 1]; i = i + 2
+      paras[#paras + 1] = value(i, "a paragraph"); i = i + 2
+    elseif v == "--working-dir" or v == "--cwd" then
+      working_dir = value(i, "a directory"); i = i + 2
+    elseif v == "--from-target" then
+      from_target = value(i, "a target name")
+      if from_target == "" then die("--from-target needs a target name\n" .. usage, 2) end
+      i = i + 2
     elseif v == "--env" then
-      local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
-      if not k then die("bad --env '" .. tostring(args[i + 1]) .. "' — use KEY=VALUE") end
+      local e = value(i, "KEY=VALUE")
+      local k, val = e:match("^([^=]+)=(.*)$")
+      if not k then die("bad --env '" .. e .. "' — use KEY=VALUE", 2) end
       env = env or {}; env[k] = val; i = i + 2
-    else positionals[#positionals + 1] = v; i = i + 1 end
+    elseif from_target then
+      -- No command token: until `--` every token is lw's (spec §16.7).
+      stray = stray or v; i = i + 1
+    elseif #v > 1 and v:sub(1, 1) == "-" then
+      die("unknown option '" .. v .. "' for `lw launch add` — see `lw help launch`", 2)
+    else
+      command = v; i = i + 1
+    end
   end
 
   local cfg
   if from_target then
-    -- Target-backed: no command positional; remaining positionals are args.
-    cfg = { target = from_target }
-    if #positionals > 0 then cfg.args = positionals end
-  else
-    if #positionals == 0 then die(usage) end
-    cfg = { command = positionals[1] }
-    if #positionals > 1 then
-      local a = {}
-      for k = 2, #positionals do a[#a + 1] = positionals[k] end
-      cfg.args = a
+    if stray then
+      local what = (#stray > 1 and stray:sub(1, 1) == "-") and "unknown option" or "unexpected argument"
+      die(what .. " '" .. stray .. "' for `lw launch add` — see `lw help launch`" ..
+        "\n    (arguments for the target's program go after `--`)", 2)
     end
+    cfg = { target = from_target }
+  else
+    if not command then die(usage, 2) end
+    cfg = { command = command }
   end
-  if working_dir then cfg.working_dir = working_dir end
+  if #prog > 0 then cfg.args = prog end
+  -- An empty value is no value (spec §16.7): `--working-dir ""` sets none.
+  if working_dir and working_dir ~= "" then cfg.working_dir = working_dir end
   if env then cfg.env = env end
   if #paras > 0 then
     local dok, desc, derr = require("loomworks.description").prepare(table.concat(paras, "\n\n"))
-    if not dok then die("invalid --description: " .. tostring(derr)) end
+    if not dok then die("invalid --description: " .. tostring(derr), 2) end
     cfg.description = desc
   end
 
@@ -3470,14 +3497,16 @@ end
 --- @param ws table
 --- @param tokens string[]
 --- @param start integer index of the first address token (3 for `launch <sub>`)
+--- @param skip? table<string, true> the caller's flags, skipped wherever they stand
 --- @return string|nil project_name, string|nil launch_name, integer next_index
-local function consume_launch_address(ws, tokens, start)
+local function consume_launch_address(ws, tokens, start, skip)
   local proj_flag, launch_flag, pos = nil, nil, {}
   local i = start
   while tokens[i] do
     local t = tokens[i]
     if t == "--project" then proj_flag = tokens[i + 1]; i = i + 2
     elseif t == "--launch" then launch_flag = tokens[i + 1]; i = i + 2
+    elseif skip and skip[t] then i = i + 1 -- a known flag of the caller (`show --json`)
     elseif t:sub(1, 2) == "--" then break -- an edit flag: the address ends here
     else
       local need = (proj_flag and 0 or 1) + (launch_flag and 0 or 1)
@@ -3516,15 +3545,17 @@ local launch_show_resolved
 ---   --working-dir D | --clear-working-dir
 ---   --env K=V (add/update, repeatable) | --unset-env K (remove, repeatable)
 ---   --command C | --from-target T   (switch kind)
----   trailing positionals replace args | --clear-args
+---   --description <para> (repeatable; replaces the whole description)
+---   bare args before `--` and every token after it replace args | --clear-args
+---   (an unknown option before `--` is a usage error, spec §16.7; an empty
+---   value clears: `--working-dir ""`, `--description ""`)
 function M.cmd_launch_set(root, args)
+  local usage = "usage: lw launch set [<project>] <name> [--project P] [--launch N] " ..
+    "[--working-dir D|--clear-working-dir] [--env K=V] [--unset-env K] " ..
+    "[--command C|--from-target T] [--description <para>] [args…|--clear-args]"
   local ws = load_workspace(root, false)
   local proj_name, name, next_i = consume_launch_address(ws, args, 3)
-  if not (proj_name and name) then
-    die("usage: lw launch set [<project>] <name> [--project P] [--launch N] " ..
-      "[--working-dir D|--clear-working-dir] " ..
-      "[--env K=V] [--unset-env K] [--command C|--from-target T] [args…|--clear-args]")
-  end
+  if not (proj_name and name) then die(usage, 2) end
   local project = resolve_project(ws, proj_name)
   local cur = project.launch and project.launch[name]
   if type(cur) ~= "table" then
@@ -3543,7 +3574,15 @@ function M.cmd_launch_set(root, args)
     local a = {}; for i, v in ipairs(new.args) do a[i] = v end; new.args = a
   end
 
-  local new_args, touched = nil, false
+  -- A missing value, `--opt=value` and a single-valued option given twice
+  -- are settled by the dispatcher (cli_options, spec §16.7 "Option values");
+  -- a missing value here is still refused for direct callers.
+  local function value(i, what)
+    local v = args[i + 1]
+    if v == nil or v == "--" then die(args[i] .. " needs " .. what .. "\n" .. usage, 2) end
+    return v
+  end
+  local new_args, touched, paras = nil, false, nil
   local i = next_i
   while args[i] do
     local v = args[i]
@@ -3552,28 +3591,52 @@ function M.cmd_launch_set(root, args)
       new_args = new_args or {}
       for k = i + 1, #args do new_args[#new_args + 1] = args[k] end
       break
-    elseif v == "--working-dir" or v == "--cwd" then new.working_dir = args[i + 1]; touched = true; i = i + 2
+    elseif v == "--working-dir" or v == "--cwd" then
+      -- An empty value clears, like --clear-working-dir.
+      local d = value(i, "a directory")
+      new.working_dir = d ~= "" and d or nil; touched = true; i = i + 2
     elseif v == "--clear-working-dir" then new.working_dir = nil; touched = true; i = i + 1
     elseif v == "--env" then
-      local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
-      if not k then die("bad --env '" .. tostring(args[i + 1]) .. "' — use KEY=VALUE") end
+      local e = value(i, "KEY=VALUE")
+      local k, val = e:match("^([^=]+)=(.*)$")
+      if not k then die("bad --env '" .. e .. "' — use KEY=VALUE", 2) end
       new.env = new.env or {}; new.env[k] = val; touched = true; i = i + 2
     elseif v == "--unset-env" then
-      local k = args[i + 1]
-      if not k then die("--unset-env needs a KEY") end
+      local k = value(i, "a KEY")
       if type(new.env) == "table" then
         new.env[k] = nil
         if not next(new.env) then new.env = nil end
       end
       touched = true; i = i + 2
     elseif v == "--clear-args" then new.args = nil; touched = true; i = i + 1
-    elseif v == "--command" then new.command = args[i + 1]; new.target = nil; touched = true; i = i + 2
-    elseif v == "--from-target" then new.target = args[i + 1]; new.command = nil; touched = true; i = i + 2
+    elseif v == "--command" or v == "--from-target" then
+      -- A launch configuration needs one of them: an empty one is refused.
+      local c = value(i, v == "--command" and "a command" or "a target name")
+      if c == "" then die(v .. " needs " .. (v == "--command" and "a command" or "a target name")
+        .. " — a launch configuration needs one\n" .. usage, 2) end
+      if v == "--command" then new.command = c; new.target = nil
+      else new.target = c; new.command = nil end
+      touched = true; i = i + 2
+    elseif v == "--description" then
+      -- Repeatable, one paragraph each; replaces the whole description.
+      paras = paras or {}
+      paras[#paras + 1] = value(i, "a paragraph"); touched = true; i = i + 2
+    elseif #v > 1 and v:sub(1, 1) == "-" then
+      -- An unknown option is a usage error, not an argument: nothing changes
+      -- (spec §16.7). An argument starting with `-` goes after `--`.
+      die("unknown option '" .. v .. "' for `lw launch set` — see `lw help launch`" ..
+        "\n    (arguments starting with `-` go after `--`)", 2)
     else new_args = new_args or {}; new_args[#new_args + 1] = v; i = i + 1 end
   end
   if new_args then new.args = new_args; touched = true end
   if not touched then
-    die("nothing to change — pass e.g. --working-dir D, --env K=V, --unset-env K")
+    die("nothing to change — pass e.g. --working-dir D, --env K=V, --unset-env K\n" .. usage, 2)
+  end
+  if paras then
+    -- `--description ""` clears (an empty text is no description, §1.10).
+    local dok, desc, derr = require("loomworks.description").prepare(table.concat(paras, "\n\n"))
+    if not dok then die("invalid --description: " .. tostring(derr), 2) end
+    new.description = desc
   end
 
   local ok, err = project:save_launch_config(name, new)
@@ -3659,9 +3722,9 @@ end
 --- `--project`/`--launch`).
 function M.cmd_launch_show(root, args)
   local ws = read_workspace(root, false)
-  local proj_name, name = consume_launch_address(ws, args, 3)
+  local proj_name, name = consume_launch_address(ws, args, 3, { ["--json"] = true })
   if not (proj_name and name) then
-    die("usage: lw launch show [<project>] <name>  (also <project>:<name> / --project P --launch N)")
+    die("usage: lw launch show [<project>] <name> [--json]  (also <project>:<name> / --project P --launch N)", 2)
   end
   local project = resolve_project(ws, proj_name)
   for _, a in ipairs(args) do
@@ -3676,7 +3739,7 @@ function M.cmd_launch_remove(root, args)
   local ws = load_workspace(root, false)
   local proj_name, name = consume_launch_address(ws, args, 3)
   if not (proj_name and name) then
-    die("usage: lw launch remove [<project>] <name>  (also <project>:<name> / --project P --launch N)")
+    die("usage: lw launch remove [<project>] <name>  (also <project>:<name> / --project P --launch N)", 2)
   end
   local project = resolve_project(ws, proj_name)
   local ok, err = project:delete_launch_config(name)
@@ -3693,7 +3756,7 @@ function M.cmd_launch(sub, root, args)
   if sub == "remove" or sub == "rm" then return M.cmd_launch_remove(root, args) end
   if sub == "rename" or sub == "mv" then return M.cmd_launch_rename(root, args) end
   if sub == "describe" then return M.cmd_launch_describe(root, args) end
-  die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove|rename|describe")
+  die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove|rename|describe", 2)
 end
 
 --- The build-target names of `project` (ids and display names), for the
@@ -3768,8 +3831,12 @@ end
 function M.cmd_launch_rename(root, args)
   local proj_name, old, new = args[3], args[4], args[5]
   if not (proj_name and old and new) then
-    die("usage: lw launch rename <project> <old> <new>")
+    die("usage: lw launch rename <project> <old> <new>", 2)
   end
+  -- A malformed new name is a usage error (spec §16.7); an unknown old or a
+  -- taken new name is the workspace's state (exit 1).
+  local vok, verr = require("loomworks.project").validate_launch_name(new)
+  if not vok then die("invalid launch name '" .. new .. "': " .. verr, 2) end
   local ws = load_workspace(root, false)
   return M._launch_rename(ws, resolve_project(ws, proj_name), old, new)
 end
@@ -3788,6 +3855,14 @@ function M.cmd_launch_describe(root, args)
     local v = args[i]
     if v == "--project" then proj_name = args[i + 1]; i = i + 2
     elseif v == "--launch" then name = args[i + 1]; i = i + 2
+    elseif v == "--" then
+      -- `--` ends lw's options: what follows is the <text> operand (spec §16.35).
+      for k = i, #args do rest[#rest + 1] = args[k] end
+      break
+    elseif (v == "-m" or v == "--message" or v == "-F" or v == "--file") and args[i + 1] ~= nil then
+      -- A valued describe option takes its value with it, so `-m X` before
+      -- the address never reads X as the project.
+      rest[#rest + 1] = v; rest[#rest + 1] = args[i + 1]; i = i + 2
     else
       local need = (proj_name and 0 or 1) + (name and 0 or 1)
       if #pos < need and not (v:sub(1, 1) == "-" and v ~= "-") then
@@ -3800,7 +3875,7 @@ function M.cmd_launch_describe(root, args)
   end
   if not proj_name then proj_name = table.remove(pos, 1) end
   if not name then name = table.remove(pos, 1) end
-  if not (proj_name and name) then die(usage) end
+  if not (proj_name and name) then die(usage, 2) end
   local o = M._describe_parse(rest, usage)
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
@@ -3833,10 +3908,10 @@ function M.cmd_init(args)
   while args and args[i] do
     if args[i] == "--name" then
       name = args[i + 1]
-      if not name then die("--name requires a value") end
+      if not name then die("--name requires a value", 2) end
       i = i + 2
     else
-      die("unknown init argument '" .. tostring(args[i]) .. "' — usage: lw init [--name <name>]")
+      die("unknown init argument '" .. tostring(args[i]) .. "' — usage: lw init [--name <name>]", 2)
     end
   end
   local ok, err = require("loomworks.workspace").init_workspace(dir, name)
@@ -3865,7 +3940,7 @@ function M.cmd_workspace(sub, root, args)
   end
   if sub == "rename" or sub == "mv" then
     local new_name = args[3]
-    if not new_name then die("usage: lw workspace rename <name>") end
+    if not new_name then die("usage: lw workspace rename <name>", 2) end
     if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
     local ws = load_workspace(root, false)
     local ok, err = ws:rename_workspace(new_name)
@@ -3874,7 +3949,7 @@ function M.cmd_workspace(sub, root, args)
     if M._has_shared_file(ws) then out("`lw publish` to update the shared loomworks.json.") end
     return 0
   end
-  die("unknown workspace subcommand '" .. tostring(sub) .. "' — use rename")
+  die("unknown workspace subcommand '" .. tostring(sub) .. "' — use rename", 2)
 end
 
 --- True when the published snapshot would carry no shared items — judged on
@@ -4042,7 +4117,7 @@ end
 
 function M.cmd_module_install(args)
   local name = args[3]
-  if not name then die("usage: lw module install <name>") end
+  if not name then die("usage: lw module install <name>", 2) end
   local force = false
   for i = 4, #args do if args[i] == "--force" then force = true end end
 
@@ -4094,7 +4169,7 @@ function M.cmd_module_update(args)
   elseif args[3] and args[3]:sub(1, 2) ~= "--" then
     targets = { args[3] }
   else
-    die("usage: lw module update <name> | --all")
+    die("usage: lw module update <name> | --all", 2)
   end
   if #targets == 0 then out("no modules installed"); return 0 end
 
@@ -4132,7 +4207,7 @@ end
 
 function M.cmd_module_remove(args)
   local name = args[3]
-  if not name then die("usage: lw module remove <name>") end
+  if not name then die("usage: lw module remove <name>", 2) end
   local mods = require_boot_modules()
   local paths = require("boot.paths")
   local present = false
@@ -4152,7 +4227,7 @@ function M.cmd_module(sub, args)
   if sub == "update" or sub == "upgrade" then return M.cmd_module_update(args) end
   if sub == "remove" or sub == "rm" then return M.cmd_module_remove(args) end
   die("unknown module subcommand '" .. tostring(sub) .. "' — "
-    .. "expected list | install | update | remove")
+    .. "expected list | install | update | remove", 2)
 end
 
 --- `lw publish` — regenerate the shared loomworks.json from the working copy.
@@ -4620,7 +4695,7 @@ local function pick_type(detected)
   if #options == 0 then die("no modules available to add a project as") end
   if not interactive() then
     die("could not determine the project type — pass it explicitly:\n" ..
-      "  lw project add <path> <type>   (types: " .. table.concat(options, ", ") .. ")")
+      "  lw project add <path> <type>   (types: " .. table.concat(options, ", ") .. ")", 2)
   end
   out(detected and "Multiple project types detected:" or
     "No type detected — select one:")
@@ -4662,7 +4737,7 @@ end
 --- `lw project add <path> [type] [name]` — register an existing directory as a
 --- project in the working copy. Path is inspected to detect/validate the type.
 function M.cmd_project_add(root, path_arg, type_arg, name_arg)
-  if not path_arg then die("usage: lw project add <path> [type] [name]") end
+  if not path_arg then die("usage: lw project add <path> [type] [name]", 2) end
   local abs = resolve_abs(path_arg, user_cwd())
   local st = abs and uv.fs_stat(abs)
   if not st or st.type ~= "directory" then die("not a directory: " .. path_arg) end
@@ -4720,7 +4795,7 @@ end
 
 --- `lw project remove <name>` — drop a project from the working copy.
 function M.cmd_project_remove(root, name_arg)
-  if not name_arg then die("usage: lw project remove <name>") end
+  if not name_arg then die("usage: lw project remove <name>", 2) end
   local ws = load_workspace(root, false)
   local proj, names = nil, {}
   for _, p in pairs(ws._projects) do
@@ -4746,7 +4821,7 @@ end
 --- back on save failure. Config-set mappings are object-keyed, so they follow
 --- automatically.
 function M.cmd_project_rename(root, old_name, new_name)
-  if not old_name or not new_name then die("usage: lw project rename <old-name> <new-name>") end
+  if not old_name or not new_name then die("usage: lw project rename <old-name> <new-name>", 2) end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, old_name)
   local shared = item_reaches_shared(ws, "projects", proj)
@@ -4890,7 +4965,7 @@ end
 --- `lw project <add|remove|list|show>`
 --- `lw project publish <name>` — mark a project shared and write loomworks.json.
 function M.cmd_project_publish(root, name)
-  if not name then die("usage: lw project publish <name>") end
+  if not name then die("usage: lw project publish <name>", 2) end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, name)
   return publish_item(ws, proj, "project '" .. proj.key .. "'")
@@ -4915,7 +4990,7 @@ local function parse_project_set_args(argv)
       break
     elseif w == "--type" then
       var_type = argv[i + 1]
-      if not var_type then die("--type needs a value — use 'string' or 'path'") end
+      if not var_type then die("--type needs a value — use 'string' or 'path'", 2) end
       i = i + 2
     elseif inline then
       var_type = inline
@@ -4942,16 +5017,16 @@ local PROJECT_SET_USAGE =
 function M.cmd_project_set(root, argv)
   local pos, var_type = parse_project_set_args(argv)
   local proj_name, var_name, default_val = pos[1], pos[2], pos[3]
-  if not proj_name or not var_name then die(PROJECT_SET_USAGE) end
+  if not proj_name or not var_name then die(PROJECT_SET_USAGE, 2) end
   -- `device.<field>`: the project's device block (spec §18.9).
   if var_name == "device" or var_name:match("^device%.") then
-    if var_type then die("--type does not apply to the device block\n" .. DEV.BLOCK_USAGE) end
+    if var_type then die("--type does not apply to the device block\n" .. DEV.BLOCK_USAGE, 2) end
     return DEV.project_device_set(root, pos)
   end
-  if #pos > 3 then die("too many arguments\n" .. PROJECT_SET_USAGE) end
+  if #pos > 3 then die("too many arguments\n" .. PROJECT_SET_USAGE, 2) end
   var_type = var_type or "string"
   if var_type ~= "string" and var_type ~= "path" then
-    die("invalid --type '" .. tostring(var_type) .. "' — use 'string' or 'path'")
+    die("invalid --type '" .. tostring(var_type) .. "' — use 'string' or 'path'", 2)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -4969,7 +5044,7 @@ end
 function M.cmd_project_unset(root, proj_name, var_name)
   if not proj_name or not var_name then
     die("usage: lw project unset <project> <variable>\n" ..
-      "  removes a project variable declaration")
+      "  removes a project variable declaration", 2)
   end
   if var_name == "device" or var_name:match("^device%.") then
     return DEV.project_device_unset(root, proj_name, var_name)
@@ -5000,7 +5075,7 @@ function M.cmd_project(sub, root, a3, a4, a5, argv)
   if sub == "describe" then return M.cmd_describe("project", root, argv) end
   if sub == nil or sub == "list" then return M.cmd_project_list(root) end
   die("unknown project subcommand '" .. tostring(sub) ..
-    "' — use add|remove|rename|list|show|set|unset|describe|publish")
+    "' — use add|remove|rename|list|show|set|unset|describe|publish", 2)
 end
 
 -- ---------------------------------------------------------------------------
@@ -5067,7 +5142,7 @@ end
 --- @return string[] replaced
 local function apply_param(data, param, value)
   if param == "options" or param == "variables" or param == "env" then
-    die("specify a key: " .. param .. ".<KEY>")
+    die("specify a key: " .. param .. ".<KEY>", 2)
   end
   -- Compiler-family override: overrides.<family>.<name> (three segments,
   -- mirroring the nested shape) or overrides.<family>.env.<NAME> (the
@@ -5079,23 +5154,23 @@ local function apply_param(data, param, value)
   -- save_configuration.
   if param == "overrides" then
     die("specify a family and name: overrides.<family>.<name> or "
-      .. "overrides.<family>.env.<NAME> (family ∈ clang|gcc|msvc)")
+      .. "overrides.<family>.env.<NAME> (family ∈ clang|gcc|msvc)", 2)
   end
   local ov_family, ov_name = param:match("^overrides%.([^.]+)%.(.+)$")
   if not ov_family and param:match("^overrides%.") then
     die("malformed override param '" .. param .. "' — expected "
       .. "overrides.<family>.<name> or overrides.<family>.env.<NAME> "
-      .. "(family ∈ clang|gcc|msvc)")
+      .. "(family ∈ clang|gcc|msvc)", 2)
   end
   if ov_family then
     if ov_family ~= "clang" and ov_family ~= "gcc" and ov_family ~= "msvc" then
       die("unknown compiler family '" .. ov_family
-        .. "' — expected clang, gcc, or msvc")
+        .. "' — expected clang, gcc, or msvc", 2)
     end
     data.overrides = data.overrides or {}
     local fam = data.overrides[ov_family] or {}
     if ov_name == "env" then
-      die("specify a variable: overrides." .. ov_family .. ".env.<NAME>")
+      die("specify a variable: overrides." .. ov_family .. ".env.<NAME>", 2)
     end
     local env_name = ov_name:match("^env%.(.+)$")
     local replaced = {}
@@ -5103,7 +5178,7 @@ local function apply_param(data, param, value)
       local env = type(fam.env) == "table" and fam.env or nil
       fam.env, replaced = set_env_ci(env, env_name, value)
     elseif ov_name:find(".", 1, true) then
-      die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+      die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS, 2)
     else
       -- A nil (unset) or empty value clears the entry.
       fam[ov_name] = (value ~= nil and value ~= "") and value or nil
@@ -5139,7 +5214,7 @@ local function apply_param(data, param, value)
     data.languages = (value and value ~= "") and split_csv(value) or nil
   elseif param:find(".", 1, true) then
     -- Unknown dotted param: never store a literal dotted module-field name.
-    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS, 2)
   else
     data[param] = value -- module field (variant, toolchain, generator, ...)
   end
@@ -5178,7 +5253,7 @@ local function get_param(cfg, param)
   ov_family = param:match("^overrides%.([^.]+)$")
   if ov_family then return cfg._overrides and cfg._overrides[ov_family] end
   if param:find(".", 1, true) then
-    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS, 2)
   end
   return cfg.module_config and cfg.module_config[param]
 end
@@ -5246,7 +5321,7 @@ local function reject_variant_param(proj, value)
     "    lw config set " .. proj.key .. " <name> inherits "
       .. (base or "variant:<Name>"),
     "  `lw config list " .. proj.key .. "` shows the available bases.",
-  }, "\n"))
+  }, "\n"), 2)
 end
 
 --- Whether configuration `name` of `proj` would reach the shared
@@ -5278,7 +5353,7 @@ end
 --- @param bases string[]|string|nil
 function M.cmd_configuration_add(root, proj_name, name, bases)
   if not proj_name or not name then
-    die("usage: lw config add <project> <name> [base...]")
+    die("usage: lw config add <project> <name> [base...]", 2)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -5342,7 +5417,7 @@ end
 
 --- `lw config show <project> <name>`
 function M.cmd_configuration_show(root, proj_name, cfg_name)
-  if not proj_name or not cfg_name then die("usage: lw config show <project> <name>") end
+  if not proj_name or not cfg_name then die("usage: lw config show <project> <name>", 2) end
   local ws = read_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, false)
@@ -5390,7 +5465,7 @@ function M.cmd_configuration_get(root, proj_name, cfg_name, param)
   if not (proj_name and cfg_name and param) then
     die("usage: lw config get <project> <name> <param>\n" ..
       "  param: inherits | languages | options.<KEY> | variables.<NAME> | env[.<NAME>]\n" ..
-      "         | overrides[.<family>[.<NAME> | .env[.<NAME>]]] | <module field>")
+      "         | overrides[.<family>[.<NAME> | .env[.<NAME>]]] | <module field>", 2)
   end
   local ws = read_workspace(root, false)
   local cfg = resolve_config(resolve_project(ws, proj_name), cfg_name, false)
@@ -5500,7 +5575,7 @@ end
 function M._refuse_tests_param(param)
   if param == "tests" or (type(param) == "string" and param:match("^tests%.")) then
     die("saved test targets are edited with `lw test-target` (add | remove | clear), " ..
-      "not `lw config set/unset` — see `lw help test-target`")
+      "not `lw config set/unset` — see `lw help test-target`", 2)
   end
 end
 
@@ -5511,7 +5586,7 @@ function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
       "  param: inherits | languages | options.<KEY> | variables.<NAME> | env.<NAME>\n" ..
       "         | overrides.<family>.<NAME> | overrides.<family>.env.<NAME>\n" ..
       "         (family ∈ clang|gcc|msvc) | <module field>\n" ..
-      "  (use `lw config unset` to clear a value)")
+      "  (use `lw config unset` to clear a value)", 2)
   end
   -- `description` is a generic field (spec §1.10): same rules as `describe`.
   if param == "description" then
@@ -5527,7 +5602,7 @@ function M.cmd_configuration_unset(root, proj_name, cfg_name, param)
     die("usage: lw config unset <project> <name> <param>\n" ..
       "  param: inherits | languages | options.<KEY> | variables.<NAME> | env.<NAME>\n" ..
       "         | overrides.<family>.<NAME> | overrides.<family>.env.<NAME>\n" ..
-      "         (family ∈ clang|gcc|msvc) | <module field>")
+      "         (family ∈ clang|gcc|msvc) | <module field>", 2)
   end
   if param == "description" then
     return M.cmd_describe("config", root, { "config", "describe", proj_name, cfg_name, "--clear" })
@@ -5539,7 +5614,7 @@ end
 --- `lw config remove <project> <name>`
 function M.cmd_configuration_remove(root, proj_name, cfg_name)
   if not proj_name or not cfg_name then
-    die("usage: lw config remove <project> <name>")
+    die("usage: lw config remove <project> <name>", 2)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -5562,7 +5637,7 @@ end
 --- surface rename_configuration's "not found" error via die.
 function M.cmd_configuration_rename(root, proj_name, old_name, new_name)
   if not (proj_name and old_name and new_name) then
-    die("usage: lw config rename <project> <old> <new>")
+    die("usage: lw config rename <project> <old> <new>", 2)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -5596,7 +5671,7 @@ end
 --- `lw config publish <project> <name>` — mark a configuration (and its
 --- project) shared and write loomworks.json.
 function M.cmd_configuration_publish(root, proj_name, cfg_name)
-  if not (proj_name and cfg_name) then die("usage: lw config publish <project> <name>") end
+  if not (proj_name and cfg_name) then die("usage: lw config publish <project> <name>", 2) end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, false)
@@ -5630,7 +5705,7 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == "publish" then return M.cmd_configuration_publish(root, a3, a4) end
   if sub == "describe" then return M.cmd_describe("config", root, argv) end
   die("unknown config subcommand '" .. tostring(sub) ..
-    "' — use list|add|show|get|set|unset|rename|describe|remove|publish")
+    "' — use list|add|show|get|set|unset|rename|describe|remove|publish", 2)
 end
 
 -- ---------------------------------------------------------------------------
@@ -5695,7 +5770,7 @@ end
 
 --- `lw configset show <name>`
 function M.cmd_cset_show(root, name)
-  if not name then die("usage: lw configset show <name>") end
+  if not name then die("usage: lw configset show <name>", 2) end
   local ws = read_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   out(cs.name)
@@ -5725,7 +5800,7 @@ end
 --- @return string project_key, string config_name (canonical)
 local function parse_mapping(ws, spec)
   local pk, cfgname = spec:match("^([^=]+)=(.+)$")
-  if not pk then die("bad mapping '" .. spec .. "' — use project=config") end
+  if not pk then die("bad mapping '" .. spec .. "' — use project=config", 2) end
   local project = resolve_project(ws, pk)
   local cfg = resolve_config(project, cfgname, false)
   return project.key, cfg.name
@@ -5739,7 +5814,7 @@ function M.cmd_cset_create(root, args)
   local name = args[3]
   if not name then
     die("usage: lw configset create <name> [project=config ...]\n" ..
-      "   or: lw configset create <name> [<project> <config> ...]")
+      "   or: lw configset create <name> [<project> <config> ...]", 2)
   end
   local ws = load_workspace(root, false)
   local raw = {}
@@ -5749,7 +5824,7 @@ function M.cmd_cset_create(root, args)
     -- Positional `<project> <config>` pairs (matching `configset map`).
     if #rest % 2 ~= 0 then
       die("positional mappings must come in <project> <config> pairs: " ..
-        table.concat(rest, " "))
+        table.concat(rest, " "), 2)
     end
     for i = 1, #rest, 2 do
       local project = resolve_project(ws, rest[i])
@@ -5782,7 +5857,7 @@ end
 --- `lw configset map <name> <project> <config>`
 function M.cmd_cset_map(root, name, pk, cfgname)
   if not (name and pk and cfgname) then
-    die("usage: lw configset map <name> <project> <config>")
+    die("usage: lw configset map <name> <project> <config>", 2)
   end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
@@ -5797,7 +5872,7 @@ end
 
 --- `lw configset unmap <name> <project>`
 function M.cmd_cset_unmap(root, name, pk)
-  if not (name and pk) then die("usage: lw configset unmap <name> <project>") end
+  if not (name and pk) then die("usage: lw configset unmap <name> <project>", 2) end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   local project = resolve_project(ws, pk)
@@ -5811,7 +5886,7 @@ end
 
 --- `lw configset remove <name>`
 function M.cmd_cset_remove(root, name)
-  if not name then die("usage: lw configset remove <name>") end
+  if not name then die("usage: lw configset remove <name>", 2) end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   local using = profiles_using_set(ws, cs)
@@ -5833,7 +5908,7 @@ end
 --- error (invalid/colliding name) surfaces via die.
 function M.cmd_cset_rename(root, old_name, new_name)
   if not (old_name and new_name) then
-    die("usage: lw configset rename <old> <new>")
+    die("usage: lw configset rename <old> <new>", 2)
   end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, old_name)
@@ -5849,7 +5924,7 @@ end
 --- `lw configset publish <name>` — mark a set shared and write
 --- loomworks.json (pulls its mapped projects + configs via the closure).
 function M.cmd_cset_publish(root, name)
-  if not name then die("usage: lw configset publish <name>") end
+  if not name then die("usage: lw configset publish <name>", 2) end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   return publish_item(ws, cs, "configuration set '" .. cs.name .. "'")
@@ -5866,7 +5941,7 @@ function M.cmd_cset(sub, root, args)
   if sub == "publish" then return M.cmd_cset_publish(root, args[3]) end
   if sub == "describe" then return M.cmd_describe("configset", root, args) end
   die("unknown configset subcommand '" .. tostring(sub) ..
-    "' — use list|show|create|map|unmap|rename|describe|remove|publish")
+    "' — use list|show|create|map|unmap|rename|describe|remove|publish", 2)
 end
 
 -- ---------------------------------------------------------------------------
@@ -5890,7 +5965,7 @@ function M._describe_parse(rest, usage)
     local v = rest[i]
     if v == "-m" or v == "--message" then
       local p = rest[i + 1]
-      if p == nil then die("-m needs a paragraph\n" .. usage) end
+      if p == nil then die("-m needs a paragraph\n" .. usage, 2) end
       if not o.paras then o.paras = {}; sources = sources + 1 end
       o.paras[#o.paras + 1] = p
       i = i + 2
@@ -5900,10 +5975,20 @@ function M._describe_parse(rest, usage)
       i = i + 1
     elseif v == "-F" or v == "--file" then
       local f = rest[i + 1]
-      if f == nil then die("-F needs a file (or - for stdin)\n" .. usage) end
+      if f == nil then die("-F needs a file (or - for stdin)\n" .. usage, 2) end
       if f == "-" then o.stdin = true else o.file = f end
       sources = sources + 1
       i = i + 2
+    elseif v == "--" then
+      -- `--` ends lw's options: the next token is the <text> operand, even
+      -- when it starts with `-` (spec §16.35); nothing may follow it.
+      local t = rest[i + 1]
+      if t == nil then die("-- needs the description text after it\n" .. usage, 2) end
+      if o.text ~= nil or rest[i + 2] ~= nil then
+        die("give the description as one quoted argument\n" .. usage, 2)
+      end
+      o.text = t; sources = sources + 1
+      break
     elseif v == "-" then
       o.stdin = true; sources = sources + 1; i = i + 1
     elseif v == "-e" or v == "--edit" then
@@ -5913,16 +5998,16 @@ function M._describe_parse(rest, usage)
     elseif v == "--json" then
       o.json = true; i = i + 1
     elseif v:sub(1, 1) == "-" and v ~= "" then
-      die("unknown option '" .. v .. "'\n" .. usage)
+      die("unknown option '" .. v .. "'\n" .. usage, 2)
     else
-      if o.text ~= nil then die("give the description as one quoted argument\n" .. usage) end
+      if o.text ~= nil then die("give the description as one quoted argument\n" .. usage, 2) end
       o.text = v; sources = sources + 1; i = i + 1
     end
   end
-  if sources > 1 then die("give the description one way only (<text>, -m, -F or -)\n" .. usage) end
-  if o.clear and (sources > 0 or o.edit) then die("--clear takes no description\n" .. usage) end
+  if sources > 1 then die("give the description one way only (<text>, -m, -F or -)\n" .. usage, 2) end
+  if o.clear and (sources > 0 or o.edit) then die("--clear takes no description\n" .. usage, 2) end
   if o.json and (sources > 0 or o.edit or o.clear) then
-    die("--json prints the description; it does not set one\n" .. usage)
+    die("--json prints the description; it does not set one\n" .. usage, 2)
   end
   return o
 end
@@ -6237,13 +6322,13 @@ function M.cmd_describe(kind, root, args)
   local ops, rest = {}, {}
   for i = 3, #args do
     if #ops < n_ops then
-      if args[i]:sub(1, 1) == "-" and args[i] ~= "-" then die(usage) end
+      if args[i]:sub(1, 1) == "-" and args[i] ~= "-" then die(usage, 2) end
       ops[#ops + 1] = args[i]
     else
       rest[#rest + 1] = args[i]
     end
   end
-  if #ops < n_ops then die(usage) end
+  if #ops < n_ops then die(usage, 2) end
   local o = M._describe_parse(rest, usage)
   -- The read form reads the runtime's projection in daemon mode (§19.13);
   -- a form that writes loads the workspace in-process.
@@ -6341,15 +6426,15 @@ function M.select_profile(ws, args)
     if a == "--none" then
       none = true
     elseif a:sub(1, 1) == "-" then
-      die("unknown option '" .. a .. "' — usage: lw profile select [<profile> | --none]")
+      die("unknown option '" .. a .. "' — usage: lw profile select [<profile> | --none]", 2)
     elseif name then
-      die("unexpected argument '" .. a .. "' — usage: lw profile select [<profile> | --none]")
+      die("unexpected argument '" .. a .. "' — usage: lw profile select [<profile> | --none]", 2)
     else
       name = a
     end
   end
   if none and name then
-    die("`--none` clears the active profile; it takes no profile name")
+    die("`--none` clears the active profile; it takes no profile name", 2)
   end
   if none then return clear_active_profile(ws) end
   local profiles = ws._profiles or {}
@@ -6371,7 +6456,7 @@ function M.select_profile(ws, args)
     die("`lw profile select` without a profile is an interactive picker.\n" ..
       "  name the profile (a unique substring works): lw profile select <profile>\n" ..
       "  or clear the selection: lw profile select --none\n" ..
-      "  profiles: " .. table.concat(keys, ", "))
+      "  profiles: " .. table.concat(keys, ", "), 2)
   end
   local active = ws._active_profile_key
   out("Select a profile:")
@@ -6429,7 +6514,7 @@ local function pick_tool(mod, qualify)
   if not interactive() then
     die("no " .. mod.id .. " toolchain specified — pass one:\n  lw profile create <set> " ..
       (qualify and (mod.id .. ":") or "") .. "<tool>   (available: " ..
-      table.concat(tool_keys_of(mod), ", ") .. ")")
+      table.concat(tool_keys_of(mod), ", ") .. ")", 2)
   end
   out("Select a " .. mod.id .. " toolchain:")
   for i, t in ipairs(tools) do
@@ -6448,7 +6533,7 @@ end
 function M.cmd_profile_create(root, args)
   local set_name = args[3]
   if not set_name then
-    die("usage: lw profile create <config-set> [tool ...] [--activate]")
+    die("usage: lw profile create <config-set> [tool ...] [--activate]", 2)
   end
   local activate, tool_specs = false, {}
   for i = 4, #args do
@@ -6480,9 +6565,9 @@ function M.cmd_profile_create(root, args)
   end
   if #order > 1 and #bare > 0 then
     die("this set needs multiple toolchains (" .. table.concat(order, ", ") ..
-      ") — qualify each: e.g. " .. order[1] .. ":<tool>")
+      ") — qualify each: e.g. " .. order[1] .. ":<tool>", 2)
   end
-  if #bare > 1 then die("too many toolchains for one module — pass a single tool key") end
+  if #bare > 1 then die("too many toolchains for one module — pass a single tool key", 2) end
 
   -- Resolve one Tool per required keyed module.
   local resolved = {}
@@ -6546,7 +6631,7 @@ end
 --- `lw profile publish <key>` — mark a profile shared and write loomworks.json
 --- (pulls its configuration set + projects via the closure).
 function M.cmd_profile_publish(root, name)
-  if not name then die("usage: lw profile publish <key>") end
+  if not name then die("usage: lw profile publish <key>", 2) end
   local ws = load_workspace(root, false)
   local profile = resolve_profile(ws, name)
   return publish_item(ws, profile, "profile '" .. profile.key .. "'")
@@ -6678,7 +6763,7 @@ local function target_set(root, args)
   local profile_name, target_name
   if #pos >= 2 then profile_name, target_name = pos[1], pos[2]
   elseif #pos == 1 then target_name = pos[1]
-  else die("usage: lw target set [<profile>] <target>") end
+  else die("usage: lw target set [<profile>] <target>", 2) end
 
   local ws = load_workspace(root, false)
   local profile = resolve_profile(ws, profile_name, -- nil → active (interactive) / dies in CI
@@ -7350,7 +7435,7 @@ local function pick_detected_sdk(ws, sdk_type)
         (inst.version and ("   (" .. tostring(inst.version) .. ")") or "")
     end
     die(#fresh .. " " .. sdk_type .. " installations detected — pass one explicitly:\n" ..
-      table.concat(lines, "\n"))
+      table.concat(lines, "\n"), 2)
   end
   local display = sdk_display_name(sdk_type)
   out("Several " .. sdk_type .. " installations detected — select one:")
@@ -7411,7 +7496,7 @@ function M.cmd_sdk(sub, root, args)
     if not sdk_type or (force and not path) then
       die("usage: lw sdk add <type> [<path>] [--force [--family <f>] [--version <v>]]\n" ..
         "  (--force needs a <path>; without a <path> the type's detected installation is used)\n" ..
-        "  types: " .. (next(ids) and table.concat(ids, ", ") or "(none)"))
+        "  types: " .. (next(ids) and table.concat(ids, ", ") or "(none)"), 2)
     end
     local ws = load_workspace(root, false)
     -- No path: declare the installation the provider detects (§10.1).
@@ -7434,7 +7519,7 @@ function M.cmd_sdk(sub, root, args)
 
   if sub == "remove" or sub == "rm" then
     local key = args[3]
-    if not key then die("usage: lw sdk remove <key>  (`lw sdk list` shows keys)") end
+    if not key then die("usage: lw sdk remove <key>  (`lw sdk list` shows keys)", 2) end
     local ws = load_workspace(root, false)
     if not ws:remove_sdk(key) then
       die("no SDK with key '" .. key .. "'. Run `lw sdk list`.")
@@ -7443,7 +7528,7 @@ function M.cmd_sdk(sub, root, args)
     return 0
   end
 
-  die("unknown sdk subcommand '" .. tostring(sub) .. "' — use types|detect|list|add|remove")
+  die("unknown sdk subcommand '" .. tostring(sub) .. "' — use types|detect|list|add|remove", 2)
 end
 
 --- `lw profile remove <profile>` — drop a profile from the working copy.
@@ -7451,7 +7536,7 @@ end
 --- --all` / the editor's delete plan handle them).
 function M.cmd_profile_remove(root, args)
   local name = args[3]
-  if not name then die("usage: lw profile remove <profile>") end
+  if not name then die("usage: lw profile remove <profile>", 2) end
   local ws = load_workspace(root, false)
   local profile = resolve_profile(ws, name)
   local key = profile.key
@@ -7490,7 +7575,7 @@ function M.cmd_profile_query(root, args)
   local profile_name, project_key, field = args[3], args[4], args[5]
   if not (profile_name and project_key and field) then
     die("usage: lw profile query <profile> <project> <field>\n" ..
-      "  fields: build-dir | config | state | tool | cache | variables | variables.<name>")
+      "  fields: build-dir | config | state | tool | cache | variables | variables.<name>", 2)
   end
   -- `cache` probes the host: asked of the runtime (§19.14) on a session kept open.
   local ws = read_workspace(root, false, { keep = field == "cache" })
@@ -7571,7 +7656,7 @@ function M.cmd_profile_query(root, args)
       value = entry.value or ""
     else
       die("unknown field '" .. field
-        .. "' — use build-dir | config | state | tool | cache | variables | variables.<name>")
+        .. "' — use build-dir | config | state | tool | cache | variables | variables.<name>", 2)
     end
   end
   out(value or "")
@@ -7629,7 +7714,7 @@ function M.cmd_profile_set(root, args)
     die("usage: lw profile set [<profile>] <project> <variable> <value>\n" ..
       "  sets this profile's machine-local value for a blank project variable\n" ..
       "  (or the pre-declared `cache` policy, e.g. `lw profile set App cache sccache`)\n" ..
-      "  (profile defaults to the active one; written to user.json only)")
+      "  (profile defaults to the active one; written to user.json only)", 2)
   end
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_set(ws, profile_name)
@@ -7675,7 +7760,7 @@ function M.cmd_profile_unset(root, args)
   else
     die("usage: lw profile unset [<profile>] <project> <variable>\n" ..
       "  clears this profile's machine-local value for a project variable\n" ..
-      "  (profile defaults to the active one)")
+      "  (profile defaults to the active one)", 2)
   end
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_set(ws, profile_name)
@@ -7725,7 +7810,7 @@ function M.cmd_profile(sub, root, args)
     return M.cmd_profiles(load_workspace(root))
   end
   die("unknown profile subcommand '" .. tostring(sub) ..
-    "' — use list|show|select|create|remove|publish|query|set|unset|describe (target moved to `lw target`)")
+    "' — use list|show|select|create|remove|publish|query|set|unset|describe (target moved to `lw target`)", 2)
 end
 
 --- The value a settings key falls back to when unset, so `lw settings get` can
@@ -7772,7 +7857,7 @@ function M.cmd_settings(sub, key, value)
     end
     return 0
   elseif sub == "get" then
-    if not key then die("usage: lw settings get <key>") end
+    if not key then die("usage: lw settings get <key>", 2) end
     if cfg[key] ~= nil then out(tostring(cfg[key])); return 0 end
     -- Unset keys still have an effective value; print it so a setting like the
     -- release URL is discoverable from the CLI instead of reading the source.
@@ -7780,14 +7865,14 @@ function M.cmd_settings(sub, key, value)
     out(eff and ("(unset — using default: " .. eff .. ")") or "(unset)")
     return 0
   elseif sub == "set" then
-    if not key or value == nil then die("usage: lw settings set <key> <value>") end
+    if not key or value == nil then die("usage: lw settings set <key> <value>", 2) end
     -- Validate constrained keys up front so a typo is caught here, not silently
     -- at the next self-update (the channel is re-validated by the host too).
     if key == "channel" and value ~= "stable" and value ~= "unstable" then
-      die("invalid channel '" .. value .. "' — use 'stable' or 'unstable'")
+      die("invalid channel '" .. value .. "' — use 'stable' or 'unstable'", 2)
     end
     if key == "release-notes" and value ~= "on" and value ~= "off" then
-      die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'")
+      die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'", 2)
     end
     if key == "runtime-mode" and not require("loomworks.daemon.runtime").is_valid(value) then
       die("invalid runtime-mode '" .. value .. "' — use 'in-process' or 'daemon'")
@@ -7805,14 +7890,14 @@ function M.cmd_settings(sub, key, value)
     out(string.format("set %s = %s", key, tostring(cfg[key])))
     return 0
   elseif sub == "unset" then
-    if not key then die("usage: lw settings unset <key>") end
+    if not key then die("usage: lw settings unset <key>", 2) end
     cfg[key] = nil
     local ok, err = write_config(cfg)
     if not ok then die("failed to write config: " .. tostring(err)) end
     out("unset " .. key)
     return 0
   end
-  die("unknown settings subcommand '" .. tostring(sub) .. "' — use list|get|set|unset")
+  die("unknown settings subcommand '" .. tostring(sub) .. "' — use list|get|set|unset", 2)
 end
 
 -- Command tokens are cyan on a real terminal; the rest of the status palette is
@@ -8670,7 +8755,7 @@ function M._parse_clean_args(args, fail)
     local a = args[i]
     if a == "-v" or a == "--verbose" then verbose = true
     elseif not profile_name then profile_name = a
-    else fail("unexpected argument '" .. tostring(a) .. "' — usage: lw clean [profile] [-v|--verbose]") end
+    else fail("unexpected argument '" .. tostring(a) .. "' — usage: lw clean [profile] [-v|--verbose]", 2) end
   end
   return profile_name, verbose
 end
@@ -11039,11 +11124,11 @@ function M.cmd_pull(args, opts)
     if v == "--dry-run" or v == "-n" then
       dry_run = true
     elseif v:sub(1, 1) == "-" then
-      die("unknown pull option '" .. v .. "' — usage: lw pull [<source>] [--dry-run]")
+      die("unknown pull option '" .. v .. "' — usage: lw pull [<source>] [--dry-run]", 2)
     elseif not source then
       source = v
     else
-      die("unexpected argument '" .. v .. "' — usage: lw pull [<source>] [--dry-run]")
+      die("unexpected argument '" .. v .. "' — usage: lw pull [<source>] [--dry-run]", 2)
     end
   end
 
@@ -11172,7 +11257,7 @@ function M.cmd_worktree(args, opts)
   end
   if sub and sub ~= "list" then
     die("unknown worktree subcommand '" .. tostring(sub) ..
-      "' — usage: lw worktree [list|add]")
+      "' — usage: lw worktree [list|add]", 2)
   end
   local git = opts.git or M._git_query_required
   local stat = opts.stat or uv.fs_stat
@@ -11238,17 +11323,17 @@ function M.cmd_worktree_add(args, opts)
     elseif v == "--pull" then
       no_pull = false
     elseif v:sub(1, 1) == "-" then
-      die("unknown option '" .. v .. "' — " .. usage)
+      die("unknown option '" .. v .. "' — " .. usage, 2)
     elseif not branch then
       branch = v
     elseif not start_point then
       start_point = v
     else
-      die("unexpected argument '" .. v .. "' — " .. usage)
+      die("unexpected argument '" .. v .. "' — " .. usage, 2)
     end
   end
   if not branch or branch == "" then
-    die("missing <branch> — " .. usage)
+    die("missing <branch> — " .. usage, 2)
   end
 
   -- Resolve the MAIN worktree (works from any linked worktree). Git-required:
@@ -11863,7 +11948,7 @@ _lw_complete() {
 complete -F _lw_complete lw]])
     return 0
   end
-  die("unknown shell '" .. tostring(shell) .. "' — use bash or zsh")
+  die("unknown shell '" .. tostring(shell) .. "' — use bash or zsh", 2)
 end
 
 -- ---------------------------------------------------------------------------
@@ -12446,7 +12531,7 @@ Wrapping and inspecting the launch:
                         on the real terminal (interactive gdb/valgrind work).
                         Repeatable and shell-word split, so
                         `--prefix 'valgrind --leak-check=full'` and
-                        `--prefix gdb --prefix --args` both give many tokens.
+                        `--prefix gdb --prefix=--args` both give many tokens.
                         This is the faithful way to run under a wrapper —
                         `valgrind $(lw run --print)` cannot carry the cwd/env.
   --print[=sh|json]     build (+deploy) first, then resolve the launch but DO
@@ -12591,27 +12676,34 @@ args/env/working-dir layered on top — no hand-written path.
         List launch configs (all projects, or one): PROJECT, NAME, the
         description summary (when any launch has one) and RUNS (the command
         line, cut to the terminal; in full when piped).
-  add <project> <name> <command> [args…] [--working-dir D] [--env K=V] [--description <para>]
+  add <project> <name> [--working-dir D] [--env K=V] [--description <para>] <command> [args…]
         Declare a command-type launch config. Repeat --env for more variables.
         --cwd is an alias of --working-dir (here and on `set`).
         --description (repeatable, one paragraph each; the first is the
-        summary) describes it. There is no -m here: everything after the
-        command is the program's own args (python -m http.server);
-        after a `--` every token is, even one lw itself knows (--env,
-        --dev). A `--` after the command is kept (npm run dev -- --port 1);
-        one before the command only ends lw's options.
-        e.g. lw launch add app serve node server.js --env PORT=8080
-  add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
+        summary) describes it. lw's options go BEFORE the command: from the
+        command on every token is the program's own, even one lw itself
+        knows (--env, --description, --dev), and there is no -m here
+        (python -m http.server). A `--` after the command is kept
+        (npm run dev -- --port 1); one before the command only ends lw's options.
+        e.g. lw launch add app serve --env PORT=8080 node server.js
+  add <project> <name> --from-target <target> [--working-dir D] [--env K=V] [--description <para>] [-- args…]
         Declare a target-backed launch config from a build target (by name).
-        e.g. lw launch add app run --from-target app --working-dir . --env FOO=bar
+        There is no command token, so up to `--` every token is lw's (an
+        unknown option or a bare argument is an error); that `--` is not
+        kept, and every token after it is the program's.
+        e.g. lw launch add app run --from-target app --working-dir . --env FOO=bar -- --theme dark
   set <project> <name> [flags]   Modify an existing config in place (only the
         given fields change). Flags:
           --working-dir D | --clear-working-dir
           --env K=V (add/update, repeat) | --unset-env K (remove, repeat)
-          --command C | --from-target T   (switch kind)
-          trailing args replace the arg list | --clear-args
-          (after `--` every token is an arg, even --env or --dev;
-           before it --dev/--no-input/... are lw's own options)
+          --command C | --from-target T   (switch kind; give one)
+          --description <para> (repeat; replaces the whole description)
+          [args…] [-- args…] replace the arg list | --clear-args
+          (an empty value clears: --working-dir "", --description "")
+          (an unknown option before `--` is an error and nothing changes;
+           an arg starting with `-` goes after `--`, where every token is
+           an arg, even --env or --dev; before it --dev/--no-input/... are
+           lw's own options)
         e.g. lw launch set app run --env PORT=9090 --unset-env FOO --working-dir .
   show <project> <name> [--json]
         Detail one config: description, target/command, args, working dir,
@@ -13958,7 +14050,7 @@ local function main()
   -- explicit-argument hint instead of blocking. Global options are taken only
   -- where they are lw's own — before the command and among its own arguments,
   -- never after `--` or from a program's arguments (spec §16.7, cli_options).
-  local a, globals = require("loomworks.cli_options").split_globals(raw)
+  local a, globals, value_problem = require("loomworks.cli_options").split_globals(raw)
   for _, v in ipairs(globals) do
     if v == "--no-input" or v == "--non-interactive" then
       force_noninteractive = true
@@ -14009,12 +14101,18 @@ local function main()
   -- An option the command does not know is a usage error (spec §16.7), checked
   -- before any handler runs — so a mistyped option can never start a build.
   -- Nothing after `--` is checked (a program's / native tool's arguments).
+  -- A missing or empty value or a single-valued option given twice (spec
+  -- §16.7 "Option values") is found the same way; it precedes any unknown option
+  -- (the walk stops there). Then every `--opt=value` is split, so the handlers
+  -- only see `--opt value`.
   do
     local bad, label = require("loomworks.cli_options").find_unknown(a)
+    if value_problem then die(value_problem, 2) end
     if bad then
       die("unknown option '" .. bad .. "' for `lw " .. label .. "` — see `lw help " .. label
         .. "`\n    (arguments for the program or build tool go after `--`)", 2)
     end
+    a = require("loomworks.cli_options").normalize(a)
   end
   -- `--break-locks[=now]` (spec §19.5), validated per command above: strip it
   -- (before any `--`) and make it the process-wide request every lock
@@ -14138,7 +14236,7 @@ local function main()
     local areas, unknown = M._health_areas(names)
     if not areas then
       die("unknown health area '" .. unknown .. "' — areas: "
-        .. table.concat(require("loomworks.inventory").AREAS, ", ") .. " (lw help health)")
+        .. table.concat(require("loomworks.inventory").AREAS, ", ") .. " (lw help health)", 2)
     end
     finish(M.cmd_health(root, { json = json, verbose = verbose, all = all, areas = areas }))
   end
