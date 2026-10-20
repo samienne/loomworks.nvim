@@ -1817,7 +1817,12 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `log { task, records, dropped? }` signal on `/launch` (subscriptions naming
   the task or none), at most `LOG_BATCH_BYTES` of JSON per signal (far under
   `protocol.MAX_FRAME`), held while the owner's write queue is above
-  `tasks.OWNER_HIGH`, flushed before the task's `done`. The pid probe
+  `tasks.OWNER_HIGH`, flushed before the task's `done`. Nothing is sent
+  while no subscription names the task (`Registry:has_subscribers` with an
+  `accept`): the queue holds the records (its bound and `dropped` still
+  apply) and the first `log` to a subscription naming it carries them, so
+  the editor's subscribe after `accepted` misses none; records still
+  unnamed at the task's end go with the run. The pid probe
   (`device_resolve_pid`, `tries = 1`, its own child slot so a cancel kills it
   and the stream, and the run's end kills it) runs every
   `LOG_PID_POLL_MS`; `LOG_PID_MISSES` misses in a row kill the stream and

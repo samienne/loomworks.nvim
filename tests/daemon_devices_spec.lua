@@ -524,9 +524,12 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     local function device_log(task, env)
         return s.call("/launch", "loomworks.Launch", "device_log", { task = task }, env or s.env)
     end
-    local function start_log(task, env)
+    --- Start a device log of launch `task`, subscribed to its `log` as the
+    --- editor is (once accepted, naming it) unless `no_sub`.
+    local function start_log(task, env, no_sub)
         local r = device_log(task, env)
         assert.equals("accepted", r.outcome, vim.inspect(r))
+        if not no_sub then subscribe({ task = r.task_id }) end
         return r.task_id
     end
     --- The `log` signals of task `id` until `stop(records)` holds (default:
@@ -558,7 +561,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("streams the launch's lines as records, prefiltered and normalized, after the clear", function()
         s = session()
         local launch = launched()
-        subscribe()
         local id = start_log(launch)
         local recs, dropped, done = collect(id)
         assert.same({
@@ -596,7 +598,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("a full queue drops the oldest records and counts them on the next log", function()
         s = session()
         local launch = launched()
-        subscribe()
         devices.LOG_QUEUE_MAX = 5
         devices.LOG_FLUSH_MS = 60000
         local recs, dropped, done = collect(start_log(launch, env_with({ LW_TEST_LOG_COUNT = "20" })))
@@ -609,7 +610,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("a cancel or the owner's disconnect ends it at once", function()
         s = session()
         local launch = launched()
-        subscribe()
         local slow = env_with({ LW_TEST_LOG_SLEEP = "30000" })
         local id = start_log(launch, slow)
         collect(id, function(r) return #r >= 3 end)
@@ -651,7 +651,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
         local _, _, done, lines = collect(start_log(launch, env_with({ LW_TEST_DEVICE_FAIL = "log_clear" })))
         assert.equals(0, done.exit_code)
         assert.truthy(lines[1]:find("^note: device log not cleared: "), vim.inspect(lines))
-        subscribe()
         local recs
         recs, _, done = collect(start_log(launch, env_with({ LW_TEST_DEVICE_FAIL = "log" })))
         assert.equals(1, done.exit_code)
@@ -687,7 +686,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("a clear that does not end in 3 s is killed: a note line, then the stream", function()
         s = session()
         local launch = launched()
-        subscribe()
         local t0 = uv.now()
         local recs, _, done, lines = collect(start_log(launch, env_with({ LW_TEST_DEVICE_SLEEP = "30000" })))
         assert.is_true(uv.now() - t0 < 15000)
@@ -700,7 +698,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("a device lock it cannot take is a note line, then the stream", function()
         s = session()
         local launch = launched()
-        subscribe()
         stub(device_lock, "try_acquire", function() return nil, "device SER1: the lock is unreadable" end)
         local recs, _, done, lines = collect(start_log(launch))
         assert.equals(0, done.exit_code, vim.inspect(done))
@@ -741,7 +738,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("holds the records back while its owner is past 4 MiB behind, and sends them once it catches up", function()
         s = session()
         local launch = launched()
-        subscribe()
         devices.LOG_FLUSH_MS = 20
         local behind = true
         local queued = tasks_mod._queued
@@ -760,11 +756,48 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
         collect(id)
     end)
 
+    it("holds the records until a subscription names the task, then sends them all", function()
+        s = session()
+        local launch = launched()
+        devices.LOG_FLUSH_MS = 20
+        local id = start_log(launch, env_with({ LW_TEST_LOG_SLEEP = "30000" }), true)
+        assert.is_true(vim.wait(15000, function() return read(s.log):find("\nlog SER1", 1, true) ~= nil end, 20))
+        drain(1000)
+        assert.equals(0, log_signals())
+        subscribe({ task = id })
+        local recs, dropped = collect(id, function(r) return #r >= 3 end)
+        assert.equals(3, #recs)
+        assert.equals("hello from the app", recs[1].message)
+        assert.equals(0, dropped)
+        cancel(id)
+        collect(id)
+    end)
+
+    it("records past the queue's bound while held count as dropped on the first log", function()
+        s = session()
+        local launch = launched()
+        devices.LOG_QUEUE_MAX = 5
+        devices.LOG_FLUSH_MS = 20
+        local id = start_log(launch, env_with({ LW_TEST_LOG_COUNT = "20", LW_TEST_LOG_SLEEP = "30000" }), true)
+        assert.is_true(vim.wait(15000, function() return read(s.log):find("\nlog SER1", 1, true) ~= nil end, 20))
+        drain(1000)
+        assert.equals(0, log_signals())
+        subscribe({ task = id })
+        local first = s.wait(function(m)
+            return m.kind == "signal" and m.object == "/launch" and m.name == "log" and m.args.task == id
+        end)
+        assert.equals(5, #first.args.records)
+        assert.equals(23 - 5, first.args.dropped)
+        assert.equals("flood 20", first.args.records[5].message)
+        cancel(id)
+        collect(id)
+    end)
+
     it("a subscription naming another task gets none of its records", function()
         s = session()
         local launch = launched()
         subscribe({ task = "T-another" })
-        local recs, _, done = collect(start_log(launch))
+        local recs, _, done = collect(start_log(launch, nil, true))
         assert.equals(0, done.exit_code)
         assert.same({}, recs)
         assert.equals(0, log_signals())
@@ -773,7 +806,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("joins a line written in parts, takes an unended last line, and takes an over-long line as a line", function()
         s = session()
         local launch = launched()
-        subscribe()
         local recs, _, done = collect(start_log(launch, env_with({ LW_TEST_LOG_PARTIAL = "1" })))
         assert.equals(0, done.exit_code)
         assert.equals(5, #recs, vim.inspect(recs))
@@ -791,7 +823,6 @@ describe("Launch/1.device_log in the workspace daemon (API.md §9.5)", function(
     it("sends at most LOG_BATCH_BYTES of records in one log signal, the rest on later ticks", function()
         s = session()
         local launch = launched()
-        subscribe()
         devices.LOG_BATCH_BYTES = 400
         devices.LOG_FLUSH_MS = 20
         local id = start_log(launch, env_with({ LW_TEST_LOG_COUNT = "20", LW_TEST_LOG_SLEEP = "30000" }))

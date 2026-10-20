@@ -448,17 +448,18 @@ function Registry:emit(object, iface, v, name, args, accept)
 end
 
 --- Does any open connection subscribe to signal `name` of an interface
---- version on `object`? (A signal whose state is costly to build is built
---- only then.)
+--- version on `object` (one `accept(sub_args, sub)` takes, when given)? (A
+--- signal whose state is costly to build is built only then.)
 --- @param object string
 --- @param iface string
 --- @param v integer
 --- @param name string
+--- @param accept? fun(sub_args: table, sub: loomworks.daemon.Subscription): boolean
 --- @return boolean
-function Registry:has_subscribers(object, iface, v, name)
+function Registry:has_subscribers(object, iface, v, name, accept)
     for _, s in pairs(self.subs) do
         if s.object == object and s.iface == iface and s.v == v and (not s.signals or s.signals[name])
-            and not s.conn.closed then
+            and not s.conn.closed and (not accept or accept(s.args or {}, s)) then
             return true
         end
     end

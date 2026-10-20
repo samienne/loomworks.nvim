@@ -198,7 +198,7 @@
       ]
     },
     {
-      "name": "device_log streams a launch's log as records of the log signal, prefiltered by its pid and bundle",
+      "name": "device_log streams a launch's log as records of the log signal, prefiltered by its pid and bundle, held until a subscription names the task",
       "fixture": "devices",
       "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
       "steps": [
@@ -210,10 +210,10 @@
         { "send": { "kind": "call", "req_id": 3, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "launch", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "launch" } } } },
         { "expect": { "kind": "task", "task_id": { "$var": "launch" }, "phase": "done", "exit_code": 0, "result": { "pid": 4242 } }, "timeout_ms": 60000 },
-        { "send": { "kind": "call", "req_id": 4, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/launch", "iface": "loomworks.Launch", "v": 1, "signals": [ "log" ] } } },
-        { "expect": { "kind": "ok", "req_id": 4, "result": { "sub_id": { "$bind": "sub" } } } },
-        { "send": { "kind": "call", "req_id": 5, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": { "task": { "$var": "launch" } }, "env": { "$var": "env" } } },
-        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "accepted", "task_id": { "$bind": "log" }, "profile_key": "dev" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": { "task": { "$var": "launch" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "accepted", "task_id": { "$bind": "log" }, "profile_key": "dev" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/launch", "iface": "loomworks.Launch", "v": 1, "signals": [ "log" ], "args": { "task": { "$var": "log" } } } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "sub_id": { "$bind": "sub" } } } },
         { "expect": { "kind": "task", "task_id": { "$var": "log" }, "phase": "start", "meta": { "name": "app: app app log on SER1", "kind": "device_log", "profile": "dev", "level": "debug", "object": "/launch", "iface": "loomworks.Launch", "method": "device_log" } } },
         { "expect": { "kind": "signal", "object": "/launch", "iface": "loomworks.Launch", "v": 1, "name": "log", "sub_id": { "$var": "sub" }, "args": { "task": { "$var": "log" }, "dropped": { "$absent": true }, "records": [
           { "ts": "10-19 12:00:00.001", "level": "info", "tag": "AppTag", "pid": 4242, "message": "hello from the app", "fields": { "tid": 4243, "domain": "A00001", "proc": "com.example.app" } },

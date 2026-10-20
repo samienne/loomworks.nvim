@@ -818,16 +818,22 @@ local function run_device_log(service, ctx, l, command, log_options)
 
     -- The records, one signal of at most LOG_BATCH_BYTES every LOG_FLUSH_MS
     -- while the owner keeps up (PROTOCOL.md §14.4); all of them, in signals
-    -- that size, before the task's `done`.
+    -- that size, before the task's `done`. Until a subscription names the
+    -- task they stay in the queue (its bound and `dropped` still apply), so
+    -- a client subscribing once the call is accepted misses none (API.md
+    -- §9.5); the first `log` to it carries them. Still unnamed at the end,
+    -- they go with the run.
     local queue = log_queue()
+    local function named(sub_args) return sub_args.task == task.id end
     local function flush(force)
+        local where = core_ifaces.LAUNCH
         repeat
             if queue.size() == 0 and queue.dropped == 0 then return end
-            if not force and tasks_mod._queued(task.owner) > tasks_mod.OWNER_HIGH then return end
-            local recs, dropped = queue.take(M.LOG_BATCH_BYTES)
             local reg = service.server and service.server.interfaces
             if not reg then return end
-            local where = core_ifaces.LAUNCH
+            if not reg:has_subscribers(where.path, where.iface, where.v, "log", named) then return end
+            if not force and tasks_mod._queued(task.owner) > tasks_mod.OWNER_HIGH then return end
+            local recs, dropped = queue.take(M.LOG_BATCH_BYTES)
             reg:emit(where.path, where.iface, where.v, "log",
                 { task = task.id, records = recs, dropped = dropped > 0 and dropped or nil },
                 function(sub_args) return sub_args.task == nil or sub_args.task == task.id end)
