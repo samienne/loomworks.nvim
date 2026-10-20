@@ -34,8 +34,7 @@ function M.launchable_targets(ws, profile)
         local project = unit and unit._project
         if project then
             for _, launch in ipairs(project:launch_configs()) do
-                local cfg = launch:declaration()
-                if type(cfg) == "table" and (cfg.command or cfg.target) then
+                if launch:is_runnable() then
                     list[#list + 1] = { kind = "launch", project = project, name = launch.name, launch = launch }
                 end
             end
@@ -171,8 +170,8 @@ end
 --- @param lt loomworks.LaunchTarget
 --- @return loomworks.ForeignArtifact|nil
 function M.foreign_of(lt)
-    local target = lt._launch_config and lt._config_target or lt._target
-    if lt._launch_config and not lt._launch_config.target then return nil end
+    local target = lt._launch and lt._config_target or lt._target
+    if lt._launch and not lt._launch.target then return nil end
     if not (target and target.artifact) then return nil end
     local unit = target._config_unit or lt._config_unit
     local bd = unit and unit.build_dir and unit:build_dir()
@@ -273,8 +272,8 @@ end
 function M.debug_spec(ws, lt, launch)
     local lang = module_language(lt)
     local adapters
-    if lt._launch_config then
-        adapters = config_adapters(ws, lt._launch_config, lang)
+    if lt._launch then
+        adapters = config_adapters(ws, lt._launch, lang)
     else
         adapters = { { language = lang, adapter = require("loomworks.debug_config").resolve_adapter(ws, lang) } }
     end
@@ -301,8 +300,8 @@ function M.primary_adapter(lt, resolve)
         return require("loomworks.debug_config").resolve_adapter(lt._workspace, language)
     end
     local first
-    if lt._launch_config then
-        first = config_adapters(lt._workspace, lt._launch_config, lang, resolve)[1]
+    if lt._launch then
+        first = config_adapters(lt._workspace, lt._launch, lang, resolve)[1]
     else
         first = { language = lang, adapter = resolve(lang) }
     end
@@ -357,14 +356,14 @@ end
 --- @return "warn"|"error"|nil severity
 function M.resolve_debug(lt)
     local ws = lt._workspace
-    if not lt._launch_config then
+    if not lt._launch then
         local target = lt._target
         if not (target and target:is_executable() and target.artifact) then return nil end
     end
     local spec, err = lt:resolve_launch_spec()
     if not spec then
         local severity = "error"
-        if not lt._launch_config and not M.foreign_of(lt) then severity = "warn" end
+        if not lt._launch and not M.foreign_of(lt) then severity = "warn" end
         return nil, "cannot debug: " .. tostring(err), severity
     end
     return M.debug_spec(ws, lt, {

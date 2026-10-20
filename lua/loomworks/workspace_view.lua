@@ -1379,11 +1379,11 @@ end
 
 --- Get all launch configs for a project.
 --- @param project loomworks.Project
---- @return { name: string, config: table, launch: loomworks.LaunchConfiguration }[]
+--- @return { name: string, launch: loomworks.LaunchConfiguration }[]
 function M.get_launch_configs(project)
     local result = {}
     for _, launch in ipairs(project:launch_configs()) do
-        result[#result + 1] = { name = launch.name, config = launch:declaration(), launch = launch }
+        result[#result + 1] = { name = launch.name, launch = launch }
     end
     return result
 end
@@ -1393,11 +1393,7 @@ end
 --- @param launch_name string|nil nil for new config
 --- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table, debug: table }
 function M.compute_edit_launch_context(project, launch_name)
-    local config = {}
-    local launch = project:find_launch(launch_name)
-    if launch and launch:declaration() then
-        config = launch:declaration()
-    end
+    local config = project:find_launch(launch_name) or {}
 
     return {
         project_key = project.key,
@@ -1422,8 +1418,8 @@ function M.execute_save_launch_config(project, old_name, new_name, data)
     -- show (the `device` block, spec §18.9, and any other declared field)
     -- survive; replace only the editor's fields, omitting empty ones.
     local old_launch = project:find_launch(old_name)
-    local existing = old_launch and old_launch:declaration()
-    local config = type(existing) == "table" and vim.deepcopy(existing) or {}
+    local config = (old_launch and not old_launch:is_invalid())
+        and vim.deepcopy(old_launch:serialize()) or {}
     -- An empty command field means "no command": the key is absent, never
     -- `""` (a target-backed launch carries only `target`). A command makes
     -- this a command-type launch: it no longer runs a target (as

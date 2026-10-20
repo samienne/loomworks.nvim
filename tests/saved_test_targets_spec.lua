@@ -400,9 +400,9 @@ describe("lw test plan (§16.16)", function()
     --- /bin/<name>; a launch runs its config's program with its own args, and
     --- records its deploy.
     local function fake_lt(c, log, deploy_fail)
-        local cfg = c.kind == "launch" and c.project:find_launch(c.name):declaration() or nil
+        local cfg = c.kind == "launch" and c.project:find_launch(c.name) or nil
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function()
                 log[#log + 1] = "deploy " .. c.name
@@ -1776,9 +1776,9 @@ describe("lw test: working directories (§16.16)", function()
     after_each(function() gtest.probe_sync = orig_probe end)
 
     local function lt_for(c, seen)
-        local cfg = c.kind == "launch" and c.project:find_launch(c.name):declaration() or nil
+        local cfg = c.kind == "launch" and c.project:find_launch(c.name) or nil
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function() return true end,
             resolve_launch_spec = function(_, o)
@@ -2174,7 +2174,7 @@ describe("test_plan.exec_step through an asynchronous host", function()
     end
     local function lt(cfg)
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function() error("deploy_sync on an asynchronous host") end,
             resolve_launch_spec = function()

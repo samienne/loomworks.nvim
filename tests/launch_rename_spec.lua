@@ -76,12 +76,12 @@ describe("launch rename", function()
     -- a hand-written file would), then save.
     local ws = load(root)
     local proj = find_project(ws, "App")
-    local cfg = proj:find_launch("schema-test"):declaration()
+    local cfg = proj:find_launch("schema-test")
     cfg.device = { stage = { "assets/**" } }
     cfg.deploy = { ["${build_dir}/x.dll"] = { project = "App", path = "x.dll" } }
     cfg.debug = { "c++" }
     cfg.description = "Editor with the schema test data"
-    cfg.future_field = { keep = true }
+    cfg._extra = { future_field = { keep = true } }
     assert.is_true(ws:_save_user())
     local before = vim.deepcopy(user_json(root).projects.App.launch["schema-test"])
 
@@ -446,7 +446,7 @@ describe("editor: launch rows, launch editor rename and description", function()
     point_all_profiles_at(root, "editor")
     local ws = load(root)
     local proj = find_project(ws, "App")
-    proj:find_launch("editor"):declaration().device = { stage = { "a/**" } }
+    proj:find_launch("editor").device = { stage = { "a/**" } }
     assert.is_true(ws:_save_user())
     local ok, err = wv.execute_save_launch_config(proj, "editor", "main",
       { command = "", args = { "--x" } })

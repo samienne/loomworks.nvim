@@ -896,11 +896,11 @@ function M._pick_target(profile, on_select)
             local project = pp._project
             if not project then goto next_pp end
             for _, launch in ipairs(project:launch_configs()) do
-                local launch_name, lcfg = launch.name, launch:declaration()
+                local launch_name = launch.name
                 items[#items + 1] = {
                     label = project.key .. " [launch: " .. launch_name .. "]"
                         .. require("loomworks.ui.helpers").picker_summary(
-                            type(lcfg) == "table" and lcfg.description or nil),
+                            launch.description),
                     project = project,
                     launch_name = launch_name,
                     action = "launch",

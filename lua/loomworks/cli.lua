@@ -2725,7 +2725,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
   end
 
   local project = lt._project
-  local cfg = lt._launch_config
+  local cfg = lt._launch
   local block = manifest.effective_block(project and project.device, cfg and cfg.device)
   for _, b in ipairs({ { project and project.device, "project device" }, { cfg and cfg.device, "launch device" } }) do
     local vok, verr = manifest.validate_block(b[1], b[2])
@@ -3320,20 +3320,20 @@ function M.cmd_launch_list(ws, proj_name)
   local rows = {}
   for _, p in ipairs(projs) do
     for _, launch in ipairs(p:launch_configs()) do
-      local n, cfg = launch.name, launch:declaration()
+      local n = launch.name
       local runs
-      if type(cfg) == "table" and cfg.target then
-        runs = "target:" .. cfg.target
-      elseif type(cfg) == "table" and cfg.command then
-        runs = cfg.command
+      if launch.target then
+        runs = "target:" .. launch.target
+      elseif launch.command then
+        runs = launch.command
       else
         runs = "(no command)"
       end
-      if type(cfg) == "table" and cfg.args and #cfg.args > 0 then
-        runs = runs .. " " .. table.concat(cfg.args, " ")
+      if launch.args and #launch.args > 0 then
+        runs = runs .. " " .. table.concat(launch.args, " ")
       end
       rows[#rows + 1] = { project = p.key, name = n, runs = runs,
-        description = type(cfg) == "table" and cfg.description or nil }
+        description = launch.description }
     end
   end
 
@@ -3555,16 +3555,14 @@ function M.cmd_launch_set(root, args)
   if not (proj_name and name) then die(usage, 2) end
   local project = resolve_project(ws, proj_name)
   local cur_launch = project:find_launch(name)
-  local cur = cur_launch and cur_launch:declaration()
-  if type(cur) ~= "table" then
+  if not cur_launch or cur_launch:is_invalid() then
     die("no launch config '" .. name .. "' on project '" .. project.key ..
       "' — create it with `lw launch add`")
   end
 
   -- Copy so a save failure leaves the in-memory config untouched. Preserve
   -- fields we don't edit (e.g. deploy, debug); deep-copy the mutated tables.
-  local new = {}
-  for k, v in pairs(cur) do new[k] = v end
+  local new = cur_launch:serialize()
   if type(new.env) == "table" then
     local e = {}; for k, v in pairs(new.env) do e[k] = v end; new.env = e
   end
@@ -3646,8 +3644,7 @@ end
 --- Print one launch config, given a resolved project + name. Shared by
 --- `launch show` and the confirmation `launch set` prints after a save.
 function launch_show_resolved(project, name)
-  local launch = project:find_launch(name)
-  local cfg = launch and launch:declaration()
+  local cfg = project:find_launch(name)
   if not cfg then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   out("launch config '" .. name .. "'  (project " .. project.key .. ")")
   if type(cfg.description) == "string" then
@@ -3693,9 +3690,8 @@ end
 --- @param name string
 --- @return integer
 function M._launch_show_json(project, name)
-  local launch = project:find_launch(name)
-  local cfg = launch and launch:declaration()
-  if type(cfg) ~= "table" then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
+  local cfg = project:find_launch(name)
+  if not cfg or cfg:is_invalid() then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   local d = require("loomworks.description")
   local desc = type(cfg.description) == "string" and cfg.description or nil
   local obj = {
@@ -3887,7 +3883,7 @@ function M.cmd_launch_describe(root, args)
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
   local launch = project:find_launch(name)
-  if not launch or type(launch:declaration()) ~= "table" then
+  if not launch or launch:is_invalid() then
     die("no launch config '" .. name .. "' on project '" .. project.key .. "'")
   end
   local handle = {
@@ -3897,7 +3893,7 @@ function M.cmd_launch_describe(root, args)
   }
   function handle:set_description(text)
     local changed, err = launch:set_description(text)
-    self.description = launch:declaration().description
+    self.description = launch.description
     return changed, err
   end
   return M._describe_item(ws, handle, "launch configuration", project.key .. ":" .. name,
@@ -6667,15 +6663,13 @@ local function collect_targets(ws, profile)
   for _, c in ipairs(cands) do
     local is_default = candidate_is_default(desc, c)
     if is_default then seen_default = true end
-    local lcfg = c.launch and c.launch:declaration()
     rows[#rows + 1] = {
       label = c.project.key .. ":" .. c.name,
       kind_label = target_kind_label(c.kind),
       is_default = is_default,
       cand = c,
       -- A launch's description summary ends its row (spec §16.35).
-      description = type(lcfg) == "table" and type(lcfg.description) == "string"
-        and lcfg.description or nil,
+      description = c.launch and c.launch.description or nil,
     }
   end
   -- The default points at a target we couldn't enumerate (e.g. an unconfigured

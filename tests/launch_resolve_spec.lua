@@ -189,7 +189,7 @@ end)
 
 describe("LaunchTarget:resolve_launch_spec", function()
     -- Construct a LaunchTarget instance directly, bypassing descriptor
-    -- resolution — the dispatcher only reads _launch_config / _target.
+    -- resolution — the dispatcher only reads _launch / _target.
     local function lt(fields)
         return setmetatable(fields, LaunchTarget)
     end
@@ -209,7 +209,7 @@ describe("LaunchTarget:resolve_launch_spec", function()
     end)
 
     it("dispatches to a command config, declared args before extra_args", function()
-        local self = lt({ _project = { key = "app" }, _launch_name = "gui", _launch_config = {} })
+        local self = lt({ _project = { key = "app" }, _launch_name = "gui", _launch = {} })
         -- Stub the expansion seam so no full workspace/expand context is needed.
         self.resolve_command_spec = function()
             return { cmd = "prog", args = { "--flag" }, cwd = "/w", env = { X = "1" } }
@@ -346,7 +346,7 @@ describe("run_prep.resolve_debug (one spec for run and debug, §8.9.6, step 5k C
         local target_lt = lt({
             _workspace = { root = "/ws" }, _project = { key = "app", path = "src/app" },
             _launch_name = "gui",
-            _launch_config = { command = "${BIN}/gui", args = { "-v" }, debug = { "typescript", "c++" } },
+            _launch = { command = "${BIN}/gui", args = { "-v" }, debug = { "typescript", "c++" } },
         })
         local ok, spec = pcall(run_prep.resolve_debug, target_lt)
         local run = target_lt:resolve_launch_spec()
@@ -367,7 +367,7 @@ describe("run_prep.resolve_debug (one spec for run and debug, §8.9.6, step 5k C
         local target_lt = lt({
             _workspace = { root = "/ws" }, _project = { key = "app", path = "src/app" },
             _launch_name = "tool", _config_target = t,
-            _launch_config = { target = "app", args = { "-x" } },
+            _launch = { target = "app", args = { "-x" } },
         })
         local ok, spec, err = pcall(run_prep.resolve_debug, target_lt)
         local run = target_lt:resolve_command_spec()
@@ -389,7 +389,7 @@ describe("run_prep.resolve_debug (one spec for run and debug, §8.9.6, step 5k C
         local target_lt = lt({
             _workspace = { root = "/ws" }, _project = { key = "app", path = "src/app" },
             _launch_name = "tool", _config_target = t,
-            _launch_config = { target = "app", debug = { "c++", "typescript" } },
+            _launch = { target = "app", debug = { "c++", "typescript" } },
         })
         local ok, adapters, data = pcall(target_lt.multi_adapter_specs, target_lt)
         expand.launch_context = orig
@@ -403,7 +403,7 @@ describe("run_prep.resolve_debug (one spec for run and debug, §8.9.6, step 5k C
         expand.launch_context = function() return {} end
         local ok, spec, err, severity = pcall(run_prep.resolve_debug, lt({
             _workspace = { root = "/ws" }, _project = { key = "app" },
-            _launch_name = "tool", _launch_config = { target = "gone" },
+            _launch_name = "tool", _launch = { target = "gone" },
         }))
         expand.launch_context = orig
         assert.is_true(ok, spec)

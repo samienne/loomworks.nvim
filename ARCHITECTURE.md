@@ -2401,15 +2401,20 @@ within the project. ConfigUnit carries `_configuration` reference. Accessor:
 project's launch configuration as a domain object, owned by
 `Project._launches` (name → object), built by `_apply` from the merged
 `launch` tables (`Project:_sync_launches`, matching by name) and serialized
-back to the same table shape (`Project:serialize_launches`, each object's
-`serialize()` returning its declaration unchanged, so every field — known
-or not — round-trips). Its declared table is its data (`declaration()`);
-`description` is the normalised copy. Callers reach it through the
+back to the same table shape (`Project:serialize_launches`). Every declared
+field (`target`, `command`, `args`, `working_dir`, `env`, `debug`, `deploy`,
+`device`, `device_log`) is a field of the object, and `description` is held
+once, normalised (a non-string value in `_description_invalid`); no raw
+declaration is kept. A key this version does not know is kept opaque in
+`_extra`, and a declaration that is not a table in `_invalid` (it runs
+nothing); `serialize()` rebuilds the table from these, so every field —
+known or not — round-trips. A project's removal marks its launches
+`_removed` (`Project:_mark_removed`), and their mutators refuse. Callers reach it through the
 project's registry (`launch_configs()`, sorted by name, `has_launches()`);
 a name is matched (`find_launch(name)`) only where a user or a file
 supplies one (CLI arguments, a dialog's name, a profile's persisted
 default-target descriptor, a saved test-target entry). A run candidate
-(`run_prep`) and a `LaunchTarget` hold the object. `LaunchConfiguration:set_description(text)`
+(`run_prep`) and a `LaunchTarget` (`_launch`) hold the object. `LaunchConfiguration:set_description(text)`
 and `Project:rename_launch_config(launch, new)` are the mutations for its
 description and name. The rename keeps the object (so its daemon id),
 re-points every profile's `_default_target_descriptor` naming it, re-keys

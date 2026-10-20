@@ -2651,7 +2651,7 @@ describe("launch config lifecycle", function()
         })
         assert.is_true(ok)
         assert.is_not_nil(app:find_launch("debug"))
-        assert.equals("node", app:find_launch("debug"):declaration().command)
+        assert.equals("node", app:find_launch("debug").command)
 
         -- 2. Get launch configs
         local configs = wv.get_launch_configs(app)
@@ -2666,8 +2666,8 @@ describe("launch config lifecycle", function()
             env = { NODE_ENV = "development", DEBUG = "true" },
         })
         assert.is_true(ok)
-        assert.equals("npx", h.find_project_in(ws:get_projects(), "App"):find_launch("debug"):declaration().command)
-        assert.equals("true", h.find_project_in(ws:get_projects(), "App"):find_launch("debug"):declaration().env.DEBUG)
+        assert.equals("npx", h.find_project_in(ws:get_projects(), "App"):find_launch("debug").command)
+        assert.equals("true", h.find_project_in(ws:get_projects(), "App"):find_launch("debug").env.DEBUG)
 
         -- 4. Rename: debug → dev
         ok = wv.execute_save_launch_config(app, "debug", "dev", {
@@ -2737,7 +2737,7 @@ describe("launch config lifecycle", function()
             env = {},
         })
 
-        local saved = h.find_project_in(ws:get_projects(), "App"):find_launch("minimal"):declaration()
+        local saved = h.find_project_in(ws:get_projects(), "App"):find_launch("minimal")
         assert.equals("echo", saved.command)
         assert.is_nil(saved.args)
         assert.is_nil(saved.working_dir)
@@ -2789,7 +2789,7 @@ describe("launch config lifecycle", function()
             },
         })
 
-        local saved = h.find_project_in(ws:get_projects(), "App"):find_launch("debug"):declaration()
+        local saved = h.find_project_in(ws:get_projects(), "App"):find_launch("debug")
         assert.is_not_nil(saved.deploy)
         assert.is_not_nil(saved.deploy["${build_dir}/lib.node"])
 
@@ -2799,7 +2799,7 @@ describe("launch config lifecycle", function()
             deploy = {},
         })
 
-        saved = h.find_project_in(ws:get_projects(), "App"):find_launch("debug"):declaration()
+        saved = h.find_project_in(ws:get_projects(), "App"):find_launch("debug")
         assert.is_nil(saved.deploy)
     end)
 

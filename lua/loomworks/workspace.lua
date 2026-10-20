@@ -5338,12 +5338,12 @@ function Workspace:_add_launch_config_targets()
         if project and project:has_launches() then
             unit.targets = unit.targets or {}
             for _, launch in ipairs(project:launch_configs()) do
-                local name, cfg = launch.name, launch:declaration()
+                local name = launch.name
                 local launch_key = "launch:" .. name
                 if not unit.targets[launch_key] then
                     unit.targets[launch_key] = Target.new(unit, launch_key, {
                         type = "launch_config",
-                        artifact = cfg.command,
+                        artifact = launch.command,
                     })
                 end
             end
@@ -7876,7 +7876,7 @@ function Workspace:remove_project(project)
     end
 
     -- Remove from domain objects
-    project._removed = true
+    project:_mark_removed()
     for i, p in ipairs(self._projects) do
         if p == project then table.remove(self._projects, i); break end
     end

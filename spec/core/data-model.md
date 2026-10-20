@@ -76,7 +76,8 @@ A launch configuration is a named way to run something of a project
 - Owned by its project; it is a domain object like a configuration:
   identity-preserving across refreshes (the same object is updated, matched
   by name within the project), kept across a rename (§8.7), marked removed
-  when its declaration goes. Its declared fields (target or command, args,
+  when its declaration goes or its project is removed (a removed launch
+  refuses every change). Its declared fields (target or command, args,
   working directory, environment, debug, deploy, device log, description)
   are its data; it serializes back to the same table, so the files do not
   change shape.

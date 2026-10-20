@@ -614,7 +614,7 @@ describe(":is_valid()", function()
             _profile = nil,
             _config_unit = nil,
             _target = nil,
-            _launch_config = nil,
+            _launch = nil,
             _device_target_id = nil,
         }, { __index = LaunchTarget })
         local ok, reasons = stale:is_valid()

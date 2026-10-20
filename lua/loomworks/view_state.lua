@@ -493,10 +493,9 @@ local function profile_row(ws, profile, active, opts)
     end
     local lt = profile:default_target()
     if lt then
-        local cfg = lt._launch and lt._launch:declaration()
         row.default_target = lt:display_name()
         row.default_target_valid = lt:is_valid() and true or false
-        row.default_target_description = type(cfg) == "table" and cfg.description or nil
+        row.default_target_description = lt._launch and lt._launch.description or nil
     end
 
     row.units = {}
@@ -654,13 +653,13 @@ local function project_row(ws, proj, opts)
     for _, launch in ipairs(proj:launch_configs()) do
         -- Launch configurations carry no publish state of their own in the
         -- model (they publish with their project, spec §2.4).
-        local name, cfg = launch.name, launch:declaration()
+        local name = launch.name
         local l = { key = name, label = name }
         if opts.id then l.id = opts.id(launch) end
-        if type(cfg) == "table" then
+        if not launch:is_invalid() then
             l.description = launch.description
-            l.target, l.command = cfg.target, cfg.command
-            l.args = type(cfg.args) == "table" and vim.deepcopy(cfg.args) or nil
+            l.target, l.command = launch.target, launch.command
+            l.args = type(launch.args) == "table" and vim.deepcopy(launch.args) or nil
         end
         row.launches[#row.launches + 1] = l
     end

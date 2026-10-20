@@ -225,6 +225,13 @@ function Project:_sync_launches(decls)
     self._launch_empty_decl = (type(decls) == "table" and next(decls) == nil) and decls or nil
 end
 
+--- Mark this project removed (its declaration is gone from the model), and
+--- with it every launch configuration it owns (spec §1.2.1).
+function Project:_mark_removed()
+    self._removed = true
+    for _, launch in pairs(self._launches) do launch._removed = true end
+end
+
 --- This project's launch configurations, sorted by name.
 --- @return loomworks.LaunchConfiguration[]
 function Project:launch_configs()
@@ -1196,7 +1203,7 @@ function Project:save_launch_config(launch_name, config)
     self:_mark_user_owned()
 
     local launch = self._launches[launch_name]
-    local old_decl = launch and launch:declaration()
+    local old_decl = launch and launch:serialize()
     if launch then
         launch:_apply(config)
     else
@@ -1298,7 +1305,7 @@ function Project:rename_launch_config(launch, new_name)
         return nil, "project '" .. self.key .. "' has been removed"
     end
     if not launch or launch._removed or launch._project ~= self
-            or self._launches[launch.name] ~= launch or type(launch:declaration()) ~= "table" then
+            or self._launches[launch.name] ~= launch or launch:is_invalid() then
         return nil, "no launch config '" .. tostring(launch and launch.name) .. "' on project '" .. self.key .. "'"
     end
     local old_name = launch.name
@@ -1394,6 +1401,9 @@ end
 --- @return boolean ok, string|nil err
 function Project:delete_launch_config(launch)
     local ws = self._workspace
+    if self._removed then
+        return false, "project '" .. self.key .. "' has been removed"
+    end
     self:_mark_user_owned()
 
     if not launch or launch._removed or self._launches[launch.name] ~= launch then

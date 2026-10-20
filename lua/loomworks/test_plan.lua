@@ -152,8 +152,7 @@ end
 function M.launches_of(project)
     local labels = {}
     for _, launch in ipairs(project:launch_configs()) do
-        local name, cfg = launch.name, launch:declaration()
-        if type(cfg) == "table" and (cfg.command or cfg.target) then labels[#labels + 1] = project.key .. ":" .. name end
+        if launch:is_runnable() then labels[#labels + 1] = project.key .. ":" .. launch.name end
     end
     table.sort(labels)
     return next(labels) and table.concat(labels, ", ") or "(none)"
@@ -614,7 +613,7 @@ function M.exec_step(ws, lt, opts, host, cb)
     local tail = {}
     for _, a in ipairs(opts.args or {}) do tail[#tail + 1] = a end
     for _, a in ipairs(opts.extra or {}) do tail[#tail + 1] = a end
-    local cfg = lt._launch_config
+    local cfg = lt._launch
     -- The results option applies only to a build target's artifact (§16.16).
     local artifact = not (cfg and not cfg.target)
     local f = artifact and (host.foreign_of or require("loomworks.run_prep").foreign_of)(lt) or nil

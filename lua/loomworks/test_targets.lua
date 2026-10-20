@@ -405,7 +405,7 @@ function M.resolve_entry(e, ctx)
     local l
     if ctx.project then
         local launch = ctx.project:find_launch(name)
-        l = launch and launch:declaration()
+        l = (launch and not launch:is_invalid()) and launch or nil
     else
         l = type(ctx.launches) == "table" and ctx.launches[name] or nil
     end
