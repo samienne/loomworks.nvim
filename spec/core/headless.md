@@ -345,16 +345,22 @@ or joined with `=` (`--working-dir=build`, `--env=PORT=8080`; the split is at
 the first `=`). A value is required: a valued option that is the last token, or
 is followed by `--` or by another token starting with `--`, is a usage error
 (exit 2) and nothing changes; a value that itself starts with `--` is given with
-`=`. An empty value is written `""`, and on a launch edit it clears that field:
-`--working-dir ""` is the same as `--clear-working-dir`, and `--description ""`
-on `set` clears the description. `--command ""` and `--from-target ""` are usage
-errors, since a launch configuration needs one of them. An option that holds one
+`=`. An empty value is written `""` (or `--opt=`), and on a launch edit it clears
+that field: `--working-dir ""` on `set` is the same as `--clear-working-dir`, and
+`--description ""` on `set` clears the description. On `add`, `--working-dir ""`
+stores no working directory. On `describe`, `-m ""` clears the description (§16.35).
+`--command ""` and `--from-target ""` are usage errors, since a launch
+configuration needs one of them. Any other empty value is a usage error (exit 2):
+`lw run --cwd= app` changes nothing. An option that holds one
 value is a usage error (exit 2), and nothing changes, when it is given twice.
 This covers `--working-dir`, including the alias pair `--cwd` / `--working-dir`,
 and `--working-dir` given together with `--clear-working-dir`. It also covers
 `--command` and `--from-target`, which are one choice, so giving both is a usage
-error. Repeatable options (`--env`, `--unset-env`, `--description`, `-m`) may be
-given more than once. Every usage error exits 2.
+error. Repeatable options (`--env`, `--unset-env`, `--description`, `-m`,
+`--prefix`, `--target`, `--log`) may be given more than once. A usage error (an
+unknown, repeated or misplaced option, a missing or malformed value, an empty
+value where none clears, or a missing operand when lw cannot ask) exits 2; an
+error about the workspace's state, such as no unambiguous default, exits 1.
 
 **Unknown commands.** A command name the runner does not know is likewise a
 **usage error** (exit 2) that names it and points at the command index
