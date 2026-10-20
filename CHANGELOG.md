@@ -69,6 +69,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 
+- Orphan cleanup could delete a live build directory when the workspace was
+  reached through a different spelling of the same path (e.g. a Windows 8.3
+  short name like `RUNNER~1`): its parent under `.nvim/build` was listed as a
+  stray directory. Stray detection now compares directory identity, and
+  cleanup refuses any directory that holds a live build dir (#293).
 - `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
   the `--` as the first argument. A target-backed add has no command token, so
   its `--` is lw's separator and is dropped; before it an unknown option or a
