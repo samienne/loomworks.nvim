@@ -152,7 +152,7 @@ describe("settings vs config storage (the flip)", function()
       -- `config` is now project-configuration: `get` needs <project> <name>
       -- <param>, so `config get dev-lua` errors instead of printing the setting.
       local r = run_main({ "config", "get", "dev-lua" }, root)
-      assert.equals(1, r.exit_code)
+      assert.equals(2, r.exit_code)
       assert.is_falsy(r.stdout:find("/opt/lw/lua", 1, true))
       assert.is_truthy(r.stderr:find("lw config get", 1, true))
     end)

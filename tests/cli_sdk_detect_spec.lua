@@ -121,7 +121,7 @@ describe("lw sdk add <type> (auto-detect) / lw sdk detect", function()
     local r = capture(function() cli.cmd_sdk("add", root, { "sdk", "add", "fakesdk" }) end)
     vim.env.LW_NO_INPUT = saved
     cli._reset_modes()
-    assert.equals(1, r.exit_code)
+    assert.equals(2, r.exit_code)
     assert.truthy(r.stderr:find("2 fakesdk installations detected", 1, true), r.stderr)
     assert.truthy(r.stderr:find("lw sdk add fakesdk " .. a, 1, true), r.stderr)
     assert.truthy(r.stderr:find("lw sdk add fakesdk " .. b, 1, true), r.stderr)

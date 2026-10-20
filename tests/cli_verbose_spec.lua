@@ -312,7 +312,7 @@ describe("lw clean -v", function()
 
   it("refuses a second operand", function()
     local r = clean({ "clean", "p", "q" })
-    assert.equals(1, r.exit_code)
+    assert.equals(2, r.exit_code)
     assert.truthy(r.stderr:find("unexpected argument 'q'", 1, true), r.stderr)
   end)
 end)

@@ -272,7 +272,7 @@ describe("cli.cmd_worktree (errors, git-required)", function()
             })
         end)
         assert.is_false(res.ok)             -- die() raised
-        assert.equals(1, res.exit_code)
+        assert.equals(2, res.exit_code)
         assert.is_truthy(res.stderr:find("unknown worktree subcommand", 1, true))
         assert.is_nil(res.stdout:find("/repo/main", 1, true)) -- did not list
     end)

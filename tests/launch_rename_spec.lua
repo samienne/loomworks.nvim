@@ -71,7 +71,7 @@ describe("launch rename", function()
   it("moves every field, including device/deploy/debug/description and unknown keys", function()
     local root = make_ws()
     assert.is_nil(launch(root, "add", "App", "schema-test", "--from-target", "editor",
-      "--use-scene-json-schema", "D:/src/x").exit_code)
+      "--", "--use-scene-json-schema", "D:/src/x").exit_code)
     -- Give it fields no CLI flag sets, straight on the object (as the editor/
     -- a hand-written file would), then save.
     local ws = load(root)
@@ -116,7 +116,7 @@ describe("launch rename", function()
     end
   end)
 
-  it("refuses an unknown old name, an existing new name and an invalid name", function()
+  it("refuses an unknown old name, an existing new name (exit 1) and an invalid name (exit 2)", function()
     local root = make_ws()
     launch(root, "add", "App", "a", "node", "x.js")
     launch(root, "add", "App", "b", "node", "y.js")
@@ -126,7 +126,7 @@ describe("launch rename", function()
     assert.is_truthy(col.stderr:find("already exists", 1, true))
     for _, bad in ipairs({ "-x", " padded", "tab\tname", "" }) do
       local r = launch(root, "rename", "App", "a", bad)
-      assert.equals(1, r.exit_code, bad)
+      assert.equals(2, r.exit_code, bad) -- a malformed name is a usage error
     end
     local l = user_json(root).projects.App.launch
     assert.is_truthy(l.a); assert.is_truthy(l.b)
@@ -230,8 +230,9 @@ end)
 describe("launch add --description / describe", function()
   it("--description never swallows the program's own args (python -m …)", function()
     local root = make_ws()
-    local r = launch(root, "add", "App", "docs", "python", "-m", "http.server", "8000",
-      "--description", "Docs server", "--description", "Serves the built docs.")
+    -- lw's options go before the command; after it every token is the program's.
+    local r = launch(root, "add", "App", "docs", "--description", "Docs server",
+      "--description", "Serves the built docs.", "python", "-m", "http.server", "8000")
     assert.is_nil(r.exit_code, r.stderr)
     local cfg = user_json(root).projects.App.launch.docs
     assert.equals("python", cfg.command)
@@ -241,7 +242,7 @@ describe("launch add --description / describe", function()
 
   it("describe sets, prints, --json, clears; empty removes the key", function()
     local root = make_ws()
-    launch(root, "add", "App", "demo", "--from-target", "editor", "--theme", "demo")
+    launch(root, "add", "App", "demo", "--from-target", "editor", "--", "--theme", "demo")
     local r = launch(root, "describe", "App", "demo", "-m", "Theme showcase", "-m", "Body")
     assert.is_nil(r.exit_code, r.stderr)
     assert.equals("Theme showcase\n\nBody", user_json(root).projects.App.launch.demo.description)
@@ -267,7 +268,7 @@ describe("launch add --description / describe", function()
 
   it("launch set keeps the description; show prints it and --json has every field", function()
     local root = make_ws()
-    launch(root, "add", "App", "demo", "--from-target", "editor", "--a", "--description", "Sum")
+    launch(root, "add", "App", "demo", "--from-target", "editor", "--description", "Sum", "--", "--a")
     launch(root, "set", "App", "demo", "--working-dir", "wd")
     local cfg = user_json(root).projects.App.launch.demo
     assert.equals("Sum", cfg.description)
@@ -286,7 +287,7 @@ describe("launch add --description / describe", function()
     local root = make_ws()
     launch(root, "add", "App", "plain", "--from-target", "editor")
     launch(root, "add", "App", "schema", "--from-target", "editor",
-      "--use-scene-json-schema", "D:/src/dres_schema_test", "--description", "Schema test data")
+      "--description", "Schema test data", "--", "--use-scene-json-schema", "D:/src/dres_schema_test")
     cli._test_stdout_tty = false
     local out = launch(root, "list").stdout
     cli._test_stdout_tty = nil
@@ -324,18 +325,19 @@ describe("launch add --description / describe", function()
 
   it("new launch names are validated on add", function()
     local root = make_ws()
-    assert.equals(1, launch(root, "add", "App", "-bad", "node").exit_code)
+    assert.equals(2, launch(root, "add", "App", "-bad", "node").exit_code)
   end)
 
   -- Tightened rule (v0.1.40-beta.2, spec §8.7): no whitespace anywhere and no
   -- '/' or '\' in a NEW name, on add and on rename; the error says what is allowed.
+  -- A malformed name is a usage error: exit 2 (spec §16.7 "Option values").
   local BAD = { "bad name", "a/b", "a\\b", "tab\tname", "", "-lead", " padded" }
 
   it("add refuses whitespace, slashes, empty and a leading '-', naming what is allowed", function()
     local root = make_ws()
     for _, bad in ipairs(BAD) do
       local r = launch(root, "add", "App", bad, "node", "x.js")
-      assert.equals(1, r.exit_code, "accepted " .. vim.inspect(bad))
+      assert.equals(2, r.exit_code, "accepted " .. vim.inspect(bad))
       assert.is_truthy(r.stderr:find("invalid launch name", 1, true), r.stderr)
       assert.is_truthy(r.stderr:find("allowed", 1, true), r.stderr)
     end
@@ -350,7 +352,7 @@ describe("launch add --description / describe", function()
     launch(root, "add", "App", "a", "node", "x.js")
     for _, bad in ipairs(BAD) do
       local r = launch(root, "rename", "App", "a", bad)
-      assert.equals(1, r.exit_code, "accepted " .. vim.inspect(bad))
+      assert.equals(2, r.exit_code, "accepted " .. vim.inspect(bad))
       assert.is_truthy(r.stderr:find("allowed", 1, true), r.stderr)
     end
     assert.is_truthy(user_json(root).projects.App.launch.a)
@@ -367,11 +369,11 @@ describe("launch add --description / describe", function()
       return r
     end
     local r = run_main("launch", "add", "App", "", "node", "x.js")
-    assert.equals(1, r.exit_code, r.stdout)
+    assert.equals(2, r.exit_code, r.stdout)
     assert.is_truthy(r.stderr:find("cannot be empty", 1, true), r.stderr)
     assert.is_nil(run_main("launch", "add", "App", "a", "node", "x.js").exit_code == 1 or nil)
     r = run_main("launch", "rename", "App", "a", "")
-    assert.equals(1, r.exit_code, r.stdout)
+    assert.equals(2, r.exit_code, r.stdout)
     assert.is_truthy(r.stderr:find("cannot be empty", 1, true), r.stderr)
     assert.is_truthy(user_json(root).projects.App.launch.a)
   end)
@@ -439,7 +441,7 @@ describe("editor: launch rows, launch editor rename and description", function()
 
   it("a name change in the launch editor is the atomic rename (fields + default targets)", function()
     local root = make_ws()
-    launch(root, "add", "App", "editor", "--from-target", "editor", "--x", "--description", "Plain")
+    launch(root, "add", "App", "editor", "--from-target", "editor", "--description", "Plain", "--", "--x")
     point_all_profiles_at(root, "editor")
     local ws = load(root)
     local proj = find_project(ws, "App")

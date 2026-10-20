@@ -698,7 +698,7 @@ so interactive tools drive the tty:
 ```sh
 lw run --prefix valgrind                       # valgrind <app> …
 lw run --prefix 'valgrind --leak-check=full'   # a tokenized string, quote-aware
-lw run --prefix gdb --prefix --args app -- x   # gdb --args <app> x   (repeatable)
+lw run --prefix gdb --prefix=--args app -- x   # gdb --args <app> x   (repeatable; a value starting with -- takes =)
 ```
 
 The prefix is **multiple tokens**, supplied two combinable ways: a single string
@@ -1710,7 +1710,12 @@ sub-command's own section under `lw help <command> <sub>` (or
 command does not know is an error (exit 2, e.g. `lw run --dryrun`), never
 silently ignored; arguments for the program or build tool go after `--`. An
 unknown command is an error too (exit 2, e.g. `lw frobnicate`), inside or
-outside a workspace.
+outside a workspace. Every usage error exits 2. An option that takes a value
+takes it as the next token or joined with `=` (`--working-dir=build`,
+`--env=PORT=8080`); a value starting with `--` needs the `=` form, and a
+missing value or a single-valued option given twice is a usage error
+(`--env`, `--unset-env`, `--description`, `-m`, `--target` and `--log` may
+repeat).
 
 `lw` highlights its own lines so the phases of a run stand out from the build
 tool's output between them: step headers (`==> [configure] App/Debug`), why a
@@ -1745,7 +1750,7 @@ global `lw` drops them instead of passing them on, so the pinned `lw` still runs
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)). `-v` / `--verbose` also prints the build's commands, each deploy copy and, for a device run, every device command |
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
-| `lw launch <sub>` | `list` \| `add` \| `set` \| `show` \| `remove` \| `rename` \| `describe` launch configurations (`--cwd` and `--working-dir` are aliases on `add`/`set`, as on `lw run` / `lw target set`). `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` takes `--description <para>`; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
+| `lw launch <sub>` | `list` \| `add` \| `set` \| `show` \| `remove` \| `rename` \| `describe` launch configurations (`--cwd` and `--working-dir` are aliases on `add`/`set`, as on `lw run` / `lw target set`). `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` / `set` take `--description <para>` (on `set` it replaces the description; `""` clears it, as `--working-dir ""` clears the working directory); on `add`, lw's options go before the command — every token after it is the program's; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
 | `lw unlock <profile> \| --all \| --device <serial>` | Clear a stale build-directory lock, or a device lock |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw export [--published] [--no-profiles] [-o <file>]` | Print the whole configuration as a `loomworks.json` (local items too) without writing anything; `--published` = exactly what `lw publish` would write |

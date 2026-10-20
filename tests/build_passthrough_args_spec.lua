@@ -201,7 +201,7 @@ describe("lw build: forwarded build-tool args reach the build tool", function()
         } })
         root = r
         local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target" })
-        assert.equals(1, code)
+        assert.equals(2, code)
         assert.equals(0, #spawned)
         assert.matches("%-%-target needs", stderr)
     end)

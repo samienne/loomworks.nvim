@@ -67,7 +67,7 @@ describe("global options stop at the command's program arguments", function()
 
   it("launch set: a --dev before -- is lw's own (the host hints to use --)", function()
     local r = dispatch(root, "--no-input", "launch", "set", "App", "demo",
-      "--dev", "--use-scene-json-schema", "D:\\src\\x")
+      "--dev", "--working-dir", "D:\\src\\x")
     assert.equals(0, r.exit_code, r.stderr)
     assert.equals("cmd_launch", r.called)
     assert.is_false(has(r.args, "--dev"), vim.inspect(r.args))
@@ -206,7 +206,7 @@ describe("launch add / set take the args after --", function()
     local r = launch(root, "set", "App", "demo", "--", "--dev", "--use-scene-json-schema", "D:\\src\\x")
     assert.is_nil(r.exit_code, r.stderr)
     assert.same({ "--dev", "--use-scene-json-schema", "D:\\src\\x" }, cfg(root, "demo").args)
-    r = launch(root, "set", "App", "demo", "--dev", "--working-dir", "w")
+    r = launch(root, "set", "App", "demo", "--working-dir", "w", "--", "--dev")
     assert.is_nil(r.exit_code, r.stderr)
     local c = cfg(root, "demo")
     assert.same({ "--dev" }, c.args)
@@ -238,7 +238,8 @@ describe("host and bundle walkers agree", function()
     { "launch", "add", "App", "x", "--", "node", "--dev" },
     { "launch", "add", "App", "x", "--from-target", "t", "--dev" },
     { "launch", "create", "App", "x", "--description", "d", "node", "--dev" },
-    { "launch", "set", "App", "demo", "--dev", "--x" },
+    { "launch", "set", "App", "demo", "--dev", "x" },
+    { "launch", "add", "App", "x", "--from-target", "t", "--dev", "--", "--dev" },
     { "launch", "set", "App", "demo", "--", "--dev" },
     { "launch", "edit", "app", "run", "--env", "K=V", "--no-input" },
     { "config", "set", "App", "Debug", "options.X", "-O2", "--no-pin" },
