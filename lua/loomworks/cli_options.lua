@@ -12,8 +12,17 @@
 ---
 --- A spec is:
 ---   flags      options that take no value;
----   valued     options that consume the next token as their value;
----   eq         prefixes accepted as `--opt=value` (e.g. "--print=");
+---   valued     options that take a value: the next token, or joined as
+---              `--opt=value` (split at the first `=`, `normalize`). The value
+---              is required: the last token, `--` or a token starting with
+---              `--` is not one (spec §16.7 "Option values");
+---   eq         prefixes accepted as `--opt=value` on an option that is not
+---              valued (a flag with an optional value, e.g. "--print=");
+---   one        extra groups of options that hold one value between them
+---              (`--working-dir` / `--clear-working-dir`, `--command` /
+---              `--from-target`). A valued option not in `REPEATABLE` holds
+---              one value, and `ALIASES_ONE` pairs alias spellings: giving
+---              that value twice is a usage error;
 ---   free_after the number of positional operands after which the rest of the
 ---              argv is not checked (a value that may start with '-', or a
 ---              program's own arguments);
@@ -39,10 +48,28 @@ local function set(list)
   return s
 end
 
+--- Valued options that may be given more than once (spec §16.7 "Option
+--- values"): every other valued option holds one value.
+M.REPEATABLE = set({ "--env", "--unset-env", "--description", "-m", "--message", "--target", "--log" })
+
+--- Spellings of one option: given together they set the same value twice.
+local ALIASES_ONE = { { "--working-dir", "--cwd" }, { "-F", "--file" }, { "-o", "--output" } }
+
 local function spec(t)
+  -- slot[opt] = the group an option's value belongs to (its first member).
+  local slot = {}
+  for _, g in ipairs(ALIASES_ONE) do
+    for _, o in ipairs(g) do slot[o] = g[1] end
+  end
+  for _, g in ipairs(t.one or {}) do
+    -- An extra group may extend an alias pair (`--working-dir`, `--cwd`, `--clear-working-dir`).
+    local key = slot[g[1]] or g[1]
+    for _, o in ipairs(g) do slot[o] = key end
+  end
   return {
     flags = set(t.flags),
     valued = set(t.valued),
+    slot = slot,
     eq = t.eq or {},
     free_after = t.free_after,
     binds = set(t.binds),
@@ -195,7 +222,8 @@ M.COMMANDS = {
       -- option is lw's own up to `--` (`lw launch set App demo -- --dev`).
       set = spec({ flags = { "--clear-working-dir", "--clear-args" },
         valued = { "--project", "--launch", "--working-dir", "--cwd", "--env", "--unset-env",
-          "--command", "--from-target" } }),
+          "--command", "--from-target", "--description" },
+        one = { { "--working-dir", "--cwd", "--clear-working-dir" }, { "--command", "--from-target" } } }),
       show = spec({ flags = { "--json" }, valued = { "--project", "--launch" } }),
       remove = LAUNCH_ADDR,
       rename = NONE,
@@ -274,24 +302,39 @@ function M.is_global(v)
     or v:sub(1, 8) == "--color=")
 end
 
+--- A `--opt=value` token for a valued option of `s`: the option, else nil.
+local function split_eq(s, v)
+  local o = v:match("^(%-%-?[^=]+)=")
+  if o and s.valued[o] then return o end
+  return nil
+end
+
+--- Is `v` not a value for a valued option (spec §16.7 "Option values")?
+local function not_a_value(v)
+  return v == nil or v:sub(1, 2) == "--"
+end
+
 --- Walk `argv` (argv[1] is the command) with its command's spec; global
 --- options count as known flags. Returns the first unknown option and the
---- command label (or nil), and the index where lw's own arguments end (see
---- `own_end`).
+--- command label (or nil), the index where lw's own arguments end (see
+--- `own_end`), the first option-value problem before them (a usage message
+--- or nil: a missing value, a single-valued option given twice) and the
+--- indices of the `--opt=value` tokens to split (`normalize`).
 --- @param argv string[]
---- @return string|nil option, string|nil label, integer own_end
+--- @return string|nil option, string|nil label, integer own_end, string|nil problem, table splits
 local function walk(argv)
   local n = #argv + 1
+  local splits = {}
   local function to_dashdash(from)
     for k = from, #argv do if argv[k] == "--" then return k end end
     return n
   end
   local command = argv[1]
-  if command == "--" then return nil, nil, 1 end
-  if type(command) ~= "string" then return nil, nil, n end
+  if command == "--" then return nil, nil, 1, nil, splits end
+  if type(command) ~= "string" then return nil, nil, n, nil, splits end
   local cmd = M.ALIASES[command] or command
   local entry = M.COMMANDS[cmd]
-  if not entry then return nil, nil, to_dashdash(2) end
+  if not entry then return nil, nil, to_dashdash(2), nil, splits end
   local s, start, label = entry, 2, cmd
   if entry.subs then
     local sub = argv[2]
@@ -304,33 +347,63 @@ local function walk(argv)
       elseif entry.operand_default then
         s = entry.operand_default
       else
-        return nil, nil, to_dashdash(2) -- the handler reports the unknown sub-command
+        return nil, nil, to_dashdash(2), nil, splits -- the handler reports the unknown sub-command
       end
     end
   end
-  if not s then return nil, nil, to_dashdash(start) end
-  if s.permissive then return nil, nil, to_dashdash(start) end
+  if not s then return nil, nil, to_dashdash(start), nil, splits end
+  if s.permissive then return nil, nil, to_dashdash(start), nil, splits end
+  local problem
+  local held = {} -- slot -> the option that set it
+  local function hold(o)
+    if problem or (s.valued[o] and M.REPEATABLE[o]) then return end
+    if not s.valued[o] and not s.slot[o] then return end -- a plain flag
+    local key = s.slot[o] or o
+    local prev = held[key]
+    if prev == o then
+      problem = "option '" .. o .. "' given twice for `lw " .. label .. "` — it holds one value"
+    elseif prev then
+      problem = "options '" .. prev .. "' and '" .. o .. "' cannot be combined for `lw " .. label
+        .. "` — give one"
+    end
+    held[key] = prev or o
+  end
   local npos, i, free_after = 0, start, s.free_after
   while argv[i] ~= nil do
     local v = argv[i]
-    if v == "--" then return nil, nil, i end
+    if v == "--" then return nil, nil, i, problem, splits end
     if free_after and npos >= free_after then
-      return nil, nil, s.verbatim and i or to_dashdash(i)
+      return nil, nil, s.verbatim and i or to_dashdash(i), problem, splits
     end
     if #v > 1 and v:sub(1, 1) == "-" then
+      local eo = split_eq(s, v)
       if M.is_global(v) then
         i = i + 1
+      elseif eo then
+        -- `--opt=value`: the value may be anything, `--…` and "" included.
+        hold(eo)
+        if s.binds[eo] then free_after = nil end
+        splits[i] = true
+        i = i + 1
       elseif s.valued[v] then
+        hold(v)
         if s.binds[v] then free_after = nil end
-        i = i + 2
+        if not_a_value(argv[i + 1]) then
+          problem = problem or ("option '" .. v .. "' for `lw " .. label .. "` needs a value"
+            .. " (a value starting with `--` is given as " .. v .. "=<value>)")
+          i = i + 1
+        else
+          i = i + 2
+        end
       elseif s.flags[v] then
+        hold(v)
         i = i + 1
       else
         local ok = false
         for _, p in ipairs(s.eq) do
           if v:sub(1, #p) == p then ok = true; break end
         end
-        if not ok then return v, label, to_dashdash(i) end
+        if not ok then return v, label, to_dashdash(i), problem, splits end
         i = i + 1
       end
     else
@@ -338,7 +411,7 @@ local function walk(argv)
       i = i + 1
     end
   end
-  return nil, nil, n
+  return nil, nil, n, problem, splits
 end
 
 --- Where lw's own arguments end in `argv` (argv[1] is the command, leading
@@ -359,8 +432,12 @@ end
 --- options before the command and among the command's own arguments
 --- (`own_end`) are taken out; everything after — a program's arguments, the
 --- tail after `--` — is left untouched (spec §16.7).
+--- Also returns the first option-value problem among the command's own
+--- arguments (spec §16.7 "Option values"), found before the global options
+--- are taken out, so `--working-dir --no-input` is a missing value rather
+--- than a directory named after the token that follows.
 --- @param raw string[]
---- @return string[] rest, string[] globals (in order)
+--- @return string[] rest, string[] globals (in order), string|nil problem
 function M.split_globals(raw)
   local globals, k = {}, 1
   while raw[k] ~= nil and M.is_global(raw[k]) do
@@ -368,7 +445,7 @@ function M.split_globals(raw)
   end
   local tail = {}
   for j = k, #raw do tail[#tail + 1] = raw[j] end
-  local stop = M.own_end(tail)
+  local _, _, stop, problem = walk(tail)
   local rest = {}
   for j, v in ipairs(tail) do
     if j > 1 and j < stop and M.is_global(v) then
@@ -377,7 +454,28 @@ function M.split_globals(raw)
       rest[#rest + 1] = v
     end
   end
-  return rest, globals
+  return rest, globals, problem
+end
+
+--- `argv` (globals already taken out) with every `--opt=value` token of a
+--- valued option among lw's own arguments split into `--opt`, `value` (at the
+--- first `=`), so a handler only sees the separate form (spec §16.7 "Option
+--- values"). Nothing at or after `own_end` is touched.
+--- @param argv string[]
+--- @return string[]
+function M.normalize(argv)
+  local _, _, _, _, splits = walk(argv)
+  if next(splits) == nil then return argv end
+  local out = {}
+  for i, v in ipairs(argv) do
+    if splits[i] then
+      local o, val = v:match("^(%-%-?[^=]+)=(.*)$")
+      out[#out + 1] = o; out[#out + 1] = val
+    else
+      out[#out + 1] = v
+    end
+  end
+  return out
 end
 
 --- `list` without its first `--` at or after index `from` (default 1): on a

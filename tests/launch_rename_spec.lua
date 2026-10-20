@@ -230,8 +230,9 @@ end)
 describe("launch add --description / describe", function()
   it("--description never swallows the program's own args (python -m …)", function()
     local root = make_ws()
-    local r = launch(root, "add", "App", "docs", "python", "-m", "http.server", "8000",
-      "--description", "Docs server", "--description", "Serves the built docs.")
+    -- lw's options go before the command; after it every token is the program's.
+    local r = launch(root, "add", "App", "docs", "--description", "Docs server",
+      "--description", "Serves the built docs.", "python", "-m", "http.server", "8000")
     assert.is_nil(r.exit_code, r.stderr)
     local cfg = user_json(root).projects.App.launch.docs
     assert.equals("python", cfg.command)

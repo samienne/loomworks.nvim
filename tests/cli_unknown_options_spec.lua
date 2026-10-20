@@ -52,6 +52,7 @@ local function run(root, ...)
   _G.arg, vim.env.LW_ROOT = saved_arg, saved_root
   for _, nm in ipairs(HANDLERS) do cli[nm] = saved[nm] end
   r.called = called.name
+  r.args = called.args
   return r
 end
 
@@ -124,8 +125,7 @@ describe("unknown options", function()
     assert_refused(run(root, "launch", "add", "App", "demo", "--from-target", "editor",
       "--theme", "demo"), "--theme", "launch add")
     -- `launch set`: an unknown option before `--` is refused (not taken as args).
-    assert_refused(run(root, "launch", "set", "App", "demo", "--description", "x"), "--description",
-      "launch set")
+    assert_refused(run(root, "launch", "set", "App", "demo", "--theme", "x"), "--theme", "launch set")
     assert_reached(run(root, "launch", "set", "App", "demo", "--", "--description", "x"), "cmd_launch")
     assert_reached(run(root, "launch", "add", "App", "demo", "--env", "A=1", "node", "-x"), "cmd_launch")
     assert_refused(run(root, "launch", "add", "App", "demo", "--bogus", "node"), "--bogus", "launch add")
@@ -160,5 +160,61 @@ describe("unknown options", function()
     assert_reached(run(root, "project", "describe", "App", "-m", "x", "-m=y"), "cmd_project")
     assert_reached(run(root, "project", "describe", "App", "-F", "-"), "cmd_project")
     assert_refused(run(root, "profile", "create", "Dev", "--bogus"), "--bogus", "profile create")
+  end)
+
+  -- Option values (spec §16.7 "Option values"), on every command through the
+  -- shared parser: `--opt=value` reaches the handler split, a missing value or
+  -- a single-valued option given twice is a usage error (exit 2) before any
+  -- handler runs.
+  local function args_of(r)
+    return r.called and r.args[#r.args] or nil
+  end
+  local function has_seq(list, a, b)
+    for i = 1, #(list or {}) - 1 do if list[i] == a and list[i + 1] == b then return true end end
+    return false
+  end
+  local function assert_usage(r, needle)
+    assert.equals(2, r.exit_code, r.stderr)
+    assert.is_nil(r.called, "reached " .. tostring(r.called))
+    assert.is_truthy(r.stderr:find(needle, 1, true), r.stderr)
+  end
+
+  it("--opt=value is split for valued options on run / test / target set", function()
+    local r = run(root, "run", "Dev", "demo", "--cwd=w", "--prefix=valgrind -q")
+    assert_reached(r, "cmd_run")
+    local a = args_of(r)
+    assert.is_true(has_seq(a, "--cwd", "w"), vim.inspect(a))
+    assert.is_true(has_seq(a, "--prefix", "valgrind -q"), vim.inspect(a))
+    r = run(root, "test", "Dev", "--target", "t", "--working-dir=--d")
+    assert_reached(r, "cmd_test")
+    assert.is_true(has_seq(args_of(r), "--working-dir", "--d"), vim.inspect(args_of(r)))
+    r = run(root, "target", "set", "Dev", "x", "--launch", "--working-dir=d")
+    assert_reached(r, "cmd_target")
+    assert.is_true(has_seq(args_of(r), "--working-dir", "d"), vim.inspect(args_of(r)))
+    -- After `--` nothing is split.
+    r = run(root, "run", "Dev", "demo", "--", "--cwd=w")
+    assert_reached(r, "cmd_run")
+    assert.is_false(has_seq(args_of(r), "--cwd", "w"), vim.inspect(args_of(r)))
+  end)
+
+  it("a single-valued option given twice is a usage error", function()
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd", "a", "--cwd", "b"), "--cwd")
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd", "a", "--working-dir=b"), "--working-dir")
+    assert_usage(run(root, "test", "Dev", "--target", "t", "--working-dir", "a", "--cwd", "b"), "--cwd")
+    assert_usage(run(root, "target", "set", "Dev", "x", "--working-dir", "a", "--working-dir", "b"),
+      "--working-dir")
+    -- Repeatable ones may repeat.
+    assert_reached(run(root, "test", "Dev", "--target", "a", "--target=b", "--log", "a=1", "--log", "b=2"),
+      "cmd_test")
+    assert_reached(run(root, "build", "Dev", "--target", "a", "--target=b"), "cmd_build")
+  end)
+
+  it("a missing value is a usage error", function()
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd"), "--cwd")
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd", "--", "x"), "--cwd")
+    assert_usage(run(root, "test", "Dev", "--junit", "--no-build"), "--junit")
+    assert_usage(run(root, "target", "set", "Dev", "x", "--working-dir", "--no-input"), "--working-dir")
+    -- A value with one leading dash is a value.
+    assert_reached(run(root, "test", "Dev", "--target", "t", "--cwd", "-d"), "cmd_test")
   end)
 end)

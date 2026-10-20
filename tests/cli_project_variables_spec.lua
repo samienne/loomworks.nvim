@@ -72,7 +72,7 @@ describe("parse_project_set_args", function()
 
   it("dies when --type has no value", function()
     local r = capture(function() parse("App", "out", "--type") end)
-    assert.equals(1, r.exit_code)
+    assert.equals(2, r.exit_code)
     assert.is_truthy(r.stderr:find("--type needs a value", 1, true))
   end)
 end)
