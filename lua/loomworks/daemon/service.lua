@@ -743,23 +743,29 @@ function Service:_on_operation(op, conn, msg, deliver, call)
 end
 
 --- An interface call's references by id (`args.profile_id`,
---- `args.project_id`; §19.20 "References"): resolved to the entity's key in
---- `args.profile` / `args.project`, as the CLI's key would be. Returns the
---- refusal of a stale or unknown id.
+--- `args.project_id`; §19.20 "References"): resolved once, in the model
+--- segment, straight to the live objects, which the caller passes on. An id
+--- is never turned into its key to be matched again (step 5o part 0): the
+--- CLI's matcher (§16.9) reads a key as user input (a bare integer is a
+--- profile number), so a key round-trip can name another entity.
 --- @param ws table the live workspace
 --- @param a table the operation's args
---- @return string|nil refusal
+--- @return { profile?: loomworks.Profile, project?: loomworks.Project }|nil objs
+--- @return string|nil refusal of a stale or unknown id
 function Service:_resolve_ids(ws, a)
+    local objs = {}
     for _, r in ipairs({ { "profile", ws._profiles }, { "project", ws._projects } }) do
         local name, list = r[1], r[2]
         local id = a[name .. "_id"]
         if id ~= nil then
             local obj = self.ids:find(id, list)
-            if not obj then return "no " .. name .. " with id " .. tostring(id) .. " (a stale reference)" end
-            a[name], a[name .. "_id"] = obj.key, nil
+            if not obj then
+                return nil, "no " .. name .. " with id " .. tostring(id) .. " (a stale reference)"
+            end
+            objs[name] = obj
         end
     end
-    return nil
+    return objs
 end
 
 --- An operation's `units` (§19.15 "Editor scopes and configure") resolved
@@ -809,10 +815,10 @@ function Service:_accept(ctx)
         return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1,
             notes = ctx.notes, note_roles = ctx.note_roles })
     end
-    local stale = self:_resolve_ids(ws, ctx.args)
-    if stale then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1,
+    local refs, stale = self:_resolve_ids(ws, ctx.args)
+    if not refs then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1,
         notes = ctx.notes, note_roles = ctx.note_roles }) end
-    if ctx.op == "reset" then return self:_accept_reset(ctx, ws) end
+    if ctx.op == "reset" then return self:_accept_reset(ctx, ws, refs) end
     local a = ctx.args
     local launching = ctx.op == "run" or ctx.op == "debug" or ctx.op == "target_build"
     local profile, units
@@ -821,6 +827,8 @@ function Service:_accept(ctx)
         units, uerr = self:_resolve_units(ws, a.units)
         if not units then return ctx.reply({ outcome = "refused", message = uerr, exit_code = 1,
             notes = ctx.notes, note_roles = ctx.note_roles }) end
+    elseif refs.profile then
+        profile = refs.profile
     else
         local err, action, code
         profile, err, action, code = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
@@ -893,7 +901,9 @@ function Service:_accept(ctx)
     elseif launching then
         -- (The program's arguments: an empty list is still a list.)
         -- (`force`: the artifact-conflict question's answer, §5.9.)
-        args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
+        -- (`project`: the Project an id named, else the key the CLI typed.)
+        args = { target = a.target, project = refs.project or a.project, kind = a.kind, cwd = a.cwd,
+            extra = a.extra or {},
             no_build = a.no_build == true, build_scope = a.build_scope, force = a.force == true }
         if ctx.op == "run" then
             args.quiet, args.prefix, args.verbose = a.quiet == true, a.prefix == true, a.verbose == true
@@ -926,12 +936,15 @@ end
 --- any lock or side effect, then refuse, ask for the confirmation or accept.
 --- @param ctx table
 --- @param ws table the live workspace
-function Service:_accept_reset(ctx, ws)
+--- @param refs table the objects the request's ids named (`_resolve_ids`)
+function Service:_accept_reset(ctx, ws, refs)
     local reset_plan = require("loomworks.reset_plan")
     local a = ctx.args
     local scope
     if a.all then
         scope = { all = true }
+    elseif refs.profile then
+        scope = { profile = refs.profile }
     else
         local profile, err, action, code = build_run.resolve_target(ws, a.profile,
             { interactive = ctx.interactive, usage = "lw reset <profile>" })

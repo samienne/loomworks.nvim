@@ -208,20 +208,25 @@ M.QUERIES = {
     end,
     --- The compiler cache a profile resolves for one of its projects
     --- (`lw profile query <profile> <project> cache`, which formats it with
-    --- profile.lua `compiler_cache_text`): `args.profile` (key), `args.project`
-    --- (key) → `{ cache = { policy, tool?, path?, present, stale,
+    --- profile.lua `compiler_cache_text`): `args.profile` and `args.project`,
+    --- each a key (the v0 query, the CLI) or the live object an interface
+    --- call's id resolved to (never matched again by its key, step 5o part 0)
+    --- → `{ cache = { policy, tool?, path?, present, stale,
     --- msvc_auto_off, applicable, not_applied_reason?, not_applied_hint? } }`;
     --- `cache` absent for a module that does not cache C/C++. Probes the
     --- client's PATH.
     profile_cache = function(ws, args)
         -- (Wire keys are resolved to objects here, at the boundary, §19.14.)
-        local profile
-        for _, p in pairs(ws._profiles or {}) do
-            if not p._removed and p.key == args.profile then profile = p end
+        local profile = type(args.profile) == "table" and args.profile or nil
+        if not profile then
+            for _, p in pairs(ws._profiles or {}) do
+                if not p._removed and p.key == args.profile then profile = p end
+            end
         end
         if not profile then return nil, "no profile '" .. tostring(args.profile) .. "'" end
+        local project = type(args.project) == "table" and args.project or nil
         for _, pp in ipairs(profile:projects()) do
-            if pp:project_key() == args.project then
+            if (project and pp._project == project) or (not project and pp:project_key() == args.project) then
                 local st = profile:compiler_cache_status(pp)
                 if not st then return {} end
                 return { cache = { policy = st.policy, tool = st.tool, path = st.path, present = st.present,
@@ -229,7 +234,8 @@ M.QUERIES = {
                     not_applied_reason = st.not_applied_reason, not_applied_hint = st.not_applied_hint } }
             end
         end
-        return nil, "project '" .. tostring(args.project) .. "' is not mapped in profile '" .. profile.key .. "'"
+        return nil, "project '" .. tostring(project and project.key or args.project)
+            .. "' is not mapped in profile '" .. profile.key .. "'"
     end,
 }
 

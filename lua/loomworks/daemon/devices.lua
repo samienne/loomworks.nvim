@@ -616,14 +616,19 @@ local function task_method(service, op, run_fn)
         if ctx.refused then return refused(ctx.refused) end
         if op ~= "scan" then
             local a = core_ifaces.operation_args(ctx.args)
-            local stale = service:_resolve_ids(ws, a)
-            if stale then return refused(stale) end
-            local profile, err, action, code = build_run.resolve_target(ws, a.profile,
-                { interactive = false, usage = "lw run <profile> <target>" })
+            local refs, stale = service:_resolve_ids(ws, a)
+            if not refs then return refused(stale) end
+            -- (An id's object is used as is, never matched again by its key.)
+            local profile, err, action, code = refs.profile, nil, nil, nil
+            if not profile then
+                profile, err, action, code = build_run.resolve_target(ws, a.profile,
+                    { interactive = false, usage = "lw run <profile> <target>" })
+            end
             if action == "onboard" then
                 return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
             end
             if not profile then return refused(err, code) end
+            a.project = refs.project or a.project
             ctx.a, ctx.profile = a, profile
         end
         local task = service.tasks:create(ctx.conn)

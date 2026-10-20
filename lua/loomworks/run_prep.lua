@@ -94,7 +94,11 @@ function M.match_targets(ws, profile, name, proj_scope, kind, all)
     all = all or M.launchable_targets(ws, profile)
     local matches = {}
     for _, c in ipairs(all) do
-        if c.name == bare and (not scope or c.project.key == scope)
+        -- (`scope` a Project — an interface call's id resolved to it — is
+        -- matched by identity; a string is the key the user typed.)
+        local in_scope = not scope or (type(scope) == "table" and c.project == scope)
+            or (type(scope) ~= "table" and c.project.key == scope)
+        if c.name == bare and in_scope
             and (not kind or c.kind == kind) then matches[#matches + 1] = c end
     end
     return matches, all
@@ -109,7 +113,8 @@ end
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
 --- @param name string|nil
---- @param proj_scope string|nil `--project`
+--- @param proj_scope string|loomworks.Project|nil `--project` (a key), or the
+---   Project an interface call's id resolved to
 --- @param kind "target"|"launch"|nil `--target` / `--launch`
 --- @param opts? { refresh?: boolean }
 --- @return loomworks.LaunchTarget|nil lt, string|nil err

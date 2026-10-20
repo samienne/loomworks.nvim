@@ -354,21 +354,22 @@ function M.launch_impl(service)
 end
 
 --- A query method: registered query `name` (snapshot.QUERIES) in a model
---- segment with `query_args(resolved args)`, its result mapped to the
---- method's by `map`; a stale reference is the refused result.
+--- segment with `query_args(args, refs)` (`refs` the objects the args' ids
+--- resolved to, `Service:_resolve_ids`), its result mapped to the method's by
+--- `map`; a stale reference is the refused result.
 --- @param service loomworks.daemon.BuildService
 --- @param name string
 --- @param map fun(result: table): table
---- @param query_args? fun(a: table): table
+--- @param query_args? fun(a: table, refs: table): table
 --- @return function
 local function query(service, name, map, query_args)
     local interfaces = require("loomworks.daemon.interfaces")
     return function(ctx, args)
         service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws)
             local qa = M.operation_args(args)
-            local stale = service:_resolve_ids(ws, qa)
-            if stale then return { outcome = "refused", message = stale, exit_code = 1 } end
-            local f = service:_query(ctx.conn, ws, name, query_args and query_args(qa) or {})
+            local refs, stale = service:_resolve_ids(ws, qa)
+            if not refs then return { outcome = "refused", message = stale, exit_code = 1 } end
+            local f = service:_query(ctx.conn, ws, name, query_args and query_args(qa, refs) or {})
             if f.outcome then return f end
             return map(f.result)
         end, nil, function(fields) ctx.reply(fields) end)
@@ -437,7 +438,9 @@ end
 function M.profiles_impl(service)
     local methods = {
         compiler_cache = query(service, "profile_cache", function(r) return { cache = r.cache } end,
-            function(a) return { profile = a.profile, project = a.project } end),
+            function(a, refs)
+                return { profile = refs.profile or a.profile, project = refs.project or a.project }
+            end),
     }
     local function refused(msg) return { outcome = "refused", message = tostring(msg), exit_code = 1 } end
     function methods.set_device(ctx, args)
