@@ -262,7 +262,8 @@ end
 
 --- The directories among `paths` that lie within the workspace root
 --- (`_validate_build_dir`), normalized — the ones a deletion may remove and
---- so the ones whose build locks it takes.
+--- so the ones whose build locks it takes. Quiet: the deletion itself
+--- validates again and reports a refused directory (once).
 --- @param ws loomworks.Workspace
 --- @param paths (string|nil)[]
 --- @return string[]
@@ -273,10 +274,40 @@ local function validated_dirs(ws, paths)
     for _, p in pairs(paths) do
         if p then
             local n = norm(p)
-            if ws:_validate_build_dir(n, safe_prefix) then dirs[#dirs + 1] = n end
+            if ws:_validate_build_dir(n, safe_prefix, { quiet = true }) then dirs[#dirs + 1] = n end
         end
     end
     return dirs
+end
+
+--- Under a deletion's locks: the directories among `dirs` that are STILL
+--- stray (`Workspace:find_stray_build_dirs`) once external changes to the
+--- workspace files are applied. The list was computed before the locks were
+--- taken, and another process may have configured into a directory since; a
+--- directory no longer stray is kept (reported). The one re-check every stray
+--- deletion makes at deletion time.
+--- @param ws loomworks.Workspace
+--- @param dirs string[]
+--- @return string[]
+local function recheck_stray(ws, dirs)
+    if #dirs == 0 then return {} end
+    if ws._tracker then ws._tracker:sync() end
+    -- Applying an external change can reload the workspace (spec §17.4):
+    -- this one is then gone and deletes nothing.
+    if ws._torn_down then return {} end
+    local norm = ws._core._deps.normalize
+    local current = {}
+    for _, d in ipairs(ws:find_stray_build_dirs()) do current[norm(d)] = true end
+    local out = {}
+    for _, d in ipairs(dirs) do
+        if current[norm(d)] then
+            out[#out + 1] = d
+        else
+            ws._core._deps.notify("loomworks: kept " .. d .. " — no longer a stray build directory",
+                vim.log.levels.INFO)
+        end
+    end
+    return out
 end
 
 --- Execute remove: delete cached configs + build dirs, remove project,
@@ -322,20 +353,23 @@ function M.execute_remove_project(ws, project, ctx, on_done)
             end)
         end, function() on_done(false, nil) end)
     else
-        -- No cached configs to delete — remove directly
-        local ok, err = ws:remove_project(project)
-        if not ok then
-            on_done(false, err)
-            return
-        end
-        if #ctx.downgrade_preview > 0 then
-            local d_ok, d_err = ws:downgrade_profiles_from_tool(ctx.project_type)
-            if d_ok == false then
-                on_done(false, "project removed, but its profiles were not downgraded: " .. tostring(d_err))
+        -- No cached configs to delete — remove directly, still holding O
+        -- (no build directory, so no build lock).
+        ws:_locked_deletion("delete", {}, function()
+            local ok, err = ws:remove_project(project)
+            if not ok then
+                on_done(false, err)
                 return
             end
-        end
-        on_done(true)
+            if #ctx.downgrade_preview > 0 then
+                local d_ok, d_err = ws:downgrade_profiles_from_tool(ctx.project_type)
+                if d_ok == false then
+                    on_done(false, "project removed, but its profiles were not downgraded: " .. tostring(d_err))
+                    return
+                end
+            end
+            on_done(true)
+        end, function() on_done(false, nil) end)
     end
 end
 
@@ -737,24 +771,30 @@ function M.compute_orphan_cleanup_context(ws)
 end
 
 --- Orphan cleanup without the locks (the caller holds them): delete the
---- orphaned configurations' build dirs, drop their BuildDir objects, then
---- delete the stray dirs. Returns a Future settling when all is done.
+--- orphaned configurations' build dirs and drop their BuildDir objects, then
+--- delete the stray dirs still stray now (`recheck_stray`).
+--- The orphans go through `Workspace:_run_deletion` like every cache-backed
+--- deletion (spec §4.6, §5.7): their entries are marked `unknown` on disk
+--- before any tree is removed, a directory a live configuration still
+--- references is kept, and the entries are dropped only when every removal
+--- succeeded — a failed removal keeps them (`unknown`, reported).
+--- Returns a Future resolving `true` when everything was removed, `false`
+--- when a removal failed.
 --- @param ws loomworks.Workspace
 --- @param orphaned_configs table[]
 --- @param stray_dirs string[]
 --- @return loomworks.Future
 local function orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs)
     local safe_prefix = ws._core._deps.normalize(ws.root)
+    stray_dirs = recheck_stray(ws, stray_dirs)
 
-    -- Orphaned configurations' build dirs
-    local dirs = {}
+    local items = {}
     for _, item in ipairs(orphaned_configs) do
-        if item.build_dir then
-            local normalized = ws._core._deps.normalize(item.build_dir)
-            if ws:_validate_build_dir(normalized, safe_prefix) then
-                dirs[#dirs + 1] = normalized
-            end
-        end
+        items[#items + 1] = {
+            project_key = item.project_key, config_key = item.config_key,
+            build_dir = item.build_dir, build_dir_obj = item.build_dir_obj,
+            disposition = "clean",
+        }
     end
 
     local function remove_build_dir_objects()
@@ -788,9 +828,19 @@ local function orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs)
         end
     end
 
-    return ws:_delete_build_dirs_async(dirs):next(function()
-        if #orphaned_configs > 0 then remove_build_dir_objects() end
-        return ws:_delete_build_dirs_async(valid_stray)
+    -- (No orphans: `_run_deletion` resolves `true` at once.)
+    return ws:_run_deletion(items, remove_build_dir_objects):next(function(orphans_ok)
+        return ws:_delete_build_dirs_async(valid_stray):next(function(results)
+            local ok = orphans_ok ~= false
+            for _, r in ipairs(results) do
+                if not r.ok then
+                    ok = false
+                    ws._core._deps.notify("loomworks: failed to delete " .. r.dir .. ": "
+                        .. (r.err or "unknown"), vim.log.levels.ERROR)
+                end
+            end
+            return ok
+        end)
     end)
 end
 
@@ -799,8 +849,10 @@ end
 --- Runs holding the workspace operation lock and the build locks of every
 --- directory it removes (spec §19.3, `Workspace:_locked_deletion`); a refused
 --- lock is reported there and `on_done(false)` is called with nothing removed.
+--- `on_done(false)` also when a removal failed or the cleanup raised an error
+--- (reported); the locks are released in every case.
 --- @param ws loomworks.Workspace
---- @param orphaned_configs table[] { project_key, config_key, build_dir? }
+--- @param orphaned_configs table[] { project_key, config_key, build_dir?, build_dir_obj? }
 --- @param stray_dirs string[] absolute paths
 --- @param on_done? fun(ok: boolean)
 function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
@@ -809,8 +861,14 @@ function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
     for _, item in ipairs(orphaned_configs) do paths[#paths + 1] = item.build_dir end
     for _, dir in ipairs(stray_dirs) do paths[#paths + 1] = dir end
     ws:_locked_deletion("delete", validated_dirs(ws, paths), function()
-        return orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs)
-            :next(function() on_done(true) end)
+        return orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs):next(
+            function(ok) on_done(ok ~= false) end,
+            function(err)
+                ws._core._deps.notify("loomworks: orphan cleanup failed: " .. tostring(err),
+                    vim.log.levels.ERROR)
+                on_done(false)
+                error(err, 0)
+            end)
     end, function() on_done(false) end)
 end
 
@@ -1096,7 +1154,9 @@ end
 --- @param dir string absolute normalized path
 --- Runs holding the workspace operation lock and the directory's build lock
 --- (spec §19.3, `Workspace:_locked_deletion`); a refused lock is reported
---- there and `on_done(false, nil)` is called with nothing removed.
+--- there and `on_done(false, nil)` is called with nothing removed. Under the
+--- locks the directory is re-checked (`recheck_stray`): one that is no longer
+--- stray is kept and `on_done(false, …)` is called.
 --- @param on_done? fun(ok: boolean, err: string|nil)
 function M.execute_delete_stray_dir(ws, dir, on_done)
     on_done = on_done or function() end
@@ -1106,7 +1166,11 @@ function M.execute_delete_stray_dir(ws, dir, on_done)
         return
     end
     ws:_locked_deletion("delete", { dir }, function()
-        return ws:_delete_build_dirs_async({ dir }, function(results)
+        if #recheck_stray(ws, { dir }) == 0 then
+            on_done(false, "no longer a stray build directory")
+            return
+        end
+        return ws:_delete_build_dirs_async({ dir }):next(function(results)
             if results[1] and results[1].ok then
                 ws._core._deps.events.emit("deletion_completed", {})
                 on_done(true)
@@ -1114,6 +1178,9 @@ function M.execute_delete_stray_dir(ws, dir, on_done)
                 local err = results[1] and results[1].err or "unknown"
                 on_done(false, err)
             end
+        end, function(err)
+            on_done(false, tostring(err))
+            error(err, 0)
         end)
     end, function() on_done(false, nil) end)
 end

@@ -4103,11 +4103,17 @@ end
 --- Set cache state to "unknown" for items that have build directories. The
 --- unit's BuildDir is marked too: the cache serializes a unit that has one
 --- from the BuildDir (`_serialize_cache`), so marking only the unit would
---- leave the persisted entry claiming its old state (spec §4.7, §5.7).
+--- leave the persisted entry claiming its old state (spec §4.7, §5.7). An
+--- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
+--- its BuildDir as `build_dir_obj`, which is marked directly.
 --- @param items loomworks.DeletionItem[]
 function Workspace:_mark_cache_unknown(items)
     for _, item in ipairs(items) do
-        if not item.unit then goto continue end
+        if not item.unit then
+            local bd = item.build_dir_obj
+            if bd and bd:has_state() then bd.state = "unknown" end
+            goto continue
+        end
         if item.unit.build_dir_value then
             item.unit.state_value = "unknown"
             local bd = item.unit._build_dir
@@ -4959,10 +4965,11 @@ end
 
 --- Run `start()` (-> Future) holding O and the build locks of `dirs`; both are
 --- released when the future settles. A refused lock calls `on_done` and
---- resolves false without running anything.
+--- resolves false without running anything. A `start` that finished
+--- synchronously may return nothing: the locks are released at once.
 --- @param operation string
 --- @param dirs string[]
---- @param start fun(): loomworks.Future
+--- @param start fun(): loomworks.Future|nil
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:_locked_deletion(operation, dirs, start, on_done)
@@ -4988,6 +4995,10 @@ function Workspace:_locked_deletion(operation, dirs, start, on_done)
     end
     local ok, f = pcall(start)
     if not ok then release(); error(f, 0) end
+    if f == nil then
+        release()
+        return future_mod.resolved(true)
+    end
     self._deletions = self._deletions or {}
     self._deletions[f] = true
     local function settle()
