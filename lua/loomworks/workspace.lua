@@ -2957,6 +2957,66 @@ function Workspace:view_workspace(opts)
     })
 end
 
+--- Both comparable forms of `dir`: its plain normalized spelling and its
+--- canonical one (`_canonicalize_boundary_path`); one entry when they agree.
+--- @param dir string
+--- @return string[]
+function Workspace:_path_forms(dir)
+    local n = self._core._deps.normalize(dir)
+    local c = self:_canonicalize_boundary_path(dir)
+    if n == c then return { n } end
+    return { n, c }
+end
+
+--- Every form (`_path_forms`) of every build dir referenced by a ConfigUnit.
+--- The normalized spelling is kept beside the canonical form because a build
+--- dir reached through a link/junction canonicalizes OUTSIDE `.nvim/build`,
+--- where only its recorded spelling still sits under its parent. Resolves
+--- (realpath) once per unit per call.
+--- @return string[]
+function Workspace:_live_build_dir_forms()
+    local known, seen = {}, {}
+    for _, unit in pairs(self._config_units) do
+        local bd = unit:build_dir()
+        if bd and bd ~= "" then
+            for _, f in ipairs(self:_path_forms(bd)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
+--- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
+--- of each side, separator-bounded) — such a dir must never be deleted as
+--- stray or orphaned. "Lies inside" only counts for a live dir that is not a
+--- strict ancestor of `<root>/.nvim/build`: an in-source unit (build_dir ==
+--- workspace root, allowed by `_pre_configure_reset`) contains the whole build
+--- tree without owning any of it, and must not shield every stray dir.
+--- @param dir string
+--- @param known? string[] precomputed `_live_build_dir_forms()`
+--- @return boolean
+function Workspace:_overlaps_live_build_dir(dir, known)
+    known = known or self:_live_build_dir_forms()
+    local function is_ancestor(a, b) return b:sub(1, #a + 1) == a .. "/" end
+    local build_roots = self:_path_forms(self.root .. "/.nvim/build")
+    local function contains_build_root(k)
+        for _, br in ipairs(build_roots) do
+            if is_ancestor(k, br) then return true end
+        end
+        return false
+    end
+    for _, c in ipairs(self:_path_forms(dir)) do
+        for _, k in ipairs(known) do
+            if k == c or is_ancestor(c, k)
+                or (is_ancestor(k, c) and not contains_build_root(k)) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 --- Find build directories on disk under {root}/.nvim/build/ that are not
 --- referenced by any cache entry. Uses top-down pruning: reports the
 --- highest-level directory whose entire subtree contains no cache entries.
@@ -2974,22 +3034,8 @@ function Workspace:find_stray_build_dirs()
     local normalize = self._core._deps.normalize
 
     -- Every form of every build dir referenced by a ConfigUnit object
-    local known_dirs, seen = {}, {}
-    local function add(p)
-        if not seen[p] then seen[p] = true; known_dirs[#known_dirs + 1] = p end
-    end
-    for _, unit in pairs(self._config_units) do
-        local bd = unit:build_dir()
-        if bd and bd ~= "" then
-            add(normalize(bd))
-            add(self:_canonicalize_boundary_path(bd))
-        end
-    end
-    local function forms(dir)
-        local n, c = normalize(dir), self:_canonicalize_boundary_path(dir)
-        if n == c then return { n } end
-        return { n, c }
-    end
+    local known_dirs = self:_live_build_dir_forms()
+    local function forms(dir) return self:_path_forms(dir) end
 
     -- Build a set for exact match and a list for prefix checks
     local known_set = {}
