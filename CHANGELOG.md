@@ -52,6 +52,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw launch set` takes `--description <para>` (repeatable), like
+  `lw launch add`; it replaces the whole description, and
+  `--description ""` clears it. `--working-dir ""` clears the working
+  directory (#290).
+
 - `lw` highlights its own lines: step headers (`==> [build] ...`), configure
   reasons, `BUILD OK` / `TESTS OK` and the other outcomes, failures and
   warnings, so a build's phases stand out from the tool output. New global
@@ -478,6 +483,38 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- Every usage error now exits 2 (it was 1 for many of them): an unknown,
+  repeated or misplaced option, a missing or malformed value (`--timeout 0`,
+  an invalid launch name, an unknown `lw config set` parameter or health
+  area), an empty value, an extra operand, and a missing operand lw cannot
+  ask for, such as no profile named in non-interactive mode. An error about
+  the workspace's state, such as no unambiguous default profile, still exits
+  1 (#290).
+- Every option that takes a value now also accepts it joined with `=`, on
+  every command: `--working-dir=build`, `--env=PORT=8080`, `--cwd=out`
+  (the split is at the first `=`) (#290).
+- An option that holds one value is refused (exit 2) when it is given twice,
+  instead of the last one winning. This includes `--cwd` with `--working-dir`,
+  `--working-dir` with `--clear-working-dir`, and `--command` with
+  `--from-target` on `lw launch set`. `--env`, `--unset-env`, `--description`,
+  `-m`, `--prefix`, `--target` and `--log` may still repeat (#290).
+- An empty option value is refused (exit 2), as in `lw run --cwd= app`, except
+  where `""` clears: `--working-dir ""` and `--description ""` on
+  `lw launch set`, `--working-dir ""` on `lw launch add` (no working
+  directory), and `-m ""` on `describe` (#290).
+- A value that starts with `--` must now be joined with `=`
+  (`--working-dir=--odd`, `lw run --prefix gdb --prefix=--args`): a valued
+  option followed by `--`, by another `--` token or by nothing is a missing
+  value (exit 2) (#290).
+- On `lw launch add <project> <name> <command>`, every token after the command
+  is the program's, including lw's own options: `--env`, `--working-dir` and
+  `--description` go before the command (#290).
+- `lw launch set` no longer turns an unknown option into an argument: an
+  unknown option before `--` is a usage error (exit 2) and nothing changes.
+  An argument starting with `-` now goes after `--`
+  (`lw launch set app run -- --port 1`); bare arguments still work as before
+  (#290).
+
 - With the workspace daemon, the editor's devices are the daemon's: the
   status page's device picker and `lw.scan_devices` scan through it (one
   task), `lw.get_devices` returns its device list, and choosing a profile's
@@ -775,6 +812,21 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   and nothing removed, while another process (an `lw` command or another
   editor) is configuring or building the directory or holds the workspace,
   instead of deleting a directory still being created. (#292)
+- `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
+  the `--` as the first argument. A target-backed add has no command token, so
+  its `--` is lw's separator and is dropped; before it an unknown option or a
+  bare argument is a usage error instead of becoming an argument (#290).
+- `lw launch set <project> <name> --description text` replaced the config's
+  arguments with `--description text`; it now sets the description (#290).
+- `lw launch describe -m <para> --project P --launch N` took the paragraph as
+  the project name when `-m` came before the address (#290).
+- `lw launch set ... --working-dir` with no value cleared the working
+  directory, and `--command` / `--from-target` with no value stored none; a
+  missing value is now a usage error and nothing changes (#290).
+- `lw <kind> describe <item> -- <text>` refused the `--`; it now ends lw's
+  options, so a description may start with `-` (#290).
+- `lw launch show --json <project> <name>` refused `--json` before the
+  address (#290).
 - `lw device select` fails with the reason when it cannot save the profile's
   device, instead of reporting it saved; choosing a device in the editor
   shows the error likewise. (#287)

@@ -52,6 +52,7 @@ local function run(root, ...)
   _G.arg, vim.env.LW_ROOT = saved_arg, saved_root
   for _, nm in ipairs(HANDLERS) do cli[nm] = saved[nm] end
   r.called = called.name
+  r.args = called.args
   return r
 end
 
@@ -103,8 +104,14 @@ describe("unknown options", function()
   it("lw launch add: the program's args after the command are never checked", function()
     assert_reached(run(root, "launch", "add", "App", "docs", "python", "-m", "http.server",
       "--bind", "0"), "cmd_launch")
+    -- A target-backed add has no command token: its program args follow `--`.
     assert_reached(run(root, "launch", "add", "App", "demo", "--from-target", "editor",
-      "--theme", "demo"), "cmd_launch")
+      "--", "--theme", "demo"), "cmd_launch")
+    assert_refused(run(root, "launch", "add", "App", "demo", "--from-target", "editor",
+      "--theme", "demo"), "--theme", "launch add")
+    -- `launch set`: an unknown option before `--` is refused (not taken as args).
+    assert_refused(run(root, "launch", "set", "App", "demo", "--theme", "x"), "--theme", "launch set")
+    assert_reached(run(root, "launch", "set", "App", "demo", "--", "--description", "x"), "cmd_launch")
     assert_reached(run(root, "launch", "add", "App", "demo", "--env", "A=1", "node", "-x"), "cmd_launch")
     assert_refused(run(root, "launch", "add", "App", "demo", "--bogus", "node"), "--bogus", "launch add")
     assert_reached(run(root, "launch", "add", "App", "demo", "--description", "d", "node"), "cmd_launch")
@@ -138,5 +145,133 @@ describe("unknown options", function()
     assert_reached(run(root, "project", "describe", "App", "-m", "x", "-m=y"), "cmd_project")
     assert_reached(run(root, "project", "describe", "App", "-F", "-"), "cmd_project")
     assert_refused(run(root, "profile", "create", "Dev", "--bogus"), "--bogus", "profile create")
+  end)
+
+  -- Option values (spec §16.7 "Option values"), on every command through the
+  -- shared parser: `--opt=value` reaches the handler split, a missing value or
+  -- a single-valued option given twice is a usage error (exit 2) before any
+  -- handler runs.
+  local function args_of(r)
+    return r.called and r.args[#r.args] or nil
+  end
+  local function has_seq(list, a, b)
+    for i = 1, #(list or {}) - 1 do if list[i] == a and list[i + 1] == b then return true end end
+    return false
+  end
+  local function assert_usage(r, needle)
+    assert.equals(2, r.exit_code, r.stderr)
+    assert.is_nil(r.called, "reached " .. tostring(r.called))
+    assert.is_truthy(r.stderr:find(needle, 1, true), r.stderr)
+  end
+
+  it("--opt=value is split for valued options on run / test / target set", function()
+    local r = run(root, "run", "Dev", "demo", "--cwd=w", "--prefix=valgrind -q")
+    assert_reached(r, "cmd_run")
+    local a = args_of(r)
+    assert.is_true(has_seq(a, "--cwd", "w"), vim.inspect(a))
+    assert.is_true(has_seq(a, "--prefix", "valgrind -q"), vim.inspect(a))
+    r = run(root, "test", "Dev", "--target", "t", "--working-dir=--d")
+    assert_reached(r, "cmd_test")
+    assert.is_true(has_seq(args_of(r), "--working-dir", "--d"), vim.inspect(args_of(r)))
+    r = run(root, "target", "set", "Dev", "x", "--launch", "--working-dir=d")
+    assert_reached(r, "cmd_target")
+    assert.is_true(has_seq(args_of(r), "--working-dir", "d"), vim.inspect(args_of(r)))
+    -- After `--` nothing is split.
+    r = run(root, "run", "Dev", "demo", "--", "--cwd=w")
+    assert_reached(r, "cmd_run")
+    assert.is_false(has_seq(args_of(r), "--cwd", "w"), vim.inspect(args_of(r)))
+  end)
+
+  it("a single-valued option given twice is a usage error", function()
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd", "a", "--cwd", "b"), "--cwd")
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd", "a", "--working-dir=b"), "--working-dir")
+    assert_usage(run(root, "test", "Dev", "--target", "t", "--working-dir", "a", "--cwd", "b"), "--cwd")
+    assert_usage(run(root, "target", "set", "Dev", "x", "--working-dir", "a", "--working-dir", "b"),
+      "--working-dir")
+    -- Repeatable ones may repeat.
+    assert_reached(run(root, "test", "Dev", "--target", "a", "--target=b", "--log", "a=1", "--log", "b=2"),
+      "cmd_test")
+    assert_reached(run(root, "build", "Dev", "--target", "a", "--target=b"), "cmd_build")
+    -- `--prefix` is repeatable (spec §16.16): a value starting with `--` takes `=`.
+    local r = run(root, "run", "--prefix", "gdb", "--prefix=--args", "app", "--", "x")
+    assert_reached(r, "cmd_run")
+    assert.is_true(has_seq(args_of(r), "--prefix", "--args"), vim.inspect(args_of(r)))
+  end)
+
+  it("an empty value is a usage error, except a launch edit's clearing \"\"", function()
+    assert_usage(run(root, "run", "--cwd=", "app"), "--cwd")
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd", ""), "--cwd")
+    assert_usage(run(root, "run", "--prefix=", "app"), "--prefix")
+    assert_usage(run(root, "test", "Dev", "--junit="), "--junit")
+    assert_usage(run(root, "build", "Dev", "--target", ""), "--target")
+    assert_usage(run(root, "test-target", "add", "Dev", "t", "--config="), "--config")
+    assert_usage(run(root, "project", "describe", "App", "-F="), "-F")
+    assert_usage(run(root, "project", "add", "App", "-m", ""), "-m")
+    assert_usage(run(root, "launch", "set", "App", "demo", "--env="), "--env")
+    assert_usage(run(root, "launch", "set", "App", "demo", "--command", ""), "--command")
+    assert_usage(run(root, "launch", "add", "App", "x", "--description=", "node"), "--description")
+    -- `describe -m ""` clears the description (§16.35).
+    assert_reached(run(root, "project", "describe", "App", "-m="), "cmd_project")
+    assert_reached(run(root, "launch", "describe", "App", "demo", "-m", ""), "cmd_launch")
+    -- A launch edit's "" clears (set) or stores nothing (add).
+    assert_reached(run(root, "launch", "set", "App", "demo", "--working-dir="), "cmd_launch")
+    assert_reached(run(root, "launch", "set", "App", "demo", "--cwd", ""), "cmd_launch")
+    assert_reached(run(root, "launch", "set", "App", "demo", "--description="), "cmd_launch")
+    assert_reached(run(root, "launch", "add", "App", "x", "--working-dir", "", "node"), "cmd_launch")
+    -- A program's empty argument is not lw's.
+    assert_reached(run(root, "run", "Dev", "demo", "--", "--cwd="), "cmd_run")
+  end)
+
+  it("a missing value is a usage error", function()
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd"), "--cwd")
+    assert_usage(run(root, "run", "Dev", "demo", "--cwd", "--", "x"), "--cwd")
+    assert_usage(run(root, "test", "Dev", "--junit", "--no-build"), "--junit")
+    assert_usage(run(root, "target", "set", "Dev", "x", "--working-dir", "--no-input"), "--working-dir")
+    -- A value with one leading dash is a value.
+    assert_reached(run(root, "test", "Dev", "--target", "t", "--cwd", "-d"), "cmd_test")
+  end)
+end)
+
+-- Exit codes (spec §16.7 "Option values"): a usage error — an unknown,
+-- repeated or misplaced option, a missing or malformed value, an empty value
+-- where none clears, or a missing operand lw cannot ask for — exits 2; an
+-- error about the workspace's state (no unambiguous default, a name that
+-- matches nothing) exits 1. These drive the REAL handlers.
+describe("usage errors exit 2, workspace-state errors exit 1", function()
+  local function lw(root, ...)
+    local saved_arg, saved_root = _G.arg, vim.env.LW_ROOT
+    _G.arg, vim.env.LW_ROOT = { ... }, root
+    local r = capture(function() cli.main() end)
+    _G.arg, vim.env.LW_ROOT = saved_arg, saved_root
+    return r
+  end
+  local root = make_root()
+
+  it("a missing profile operand in non-interactive mode is a usage error", function()
+    local r = lw(root, "--no-input", "build")
+    assert.equals(2, r.exit_code, r.stderr)
+    assert.is_truthy(r.stderr:find("no profile specified", 1, true), r.stderr)
+  end)
+
+  it("project set: missing operands and too many arguments", function()
+    assert.equals(2, lw(root, "project", "set", "App").exit_code)
+    assert.equals(2, lw(root, "project", "set", "App", "V", "d", "extra").exit_code)
+    assert.equals(2, lw(root, "project", "set", "App", "V", "d", "--type", "bogus").exit_code)
+  end)
+
+  it("malformed values and operands", function()
+    assert.equals(2, lw(root, "run", "--no-build", "--timeout", "0", "app").exit_code)
+    assert.equals(2, lw(root, "run", "--no-build", "--log", "nokey", "app").exit_code)
+    assert.equals(2, lw(root, "launch", "add", "App", "bad\tname", "node").exit_code)
+    assert.equals(2, lw(root, "launch", "rename", "App", "a", "bad\tname").exit_code)
+    assert.equals(2, lw(root, "settings", "set", "channel", "bogus").exit_code)
+    assert.equals(2, lw(root, "health", "bogus-area").exit_code)
+    assert.equals(2, lw(root, "reset", "Dev", "--all", "-y").exit_code)
+    assert.equals(2, lw(root, "configset", "create", "S", "App").exit_code)
+  end)
+
+  it("workspace state stays exit 1", function()
+    assert.equals(1, lw(root, "launch", "rename", "App", "nope", "c").exit_code)
+    assert.equals(1, lw(root, "build", "NoSuchProfile").exit_code)
   end)
 end)

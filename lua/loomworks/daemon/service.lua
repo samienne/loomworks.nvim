@@ -831,7 +831,7 @@ function Service:_accept(ctx)
             return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
         end
         if not profile then
-            return ctx.reply({ outcome = "refused", message = err, exit_code = 1,
+            return ctx.reply({ outcome = "refused", message = err, exit_code = build_run.is_usage_refusal(err) and 2 or 1,
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
     end
@@ -939,7 +939,7 @@ function Service:_accept_reset(ctx, ws)
             return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
         end
         if not profile then
-            return ctx.reply({ outcome = "refused", message = err, exit_code = 1,
+            return ctx.reply({ outcome = "refused", message = err, exit_code = build_run.is_usage_refusal(err) and 2 or 1,
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
         scope = { profile = profile }

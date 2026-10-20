@@ -104,7 +104,7 @@ describe("cli._run_selection", function()
         local res = capture(function() return cli._run_selection(ws, { "app" }) end)
 
         assert.is_false(res.ok)
-        assert.equals(1, res.exit_code)
+        assert.equals(2, res.exit_code)
         assert.is_truthy(res.stderr:find("no profile specified", 1, true))
         assert.is_truthy(res.stderr:find("Debug", 1, true))
         assert.is_truthy(res.stderr:find("Release", 1, true))

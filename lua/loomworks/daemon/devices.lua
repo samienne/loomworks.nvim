@@ -605,7 +605,7 @@ local function task_method(service, op, run_fn)
     local function accept(ctx)
         if ctx.conn.closed then return end
         local function refused(msg)
-            return ctx.reply({ outcome = "refused", message = msg, exit_code = 1,
+            return ctx.reply({ outcome = "refused", message = msg, exit_code = build_run.is_usage_refusal(msg) and 2 or 1,
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
         local ws, refusal, decline = service:live(ctx)

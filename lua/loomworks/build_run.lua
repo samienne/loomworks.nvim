@@ -71,6 +71,16 @@ end
 --- @param name string|nil
 --- @param opts? { no_number?: boolean, usage?: string, interactive?: boolean }
 --- @return table|nil profile, string|nil err
+--- The start of the refusal for no profile named in non-interactive mode: a
+--- usage error (exit 2, spec 16.7), unlike the workspace-state refusals.
+M.NO_PROFILE_NON_INTERACTIVE = "no profile specified — non-interactive mode"
+
+--- @param err string a `resolve_profile` / `resolve_target` refusal
+--- @return boolean
+function M.is_usage_refusal(err)
+    return type(err) == "string" and err:sub(1, #M.NO_PROFILE_NON_INTERACTIVE) == M.NO_PROFILE_NON_INTERACTIVE
+end
+
 function M.resolve_profile(ws, name, opts)
     opts = opts or {}
     local profiles = ws._profiles or {}
@@ -84,7 +94,7 @@ function M.resolve_profile(ws, name, opts)
         local keys = {}
         for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
         table.sort(keys)
-        return nil, "no profile specified — non-interactive mode never uses the active profile\n" ..
+        return nil, M.NO_PROFILE_NON_INTERACTIVE .. " never uses the active profile\n" ..
             "  and never infers one (not even when only one profile exists).\n" ..
             "  pass one explicitly (a unique substring works): " ..
             (opts.usage or "lw <command> <profile>") .. "\n" ..
