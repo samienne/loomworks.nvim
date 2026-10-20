@@ -5,6 +5,17 @@ they don't get lost.
 
 ---
 
+## Stray scan flags a live build dir's parent on an 8.3 short-path root
+
+`Workspace:find_stray_build_dirs` compares the scanned paths (long form, from
+`ws.root`) with the units' build dirs (spelled as cached, e.g. the 8.3
+`C:/Users/RUNNER~1/...`) by normalized string. On a root reached through a
+short name nothing matches, so `.nvim/build/App` — containing the live
+`App/Debug` — is reported as one stray dir, and orphan cleanup would remove
+it. Compare by directory identity (`_build_dir_identity`, spec §4.6) instead.
+Deletion safety: needs a failing test first (set `TMPDIR` to a short path).
+Found by `tests/view_deletion_locks_spec.lua` on Windows CI (#292).
+
 ## master: in-process deletions take no locks
 
 master: in-process deletions take no locks (no operation lock; cross-process

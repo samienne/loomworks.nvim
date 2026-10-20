@@ -65,10 +65,10 @@ local cases = {
             vim.fn.mkdir(dir, "p")
             return dir
         end,
-        run = function(ws, _, done)
-            local ctx = wv.compute_orphan_cleanup_context(ws)
-            assert.equals(1, #ctx.stray_dirs, "test setup: one stray dir")
-            wv.execute_orphan_cleanup(ws, ctx.orphaned_configs, ctx.stray_dirs, done)
+        run = function(ws, dir, done)
+            -- The stray list is given directly: this tests the locking, not
+            -- the stray scan.
+            wv.execute_orphan_cleanup(ws, {}, { ws._core._deps.normalize(dir) }, done)
         end,
     },
     {
