@@ -5335,14 +5335,15 @@ function Workspace:_add_launch_config_targets()
 
     for _, unit in pairs(self._config_units) do
         local project = unit._project
-        if project and project.launch then
+        if project and project:has_launches() then
             unit.targets = unit.targets or {}
-            for name, cfg in pairs(project.launch) do
+            for _, launch in ipairs(project:launch_configs()) do
+                local name = launch.name
                 local launch_key = "launch:" .. name
                 if not unit.targets[launch_key] then
                     unit.targets[launch_key] = Target.new(unit, launch_key, {
                         type = "launch_config",
-                        artifact = cfg.command,
+                        artifact = launch.command,
                     })
                 end
             end
@@ -5393,7 +5394,7 @@ function Workspace:_config_from_objects()
                 type = project.type,
                 type_config = tc,
                 depends_on = project._depends_on_keys,
-                launch = project.launch,
+                launch = project:serialize_launches(),
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
@@ -5500,8 +5501,9 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     if project._depends_on_keys then
         entry.depends_on = project._depends_on_keys
     end
-    if project.launch then
-        entry.launch = project.launch
+    local launch = project:serialize_launches()
+    if launch then
+        entry.launch = launch
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
@@ -5548,8 +5550,9 @@ function Workspace:_serialize_project(project)
     if project._depends_on_keys then
         entry.depends_on = project._depends_on_keys
     end
-    if project.launch then
-        entry.launch = project.launch
+    local launch = project:serialize_launches()
+    if launch then
+        entry.launch = launch
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
@@ -5902,7 +5905,7 @@ function Workspace:_user_config_from_objects()
                 type = project.type,
                 type_config = tc,
                 depends_on = project._depends_on_keys,
-                launch = project.launch,
+                launch = project:serialize_launches(),
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
@@ -6065,7 +6068,7 @@ function Workspace:is_project_modified(project)
     -- Check launch configs
     local bp = self:_baseline_project(project.key)
     local baseline_launch = bp and bp.launch
-    local current_launch = project.launch
+    local current_launch = project:serialize_launches()
     -- Published launch configs: compare per-key
     if current_launch or baseline_launch then
         -- Collect all launch names
@@ -6909,7 +6912,7 @@ function Workspace:_serialize_config_internal()
                 type = project.type,
                 type_config = tc,
                 depends_on = project._depends_on_keys,
-                launch = project.launch,
+                launch = project:serialize_launches(),
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
@@ -6996,8 +6999,9 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     if project._depends_on_keys then
         entry.depends_on = project._depends_on_keys
     end
-    if project.launch then
-        entry.launch = project.launch
+    local launch = project:serialize_launches()
+    if launch then
+        entry.launch = launch
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
@@ -7872,7 +7876,7 @@ function Workspace:remove_project(project)
     end
 
     -- Remove from domain objects
-    project._removed = true
+    project:_mark_removed()
     for i, p in ipairs(self._projects) do
         if p == project then table.remove(self._projects, i); break end
     end

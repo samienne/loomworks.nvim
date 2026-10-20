@@ -37,7 +37,7 @@ describe("lw run on a foreign target", function()
     local function lt(launch_cfg)
         return {
             _target = target, _config_unit = unit, _project = project, _profile = profile,
-            _launch_config = launch_cfg, _config_target = launch_cfg and target or nil,
+            _launch = launch_cfg, _config_target = launch_cfg and target or nil,
             is_valid = function() return true end,
             requires_device = function() return false end,
             deploy_sync = function() return true end,

@@ -196,7 +196,7 @@ describe("daemon run preparation (§19.15 Run)", function()
     end
 
     it("ends a debug preparation with the run's resolved launch and the ordered adapters", function()
-        local lt = launch_target({ _launch_config = { command = "/bin/app", debug = { "typescript", "c++" } } })
+        local lt = launch_target({ _launch = { command = "/bin/app", debug = { "typescript", "c++" } } })
         local done = run_op("debug", lt, { no_build = true })
         assert.are.equal(0, done.code)
         assert.is_nil(done.fields.launch)
@@ -264,7 +264,7 @@ describe("daemon run preparation (§19.15 Run)", function()
         with(build_run, "plan", function() error("the profile is not planned") end)
         with(build_run, "profile_build_dirs", function() error("no profile lock") end)
         local lt = launch_target({
-            _launch_config = { command = "/bin/app" }, _config_unit = app_unit,
+            _launch = { command = "/bin/app" }, _config_unit = app_unit,
             abstract_error = function() return nil end,
             build_dependencies = function() return { { project = { key = "lib" } } } end,
             _resolve_dep_config_unit = function() return lib_unit end,
@@ -311,7 +311,7 @@ describe("daemon run preparation (§19.15 Run)", function()
         local planned = false
         with(overseer, "plan_unit_build", function() planned = true; return {} end)
         local lt = launch_target({
-            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck },
+            _launch = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck },
             abstract_error = function() return nil end,
             build_dependencies = function() return { { project = { key = "lib" } } } end,
             _resolve_dep_config_unit = function() return nil end,
@@ -336,7 +336,7 @@ describe("daemon run preparation (§19.15 Run)", function()
             return {}
         end)
         local lt = launch_target({
-            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck },
+            _launch = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck },
             abstract_error = function() return nil end,
             build_dependencies = function() return {} end,
             _deploy_phase = function(_, phase, cb) calls[#calls + 1] = "deploy " .. phase; cb(true) end,
@@ -388,7 +388,7 @@ describe("daemon run preparation (§19.15 Run)", function()
         with(build_run, "after_step", function() end)
         with(runner, "spawn", function(_, sink) sink.done(0) end)
         local lt = launch_target({
-            _launch_config = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck, steps = 2 },
+            _launch = { command = "/bin/app" }, _config_unit = { name = "app", config_key = ck, steps = 2 },
             abstract_error = function() return nil end,
             build_dependencies = function() return { { project = { key = "lib" } } } end,
             _resolve_dep_config_unit = function() return { name = "lib", config_key = ck, steps = 1 } end,

@@ -11,6 +11,7 @@ local cli = require("loomworks.cli")
 local tt = require("loomworks.test_targets")
 local ConfigUnit = require("loomworks.config_unit")
 local Target = require("loomworks.target")
+local set_launches = require("tests.helpers").set_launches
 
 local function capture(fn)
     local out_buf, err_buf = {}, {}
@@ -338,8 +339,8 @@ end
 local function fake_unit(key, o)
     o = o or {}
     local cfg = { name = o.cfg or "Tests", _project = nil, variables = o.cfg_vars }
-    local project = { key = key, launch = o.launch, variables = o.variables,
-        _module = { impl = { parse_targets = function() return {} end } } }
+    local project = set_launches({ key = key, variables = o.variables,
+        _module = { impl = { parse_targets = function() return {} end } } }, o.launch)
     cfg._project = project
     local unit = {
         _project = project, targets = o.targets, _configuration = cfg, build_dir_value = o.build_dir,
@@ -399,9 +400,9 @@ describe("lw test plan (§16.16)", function()
     --- /bin/<name>; a launch runs its config's program with its own args, and
     --- records its deploy.
     local function fake_lt(c, log, deploy_fail)
-        local cfg = c.kind == "launch" and c.project.launch[c.name] or nil
+        local cfg = c.kind == "launch" and c.project:find_launch(c.name) or nil
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function()
                 log[#log + 1] = "deploy " .. c.name
@@ -1136,13 +1137,13 @@ describe("lw test-target (§16.9)", function()
         local root = make_ws(SECTION, "Tests")
         local ws = load(root)
         local p = targets_for(ws)
-        p.launch = { BaseTests = { command = "tool" }, chk = { command = "tool", args = { "--c" } } }
+        set_launches(p, { BaseTests = { command = "tool" }, chk = { command = "tool", args = { "--c" } } })
         local r = capture(function() return cli._tt_add(root, { "test-target", "add", "Dev", "chk", "BaseTests" }, ws) end)
         assert.is_nil(r.exit_code, r.stderr)
         assert.truthy(r.stdout:find("saved chk (launch), BaseTests #2 (launch)", 1, true), r.stdout)
         -- A launch name needs no configured targets.
         local ws2 = load(root)
-        project(ws2, "App").launch = { only = { command = "tool" } }
+        set_launches(project(ws2, "App"), { only = { command = "tool" } })
         local impl = project(ws2, "App")._module.impl
         local orig = impl.parse_targets
         impl.parse_targets = function() return nil end
@@ -1237,7 +1238,7 @@ describe("lw test-target (§16.9)", function()
         assert.truthy(r.stdout:find("inherited from Tests", 1, true), r.stdout)
         assert.truthy(r.stdout:find("BaseTests", 1, true))
         local p = targets_for(ws)
-        p.launch = { X1 = { command = "tool" } }
+        set_launches(p, { X1 = { command = "tool" } })
         assert.is_true(p:get_configuration("Tests"):set_test_targets({ { name = "BaseTests" },
             { name = "X1", args = { "--x" } }, { name = "BaseTests", args = { "--b" } } }))
         local l = capture(function() return cli._tt_list(root, nil, ws) end)
@@ -1310,11 +1311,11 @@ describe("launch rename carries saved entries (§8.7)", function()
             Tests = { inherits = "variant:default" }, Other = { inherits = "variant:default" } } }, "Tests")
         local ws = load(root)
         local p = project(ws, "App")
-        p.launch = { chk = { command = "tool" } }
+        set_launches(p, { chk = { command = "tool" } })
         assert.is_true(p:set_test_targets({ { name = "chk" } }))
         assert.is_true(p:get_configuration("Tests"):set_test_targets({ { name = "A" },
             { name = "chk", args = { "--x" } }, { name = "chk" } }))
-        local changed, err = p:rename_launch_config("chk", "check")
+        local changed, err = p:rename_launch_config(p:find_launch("chk"), "check")
         assert.is_true(changed, err)
         local user = read_json(root .. "/.nvim/loomworks.user.json")
         local tc = user.projects.App.typescript
@@ -1346,7 +1347,7 @@ describe("ConfigUnit + saved-targets TestUnit (§8.9.2–§8.9.3)", function()
 
     local function saved_unit(entries_raw, launch)
         local unit
-        local project = { key = "App", launch = launch }
+        local project = set_launches({ key = "App" }, launch)
         local ws = { _projects = { project }, _profiles = {} }
         local profile = { key = "Dev", project = function(_, k) return k == "App" and { _config_unit = unit } or nil end }
         unit = {
@@ -1559,7 +1560,7 @@ describe("status page Tests: line (ui)", function()
     local Project = require("loomworks.project")
     -- The status page formats the project's resolved view.
     local function line(eff, item, targets, width, proj)
-        proj = setmetatable(proj or { key = "App" }, { __index = Project })
+        proj = setmetatable(proj or set_launches({ key = "App" }), { __index = Project })
         return helpers.test_targets_chunks(proj:saved_tests_view(eff, item, targets), width)
     end
     local function text(chunks)
@@ -1587,8 +1588,9 @@ describe("status page Tests: line (ui)", function()
     end)
 
     it("a launch name is not missing; a trust-ignored launch and an invalid list are flagged", function()
-        local proj = { key = "App", launch = { chk = { command = "tool" } },
-            _workspace = { _shared_ignored = { { kind = "launch", path = { "projects", "App", "launch", "ign" } } } } }
+        local proj = set_launches({ key = "App",
+            _workspace = { _shared_ignored = { { kind = "launch", path = { "projects", "App", "launch", "ign" } } } } },
+            { chk = { command = "tool" } })
         local base = { name = "Tests", _project = proj }
         local eff = { entries = tt.parse({ "chk", "ign" }).entries, source = base }
         local chunks = line(eff, base, {}, 200, proj)
@@ -1742,8 +1744,8 @@ describe("${target_dir} (§8.7)", function()
         for _, u in pairs(ws._config_units) do if u._project == p then unit = u end end
         unit.state_value, unit.build_dir_value = "built", root .. "/build"
         unit.targets = { CoreTests = Target.new(unit, "CoreTests", { type = "executable", artifact = "bin/c" }) }
-        p.launch = { chk = { target = "CoreTests", working_dir = "${target_dir}/w", args = { "${target_dir}" } },
-            cmd = { command = "tool", working_dir = "${target_dir}" } }
+        set_launches(p, { chk = { target = "CoreTests", working_dir = "${target_dir}/w", args = { "${target_dir}" } },
+            cmd = { command = "tool", working_dir = "${target_dir}" } })
         local profile = ws._profiles[1]
         local LT = require("loomworks.launch_target")
         local t = LT.new(ws, profile, { project = "App", target = "CoreTests" })
@@ -1774,9 +1776,9 @@ describe("lw test: working directories (§16.16)", function()
     after_each(function() gtest.probe_sync = orig_probe end)
 
     local function lt_for(c, seen)
-        local cfg = c.kind == "launch" and c.project.launch[c.name] or nil
+        local cfg = c.kind == "launch" and c.project:find_launch(c.name) or nil
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function() return true end,
             resolve_launch_spec = function(_, o)
@@ -1904,7 +1906,7 @@ describe("saved-targets TestUnit: working directories (§8.9.2)", function()
                 resolve_launch_spec = function() return { cmd = "/usr/bin/tool", args = {}, cwd = "/w" } end }
         end }
         local unit
-        local project = { key = "App", launch = { chk = { command = "tool" } } }
+        local project = set_launches({ key = "App" }, { chk = { command = "tool" } })
         local ws = { root = "/root", _projects = { project }, _profiles = {} }
         local profile = { key = "Dev", project = function(_, k) return k == "App" and { _config_unit = unit } or nil end }
         local raw = { { name = "Run", working_dir = "${target_dir}/d" }, { name = "chk", working_dir = "rel" }, "chk" }
@@ -2172,7 +2174,7 @@ describe("test_plan.exec_step through an asynchronous host", function()
     end
     local function lt(cfg)
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function() error("deploy_sync on an asynchronous host") end,
             resolve_launch_spec = function()

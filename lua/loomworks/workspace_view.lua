@@ -1379,15 +1379,12 @@ end
 
 --- Get all launch configs for a project.
 --- @param project loomworks.Project
---- @return { name: string, config: table }[]
+--- @return { name: string, launch: loomworks.LaunchConfiguration }[]
 function M.get_launch_configs(project)
-    if not project.launch then return {} end
-
     local result = {}
-    for name, config in pairs(project.launch) do
-        result[#result + 1] = { name = name, config = config }
+    for _, launch in ipairs(project:launch_configs()) do
+        result[#result + 1] = { name = launch.name, launch = launch }
     end
-    table.sort(result, function(a, b) return a.name < b.name end)
     return result
 end
 
@@ -1396,12 +1393,7 @@ end
 --- @param launch_name string|nil nil for new config
 --- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table, debug: table }
 function M.compute_edit_launch_context(project, launch_name)
-    local config = {}
-    if launch_name then
-        if project.launch and project.launch[launch_name] then
-            config = project.launch[launch_name]
-        end
-    end
+    local config = project:find_launch(launch_name) or {}
 
     return {
         project_key = project.key,
@@ -1425,8 +1417,9 @@ function M.execute_save_launch_config(project, old_name, new_name, data)
     -- Start from the existing config so the fields the launch editor does not
     -- show (the `device` block, spec §18.9, and any other declared field)
     -- survive; replace only the editor's fields, omitting empty ones.
-    local existing = old_name and project.launch and project.launch[old_name]
-    local config = type(existing) == "table" and vim.deepcopy(existing) or {}
+    local old_launch = project:find_launch(old_name)
+    local config = (old_launch and not old_launch:is_invalid())
+        and vim.deepcopy(old_launch:serialize()) or {}
     -- An empty command field means "no command": the key is absent, never
     -- `""` (a target-backed launch carries only `target`). A command makes
     -- this a command-type launch: it no longer runs a target (as
@@ -1448,7 +1441,10 @@ function M.execute_save_launch_config(project, old_name, new_name, data)
     -- the whole launch and re-points every profile's default target — never
     -- a delete plus re-create. The edited fields are then saved on the new name.
     if old_name and old_name ~= new_name then
-        local changed, err = project:rename_launch_config(old_name, new_name)
+        if not old_launch then
+            return false, "no launch config '" .. tostring(old_name) .. "' on project '" .. project.key .. "'"
+        end
+        local changed, err = project:rename_launch_config(old_launch, new_name)
         if changed == nil then return false, err end
     elseif not old_name then
         local vok, verr = require("loomworks.project").validate_launch_name(new_name)
@@ -1463,7 +1459,9 @@ end
 --- @param launch_name string
 --- @return boolean ok, string|nil err
 function M.execute_delete_launch_config(project, launch_name)
-    return project:delete_launch_config(launch_name)
+    local launch = project:find_launch(launch_name)
+    if not launch then return false, "launch config '" .. tostring(launch_name) .. "' not found" end
+    return project:delete_launch_config(launch)
 end
 
 -- ---------------------------------------------------------------------------

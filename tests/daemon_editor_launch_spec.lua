@@ -70,10 +70,10 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         ws = core:get_workspace()
         profile = ws:get_profiles()[1]
         -- The project's launch configurations (as loaded from the files).
-        ws._projects[1].launch = {
+        ws._projects[1]:_sync_launches({
             run = { command = "tool", args = { "-v" } },
             multi = { command = "node", args = { "x.js" }, debug = { "typescript", "c++" } },
-        }
+        })
         sent, created, notes, launched, dap_runs, titles = {}, {}, {}, {}, {}, {}
         saved = {}
         stub(package.loaded, "overseer", {

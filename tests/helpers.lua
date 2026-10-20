@@ -381,7 +381,8 @@ function M.make_mock_workspace(overrides)
             entry.path = project.path
         end
         if project._depends_on_keys then entry.depends_on = project._depends_on_keys end
-        if project.launch then entry.launch = project.launch end
+        local launch = project.serialize_launches and project:serialize_launches()
+        if launch then entry.launch = launch end
         return entry
     end
     ws._serialize_project_partial = core_overrides._serialize_project_partial or function(self_ws, project, needed_config_names)
@@ -405,7 +406,8 @@ function M.make_mock_workspace(overrides)
             entry.path = project.path
         end
         if project._depends_on_keys then entry.depends_on = project._depends_on_keys end
-        if project.launch then entry.launch = project.launch end
+        local launch = project.serialize_launches and project:serialize_launches()
+        if launch then entry.launch = launch end
         return entry
     end
     ws._serialize_user = core_overrides._serialize_user or function(self_ws)
@@ -995,6 +997,29 @@ function M.temp_root()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     return ((uv.fs_realpath(root) or root):gsub("\\", "/"))
+end
+
+--- Give `project` the launch configurations `launches` (name → declared
+--- table), as a refresh of the files would (spec §1.2.1). `project` is a real
+--- Project, or a plain table standing in for one, which then gets the
+--- Project's launch-registry methods (and nothing else).
+--- @param project table
+--- @param launches table<string, table>|nil
+--- @return table project
+function M.set_launches(project, launches)
+    local Project = require("loomworks.project")
+    if getmetatable(project) == nil then
+        setmetatable(project, { __index = {
+            _sync_launches = Project._sync_launches,
+            launch_configs = Project.launch_configs,
+            has_launches = Project.has_launches,
+            find_launch = Project.find_launch,
+            serialize_launches = Project.serialize_launches,
+        } })
+    end
+    project._launches = project._launches or {}
+    project:_sync_launches(launches)
+    return project
 end
 
 return M

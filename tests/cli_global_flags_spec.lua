@@ -161,7 +161,7 @@ describe("launch add / set take the args after --", function()
   local function cfg(root, name)
     local ws = assert(cli._load_workspace(root, false))
     for _, p in pairs(ws._projects) do
-      if p.key == "App" then return p.launch and p.launch[name] end
+      if p.key == "App" then local l = p:find_launch(name); return l and l:serialize() end
     end
   end
 

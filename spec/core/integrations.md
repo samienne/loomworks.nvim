@@ -605,7 +605,7 @@ The `device_target` field stores the target ID.
 is set.
 
 The target picker collects from all three sources:
-1. Launch configs from projects (`project.launch` dict)
+1. Launch configurations of the projects (§1.2.1)
 2. Executable targets from `ConfigUnit.targets`
 3. Device targets from modules (`module.device_targets()`)
 

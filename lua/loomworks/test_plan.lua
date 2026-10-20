@@ -151,8 +151,8 @@ end
 --- The project's launch configurations in the model, for messages.
 function M.launches_of(project)
     local labels = {}
-    for name, cfg in pairs(type(project.launch) == "table" and project.launch or {}) do
-        if type(cfg) == "table" and (cfg.command or cfg.target) then labels[#labels + 1] = project.key .. ":" .. name end
+    for _, launch in ipairs(project:launch_configs()) do
+        if launch:is_runnable() then labels[#labels + 1] = project.key .. ":" .. launch.name end
     end
     table.sort(labels)
     return next(labels) and table.concat(labels, ", ") or "(none)"
@@ -164,7 +164,7 @@ end
 function M.rctx(ws, unit, project, level)
     local test_targets = require("loomworks.test_targets")
     return {
-        launches = project.launch,
+        project = project,
         launch_ignored = function(n) return test_targets.launch_ignored(ws._shared_ignored, project, n) end,
         targets = unit and type(unit.targets) == "table" and unit.targets or nil,
         level = level,
@@ -613,7 +613,7 @@ function M.exec_step(ws, lt, opts, host, cb)
     local tail = {}
     for _, a in ipairs(opts.args or {}) do tail[#tail + 1] = a end
     for _, a in ipairs(opts.extra or {}) do tail[#tail + 1] = a end
-    local cfg = lt._launch_config
+    local cfg = lt._launch
     -- The results option applies only to a build target's artifact (§16.16).
     local artifact = not (cfg and not cfg.target)
     local f = artifact and (host.foreign_of or require("loomworks.run_prep").foreign_of)(lt) or nil

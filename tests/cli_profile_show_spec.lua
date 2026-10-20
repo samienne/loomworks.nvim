@@ -14,12 +14,11 @@ local ANSI_ACTIVE = "\27[32m" -- status_palette active (green)
 -- One project-in-profile. `key`/`type`/`config`/`tool`/`state`/`build_dir`
 -- shape the Projects + Tools sections; `targets`/`launch` feed collect_targets.
 local function fake_pp(o)
-  local project = {
+  local project = require("tests.helpers").set_launches({
     key = o.key,
     type = o.type or "cmake",
     _module = { id = o.type or "cmake", impl = {} },
-    launch = o.launch,
-  }
+  }, o.launch)
   local unit = {
     _project = project,
     targets = o.targets, -- nil → no build targets enumerated

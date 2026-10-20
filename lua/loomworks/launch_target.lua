@@ -13,7 +13,7 @@ local debug_mod = require("loomworks.debug")
 --- @field _config_unit loomworks.ConfigUnit|nil direct reference
 --- @field _target loomworks.Target|nil direct reference (module targets)
 --- @field _target_id string|nil fallback identifier for re-resolution
---- @field _launch_config table|nil launch config from loomworks.json
+--- @field _launch loomworks.LaunchConfiguration|nil the launch configuration the descriptor names
 --- @field _config_target loomworks.Target|nil target a target-backed launch config references
 --- @field _launch_name string|nil name of the launch config
 --- @field _working_dir string|nil descriptor working-dir override (module targets)
@@ -73,14 +73,14 @@ function LaunchTarget:_update(descriptor)
     -- Resolve launch config from project domain object. A launch config may be
     -- command-type (`command`) or target-backed (`target`); resolve the
     -- referenced target for the latter.
-    self._launch_config = nil
+    self._launch = nil
     self._config_target = nil
     if self._launch_name and self._project then
-        local cfg = self._project.launch and self._project.launch[self._launch_name]
-        if cfg then
-            self._launch_config = cfg
-            if cfg.target and self._config_unit then
-                self._config_target = self:_resolve_target_ref(cfg.target)
+        local launch = self._project:find_launch(self._launch_name)
+        if launch then
+            self._launch = launch
+            if launch.target and self._config_unit then
+                self._config_target = self:_resolve_target_ref(launch.target)
             end
         end
     end
@@ -135,7 +135,7 @@ end
 --- @return boolean ok, string[] reasons
 function LaunchTarget:is_valid()
     -- Tier 1: descriptor resolution
-    if self._launch_config then
+    if self._launch then
         -- Launch configs are valid as long as the descriptor is
         -- present — no module-side resolution required.
     elseif self._device_target_id then
@@ -443,7 +443,7 @@ end
 function LaunchTarget:_resolved_deploy()
     local deploy_mod = require("loomworks.deploy")
     local project_deploy = self._project and self._project.deploy or nil
-    local launch_deploy = self._launch_config and self._launch_config.deploy or nil
+    local launch_deploy = self._launch and self._launch.deploy or nil
     if not project_deploy and not launch_deploy then return nil end
     local merged = deploy_mod.merge_deploy_sources(project_deploy, launch_deploy)
     if not next(merged) then return nil end
@@ -518,7 +518,7 @@ function LaunchTarget:_deploy_phase(phase, on_complete, opts)
         launch_project = self._project,
         -- The launch target's build target, for `${target_dir}` in
         -- destinations (§8.8.4); nil for a command-type launch.
-        launch_build_target = (self._launch_config and (self._launch_config.target and self._config_target or nil))
+        launch_build_target = (self._launch and (self._launch.target and self._config_target or nil))
             or self._target,
         on_step = opts and opts.on_step or nil,
     }
@@ -608,7 +608,7 @@ end
 --- For module targets: delegates to Target:launch().
 --- Expands variables in command, args, env, working_dir.
 function LaunchTarget:launch()
-    if self._launch_config then
+    if self._launch then
         self:_launch_command()
     elseif self._target and self._target:is_executable() then
         self._target:launch({ working_dir = self:_effective_cwd() })
@@ -622,7 +622,7 @@ end
 --- @return { cmd: string, args: string[], cwd: string, env: table }|nil spec
 --- @return string|nil err
 function LaunchTarget:resolve_command_spec()
-    local cfg = self._launch_config
+    local cfg = self._launch
     if not cfg then return nil, "no launch configuration" end
 
     local ws = self._workspace
@@ -748,7 +748,7 @@ end
 function LaunchTarget:resolve_launch_spec(opts)
     opts = opts or {}
     local spec, err
-    if self._launch_config then
+    if self._launch then
         spec, err = self:resolve_command_spec()
         if spec then
             spec.name = self._project.key .. ": " .. (self._launch_name or "launch")
@@ -857,7 +857,7 @@ end
 --- Check if this launch target has a multi-adapter debug config.
 --- @return boolean
 function LaunchTarget:is_multi_adapter()
-    local cfg = self._launch_config
+    local cfg = self._launch
     return cfg and cfg.debug and type(cfg.debug) == "table" and #cfg.debug > 1
 end
 
@@ -888,7 +888,7 @@ end
 --- Check if this target can be launched.
 --- @return boolean
 function LaunchTarget:is_launchable()
-    if self._launch_config then return true end
+    if self._launch then return true end
     if self._device_target_id then return self._config_unit ~= nil end
     return self._target ~= nil and self._target:is_executable()
 end

@@ -330,29 +330,6 @@ function M.description_row(t, item, label, refresh)
     })
 end
 
---- A description handle for a launch configuration (spec §8.7): launches are
---- tables on their project, not domain objects, so the description editor and
---- `with_description` get this `{ description, set_description }` stand-in.
---- @param project loomworks.Project
---- @param name string
---- @return table
-function M.launch_handle(project, name)
-    local d = require("loomworks.description")
-    local cfg = project.launch and project.launch[name]
-    local h = {
-        description = type(cfg) == "table" and d.normalize(cfg.description) or nil,
-        _kind = "launch configuration",
-        _label = project.key .. ":" .. name,
-    }
-    function h:set_description(text)
-        local changed, err = project:set_launch_description(name, text)
-        local c = project.launch and project.launch[name]
-        self.description = type(c) == "table" and c.description or nil
-        return changed, err
-    end
-    return h
-end
-
 --- The chunks of a project's launch rows (spec/ui.md §1.8): `{name}  {summary}
 --- {runs}`, the summaries forming a column (at most 36 display columns, blank
 --- when absent) before the open-ended command line, which is cut to `width`.

@@ -37,7 +37,7 @@ describe("daemon launch-target build (§19.15 Build of a launch target)", functi
             requires_device = function() return false end,
             display_name = function() return "app: hello" end,
             _project = { key = "app" },
-            _launch_config = { command = "/bin/app" }, _config_unit = unit("app"),
+            _launch = { command = "/bin/app" }, _config_unit = unit("app"),
             abstract_error = function() return nil end,
             build_dependencies = function() return { { project = { key = "lib" } } } end,
             _resolve_dep_config_unit = function() return unit("lib") end,

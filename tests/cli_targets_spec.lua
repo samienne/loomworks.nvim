@@ -21,11 +21,10 @@ end
 ---   default   = { project=.., target=.. } | { project=.., launch=.. }
 local function fake_profile(opts)
   opts = opts or {}
-  local project = {
+  local project = require("tests.helpers").set_launches({
     key = "acme",
-    launch = opts.launch,
     _module = opts.parses and { impl = { parse_targets = function() return {} end } } or nil,
-  }
+  }, opts.launch)
   local unit = {
     targets = opts.targets,       -- nil → ensure_unit_targets tries (and, with no
     build_dir = nil,              --       build_dir, gives up → no build targets)

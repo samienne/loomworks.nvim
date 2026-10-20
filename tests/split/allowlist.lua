@@ -95,6 +95,7 @@ return {
             "loomworks.configuration",
             "loomworks.configuration_set",
             "loomworks.description",
+            "loomworks.launch_configuration",
             "loomworks.profile",
             "loomworks.project",
         },

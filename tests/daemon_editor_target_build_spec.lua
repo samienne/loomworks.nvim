@@ -89,7 +89,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
         ws = core:get_workspace()
         profile = ws:get_profiles()[1]
-        ws._projects[1].launch = { run = { command = "tool", args = { "-v" } } }
+        ws._projects[1]:_sync_launches({ run = { command = "tool", args = { "-v" } } })
         sent, created, notes, selects, events = {}, {}, {}, {}, {}
         saved = {}
         stub(package.loaded, "overseer", {

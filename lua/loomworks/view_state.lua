@@ -493,11 +493,9 @@ local function profile_row(ws, profile, active, opts)
     end
     local lt = profile:default_target()
     if lt then
-        local project, name = lt._project, lt._launch_name
-        local cfg = project and name and project.launch and project.launch[name]
         row.default_target = lt:display_name()
         row.default_target_valid = lt:is_valid() and true or false
-        row.default_target_description = type(cfg) == "table" and cfg.description or nil
+        row.default_target_description = lt._launch and lt._launch.description or nil
     end
 
     row.units = {}
@@ -652,18 +650,19 @@ local function project_row(ws, proj, opts)
         table.sort(row.presets, function(a, b) return a.name < b.name end)
     end
     row.launches = {}
-    for name, cfg in pairs(proj.launch or {}) do
+    for _, launch in ipairs(proj:launch_configs()) do
         -- Launch configurations carry no publish state of their own in the
         -- model (they publish with their project, spec §2.4).
+        local name = launch.name
         local l = { key = name, label = name }
-        if type(cfg) == "table" then
-            l.description = require("loomworks.description").normalize(cfg.description)
-            l.target, l.command = cfg.target, cfg.command
-            l.args = type(cfg.args) == "table" and vim.deepcopy(cfg.args) or nil
+        if opts.id then l.id = opts.id(launch) end
+        if not launch:is_invalid() then
+            l.description = launch.description
+            l.target, l.command = launch.target, launch.command
+            l.args = type(launch.args) == "table" and vim.deepcopy(launch.args) or nil
         end
         row.launches[#row.launches + 1] = l
     end
-    table.sort(row.launches, function(a, b) return a.key < b.key end)
     row.deploy = {}
     if proj.deploy then
         local deploy_mod = require("loomworks.deploy")

@@ -213,7 +213,7 @@ local function sync_projects(ctx, workspace, active_set)
 
     for key, project in pairs(ctx.projects) do
         if not new_data[key] then
-            project._removed = true
+            project:_mark_removed()
             ctx.projects[key] = nil
         end
     end

@@ -138,8 +138,9 @@ describe("device block location (spec §18.9)", function()
 
     it("serializes the block into the module section (a legacy block migrates on save)", function()
         local Workspace = require("loomworks.workspace").Workspace
-        local project = { key = "App", type = "cmake", type_config = { options = { X = "1" } },
-            _configurations = {}, device = { stage = { "a/*.so" }, env = { K = "v" } } }
+        local project = require("tests.helpers").set_launches({ key = "App", type = "cmake",
+            type_config = { options = { X = "1" } },
+            _configurations = {}, device = { stage = { "a/*.so" }, env = { K = "v" } } })
         for _, fn in ipairs({ "_serialize_project", "_serialize_project_shared" }) do
             local entry = Workspace[fn](nil, project, fn == "_serialize_project_shared" and {} or nil)
             assert.is_nil(entry.device, fn)
