@@ -196,4 +196,131 @@ describe("orphan cleanup deletion safety", function()
             "the configured unit's entry was not unknown on disk before its removal")
         assert.is_nil(uv.fs_stat(built))
     end)
+
+    -- A shared build dir that `_run_deletion` skips (another live unit still
+    -- references it) is never handed to rm-rf, so its BuildDir must not be
+    -- marked `unknown`: if another removal in the batch fails, nothing would
+    -- restore it and the surviving unit would reload as `unknown` (blocked
+    -- from configure/build). The dir that IS removed is still `unknown` on
+    -- disk before its rm-rf starts.
+    it("leaves a skipped shared dir's state alone when another removal in the batch fails", function()
+        quiet(function() cli.cmd_configuration("add", root, "App", "Other", "variant:default") end)
+        ws = assert(cli._load_workspace(root, false))
+        ws._core._deps.notify = function(msg, level)
+            if level == vim.log.levels.ERROR then errs[#errs + 1] = msg end
+        end
+        local orphan_dir = add_orphan(ws, root)
+        local orphan = ws:get_orphaned_configs()[1]
+        local unit_a = ws._profiles[1]:projects()[1]._config_unit
+        local shared_bd = unit_a._build_dir
+        assert.is_not_nil(shared_bd, "test setup: the live unit has a BuildDir")
+        local project = unit_a._project
+        local unit_b = ws:ensure_config_unit(project, project:get_configuration("Other"), nil)
+        unit_b.build_dir_value = built
+        unit_b.state_value = "built"
+        unit_b._build_dir = shared_bd
+        ws:_sync_build_dir_refs()
+        assert.equals(2, #ws:get_build_dir_refs(ws._core._deps.normalize(built)), "test setup: dir is shared")
+        ws:_save_cache()
+
+        local removed_state, handed = nil, {}
+        local norm_orphan = ws._core._deps.normalize(orphan_dir)
+        io_mod.rm_rf_async = function(d, cb)
+            handed[#handed + 1] = d
+            if ws._core._deps.normalize(d) == norm_orphan then
+                local cache = vim.json.decode(read(root .. "/.nvim/loomworks.cache.json") or "{}")
+                removed_state = "<missing>"
+                for _, e in pairs(cache.build_dirs or {}) do
+                    if e.project_key == "App" and e.config_key == "Release" then removed_state = e.state end
+                end
+            end
+            cb(false, "boom")
+        end
+        local done = false
+        ws:_run_deletion({
+            { project_key = "App", config_key = "Other", build_dir = built, unit = unit_b },
+            { project_key = "App", config_key = "Release", build_dir = orphan_dir,
+              build_dir_obj = orphan.build_dir_obj },
+        }, function() end, function() done = true end)
+        assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+
+        assert.equals(1, #handed, "only the unshared dir is handed to rm-rf")
+        assert.equals("unknown", removed_state,
+            "the removed dir's entry was not unknown on disk before its rm-rf")
+        local cache = vim.json.decode(read(root .. "/.nvim/loomworks.cache.json") or "{}")
+        local shared_state = "<missing>"
+        for _, e in pairs(cache.build_dirs or {}) do
+            if ws._core._deps.normalize(e.build_dir or "") == ws._core._deps.normalize(built) then
+                shared_state = e.state
+            end
+        end
+        assert.equals("built", shared_state,
+            "the skipped shared dir was left unknown on disk after a failed batch")
+        assert.equals("built", shared_bd.state)
+    end)
+end)
+
+-- The status page's "Clean all" action reports the outcome `on_done` gives
+-- it: a failed cleanup must not be announced as success.
+describe("orphaned section Clean all notification", function()
+    local saved = {}
+    local stubbed = { "loomworks", "loomworks.workspace_view", "loomworks.ui.dialog",
+        "loomworks.ui.sections.orphaned" }
+    local notes
+    local real_notify
+
+    before_each(function()
+        for _, m in ipairs(stubbed) do saved[m] = package.loaded[m] end
+        notes = {}
+        real_notify = vim.notify
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+    end)
+    after_each(function()
+        for _, m in ipairs(stubbed) do package.loaded[m] = saved[m] end
+        vim.notify = real_notify
+    end)
+
+    local function run_clean_all(cleanup_ok)
+        local ws = { root = "/r" }
+        local lw = {
+            get_workspace = function() return ws end,
+            get_orphaned_configs = function() return { { config_key = "App/Release" } } end,
+        }
+        package.loaded["loomworks"] = lw
+        package.loaded["loomworks.workspace_view"] = {
+            find_stray_build_dirs = function() return {} end,
+            compute_orphan_cleanup_context = function()
+                return { orphaned_configs = { {} }, stray_dirs = {}, lines = {}, highlights = {} }
+            end,
+            execute_orphan_cleanup = function(_, _, _, on_done) on_done(cleanup_ok) end,
+        }
+        package.loaded["loomworks.ui.dialog"] = {
+            show = function(opts) opts.keys.y({ close = function() end }) end,
+        }
+        package.loaded["loomworks.ui.sections.orphaned"] = nil
+        local render = require("loomworks.ui.sections.orphaned")
+        local clean_all
+        local tree = {
+            leaf = function() end, blank = function() end,
+            item = function(_, _, opts) if opts.on_enter then clean_all = opts.on_enter end end,
+        }
+        render(tree, { lw = lw })
+        assert.is_not_nil(clean_all, "test setup: no Clean all action rendered")
+        clean_all()
+        return notes
+    end
+
+    it("reports success when the cleanup succeeded", function()
+        local n = run_clean_all(true)
+        assert.equals(1, #n)
+        assert.equals(vim.log.levels.INFO, n[1].level)
+        assert.is_truthy(n[1].msg:find("cleaned", 1, true))
+    end)
+
+    it("reports a failure when the cleanup failed", function()
+        local n = run_clean_all(false)
+        assert.equals(1, #n)
+        assert.equals(vim.log.levels.WARN, n[1].level, n[1].msg)
+        assert.is_falsy(n[1].msg:find("orphaned build dirs cleaned", 1, true), n[1].msg)
+    end)
 end)

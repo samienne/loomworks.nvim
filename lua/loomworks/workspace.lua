@@ -3681,9 +3681,20 @@ end
 --- serializes it from the BuildDir (`_serialize_cache`). A unit's BuildDir is
 --- marked too, for the same reason: marking only the unit would leave the
 --- persisted entry claiming its old state during the rm-rf (spec §4.6).
+--- Only items whose build dir is in `to_remove` (the dirs actually handed to
+--- rm-rf) are marked: a skipped dir (shared with a live unit, or failing
+--- validation) stays as it is, since nothing would restore it if another
+--- removal in the batch failed — a shared BuildDir left `unknown` would block
+--- the surviving unit from configure/build.
 --- @param items loomworks.DeletionItem[]
-function Workspace:_mark_cache_unknown(items)
+--- @param to_remove? table<string, true> normalized build dirs handed to
+---   rm-rf; nil marks every item (no skip set known)
+function Workspace:_mark_cache_unknown(items, to_remove)
+    local normalize = self._core._deps.normalize
     for _, item in ipairs(items) do
+        if to_remove and not (item.build_dir and to_remove[normalize(item.build_dir)]) then
+            goto continue
+        end
         if not item.unit then
             local bd = item.build_dir_obj
             if bd and bd:has_state() then bd.state = "unknown" end
@@ -4110,9 +4121,6 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         return out
     end
     local f = self:stop_tasks_then(task_ids):next(function()
-        ws:_mark_cache_unknown(items)
-        ws:_save_cache()
-
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
 
@@ -4148,6 +4156,13 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                 end
             end
         end
+
+        -- Crash safety (spec §4.6): every dir about to be removed is `unknown`
+        -- on disk before the async rm-rf starts; skipped dirs are untouched.
+        local to_remove = {}
+        for _, d in ipairs(dirs) do to_remove[d] = true end
+        ws:_mark_cache_unknown(items, to_remove)
+        ws:_save_cache()
 
         return ws:_delete_build_dirs_async(dirs)
     end):next(function(results)
