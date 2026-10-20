@@ -26,8 +26,32 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Added
+
+- `lw launch set` takes `--description <para>` (repeatable), like
+  `lw launch add`; it replaces the whole description, and
+  `--description ""` clears it. `--working-dir ""` clears the working
+  directory (#290).
+
 ### Changed
 
+- Every usage error now exits 2 (it was 1 for many of them): a missing or
+  extra operand, a missing option value, an unknown option and the other
+  ways of calling a command wrongly. Other failures still exit 1 (#290).
+- Every option that takes a value now also accepts it joined with `=`, on
+  every command: `--working-dir=build`, `--env=PORT=8080`, `--cwd=out`
+  (the split is at the first `=`) (#290).
+- An option that holds one value is refused (exit 2) when it is given twice,
+  instead of the last one winning. This includes `--cwd` with `--working-dir`,
+  `--working-dir` with `--clear-working-dir`, and `--command` with
+  `--from-target` on `lw launch set`. `--env`, `--unset-env`, `--description`,
+  `-m`, `--target` and `--log` may still repeat (#290).
+- A value that starts with `--` must now be joined with `=`
+  (`--working-dir=--odd`): a valued option followed by `--`, by another
+  `--` token or by nothing is a missing value (exit 2) (#290).
+- On `lw launch add <project> <name> <command>`, every token after the command
+  is the program's, including lw's own options: `--env`, `--working-dir` and
+  `--description` go before the command (#290).
 - `lw launch set` no longer turns an unknown option into an argument: an
   unknown option before `--` is a usage error (exit 2) and nothing changes.
   An argument starting with `-` now goes after `--`
@@ -36,15 +60,21 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 
-- `lw launch add <project> <name> --from-target <target> … -- <args>` stored the
-  `--` as the first argument. A target-backed add has no command token, so its
-  `--` is lw's separator and is dropped; before it an unknown option is a usage
-  error instead of becoming an argument (#290).
-- `lw launch set <project> <name> --description text` (an option `set` does not
-  have) replaced the config's arguments with `--description text`. It is now
-  refused with exit 2 and the config is left unchanged (#290).
+- `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
+  the `--` as the first argument. A target-backed add has no command token, so
+  its `--` is lw's separator and is dropped; before it an unknown option or a
+  bare argument is a usage error instead of becoming an argument (#290).
+- `lw launch set <project> <name> --description text` replaced the config's
+  arguments with `--description text`; it now sets the description (#290).
 - `lw launch describe -m <para> --project P --launch N` took the paragraph as
   the project name when `-m` came before the address (#290).
+- `lw launch set ... --working-dir` with no value cleared the working
+  directory, and `--command` / `--from-target` with no value stored none; a
+  missing value is now a usage error and nothing changes (#290).
+- `lw <kind> describe <item> -- <text>` refused the `--`; it now ends lw's
+  options, so a description may start with `-` (#290).
+- `lw launch show --json <project> <name>` refused `--json` before the
+  address (#290).
 
 ## 0.1.49 - 2026-10-19
 
