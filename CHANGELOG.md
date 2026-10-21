@@ -55,7 +55,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Experimental daemon: `Profiles/1.tool_choices` also lists the resolved
   SDKs relevant to the set, as `{ sdk = true, key, label }`, and
   `Profiles/1.create` takes one as `tool = { sdk = <key> }`, as the status
-  page's tool picker does. An SDK not offered is refused. (#PRNUM)
+  page's tool picker does. An SDK not offered is refused. (#311)
 - `lw launch set` takes `--description <para>` (repeatable), like
   `lw launch add`; it replaces the whole description, and
   `--description ""` clears it. `--working-dir ""` clears the working
