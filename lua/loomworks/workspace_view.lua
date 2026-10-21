@@ -7,6 +7,7 @@
 
 local modules = require("loomworks.modules")
 local commands = require("loomworks.model_commands")
+local deletion_plan = require("loomworks.deletion_plan")
 
 local M = {}
 
@@ -156,19 +157,7 @@ end
 --- @param project loomworks.Project
 --- @return { config_key: string, state: string|nil, build_dir: string|nil, unit: loomworks.ConfigUnit|nil }[]
 function M.collect_project_configs(ws, project)
-    local items = {}
-    for _, unit in pairs(ws._config_units) do
-        if unit._project == project and unit._config_key then
-            items[#items + 1] = {
-                config_key = unit._config_key,
-                state = unit.state_value,
-                build_dir = unit.build_dir_value,
-                unit = unit,
-            }
-        end
-    end
-    table.sort(items, function(a, b) return a.config_key < b.config_key end)
-    return items
+    return deletion_plan.project_configs(ws, project)
 end
 
 --- Make a path relative to workspace root for display.
@@ -255,113 +244,11 @@ function M.compute_remove_context(ws, project)
     }
 end
 
---- The directories among `paths` that lie within the workspace root
---- (`_validate_build_dir`), normalized — the ones a deletion may remove and
---- so the ones whose build locks it takes. Quiet: the deletion itself
---- validates again and reports a refused directory (once).
---- @param ws loomworks.Workspace
---- @param paths (string|nil)[]
---- @return string[]
-local function validated_dirs(ws, paths)
-    local norm = ws._core._deps.normalize
-    local safe_prefix = norm(ws.root)
-    local dirs = {}
-    for _, p in pairs(paths) do
-        if p then
-            local n = norm(p)
-            if ws:_validate_build_dir(n, safe_prefix, { quiet = true }) then dirs[#dirs + 1] = n end
-        end
-    end
-    return dirs
-end
-
---- Under a deletion's locks: apply external changes to the workspace files
---- (`FileTracker:sync`) so the re-checks below see what other processes wrote
---- since the deletion was planned. Applying a change can reload the
---- workspace (spec §17.4): returns false when this one is then gone — it
---- must delete nothing (its cache writes are no-ops, so the `unknown` marks
---- would never reach the disk, §5.7).
---- @param ws loomworks.Workspace
---- @return boolean alive
-local function resync(ws)
-    if ws._tracker then ws._tracker:sync() end
-    return not ws._torn_down
-end
-
---- After `resync`: the directories among `dirs` that are STILL stray
---- (`Workspace:find_stray_build_dirs`). The list was computed before the
---- locks were taken, and another process may have configured into a
---- directory since; a directory no longer stray is kept (reported). The one
---- re-check every stray deletion makes at deletion time.
---- @param ws loomworks.Workspace
---- @param dirs string[]
---- @return string[]
-local function recheck_stray(ws, dirs)
-    if #dirs == 0 then return {} end
-    -- Directory identity, not spelling: `dirs` may name a directory under
-    -- another spelling (8.3 short vs long on Windows) than the scan, which
-    -- walks `ws.root`. Exact equality of canonical forms — never a prefix.
-    local function canon(p) return ws:_canonicalize_boundary_path(p) end
-    local current = {}
-    for _, d in ipairs(ws:find_stray_build_dirs()) do current[canon(d)] = true end
-    -- Belt and braces (#293): never a dir that IS, CONTAINS or lies INSIDE a
-    -- live build dir, whatever its spelling, even if the scan listed it.
-    local known = ws:_live_build_dir_forms()
-    local out = {}
-    for _, d in ipairs(dirs) do
-        if not current[canon(d)] then
-            ws._core._deps.notify("loomworks: kept " .. d .. " — no longer a stray build directory",
-                vim.log.levels.INFO)
-        elseif ws:_overlaps_live_build_dir(d, known) then
-            ws._core._deps.notify("loomworks: refusing to delete stray dir holding a live build dir: " .. d,
-                vim.log.levels.ERROR)
-        else
-            out[#out + 1] = d
-        end
-    end
-    return out
-end
-
---- After `resync`: the orphaned configurations among `orphans` that are STILL
---- orphaned (`Workspace:get_orphaned_configs`, same BuildDir and directory).
---- Another process may have re-adopted one since the cleanup was planned; it
---- is kept (reported) — neither its tree nor its BuildDir is touched.
---- @param ws loomworks.Workspace
---- @param orphans table[]
---- @return table[]
-local function recheck_orphans(ws, orphans)
-    if #orphans == 0 then return {} end
-    -- Same directory by identity (8.3 short vs long spelling on Windows).
-    local function canon(p) return ws:_canonicalize_boundary_path(p) end
-    local current = {}
-    for _, o in ipairs(ws:get_orphaned_configs()) do
-        if o.build_dir_obj then current[o.build_dir_obj] = true end
-    end
-    local out = {}
-    for _, item in ipairs(orphans) do
-        local bd = item.build_dir_obj
-        local same_dir = bd and (item.build_dir == nil or bd.path == nil
-            or canon(bd.path) == canon(item.build_dir))
-        if bd and current[bd] and same_dir then
-            out[#out + 1] = item
-        else
-            ws._core._deps.notify("loomworks: kept " .. tostring(item.build_dir or item.config_key)
-                .. " — no longer an orphaned configuration", vim.log.levels.INFO)
-        end
-    end
-    return out
-end
-
---- Whether no ConfigUnit references `bd` (it is still an orphan).
---- @param ws loomworks.Workspace
---- @param bd loomworks.BuildDir
---- @return boolean
-local function still_orphaned(ws, bd)
-    for _, unit in pairs(ws._config_units) do
-        if unit._build_dir == bd then return false end
-    end
-    return true
-end
+-- The deletion re-checks (shared with loomworks.deletion_plan, the
+-- command layer's `execute_deletion`).
+local validated_dirs = deletion_plan.validated_dirs
+local resync = deletion_plan.resync
+local recheck_stray = deletion_plan.recheck_stray
 
 --- Execute remove: delete cached configs + build dirs, remove project,
 --- downgrade profiles. The deletion is async (build dirs deleted via
@@ -784,87 +671,7 @@ function M.compute_orphan_cleanup_context(ws)
     }
 end
 
---- Orphan cleanup without the locks (the caller holds them, and has applied
---- external changes, `resync`): delete the build dirs of the orphaned
---- configurations still orphaned now (`recheck_orphans`) and drop their
---- BuildDir objects, then delete the stray dirs still stray now
---- (`recheck_stray`).
---- The orphans go through `Workspace:_run_deletion` like every cache-backed
---- deletion (spec §4.6, §5.7): their entries are marked `unknown` on disk
---- before any tree is removed, a directory a live configuration still
---- references is kept (the shared-dir refs check, plus
---- `Workspace:_overlaps_live_build_dir` for a dir that is, contains or lies
---- inside a live build dir under any spelling), and the entries are dropped
---- only when every removal succeeded — a failed removal keeps them
---- (`unknown`, reported). Confirmed-deleted orphan dirs hand their module to
---- the owned LSP database cleanup.
---- Returns a Future resolving `true` when everything was removed, `false`
---- when a removal failed.
---- @param ws loomworks.Workspace
---- @param orphaned_configs table[]
---- @param stray_dirs string[]
---- @return loomworks.Future
-local function orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs)
-    local safe_prefix = ws._core._deps.normalize(ws.root)
-    orphaned_configs = recheck_orphans(ws, orphaned_configs)
-    stray_dirs = recheck_stray(ws, stray_dirs)
-
-    local items = {}
-    for _, item in ipairs(orphaned_configs) do
-        items[#items + 1] = {
-            project_key = item.project_key, config_key = item.config_key,
-            build_dir = item.build_dir, build_dir_obj = item.build_dir_obj,
-            disposition = "clean",
-        }
-    end
-
-    local function remove_build_dir_objects()
-        -- Remove BuildDir objects and clear their state — only those still
-        -- orphaned (a unit may have adopted one while the removal ran).
-        local deploy = require("loomworks.deploy")
-        for _, item in ipairs(orphaned_configs) do
-            local bd = item.build_dir_obj
-            if bd and still_orphaned(ws, bd) then
-                -- Clean deploy records sourced from this build dir
-                deploy.clean_deploy_records(ws._deploy_records, bd.rel_path)
-                bd:clear_state()
-                -- Remove from _build_dirs array
-                for i, b in ipairs(ws._build_dirs) do
-                    if b == bd then
-                        table.remove(ws._build_dirs, i)
-                        break
-                    end
-                end
-            end
-        end
-        ws:_save_cache()
-        ws:_sync_build_dir_refs()
-        ws._core._deps.events.emit("active_set_changed", ws._active_set)
-    end
-
-    -- Stray dirs
-    local valid_stray = {}
-    for _, dir in ipairs(stray_dirs) do
-        if ws:_validate_build_dir(dir, safe_prefix) then
-            valid_stray[#valid_stray + 1] = dir
-        end
-    end
-
-    -- (No orphans: `_run_deletion` resolves `true` at once.)
-    return ws:_run_deletion(items, remove_build_dir_objects):next(function(orphans_ok)
-        return ws:_delete_build_dirs_async(valid_stray):next(function(results)
-            local ok = orphans_ok ~= false
-            for _, r in ipairs(results) do
-                if not r.ok then
-                    ok = false
-                    ws._core._deps.notify("loomworks: failed to delete " .. r.dir .. ": "
-                        .. (r.err or "unknown"), vim.log.levels.ERROR)
-                end
-            end
-            return ok
-        end)
-    end)
-end
+local orphan_cleanup_unlocked = deletion_plan.orphan_cleanup_unlocked
 
 --- Execute orphan cleanup: delete orphaned cache entries + build dirs,
 --- then delete stray build dirs.

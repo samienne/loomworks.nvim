@@ -134,9 +134,12 @@ return {
         -- view's model writes into the host-neutral command layer (the
         -- daemon's interfaces call it too); the view keeps only the editor's
         -- `ok, err` adapters, until C0/C2 route the actions as calls.
+        -- loomworks.deletion_plan (step 5o A2) replaces loomworks.deploy: the
+        -- deletion re-checks the view's own dialogs still run moved into the
+        -- deletion plans `Maintenance/1.execute_deletion` uses.
         ["lua/loomworks/workspace_view.lua"] = {
             "loomworks.cpp_compilers",
-            "loomworks.deploy",
+            "loomworks.deletion_plan",
             "loomworks.model_commands",
             "loomworks.modules",
             "loomworks.variables",

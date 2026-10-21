@@ -16,8 +16,10 @@
 --- naming what was not done (decision D1). A removed object (a stale
 --- reference the caller still holds) is refused before any write.
 ---
---- Deletions (`Maintenance/1.execute_deletion`) are not here yet (step 5o
---- part A2). Locks: single-file working-copy writes take only the save
+--- Deletions (`Maintenance/1.execute_deletion`, API.md §22) are planned
+--- and confirmed with a token (loomworks.deletion_plan) and run under the
+--- workspace operation lock and the build-directory locks
+--- (`Workspace:_locked_deletion`). Locks: single-file working-copy writes take only the save
 --- guard of `_save_user` (spec §2.7); the operation lock of publish and
 --- propagating renames (spec §19.3) is taken where the Workspace methods
 --- take it.
@@ -911,6 +913,120 @@ function M.sdk_remove(ws, sdk)
         return refused("SDK '" .. tostring(sdk.key) .. "' is not declared")
     end
     return ok()
+end
+
+
+-- ---------------------------------------------------------------------------
+-- Maintenance/1 (API.md §22)
+-- ---------------------------------------------------------------------------
+
+--- The request phase of `execute_deletion { target, plan?, yes? }`: the
+--- deletion is planned (loomworks.deletion_plan) after resolution and
+--- before any lock; nothing is locked or changed here. In `reset`'s order
+--- (§8.5): a target that cannot be deleted (stale, a stray dir not in the
+--- current stray set or outside the workspace) is refused; a `plan` the
+--- fresh token differs from is refused (`deletion_plan.CHANGED`, exit 1),
+--- before the empty check, so a listed plan whose directories vanished is
+--- never "nothing to delete"; nothing to delete is refused (exit 0, `stream
+--- = "out"`); without `yes` it is `confirm` (`lines`, `plan`); otherwise
+--- `accepted`, carrying the plan `deletion_run` executes and whether the
+--- listing is still to be shown (`listing`: no `plan` was sent).
+--- @param ws loomworks.Workspace
+--- @param target table a deletion target (loomworks.deletion_plan header)
+--- @param plan string|nil the token a confirmation returned
+--- @param yes boolean|nil
+--- @return table outcome `refused` | `confirm` | `accepted` (`deletion`, `listing`)
+function M.deletion_request(ws, target, plan, yes)
+    local dp = require("loomworks.deletion_plan")
+    local p = dp.plan(ws, target)
+    if p.refusal then return refused(p.refusal) end
+    if plan ~= nil and plan ~= p.token then return refused(dp.CHANGED) end
+    if dp.is_empty(p) then
+        local r = refused(dp.NOTHING, 0)
+        r.stream = "out"
+        return r
+    end
+    if not yes then
+        return { outcome = "confirm", lines = dp.listing(ws, p), plan = p.token }
+    end
+    return { outcome = "accepted", deletion = p, listing = plan == nil and dp.listing(ws, p) or nil }
+end
+
+--- The run phase of an accepted deletion: take the workspace operation lock,
+--- then the build-directory lock of every directory of the plan (exclusive,
+--- canonical order; `Workspace:_locked_deletion`), apply external changes
+--- (`deletion_plan.resync`), plan again and refuse a different plan
+--- (`deletion_plan.CHANGED`) before anything is removed, then execute it
+--- (`deletion_plan.execute`). The locks are released once the deletion has
+--- settled. `done(outcome)` runs once: `ok` (a `warn` note when a project's
+--- downgrade failed after its removal), or `refused` — a held lock (its
+--- holder), a changed plan, a stopped deletion (`delete stopped: <reason>`,
+--- `opts.stop_reason`), a failed removal. Returns the deletion's Future.
+--- @param ws loomworks.Workspace
+--- @param deletion loomworks.DeletionTargetPlan the accepted plan
+--- @param opts? { stop?: fun(): boolean, stop_reason?: fun(): string }
+--- @param done fun(outcome: loomworks.CommandOutcome)
+--- @return loomworks.Future
+function M.deletion_run(ws, deletion, opts, done)
+    local dp = require("loomworks.deletion_plan")
+    opts = opts or {}
+    local settled = false
+    local function finish(r)
+        if settled then return end
+        settled = true
+        done(r)
+    end
+    local lock_msg
+    local f = ws:_locked_deletion("delete", deletion.lock_dirs, function()
+        local pok, fresh, verr = pcall(function()
+            if not dp.resync(ws) then return nil, "the workspace was unloaded" end
+            return dp.verify(ws, deletion)
+        end)
+        if not pok then finish(refused(fresh)); return false end
+        if not fresh then finish(refused(verr)); return false end
+        -- A synchronous throw (e.g. the working-copy save failing before any
+        -- removal) settles as `refused`; returning false releases the locks.
+        local eok, ef = pcall(dp.execute, ws, fresh, { stop = opts.stop })
+        if not eok then finish(refused(ef)); return false end
+        return ef:next(function(res)
+            if res.stopped then
+                finish(refused("delete stopped: "
+                    .. tostring(opts.stop_reason and opts.stop_reason() or "cancelled")))
+            elseif not res.ok then
+                finish(refused(res.message))
+            else
+                local r = ok()
+                if res.warn then warn(r, res.warn) end
+                finish(r)
+            end
+            return res.ok == true
+        end, function(err)
+            finish(refused(err))
+            error(err, 0)
+        end)
+    end, nil, function(msg) lock_msg = msg end)
+    f:next(function(v)
+        if v == false and not settled then
+            finish(refused(lock_msg or "the deletion was refused"))
+        end
+    end):catch(function(err) finish(refused(err)) end)
+    return f
+end
+
+--- `execute_deletion { target, plan?, yes? }` in one call (the in-process
+--- host): `deletion_request`, and when accepted `deletion_run`, whose final
+--- outcome goes to `opts.done`. Returns the request's outcome (`refused`,
+--- `confirm` or `accepted`).
+--- @param ws loomworks.Workspace
+--- @param target table a deletion target
+--- @param opts? { plan?: string, yes?: boolean, stop?: fun(): boolean, stop_reason?: fun(): string, done?: fun(outcome: loomworks.CommandOutcome) }
+--- @return table outcome
+function M.execute_deletion(ws, target, opts)
+    opts = opts or {}
+    local r = M.deletion_request(ws, target, opts.plan, opts.yes)
+    if r.outcome ~= "accepted" then return r end
+    M.deletion_run(ws, r.deletion, opts, opts.done or function() end)
+    return r
 end
 
 return M

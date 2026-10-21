@@ -1636,12 +1636,13 @@ of `reset` (§8.5) and its confirmation (§8.6). `target` is exactly one of:
 
 The server plans the deletion after resolution and before any lock (what
 it would remove and which build directories it must lock), then answers:
-with nothing to delete `refused` (`nothing to delete`, exit 0, `stream =
+with a `plan` the new plan differs from `refused` (`the build directories
+to delete changed since they were listed`, exit 1), considered before the
+empty check, so a listed plan whose directories vanished is never
+`nothing to delete`; with nothing to delete `refused` (`nothing to delete`, exit 0, `stream =
 "out"`); without `yes` `confirm` (`lines` the listing a client shows,
 `plan` a token of the planned removal and lock set) with nothing locked or
-changed; with `yes` and `plan` it plans again and refuses a different plan
-(`the build directories to delete changed since they were listed`, exit 1)
-before any side effect, or is `accepted`; with `yes` and no `plan` it is
+changed; with `yes` and an unchanged `plan` it is `accepted`; with `yes` and no `plan` it is
 `accepted` and the task prints the listing first. An accepted deletion
 takes the workspace operation lock, then the build-directory lock of every
 directory of the plan (exclusive, canonical order; a held one ends the task
@@ -1650,10 +1651,14 @@ the locks and ends with the same changed-plan refusal on a difference, and
 then removes as spec §4.6–§4.7 specify: each path validated against the
 workspace root, the cache `unknown` on disk before a tree is removed, the
 units reset only after its removal succeeded, a directory still used
-outside the target kept. A `stray_dir` that is not in the server's current
-set of stray directories, or not under the workspace root, is `refused`;
-it is locked like any other directory, so one a running configure owns is
-refused. Cancelling stops between directories (`delete stopped: <reason>`);
+outside the target kept. A `{ project }` whose build directories are not
+all removed is kept (declaration, profiles and its cache entries
+`unknown`), and the task ends `refused`. A `stray_dir` not under the
+workspace root is `refused` (`path outside workspace: <path>`), one not in
+the server's current set of stray directories `refused` (`not a stray
+build directory: <path>`), and one that holds a live build directory
+`refused` (`directory holds a live build dir: <path>`); it is locked like
+any other directory, so one a running configure owns is refused. Cancelling stops between directories (`delete stopped: <reason>`);
 what was removed stays removed and its cache entry `unknown`. The task's
 writes' `changed` precede `done`.
 

@@ -4030,9 +4030,20 @@ end
 --- `opts.overlap_exempt` / `opts.report`: as `_run_deletion`'s.
 --- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
 function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
+    return self:_delete_orphan_unlocked(self:find_build_dir(build_dir_key), on_done, opts)
+end
+
+--- `_delete_orphaned_build_dir_unlocked` on the BuildDir object itself (a
+--- caller that resolved it at its input boundary, `Maintenance/1`'s
+--- `{ build_dir }` target through loomworks.deletion_plan). `bd` nil: the
+--- entry is gone; nothing is removed.
+--- @param bd loomworks.BuildDir|nil
+--- @param on_done? function
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @return loomworks.Future
+function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
     local future_mod = require("loomworks.future")
     local stop = opts and opts.stop or nil
-    local bd = self:find_build_dir(build_dir_key)
     local function drop()
         for i, b in ipairs(self._build_dirs) do
             if b == bd then table.remove(self._build_dirs, i); break end
@@ -5159,11 +5170,14 @@ end
 --- @param dirs string[]
 --- @param start fun(): loomworks.Future|boolean
 --- @param on_done? function
+--- @param on_refused? fun(message: string) a refused lock's message (the
+---   holder), before `on_done`; it was already reported
 --- @return loomworks.Future
-function Workspace:_locked_deletion(operation, dirs, start, on_done)
+function Workspace:_locked_deletion(operation, dirs, start, on_done, on_refused)
     local future_mod = require("loomworks.future")
-    local tok = self:_op_lock(operation)
+    local tok, omsg = self:_op_lock(operation)
     if not tok then
+        if on_refused then on_refused(omsg) end
         if on_done then on_done() end
         return future_mod.resolved(false)
     end
@@ -5173,6 +5187,7 @@ function Workspace:_locked_deletion(operation, dirs, start, on_done)
         local deps = self._core._deps
         if deps.on_lock_refused then deps.on_lock_refused(msg) end
         deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        if on_refused then on_refused(msg) end
         if on_done then on_done() end
         return future_mod.resolved(false)
     end
