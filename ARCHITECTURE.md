@@ -1684,6 +1684,23 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `model_commands.project_candidates` / `project_declaration` /
   `expand_preview` in a model segment of the caller's environment (a
   toolchain detection for `candidates` is not stored in the model).
+- *(Step 5o part B5.)* `daemon/maintenance.lua` serves `/maintenance`
+  `loomworks.Maintenance/1.execute_deletion` (API.md §22), task-streamed
+  (`meta.kind = "delete"`), mounted by `core_interfaces.mount`. Its target
+  resolves once at the boundary (`resolve_target`: a profile or project by
+  id or key, a configuration unit or an orphaned build directory by id —
+  `view.Workspace/1` `orphaned.configurations[].id`, `view_state` with the
+  daemon's `id` — a stray directory as the path, `orphans = true`); after a
+  tracker sync it is `model_commands.deletion_request` in a model segment of
+  the caller's environment (`refused` / `confirm` / `accepted`, as `reset`),
+  and an accepted one runs `model_commands.deletion_run` (O then every B
+  via `Workspace:_locked_deletion`, re-plan under them, then
+  `deletion_plan.execute`): it adds no deletion path. The run's
+  cancellation is the deletion's stop predicate (between entries, `delete
+  stopped: <reason>`); the run stays in `Service.runs` with `deleting` /
+  `deletion_settled` (the daemon busy) until the deletion and its locks
+  settled, also after its task ended; the header check (writes' `changed`,
+  views' `update`) precedes `done`.
 - `daemon/core_interfaces.lua` also mounts `/build` `loomworks.Build/1`
   (`build`, `clean`, `reset`), `/tests` `loomworks.Tests/1` (`run`) and
   `/launch` `loomworks.Launch/1` (`prepare_run`): each handler turns its

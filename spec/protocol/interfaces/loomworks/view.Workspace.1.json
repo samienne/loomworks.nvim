@@ -200,6 +200,7 @@
             "type": "object",
             "required": ["key"],
             "properties": {
+              "id": { "description": "Its build directory's id (daemon only): what Maintenance/1.execute_deletion takes as build_dir.", "$ref": "loomworks.Common/1#/$defs/Id" },
               "key": { "description": "Its cache key.", "type": "string" },
               "build_dir": { "description": "Its cached build directory.", "type": "string" }
             }

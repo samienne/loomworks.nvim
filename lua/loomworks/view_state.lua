@@ -266,7 +266,8 @@ end
 --- @field units loomworks.ViewUnit[]
 
 --- @class loomworks.ViewOrphaned
---- @field configurations { key: string, build_dir?: string }[]
+--- @field configurations { id?: string, key: string, build_dir?: string }[] `id` the
+---   orphaned build directory's (daemon only; Maintenance/1.execute_deletion)
 --- @field stray_dirs string[]
 
 --- @class loomworks.ViewConfigSet
@@ -728,6 +729,7 @@ function M.workspace(ws, opts)
     for _, o in ipairs(ws:get_orphaned_configs()) do
         local row = { key = o.build_dir_key or o.config_key,
             build_dir = o.cached_entry and o.cached_entry.build_dir or nil }
+        if opts.id and o.build_dir_obj then row.id = opts.id(o.build_dir_obj) end
         out.orphaned.configurations[#out.orphaned.configurations + 1] = row
         if opts.bind then opts.bind(row, o) end
     end
