@@ -812,6 +812,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   the cache claiming trees that were gone. It now removes nothing, reports
   every item as failed with the reason, and leaves the entries as they were
   (#302).
+- Deleting a single orphaned build directory from the status page could
+  remove a live build: an orphan whose directory contains the live one (the
+  build-directory template gained a level, `build/proj` -> `build/proj/Debug`)
+  or is the live one under another spelling (an 8.3 short name). It now gets
+  the same protections as the bulk orphan cleanup: such a tree is kept and
+  only the stale entry is dropped (#302).
 - The editor's project removal, orphan cleanup and stray build-directory
   deletion now take the workspace operation lock and the build-directory
   locks, like every other deletion: they are refused, with the holder named

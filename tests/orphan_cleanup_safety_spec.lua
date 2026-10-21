@@ -267,6 +267,56 @@ describe("view deletion safety", function()
         end)
     end)
 
+    -- The status page's single-row orphan delete (`delete_orphaned_build_dir`)
+    -- gets the same protections as the bulk cleanup: an orphan dir that
+    -- contains a live build dir (a build-dir template that gained a level,
+    -- `.nvim/build/App` -> `.nvim/build/App/Debug`) or that IS a live build
+    -- dir under another spelling (8.3 short name) keeps its tree; only the
+    -- entry is dropped.
+    describe("single-row orphan delete", function()
+        local function delete_row()
+            local key = ws:get_orphaned_configs()[1].build_dir_key
+            local done, ok = false, nil
+            ws:delete_orphaned_build_dir(key):next(function(v) done, ok = true, v end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "delete never finished")
+            return ok
+        end
+
+        it("never removes an orphan dir that contains a live build dir", function()
+            local dir = add_orphan(ws, root, root .. "/.nvim/build/App")
+            local removed = count_rm()
+            delete_row()
+            assert.equals(0, #removed, "rm-rf was handed " .. table.concat(removed, ", "))
+            assert.is_not_nil(uv.fs_stat(dir))
+            assert.is_not_nil(uv.fs_stat(built), "the live build dir was removed")
+            assert.equals(0, #ws:get_orphaned_configs(), "the orphan's entry was not dropped")
+        end)
+
+        it("never removes an orphan dir that is a live build dir under its 8.3 short name", function()
+            if vim.fn.has("win32") == 0 then
+                pending("8.3 short names are Windows-only"); return
+            end
+            local out = vim.fn.system({ "cmd", "/c",
+                "for %I in (\"" .. built:gsub("/", "\\") .. "\") do @echo %~sI" })
+            local short = vim.trim(out or ""):gsub("\\", "/")
+            if vim.v.shell_error ~= 0 or not short:find("~", 1, true) then
+                pending("8.3 short names unavailable on this volume"); return
+            end
+            add_orphan(ws, root, short)
+            local removed = count_rm()
+            delete_row()
+            assert.equals(0, #removed, "rm-rf was handed " .. table.concat(removed, ", "))
+            assert.is_not_nil(uv.fs_stat(built), "the live build dir was removed")
+        end)
+
+        it("still removes an orphan dir of its own", function()
+            local dir = add_orphan(ws, root)
+            assert.is_true(delete_row())
+            assert.is_nil(uv.fs_stat(dir))
+            assert.equals(0, #ws:get_orphaned_configs())
+        end)
+    end)
+
     describe("stray directory deletion", function()
         it("keeps a directory that stopped being stray before the lock was taken", function()
             local stray = root .. "/.nvim/build/App/Stray"

@@ -4024,7 +4024,9 @@ end
 --- cache only after the removal succeeded; a failed or stopped removal keeps
 --- it (`unknown`) and resolves `false`. `opts.stop` (the daemon's
 --- cancellation, §19.15 "Reset") is asked before the removal starts and
---- during it.
+--- during it. Runs through `_run_deletion`, so the tree is kept (the entry
+--- still dropped) when a live unit references the dir under any spelling or
+--- the dir contains / lies inside a live build dir — like the bulk cleanup.
 --- @param opts? { stop?: fun(): boolean }
 function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
     local future_mod = require("loomworks.future")
@@ -4044,36 +4046,19 @@ function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, o
                     if on_done then on_done() end
                     return future_mod.resolved(false)
                 end
-                -- The `unknown` mark reaches the disk before the tree is
-                -- removed (§5.7): never staged in an open transaction (§19.4).
-                assert(not require("loomworks.txn").active(),
-                    "loomworks: a deletion's cache write ran inside a transaction")
-                if bd:has_state() then bd.state = "unknown" end
-                self:_save_cache()
-                local ws = self
-                local mod = self:_lsp_db_module_for(nil, bd)
-                local f = self:_delete_build_dirs_async({ abs_dir }, nil, { stop = stop })
-                    :next(function(results)
-                        local r = results and results[1]
-                        local ok = r ~= nil and r.ok == true
-                        if ok then
-                            drop()
-                        elseif r and not r.stopped then
-                            ws._core._deps.notify("loomworks: failed to delete " .. abs_dir
-                                .. ": " .. tostring(r.err or "unknown"), vim.log.levels.ERROR)
-                        end
-                        ws:_save_cache()
-                        ws._core._deps.events.emit("active_set_changed", ws._active_set)
-                        if not ok then return false end
-                        -- Owned LSP database mirror only after confirmed removal (§4.6).
-                        return ws:_remove_owned_lsp_dbs({ { dir = r.dir or abs_dir, mod = mod } })
-                            :next(function() return true end)
-                    end)
-                if on_done then
-                    f:next(function() on_done() end)
-                     :catch(function() on_done() end)
-                end
-                return f
+                -- The bulk cleanup's path (`_run_deletion`): the dir is kept
+                -- when a live unit still references it under any spelling
+                -- (shared refs by `_build_dir_identity`, e.g. an 8.3 short
+                -- name) or when it contains / lies inside a live build dir
+                -- (`_overlaps_live_build_dir`, e.g. a template that gained a
+                -- level) — only the entry is dropped then. Otherwise the
+                -- entry is `unknown` on disk before the removal, leaves the
+                -- cache only after it succeeded, and its owned LSP database
+                -- follows the confirmed removal (§4.6, §5.7).
+                return self:_run_deletion({
+                    { project_key = bd.project_key, config_key = bd.config_key or bd.variant,
+                      build_dir = bd.path, build_dir_obj = bd, disposition = "clean" },
+                }, drop, on_done, nil, { stop = stop })
             end
         end
         -- No path, or one outside the workspace root: nothing is removed from
