@@ -178,6 +178,32 @@ end
 -- View instance
 -- ---------------------------------------------------------------------------
 
+--- Revert (`:e!`; `:e` on a buffer not marked modified — ui/view.lua
+--- attach_revert): `Workspace/1.revert_to_baseline`, in `daemon` mode a call
+--- to the workspace daemon (step 5o C2a), whose view `update` re-renders
+--- the page. In `daemon` mode only `:e!` reverts: the buffer's flag can lag
+--- the daemon's working copy (status_source.modified), so a plain `:e` Vim
+--- let through only re-renders — never a revert the user did not force.
+--- Test seam.
+--- @param force boolean `:e!`
+function M._on_revert(force)
+    local ws = model()
+    if not ws then
+        vim.notify("loomworks: no workspace", vim.log.levels.WARN)
+        return
+    end
+    if not force and require("loomworks.daemon.editor_ops").daemon_of(ws) then return end
+    local calls = require("loomworks.ui.model_calls")
+    calls.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
+        local ok, err = calls.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
+        else
+            vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
+        end
+    end)
+end
+
 local tree = Tree.new(render_fn)
 
 --- Test seam: the page's render function.
@@ -250,22 +276,7 @@ local view = View.new({
             end
         end)
     end,
-    on_revert = function()
-        local ws = model()
-        if not ws then
-            vim.notify("loomworks: no workspace", vim.log.levels.WARN)
-            return
-        end
-        local calls = require("loomworks.ui.model_calls")
-        calls.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
-            local ok, err = calls.result(r)
-            if not ok then
-                vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
-            else
-                vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
-            end
-        end)
-    end,
+    on_revert = function(force) return M._on_revert(force) end,
     events = {
         "task_started",
         "task_stopped",

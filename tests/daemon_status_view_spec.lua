@@ -286,42 +286,167 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
-    it("the buffer's 'modified' follows the daemon's view, not the editor's model: `:e` refused (5o C2a)", function()
-        fake_obs()
-        header()
-        -- An edit of the editor's own model is not what `:w` / `:e!` act on
-        -- in daemon mode: it does not mark the buffer.
-        ws:get_profiles()[1]._intent = "local+shared"
-        assert.is_true(ws:has_any_modified())
-        -- Waiting for the view (none held yet): nothing known, not modified.
-        assert.is_nil((obs:workspace_view()))
-        assert.is_false(status_source.modified(ws))
-        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        assert.is_false(status_source.modified(ws))
-        -- The daemon's working copy has unpublished changes.
-        views.set(obs, "workspace", daemon_view(function(v) v.modified = true end))
-        assert.is_true(status_source.modified(ws))
-        -- An acwrite buffer as the status page's (ui/view.lua: 'modified'
-        -- from `is_modified`, `:e` -> BufReadCmd -> revert): Vim refuses
-        -- `:e` (E37), so no revert runs.
+    --- An acwrite buffer as the status page's: 'modified' from
+    --- status_source.modified, BufReadCmd (`:e` / `:e!`) wired by
+    --- ui/view.lua's attach_revert to the page's revert. Returns the buffer
+    --- and the `Workspace/1.revert_to_baseline` calls made (model_calls spied).
+    local function status_buffer()
         local buf = vim.api.nvim_create_buf(false, true)
         vim.bo[buf].buftype = "acwrite"
-        vim.api.nvim_buf_set_name(buf, "loomworks://status-e37-spec")
-        local reverted = false
-        vim.api.nvim_create_autocmd("BufReadCmd", { buffer = buf, callback = function() reverted = true end })
+        vim.api.nvim_buf_set_name(buf, "loomworks://status-revert-spec-" .. buf)
         vim.bo[buf].modified = status_source.modified(ws)
-        local ok, err = pcall(vim.api.nvim_buf_call, buf, function() vim.cmd("edit") end)
-        assert.is_false(ok)
-        assert.truthy(tostring(err):find("E37", 1, true), tostring(err))
-        assert.is_false(reverted)
-        vim.api.nvim_buf_delete(buf, { force = true })
-        -- Selected for daemon mode but not connected at all: not modified
-        -- (`:w` / `:e!` are refused then).
+        local reverts = {}
+        local mc = require("loomworks.ui.model_calls")
+        local orig = mc.call
+        mc.call = function(w, method, ...)
+            if method == "Workspace/1.revert_to_baseline" then reverts[#reverts + 1] = w; return end
+            return orig(w, method, ...)
+        end
+        require("loomworks.ui.view").attach_revert(buf, require("loomworks.ui.status")._on_revert)
+        local function done()
+            mc.call = orig
+            vim.api.nvim_buf_delete(buf, { force = true })
+        end
+        local function edit(cmd)
+            return pcall(vim.api.nvim_buf_call, buf, function() vim.cmd(cmd) end)
+        end
+        return reverts, edit, done, buf
+    end
+
+    --- A status-page write not routed to the daemon yet (Projects/1 until
+    --- 5o C2b), run in-process through ui/model_calls: a project's
+    --- `type_config` field saved (the editor's model's write stubbed).
+    local function in_process_write()
+        local wv = require("loomworks.workspace_view")
+        local orig = wv.save_type_config_field
+        local saved = false
+        wv.save_type_config_field = function() saved = true; return true end
+        local r
+        require("loomworks.ui.model_calls").call(ws, "Projects/1.type_config_set",
+            { project = ws:get_projects()[1], field = "x", value = "y" }, function(x) r = x end)
+        wv.save_type_config_field = orig
+        assert.is_true(saved)
+        assert.equals("ok", r and r.outcome)
+    end
+
+    it("the buffer's 'modified' follows the daemon's view while it is held and fresh, else the editor's model (5o C2a)", function()
+        fake_obs()
+        header()
+        -- An unpublished edit of the editor's own model.
+        ws:get_profiles()[1]._intent = "local+shared"
+        assert.is_true(ws:has_any_modified())
+        -- Waiting for the view (none held yet): the daemon's state is not
+        -- known — the editor's model's (modified here).
+        assert.is_nil((obs:workspace_view()))
+        assert.is_true(status_source.modified(ws))
+        -- Held and fresh: the daemon's view's.
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        assert.is_false(status_source.modified(ws))
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = true end))
+        assert.is_true(status_source.modified(ws))
+        -- Selected for daemon mode but not connected at all: the editor's
+        -- model's.
         views.clear(obs)
         ws._daemon_observer = nil
         ws._runtime_selection = { daemon = true }
         obs = nil
+        assert.is_true(status_source.modified(ws))
+    end)
+
+    it("view not held and the editor's model modified: `:e` is refused (E37), no revert runs", function()
+        fake_obs()
+        header()
+        ws:get_profiles()[1]._intent = "local+shared"
+        assert.is_nil((obs:workspace_view()))
+        local reverts, edit, done = status_buffer()
+        local ok, err = edit("edit")
+        done()
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("E37", 1, true), tostring(err))
+        assert.equals(0, #reverts)
+    end)
+
+    it("in daemon mode a plain `:e` never reverts (the buffer's flag can lag); `:e!` does", function()
+        fake_obs()
+        header()
+        -- View not held, the editor's model clean: not marked, `:e` allowed —
+        -- it re-renders, never reverts.
+        assert.is_false(ws:has_any_modified())
         assert.is_false(status_source.modified(ws))
+        local reverts, edit, done = status_buffer()
+        assert.is_true((edit("edit")))
+        assert.equals(0, #reverts)
+        -- `:e!` is the user's revert.
+        assert.is_true((edit("edit!")))
+        done()
+        assert.equals(1, #reverts)
+    end)
+
+    it("an in-process write the daemon has not answered the freshness `get` for marks the buffer; `:e` reverts nothing", function()
+        -- `get` never answered: the view stays the one before the write.
+        fake_obs()
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        assert.is_false(status_source.modified(ws))
+        -- An editor-side save alone (e.g. a reload's) is not a status-page
+        -- write: the view's flag still.
+        ws:get_profiles()[1]._intent = "local+shared"
+        assert.is_true(ws:_save_user())
+        assert.is_false(status_source.modified(ws))
+        -- An in-process write (Projects/1 until 5o C2b) leaving the working
+        -- copy unpublished: the observer gets the view; until it answers,
+        -- the held view does not know the write.
+        in_process_write()
+        assert.is_true(status_source.modified(ws))
+        assert.is_true(vim.wait(1000, function()
+            for _, c in ipairs(calls) do
+                if c.method == "get" and c.iface == "loomworks.view.Workspace" then return true end
+            end
+            return false
+        end, 10))
+        assert.is_true(status_source.modified(ws))
+        local reverts, edit, done, buf = status_buffer()
+        local ok, err = edit("edit")
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("E37", 1, true), tostring(err))
+        -- Even were the buffer not marked: a plain `:e` reverts nothing.
+        vim.bo[buf].modified = false
+        edit("edit")
+        done()
+        assert.equals(0, #reverts)
+    end)
+
+    it("the answered freshness `get` ends it: the daemon's view's flag again", function()
+        local fresh = daemon_view(function(v) v.modified = true end)
+        fake_obs(nil, function() return fresh end)
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        ws:get_profiles()[1]._intent = "local+shared"
+        in_process_write()
+        assert.is_true(status_source.modified(ws))
+        assert.is_true(vim.wait(1000, function() return views.daemon_state(obs, "workspace") == fresh end, 10))
+        assert.is_true(status_source.modified(ws))
+        -- The daemon's view says clean (e.g. another client published).
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        assert.is_false(status_source.modified(ws))
+    end)
+
+    it("a routed write with no workspace given is decided by the runtime selection: refused with the observer gone, never in-process", function()
+        -- The loaded workspace selected for daemon mode, its observer gone
+        -- (stopped: no longer current, detached from the workspace).
+        observer.attach(ws, { configured = "in-process" })
+        ws._runtime_selection = { daemon = true }
+        ws._daemon_observer = nil
+        assert.is_nil(observer.current())
+        local lw = require("loomworks")
+        local orig = lw.trust_user_prefs
+        local ran = false
+        lw.trust_user_prefs = function() ran = true; return "trusted" end
+        local out
+        require("loomworks.ui.model_calls").call(nil, "Workspace/1.trust_accept", {}, function(r) out = r end)
+        lw.trust_user_prefs = orig
+        assert.is_false(ran)
+        assert.equals("refused", out and out.outcome)
     end)
 
     it("a unit's elapsed time comes only from a task running that unit's configuration", function()
@@ -361,5 +486,16 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local _, text = render()
         assert.equals(2, built)
         assert.is_nil(text:find("unavailable —", 1, true))
+    end)
+
+    it("an in-process row no longer reaches its object once its workspace is torn down", function()
+        local body = status_source.read(ws)
+        local row = body.view.profiles[1]
+        local profile = status_source.object_of(row)
+        assert.is_not_nil(profile)
+        assert.equals(ws, profile._workspace)
+        core:shutdown()
+        assert.is_nil(status_source.object_of(row))
+        assert.is_nil(body.profile_progress(row))
     end)
 end)

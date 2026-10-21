@@ -413,15 +413,16 @@ end
 --- @param crow table the configuration's view row
 --- @param pkey string the project's key (the configuration's label)
 local function configuration_actions(ws, project, cfg, crow, pkey)
-    local item = helpers.row_item("configuration", crow, pkey .. "/" .. crow.key)
-    if not project then return helpers.describe_action(publish_actions(ws, crow), item) end
+    if not project then return {} end
     -- `cfg` is always bound in practice: every declared configuration has a
-    -- Configuration object (Project:_sync_configurations), so the nil guards
-    -- only keep a row without one inert rather than acting on a name.
+    -- Configuration object (Project:_sync_configurations), so the nil guard
+    -- only keeps a row without one inert rather than acting on a name.
+    if not cfg then return {} end
     local acts = {
-        on_enter = cfg and function() edit_project_configuration(project, cfg, crow) end or nil,
-        on_delete = (crow.user and cfg) and function() delete_project_configuration(project, cfg) end or nil,
+        on_enter = function() edit_project_configuration(project, cfg, crow) end,
+        on_delete = crow.user and function() delete_project_configuration(project, cfg) end or nil,
     }
+    local item = helpers.row_item("configuration", crow, pkey .. "/" .. crow.key)
     return helpers.describe_action(with(acts, publish_actions(ws, crow)), item)
 end
 

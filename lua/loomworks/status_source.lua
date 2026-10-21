@@ -28,7 +28,8 @@ local M = {}
 
 --- The in-process view's rows, each bound to the domain object it describes
 --- (`Workspace:view_workspace`'s `bind`; weak: a row lives as long as the
---- page that rendered it). The status page's actions name an entity by its
+--- page that rendered it; all forgotten when a workspace is torn down,
+--- M.forget). The status page's actions name an entity by its
 --- row; in the `in-process` mode loomworks/ui/model_calls.lua finds the
 --- object here (M.object_of).
 local bound = setmetatable({}, { __mode = "k" })
@@ -38,6 +39,12 @@ local bound = setmetatable({}, { __mode = "k" })
 --- @param obj table|nil
 function M.bind(row, obj)
     if row ~= nil then bound[row] = obj end
+end
+
+--- Forget every row's binding (Workspace:teardown: a torn-down workspace's
+--- objects are reached by no row of a page rendered before the swap).
+function M.forget()
+    for row in pairs(bound) do bound[row] = nil end
 end
 
 --- The domain object an in-process row was bound to, or nil (a daemon row:
@@ -279,22 +286,31 @@ function M.read(ws)
 end
 
 --- Whether the workspace has changes not published (the status buffer's
---- 'modified', which makes Vim refuse `:e` with E37). In `daemon` mode the
---- daemon's view's `modified` (step 5o C2a): publish and revert (`:w`,
---- `:e!`) run in the daemon, whose view's `update` precedes their reply, so
---- the flag the buffer shows is the state they act on; false while the view
---- is not held (then `:w` / `:e!` are refused anyway, and `:e` only
---- re-renders). In the `in-process` mode the editor's model's.
+--- 'modified', which makes Vim refuse `:e` with E37). In `daemon` mode
+--- publish and revert (`:w`, `:e!`) run in the daemon (step 5o C2a): the
+--- daemon's view's `modified` while that view is held and knows the
+--- editor's own writes; otherwise — the view not held (connecting, waiting
+--- for it, lost, a daemon without it, not connected at all), or an
+--- in-process write (Projects/1, Sdks/1, Maintenance/1 until C2b/C2c) whose
+--- freshness `get` is not answered yet (Observer:workspace_view_stale) — it
+--- is not known, and the editor's model's is the best knowledge (the same
+--- files; it does not block `:qa` for a clean working copy). The flag can
+--- still lag the daemon (another client's write): a plain `:e` in `daemon`
+--- mode therefore never reverts (ui/status.lua `_on_revert`), only `:e!`
+--- does. In the `in-process` mode the editor's model's.
 --- @param ws loomworks.Workspace|nil
 --- @return boolean
 function M.modified(ws)
     if not ws then return false end
+    local editor = ws:has_any_modified() and true or false
     local is_daemon, obs = daemon_of(ws)
     if is_daemon then
         local view = obs and obs:workspace_view() or nil
-        return type(view) == "table" and view.modified == true
+        if type(view) ~= "table" then return editor end
+        if view.modified == true then return true end
+        return obs:workspace_view_stale() and editor
     end
-    return ws:has_any_modified() and true or false
+    return editor
 end
 
 return M

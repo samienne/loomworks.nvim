@@ -466,8 +466,8 @@ function M.routed(method)
     return ROUTED[method] ~= nil
 end
 
---- Call a model method of the workspace `ws` (nil: the loaded workspace —
---- the one the live observer observes; none in the `in-process` mode).
+--- Call a model method of the workspace `ws` (nil: the loaded workspace,
+--- loomworks.daemon.observer.loaded_workspace).
 --- In `daemon` mode a routed method is a call to the workspace daemon; any
 --- other runs its in-process body. `cb(r)` gets its outcome (may be nil).
 --- @param ws loomworks.Workspace|nil
@@ -478,16 +478,21 @@ function M.call(ws, method, params, cb)
     local fn = CALLS[method]
     if not fn then error("loomworks.ui.model_calls: unknown method " .. tostring(method), 2) end
     params, cb = params or {}, cb or function() end
+    -- (No workspace given: the loaded one. Its mode is its runtime
+    -- selection's — never whether an observer is attached: in `daemon` mode
+    -- with its observer gone a routed method is refused, not run in-process.)
+    local target = ws or require("loomworks.daemon.observer").loaded_workspace()
+    local daemon, obs = require("loomworks.daemon.editor_ops").daemon_of(target)
     local route = ROUTED[method]
     if route then
-        -- (No workspace given: the loaded one's — its observer's.)
-        if ws == nil then
-            local o = require("loomworks.daemon.observer").current()
-            ws = o and o.ws or nil
-        end
-        if require("loomworks.daemon.editor_ops").daemon_of(ws) then return route(ws, params, cb) end
+        if daemon then return route(target, params, cb) end
+        return fn(target, params, cb)
     end
     fn(ws, params, cb)
+    -- Not routed yet (until C2b / C2c), run in-process in `daemon` mode too:
+    -- the daemon's view does not know this write until its freshness `get`
+    -- is answered (the status buffer's 'modified', status_source.modified).
+    if daemon and obs then obs:in_process_write() end
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a

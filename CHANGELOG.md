@@ -150,7 +150,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   take, or refuses (for example a row made stale by a reload), is an error
   notification and changes nothing; it is never done in Neovim instead. The
   status page is marked modified (`:e` refused) while the daemon's working
-  copy has unpublished changes. `U` (discard the working copy) shows what it
+  copy has unpublished changes; a plain `:e` never reverts there, only
+  `:e!` does. `U` (discard the working copy) shows what it
   deletes and refuses when the file changed since. Creating a profile from an
   automatic configuration set now adds the set together with the profile,
   not when the set is picked, in both runtime modes. (#317)
