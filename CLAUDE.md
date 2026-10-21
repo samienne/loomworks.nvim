@@ -390,6 +390,9 @@ These are implementation-specific details not covered by the spec or architectur
   identity (`_build_dir_identity`: realpath; for a missing dir the realpath of
   its nearest existing ancestor + the rest, normalized) → set of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by
   deletion safety (skip rm-rf of shared dirs) and UI hints ("shared" indicator).
+  `_run_deletion` dedups dirs, keys `to_remove` / `_mark_cache_unknown`, and
+  applies `overlap_exempt` by the same identity; `_remove_owned_lsp_dbs`
+  keys its `gone` set by it too — never by spelling.
 - **Build dir operation queue**: `_build_dir_locks` provides per-build-dir
   exclusive/shared locks with FIFO queue. Exclusive for configure/delete/clean,
   shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,

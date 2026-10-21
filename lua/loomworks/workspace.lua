@@ -608,7 +608,7 @@ end
 --- @field _projection boolean|nil a read-only projection of the workspace daemon's model (spec §19.13, daemon/snapshot.lua `project`); `_no_write` is set
 --- @field _index table|nil a projection's current-key → opaque-id index from its snapshot (§19.12)
 --- @field _delete_waiters function[]
---- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
+--- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> build-dir identity key (`_build_dir_identity`) -> units
 --- @field _artifact_refs table<string, loomworks.ConfigUnit[]> normalized_artifact_path -> units (§5.9)
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 --- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
@@ -2968,17 +2968,19 @@ function Workspace:_path_forms(dir)
     return { n, c }
 end
 
---- Every form (`_path_forms`) of every build dir referenced by a ConfigUnit.
+--- Every form (`_path_forms`) of every build dir referenced by a ConfigUnit,
+--- except a dir whose identity (`_build_dir_identity`) is in `exempt`.
 --- The normalized spelling is kept beside the canonical form because a build
 --- dir reached through a link/junction canonicalizes OUTSIDE `.nvim/build`,
 --- where only its recorded spelling still sits under its parent. Resolves
 --- (realpath) once per unit per call.
+--- @param exempt? table<string, true> build-dir identities to leave out
 --- @return string[]
-function Workspace:_live_build_dir_forms()
+function Workspace:_live_build_dir_forms(exempt)
     local known, seen = {}, {}
     for _, unit in pairs(self._config_units) do
         local bd = unit:build_dir()
-        if bd and bd ~= "" then
+        if bd and bd ~= "" and not (exempt and exempt[self:_build_dir_identity(bd)]) then
             for _, f in ipairs(self:_path_forms(bd)) do
                 if not seen[f] then seen[f] = true; known[#known + 1] = f end
             end
@@ -4195,17 +4197,18 @@ end
 --- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
 --- its BuildDir as `build_dir_obj`, which is marked directly.
 --- Only items whose build dir is in `to_remove` (the dirs actually handed to
---- rm-rf) are marked: a skipped dir (shared with a live unit, overlapping a
+--- rm-rf, by directory identity `_build_dir_identity`, so every item naming
+--- one under any spelling — long or 8.3 short) are marked: a skipped dir
+--- (shared with a live unit, overlapping a
 --- live build dir, or failing validation) stays as it is, since nothing would
 --- restore it if another removal in the batch failed — a shared BuildDir left
 --- `unknown` would block the surviving unit from configure/build.
 --- @param items loomworks.DeletionItem[]
---- @param to_remove? table<string, true> normalized build dirs handed to
----   rm-rf; nil marks every item (no skip set known)
+--- @param to_remove? table<string, true> identity keys (`_build_dir_identity`)
+---   of the build dirs handed to rm-rf; nil marks every item (no skip set known)
 function Workspace:_mark_cache_unknown(items, to_remove)
-    local normalize = self._core._deps.normalize
     for _, item in ipairs(items) do
-        if to_remove and not (item.build_dir and to_remove[normalize(item.build_dir)]) then
+        if to_remove and not (item.build_dir and to_remove[self:_build_dir_identity(item.build_dir)]) then
             goto continue
         end
         if not item.unit then
@@ -4569,8 +4572,10 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     local normalize = deps.normalize
     if not deleted or #deleted == 0 then return future_mod.resolved(true) end
 
+    -- Deleted dirs by directory identity, so a remaining entry naming one under
+    -- another spelling (8.3 short vs long) does not keep its mirror alive.
     local gone = {}
-    for _, d in ipairs(deleted) do gone[normalize(d.dir)] = true end
+    for _, d in ipairs(deleted) do gone[self:_build_dir_identity(d.dir)] = true end
 
     -- Candidates: mirror per deleted dir (deduplicated, normalized).
     local candidates, seen = {}, {}
@@ -4589,7 +4594,7 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     -- Rule 2: mirrors still mapped from a remaining build directory.
     local kept = {}
     local function keep_for(mod, dir)
-        if not dir or dir == "" or gone[normalize(dir)] then return end
+        if not dir or dir == "" or gone[self:_build_dir_identity(dir)] then return end
         local m = self:_lsp_db_mirror(mod, dir)
         if m then kept[normalize((m:gsub("\\", "/")))] = true end
     end
@@ -4727,6 +4732,10 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         local safe_prefix = ws._core._deps.normalize(ws.root)
         local dirs = {}
         local seen_dirs = {}
+        -- Identity keys (`_build_dir_identity`) of the dirs handed to rm-rf:
+        -- every item naming one of them, under any spelling, is marked
+        -- `unknown` before the removal.
+        local to_remove = {}
         local live_forms -- lazily, only when an orphaned entry is present
         local report = opts and opts.report or nil
         if report then report.kept = {} end
@@ -4734,24 +4743,27 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
             if report then report.kept[#report.kept + 1] = { dir = dir, why = why } end
         end
         local function live_build_dir_forms()
-            local forms = ws:_live_build_dir_forms()
             local exempt_dirs = opts and opts.overlap_exempt
-            if not exempt_dirs or #exempt_dirs == 0 then return forms end
+            if not exempt_dirs or #exempt_dirs == 0 then return ws:_live_build_dir_forms() end
+            -- Exempt by directory IDENTITY, per live dir: a live unit naming an
+            -- exempt dir under another spelling (8.3 short vs long) is exempt
+            -- too, and every form of it is dropped — not only the forms that
+            -- happen to equal the exempt spelling's.
             local exempt = {}
             for _, d in ipairs(exempt_dirs) do
-                for _, f in ipairs(ws:_path_forms(d)) do exempt[f] = true end
+                local id = ws:_build_dir_identity(d)
+                if id then exempt[id] = true end
             end
-            local out = {}
-            for _, f in ipairs(forms) do
-                if not exempt[f] then out[#out + 1] = f end
-            end
-            return out
+            return ws:_live_build_dir_forms(exempt)
         end
         for _, item in ipairs(items) do
             if item.build_dir then
                 local normalized = ws._core._deps.normalize(item.build_dir)
-                if not seen_dirs[normalized] and ws:_validate_build_dir(normalized, safe_prefix) then
-                    seen_dirs[normalized] = true
+                -- Dedup by directory IDENTITY, not spelling: an 8.3 short and
+                -- a long spelling of one dir are the same tree (spec §4.6).
+                local ident = ws:_build_dir_identity(item.build_dir)
+                if not seen_dirs[ident] and ws:_validate_build_dir(normalized, safe_prefix) then
+                    seen_dirs[ident] = true
                     do
                         local remaining_refs = ws:_remaining_build_dir_refs(normalized, deleting_units)
                         if remaining_refs > 0 then
@@ -4777,6 +4789,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                         end
                     end
                     dirs[#dirs + 1] = normalized
+                    to_remove[ident] = true
                     -- An orphaned entry (no unit) carries its BuildDir.
                     dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
                         item.unit and item.unit._build_dir or item.build_dir_obj)
@@ -4786,12 +4799,11 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         end
 
         -- Crash safety (spec §5.7): every dir about to be removed is `unknown`
-        -- on disk before the async rm-rf starts; skipped dirs are untouched.
+        -- on disk before the async rm-rf starts — every entry naming one, by
+        -- directory identity; skipped dirs are untouched.
         -- Never staged in an open transaction (spec §19.4).
         assert(not require("loomworks.txn").active(),
             "loomworks: a deletion's cache write ran inside a transaction")
-        local to_remove = {}
-        for _, d in ipairs(dirs) do to_remove[d] = true end
         local prior = ws:_snapshot_build_states(items)
         ws:_mark_cache_unknown(items, to_remove)
         if not ws:_save_cache() then

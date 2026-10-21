@@ -713,16 +713,16 @@ end
 --- Rebuild the build dir reverse index from ConfigUnit objects.
 --- Maps build-dir identity -> array of ConfigUnits that reference it.
 --- @param config_units table[] array of ConfigUnit objects
---- @param normalize function the key of a build dir path (the workspace's
+--- @param key_of fun(dir: string): string the key of a build dir path (the workspace's
 ---   `_build_dir_identity`: resolved real path, spec §4.6; plain path
 ---   normalization when none is given)
 --- @return table<string, table[]> build_dir_refs
-function M.sync_build_dir_refs(config_units, normalize)
+function M.sync_build_dir_refs(config_units, key_of)
     local refs = {}
     for _, unit in pairs(config_units) do
         local bd = unit:build_dir()
         if bd then
-            local dir = normalize(bd)
+            local dir = key_of(bd)
             if not refs[dir] then refs[dir] = {} end
             refs[dir][#refs[dir] + 1] = unit
         end

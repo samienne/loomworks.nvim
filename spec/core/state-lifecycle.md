@@ -325,7 +325,10 @@ shares a build directory with other configurations:
    of the path), so one folder spelled differently -- a junction or symlink, a
    Windows 8.3 short name, an aliased workspace root -- is one directory; this
    applies equally to grouping a clean's wipes into one batch (§4.7) and to
-   the build-directory locks (§5.3, §16.6).
+   the build-directory locks (§5.3, §16.6). A deletion batch's directories
+   are deduplicated, marked `unknown` before removal (§5.7), and matched
+   against a reset's overlap exemption by the same identity, so every entry
+   naming a removed directory under any spelling is covered.
 2. Before adding a directory to the deletion queue, subtract the cache keys
    being deleted in the current batch from the ref set.
 3. If remaining refs > 0 → skip the directory (don't rm -rf). The cache
