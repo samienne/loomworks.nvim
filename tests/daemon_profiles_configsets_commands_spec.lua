@@ -190,6 +190,76 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.same({ id = id_of(cs), key = "Auto" }, r.config_set)
     end)
 
+    --- Declare a resolved SDK `fake_tc-1` (a fake provider, registered in
+    --- this Lua state) that offers the `shell` module capabilities, in the
+    --- signed working copy, before the model loads.
+    local function with_fake_sdk()
+        package.preload["loomworks.sdks.fake_tc"] = function()
+            local SDK = require("loomworks.sdk")
+            local P = { id = "fake_tc", api_version = require("loomworks.api_versions").sdk,
+                display_name = "Fake TC" }
+            function P.validate() return { version = "1" } end
+            function P.create_sdk(key, path, version)
+                return SDK.new({ key = key, type = "fake_tc", version = version, path = path,
+                    resolved = true, provider = P })
+            end
+            function P.query_capabilities(_, mod) return mod == "shell" and {} or nil end
+            function P.detect_all() return {} end
+            function P.match_version() return true end
+            return P
+        end
+        local _, content = trust.verify("user", read(root .. "/.nvim/loomworks.user.json"))
+        local user = vim.json.decode(content)
+        user.sdks = { ["fake_tc-1"] = { type = "fake_tc", path = root } }
+        local signed = trust.sign("user", trust.encode(user))
+        local f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb"))
+        f:write(signed); f:close()
+    end
+
+    it("tool_choices offers a relevant SDK as { sdk = true, key, label }; create takes { sdk = key }", function()
+        with_fake_sdk()
+        local ws = loaded()
+        local sdk = find(ws._sdks, "key", "fake_tc-1")
+        assert.is_not_nil(sdk)
+        local r = profiles("tool_choices", { config_set = { key = "dev" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.same({ { sdk = true, key = "fake_tc-1", label = sdk:display_name() } }, r.tools)
+
+        -- A set with no profile yet: an SDK-only profile has no tool keys, so
+        -- its key is the bare set name (spec §1.6), as dev's toolless one is.
+        assert.equals("ok", sets("add", { name = "rel", mappings = { app = "Debug" } }).outcome)
+        r = profiles("create", { config_set = { key = "rel" }, tool = { sdk = "fake_tc-1" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        local profile = srv.service.ids:find(r.profile.id, ws._profiles)
+        assert.is_not_nil(profile, vim.inspect(r))
+        assert.equals(profile.key, r.profile.key)
+        assert.equals(sdk, profile._sdk)
+        -- Saved to the working copy (as the editor's pick is: a profile entry
+        -- carries no `sdk` field, spec §1.6).
+        assert.is_not_nil(working_copy(root).profiles[r.profile.key])
+
+        -- Created again: the existing profile, not a duplicate.
+        local count = #ws._profiles
+        local again = profiles("create", { config_set = { key = "rel" }, tool = { sdk = "fake_tc-1" } })
+        assert.equals("ok", again.outcome, vim.inspect(again))
+        assert.same(r.profile, again.profile)
+        assert.equals(count, #ws._profiles)
+    end)
+
+    it("create of an SDK toolchain not among tool_choices' is refused and creates nothing", function()
+        with_fake_sdk()
+        local ws = loaded()
+        local count = #ws._profiles
+        -- Not a prefix match either (an exact key, API.md §1.2).
+        for _, key in ipairs({ "nope", "fake_tc" }) do
+            local r = profiles("create", { config_set = { key = "dev" }, tool = { sdk = key } })
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            assert.equals("no SDK toolchain '" .. key .. "' for this configuration set (see Profiles/1.tool_choices)",
+                r.message)
+        end
+        assert.equals(count, #ws._profiles)
+    end)
+
     it("add_tool / remove_tool re-derive the key under O, the id kept; refused while O is held", function()
         local ws = loaded()
         ws:get_or_create_tool("shell", "gcc-x", {}, "GCC x")
