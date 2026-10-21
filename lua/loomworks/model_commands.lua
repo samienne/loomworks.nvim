@@ -320,7 +320,13 @@ function M.delete_user_prefs(core, root, plan)
             lines = { "Will delete " .. path .. " (the working copy: profiles, local configuration, settings)." } }
     end
     if plan ~= token then return refused(M.PLAN_CHANGED) end
-    core:delete_user_prefs(root)
+    -- The confirmed text is checked again under the operation lock (it may
+    -- change between the check above and the lock); a held lock is refused
+    -- naming its holder.
+    local done, derr, kind = core:delete_user_prefs(root, text)
+    if not done then
+        return refused(kind == "changed" and M.PLAN_CHANGED or derr or "the working copy was not deleted")
+    end
     if deps.io.read_file(path) ~= nil then return refused("the working copy was not deleted") end
     return ok({ reloaded = true })
 end

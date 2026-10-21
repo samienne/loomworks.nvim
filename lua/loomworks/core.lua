@@ -1040,8 +1040,14 @@ end
 
 --- Delete user.json and reload the workspace.
 --- Called when user.json has a version mismatch and user confirms deletion.
+--- With `expected_content` (the text the user confirmed), the file is read
+--- again under the operation lock and nothing is deleted when it changed
+--- since: another process (the editor's save takes no lock) may rewrite it
+--- between the confirmation and the lock.
 --- @param root string
-function Core:delete_user_prefs(root)
+--- @param expected_content? string
+--- @return boolean ok, string|nil err, "changed"|nil kind
+function Core:delete_user_prefs(root, expected_content)
     local norm_root = self._deps.normalize(root)
     -- The working copy and its backup go together, under the workspace
     -- operation lock (spec §19.3).
@@ -1049,27 +1055,35 @@ function Core:delete_user_prefs(root)
     local tok, lmsg = op_lock.acquire(norm_root, "trust --discard")
     if not tok then
         self._deps.notify("loomworks: " .. lmsg, vim.log.levels.ERROR)
-        return
+        return false, lmsg
     end
-    local ok_d, derr = pcall(self._delete_user_prefs_locked, self, norm_root)
+    local ok_d, done, derr, kind = pcall(self._delete_user_prefs_locked, self, norm_root, expected_content)
     op_lock.release(tok)
-    if not ok_d then error(derr, 0) end
+    if not ok_d then error(done, 0) end
+    return done, derr, kind
 end
 
 --- `delete_user_prefs` under the operation lock.
 --- @param norm_root string
-function Core:_delete_user_prefs_locked(norm_root)
+--- @param expected_content? string
+--- @return boolean ok, string|nil err, "changed"|nil kind
+function Core:_delete_user_prefs_locked(norm_root, expected_content)
 
     local user_path = self._deps.user.filepath(norm_root)
     if not self:_safe_nvim_path(user_path, norm_root) then
-        self._deps.notify("loomworks: refusing to delete path outside .nvim/: " .. user_path, vim.log.levels.ERROR)
-        return
+        local msg = "refusing to delete path outside .nvim/: " .. user_path
+        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        return false, msg
+    end
+    if expected_content ~= nil and self._deps.io.read_file(user_path) ~= expected_content then
+        return false, "the working copy changed since it was confirmed", "changed"
     end
 
     local ok, err = self._deps.io.rm_rf(user_path)
     if not ok then
-        self._deps.notify("loomworks: failed to delete user.json: " .. (err or "unknown"), vim.log.levels.ERROR)
-        return
+        local msg = "failed to delete user.json: " .. (err or "unknown")
+        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        return false, msg
     end
     -- The backup of a discarded working copy goes too (spec §17.4 discard).
     self._deps.io.rm_rf(user_path .. ".bak")
@@ -1077,6 +1091,7 @@ function Core:_delete_user_prefs_locked(norm_root)
     self._deps.notify("loomworks: user preferences deleted, reloading", vim.log.levels.INFO)
     self._setup_error = nil
     self:setup({ root = norm_root })
+    return true
 end
 
 -- ===========================================================================

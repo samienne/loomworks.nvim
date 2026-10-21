@@ -241,5 +241,42 @@ describe("loomworks.Workspace/1 commands (step 5o part B1)", function()
             assert.equals("refused", r2.outcome, vim.inspect(r2))
             assert.is_not_nil(read(user_path))
         end)
+
+        it("delete_user_prefs re-checks the plan under O: a change before the lock is refused", function()
+            pcall(loaded)
+            local r = call("delete_user_prefs", {})
+            assert.equals("confirm", r.outcome, vim.inspect(r))
+            -- Another process (the editor's save takes no O) rewrites the
+            -- working copy after the plan was checked, before O is taken.
+            local changed = read(user_path) .. "\n"
+            local real_locks = op_lock.locks
+            op_lock.locks = function(...)
+                local l = real_locks(...)
+                local op = setmetatable({}, { __index = l.op })
+                op.acquire = function(...)
+                    write(user_path, changed)
+                    return l.op.acquire(...)
+                end
+                return setmetatable({ op = op }, { __index = l })
+            end
+            local ok_c, r2 = pcall(call, "delete_user_prefs", { plan = r.plan })
+            op_lock.locks = real_locks
+            assert.is_true(ok_c, tostring(r2))
+            assert.equals("refused", r2.outcome, vim.inspect(r2))
+            assert.equals("the working copy changed since it was shown — review it again", r2.message)
+            assert.equals(changed, read(user_path))
+            assert.is_nil(op_lock.read(root), "O left behind")
+        end)
+
+        it("delete_user_prefs refused while O is held names the holder", function()
+            pcall(loaded)
+            local r = call("delete_user_prefs", {})
+            assert.equals("confirm", r.outcome, vim.inspect(r))
+            local h = L.hold(op_lock.path(root), "import")
+            local r2 = call("delete_user_prefs", { plan = r.plan })
+            assert.equals("refused", r2.outcome, vim.inspect(r2))
+            assert.matches("pid " .. h.pid, r2.message, 1, true)
+            assert.is_not_nil(read(user_path))
+        end)
     end)
 end)
