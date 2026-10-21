@@ -172,4 +172,76 @@ describe("tool picker: a profile made of an SDK", function()
         meson.kits_from_sdk = saved
         assert(ok, err)
     end)
+
+    it("never resolves kits against a replaced SDK's old path before a rescan", function()
+        local meson = require("loomworks.modules").get("meson")
+        local saved = meson.kits_from_sdk
+        local paths = {}
+        meson.kits_from_sdk = function(_, sdk)
+            paths[#paths + 1] = sdk._path
+            return { { tool_data = { id = "fake-meson-kit", sdk_key = sdk.key } } }
+        end
+        local ok, err = pcall(function()
+            local ws = load()
+            local key = sdk_profile(ws).key
+            local old = find(ws._sdks, "key", "fake_tc-1")
+            local old_path = old._path
+            -- The user points the SDK at another installation (a user.json
+            -- change: a remerge, no tool detection).
+            local user = ws:_serialize_user()
+            user.sdks["fake_tc-1"].path = root .. "/.nvim"
+            ws:remerge(nil, nil, user)
+            assert.is_true(old._removed == true, "the replaced SDK is marked removed")
+            local profile = find(ws._profiles, "key", key)
+            assert.is_not_nil(profile)
+            local sdk = profile:sdk()
+            assert.is_true(sdk == nil or not sdk._removed, "the profile holds no removed SDK")
+            paths = {}
+            profile:tool_for("meson")
+            for _, p in ipairs(paths) do
+                assert.are_not.equal(old_path, p, "kits resolved against the old path")
+            end
+            -- A mutation re-derives the SDK the same way.
+            profile:add_tool("fake-kit2")
+            profile:remove_tool("fake-kit2")
+            sdk = profile:sdk()
+            assert.is_true(sdk == nil or not sdk._removed, "no removed SDK after add/remove_tool")
+        end)
+        meson.kits_from_sdk = saved
+        assert(ok, err)
+    end)
+
+    describe("a profile with a persisted sdk whose tools are not detected", function()
+        --- The working copy gains a profile with `sdk` and tool keys no
+        --- detection produced (a user.json change: a remerge with it).
+        local function load_with_profile(tools)
+            local ws = load()
+            local user = ws:_serialize_user()
+            user.profiles["dev:" .. table.concat(tools, "+")] =
+                { configuration_set = "dev", tools = tools, sdk = "fake_tc-1" }
+            ws:remerge(nil, nil, user)
+            local profile
+            for _, p in pairs(ws._profiles) do
+                if not p._removed and vim.deep_equal(p._tool_keys, tools) then profile = p end
+            end
+            assert.is_not_nil(profile, "the persisted profile loads")
+            local sdk = find(ws._sdks, "key", "fake_tc-1")
+            assert.equals(sdk, profile:sdk(), "the persisted sdk resolves")
+            return ws, profile, sdk
+        end
+
+        it("add_tool keeps it", function()
+            local _, profile, sdk = load_with_profile({ "undetected-kit" })
+            profile:add_tool("another-undetected-kit")
+            assert.equals(sdk, profile:sdk())
+            assert.equals("fake_tc-1", profile._sdk_key)
+        end)
+
+        it("remove_tool keeps it while a remaining key is unresolved", function()
+            local _, profile, sdk = load_with_profile({ "undetected-kit", "undetected-kit2" })
+            profile:remove_tool("undetected-kit2")
+            assert.equals(sdk, profile:sdk())
+            assert.equals("fake_tc-1", profile._sdk_key)
+        end)
+    end)
 end)

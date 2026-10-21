@@ -346,13 +346,13 @@ function ConfigurationSet:ensure_profile(tool_entry)
         -- kit toolchains — stored as tool keys, which carry the SDK (spec
         -- §1.6), so the profile keeps it across a reload.
         local tools = require("loomworks.workspace").tool_entry_tools(tool_entry)
+        -- The SDK is the entry's (`_sdk`), not a named `sdk` the profile
+        -- data pins: its tool keys carry it.
         local sdk = tool_entry and tool_entry.sdk or nil
-        local sdk_key = sdk and sdk.key or nil
 
         local data = {
             configuration_set = self.name,
             tools = tools,
-            sdk = sdk_key,
             _sdk = sdk,
         }
 

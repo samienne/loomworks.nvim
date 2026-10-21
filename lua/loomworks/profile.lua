@@ -177,6 +177,8 @@ end
 --- @field _sdk loomworks.SDK|nil SDK domain object reference (resolved at sync time
 ---        from the first kit-derived tool in `_tool_keys`)
 --- @field _sdk_key string|nil cached SDK key for runtime queries
+--- @field _sdk_pinned boolean the profile data named an `sdk` explicitly (a
+---        legacy working-copy field), which a tool change never re-derives
 --- @field _default_target_descriptor table|nil user.json default target for this profile
 --- @field _device_serial string|nil selected device serial for this profile
 --- @field description string|nil normalised description (spec §1.10), stored at
@@ -290,6 +292,7 @@ function Profile:_apply(data)
     self.description, self._description_invalid = description_mod.from_file(data.description)
     self._tool_keys = read_tool_keys(data.tools)
     self._sdk_key = data.sdk or nil
+    self._sdk_pinned = data.sdk ~= nil
     -- Read pre-resolved Tool domain objects (set by _sync_profiles)
     self._tool_objects = data._tool_objects
 
@@ -303,7 +306,7 @@ function Profile:_apply(data)
         -- owners), not `workspace._modules`, which is assigned after it.
         local modules = {}
         for mod in pairs(self._tool_objects or {}) do modules[#modules + 1] = mod end
-        self._sdk = self:_sdk_of_tools(modules)
+        self._sdk = (self:_sdk_of_tools(modules))
         self._sdk_key = self._sdk and self._sdk.key or nil
     end
 
@@ -412,24 +415,43 @@ end
 --- tool key stands for. Nil when a key resolves to no tool or to a tool no
 --- SDK produced (host-detected or cache-only), or when the tools come from
 --- different SDKs — an SDK is never inferred for a mix, so a module type no
---- key covers gets no SDK kit (no fallback guessing).
+--- key covers gets no SDK kit (no fallback guessing). A tool whose SDK was
+--- replaced (`_removed`: its declaration changed since the detection that
+--- made the tool) stands for no SDK until the next detection.
 --- @param modules loomworks.Module[] the registries the keys resolve in
---- @return loomworks.SDK|nil
+--- @return loomworks.SDK|nil sdk
+--- @return boolean resolved every key resolves to a tool
 function Profile:_sdk_of_tools(modules)
-    local sdk = nil
+    local sdk, mixed = nil, false
     for _, k in ipairs(self._tool_keys or {}) do
         local found = false
         for _, mod in pairs(modules or {}) do
             local tool = mod:find_tool(k)
             if tool and not tool._removed then
                 local s = tool:sdk()
-                if not s or (sdk and s ~= sdk) then return nil end
-                sdk, found = s, true
+                if s and s._removed then s = nil end
+                if not s or (sdk and s ~= sdk) then mixed = true end
+                if s then sdk = s end
+                found = true
             end
         end
-        if not found then return nil end
+        if not found then return nil, false end
     end
-    return sdk
+    if mixed then return nil, true end
+    return sdk, true
+end
+
+--- Re-derive the SDK after a tool change, from the live modules. Left alone
+--- while a key resolves to no tool (detection not in yet): only a complete
+--- set of tools decides it. `opts.keep_pinned` also leaves an `sdk` the
+--- profile data named alone.
+--- @param opts? { keep_pinned?: boolean }
+function Profile:_rederive_sdk(opts)
+    if opts and opts.keep_pinned and self._sdk_pinned then return end
+    local sdk, resolved = self:_sdk_of_tools(self._workspace and self._workspace._modules)
+    if not resolved then return end
+    self._sdk = sdk
+    self._sdk_key = sdk and sdk.key or nil
 end
 
 --- Resolve SDK-derived tool for a module type.
@@ -1104,9 +1126,9 @@ function Profile:add_tool(tool_key)
     end
     local old_key = self.key
     self._tool_keys[#self._tool_keys + 1] = tool_key
-    -- Re-derive the SDK: a host toolchain added to a kit profile ends it.
-    self._sdk = self:_sdk_of_tools(self._workspace and self._workspace._modules)
-    self._sdk_key = self._sdk and self._sdk.key or nil
+    -- Re-derive the SDK: a host toolchain added to a kit profile ends it
+    -- (one the profile data named stays).
+    self:_rederive_sdk({ keep_pinned = true })
     self:_derive_key()
     self:_after_key_rename(old_key)
 end
@@ -1125,8 +1147,7 @@ function Profile:remove_tool(tool_key)
     local old_key = self.key
     self._tool_keys = #kept > 0 and kept or {}
     -- Re-derive the SDK from the remaining tools.
-    self._sdk = self:_sdk_of_tools(self._workspace and self._workspace._modules)
-    self._sdk_key = self._sdk and self._sdk.key or nil
+    self:_rederive_sdk()
     self:_derive_key()
     self:_after_key_rename(old_key)
 end
