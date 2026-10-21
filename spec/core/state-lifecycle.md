@@ -317,8 +317,12 @@ configurations (Debug and Release produce output in the same directory,
 selected at build time via `--config`). When deleting a configuration that
 shares a build directory with other configurations:
 
-1. A reverse index (`_build_dir_refs`) maps each normalized build directory
-   to the set of cache keys that reference it. Rebuilt during every remerge.
+1. A reverse index (`_build_dir_refs`) maps each build directory, keyed by
+   its directory identity (canonical form: Windows 8.3 short and long names
+   and case reconciled, links resolved; a path that does not resolve falls
+   back to its normalized form), to the set of cache keys that reference it,
+   so two spellings of one directory share an entry. Every lookup uses the
+   same key. Rebuilt during every remerge and before each deletion batch.
 2. Before adding a directory to the deletion queue, subtract the cache keys
    being deleted in the current batch from the ref set.
 3. If remaining refs > 0 → skip the directory (don't rm -rf). The cache

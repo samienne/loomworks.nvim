@@ -259,6 +259,129 @@ describe("orphan cleanup deletion safety", function()
         assert.equals("built", shared_bd.state)
     end)
 
+    -- The shared-dir refs index keys DIRECTORY IDENTITY, not one spelling:
+    -- two configurations that record the same build dir under different
+    -- spellings (long path vs its Windows 8.3 short name) share it, so
+    -- deleting one must not rm-rf the tree the other still uses.
+    it("never removes a dir another configuration references under its 8.3 short name", function()
+        if vim.fn.has("win32") == 0 then
+            pending("8.3 short names are Windows-only"); return
+        end
+        local out = vim.fn.system({ "cmd", "/c",
+            "for %I in (\"" .. built:gsub("/", "\\") .. "\") do @echo %~sI" })
+        local short = vim.trim(out or ""):gsub("\\", "/")
+        if vim.v.shell_error ~= 0 or not short:find("~", 1, true)
+            or ws._core._deps.normalize(short) == ws._core._deps.normalize(built) then
+            pending("8.3 short names unavailable on this volume"); return
+        end
+        quiet(function() cli.cmd_configuration("add", root, "App", "Other", "variant:default") end)
+        ws = assert(cli._load_workspace(root, false))
+        ws._core._deps.notify = function() end
+        local unit_a = ws._profiles[1]:projects()[1]._config_unit
+        assert.equals(ws._core._deps.normalize(built), ws._core._deps.normalize(unit_a:build_dir()),
+            "test setup: the live unit records the long spelling")
+        local project = unit_a._project
+        local unit_b = ws:ensure_config_unit(project, project:get_configuration("Other"), nil)
+        unit_b.build_dir_value = short
+        unit_b.state_value = "built"
+        ws:_sync_build_dir_refs()
+        ws:_save_cache()
+        assert.equals(2, #ws:get_build_dir_refs(ws._core._deps.normalize(built)),
+            "both spellings must index to the same dir")
+        assert.equals(2, #ws:get_build_dir_refs(ws._core._deps.normalize(short)),
+            "both spellings must index to the same dir")
+
+        local handed = {}
+        io_mod.rm_rf_async = function(d, cb)
+            handed[#handed + 1] = d
+            return real_rm(d, cb)
+        end
+        local done = false
+        ws:_run_deletion({
+            { project_key = "App", config_key = "Other", build_dir = short, unit = unit_b },
+        }, function() end, function() done = true end)
+        assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        assert.equals(0, #handed, "rm-rf was handed " .. table.concat(handed, ", "))
+        assert.is_not_nil(uv.fs_stat(built), "the shared build dir was removed")
+    end)
+
+    -- Crash safety by directory IDENTITY (spec §4.6): one batch deleting two
+    -- entries whose build dirs are the same tree under its long and 8.3 short
+    -- spellings hands the tree to rm-rf once, but BOTH entries must be
+    -- `unknown` on disk before it starts — otherwise the second stays `built`
+    -- in the cache while its tree is being removed.
+    describe("one dir under two spellings in a batch", function()
+        local function setup()
+            if vim.fn.has("win32") == 0 then
+                pending("8.3 short names are Windows-only"); return
+            end
+            local out = vim.fn.system({ "cmd", "/c",
+                "for %I in (\"" .. built:gsub("/", "\\") .. "\") do @echo %~sI" })
+            local short = vim.trim(out or ""):gsub("\\", "/")
+            if vim.v.shell_error ~= 0 or not short:find("~", 1, true)
+                or ws._core._deps.normalize(short) == ws._core._deps.normalize(built) then
+                pending("8.3 short names unavailable on this volume"); return
+            end
+            quiet(function() cli.cmd_configuration("add", root, "App", "Other", "variant:default") end)
+            ws = assert(cli._load_workspace(root, false))
+            ws._core._deps.notify = function() end
+            local unit_a = ws._profiles[1]:projects()[1]._config_unit
+            local project = unit_a._project
+            local unit_b = ws:ensure_config_unit(project, project:get_configuration("Other"), nil)
+            unit_b.build_dir_value = short
+            unit_b.state_value = "built"
+            ws:_sync_build_dir_refs()
+            ws:_save_cache()
+            return {
+                { project_key = "App", config_key = "Debug", build_dir = built, unit = unit_a },
+                { project_key = "App", config_key = "Other", build_dir = short, unit = unit_b },
+            }
+        end
+
+        local function disk_states()
+            local cache = vim.json.decode(read(root .. "/.nvim/loomworks.cache.json") or "{}")
+            local states = {}
+            for _, e in pairs(cache.build_dirs or {}) do
+                if e.project_key == "App" then states[e.config_key] = e.state end
+            end
+            return states
+        end
+
+        local function run(items)
+            local done = false
+            ws:_run_deletion(items, function() end, function() done = true end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        end
+
+        it("marks both entries unknown on disk before the rm-rf", function()
+            local items = setup()
+            if not items then return end
+            local at_rm, handed = nil, 0
+            io_mod.rm_rf_async = function(d, cb)
+                handed = handed + 1
+                at_rm = at_rm or disk_states()
+                return real_rm(d, cb)
+            end
+            run(items)
+            assert.equals(1, handed, "the tree is handed to rm-rf once")
+            assert.equals("unknown", at_rm.Debug, "App/Debug on disk at rm-rf: " .. tostring(at_rm.Debug))
+            assert.equals("unknown", at_rm.Other, "App/Other on disk at rm-rf: " .. tostring(at_rm.Other))
+        end)
+
+        it("keeps both entries, neither built, when the removal fails", function()
+            local items = setup()
+            if not items then return end
+            io_mod.rm_rf_async = function(_, cb) cb(false, "boom") end
+            run(items)
+            local states = disk_states()
+            assert.is_not_nil(states.Debug, "App/Debug's entry was dropped")
+            assert.is_not_nil(states.Other, "App/Other's entry was dropped")
+            assert.are_not.equals("built", states.Debug, "App/Debug still claims built")
+            assert.are_not.equals("built", states.Other, "App/Other still claims built")
+            assert.is_not_nil(uv.fs_stat(built))
+        end)
+    end)
+
     -- The status page's single-row orphan delete (`delete_orphaned_build_dir`)
     -- gets the bulk cleanup's protections: a dir a live configuration still
     -- references, one that contains a live build dir (a build-dir template

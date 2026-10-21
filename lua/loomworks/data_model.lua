@@ -711,16 +711,19 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
 end
 
 --- Rebuild the build dir reverse index from ConfigUnit objects.
---- Maps normalized_build_dir -> array of ConfigUnits that reference it.
+--- Maps build-dir identity key -> array of ConfigUnits that reference it.
+--- The key is directory IDENTITY (`Workspace:_build_dir_ref_key`: canonical
+--- form, 8.3 short<->long + case reconciled), so two spellings of one
+--- directory share an entry; every lookup must use the same key function.
 --- @param config_units table[] array of ConfigUnit objects
---- @param normalize function path normalization function
+--- @param key_of fun(dir: string): string build dir -> identity key
 --- @return table<string, table[]> build_dir_refs
-function M.sync_build_dir_refs(config_units, normalize)
+function M.sync_build_dir_refs(config_units, key_of)
     local refs = {}
     for _, unit in pairs(config_units) do
         local bd = unit:build_dir()
         if bd then
-            local dir = normalize(bd)
+            local dir = key_of(bd)
             if not refs[dir] then refs[dir] = {} end
             refs[dir][#refs[dir] + 1] = unit
         end
@@ -816,7 +819,8 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local build_dirs = sync_build_dirs(ctx, workspace, cache)
     local config_units, profile_projects = sync_profile_projects_and_config_units(
         ctx, workspace, cache, deps)
-    local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
+    local build_dir_refs = M.sync_build_dir_refs(config_units,
+        deps.build_dir_ref_key or deps.normalize)
     local artifact_refs = M.sync_artifact_refs(config_units, deps.normalize)
 
     -- Set _source and _intent on projects, config_sets, and profiles
