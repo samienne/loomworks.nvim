@@ -31,6 +31,13 @@
         }
       ]
     },
+    "ItemRef": {
+      "description": "An item reference (API.md §1.2): a profile, configuration set, project, configuration or launch configuration, named by its id alone (ids are unique across kinds). In step 5o it has no key form.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/Id" } }
+    },
     "Environment": {
       "description": "The client's environment (API.md §5), sent as the envelope's env.",
       "type": "object",

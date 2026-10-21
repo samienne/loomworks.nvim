@@ -120,7 +120,8 @@ M.LOAD_WAIT_MS = 45000
 --- @field host table { load(root, handlers, opts?: { wait_tools?: boolean }) → ws|nil, err; unload(); current() → the loaded
 ---   workspace (nil while it (re)loads); settle(ms); setup_error() → refusal; unknown_target_hint?;
 ---   error_state?() → { message, refused?, trust? }|nil, the failed load the welcome header and view.Header/1
----   report (`trust`: the file a trust refusal refused, `user` or `cache`) }
+---   report (`trust`: the file a trust refusal refused, `user` or `cache`); core?() → the workspace core (Workspace/1's
+---   trust_accept / delete_user_prefs) }
 --- @field ws table|nil the live workspace
 --- @field env_sig string|nil the environment signature `ws` was loaded in
 --- @field stopping boolean|nil the server is stopping (`on_stopping`): no new request starts
@@ -359,6 +360,19 @@ function Service:_unload()
         pcall(self.host.unload)
         self:_stop_stale_runs("the workspace was reloaded")
     end
+end
+
+--- After a command that put the core through setup again (Workspace/1's
+--- trust_accept / delete_user_prefs, API.md §6): wait for that load, then
+--- serve what it produced (its refusal is the header's). Runs bound to the
+--- old workspace stop, and every id issued before is stale.
+--- @param ctx table the request (its `env`)
+function Service:_adopt_reload(ctx)
+    self.host.settle(M.LOAD_WAIT_MS)
+    self.ws, self.env_sig = nil, nil
+    self:_stop_stale_runs("the workspace was reloaded")
+    local now = self.host.current()
+    if now then self:_adopt(now, envscope.signature(ctx.env)) end
 end
 
 --- The live workspace for request `ctx`, re-validated (see the header).

@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Workspace",
   "version": 1,
-  "description": "Object /workspace (API.md §2, §6): header and the changed and header_changed signals.",
+  "description": "Object /workspace (API.md §2, §6): header and the changed and header_changed signals; the commands (step 5o part B1).",
   "cases": [
     {
       "name": "header reports the session and an unloaded model without loading it",
@@ -74,6 +74,76 @@
         { "send": { "kind": "call", "req_id": 3, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
         { "expect_none": { "kind": "signal", "object": "/workspace", "name": "header_changed" }, "within_ms": 200 }
+      ]
+    },
+    {
+      "name": "set_intent makes a profile shared and publish writes it, each with changed before its reply (step 5o)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" }, { "kind": "signal", "object": "/workspace", "name": "changed" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "index": { "profiles": { "dev": { "$bind": "dev_id" } } } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["changed"] } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "sub_id": { "$bind": "sub" } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_intent", "args": { "item": { "id": { "$var": "dev_id" } }, "intent": "local+shared" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "changed", "sub_id": { "$var": "sub" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "publish", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "changed", "sub_id": { "$var": "sub" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/views", "iface": "loomworks.view.Workspace", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "published": true, "profiles": [ { "id": { "$var": "dev_id" }, "key": "dev", "intent": "local+shared" } ] } } }
+      ]
+    },
+    {
+      "name": "set_description takes a launch id; publish_one, revert_one and set_intent refuse one, naming its project (step 5o)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/views", "iface": "loomworks.view.Workspace", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "projects": { "$contains": [ { "key": "app", "launches": { "$contains": [ { "key": "hello", "id": { "$bind": "hello_id", "$type": "string" } } ] } } ] } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_description", "args": { "item": { "id": { "$var": "hello_id" } }, "text": "Says hello" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/views", "iface": "loomworks.view.Workspace", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "projects": { "$contains": [ { "key": "app", "launches": { "$contains": [ { "id": { "$var": "hello_id" }, "key": "hello", "description": "Says hello" } ] } } ] } } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "publish_one", "args": { "item": { "id": { "$var": "hello_id" } } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "refused", "message": "a launch configuration is published with its project app", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "revert_one", "args": { "item": { "id": { "$var": "hello_id" } } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "refused", "message": "a launch configuration is published with its project app", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 7, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_intent", "args": { "item": { "id": { "$var": "hello_id" } }, "intent": "local" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 7, "result": { "outcome": "refused", "message": "a launch configuration is published with its project app", "exit_code": 1 } } }
+      ]
+    },
+    {
+      "name": "a stale id is refused; a key reference, an unknown intent and a missing item are invalid (step 5o)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_intent", "args": { "item": { "id": "no-such-id" }, "intent": "local" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": "no item with id no-such-id (a stale reference)", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "publish_one", "args": { "item": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_intent", "args": { "item": { "id": "no-such-id" }, "intent": "public" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_description", "args": { "text": "x" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "trust_accept of a trusted working copy is ok at once; delete_user_prefs confirms with a plan and refuses another (step 5o)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "trust_accept", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "delete_user_prefs", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "confirm", "lines": { "$len": 1 }, "plan": { "$type": "string" } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "delete_user_prefs", "args": { "plan": "not-the-plan" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": "the working copy changed since it was shown — review it again", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "header", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "state": "loaded" } } }
       ]
     }
   ]

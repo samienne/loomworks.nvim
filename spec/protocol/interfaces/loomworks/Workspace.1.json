@@ -2,7 +2,7 @@
   "interface": "loomworks.Workspace",
   "version": 1,
   "status": "draft",
-  "description": "Object /workspace (API.md §6): the workspace's header and its model changes. Step 5g.2 lands header and the changed and header_changed signals; the command methods follow in step 5o.",
+  "description": "Object /workspace (API.md §6): the workspace's header and its model changes. Step 5g.2 lands header and the changed and header_changed signals; step 5o (part B1) the commands publish, publish_one, revert_one, revert_to_baseline, set_intent, set_description, trust_accept and delete_user_prefs.",
   "methods": {
     "header": {
       "description": "The always-warm header (API.md §2): the session fields and the model's state. Never loads the workspace.",
@@ -10,6 +10,62 @@
       "result": { "$ref": "#/$defs/Header" },
       "needs_env": false,
       "mutates": false
+    },
+    "publish": {
+      "description": "Regenerate loomworks.json from the working copy (API.md §6, spec §2.4; the status page's :w), under the workspace operation lock, in a model segment of the caller's environment. A refused or failed write (a held lock, naming its holder; a stale or untrusted working copy; a reload) changes no file and no model state: the refused result. The write's changed and the views' update precede the reply.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
+    },
+    "publish_one": {
+      "description": "Publish one item (API.md §6): a profile, configuration set, project or configuration, under the workspace operation lock. A launch configuration's id is refused (it is published with its project, which the message names); a stale or unknown id is refused (a stale reference).",
+      "params": { "type": "object", "required": ["item"], "additionalProperties": false, "properties": { "item": { "$ref": "loomworks.Common/1#/$defs/ItemRef" } } },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
+    },
+    "revert_one": {
+      "description": "Revert one item to the published baseline (API.md §6, spec §2.4); refusals as publish_one.",
+      "params": { "type": "object", "required": ["item"], "additionalProperties": false, "properties": { "item": { "$ref": "loomworks.Common/1#/$defs/ItemRef" } } },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
+    },
+    "revert_to_baseline": {
+      "description": "The working copy's published items back to the baseline, locally added items kept as local (API.md §6, spec §2.4; :e!).",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
+    },
+    "set_intent": {
+      "description": "The item's intent, recorded as the user's choice (API.md §6, spec §2.4, sticky). A launch configuration's id is refused, naming its project.",
+      "params": { "type": "object", "required": ["item", "intent"], "additionalProperties": false, "properties": { "item": { "$ref": "loomworks.Common/1#/$defs/ItemRef" }, "intent": { "enum": ["local", "shared", "local+shared"] } } },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
+    },
+    "set_description": {
+      "description": "The item's description (API.md §6, spec §1.10), normalized as written there; no text removes it. The item may be a launch configuration.",
+      "params": { "type": "object", "required": ["item"], "additionalProperties": false, "properties": { "item": { "$ref": "loomworks.Common/1#/$defs/ItemRef" }, "text": { "type": "string" } } },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
+    },
+    "trust_accept": {
+      "description": "Review and trust the working copy (API.md §6, spec §17.4). Without plan: confirm, lines the review (what the working copy holds that needs trust) and plan a token of exactly that content; with plan: the working copy is signed as shown and the workspace loaded again (header_changed; every earlier id is stale), or refused when its content changed since. Served while the header's state is refused. An already trusted working copy is ok at once (a note says so); none at all is refused.",
+      "params": { "type": "object", "additionalProperties": false, "properties": { "plan": { "description": "The token of the confirm that showed the plan; absent: the confirm.", "type": "string" } } },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Confirm" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
+    },
+    "delete_user_prefs": {
+      "description": "Remove the working copy and its backup (API.md §6, spec §17.10, lw trust --discard, its .nvim path checks), confirmed as trust_accept is, under the workspace operation lock; the workspace is then loaded again. Served while the header's state is refused. No working copy is refused.",
+      "params": { "type": "object", "additionalProperties": false, "properties": { "plan": { "description": "The token of the confirm that showed the plan; absent: the confirm.", "type": "string" } } },
+      "result": { "oneOf": [ { "$ref": "#/$defs/Ok" }, { "$ref": "loomworks.Common/1#/$defs/Confirm" }, { "$ref": "loomworks.Common/1#/$defs/Refused" }, { "$ref": "loomworks.Common/1#/$defs/Declined" } ] },
+      "needs_env": true,
+      "mutates": true
     }
   },
   "signals": {
@@ -39,6 +95,16 @@
     }
   },
   "$defs": {
+    "Ok": {
+      "description": "A command applied (API.md §4.1).",
+      "type": "object",
+      "required": ["outcome"],
+      "properties": {
+        "outcome": { "const": "ok" },
+        "notes": { "$ref": "loomworks.Common/1#/$defs/Notes" },
+        "note_roles": { "$ref": "loomworks.Common/1#/$defs/NoteRoles" }
+      }
+    },
     "Header": {
       "type": "object",
       "required": ["root", "pid", "lw_version", "session_generation", "state"],
