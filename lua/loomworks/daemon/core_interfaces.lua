@@ -781,13 +781,17 @@ function M.projects_impl(service)
             if not require("loomworks.modules").get(args.type) then
                 return mc.refused("unknown project type '" .. tostring(args.type) .. "'", 2)
             end
+            -- The directory (`path`, else the one named by the key) must be
+            -- under the root (exit 2) and exist; it is stored relative to it.
+            local rel, refusal = mc.project_dir(ws.root, plain(args.path) or args.key)
+            if not rel then return refusal end
+            local path = rel == "" and "." or rel
             local tool_entry
             if args.tool ~= nil then
-                local refusal
                 tool_entry, refusal = mc.project_tool_entry(ws, args.type, args.tool.key)
                 if not tool_entry then return refusal end
             end
-            local r = mc.project_add(ws, args.key, args.type, args.path, plain(args.mappings), tool_entry)
+            local r = mc.project_add(ws, args.key, args.type, path, plain(args.mappings), tool_entry)
             if r.outcome == "ok" then r.project = entity(r.project, r.project and r.project.key) end
             return r
         end)

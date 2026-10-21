@@ -521,7 +521,7 @@ end
 -- Projects/1 (API.md §19)
 -- ---------------------------------------------------------------------------
 
---- `add { key, type, path, mappings?, tool? }` — declare a project, map it
+--- `add { key, type, path?, mappings?, tool? }` — declare a project, map it
 --- into each configuration set, and with a toolchain upgrade the affected
 --- profiles to it. A keyed module's project without a toolchain is added
 --- unmapped (it is mapped once a toolchain is chosen), with a `warn` note
@@ -825,7 +825,9 @@ end
 --- root, or absolute under it), or nil + the refusal. The boundary is checked
 --- on real paths (8.3 short names and case reconciled, links resolved), so a
 --- short spelling of a path under the root is accepted and a junction or
---- symlink inside the root that resolves outside it is refused.
+--- symlink inside the root that resolves outside it is refused. A path that
+--- does not resolve is refused as outside when its text leaves the root (a
+--- `..` segment counts as leaving it), else as missing.
 --- @param root string
 --- @param path string
 --- @return string|nil rel ("" for the root itself), loomworks.CommandOutcome|nil
@@ -855,6 +857,9 @@ local function project_dir(root, path)
         -- Nothing to resolve: refused as outside when its text is, else as missing.
         local a, b = win and abs:lower() or abs, win and r:lower() or r
         if a ~= b and a:sub(1, #b + 1) ~= b .. "/" then return nil, outside end
+        for seg in abs:gmatch("[^/]+") do
+            if seg == ".." then return nil, outside end
+        end
         return nil, refused("no directory '" .. tostring(path) .. "'")
     end
     local a, b = win and rabs:lower() or rabs, win and rroot:lower() or rroot
@@ -862,6 +867,7 @@ local function project_dir(root, path)
     if vim.fn.isdirectory(rabs) ~= 1 then return nil, refused("no directory '" .. tostring(path) .. "'") end
     return a == b and "" or rabs:sub(#rroot + 2)
 end
+M.project_dir = project_dir
 
 --- `candidates { path, type? }` — what adding the directory as a project
 --- would declare (the project browser's add context): the derived key and
@@ -878,7 +884,7 @@ end
 function M.project_candidates(ws, path, mod_type)
     local modules = require("loomworks.modules")
     local wv = require("loomworks.workspace_view")
-    local rel, r = project_dir(ws.root, path)
+    local rel, r = M.project_dir(ws.root, path)
     if not rel then return r end
     local root = ws.root:gsub("\\", "/")
     local abs = rel == "" and root or (root .. "/" .. rel)

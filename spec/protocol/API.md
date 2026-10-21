@@ -65,9 +65,9 @@ project, configuration or launch configuration without saying which: ids
 are unique across kinds, so `{ id }` alone resolves. In step 5o an
 `ItemRef` is an id only; it has no key form.
 
-A **launch configuration** is named by a `Ref`: its id, or with `{ key }`
-(its name) the request's `project` reference as well. A launch id that is
-not of the request's `project` is `refused`.
+A **launch configuration** or a **configuration** is named by a `Ref`: its
+id, or with `{ key }` (its name) the request's `project` reference as well.
+An id that is not of the request's `project` is `refused`.
 
 A project's **variable**, **deploy destination** or **`type_config`
 field** is not an entity: a request names its project by a reference and
@@ -1541,17 +1541,28 @@ name.
   environment: the derived key and relative path, the module types that
   detect it, the configurations the module offers, a proposed mapping into
   each configuration set (set name → configuration name), the toolchains it
-  can use, and the profiles a toolchain choice would upgrade;
-- `add { key, type, path, mappings?, tool? }` → `ok` with `project { id,
+  can use (`tools[] { key, label, inherited? }`: only the one the profiles
+  already use, `inherited`, when there is one), and the profiles a toolchain
+  choice would upgrade (`upgrade_preview[] { tool, from, to }`, profile keys).
+  A path outside the root (exit 2) or an unknown `type` (exit 2) is refused,
+  as is a missing directory;
+- `add { key, type, path?, mappings?, tool? }` → `ok` with `project { id,
   key }` — declares the project, maps it into each configuration set by
   `mappings` and, with `tool` (`{ key }`), upgrades the affected profiles to
   that toolchain; an upgrade that fails after the project was added is a
-  `warn` note (§4.1);
+  `warn` note (§4.1). `path` (else the directory named by `key`) is checked
+  as `candidates` checks it — outside the root is refused with exit 2, a
+  missing directory refused — and stored relative to the root. A keyed
+  module's project without `tool` is added unmapped, with a `warn` note
+  naming the mappings not made; a mapping into a configuration set that does
+  not exist is a `warn` note naming it. An unknown `type` is refused (exit 2);
 - `declaration { project }` → `{ outcome = "ok", configurations, launches,
   deploy, variables, options, type_config }` — the project's declaration as
   the working copy holds it (merged as spec §2.4 merges it), for a client's
   editors: each configuration's and launch configuration's declared fields
-  with its `id`;
+  with its `id` (`configurations[] { id, key, user?, fields }`, `user` for a
+  user configuration; `launches[] { id, key, fields }`, or `invalid` instead
+  of `fields` when the declaration is not a table);
 - `configuration_save { project, configuration?, name, fields }` → `ok`
   with `configuration { id, key }` — creates a user configuration (no
   `configuration`), or updates one; a `name` other than its key renames it,
@@ -1572,13 +1583,17 @@ name.
   declaration; no `deploy` removes it;
 - `variable_save { project, variable?, name, data }` — declares a variable
   (no `variable`) or replaces one, `variable` its current name (a rename
-  when `name` differs); `variable_remove { project, variable }`;
+  when `name` differs); `variable_remove { project, variable }`. A
+  `variable` the project does not declare is refused, `no variable '<name>'
+  in project '<key>'`;
 - `type_config_set { project, field, value? }` — one of the module's
-  editable `type_config` fields (§14.4); no `value` clears it;
+  editable `type_config` fields (§14.4); no `value` clears it; any other
+  field is refused (exit 2);
 - `expand_preview { project, profile?, templates }` → `{ outcome = "ok",
   values }` — each template expanded as a launch of that project would
   expand it (spec §1.3.1, §8.7), under `profile` or the active profile, in
-  the client's environment; an unresolved reference stays as written.
+  the client's environment; an unresolved reference stays as written. No
+  `profile` and no active profile is refused.
 
 A project is removed with `Maintenance/1.execute_deletion` (§22).
 
