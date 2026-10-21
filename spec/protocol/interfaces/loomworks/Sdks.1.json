@@ -1,0 +1,188 @@
+{
+  "interface": "loomworks.Sdks",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /toolchains (API.md §21, step 5o part B4): the workspace's SDKs (spec §10). detect is a query; add and remove are commands, each in a model segment of the caller's environment, its write the in-process editor's (loomworks.model_commands); Workspace/1 changed precedes the reply. A refused or failed write changes neither the file nor the model: the refused result. list is deferred (view.Workspace/1 carries the SDKs).",
+  "methods": {
+    "detect": {
+      "description": "The installed SDK providers (or the one named) and the installation paths each finds, in the client's environment. Changes nothing. An unknown provider is refused.",
+      "params": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Providers"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    },
+    "add": {
+      "description": "Declare the SDK of that provider at that path, then detect the toolchains again (Toolchains/1.rescan). An unknown provider, a path that is not a valid installation, or an SDK already declared is refused. A rescan that does not finish in time is ok with a warn note.",
+      "params": {
+        "type": "object",
+        "required": [
+          "provider",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/OkSdk"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "remove": {
+      "description": "Remove the SDK's declaration.",
+      "params": {
+        "type": "object",
+        "required": [
+          "sdk"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "sdk": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Ok"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    }
+  },
+  "$defs": {
+    "Ok": {
+      "description": "A command applied (API.md §4.1).",
+      "type": "object",
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "notes": {
+          "$ref": "loomworks.Common/1#/$defs/Notes"
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    },
+    "OkSdk": {
+      "description": "The SDK declared (its key derived by its provider).",
+      "type": "object",
+      "required": [
+        "outcome",
+        "sdk"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "sdk": {
+          "$ref": "loomworks.Common/1#/$defs/Entity"
+        },
+        "notes": {
+          "$ref": "loomworks.Common/1#/$defs/Notes"
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    },
+    "Providers": {
+      "description": "The SDK providers and what each detects.",
+      "type": "object",
+      "required": [
+        "outcome",
+        "providers"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "found"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "found": {
+                "description": "The installation paths the provider detects.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "notes": {
+          "$ref": "loomworks.Common/1#/$defs/Notes"
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    }
+  }
+}

@@ -1335,8 +1335,61 @@ function M.config_set_generate_defaults(ws)
 end
 
 -- ---------------------------------------------------------------------------
+-- Toolchains/1.rescan (API.md §11)
+-- ---------------------------------------------------------------------------
+
+--- `rescan {}` — start detecting the toolchains again
+--- (Workspace:rescan_tools, the status page's `L`). Detection is
+--- asynchronous: the model takes the result in when `ws._tool_state` is
+--- "scanned" again; the daemon waits for that before it replies.
+--- @param ws loomworks.Workspace
+--- @return loomworks.CommandOutcome
+function M.tools_rescan(ws)
+    ws:rescan_tools()
+    return ok()
+end
+
+-- ---------------------------------------------------------------------------
 -- Sdks/1 (API.md §21)
 -- ---------------------------------------------------------------------------
+
+--- `detect { provider? }` — the installed SDK providers (or the one named)
+--- and the installation paths each detects, in the current environment.
+--- Changes nothing. A provider whose detection raises finds none (as the
+--- status page's SDK picker); an unknown provider is refused with
+--- Workspace:add_sdk's message.
+--- @param provider string|nil provider id
+--- @return loomworks.CommandOutcome providers: { id: string, label: string, found: string[] }[]
+function M.sdk_detect(provider)
+    local registry = require("loomworks.sdks")
+    local ids
+    if provider ~= nil then
+        if not registry.get(provider) then
+            return refused("no provider for SDK type '" .. tostring(provider) .. "'")
+        end
+        ids = { provider }
+    else
+        ids = registry.list()
+    end
+    local providers = {}
+    for _, id in ipairs(ids) do
+        local p = registry.get(id)
+        if p then
+            local found = {}
+            if type(p.detect_all) == "function" then
+                local okd, res = pcall(p.detect_all)
+                for _, inst in ipairs(okd and type(res) == "table" and res or {}) do
+                    if type(inst) == "table" and type(inst.path) == "string" and inst.path ~= "" then
+                        found[#found + 1] = inst.path
+                    end
+                end
+            end
+            providers[#providers + 1] = { id = id,
+                label = type(p.display_name) == "string" and p.display_name or id, found = found }
+        end
+    end
+    return ok({ providers = providers })
+end
 
 --- `add { provider, path }` — declare an SDK.
 --- @param ws loomworks.Workspace

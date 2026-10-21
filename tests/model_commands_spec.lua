@@ -518,6 +518,34 @@ describe("model_commands", function()
     it("remove refuses a missing SDK", function()
       assert_refused(mc.sdk_remove(ws, nil), "stale reference")
     end)
+
+    it("detect names each provider and the paths it finds; an unknown provider is refused", function()
+      package.preload["loomworks.sdks.fake_detect"] = function()
+        return { id = "fake_detect", api_version = require("loomworks.api_versions").sdk,
+          display_name = "Fake Detect",
+          detect_all = function() return { { path = "/opt/fake", version = "1" }, { version = "2" } } end }
+      end
+      local r = mc.sdk_detect("fake_detect")
+      assert_ok(r)
+      assert.same({ { id = "fake_detect", label = "Fake Detect", found = { "/opt/fake" } } }, r.providers)
+      assert_refused(mc.sdk_detect("no_such_provider"), "no provider for SDK type 'no_such_provider'")
+      r = mc.sdk_detect(nil)
+      assert_ok(r)
+      assert.is_table(r.providers)
+    end)
+  end)
+
+  describe("Toolchains/1", function()
+    it("rescan detects every module type again, never reusing a cached result", function()
+      local seen
+      local deps = ws._core._deps
+      local saved = deps.detect_tools_async
+      deps.detect_tools_async = function(_, _, cb, opts) seen = opts; cb({}) end
+      local ok_, err = pcall(function() assert_ok(mc.tools_rescan(ws)) end)
+      deps.detect_tools_async = saved
+      assert(ok_, err)
+      assert.is_true(seen and seen.force == true)
+    end)
   end)
 
   -- Guard ratchet (5o A1): the status page's sections and dialogs write the

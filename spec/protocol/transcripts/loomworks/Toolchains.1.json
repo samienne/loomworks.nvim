@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Toolchains",
   "version": 1,
-  "description": "Object /toolchains (API.md §11): list, in the client's environment.",
+  "description": "Object /toolchains (API.md §11): list, in the client's environment; rescan, a command (step 5o part B4).",
   "cases": [
     {
       "name": "list returns the detected toolchains per module type",
@@ -15,6 +15,17 @@
         { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": { "module": "cmake" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "rescan detects the toolchains again and replies once the model took them in",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "rescan", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "rescan", "args": { "module": "cmake" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
       ]
     }
   ]

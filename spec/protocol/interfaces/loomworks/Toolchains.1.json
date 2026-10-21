@@ -2,7 +2,7 @@
   "interface": "loomworks.Toolchains",
   "version": 1,
   "status": "draft",
-  "description": "Object /toolchains (API.md §11): the toolchains detected in the client's environment. The protocol-10 query tools stays as its v0 alias; rescan lands with the command methods (step 5o).",
+  "description": "Object /toolchains (API.md §11): the toolchains detected in the client's environment. The protocol-10 query tools stays as list's v0 alias; rescan is a command (step 5o part B4).",
   "methods": {
     "list": {
       "description": "The toolchains detected in the client's environment, per module type (the live model is not changed). Loads the workspace when none is loaded.",
@@ -25,6 +25,30 @@
       },
       "needs_env": true,
       "mutates": false
+    },
+    "rescan": {
+      "description": "Detect the toolchains again in the client's environment, every module type afresh, and take them into the model, as the status page's L does in-process; replies once the model took them in. Workspace/1 changed precedes the reply when the model's toolchains changed. A detection that does not finish in time is refused (it goes on in the background).",
+      "params": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Ok"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
     }
   },
   "$defs": {
@@ -64,6 +88,24 @@
           "items": {
             "type": "string"
           }
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    },
+    "Ok": {
+      "description": "A command applied (API.md §4.1).",
+      "type": "object",
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "notes": {
+          "$ref": "loomworks.Common/1#/$defs/Notes"
         },
         "note_roles": {
           "$ref": "loomworks.Common/1#/$defs/NoteRoles"
