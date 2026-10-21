@@ -232,8 +232,9 @@ function Tree:on_key(action, line)
 
     elseif action == "load" then
         local lw = require("loomworks")
-        if lw.get_workspace() then
-            lw.rescan_tools()
+        local ws = lw.get_workspace()
+        if ws then
+            require("loomworks.ui.model_calls").call(ws, "Toolchains/1.rescan", {})
         else
             lw.setup({ root = vim.fn.getcwd() })
         end
@@ -248,7 +249,7 @@ function Tree:on_key(action, line)
         return {}
 
     elseif action == "trust" then
-        require("loomworks").trust_user_prefs()
+        require("loomworks.ui.model_calls").call(nil, "Workspace/1.trust_accept", {})
         return { refresh = true }
 
     elseif action == "help" then
@@ -387,7 +388,7 @@ function Tree:_confirm_nuke()
             n = "close",
             y = function(self)
                 self:close()
-                lw.nuke_cache(root)
+                require("loomworks.ui.model_calls").call(ws, "Maintenance/1.nuke", { root = root })
             end,
         },
     })
@@ -429,7 +430,7 @@ function Tree:_confirm_delete_user_prefs()
             n = "close",
             y = function(self)
                 self:close()
-                lw.delete_user_prefs(root)
+                require("loomworks.ui.model_calls").call(ws, "Workspace/1.delete_user_prefs", { root = root })
             end,
         },
     })

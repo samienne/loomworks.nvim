@@ -151,7 +151,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         obs = observer.attach(ws, { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
         assert.is_true(vim.wait(60000, function()
-            return obs:can_call("device_scan") and obs:can_call("set_device") and obs._devices ~= nil
+            return obs:can_call("device_scan") and obs:can_call("Profiles/1.set_device") and obs._devices ~= nil
         end, 20), obs:runtime_line())
         -- And the daemon has loaded the workspace: a launch before that is
         -- refused as "unloaded" (§19.16), which a slow machine can reach.

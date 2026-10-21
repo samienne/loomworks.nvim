@@ -63,15 +63,18 @@ local function edit_config_set(cs)
         end,
         on_accept = function(result)
             local new_name = result.name
-            local ok, err = workspace_view.execute_edit_config_set(
-                cs, new_name, result.mappings)
-            if not ok then
-                vim.notify("loomworks: " .. (err or "failed to edit config set"),
-                    vim.log.levels.ERROR)
-            elseif new_name ~= set_name then
-                vim.notify("loomworks: configuration set renamed to '" .. new_name .. "'",
-                    vim.log.levels.INFO)
-            end
+            local model = require("loomworks.ui.model_calls")
+            model.call(ws, "ConfigSets/1.update", { config_set = cs, name = new_name, mappings = result.mappings },
+                function(r)
+                    local ok, err = model.result(r)
+                    if not ok then
+                        vim.notify("loomworks: " .. (err or "failed to edit config set"),
+                            vim.log.levels.ERROR)
+                    elseif new_name ~= set_name then
+                        vim.notify("loomworks: configuration set renamed to '" .. new_name .. "'",
+                            vim.log.levels.INFO)
+                    end
+                end)
         end,
         on_cancel = function() end,
     })
@@ -97,14 +100,17 @@ local function delete_config_set(cs)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_config_set(ws, cs)
-                if ok then
-                    vim.notify("loomworks: configuration set '" .. cs.name .. "' removed",
-                        vim.log.levels.INFO)
-                else
-                    vim.notify("loomworks: " .. (err or "failed to delete config set"),
-                        vim.log.levels.ERROR)
-                end
+                local model = require("loomworks.ui.model_calls")
+                model.call(ws, "ConfigSets/1.remove", { config_set = cs }, function(r)
+                    local ok, err = model.result(r)
+                    if ok then
+                        vim.notify("loomworks: configuration set '" .. cs.name .. "' removed",
+                            vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: " .. (err or "failed to delete config set"),
+                            vim.log.levels.ERROR)
+                    end
+                end)
             end,
         },
     })
@@ -116,14 +122,17 @@ end
 --- @param name string set name
 --- @param candidate string the template's candidate token
 local function create_from_template(ws, name, candidate)
-    local cs_new, err = require("loomworks.workspace_view").execute_create_config_set_from_candidate(ws, candidate)
-    if cs_new then
-        vim.notify("loomworks: configuration set '" .. name .. "' created",
-            vim.log.levels.INFO)
-    else
-        vim.notify("loomworks: " .. (err or "failed to create config set"),
-            vim.log.levels.ERROR)
-    end
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "ConfigSets/1.add", { candidate = candidate }, function(r)
+        if r.config_set then
+            vim.notify("loomworks: configuration set '" .. name .. "' created",
+                vim.log.levels.INFO)
+        else
+            local _, err = model.result(r)
+            vim.notify("loomworks: " .. (err or "failed to create config set"),
+                vim.log.levels.ERROR)
+        end
+    end)
 end
 
 --- Create a config set via the manual editor dialog.
@@ -148,14 +157,17 @@ local function create_custom_config_set(ws)
         end,
         on_accept = function(result)
             local name = result.name
-            local cs_new, err = workspace_view.execute_create_config_set(ws, name, result.mappings)
-            if cs_new then
-                vim.notify("loomworks: configuration set '" .. name .. "' created",
-                    vim.log.levels.INFO)
-            else
-                vim.notify("loomworks: " .. (err or "failed to create config set"),
-                    vim.log.levels.ERROR)
-            end
+            local model = require("loomworks.ui.model_calls")
+            model.call(ws, "ConfigSets/1.add", { name = name, mappings = result.mappings }, function(r)
+                if r.config_set then
+                    vim.notify("loomworks: configuration set '" .. name .. "' created",
+                        vim.log.levels.INFO)
+                else
+                    local _, err = model.result(r)
+                    vim.notify("loomworks: " .. (err or "failed to create config set"),
+                        vim.log.levels.ERROR)
+                end
+            end)
         end,
         on_cancel = function() end,
     })

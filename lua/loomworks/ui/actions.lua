@@ -23,22 +23,12 @@ end
 --- @param profile loomworks.Profile
 function M.activate(profile)
     return function()
-        local ok, err = require("loomworks.workspace_view").activate_profile(profile)
-        if not ok then
-            vim.notify("loomworks: " .. tostring(err or "the profile was not activated"), vim.log.levels.ERROR)
-        end
-    end
-end
-
---- Activate a profile that may not exist yet (config_sets UI).
---- @param config_set loomworks.ConfigurationSet
---- @param tool_entry? table
-function M.activate_new(config_set, tool_entry)
-    return function()
-        local profile, err = require("loomworks.workspace_view").execute_create_profile(config_set, tool_entry, true)
-        if not profile then
-            vim.notify("loomworks: " .. tostring(err or "the profile was not activated"), vim.log.levels.ERROR)
-        end
+        require("loomworks.ui.model_calls").call(nil, "Profiles/1.set_active", { profile = profile }, function(r)
+            local ok, err = require("loomworks.ui.model_calls").result(r)
+            if not ok then
+                vim.notify("loomworks: " .. tostring(err or "the profile was not activated"), vim.log.levels.ERROR)
+            end
+        end)
     end
 end
 
@@ -67,42 +57,10 @@ function M.build_serial(profile)
     end
 end
 
---- Materialize a new profile then build it.
---- @param config_set loomworks.ConfigurationSet
---- @param tool_entry? table
-function M.build_new(config_set, tool_entry)
-    return function()
-        local profile = config_set:ensure_profile(tool_entry)
-        if not profile then return end
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_op_action("Building " .. profile.key)
-        fidget.report(handle, "building...")
-        profile:build()
-            :next(function() fidget.finish(handle, "built") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-end
-
 --- Configure an existing profile.
 --- @param profile loomworks.Profile
 function M.configure(profile)
     return function()
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_op_action("Configuring " .. profile.key)
-        fidget.report(handle, "configuring...")
-        profile:configure()
-            :next(function() fidget.finish(handle, "configured") end)
-            :catch(function(err) fidget.fail(handle, err) end)
-    end
-end
-
---- Materialize a new profile then configure it.
---- @param config_set loomworks.ConfigurationSet
---- @param tool_entry? table
-function M.configure_new(config_set, tool_entry)
-    return function()
-        local profile = config_set:ensure_profile(tool_entry)
-        if not profile then return end
         local fidget = require("loomworks.fidget")
         local handle = fidget.start_op_action("Configuring " .. profile.key)
         fidget.report(handle, "configuring...")
@@ -161,9 +119,10 @@ function M.delete_profile(profile)
         local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: " .. profile.key, plan,
             profile.description)
         M._show_confirmation(ctx, function()
-            require("loomworks").execute_deletion(plan, { deactivate_profile = profile }, function()
-                vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
-            end)
+            require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
+                { target = { profile = profile }, confirmed = plan }, function()
+                    vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
+                end)
         end)
     end
 end
@@ -234,34 +193,36 @@ function M.delete_config(unit)
         local ctx = wv.compute_delete_confirmation_context(ws,
             "Delete: " .. pkey .. " / " .. ckey, plan, cfg and cfg.description)
         M._show_confirmation(ctx, function()
-            unit:delete(function()
-                vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-            end)
+            require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
+                { target = { unit = unit } }, function()
+                    vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+                end)
         end)
     end
 end
 
---- @param orphan { project_key: string, config_key: string, build_dir_key: string }
+--- @param orphan { project_key: string, config_key: string, build_dir_obj: loomworks.BuildDir }
 function M.delete_orphaned_config(orphan)
     return function()
         local ws = require("loomworks").get_workspace()
         if not ws then return end
         local pkey = orphan.project_key or "?"
         local ckey = orphan.config_key or "?"
-        local build_dir_key = orphan.build_dir_key
+        local build_dir = orphan.build_dir_obj
         vim.ui.select({ "Yes", "No" }, {
             prompt = "Delete orphaned build dir: " .. pkey .. "/" .. ckey .. "?",
         }, function(choice)
             if choice ~= "Yes" then return end
-            if build_dir_key then
+            if build_dir and build_dir.rel_path then
                 -- Report the real outcome: a failed removal (already reported
                 -- in detail) warns; a tree kept because it is shared or holds
                 -- a live build dir says so (only the entry was dropped).
-                local report = {}
-                ws:delete_orphaned_build_dir(build_dir_key, nil, { report = report })
-                    :next(function(ok)
-                        if ok ~= true then
-                            vim.notify("loomworks: orphaned build dir not removed", vim.log.levels.WARN)
+                require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
+                    { target = { build_dir = build_dir } }, function(r)
+                        local report = r.report or {}
+                        if r.outcome ~= "ok" then
+                            vim.notify("loomworks: orphaned build dir not removed"
+                                .. (r.message and (": " .. r.message) or ""), vim.log.levels.WARN)
                         elseif report.kept and #report.kept > 0 then
                             local k = report.kept[1]
                             vim.notify("loomworks: orphaned entry dropped; directory kept ("
@@ -271,10 +232,6 @@ function M.delete_orphaned_config(orphan)
                         else
                             vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
                         end
-                    end)
-                    :catch(function(err)
-                        vim.notify("loomworks: orphaned build dir not removed: " .. tostring(err),
-                            vim.log.levels.WARN)
                     end)
             end
         end)
@@ -292,13 +249,14 @@ function M.delete_stray_dir(dir)
 
         local ctx = wv.compute_delete_stray_dir_context(ws, dir)
         M._show_confirmation(ctx, function()
-            wv.execute_delete_stray_dir(ws, dir, function(ok, err)
-                if ok then
-                    vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
-                elseif err then -- nil: the lock was refused (already reported)
-                    vim.notify("loomworks: failed to delete: " .. err, vim.log.levels.ERROR)
-                end
-            end)
+            require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
+                { target = { stray_dir = dir } }, function(r)
+                    if r.outcome == "ok" then
+                        vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
+                    elseif r.message then -- none: the lock was refused (already reported)
+                        vim.notify("loomworks: failed to delete: " .. r.message, vim.log.levels.ERROR)
+                    end
+                end)
         end)
     end
 end
@@ -362,13 +320,30 @@ function M.create_profile(ctx)
         }, function(choice)
             if not choice then return end
 
-            local cs, err = wv.resolve_config_set_choice(ws, choice)
-            if not cs then
-                vim.notify("loomworks: " .. (err or "failed"), vim.log.levels.ERROR)
-                return
+            local function step2(cs)
+                local is_first = not next(lw.get_profiles())
+                M._create_profile_step2(cs, choice.name or choice.real_name, is_first)
             end
-            local is_first = not next(lw.get_profiles())
-            M._create_profile_step2(cs, choice.name or choice.real_name, is_first)
+            if not choice.auto then
+                if not choice.cs then
+                    vim.notify("loomworks: failed", vim.log.levels.ERROR)
+                    return
+                end
+                return step2(choice.cs)
+            end
+            -- An automatic set is added when picked (C0: the candidate form
+            -- of ConfigSets/1.add; see loomworks.ui.model_calls).
+            local model = require("loomworks.ui.model_calls")
+            model.call(ws, "ConfigSets/1.add",
+                { candidate = choice.candidate or wv.candidate_token(choice.real_name, choice.mappings) },
+                function(r)
+                    if not r.config_set then
+                        local _, err = model.result(r)
+                        vim.notify("loomworks: " .. (err or "failed"), vim.log.levels.ERROR)
+                        return
+                    end
+                    step2(r.config_set)
+                end)
         end)
     end
 end
@@ -393,8 +368,6 @@ function M._create_profile_step2(cs, set_name, activate)
         return
     end
 
-    local wv = require("loomworks.workspace_view")
-
     -- Re-fetch tool entries at call time; the render-time snapshot may
     -- predate tool detection completing.
     local tool_entries = lw.get_tool_entries()
@@ -405,7 +378,7 @@ function M._create_profile_step2(cs, set_name, activate)
     -- collaborators on a host without the SDK installed). The build path
     -- refuses to start an incomplete profile, so this entry is the explicit
     -- opt-in. The synthetic entry carries _none = true so
-    -- execute_create_profile passes nil for the tool argument.
+    -- Profiles/1.create gets no tool.
     local picker_items = {}
     for _, e in ipairs(entries) do picker_items[#picker_items + 1] = e end
     picker_items[#picker_items + 1] = {
@@ -421,12 +394,16 @@ function M._create_profile_step2(cs, set_name, activate)
     }, function(choice)
         if not choice then return end
         local tool = choice._none and nil or choice
-        local profile, err = wv.execute_create_profile(cs, tool, activate)
-        if not profile then
-            vim.notify("loomworks: " .. tostring(err or "the profile was not created"), vim.log.levels.ERROR)
-        elseif not activate then
-            vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
-        end
+        local model = require("loomworks.ui.model_calls")
+        model.call(ws, "Profiles/1.create", { config_set = cs, tool = tool, activate = activate }, function(r)
+            local profile = r.profile
+            if not profile then
+                local _, err = model.result(r)
+                vim.notify("loomworks: " .. tostring(err or "the profile was not created"), vim.log.levels.ERROR)
+            elseif not activate then
+                vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
+            end
+        end)
     end)
 end
 

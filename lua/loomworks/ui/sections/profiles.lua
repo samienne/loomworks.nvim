@@ -7,7 +7,7 @@
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
-local workspace_view = require("loomworks.workspace_view")
+local model = require("loomworks.ui.model_calls")
 
 -- ---------------------------------------------------------------------------
 -- Actions (keymaps / mutations)
@@ -27,10 +27,12 @@ end
 
 --- Remove a tool from a profile's toolchain.
 local function remove_tool(profile, key)
-    local ok, err = workspace_view.remove_profile_tool(profile, key)
-    if not ok then
-        vim.notify("loomworks: " .. tostring(err or "the tool was not removed"), vim.log.levels.ERROR)
-    end
+    model.call(nil, "Profiles/1.remove_tool", { profile = profile, tool = key }, function(r)
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "the tool was not removed"), vim.log.levels.ERROR)
+        end
+    end)
 end
 
 --- The actions of a toolchain entry row.
@@ -97,10 +99,12 @@ local function add_tool_action(ws, profile)
             end,
         }, function(choice)
             if not choice then return end
-            local ok, err = workspace_view.add_profile_tool(profile, choice.key)
-            if not ok then
-                vim.notify("loomworks: " .. tostring(err or "the tool was not added"), vim.log.levels.ERROR)
-            end
+            model.call(ws, "Profiles/1.add_tool", { profile = profile, tool = choice.key }, function(r)
+                local ok, err = model.result(r)
+                if not ok then
+                    vim.notify("loomworks: " .. tostring(err or "the tool was not added"), vim.log.levels.ERROR)
+                end
+            end)
         end)
     end
 end

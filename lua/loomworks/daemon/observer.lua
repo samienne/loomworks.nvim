@@ -2057,6 +2057,13 @@ M.DECLINED_CODES = { same_build_required = true, stopping = true, retiring = tru
 --- The interface table of each method the editor calls (step 5k): the
 --- feature that carries it, and whether it runs as a task (`tasks`: it needs
 --- Tasks/1, to be cancelled).
+---
+--- A call is named by its method (the calls before step 5o, flat names) or,
+--- from step 5o, by its interface-qualified name `"<Interface>/<v>.<method>"`
+--- (step 5o C0, finding 8: Profiles/1, Projects/1 and ConfigSets/1 share
+--- method names such as `add`, `remove`, `update`, `candidates`). A
+--- qualified name's interface and method are checked against its table when
+--- this module loads.
 local METHOD_IFACE = {
     build = M.BUILD, configure = M.BUILD, clean = M.BUILD,
     prepare_run = M.LAUNCH, prepare_debug = M.LAUNCH, launch_build = M.LAUNCH, device_log = M.LAUNCH,
@@ -2066,8 +2073,27 @@ local METHOD_IFACE = {
     discover = M.TESTS, run_cases = M.TESTS, prepare_test_debug = M.TESTS, collect = M.TESTS, result = M.TESTS,
     device_list = M.DEVICES, device_scan = M.DEVICES, device_install = M.DEVICES, device_launch = M.DEVICES,
     device_stop = M.DEVICES,
-    set_device = M.PROFILES, clear_device = M.PROFILES,
+    ["Profiles/1.set_device"] = M.PROFILES, ["Profiles/1.clear_device"] = M.PROFILES,
 }
+
+--- The interface, version and method of a qualified call name
+--- (`"Profiles/1.set_device"` → "Profiles", 1, "set_device"), or nil.
+--- @param name string
+--- @return string|nil iface, integer|nil v, string|nil method
+function M.qualified(name)
+    local iface, v, method = tostring(name):match("^([%w_]+)/(%d+)%.([%w_]+)$")
+    if not iface then return nil end
+    return iface, tonumber(v), method
+end
+
+for name, want in pairs(METHOD_IFACE) do
+    local iface, v, method = M.qualified(name)
+    if iface then
+        assert(want.iface:match("^loomworks%.(.+)$") == iface and want.v == v
+            and vim.tbl_contains(want.methods, method),
+            "observer: call " .. name .. " does not name a method of " .. want.iface .. "/" .. want.v)
+    end
+end
 
 --- The wire method of a call whose editor-side name differs (step 5m C2):
 --- Launch/1 and Tests/1 both have a `prepare_debug`, so the test one is the
@@ -2075,9 +2101,18 @@ local METHOD_IFACE = {
 --- methods are keyed by the call's name, the daemon is sent `prepare_debug`.
 --- Likewise Build/1 and Launch/1 both have a `build`: the launch target's is
 --- the call `launch_build` (step 5t). The Devices/1 methods are the calls
---- `device_<method>` (step 5n C2: `list` is also Tasks/1's).
+--- `device_<method>` (step 5n C2: `list` is also Tasks/1's). A qualified
+--- name's wire method is its method (`wire`).
 local WIRE = { prepare_test_debug = "prepare_debug", launch_build = "build", device_list = "list",
     device_scan = "scan", device_install = "install", device_launch = "launch", device_stop = "stop" }
+
+--- The method the daemon is sent for the call `name`.
+--- @param name string
+--- @return string
+local function wire(name)
+    local _, _, method = M.qualified(name)
+    return WIRE[name] or method or name
+end
 
 --- The calls the editor makes (step 5k), each naming its method literally
 --- (the guard checks them against the `methods` of M.BUILD, M.LAUNCH,
@@ -2152,10 +2187,10 @@ local CALLS = {
     device_stop = function(conn, args, cb, env)
         conn:call(M.DEVICES.object, M.DEVICES.iface, M.DEVICES.v, "stop", args, cb, env)
     end,
-    set_device = function(conn, args, cb, env)
+    ["Profiles/1.set_device"] = function(conn, args, cb, env)
         conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "set_device", args, cb, env)
     end,
-    clear_device = function(conn, args, cb, env)
+    ["Profiles/1.clear_device"] = function(conn, args, cb, env)
         conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "clear_device", args, cb, env)
     end,
 }
@@ -2165,7 +2200,7 @@ local CALLS = {
 --- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"set_device"|"clear_device"|"device_log"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"device_log"|"Profiles/1.set_device"|"Profiles/1.clear_device"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -2264,7 +2299,7 @@ function Observer:_degrade(method, err)
         return self:_lsp_changed()
     end
     local note = string.format("%s: daemon offers no %s/%d.%s (%s)", want.label or want.feature, want.iface,
-        want.v, WIRE[method] or method, tostring(err and (err.message or err.code) or "?"))
+        want.v, wire(method), tostring(err and (err.message or err.code) or "?"))
     if want.unavailable then note = note .. " — " .. want.unavailable end
     self._method_notes = self._method_notes or {}
     self._method_notes[#self._method_notes + 1] = note
@@ -2470,7 +2505,7 @@ M.VALUE_CHECKED = { set_option = true }
 ---   { outcome = "invalid", reason }   `invalid_args` of a VALUE_CHECKED method
 ---   { outcome = "degraded", reason }  the daemon lacks the method (noted)
 ---   { outcome = "failed", reason }    any other error
---- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"|"device_list"|"device_stop"|"set_device"|"clear_device"
+--- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"|"device_list"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"
 --- @param args table
 --- @param cb fun(r: table)
 function Observer:request(method, args, cb)

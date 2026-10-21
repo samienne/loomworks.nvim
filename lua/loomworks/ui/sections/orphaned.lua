@@ -30,12 +30,12 @@ local function clean_all_orphans()
             n = "close",
             y = function(self)
                 self:close()
-                workspace_view.execute_orphan_cleanup(
-                    ws, ctx.orphaned_configs, ctx.stray_dirs, function(ok)
+                require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
+                    { target = { orphans = true }, confirmed = ctx }, function(r)
                     -- A refused lock or a failed removal was already
                     -- reported; this is the summary, so never claim success
                     -- after one.
-                    if ok then
+                    if r.outcome == "ok" then
                         vim.notify("loomworks: orphaned build dirs cleaned",
                             vim.log.levels.INFO)
                     else

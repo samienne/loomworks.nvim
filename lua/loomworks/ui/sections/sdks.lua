@@ -5,6 +5,25 @@
 
 local sdk_registry = require("loomworks.sdks")
 
+--- Declare an SDK (`Sdks/1.add`); the outcome is notified.
+--- @param ws loomworks.Workspace
+--- @param provider string
+--- @param path string|nil
+local function add_sdk(ws, provider, path)
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "Sdks/1.add", { provider = provider, path = path }, function(r)
+        if r.sdk then
+            vim.notify("loomworks: SDK '" .. r.sdk:display_name() .. "' added",
+                vim.log.levels.INFO)
+        else
+            local _, err = model.result(r)
+            vim.notify("loomworks: " .. (err or "failed to add SDK"),
+                vim.log.levels.ERROR)
+        end
+        require("loomworks.ui.status").refresh()
+    end)
+end
+
 --- Render the SDKs section.
 --- @param tree loomworks.Tree
 --- @param ctx table { view, ref, ws } the workspace view's `sdks`
@@ -37,11 +56,14 @@ return function(tree, ctx)
                     prompt = "Remove SDK '" .. row.label .. "'?",
                 }, function(choice)
                     if choice ~= "Yes" then return end
-                    local ok, err = require("loomworks.workspace_view").remove_sdk(ws, ctx.ref(row))
-                    if not ok then
-                        vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
-                    end
-                    require("loomworks.ui.status").refresh()
+                    local model = require("loomworks.ui.model_calls")
+                    model.call(ws, "Sdks/1.remove", { sdk = ctx.ref(row) }, function(r)
+                        local ok, err = model.result(r)
+                        if not ok then
+                            vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+                        end
+                        require("loomworks.ui.status").refresh()
+                    end)
                 end)
             end or nil,
         }, function()
@@ -126,26 +148,10 @@ return function(tree, ctx)
                             prompt = prompt .. ": ",
                         }, function(path)
                             if not path or path == "" then return end
-                            local sdk2, err = require("loomworks.workspace_view").add_sdk(ws, choice.provider_id, path)
-                            if sdk2 then
-                                vim.notify("loomworks: SDK '" .. sdk2:display_name() .. "' added",
-                                    vim.log.levels.INFO)
-                            else
-                                vim.notify("loomworks: " .. (err or "failed to add SDK"),
-                                    vim.log.levels.ERROR)
-                            end
-                            require("loomworks.ui.status").refresh()
+                            add_sdk(ws, choice.provider_id, path)
                         end)
                     else
-                        local sdk2, err = require("loomworks.workspace_view").add_sdk(ws, choice.provider_id, choice.path)
-                        if sdk2 then
-                            vim.notify("loomworks: SDK '" .. sdk2:display_name() .. "' added",
-                                vim.log.levels.INFO)
-                        else
-                            vim.notify("loomworks: " .. (err or "failed to add SDK"),
-                                vim.log.levels.ERROR)
-                        end
-                        require("loomworks.ui.status").refresh()
+                        add_sdk(ws, choice.provider_id, choice.path)
                     end
                 end)
             end,
