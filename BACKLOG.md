@@ -5,6 +5,21 @@ they don't get lost.
 
 ---
 
+## `written_by` stamp from dev builds
+
+A dev build stamps the files it writes with e.g. `0.1.49+dev`: `M.version()`
+appends `+dev` while an `## Unreleased` entry sits above the newest release
+in `CHANGELOG.md` (`lua/loomworks/save_guard.lua:71`; stamped into
+`_meta.written_by` at `lua/loomworks/user.lua:122`,
+`lua/loomworks/cache.lua:175`, `lua/loomworks/workspace.lua:160` and
+`lua/loomworks/txn.lua:204`). An older release (e.g. 0.1.47) reading such a
+file raises the "written by a newer loomworks" warning
+(`save_guard.newer_writer_warning`, `lua/loomworks/save_guard.lua:120`; called
+from `lua/loomworks/core.lua:451` and `lua/loomworks/workspace.lua:9079` /
+`:9098`) although nothing incompatible was written. Options to consider
+later: strip `+dev` (use the base release version) when stamping, or do not
+warn when the stamp carries `+dev`.
+
 ## Stray scan flags a live build dir's parent on an 8.3 short-path root
 
 `Workspace:find_stray_build_dirs` compares the scanned paths (long form, from
@@ -835,6 +850,9 @@ implementations of the committed-ignore rule. Follow-ups:
 - Standalone bootstrap tests (Windows): "the helper's children are
   enumerated" failed with (0) on PR #177 (run 37891094721), passed on
   rerun.
+- `daemon_server` (flaky; not yet investigated).
+- `daemon_devices_editor_e2e` was a real race (the launch ran before the
+  workspace had loaded), not a flake; fixed by #301.
 - `tests/daemon_reset_cli_spec.lua` "every case: the same output..." failed
   once on Windows CI (PR #171 run 37734890114, docs-only change), passed on
   rerun.
