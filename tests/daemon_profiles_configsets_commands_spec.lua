@@ -329,6 +329,19 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.equals(count, #ws._profiles)
     end)
 
+    it("create with a non-string SDK key is invalid_args, like other malformed tool shapes", function()
+        with_fake_sdk()
+        local ws = loaded()
+        local count = #ws._profiles
+        for _, sdk in ipairs({ true, vim.NIL, 1 }) do
+            local r, e = profiles("create", { config_set = { key = "dev" }, tool = { sdk = sdk } })
+            assert.equals("invalid_args", e and e.code, vim.inspect({ r, e }))
+        end
+        local _, e = profiles("create", { config_set = { key = "dev" }, tool = { module = true } })
+        assert.equals("invalid_args", e and e.code, vim.inspect(e))
+        assert.equals(count, #ws._profiles)
+    end)
+
     it("add_tool / remove_tool re-derive the key under O, the id kept; refused while O is held", function()
         local ws = loaded()
         ws:get_or_create_tool("shell", "gcc-x", {}, "GCC x")

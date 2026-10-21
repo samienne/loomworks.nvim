@@ -2368,14 +2368,11 @@ function Workspace:tool_entries_for(set_name, mod_types)
             -- of the set (each one when it has no projects yet), the first
             -- keyed kit the SDK yields, as Profile:_resolve_sdk_tool picks.
             -- An SDK yielding none for them has nothing to offer the set.
-            -- A kit names its SDK in its tool data (`sdk_key`, as
-            -- Profile:_sdk_of_tools reads it): the detection's SDK object
-            -- may be an earlier instance than this one.
             local kit_tools = {}
             for mod_type, tools in pairs(self._tools_by_type or {}) do
                 if mod_types[mod_type] or not next(mod_types) then
                     for _, tool in ipairs(tools) do
-                        if tool.tool_key and tool.tool_data and tool.tool_data.sdk_key == sdk.key then
+                        if tool.tool_key and tool.sdk == sdk then
                             kit_tools[mod_type] = {
                                 key = tool.tool_key,
                                 data = tool.tool_data,
@@ -7832,6 +7829,22 @@ function Workspace:_sync_sdks(config_sdks, user_sdks)
 
         ::next::
     end
+
+    -- Identity: an SDK that resolves exactly as before keeps its object, so
+    -- the Tools detection made from it (Tool:sdk()) and the profiles that
+    -- reference it keep holding the live one across a remerge.
+    local previous = {}
+    for _, old in ipairs(self._sdks or {}) do previous[old.key] = old end
+    for i, sdk in ipairs(new_sdks) do
+        local old = previous[sdk.key]
+        if old and old._type == sdk._type and old._path == sdk._path
+            and old._version == sdk._version and old._resolved == sdk._resolved
+            and old._provider == sdk._provider then
+            new_sdks[i] = old
+            previous[sdk.key] = nil
+        end
+    end
+    for _, old in pairs(previous) do old._removed = true end
 
     self._sdks = new_sdks
 end

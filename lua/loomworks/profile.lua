@@ -299,7 +299,12 @@ function Profile:_apply(data)
         self._sdk = data._sdk
         self._sdk_key = data._sdk.key
     elseif not data.sdk then
-        self._sdk_key, self._sdk = self:_sdk_of_tools()
+        -- Resolved against the modules this refresh built (`_tool_objects`'
+        -- owners), not `workspace._modules`, which is assigned after it.
+        local modules = {}
+        for mod in pairs(self._tool_objects or {}) do modules[#modules + 1] = mod end
+        self._sdk = self:_sdk_of_tools(modules)
+        self._sdk_key = self._sdk and self._sdk.key or nil
     end
 
     -- Read pre-resolved ConfigurationSet reference (set by _sync_profiles)
@@ -403,21 +408,28 @@ function Profile:set_sdk(sdk)
     self._sdk_key = sdk and sdk.key or nil
 end
 
---- The SDK the profile's tool keys carry (spec §1.6): the first tool,
---- in key order, whose data names an SDK (`sdk_key`).
---- @return string|nil sdk_key, loomworks.SDK|nil sdk
-function Profile:_sdk_of_tools()
-    local ws = self._workspace
-    if not ws or not ws._modules then return nil, nil end
+--- The SDK the profile's tool keys carry (spec §1.6): the one SDK every
+--- tool key stands for. Nil when a key resolves to no tool or to a tool no
+--- SDK produced (host-detected or cache-only), or when the tools come from
+--- different SDKs — an SDK is never inferred for a mix, so a module type no
+--- key covers gets no SDK kit (no fallback guessing).
+--- @param modules loomworks.Module[] the registries the keys resolve in
+--- @return loomworks.SDK|nil
+function Profile:_sdk_of_tools(modules)
+    local sdk = nil
     for _, k in ipairs(self._tool_keys or {}) do
-        for _, mod in pairs(ws._modules) do
+        local found = false
+        for _, mod in pairs(modules or {}) do
             local tool = mod:find_tool(k)
-            if tool and tool.data and tool.data.sdk_key then
-                return tool.data.sdk_key, ws:find_sdk(tool.data.sdk_key)
+            if tool and not tool._removed then
+                local s = tool:sdk()
+                if not s or (sdk and s ~= sdk) then return nil end
+                sdk, found = s, true
             end
         end
+        if not found then return nil end
     end
-    return nil, nil
+    return sdk
 end
 
 --- Resolve SDK-derived tool for a module type.
@@ -1092,6 +1104,9 @@ function Profile:add_tool(tool_key)
     end
     local old_key = self.key
     self._tool_keys[#self._tool_keys + 1] = tool_key
+    -- Re-derive the SDK: a host toolchain added to a kit profile ends it.
+    self._sdk = self:_sdk_of_tools(self._workspace and self._workspace._modules)
+    self._sdk_key = self._sdk and self._sdk.key or nil
     self:_derive_key()
     self:_after_key_rename(old_key)
 end
@@ -1109,8 +1124,9 @@ function Profile:remove_tool(tool_key)
     if not found then return end
     local old_key = self.key
     self._tool_keys = #kept > 0 and kept or {}
-    -- Re-derive SDK key from remaining tools (first tool with sdk_key wins).
-    self._sdk_key, self._sdk = self:_sdk_of_tools()
+    -- Re-derive the SDK from the remaining tools.
+    self._sdk = self:_sdk_of_tools(self._workspace and self._workspace._modules)
+    self._sdk_key = self._sdk and self._sdk.key or nil
     self:_derive_key()
     self:_after_key_rename(old_key)
 end

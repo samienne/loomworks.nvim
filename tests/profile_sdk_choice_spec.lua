@@ -39,7 +39,9 @@ describe("tool picker: a profile made of an SDK", function()
                 return SDK.new({ key = key, type = "fake_tc", version = version, path = path,
                     resolved = true, provider = P })
             end
-            function P.query_capabilities(_, mod) return mod == "shell" and {} or nil end
+            function P.query_capabilities(_, mod)
+                return (mod == "shell" or mod == "meson") and {} or nil
+            end
             function P.detect_all() return {} end
             function P.match_version() return true end
             return P
@@ -107,5 +109,67 @@ describe("tool picker: a profile made of an SDK", function()
         local count = #ws._profiles
         assert.equals(profile, require("loomworks.workspace_view").execute_create_profile(cs, entry, false))
         assert.equals(count, #ws._profiles)
+    end)
+
+    --- A profile made of the SDK's picker entry.
+    local function sdk_profile(ws)
+        local sdk = find(ws._sdks, "key", "fake_tc-1")
+        local entry
+        for _, e in ipairs(ws:get_tool_entries().dev or {}) do
+            if e.sdk == sdk then entry = e end
+        end
+        local cs = find(ws._config_sets, "name", "dev")
+        return assert(require("loomworks.workspace_view").execute_create_profile(cs, entry, false))
+    end
+
+    it("derives its SDK in a single refresh of a workspace with no modules yet", function()
+        local ws = load()
+        local key = sdk_profile(ws).key
+        -- A fresh workspace's refresh: detection (with its SDK kits) is in
+        -- hand, but no Module has been assigned yet (`_modules` is set only
+        -- after the refresh, which builds the modules itself).
+        ws._modules = {}
+        ws:remerge()
+        local profile = find(ws._profiles, "key", key)
+        assert.is_not_nil(profile)
+        assert.equals(find(ws._sdks, "key", "fake_tc-1"), profile:sdk())
+    end)
+
+    it("keeps one SDK object across a remerge without a rescan", function()
+        local ws = load()
+        local key = sdk_profile(ws).key
+        ws:remerge()
+        local sdk = find(ws._sdks, "key", "fake_tc-1")
+        local kit
+        for _, mod in pairs(ws._modules) do kit = kit or mod:find_tool("fake-kit") end
+        assert.equals(sdk, kit:sdk(), "the kit's SDK is the workspace's live one")
+        assert.equals(sdk, find(ws._profiles, "key", key):sdk())
+    end)
+
+    it("a profile mixing host and kit toolchains has no SDK and no SDK fallback", function()
+        local meson = require("loomworks.modules").get("meson")
+        local saved = meson.kits_from_sdk
+        meson.kits_from_sdk = function(_, sdk)
+            return { { tool_data = { id = "fake-meson-kit", sdk_key = sdk.key } } }
+        end
+        local ok, err = pcall(function()
+            local ws = load()
+            table.insert(ws._tools_by_type.shell, {
+                tool_key = "host-cc", tool_data = { id = "host-cc" }, tool_label = "host-cc" })
+            ws:remerge()
+            local profile = sdk_profile(ws)
+            profile:add_tool("host-cc")
+            assert.same({ "fake-kit", "host-cc" }, profile._tool_keys)
+            assert.is_nil(profile:sdk())
+            assert.is_nil(profile:tool_for("meson"), "no unrequested SDK kit")
+            local key = profile.key
+            ws:remerge()
+            profile = find(ws._profiles, "key", key)
+            assert.is_not_nil(profile)
+            assert.is_nil(profile:sdk())
+            assert.is_nil(profile:tool_for("meson"), "no unrequested SDK kit after a refresh")
+        end)
+        meson.kits_from_sdk = saved
+        assert(ok, err)
     end)
 end)
