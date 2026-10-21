@@ -4680,9 +4680,12 @@ end
 ---   reset-all has itself just removed (`_reset_all_unlocked`); the shared-
 ---   refs and root checks still apply. `report`: a table that receives
 ---   `kept` = `{ dir, why = "shared"|"live" }[]`, the dirs left on disk by
----   those checks (their entries still dropped), and `removed` = the
+---   those checks (their entries still dropped), `removed` = the
 ---   normalized dirs whose removal was confirmed (never a dir refused by
----   `_validate_build_dir` or kept by those checks).
+---   `_validate_build_dir` or kept by those checks), and `removed_ids` = the
+---   identities (`_build_dir_identity`) of those same dirs, taken BEFORE the
+---   removal while each still resolved — after it, an 8.3 short leaf no
+---   longer canonicalizes to its long one.
 --- @return loomworks.Future
 function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     local future_mod = require("loomworks.future")
@@ -4713,14 +4716,22 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     -- validated, non-shared ones). Their owned LSP database mirrors are removed
     -- only once each dir's deletion is confirmed (spec §4.6 rule 1).
     local dir_owner = {}
+    -- Normalized build dir handed to rm-rf → its identity, taken before the
+    -- removal (`report.removed_ids`).
+    local dir_ident = {}
     local function deleted_ok(results)
         local out = {}
         local report = opts and opts.report or nil
-        if report then report.removed = {} end
+        if report then report.removed, report.removed_ids = {}, {} end
         for _, r in ipairs(results) do
             if r.ok then
                 out[#out + 1] = { dir = r.dir, mod = dir_owner[r.dir] }
-                if report then report.removed[#report.removed + 1] = r.dir end
+                if report then
+                    report.removed[#report.removed + 1] = r.dir
+                    if dir_ident[r.dir] then
+                        report.removed_ids[#report.removed_ids + 1] = dir_ident[r.dir]
+                    end
+                end
             end
         end
         return out
@@ -4790,6 +4801,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                     end
                     dirs[#dirs + 1] = normalized
                     to_remove[ident] = true
+                    dir_ident[normalized] = ident
                     -- An orphaned entry (no unit) carries its BuildDir.
                     dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
                         item.unit and item.unit._build_dir or item.build_dir_obj)
@@ -5004,7 +5016,12 @@ function Workspace:_reset_all_unlocked(on_done, opts)
     -- CONFIRMED: a live dir it failed to remove, refused (`_validate_build_dir`,
     -- e.g. a junction leading outside the root) or kept as shared keeps the
     -- overlap protection, and an orphan kept for it is not removed (the reset
-    -- does not succeed). Shared refs and the root check still apply.
+    -- does not succeed). Shared refs and the root check still apply. Each
+    -- removed dir is exempted by its spelling AND by the identity phase 1 took
+    -- before removing it: a live host's remerge between the phases re-derives
+    -- a reset unit's dir from its template, possibly under another spelling
+    -- (the long leaf of a dir recorded under its 8.3 short one), and once the
+    -- dir is gone that spelling no longer resolves to the removed one.
     local exempt = nil
     local phase1 = {}
     local function delete_orphans(i)
@@ -5030,6 +5047,7 @@ function Workspace:_reset_all_unlocked(on_done, opts)
         else
             exempt = {}
             for _, d in ipairs(phase1.removed or {}) do exempt[#exempt + 1] = d end
+            for _, d in ipairs(phase1.removed_ids or {}) do exempt[#exempt + 1] = d end
         end
         return delete_orphans(1)
     end)

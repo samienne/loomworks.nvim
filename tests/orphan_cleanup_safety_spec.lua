@@ -795,6 +795,67 @@ describe("deletion unknown marks", function()
         assert.is_nil(uv.fs_stat(app), "the orphan's tree was kept")
     end)
 
+    -- reset --all end to end (#309 review): a live unit recorded its dir
+    -- under its 8.3 short LEAF (`App/LONG-D~1`); an orphan at
+    -- `.nvim/build/App` holds it. Phase 1 removes the dir; between the
+    -- phases a live host's remerge re-derives the reset unit's dir from its
+    -- template under the LONG leaf (`App/long-debug-directory`). The removed
+    -- dir's identity must be taken while it still resolves: computed after
+    -- the removal, the short leaf no longer canonicalizes to the long one,
+    -- the unit still shields the orphan, and the reset keeps it and fails.
+    it("reset --all removes an orphan holding a live dir it removed under its short leaf", function()
+        if vim.fn.has("win32") == 0 then
+            pending("8.3 short names are Windows-only"); return
+        end
+        local app = root .. "/.nvim/build/App"
+        local long = app .. "/long-debug-directory"
+        vim.fn.mkdir(long, "p")
+        local out = vim.fn.system({ "cmd", "/c",
+            "for %I in (\"" .. long:gsub("/", "\\") .. "\") do @echo %~sI" })
+        local short = vim.v.shell_error == 0 and (vim.trim(out or ""):gsub("\\", "/")) or nil
+        local norm = ws._core._deps.normalize
+        if not short or not short:match("~%d+$") or norm(short) == norm(long) then
+            pending("8.3 short names unavailable on this volume"); return
+        end
+        -- Only the leaf differs from the long spelling.
+        short = app .. "/" .. short:match("[^/]+$")
+        L.capture(function()
+            cli.cmd_configuration("add", root, "App", "long-debug-directory", "variant:default")
+            cli.cmd_cset("create", root, { "configuration-set", "create", "Long", "App=long-debug-directory" })
+            cli.cmd_profile_create(root, { "profile", "create", "Long", "--activate" })
+        end)
+        ws = load(root)
+        ws._core._deps.notify = function() end
+        add_orphan(ws, root, app)
+        local unit
+        for _, u in pairs(ws._config_units) do
+            if u:configuration() and u:configuration().name == "long-debug-directory" then unit = u end
+        end
+        assert.is_not_nil(unit, "test setup: the long-named unit")
+        unit.build_dir_value = short
+        unit.state_value = "built"
+        ws:_sync_build_dir_refs()
+        ws:_save_cache()
+        -- A live host's file reconciliation between the phases (see the
+        -- "reset --all" tests above).
+        local real_del = ws.delete_orphaned_build_dir
+        local rederived
+        ws.delete_orphaned_build_dir = function(w, ...)
+            w:remerge(nil, w:_serialize_cache())
+            rederived = unit:build_dir()
+            return real_del(w, ...)
+        end
+
+        local done, result = false, nil
+        ws:reset_all():next(function(v) done, result = true, v end)
+        assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+        assert.equals("long-debug-directory", (rederived or ""):match("[^/]+$"),
+            "test setup: the remerge re-derives the long leaf: " .. tostring(rederived))
+        assert.is_true(result, "reset --all reported a failure")
+        assert.is_nil(uv.fs_stat(app), "the orphan's tree was kept")
+        assert.equals(0, #ws:get_orphaned_configs())
+    end)
+
     -- Crash rule (Deletion Safety 4): when the `unknown` marks cannot reach
     -- the disk — the runtime lost its lock (`_no_write`), or the workspace
     -- was torn down while the deletion waited for its tasks to stop — no tree
