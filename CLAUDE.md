@@ -328,9 +328,12 @@ These are implementation-specific details not covered by the spec or architectur
   All path comparisons (build dir refs, locks, stray detection, prefix checks) use normalized
   (lowercased) paths. Cached `build_dir` values retain original casing for display.
 - clangd auto-reloads when compile_commands.json changes on disk — no explicit restart needed
-- **Build dir reverse index**: `_build_dir_refs` maps normalized build dir → set
-  of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by
-  deletion safety (skip rm-rf of shared dirs) and UI hints ("shared" indicator).
+- **Build dir reverse index**: `_build_dir_refs` maps a build dir's identity
+  key (`Workspace:_build_dir_ref_key`: canonical path, so 8.3 short/long
+  spellings and case share one entry; normalized form when it doesn't resolve)
+  → units referencing it. Every lookup uses the same key. Rebuilt in
+  `_sync_build_dir_refs()` during remerge and before each deletion batch. Used
+  by deletion safety (skip rm-rf of shared dirs) and UI hints ("shared" indicator).
 - **Build dir operation queue**: `_build_dir_locks` provides per-build-dir
   exclusive/shared locks with FIFO queue. Exclusive for configure/delete/clean,
   shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,
