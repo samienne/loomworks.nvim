@@ -822,6 +822,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   always reporting it removed. `lw reset --all` still removes an orphaned
   directory that contains build directories the reset itself removed, so it
   no longer fails with "could not be removed" there (#302).
+- When two entries of one deletion named the same build directory under
+  different spellings (a long path and its 8.3 short name, such as
+  `C:/Users/RUNNER~1/...`), only the entry whose spelling was removed first
+  was marked `unknown` on disk before the removal, and its owned LSP database
+  could survive; `lw reset --all` could also refuse an orphaned directory that
+  only held a build directory it had just removed under the other spelling.
+  Deletions now compare build directories by the directory itself, not its
+  spelling, everywhere (#308).
 - The editor's project removal, orphan cleanup and stray build-directory
   deletion now take the workspace operation lock and the build-directory
   locks, like every other deletion: they are refused, with the holder named

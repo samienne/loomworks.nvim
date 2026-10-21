@@ -2403,7 +2403,7 @@ through files.
    unit adopts that entry's persisted `build_dir` rather than a recomputed path
 6. ProfileProjects — resolves Profile + Project + ConfigUnit references
 7. BuildDirs — domain objects for physical build directories with state
-8. BuildDirRefs — reverse index from BuildDir paths
+8. BuildDirRefs — reverse index from BuildDir identity (`_build_dir_identity`) to units
 9. ArtifactRefs — reverse index from resolved output-artifact paths to the
    ConfigUnits that produce them (output-artifact conflict detection, §5.9)
 
