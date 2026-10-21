@@ -1135,8 +1135,9 @@ function Service:on_stopping(reason)
         if not run.finished then
             run.cancel("the workspace daemon stopped (" .. tostring(reason) .. ")", 1)
         elseif run.deleting and not run.deletion_settled then
-            -- A reset whose task ended (timed out) while its deletion still
-            -- runs: stop it between entries (the cache stays `unknown`).
+            -- A reset or delete run whose task ended (e.g. a reset timed
+            -- out) while its deletion still runs: stop it between entries
+            -- (what was not removed stays, its cache entries `unknown`).
             run.cancelled = true
             run.cancel_reason = run.cancel_reason or ("the workspace daemon stopped (" .. tostring(reason) .. ")")
         end

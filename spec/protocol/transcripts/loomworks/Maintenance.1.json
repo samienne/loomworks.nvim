@@ -1,0 +1,356 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Maintenance",
+  "version": 1,
+  "description": "Object /maintenance (API.md §22): execute_deletion as a task-streamed method with reset's confirmation (plan token), its refusals (a changed plan, nothing to delete, a stray directory outside the workspace, a stale id).",
+  "cases": [
+    {
+      "name": "a profile's deletion asks for confirmation with a plan token, runs once confirmed as a delete task, then the profile is gone",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "task"
+        },
+        {
+          "kind": "model_change"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/build",
+            "iface": "loomworks.Build",
+            "v": 1,
+            "method": "build",
+            "args": {
+              "profile": {
+                "key": "dev"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "accepted",
+              "task_id": {
+                "$bind": "build"
+              }
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "task",
+            "task_id": {
+              "$var": "build"
+            },
+            "phase": "done",
+            "exit_code": 0
+          },
+          "timeout_ms": 120000
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/maintenance",
+            "iface": "loomworks.Maintenance",
+            "v": 1,
+            "method": "execute_deletion",
+            "args": {
+              "target": {
+                "profile": {
+                  "key": "dev"
+                }
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "confirm",
+              "lines": {
+                "$type": "array"
+              },
+              "plan": {
+                "$bind": "plan",
+                "$type": "string"
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/maintenance",
+            "iface": "loomworks.Maintenance",
+            "v": 1,
+            "method": "execute_deletion",
+            "args": {
+              "target": {
+                "profile": {
+                  "key": "dev"
+                }
+              },
+              "yes": true,
+              "plan": {
+                "$var": "plan"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "accepted",
+              "task_id": {
+                "$bind": "del"
+              },
+              "pid": {
+                "$var": "welcome.header.pid"
+              }
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "task",
+            "task_id": {
+              "$var": "del"
+            },
+            "phase": "start",
+            "meta": {
+              "object": "/maintenance",
+              "iface": "loomworks.Maintenance",
+              "v": 1,
+              "method": "execute_deletion",
+              "kind": "delete"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "task",
+            "task_id": {
+              "$var": "del"
+            },
+            "phase": "done",
+            "exit_code": 0,
+            "result": {
+              "$exact": {
+                "exit_code": 0
+              }
+            }
+          },
+          "timeout_ms": 60000
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 4,
+            "object": "/maintenance",
+            "iface": "loomworks.Maintenance",
+            "v": 1,
+            "method": "execute_deletion",
+            "args": {
+              "target": {
+                "profile": {
+                  "key": "dev"
+                }
+              },
+              "yes": true,
+              "plan": {
+                "$var": "plan"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 4,
+            "result": {
+              "outcome": "refused",
+              "message": "no profile 'dev'",
+              "exit_code": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a stale plan token is refused before the empty check; nothing to delete is refused on stdout",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "task"
+        },
+        {
+          "kind": "model_change"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/maintenance",
+            "iface": "loomworks.Maintenance",
+            "v": 1,
+            "method": "execute_deletion",
+            "args": {
+              "target": {
+                "orphans": true
+              },
+              "yes": true,
+              "plan": "stale-token"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "refused",
+              "message": "the build directories to delete changed since they were listed",
+              "exit_code": 1
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/maintenance",
+            "iface": "loomworks.Maintenance",
+            "v": 1,
+            "method": "execute_deletion",
+            "args": {
+              "target": {
+                "orphans": true
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "refused",
+              "message": "nothing to delete",
+              "exit_code": 0,
+              "stream": "out"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a stray directory outside the workspace and a stale id are refused",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "task"
+        },
+        {
+          "kind": "model_change"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/maintenance",
+            "iface": "loomworks.Maintenance",
+            "v": 1,
+            "method": "execute_deletion",
+            "args": {
+              "target": {
+                "stray_dir": "/lw-outside-the-workspace/build"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "refused",
+              "message": {
+                "$type": "string"
+              },
+              "exit_code": 1
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/maintenance",
+            "iface": "loomworks.Maintenance",
+            "v": 1,
+            "method": "execute_deletion",
+            "args": {
+              "target": {
+                "build_dir": {
+                  "id": "no-such-id"
+                }
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "refused",
+              "message": "no build directory with id no-such-id (a stale reference)",
+              "exit_code": 1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

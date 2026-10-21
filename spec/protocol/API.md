@@ -1655,9 +1655,12 @@ of `reset` (§8.5) and its confirmation (§8.6). `target` is exactly one of:
 
 - `{ profile }` — the profile and the build directories only it uses; the
   profile is deactivated first when active;
-- `{ unit }` — a configuration unit's build directory and cached state;
-- `{ build_dir }` — an orphaned build directory (its id in
-  `view.Workspace/1` `orphaned.configurations`);
+- `{ unit }` — a configuration unit's build directory and cached state:
+  a unit by its id from `view.Workspace/1`, or `{ project, configuration }`
+  (the `snapshot.index` `config_units` shape);
+- `{ build_dir }` — an orphaned build directory: a build directory by its
+  id (in `view.Workspace/1` `orphaned.configurations`), or `{ key }` (the
+  orphan row's key);
 - `{ stray_dir }` — a stray build directory, the path as
   `view.Workspace/1` lists it;
 - `{ orphans = true }` — every orphaned and stray build directory;
@@ -1689,7 +1692,10 @@ the server's current set of stray directories `refused` (`not a stray
 build directory: <path>`), and one that holds a live build directory
 `refused` (`directory holds a live build dir: <path>`); it is locked like
 any other directory, so one a running configure owns is refused. Cancelling stops between directories (`delete stopped: <reason>`);
-what was removed stays removed and its cache entry `unknown`. The task's
+what was removed stays removed and its cache entry `unknown`. A key form
+naming nothing is `refused` (`no configuration unit '<project>/<configuration>'`,
+`no build directory '<key>'`), as an unknown profile or project key is. A
+successful deletion's task prints `DELETE OK: <label>` last. The task's
 writes' `changed` precede `done`.
 
 *(Optional, part B6.)* `nuke { plan?, yes? }` — task-streamed, `meta.kind =
