@@ -984,7 +984,11 @@ function M.deletion_run(ws, deletion, opts, done)
         end)
         if not pok then finish(refused(fresh)); return false end
         if not fresh then finish(refused(verr)); return false end
-        return dp.execute(ws, fresh, { stop = opts.stop }):next(function(res)
+        -- A synchronous throw (e.g. the working-copy save failing before any
+        -- removal) settles as `refused`; returning false releases the locks.
+        local eok, ef = pcall(dp.execute, ws, fresh, { stop = opts.stop })
+        if not eok then finish(refused(ef)); return false end
+        return ef:next(function(res)
             if res.stopped then
                 finish(refused("delete stopped: "
                     .. tostring(opts.stop_reason and opts.stop_reason() or "cancelled")))

@@ -109,8 +109,14 @@ describe("deletion_plan.plan: a stray directory", function()
         local dir = ws._core._deps.normalize(mkstray(root, "App/Stray"))
         local p = dp.plan(ws, { stray_dir = dir })
         assert.is_nil(p.refusal)
-        assert.same({ dir }, p.strays)
-        assert.same({ dir }, p.lock_dirs)
+        -- The plan keeps the scan's spelling (long form), which may differ
+        -- from the target's (8.3 short form on a CI runner's TEMP): compare
+        -- canonical forms.
+        local canon = function(d) return ws:_canonicalize_boundary_path(d) end
+        assert.equals(1, #p.strays)
+        assert.equals(canon(dir), canon(p.strays[1]))
+        assert.equals(1, #p.lock_dirs)
+        assert.equals(canon(dir), canon(p.lock_dirs[1]))
     end)
 
     it("is refused when not in the current stray set (a live build dir, a missing dir)", function()
@@ -270,6 +276,51 @@ describe("model_commands.execute_deletion", function()
         assert.equals("ok", r.outcome)
         assert.is_nil(find_app(ws))
         assert.is_nil(uv.fs_stat(dir))
+    end)
+
+    it("keeps a project, its cache entry and refuses when removing its build dir fails", function()
+        local root, dir = L.make_ws()
+        local ws = load(root)
+        quiet(ws)
+        local app = find_app(ws)
+        local function app_entries()
+            local n = 0
+            for _, e in pairs(ws:_serialize_cache().build_dirs or {}) do
+                if e.project_key == "App" then n = n + 1 end
+            end
+            return n
+        end
+        assert.is_true(app_entries() > 0)
+        io_mod.rm_rf_async = function(_, cb)
+            if cb then cb(false, "access denied") end
+            return require("loomworks.future").rejected("access denied")
+        end
+        local c = commands.execute_deletion(ws, { project = app })
+        local r = run(ws, { project = app }, c.plan)
+        assert.equals("refused", r.outcome)
+        assert.equals(app, find_app(ws))
+        assert.is_not_nil(uv.fs_stat(dir))
+        assert.is_true(app_entries() > 0, "cache entry dropped")
+        assert.is_true(vim.wait(2000, function() return op_lock.read(root) == nil end, 20), "O left behind")
+        assert.is_nil(bl.read(dir), "B left behind")
+    end)
+
+    it("refuses with the error when the deletion throws synchronously, releasing every lock", function()
+        local root, dir = L.make_ws()
+        local ws = load(root)
+        quiet(ws)
+        local profile = ws._profiles[1]
+        local token = commands.execute_deletion(ws, { profile = profile }).plan
+        local removed = false
+        io_mod.rm_rf_async = function(d, cb, o) removed = true; return real_rm(d, cb, o) end
+        ws._save_user = function() error("save failed: disk full", 0) end
+        local r = run(ws, { profile = profile }, token)
+        assert.equals("refused", r.outcome)
+        assert.is_truthy(tostring(r.message):find("save failed: disk full", 1, true), r.message)
+        assert.is_false(removed)
+        assert.is_not_nil(uv.fs_stat(dir))
+        assert.is_nil(op_lock.read(root), "O left behind")
+        assert.is_nil(bl.read(dir), "B left behind")
     end)
 
     it("deletes an orphaned build directory given as its object", function()
