@@ -8,6 +8,7 @@ local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
 local modules = require("loomworks.modules")
 local workspace_view = require("loomworks.workspace_view")
+local model = require("loomworks.ui.model_calls")
 
 local M = {}
 
@@ -107,10 +108,13 @@ function M.open(root)
             inherited_tool = ctx.inherited_tool,
             no_tool_profiles = ctx.no_tool_profiles,
             on_accept = function(result)
-                local ok, err = workspace_view.execute_add_project(ws, key, type_info.type, path, result)
-                if not ok then
-                    vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-                end
+                model.call(ws, "Projects/1.add", { key = key, type = type_info.type, path = path,
+                    mappings = result.mappings, tool = result.tool_entry }, function(r)
+                    local ok, err = model.result(r)
+                    if not ok then
+                        vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+                    end
+                end)
             end,
             on_cancel = function() end,
         })
@@ -132,11 +136,13 @@ function M.open(root)
         -- Add project directly with no mappings.
         -- Config set mappings and tool/SDK selection happen separately
         -- via the status page.
-        local ok, err = workspace_view.execute_add_project(
-            ws, prep.key, prep.mod_type, prep.path, { mappings = {} })
-        if not ok then
-            vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-        end
+        model.call(ws, "Projects/1.add", { key = prep.key, type = prep.mod_type, path = prep.path, mappings = {} },
+            function(r)
+                local ok, err = model.result(r)
+                if not ok then
+                    vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+                end
+            end)
     end
 
     --- Remove a project that matches a browser entry.
@@ -166,13 +172,14 @@ function M.open(root)
                 n = "close",
                 y = function(self)
                     self:close()
-                    workspace_view.execute_remove_project(ws, project, ctx, function(ok, err)
-                        -- err is nil when the deletion's lock was refused
-                        -- (already reported by the workspace)
-                        if not ok and err then
-                            vim.notify("loomworks: " .. err, vim.log.levels.ERROR)
-                        end
-                    end)
+                    model.call(ws, "Maintenance/1.execute_deletion",
+                        { target = { project = project }, confirmed = ctx }, function(r)
+                            -- no message when the deletion's lock was refused
+                            -- (already reported by the workspace)
+                            if r.outcome ~= "ok" and r.message then
+                                vim.notify("loomworks: " .. r.message, vim.log.levels.ERROR)
+                            end
+                        end)
                 end,
             },
         })

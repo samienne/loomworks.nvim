@@ -9,6 +9,7 @@
 
 local helpers = require("loomworks.ui.helpers")
 local workspace_view = require("loomworks.workspace_view")
+local model = require("loomworks.ui.model_calls")
 
 -- ---------------------------------------------------------------------------
 -- Actions (editors, dialogs, mutations)
@@ -54,23 +55,25 @@ local function edit_launch_config(project, launch)
             return true
         end,
         on_accept = function(result)
-            local ok, err = workspace_view.execute_save_launch_config(
-                project, launch, result.name, {
+            model.call(nil, "Projects/1.launch_save", {
+                project = project, launch = launch, name = result.name, data = {
                     command = result.command,
                     args = result.args,
                     working_dir = result.working_dir,
                     env = result.env,
                     deploy = result.deploy,
                     debug = result.debug,
-                })
-            if ok then
-                local verb = launch_name and "updated" or "created"
-                vim.notify("loomworks: launch config '" .. result.name .. "' " .. verb,
-                    vim.log.levels.INFO)
-            else
-                vim.notify("loomworks: " .. (err or "failed to save launch config"),
-                    vim.log.levels.ERROR)
-            end
+                } }, function(r)
+                local ok, err = model.result(r)
+                if ok then
+                    local verb = launch_name and "updated" or "created"
+                    vim.notify("loomworks: launch config '" .. result.name .. "' " .. verb,
+                        vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: " .. (err or "failed to save launch config"),
+                        vim.log.levels.ERROR)
+                end
+            end)
         end,
         on_cancel = function() end,
     })
@@ -101,14 +104,16 @@ local function delete_launch_config(project, launch)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_launch_config(project, launch)
-                if ok then
-                    vim.notify("loomworks: launch config '" .. launch_name .. "' deleted",
-                        vim.log.levels.INFO)
-                else
-                    vim.notify("loomworks: " .. (err or "failed to delete"),
-                        vim.log.levels.ERROR)
-                end
+                model.call(nil, "Projects/1.launch_remove", { project = project, launch = launch }, function(r)
+                    local ok, err = model.result(r)
+                    if ok then
+                        vim.notify("loomworks: launch config '" .. launch_name .. "' deleted",
+                            vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: " .. (err or "failed to delete"),
+                            vim.log.levels.ERROR)
+                    end
+                end)
             end,
         },
     })
@@ -140,19 +145,21 @@ local function edit_variable(project, var_name)
             return true
         end,
         on_accept = function(result)
-            local ok, err = workspace_view.execute_save_variable(
-                project, var_name, result.name, {
+            model.call(nil, "Projects/1.variable_save", {
+                project = project, variable = var_name, name = result.name, data = {
                     type = result.type,
                     default = result.default,
-                })
-            if ok then
-                local verb = var_name and "updated" or "created"
-                vim.notify("loomworks: variable '" .. result.name .. "' " .. verb,
-                    vim.log.levels.INFO)
-            else
-                vim.notify("loomworks: " .. (err or "failed to save variable"),
-                    vim.log.levels.ERROR)
-            end
+                } }, function(r)
+                local ok, err = model.result(r)
+                if ok then
+                    local verb = var_name and "updated" or "created"
+                    vim.notify("loomworks: variable '" .. result.name .. "' " .. verb,
+                        vim.log.levels.INFO)
+                else
+                    vim.notify("loomworks: " .. (err or "failed to save variable"),
+                        vim.log.levels.ERROR)
+                end
+            end)
         end,
         on_cancel = function() end,
     })
@@ -182,14 +189,16 @@ local function delete_variable(project, var_name)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_variable(project, var_name)
-                if ok then
-                    vim.notify("loomworks: variable '" .. var_name .. "' deleted",
-                        vim.log.levels.INFO)
-                else
-                    vim.notify("loomworks: " .. (err or "failed to delete"),
-                        vim.log.levels.ERROR)
-                end
+                model.call(nil, "Projects/1.variable_remove", { project = project, variable = var_name }, function(r)
+                    local ok, err = model.result(r)
+                    if ok then
+                        vim.notify("loomworks: variable '" .. var_name .. "' deleted",
+                            vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: " .. (err or "failed to delete"),
+                            vim.log.levels.ERROR)
+                    end
+                end)
             end,
         },
     })
@@ -266,16 +275,18 @@ local function edit_project_configuration(project, cfg)
         on_accept = function(result)
             -- The save changes only the fields the dialog edits; every other
             -- declared field (env, overrides, description, …) is kept.
-            local ok, err = workspace_view.execute_save_configuration(
-                project, cfg, result.name, result)
-            if ok then
-                local verb = config_name and "updated" or "created"
-                vim.notify("loomworks: configuration '" .. result.name .. "' " .. verb,
-                    vim.log.levels.INFO)
-            else
-                vim.notify("loomworks: " .. (err or "failed to save configuration"),
-                    vim.log.levels.ERROR)
-            end
+            model.call(nil, "Projects/1.configuration_save",
+                { project = project, configuration = cfg, name = result.name, fields = result }, function(r)
+                    local ok, err = model.result(r)
+                    if ok then
+                        local verb = config_name and "updated" or "created"
+                        vim.notify("loomworks: configuration '" .. result.name .. "' " .. verb,
+                            vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: " .. (err or "failed to save configuration"),
+                            vim.log.levels.ERROR)
+                    end
+                end)
         end,
         on_cancel = function() end,
     })
@@ -308,14 +319,17 @@ local function delete_project_configuration(project, cfg)
             n = "close",
             y = function(self)
                 self:close()
-                local ok, err = workspace_view.execute_delete_configuration(project, cfg)
-                if ok then
-                    vim.notify("loomworks: configuration '" .. config_name .. "' deleted",
-                        vim.log.levels.INFO)
-                else
-                    vim.notify("loomworks: " .. (err or "failed to delete"),
-                        vim.log.levels.ERROR)
-                end
+                model.call(nil, "Projects/1.configuration_remove", { project = project, configuration = cfg },
+                    function(r)
+                        local ok, err = model.result(r)
+                        if ok then
+                            vim.notify("loomworks: configuration '" .. config_name .. "' deleted",
+                                vim.log.levels.INFO)
+                        else
+                            vim.notify("loomworks: " .. (err or "failed to delete"),
+                                vim.log.levels.ERROR)
+                        end
+                    end)
             end,
         },
     })
@@ -341,10 +355,12 @@ end
 local function field_saver(project, name)
     if not project then return nil end
     return function(value)
-        local ok, err = workspace_view.save_type_config_field(project, name, value)
-        if not ok then
-            vim.notify("loomworks: " .. tostring(err or "failed to save " .. name), vim.log.levels.ERROR)
-        end
+        model.call(nil, "Projects/1.type_config_set", { project = project, field = name, value = value }, function(r)
+            local ok, err = model.result(r)
+            if not ok then
+                vim.notify("loomworks: " .. tostring(err or "failed to save " .. name), vim.log.levels.ERROR)
+            end
+        end)
     end
 end
 
@@ -408,10 +424,12 @@ local function deploy_editing(project)
         return project.deploy and vim.deepcopy(project.deploy) or {}
     end
     local function save(new_deploy)
-        local ok, err = workspace_view.save_deploy(project, new_deploy)
-        if not ok then
-            vim.notify("loomworks: " .. tostring(err or "failed to save deploy steps"), vim.log.levels.ERROR)
-        end
+        model.call(nil, "Projects/1.deploy_save", { project = project, deploy = new_deploy }, function(r)
+            local ok, err = model.result(r)
+            if not ok then
+                vim.notify("loomworks: " .. tostring(err or "failed to save deploy steps"), vim.log.levels.ERROR)
+            end
+        end)
     end
     return get_editable_copy, save
 end

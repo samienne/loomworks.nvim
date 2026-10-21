@@ -66,7 +66,8 @@ local VERB = { build = "build", configure = "configure", clean = "clean",
     prepare_run = "launch", prepare_debug = "debug launch", launch_build = "build", discover = "test discovery",
     run_cases = "test run", prepare_test_debug = "test debug preparation",
     device_list = "devices", device_scan = "device scan", device_install = "install", device_launch = "launch",
-    device_stop = "device stop", set_device = "device choice", clear_device = "device choice",
+    device_stop = "device stop", ["Profiles/1.set_device"] = "device choice",
+    ["Profiles/1.clear_device"] = "device choice",
     device_log = "device log" }
 
 --- The calls whose task-runner restart is not sent again (§19.16 "Tasks in
@@ -85,7 +86,7 @@ M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = 
 --- workspace's own observer carries its operations: a step chained from a
 --- workspace the editor has since swapped away from is never sent to another
 --- workspace's daemon.
---- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"launch_build"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"set_device"|"clear_device"
+--- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"launch_build"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"
 --- @param ws loomworks.Workspace|nil
 --- @return loomworks.daemon.Observer|nil
 function M.carrier(method, ws)
@@ -331,7 +332,7 @@ end
 --- build, the read of the profile's device, its install and launch.
 local DEVICE_RUN = { "launch_build", "device_list", "device_install", "device_launch" }
 --- The calls it adds when the profile has no device: a scan, then the choice.
-local DEVICE_CHOICE = { "device_scan", "set_device" }
+local DEVICE_CHOICE = { "device_scan", "Profiles/1.set_device" }
 
 --- In `daemon` mode, refuse a device target's launch at once when the daemon
 --- cannot carry one of its calls now (§19.16 "Availability": refused like
@@ -661,12 +662,13 @@ function M.device_log(ws, launch_task, conn, sink)
 end
 
 --- A plain Devices/1 or Profiles/1 write the editor sends (`device_stop`,
---- `set_device`, `clear_device`): refused at once when not carried; its
+--- `Profiles/1.set_device`, `Profiles/1.clear_device`): refused at once
+--- when not carried; its
 --- `refused` / `declined` result, a degraded method or a failure end it
 --- with that message (notified); `ok` ends it with `cb(true)`. With `moot`,
 --- an answer that arrives once `moot()` holds ends it with `cb(true)`,
 --- unnotified (a device stop whose launch the daemon forgot meanwhile).
---- @param method "device_stop"|"set_device"|"clear_device"
+--- @param method "device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"
 --- @param ws loomworks.Workspace|nil
 --- @param args table
 --- @param cb fun(ok: boolean, err: string|nil)
@@ -788,9 +790,10 @@ end
 --- @param cb fun(ok: boolean, err: string|nil)
 function M.set_device(ws, profile, device, cb)
     if device then
-        return M.plain("set_device", ws, { profile = { key = profile.key }, device = { id = device.id } }, cb)
+        return M.plain("Profiles/1.set_device", ws,
+            { profile = { key = profile.key }, device = { id = device.id } }, cb)
     end
-    M.plain("clear_device", ws, { profile = { key = profile.key } }, cb)
+    M.plain("Profiles/1.clear_device", ws, { profile = { key = profile.key } }, cb)
 end
 
 --- The discovery of the active profile's tests through the daemon (step 5m

@@ -218,10 +218,13 @@ local view = View.new({
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end
-        local ok, err = require("loomworks.workspace_view").publish(ws)
-        if not ok then
-            vim.notify("loomworks: " .. (err or "publish failed: unknown"), vim.log.levels.ERROR)
-        end
+        local model = require("loomworks.ui.model_calls")
+        model.call(ws, "Workspace/1.publish", {}, function(r)
+            local ok, err = model.result(r)
+            if not ok then
+                vim.notify("loomworks: " .. (err or "publish failed: unknown"), vim.log.levels.ERROR)
+            end
+        end)
     end,
     on_revert = function()
         local lw = require("loomworks")
@@ -230,12 +233,15 @@ local view = View.new({
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end
-        local ok, err = require("loomworks.workspace_view").revert_to_baseline(ws)
-        if not ok then
-            vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
-        else
-            vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
-        end
+        local model = require("loomworks.ui.model_calls")
+        model.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
+            local ok, err = model.result(r)
+            if not ok then
+                vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
+            else
+                vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
+            end
+        end)
     end,
     events = {
         "task_started",

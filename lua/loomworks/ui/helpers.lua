@@ -238,28 +238,37 @@ end
 --- notified.
 --- @param item table a profile, configuration set, project or configuration
 function M.cycle_intent(item)
-    local ok, err = require("loomworks.workspace_view").set_intent(item, M.next_intent(item._intent))
-    if not ok then
-        vim.notify("loomworks: " .. tostring(err or "the intent was not saved"), vim.log.levels.ERROR)
-    end
+    local model = require("loomworks.ui.model_calls")
+    model.call(nil, "Workspace/1.set_intent", { item = item, intent = M.next_intent(item._intent) }, function(r)
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "the intent was not saved"), vim.log.levels.ERROR)
+        end
+    end)
 end
 
 --- Publish one item now; a refusal is notified.
 --- @param item table
 function M.publish_one(item)
-    local ok, err = require("loomworks.workspace_view").publish_one(item)
-    if not ok then
-        vim.notify("loomworks: " .. tostring(err or "publish failed: unknown"), vim.log.levels.ERROR)
-    end
+    local model = require("loomworks.ui.model_calls")
+    model.call(nil, "Workspace/1.publish_one", { item = item }, function(r)
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "publish failed: unknown"), vim.log.levels.ERROR)
+        end
+    end)
 end
 
 --- Revert one item to its baseline; a refusal is notified.
 --- @param item table
 function M.revert_one(item)
-    local ok, err = require("loomworks.workspace_view").revert_one(item)
-    if not ok then
-        vim.notify("loomworks: " .. tostring(err or "revert failed: unknown"), vim.log.levels.ERROR)
-    end
+    local model = require("loomworks.ui.model_calls")
+    model.call(nil, "Workspace/1.revert_one", { item = item }, function(r)
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "revert failed: unknown"), vim.log.levels.ERROR)
+        end
+    end)
 end
 
 --- Get the label for the next intent transition.
