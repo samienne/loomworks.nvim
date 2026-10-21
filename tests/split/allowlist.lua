@@ -181,7 +181,11 @@ return {
         ["lua/loomworks/ui/sections/debug.lua"] = 1,
         ["lua/loomworks/ui/sections/orphaned.lua"] = 1,
         ["lua/loomworks/ui/sections/projects.lua"] = 5,
-        ["lua/loomworks/ui/status.lua"] = 6,
+        -- 6 -> 1: step 5n C1 — the body and its `modified` read through
+        -- status_source.lua (in `daemon` mode only the daemon's
+        -- view.Workspace/1); the page's other model reads (the header's root,
+        -- the cursor, publish/revert until 5o) share one helper.
+        ["lua/loomworks/ui/status.lua"] = 1,
         ["lua/loomworks/ui/tree.lua"] = 4,
         ["lua/loomworks/workspace_view.lua"] = 2,
         ["plugin/loomworks.lua"] = 1,

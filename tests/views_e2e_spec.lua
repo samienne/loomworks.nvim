@@ -137,4 +137,64 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
         assert.is_nil(lw.buf_project(other))
         vim.api.nvim_buf_delete(other, { force = true })
     end)
+
+    it("the status page body reads the daemon's view.Workspace/1; an editor write gets it fresh (step 5n C1)", function()
+        require("loomworks") -- the facade's own-write hook (init.lua)
+        local store = require("loomworks.views")
+        local source = require("loomworks.status_source")
+        local ews = core:get_workspace()
+        local built = 0
+        local orig = ews.view_workspace
+        ews.view_workspace = function(...)
+            built = built + 1
+            return orig(...)
+        end
+
+        srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000,
+            log = function() end })
+        srv:registry()
+        service.attach(srv, require("loomworks.cli")._daemon_build_host())
+        assert(srv:start())
+        assert.is_not_nil(srv.interfaces:resolve("/views", "loomworks.view.Workspace", 1))
+
+        local fr = FR.new({})
+        obs = observer.attach(ews, { getenv = daemon_mode, keepalive_ms = 100,
+            resolve = function() return "lw" end, relay = fr.relay })
+        -- Loaded on attach: the body follows by `update`.
+        assert.is_true(vim.wait(30000, function()
+            local v = obs:workspace_view()
+            return v ~= nil and #v.profiles > 0
+        end, 20), obs:runtime_line())
+        assert.equals("daemon", store.source("workspace"))
+
+        local body = source.read(ews)
+        assert.equals("daemon", body.mode)
+        assert.is_true(body.loaded)
+        local prow = body.view.profiles[1]
+        assert.equals("dev", prow.key)
+        assert.is_string(prow.id)
+        assert.equals("app", body.view.projects[1].key)
+        -- The transitional actions reach the editor's model objects.
+        assert.equals("dev", body.ref(prow).key)
+        assert.is_nil(prow.description)
+
+        -- An editor write (the working copy, in-process until step 5o): the
+        -- observer gets the view, whose freshness check applies the write.
+        -- (This one-process host's daemon model also polls the files, so the
+        -- `get` itself is checked, not only its outcome.)
+        local gets = 0
+        local conn_call = obs.conn.call
+        obs.conn.call = function(self, object, iface, ...)
+            if iface == "loomworks.view.Workspace" and select(2, ...) == "get" then gets = gets + 1 end
+            return conn_call(self, object, iface, ...)
+        end
+        local changed = ews:get_profiles()[1]:set_description("written by the editor")
+        assert.is_true(changed)
+        assert.is_true(vim.wait(5000, function() return gets == 1 end, 10))
+        assert.is_true(vim.wait(10000, function()
+            local v = obs:workspace_view()
+            return v ~= nil and v.profiles[1] and v.profiles[1].description == "written by the editor"
+        end, 20), vim.inspect(obs:workspace_view() and obs:workspace_view().profiles[1]))
+        assert.equals(0, built)
+    end)
 end)

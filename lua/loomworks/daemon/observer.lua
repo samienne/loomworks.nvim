@@ -107,6 +107,7 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _why table<string, string>|nil per feature: why it is not subscribed (its note)
 --- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `describe` reports `delivery = "subscription"`, step 5g.3)
 --- @field _view_seq integer|nil the last `seq` of the `/views` object seen on this connection (a gap re-fetches the views, step 5j)
+--- @field _own_write_pending boolean|nil a `get` of the workspace view after an editor write is scheduled (`_own_write`, step 5n C1)
 --- @field generation any session generation of the observed daemon
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
@@ -248,6 +249,14 @@ M.TESTS = {
     methods = { "discover", "run_cases", "prepare_debug", "collect", "result" }, signals = { "results" },
     callable = true, tasks = true, unavailable = "tests unavailable",
 }
+-- The workspace view (step 5n C1, §19.13 "The workspace view"): the status
+-- page's body. Never built in-process in `daemon` mode: while it is not held,
+-- each body section is one `unavailable — <why>` line
+-- (`Observer:workspace_view`).
+M.VIEW_WORKSPACE = {
+    object = "/views", iface = "loomworks.view.Workspace", v = 1, feature = "workspace view",
+    methods = { "get" }, signals = { "update" }, view = "workspace",
+}
 -- The devices (step 5n C2, §19.16 "Devices", API.md §15): subscribed to for
 -- its thin `changed`; `list` is read into a per-connection cache on subscribe
 -- and on each `changed` (the editor never lists or probes devices itself);
@@ -264,9 +273,9 @@ M.PROFILES = {
     object = "/profiles", iface = "loomworks.Profiles", v = 1, feature = "device choice",
     methods = { "set_device", "clear_device" }, signals = {}, call_only = true,
 }
-M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS }
-M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.BUILD, M.LAUNCH, M.DEBUG,
-    M.LSP, M.TESTS, M.DEVICES, M.PROFILES }
+M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE }
+M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE, M.BUILD,
+    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -2868,6 +2877,49 @@ function Observer:lsp_note()
             .. (d.why == "disconnected" and "stopped, held" or "held"), false
     end
     return "lsp configuration: " .. d.note .. " — language servers withheld", true
+end
+
+--- The workspace view (`loomworks.view.Workspace/1`, §19.13 "The workspace
+--- view") as this observer holds it, else nil and why it is not offered —
+--- the status page's body sections then each show `unavailable — <why>`;
+--- nothing of them is built in-process.
+--- @return loomworks.ViewWorkspace|nil view
+--- @return string|nil why
+function Observer:workspace_view()
+    if self.state == "stopped" then return nil, "the workspace is no longer loaded" end
+    if self.state == "no-binary" then return nil, "no lw host binary" end
+    if self._lost then return nil, M.LOST_NOTE end
+    local view = views.daemon_state(self, "workspace")
+    if type(view) == "table" then return view, nil end
+    if self.state ~= "connected" or self.mode == nil then return nil, "waiting for the workspace daemon" end
+    if self.mode ~= "interfaces" then
+        return nil, "the workspace daemon offers no loomworks.view.Workspace/1 (protocol 10)"
+    end
+    if self.incompat_note or self._retire then return nil, "the workspace daemon is incompatible" end
+    local want = M.VIEW_WORKSPACE
+    local f = self._feat and self._feat[want.feature]
+    local note = self._why and self._why[want.feature]
+    if f == "subscribed" or f == "pending" or (f == nil and not note) then
+        return nil, "waiting for the workspace daemon"
+    end
+    return nil, ((note or M.feature_note(want, {})):gsub("^" .. vim.pesc(want.feature) .. ": ", ""))
+end
+
+--- The editor wrote a state file of this observer's workspace itself (an
+--- in-process write before step 5o: a publish, a revert, a status-page
+--- mutation): fetch the workspace view (`get`), whose freshness check
+--- applies the write in the daemon (§19.13 "Freshness of views"); the
+--- views' `update`s follow from it. One `get` per event-loop turn however
+--- many files the write touched.
+function Observer:_own_write()
+    if self._own_write_pending then return end
+    if not (self._feat and self._feat[M.VIEW_WORKSPACE.feature] == "subscribed") then return end
+    self._own_write_pending = true
+    vim.schedule(function()
+        self._own_write_pending = nil
+        if self.state == "stopped" then return end
+        self:_refetch_views(M.VIEW_WORKSPACE)
+    end)
 end
 
 --- Where the tests stand with this observer (§19.16 "Tests" Unavailable or

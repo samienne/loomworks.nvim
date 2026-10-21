@@ -382,6 +382,7 @@ may import from its own layer or any layer below it, never above.
 | `lsp.lua` | LSP dispatch layer + plugin-style integration registry. On load, scans every runtime path for `integrations/lsp/*.lua` and requires each — integrations self-register via `register(server, M)`. Exposes generic `cmd(server, base)` / `root_dir(server, fallback)` factories, a `setup_servers(opts)` that installs enabled integrations via `vim.lsp.config` + `vim.lsp.enable`, buffer excludes (`default_excludes()` / `excluded(bufnr)` + `LspAttach` detach autocmd) applied uniformly across all managed integrations, `get_status()` dispatching per-server status fields to integrations, and the **generic restart machinery**: `wrap_on_exit(server, user_on_exit)` distinguishes managed-stop / clean external stop / unexpected death; `mark_managed_stop(client_id)` lets integrations flag their own intentional stops; per-`(server, root_dir)` throttle (4 attempts / 5min sliding window) deferring with `vim.defer_fn`; `is_suppressed` / `clear_suppression` / `reset_attempts` for the UI Reset path; subscribes to `lsp_options_changed` and dispatches to integrations' `on_lsp_options_changed` for cmd-affecting toggles. Reads projects, entries, options and readiness only through `lsp_source.lua` (never the model). **The entries are content-memoized** (in `lsp_config.lua`): on `active_set_changed` every integration iterates every project's entries, so a per-project cache keyed on `{generation, ws.root, project.key, active-profile key, resolved build_dir/config_key/build-state/tool, fallback cached.build_dir + tool_data clangd, hash(type_config)}` returns the prior `module.lsp_configs()` result on a hit — a no-op switch and the second integration on a tick pay nothing. The memo is blown on `workspace_changed` / `workspace_closed` and its keys invalidated (generation bump) on `lsp_options_changed`; the early return-on-hit is structured so a future mtime-guarded side effect inside `lsp_configs` is skipped on hits too | Contain server-specific wiring (lives in `integrations/lsp/<server>.lua`) |
 | `lsp_config.lua` | The LSP configuration state (shared side, host-neutral): the `lsp_configs` content memo (per environment in the daemon: at most `ENV_SLOTS` (4) environments per project, least recently used dropped first, each named by the SHA-256 of its signature), `db_state` derivation, the core `db_dir` / `db_rev` entry fields, `state(ws, opts)` in the `LspConfig/1.get` shape and its `signature` | Use `vim.*`, start servers, decide withhold reasons (integrations do) |
 | `lsp_source.lua` | Where `lsp.lua` and the integrations read the LSP state: in `daemon` mode the daemon's alone (the observer's `lsp_phase`: in use, waiting or unavailable instead of any fallback), the in-process state from the `loomworks` facade only in `in-process` mode until step 6b; the change diff, option writes through the daemon | Let the LSP layer reach into the model any other way; fall back to the in-process state in `daemon` mode |
+| `status_source.lua` | Where the status page's body reads (step 5n part C1): in `daemon` mode only the daemon's `view.Workspace/1` (or why it is not held), its progress overlaid from the observed `Tasks/1` tasks; in `in-process` mode the view built from the model with each row bound to its object | Build any of the body in-process in `daemon` mode |
 | `device_source.lua` | Where the editor reads devices (step 5n parts A and C2): the device list and scan, a profile's chosen device, selecting and clearing it — for the status page's device row, `lw.scan_devices` / `lw.get_devices` and the session tracker's device prompt — as `DeviceRecord`s (the `Devices/1.list` shape). `daemon` mode: only the daemon (`editor_ops.devices` / `scan_devices` / `set_device`: the observer's cached `Devices/1.list`, re-read on `changed`; a `Devices/1.scan` task; `Profiles/1.set_device` / `clear_device`), refused when not carried; `in-process` mode: the workspace's device registry and the profile's selection | Let those callers read devices from the model any other way; run any of it in-process in `daemon` mode |
 | `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement; **always-on `--pch-storage=disk`** + **user-configurable `--clang-tidy`/`--background-index`/`--background-index-priority`/`extra_args`** appended to every cmd (last-wins via LLVM `cl::opt`); reads via `Workspace:get_lsp_options("clangd")` (defaults applied); coalesced restart on `on_lsp_options_changed`; **OOM-adaptive `-j` step-down** via `on_unexpected_exit` (seed `-j 12` on first OOM, halve to 1 floor, give up after); single-retry policy for non-OOM crashes; nvim LSP log snapshot rotation (5 generations) on every (re)start; `reset(root_dir)` clears adaptive state and re-enables clangd | Reference specific modules; read `project.cmake` or other module-specific fields |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
@@ -1876,8 +1877,29 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   daemon's own run's end sets the profile's last result
   (`Service:on_run_done`, `BuildRun.profile`, the end message from
   `Operation.task_outcome`, the one wording shared with
-  `RemoteTask:outcome`). The editor still builds it in-process in `daemon`
-  mode until 5n C1.
+  `RemoteTask:outcome`). *(5n part C1)* The status page reads its body
+  only through `status_source.lua` (`read(ws)` → `{ mode, view, why,
+  loaded, ref, profile_progress, unit_progress }`, `modified(ws)` for the
+  buffer's 'modified' — the editor's model's in both modes until 5o C2, as
+  publish and revert act on it, so `:e` is refused (E37) while it has
+  unpublished edits whatever the view's state). In `daemon` mode the view is the observer's
+  subscription to `view.Workspace/1` (`observer.VIEW_WORKSPACE`, held in
+  the view store as `workspace`; `Observer:workspace_view()` gives it or why
+  not) and nothing of the body is built in-process: while it is not held
+  each body section is one `unavailable — <why>` line; `loaded` comes from
+  the daemon's header view (no "not on disk" banner from an unloaded
+  daemon's `published = false`); progress is overlaid from the observer's
+  `Tasks/1` tasks (`RemoteTask.profile_name` / `units` / `pct` /
+  `start_time`; a task of no profile counts for a unit row only when it runs
+  that row's configuration unit, whose key comes from the editor's model
+  until C2); `ref` (transitional, until 5o C2) resolves a row to the
+  editor's model object by the keys the row shows, for the objects the
+  sections pass to `ui/model_calls.lua` (in-process writes in both modes
+  until C2; the rows keep the view's ids for C2). Every state-file write of the editor's model
+  (`Workspace:_record_written`, `_save_config`, `publish_one`) emits
+  `state_file_written { workspace, kind }`; init.lua hands it to that
+  workspace's observer, which `get`s the workspace view once per
+  event-loop turn (`Observer:_own_write`, §19.13 "Freshness of views").
 - *(5n part B2, spec §19.16 "Devices", API.md §15)* `daemon/devices.lua`
   (binary side) serves `Devices/1` on `/devices`: `list` (the registry,
   `Workspace:devices`, never loading or probing; records `{ id, key = serial,
@@ -3846,6 +3868,7 @@ loomworks.nvim/
 │   │   ├── lsp_source.lua             Where the LSP layer reads that state (the daemon's or in-process)
 │   │   ├── test_state.lua             Tests view state builder (`view.Tests/1`: unit states, explicit suites, unit-scoped ids)
 │   │   ├── test_source.lua            Where the loomtest / neotest adapters read tests (the daemon's view or in-process)
+│   │   ├── status_source.lua          Where the status page's body reads (the daemon's `view.Workspace/1` or in-process) + its progress overlay
 │   │   ├── integrations/
 │   │   │   ├── lsp/
 │   │   │   │   ├── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)

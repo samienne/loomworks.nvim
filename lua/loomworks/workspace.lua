@@ -984,6 +984,17 @@ function Workspace:_record_written(kind, path, written)
     -- The workspace daemon tells its clients (spec §19.12, `model_change`).
     local on_written = self._core._deps.on_written
     if on_written then pcall(on_written, kind, path) end
+    self:_emit_written(kind)
+end
+
+--- Tell the host this process wrote one of the workspace's state files
+--- (`state_file_written { workspace, kind }`): the editor in `daemon` mode
+--- then fetches the workspace view, whose freshness check applies the write
+--- in the daemon (spec §19.13 "Freshness of views", until step 5o).
+--- @param kind "cache"|"user"|"config"
+function Workspace:_emit_written(kind)
+    local events = self._core._deps.events
+    if events then pcall(events.emit, "state_file_written", { workspace = self, kind = kind }) end
 end
 
 --- The guarded file's current bytes, or `false` when this host cannot read
@@ -6746,7 +6757,10 @@ function Workspace:_save_config()
     if ok and self._tracker then
         self._tracker:mark_written(path)
     end
-    if ok then self:_report_dropped_test_args(dropped) end
+    if ok then
+        self:_report_dropped_test_args(dropped)
+        self:_emit_written("config")
+    end
     return ok, err
 end
 
@@ -6869,6 +6883,7 @@ function Workspace:publish_one(item)
     if self._tracker then
         self._tracker:mark_written(path)
     end
+    self:_emit_written("config")
 
     -- Update baseline for the named item only, so its `+` clears while
     -- other items keep theirs. The baseline is the parsed (internal) shape

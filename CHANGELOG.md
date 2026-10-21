@@ -133,6 +133,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   adapter the daemon resolved; its results are recorded when the session
   ends. A test's output, its first-error jump and the inline error detail
   are read from the daemon when shown. (#254)
+- Experimental daemon: in daemon mode the status page's Diagnostics,
+  Suggestions, Profiles, Orphaned, Configuration Sets, Projects and SDKs
+  sections show the workspace daemon's view of the workspace, with build
+  progress from the daemon's tasks; while the daemon does not offer it each
+  of them shows `unavailable` with the reason, and nothing of them is
+  computed in Neovim. The "loomworks.json not on disk" banner no longer shows
+  before the daemon has loaded the workspace. Edits made from the status page
+  still write the files from Neovim and then refresh the view. (#286)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor
