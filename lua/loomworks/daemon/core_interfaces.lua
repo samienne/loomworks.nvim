@@ -758,7 +758,11 @@ function M.profiles_impl(service)
             local r = mc.profile_create(ws, set, entry, args.activate == true)
             if r.outcome == "ok" then
                 r.profile = r.profile and { id = service.ids:id(r.profile), key = r.profile.key } or nil
-                r.config_set = nil
+                -- The automatic set a candidate added is a created entity:
+                -- returned as { id, key } (API.md §4.1), also when the
+                -- profile could not be saved (the warn result).
+                local cs = set.candidate ~= nil and r.config_set or nil
+                r.config_set = cs and { id = service.ids:id(cs), key = cs.name } or nil
             end
             return r
         end)

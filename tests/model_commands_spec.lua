@@ -186,7 +186,11 @@ describe("model_commands", function()
       assert_refused(mc.profile_create(ws, { candidate = auto.candidate }, nil, false), "changed since it was listed")
     end)
 
+    --- A detected toolchain `gcc-x` (the shell of these tests detects none).
+    local function with_gcc_x() ws:get_or_create_tool("typescript", "gcc-x", {}, "GCC x") end
+
     it("add_tool / remove_tool change the toolchain and re-derive the key", function()
+      with_gcc_x()
       local dev = find(ws._profiles, "_configuration_set_name", "Dev")
       local before = dev.key
       assert_ok(mc.profile_add_tool(dev, "gcc-x"))
@@ -198,6 +202,7 @@ describe("model_commands", function()
     end)
 
     it("add_tool / remove_tool whose save fails are refused and leave the profile unchanged", function()
+      with_gcc_x()
       local dev = find(ws._profiles, "_configuration_set_name", "Dev")
       local before = dev.key
       local remerged = 0
@@ -240,6 +245,73 @@ describe("model_commands", function()
       assert.equals(dev.key, ws._active_profile_key)
     end)
 
+    it("add_tool refuses a toolchain that does not resolve; remove_tool one the profile lacks", function()
+      with_gcc_x()
+      local dev = find(ws._profiles, "_configuration_set_name", "Dev")
+      local before = dev.key
+      local file = io_mod.read_file(user_mod.filepath(root))
+      assert_refused(mc.profile_add_tool(dev, "typo"), "no toolchain 'typo'")
+      assert.same({}, dev._tool_keys or {})
+      assert.equals(before, dev.key)
+      assert_refused(mc.profile_remove_tool(dev, "gcc-x"), "no toolchain 'gcc-x' on profile")
+      assert.equals(before, dev.key)
+      assert.equals(file, io_mod.read_file(user_mod.filepath(root)))
+    end)
+
+    it("add_tool / remove_tool whose commit fails are refused and restore the profile", function()
+      with_gcc_x()
+      local dev = find(ws._profiles, "_configuration_set_name", "Dev")
+      local before = dev.key
+      local real_finish = ws._txn_finish
+      ws._txn_finish = function(self, t) self:_txn_abort(t); return false, "commit failed" end
+      assert_refused(mc.profile_add_tool(dev, "gcc-x"), "commit failed")
+      assert.same({}, dev._tool_keys or {})
+      assert.equals(before, dev.key)
+      ws._txn_finish = real_finish
+      with_gcc_x() -- the restoring remerge drops the injected (undetected) tool
+      assert_ok(mc.profile_add_tool(dev, "gcc-x"))
+      local with_tool = dev.key
+      ws._txn_finish = function(self, t) self:_txn_abort(t); return false, "commit failed" end
+      assert_refused(mc.profile_remove_tool(dev, "gcc-x"), "commit failed")
+      assert.same({ "gcc-x" }, dev._tool_keys)
+      assert.equals(with_tool, dev.key)
+      ws._txn_finish = real_finish
+      -- A later unrelated save writes the profile as it is (with the tool).
+      assert_ok(mc.profile_set_active(dev))
+      local saved
+      for _, p in pairs(user_json(root).profiles or {}) do
+        if type(p) == "table" and p.configuration_set == "Dev" then saved = p end
+      end
+      if saved then assert.same({ "gcc-x" }, saved.tools) end
+    end)
+
+    --- Mark the items Profile:activate's cascade materializes `shared`.
+    local function shared_items(profile)
+      local items = { profile, profile._config_set_ref }
+      for project, cfg in pairs(profile._config_set_ref.mappings or {}) do
+        items[#items + 1] = project
+        if type(cfg) == "table" then items[#items + 1] = cfg end
+      end
+      for _, o in ipairs(items) do o._intent = "shared" end
+      return items
+    end
+
+    it("set_active whose save fails restores the intents its cascade changed", function()
+      local other = find(ws._profiles, "_configuration_set_name", "Other")
+      local items = shared_items(other)
+      ws._no_write = "read-only working copy"
+      assert_refused(mc.profile_set_active(other), "read-only working copy")
+      for _, o in ipairs(items) do assert.equals("shared", o._intent, tostring(o.key or o.name)) end
+    end)
+
+    it("create --activate whose save fails restores the intents its cascade changed", function()
+      local other = find(ws._profiles, "_configuration_set_name", "Other")
+      local items = shared_items(other)
+      ws._no_write = "read-only working copy"
+      assert_refused(mc.profile_create(ws, other._config_set_ref, nil, true), "read-only working copy")
+      for _, o in ipairs(items) do assert.equals("shared", o._intent, tostring(o.key or o.name)) end
+    end)
+
     it("tool_choices lists the keyed toolchains of the set's module types, for a set or a candidate", function()
       ws._tools_by_type = { typescript = { { tool_key = "t1", tool_label = "T one", tool_data = {} } },
         cmake = { { tool_key = "c1", tool_label = "C one", tool_data = {} } } }
@@ -261,6 +333,7 @@ describe("model_commands", function()
     end)
 
     it("add_tool is refused while another process holds the operation lock; nothing changes", function()
+      with_gcc_x()
       local L = require("tests.lock_helpers")
       local op_lock = require("loomworks.op_lock")
       local dev = find(ws._profiles, "_configuration_set_name", "Dev")

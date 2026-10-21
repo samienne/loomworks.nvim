@@ -150,11 +150,36 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.matches("changed since it was listed", r.message, 1, true)
     end)
 
+    it("create whose profile save fails after a candidate set was added returns the set, with a warn", function()
+        local ws = loaded()
+        ws.generate_default_config_sets = function() return { Auto = { app = "Debug" } } end
+        local auto
+        for _, s in ipairs(sets("candidates").sets) do if s.name == "Auto" then auto = s end end
+        local real_add = ws.add_configuration_set
+        ws.add_configuration_set = function(...)
+            local cs, err = real_add(...)
+            ws._no_write = "read-only working copy"
+            return cs, err
+        end
+        local r = profiles("create", { config_set = { candidate = auto.candidate } })
+        ws._no_write, ws.add_configuration_set = nil, real_add
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.is_nil(r.profile)
+        assert.is_truthy(r.notes and #r.notes > 0, vim.inspect(r))
+        local cs = find(ws._config_sets, "name", "Auto")
+        assert.same({ id = id_of(cs), key = "Auto" }, r.config_set)
+    end)
+
     it("add_tool / remove_tool re-derive the key under O, the id kept; refused while O is held", function()
         local ws = loaded()
+        ws:get_or_create_tool("shell", "gcc-x", {}, "GCC x")
         local dev = find(ws._profiles, "key", "dev")
         local id = id_of(dev)
-        local r = profiles("add_tool", { profile = { id = id }, tool = "gcc-x" })
+        -- A toolchain that does not resolve is refused (API.md §4.1).
+        local r = profiles("add_tool", { profile = { id = id }, tool = "typo" })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("dev", dev.key)
+        r = profiles("add_tool", { profile = { id = id }, tool = "gcc-x" })
         assert.equals("ok", r.outcome, vim.inspect(r))
         assert.are_not.equal("dev", dev.key)
         assert.equals(id, id_of(dev))

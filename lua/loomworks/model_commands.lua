@@ -337,6 +337,32 @@ end
 -- Profiles/1 (API.md §11)
 -- ---------------------------------------------------------------------------
 
+--- The intent (and source) of each item Profile:activate's cascade
+--- materializes into the working copy (the profile, its set, the set's
+--- projects and configurations), to put back when nothing was written
+--- (API.md §11: a refused write changes neither user.json nor the model).
+--- @param profile loomworks.Profile
+--- @return table[] snapshot
+local function activation_intents(profile)
+    local items = { profile }
+    local cs = profile._config_set_ref
+    if cs then
+        items[#items + 1] = cs
+        for project, cfg in pairs(cs.mappings or {}) do
+            if type(project) == "table" then items[#items + 1] = project end
+            if type(cfg) == "table" then items[#items + 1] = cfg end
+        end
+    end
+    local snapshot = {}
+    for _, o in ipairs(items) do snapshot[#snapshot + 1] = { o, o._intent, o._source } end
+    return snapshot
+end
+
+--- Put back the intents `activation_intents` recorded.
+local function restore_intents(snapshot)
+    for _, e in ipairs(snapshot) do e[1]._intent, e[1]._source = e[2], e[3] end
+end
+
 --- `set_active { profile }` — make it the active profile (spec §4.2).
 --- @param profile loomworks.Profile
 --- @return loomworks.CommandOutcome
@@ -345,12 +371,14 @@ function M.profile_set_active(profile)
     if r then return r end
     local ws = profile._workspace
     local old_active, old_active_key = ws._active_profile, ws._active_profile_key
+    local intents = activation_intents(profile)
     local saved, err, reason = profile:activate()
     if not saved then
-        -- Nothing was written: the active profile stays (a stale refusal
-        -- already reloaded from disk).
+        -- Nothing was written: the active profile and the intents its
+        -- cascade changed stay (a stale refusal already reloaded from disk).
         if reason ~= "stale" then
             ws._active_profile, ws._active_profile_key = old_active, old_active_key
+            restore_intents(intents)
             ws:remerge()
         end
         return refused(err or "user.json was not written")
@@ -453,6 +481,7 @@ function M.profile_create(ws, set, tool_entry, activate)
     end
     local old_intent = profile._intent
     local old_active, old_active_key = ws._active_profile, ws._active_profile_key
+    local intents = activate and activation_intents(profile) or {}
     if not existing then profile._intent = "local" end
     local saved, err, reason
     if activate then
@@ -466,6 +495,7 @@ function M.profile_create(ws, set, tool_entry, activate)
         -- one, which already reloaded from disk (the undo would put back
         -- pre-reload state, e.g. an active profile the reload removed).
         if reason ~= "stale" then
+            restore_intents(intents)
             profile._intent = old_intent
             ws._active_profile, ws._active_profile_key = old_active, old_active_key
             if not existing then ws:_remove_profile(profile) end
@@ -532,6 +562,22 @@ local function profile_tools_snapshot(profile)
         sdk = profile._sdk, sdk_key = profile._sdk_key }
 end
 
+--- Put the profile's toolchain back as `snapshot` had it (its key derived
+--- again). False when it already is.
+--- @return boolean restored
+local function restore_profile_tools(profile, snapshot)
+    if vim.deep_equal(profile._tool_keys, snapshot.tool_keys)
+            and profile._sdk == snapshot.sdk and profile._sdk_key == snapshot.sdk_key then
+        return false
+    end
+    local changed_key = profile.key
+    profile._tool_keys = snapshot.tool_keys
+    profile._sdk, profile._sdk_key = snapshot.sdk, snapshot.sdk_key
+    profile:_derive_key()
+    profile:_after_key_rename(changed_key)
+    return true
+end
+
 --- Save after a toolchain change of a profile and re-derive; a failed save
 --- restores the profile as `snapshot` had it (nothing was written).
 local function save_profile_tools(profile, snapshot)
@@ -540,11 +586,7 @@ local function save_profile_tools(profile, snapshot)
     if not saved then
         -- A stale refusal reloaded from disk: nothing to undo.
         if reason == "stale" then return refused(err) end
-        local changed_key = profile.key
-        profile._tool_keys = snapshot.tool_keys
-        profile._sdk, profile._sdk_key = snapshot.sdk, snapshot.sdk_key
-        profile:_derive_key()
-        profile:_after_key_rename(changed_key)
+        restore_profile_tools(profile, snapshot)
         return refused(err or "user.json was not written")
     end
     ws:remerge()
@@ -568,11 +610,48 @@ end
 
 require("loomworks.op_lock").guard(Toolchain, "change", "rename", function(profile) return profile._workspace end)
 
---- Run a toolchain change of `profile` under the operation lock.
+--- Run a toolchain change of `profile` under the operation lock. The guard's
+--- `false` is a held lock (nothing ran) or a commit that failed after the
+--- change was saved (staged) and re-derived: the profile is put back as it
+--- was, so no later save writes the change (API.md §11).
 local function change_toolchain(profile, change)
+    local ws = profile._workspace
+    local snapshot = profile_tools_snapshot(profile)
+    local base = ws._disk_baseline and ws._disk_baseline.user
     local r, msg = Toolchain.change(profile, change)
-    if r == false then return refused(msg or "the workspace operation lock is held") end
+    if r == false then
+        -- The aborted save recorded its staged text as the working copy's
+        -- baseline: while the disk still holds the old text, the old
+        -- baseline stands (else the next save is refused as stale).
+        if base and ws._disk_baseline.user ~= base
+                and ws:_read_disk(require("loomworks.user").filepath(ws.root)) == base.text then
+            ws._disk_baseline.user = base
+        end
+        if restore_profile_tools(profile, snapshot) then ws:remerge() end
+        return refused(msg or "the workspace operation lock is held")
+    end
     return r
+end
+
+--- The Tool a toolchain key names in the workspace's module registries
+--- (the exact key; API.md §1.2), or nil.
+--- @param ws loomworks.Workspace
+--- @param tool_key string
+--- @return loomworks.Tool|nil
+local function resolve_tool(ws, tool_key)
+    for _, mod in pairs(ws._modules or {}) do
+        local tool = mod._tools and mod._tools[tool_key]
+        if tool and not tool._removed and tool.key then return tool end
+    end
+    return nil
+end
+
+--- Whether `profile` lists the toolchain `tool_key`.
+local function has_tool(profile, tool_key)
+    for _, k in ipairs(profile._tool_keys or {}) do
+        if k == tool_key then return true end
+    end
+    return false
 end
 
 --- `add_tool { profile, tool }` — add a toolchain (its key, a value) to a
@@ -585,7 +664,10 @@ function M.profile_add_tool(profile, tool_key)
     local r = stale(profile, "profile")
     if r then return r end
     if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
-    return change_toolchain(profile, function(p) p:add_tool(tool_key) end)
+    -- An argument that does not resolve is refused (API.md §4.1).
+    local tool = resolve_tool(profile._workspace, tool_key)
+    if not tool then return refused("no toolchain '" .. tool_key .. "'") end
+    return change_toolchain(profile, function(p) p:add_tool(tool.key) end)
 end
 
 --- `remove_tool { profile, tool }` — remove a toolchain from a profile, under
@@ -597,6 +679,9 @@ function M.profile_remove_tool(profile, tool_key)
     local r = stale(profile, "profile")
     if r then return r end
     if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
+    if not has_tool(profile, tool_key) then
+        return refused("no toolchain '" .. tool_key .. "' on profile '" .. tostring(profile.key) .. "'")
+    end
     return change_toolchain(profile, function(p) p:remove_tool(tool_key) end)
 end
 

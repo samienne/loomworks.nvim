@@ -970,7 +970,9 @@ Each reaches subscribers as `Workspace/1` `changed` and in
 - **`Profiles/1.set_active { profile }`** — makes it the active profile
   (spec §4.2), with `header_changed`;
 - **`Profiles/1.create { config_set, tool?, activate? }`** → `ok` with
-  `profile { id, key }` — materializes a profile of the set (spec §4.1):
+  `profile { id, key }` (and `config_set { id, key }` when a `{ candidate }`
+  set was added — also when the profile could not be saved, the `warn`
+  result without `profile`) — materializes a profile of the set (spec §4.1):
   `config_set` a reference, or `{ candidate }`, a token
   `ConfigSets/1.candidates` (§20) gave for an automatic set, which is added
   first; `tool` `{ module, key? }` one of `tool_choices`' toolchains, absent

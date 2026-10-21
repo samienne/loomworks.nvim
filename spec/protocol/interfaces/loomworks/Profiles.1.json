@@ -134,7 +134,7 @@
       "mutates": true
     },
     "create": {
-      "description": "Materialize a profile of the configuration set (spec §4.1): a { candidate } set is added first; tool one of tool_choices' toolchains (absent: a profile without one, shown incomplete); an existing profile of that set and toolchain is returned, not duplicated. A new profile's intent is local; with activate it is also made active. Waits for a toolchain detection that is running. A toolchain not among tool_choices', an unknown or stale set or a changed candidate is refused. When the automatic set was added but the profile could not be saved, the result is ok without profile and with a warn note (API.md §4.1).",
+      "description": "Materialize a profile of the configuration set (spec §4.1): a { candidate } set is added first; tool one of tool_choices' toolchains (absent: a profile without one, shown incomplete); an existing profile of that set and toolchain is returned, not duplicated. A new profile's intent is local; with activate it is also made active. Waits for a toolchain detection that is running. A toolchain not among tool_choices', an unknown or stale set or a changed candidate is refused. When the automatic set was added but the profile could not be saved, the result is ok with config_set, without profile, and with a warn note (API.md §4.1).",
       "params": {
         "type": "object",
         "required": [
@@ -407,6 +407,10 @@
           "const": "ok"
         },
         "profile": {
+          "$ref": "loomworks.Common/1#/$defs/Entity"
+        },
+        "config_set": {
+          "description": "The automatic set a { candidate } added (a created entity, API.md §4.1); absent for a set named by reference.",
           "$ref": "loomworks.Common/1#/$defs/Entity"
         },
         "notes": {

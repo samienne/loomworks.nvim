@@ -70,7 +70,7 @@
       ]
     },
     {
-      "name": "create returns the existing profile by id; set_active, add_tool and remove_tool by id, the id kept (step 5o part B2)",
+      "name": "create returns the existing profile by id; set_active by id; add_tool of a toolchain that does not resolve and remove_tool of one the profile lacks are refused, the id kept (step 5o part B2)",
       "fixture": "shell",
       "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
       "steps": [
@@ -81,9 +81,9 @@
         { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_active", "args": { "profile": { "id": { "$var": "dev_id" } } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
         { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "add_tool", "args": { "profile": { "id": { "$var": "dev_id" } }, "tool": "gcc-x" }, "env": { "$var": "env" } } },
-        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "refused", "message": "no toolchain 'gcc-x'", "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 5, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "remove_tool", "args": { "profile": { "id": { "$var": "dev_id" } }, "tool": "gcc-x" }, "env": { "$var": "env" } } },
-        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "ok" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "refused", "message": "no toolchain 'gcc-x' on profile 'dev'", "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 6, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "ok", "profile": { "id": { "$var": "dev_id" }, "key": "dev" } } } }
       ]
