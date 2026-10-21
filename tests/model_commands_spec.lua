@@ -241,6 +241,30 @@ describe("model_commands", function()
       assert_refused(mc.project_add(ws, "B", "typescript", "B", nil, nil))
     end)
 
+    it("add of a keyed module without a tool is unmapped, with a warn naming the mappings not made", function()
+      local r = mc.project_add(ws, "C", "cmake", "B", { Dev = "Debug" }, nil)
+      assert_ok(r)
+      assert.equals("C", r.project.key)
+      local dev = find(ws._config_sets, "name", "Dev")
+      assert.is_falsy(dev:configuration(r.project))
+      assert.same({ "warn" }, r.note_roles)
+      assert.is_truthy(r.notes[1]:find("Dev", 1, true), r.notes[1])
+      assert.is_truthy(r.notes[1]:find("no toolchain", 1, true), r.notes[1])
+      -- The editor's add without a toolchain sends its initial mappings; the
+      -- adapter drops them (the dialog hides them until a tool is chosen).
+      local ok, err = require("loomworks.workspace_view").execute_add_project(ws, "D", "cmake", "B",
+        { mappings = { Dev = "Debug" } })
+      assert.is_true(ok, err)
+    end)
+
+    it("add maps the known sets and warns naming an unknown set", function()
+      local r = mc.project_add(ws, "B", "typescript", "B", { Dev = "Debug", Nope = "Debug" }, nil)
+      assert_ok(r)
+      assert.is_truthy(find(ws._config_sets, "name", "Dev"):configuration(r.project))
+      assert.same({ "warn" }, r.note_roles)
+      assert.is_truthy(r.notes[1]:find("'Nope'", 1, true), r.notes[1])
+    end)
+
     it("add whose profile upgrade fails is ok with a warn note (D1)", function()
       ws.upgrade_profiles_for_tool = function() return false, "workspace busy" end
       local r = mc.project_add(ws, "B", "typescript", "B", {}, { tool_key = "t", tool_mod_type = "typescript" })

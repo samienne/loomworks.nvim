@@ -140,9 +140,13 @@ end
 --- @param result { mappings: table, tool_entry: table|nil }
 --- @return boolean ok, string|nil err
 function M.execute_add_project(ws, key, mod_type, path, result)
-    -- The module's keyed-ness is the command's own (a keyed module's
-    -- project without a toolchain is added unmapped).
-    local r = commands.project_add(ws, key, mod_type, path, result.mappings, result.tool_entry)
+    -- A keyed module's project without a toolchain is added unmapped: the
+    -- mapping dialog hides its mappings until a tool is chosen, so the
+    -- initial ones it still carries are not a request (no warn note).
+    local mod = require("loomworks.modules").get(mod_type)
+    local mappings = result.mappings
+    if mod and mod.has_keyed_tools and not result.tool_entry then mappings = nil end
+    local r = commands.project_add(ws, key, mod_type, path, mappings, result.tool_entry)
     local ok, err = as_result(r)
     return ok, err, r.project
 end

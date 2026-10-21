@@ -1,0 +1,615 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Projects",
+  "version": 1,
+  "description": "Object /projects (API.md §19; step 5o part B3): the declaration read with ids, a launch rename that keeps its id, a configuration rename under the same id, the environment reads, and the refusals of references and arguments.",
+  "cases": [
+    {
+      "name": "declaration names each launch configuration by id; launch_save renames one, its id kept; another project's launch id is refused",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "model_change"
+        },
+        {
+          "kind": "signal",
+          "object": "/workspace",
+          "name": "changed"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/internal",
+            "iface": "lw.internal.Snapshot",
+            "v": 1,
+            "method": "get",
+            "args": {
+              "scope": "config"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "index": {
+                "projects": {
+                  "app": {
+                    "$bind": "app_id"
+                  },
+                  "lib": {
+                    "$bind": "lib_id"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "declaration",
+            "args": {
+              "project": {
+                "id": {
+                  "$var": "app_id"
+                }
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "ok",
+              "launches": {
+                "$contains": [
+                  {
+                    "id": {
+                      "$bind": "hello_id"
+                    },
+                    "key": "hello",
+                    "fields": {
+                      "args": [
+                        "--version"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "configurations": {
+                "$contains": [
+                  {
+                    "id": {
+                      "$type": "string"
+                    },
+                    "key": "Debug"
+                  }
+                ]
+              },
+              "type_config": {
+                "fields": {
+                  "$type": "array"
+                }
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "launch_save",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "launch": {
+                "id": {
+                  "$var": "hello_id"
+                }
+              },
+              "name": "hi",
+              "data": {
+                "command": "hi-tool"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "ok",
+              "launch": {
+                "$exact": {
+                  "id": {
+                    "$var": "hello_id"
+                  },
+                  "key": "hi"
+                }
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 4,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "launch_remove",
+            "args": {
+              "project": {
+                "id": {
+                  "$var": "lib_id"
+                }
+              },
+              "launch": {
+                "id": {
+                  "$var": "hello_id"
+                }
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 4,
+            "result": {
+              "outcome": "refused",
+              "exit_code": 1,
+              "message": "launch configuration 'app:hi' is not of project 'lib'"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 5,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "launch_remove",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "launch": {
+                "key": "hi"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 5,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "configuration_save creates a configuration, then renames it under the same id",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "model_change"
+        },
+        {
+          "kind": "signal",
+          "object": "/workspace",
+          "name": "changed"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "configuration_save",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "name": "Fast",
+              "fields": {
+                "options": {
+                  "O": "2"
+                }
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "ok",
+              "configuration": {
+                "id": {
+                  "$bind": "fast_id"
+                },
+                "key": "Fast"
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "configuration_save",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "configuration": {
+                "id": {
+                  "$var": "fast_id"
+                }
+              },
+              "name": "Faster",
+              "fields": {
+                "options": {
+                  "O": "3"
+                }
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "ok",
+              "configuration": {
+                "id": {
+                  "$var": "fast_id"
+                },
+                "key": "Faster"
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "configuration_remove",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "configuration": {
+                "key": "Faster"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "candidates and expand_preview read in the client's environment and change nothing",
+      "fixture": "shell",
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "candidates",
+            "args": {
+              "path": "app",
+              "type": "shell"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "ok",
+              "key": "app",
+              "path": "app",
+              "types": {
+                "$type": "array"
+              },
+              "configurations": {
+                "$type": "array"
+              }
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "expand_preview",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "profile": {
+                "key": "dev"
+              },
+              "templates": [
+                "${project_path}/bin",
+                "${no_such_variable}"
+              ]
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "ok",
+              "values": [
+                "app/bin",
+                "${no_such_variable}"
+              ]
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "candidates",
+            "args": {
+              "path": "../outside"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "refused",
+              "exit_code": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a stale id, an unknown key, a field the module does not edit and invalid arguments are refused",
+      "fixture": "shell",
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "options_save",
+            "args": {
+              "project": {
+                "id": "999.999"
+              },
+              "options": {
+                "A": "1"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "refused",
+              "exit_code": 1,
+              "message": "no project with id 999.999 (a stale reference)"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "declaration",
+            "args": {
+              "project": {
+                "key": "nope"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "refused",
+              "exit_code": 1,
+              "message": "no project 'nope'"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "type_config_set",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "field": "configurations",
+              "value": "x"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "refused",
+              "exit_code": 2
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 4,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "launch_remove",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "launch": {
+                "id": "x",
+                "key": "y"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 4,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 5,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "add",
+            "args": {
+              "key": "x",
+              "type": "shell",
+              "bogus": 1
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "error",
+            "req_id": 5,
+            "error": {
+              "code": "invalid_args"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

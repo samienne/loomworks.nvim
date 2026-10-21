@@ -16,6 +16,10 @@
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list
 ---   /profiles    loomworks.Profiles/1     compiler_cache, set_device, clear_device
+---   /projects    loomworks.Projects/1     candidates, add, declaration, configuration_save,
+---                                         configuration_remove, options_save, launch_save, launch_remove,
+---                                         deploy_save, variable_save, variable_remove, type_config_set,
+---                                         expand_preview
 ---   /devices     loomworks.Devices/1      list, scan T, install T, launch T, stop (changed;
 ---                                         loomworks.daemon.devices)
 ---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1, loomworks.view.Tests/1
@@ -70,6 +74,7 @@ M.TOOLCHAINS = { path = "/toolchains", iface = "loomworks.Toolchains", v = 1 }
 M.PROFILES = { path = "/profiles", iface = "loomworks.Profiles", v = 1 }
 M.DEBUG = { path = "/debug", iface = "loomworks.DebugConfig", v = 1 }
 M.LSP = { path = "/lsp", iface = "loomworks.LspConfig", v = 1 }
+M.PROJECTS = { path = "/projects", iface = "loomworks.Projects", v = 1 }
 
 --- The header of `Workspace/1` (the welcome header's fields, §19.13), never
 --- loading.
@@ -192,6 +197,61 @@ local function item_of(service, ws, ref)
     return item
 end
 
+--- The entity fields a command's result may carry (`{ id, key }` each, made
+--- by the handler from the created or kept object).
+local ENTITY_FIELDS = { "project", "configuration", "launch" }
+
+--- The reply of a command outcome: only the protocol's fields; a refused
+--- write reports the lock or save refusal the host recorded (it names
+--- the holder), without repeating it as a note.
+local function reply_of(r, seg)
+    local out = { outcome = r.outcome, message = r.message, exit_code = r.exit_code,
+        lines = r.lines, plan = r.plan, notes = r.notes, note_roles = r.note_roles }
+    if r.outcome == "ok" then
+        for _, f in ipairs(ENTITY_FIELDS) do out[f] = r[f] end
+    end
+    if r.outcome == "refused" and seg and seg.refused then
+        out.message = seg.refused
+        local notes, roles = {}, {}
+        for i, n in ipairs(seg.notes or {}) do
+            if not n:find(seg.refused, 1, true) then
+                notes[#notes + 1] = n
+                roles[#roles + 1] = (seg.note_roles or {})[i]
+            end
+        end
+        seg.notes = #notes > 0 and notes or nil
+        seg.note_roles = #roles > 0 and roles or nil
+    end
+    return out
+end
+
+--- A command on the loaded model, in a model segment of the caller's
+--- environment (request kind `workspace_command`): `fn(ws)` → a
+--- model_commands outcome, after the tracker took in any pending change.
+local function command(service, ctx, fn)
+    service:_on_model_request(ctx.conn, { kind = "workspace_command", env = ctx.env }, function(ws, seg)
+        -- A change another process wrote is taken in first: the write
+        -- then never refuses as stale for it (§2.7).
+        local tr = ws._tracker
+        if tr and tr.sync then tr:sync() end
+        if service.host.current() ~= ws then
+            return { outcome = "refused", exit_code = 1,
+                message = "the workspace was reloaded (refused or changed .nvim files); try again" }
+        end
+        local out = reply_of(fn(ws), seg)
+        -- The outcome's own notes follow the segment's (the request
+        -- replies with the segment's list).
+        for i, n in ipairs(out.notes or {}) do
+            seg.notes, seg.note_roles = seg.notes or {}, seg.note_roles or {}
+            seg.notes[#seg.notes + 1] = n
+            seg.note_roles[#seg.notes] = (out.note_roles or {})[i] or "plain"
+        end
+        out.notes, out.note_roles = nil, nil
+        return out
+    end, nil, function(fields) ctx.reply(fields) end)
+    return require("loomworks.daemon.interfaces").ASYNC
+end
+
 --- The `loomworks.Workspace/1` handlers (API.md §6). The commands run in a
 --- model segment of the caller's environment (as `write_segment`): ids
 --- resolve to the live objects once, here, and the write is the shared
@@ -210,63 +270,17 @@ function M.workspace_impl(service)
     local methods = {}
     function methods.header() return M.header(service) end
 
-    --- The reply of a command outcome: only the protocol's fields; a refused
-    --- write reports the lock or save refusal the host recorded (it names
-    --- the holder), without repeating it as a note.
-    local function reply_of(r, seg)
-        local out = { outcome = r.outcome, message = r.message, exit_code = r.exit_code,
-            lines = r.lines, plan = r.plan, notes = r.notes, note_roles = r.note_roles }
-        if r.outcome == "refused" and seg and seg.refused then
-            out.message = seg.refused
-            local notes, roles = {}, {}
-            for i, n in ipairs(seg.notes or {}) do
-                if not n:find(seg.refused, 1, true) then
-                    notes[#notes + 1] = n
-                    roles[#roles + 1] = (seg.note_roles or {})[i]
-                end
-            end
-            seg.notes = #notes > 0 and notes or nil
-            seg.note_roles = #roles > 0 and roles or nil
-        end
-        return out
-    end
-
-    --- A command on the loaded model: `fn(ws)` → a model_commands outcome.
-    local function command(ctx, fn)
-        service:_on_model_request(ctx.conn, { kind = "workspace_command", env = ctx.env }, function(ws, seg)
-            -- A change another process wrote is taken in first: the write
-            -- then never refuses as stale for it (§2.7).
-            local tr = ws._tracker
-            if tr and tr.sync then tr:sync() end
-            if service.host.current() ~= ws then
-                return { outcome = "refused", exit_code = 1,
-                    message = "the workspace was reloaded (refused or changed .nvim files); try again" }
-            end
-            local out = reply_of(fn(ws), seg)
-            -- The outcome's own notes follow the segment's (the request
-            -- replies with the segment's list).
-            for i, n in ipairs(out.notes or {}) do
-                seg.notes, seg.note_roles = seg.notes or {}, seg.note_roles or {}
-                seg.notes[#seg.notes + 1] = n
-                seg.note_roles[#seg.notes] = (out.note_roles or {})[i] or "plain"
-            end
-            out.notes, out.note_roles = nil, nil
-            return out
-        end, nil, function(fields) ctx.reply(fields) end)
-        return interfaces.ASYNC
-    end
-
     --- A command naming one item.
     local function item_command(ctx, args, fn)
-        return command(ctx, function(ws)
+        return command(service, ctx, function(ws)
             local item, err = item_of(service, ws, args.item)
             if not item then return mc.refused(err) end
             return fn(item)
         end)
     end
 
-    function methods.publish(ctx) return command(ctx, mc.publish) end
-    function methods.revert_to_baseline(ctx) return command(ctx, mc.revert_to_baseline) end
+    function methods.publish(ctx) return command(service, ctx, mc.publish) end
+    function methods.revert_to_baseline(ctx) return command(service, ctx, mc.revert_to_baseline) end
     function methods.publish_one(ctx, args) return item_command(ctx, args, mc.publish_one) end
     function methods.revert_one(ctx, args) return item_command(ctx, args, mc.revert_one) end
     function methods.set_intent(ctx, args)
@@ -622,6 +636,269 @@ function M.profiles_impl(service)
     return { methods = methods }
 end
 
+--- The project a `Projects/1` call names (`{ id }` or `{ key }`), or nil +
+--- the refusal.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @param ref table
+--- @return table|nil project, string|nil err
+local function project_of(service, ws, ref)
+    if ref.id ~= nil then
+        local p = service.ids:find(ref.id, ws._projects)
+        if not p then return nil, "no project with id " .. tostring(ref.id) .. " (a stale reference)" end
+        return p
+    end
+    for _, p in pairs(ws._projects or {}) do
+        if not p._removed and p.key == ref.key then return p end
+    end
+    return nil, "no project '" .. tostring(ref.key) .. "'"
+end
+
+--- Every live project's objects of one kind (`field`: `_configurations` or
+--- `_launches`), for resolving an id among all of them.
+local function owned_objects(ws, field)
+    local out = {}
+    for _, p in pairs(ws._projects or {}) do
+        if not p._removed then
+            for _, o in pairs(p[field] or {}) do out[#out + 1] = o end
+        end
+    end
+    return out
+end
+
+--- The configuration of `project` a call names: its id (refused when it is
+--- another project's), or `{ key }` its name in `project`; or nil + the
+--- refusal.
+--- @param service loomworks.daemon.BuildService
+--- @param project loomworks.Project
+--- @param ref table
+--- @return loomworks.Configuration|nil, string|nil err
+local function configuration_of(service, project, ref)
+    if ref.id ~= nil then
+        local c = service.ids:find(ref.id, owned_objects(project._workspace, "_configurations"))
+        if not c then return nil, "no configuration with id " .. tostring(ref.id) .. " (a stale reference)" end
+        if c._project ~= project then
+            return nil, "configuration '" .. c.name .. "' is not of project '" .. project.key .. "'"
+        end
+        return c
+    end
+    local c = project:get_configuration(ref.key)
+    if not c or c._removed then
+        return nil, "no configuration '" .. tostring(ref.key) .. "' in project '" .. project.key .. "'"
+    end
+    return c
+end
+
+--- The launch configuration of `project` a call names (API.md §1.2): its id
+--- (refused when it is another project's), or `{ key }` its name in
+--- `project`; or nil + the refusal.
+--- @param service loomworks.daemon.BuildService
+--- @param project loomworks.Project
+--- @param ref table
+--- @return loomworks.LaunchConfiguration|nil, string|nil err
+local function launch_of(service, project, ref)
+    if ref.id ~= nil then
+        local l = service.ids:find(ref.id, owned_objects(project._workspace, "_launches"))
+        if not l then return nil, "no launch configuration with id " .. tostring(ref.id) .. " (a stale reference)" end
+        if l._project ~= project then
+            return nil, "launch configuration '" .. l._project.key .. ":" .. l.name .. "' is not of project '"
+                .. project.key .. "'"
+        end
+        return l
+    end
+    local l = project:find_launch(ref.key)
+    if not l or l:is_removed() then
+        return nil, "no launch config '" .. tostring(ref.key) .. "' on project '" .. project.key .. "'"
+    end
+    return l
+end
+
+--- A wire value with JSON nulls (vim.NIL) dropped, recursively.
+local function plain(v)
+    if v == vim.NIL then return nil end
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, x in pairs(v) do
+        if x ~= vim.NIL then out[k] = plain(x) end
+    end
+    return out
+end
+
+--- The `loomworks.Projects/1` handlers (API.md §19). The commands run as
+--- Workspace/1's do (`command`): references resolve to the live objects once,
+--- here (a project, configuration or launch configuration by id or by key,
+--- a variable, deploy declaration or `type_config` field by its project and
+--- name), and the write is the shared loomworks.model_commands function the
+--- in-process editor calls. A configuration rename propagates under the
+--- workspace operation lock O (Project:rename_configuration is guarded, spec
+--- §19.3), as does `add`'s profile upgrade (Workspace:upgrade_profiles_for_tool);
+--- a launch rename writes only the working copy and takes no O. The reads
+--- (`candidates`, `declaration`, `expand_preview`) run in a model segment of
+--- the caller's environment and change nothing.
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.daemon.InterfaceImpl
+function M.projects_impl(service)
+    local interfaces = require("loomworks.daemon.interfaces")
+    local mc = require("loomworks.model_commands")
+    local methods = {}
+
+    --- `{ id, key }` of a created or kept object.
+    local function entity(obj, key)
+        if obj == nil then return nil end
+        return { id = service.ids:id(obj), key = key }
+    end
+
+    --- A read: `fn(ws)` → a model_commands outcome (its fields the result).
+    local function read(ctx, fn)
+        service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws)
+            local r = fn(ws)
+            if r.outcome ~= "ok" then
+                return { outcome = "refused", message = r.message, exit_code = r.exit_code or 1 }
+            end
+            return r
+        end, nil, function(fields) ctx.reply(fields) end)
+        return interfaces.ASYNC
+    end
+
+    --- A command or read on the project `args.project` names: `fn(project,
+    --- ws)` → a model_commands outcome.
+    local function on_project(run, ctx, args, fn)
+        return run(service, ctx, function(ws)
+            local project, err = project_of(service, ws, args.project)
+            if not project then return mc.refused(err) end
+            return fn(project, ws)
+        end)
+    end
+    local function cmd(ctx, args, fn) return on_project(command, ctx, args, fn) end
+    local function rd(ctx, args, fn) return on_project(function(_, c, f) return read(c, f) end, ctx, args, fn) end
+
+    function methods.candidates(ctx, args)
+        return read(ctx, function(ws) return mc.project_candidates(ws, args.path, args.type) end)
+    end
+
+    function methods.add(ctx, args)
+        return command(service, ctx, function(ws)
+            if not require("loomworks.modules").get(args.type) then
+                return mc.refused("unknown project type '" .. tostring(args.type) .. "'", 2)
+            end
+            -- The directory (`path`, else the one named by the key) must be
+            -- under the root (exit 2) and exist; it is stored relative to it.
+            local rel, refusal = mc.project_dir(ws.root, plain(args.path) or args.key)
+            if not rel then return refusal end
+            local path = rel == "" and "." or rel
+            local tool_entry
+            if args.tool ~= nil then
+                tool_entry, refusal = mc.project_tool_entry(ws, args.type, args.tool.key)
+                if not tool_entry then return refusal end
+            end
+            local r = mc.project_add(ws, args.key, args.type, path, plain(args.mappings), tool_entry)
+            if r.outcome == "ok" then r.project = entity(r.project, r.project and r.project.key) end
+            return r
+        end)
+    end
+
+    function methods.declaration(ctx, args)
+        return rd(ctx, args, function(project)
+            return mc.project_declaration(project, function(o) return service.ids:id(o) end)
+        end)
+    end
+
+    function methods.configuration_save(ctx, args)
+        return cmd(ctx, args, function(project)
+            local cfg
+            if args.configuration ~= nil then
+                local err
+                cfg, err = configuration_of(service, project, args.configuration)
+                if not cfg then return mc.refused(err) end
+            end
+            local r = mc.configuration_save(project, cfg, args.name, plain(args.fields))
+            if r.outcome == "ok" then
+                r.configuration = entity(r.configuration, r.configuration and r.configuration.name)
+            end
+            return r
+        end)
+    end
+
+    function methods.configuration_remove(ctx, args)
+        return cmd(ctx, args, function(project)
+            local cfg, err = configuration_of(service, project, args.configuration)
+            if not cfg then return mc.refused(err) end
+            return mc.configuration_remove(project, cfg)
+        end)
+    end
+
+    function methods.options_save(ctx, args)
+        return cmd(ctx, args, function(project) return mc.options_save(project, plain(args.options)) end)
+    end
+
+    function methods.launch_save(ctx, args)
+        return cmd(ctx, args, function(project)
+            local launch
+            if args.launch ~= nil then
+                local err
+                launch, err = launch_of(service, project, args.launch)
+                if not launch then return mc.refused(err) end
+            end
+            local r = mc.launch_save(project, launch, args.name, plain(args.data))
+            if r.outcome == "ok" then r.launch = entity(r.launch, r.launch and r.launch.name) end
+            return r
+        end)
+    end
+
+    function methods.launch_remove(ctx, args)
+        return cmd(ctx, args, function(project)
+            local launch, err = launch_of(service, project, args.launch)
+            if not launch then return mc.refused(err) end
+            return mc.launch_remove(project, launch)
+        end)
+    end
+
+    function methods.deploy_save(ctx, args)
+        return cmd(ctx, args, function(project) return mc.deploy_save(project, plain(args.deploy)) end)
+    end
+
+    function methods.variable_save(ctx, args)
+        return cmd(ctx, args, function(project)
+            if args.variable ~= nil and not (project.variables and project.variables[args.variable]) then
+                return mc.refused("no variable '" .. tostring(args.variable) .. "' in project '" .. project.key .. "'")
+            end
+            return mc.variable_save(project, args.variable, args.name, plain(args.data))
+        end)
+    end
+
+    function methods.variable_remove(ctx, args)
+        return cmd(ctx, args, function(project)
+            if not (project.variables and project.variables[args.variable]) then
+                return mc.refused("no variable '" .. tostring(args.variable) .. "' in project '" .. project.key .. "'")
+            end
+            return mc.variable_remove(project, args.variable)
+        end)
+    end
+
+    function methods.type_config_set(ctx, args)
+        return cmd(ctx, args, function(project)
+            if not mc.editable_type_config_field(project, args.field) then
+                return mc.refused("'" .. tostring(args.field) .. "' is not an editable type_config field of project '"
+                    .. project.key .. "'", 2)
+            end
+            return mc.type_config_set(project, args.field, plain(args.value))
+        end)
+    end
+
+    function methods.expand_preview(ctx, args)
+        return rd(ctx, args, function(project, ws)
+            local profile
+            if args.profile ~= nil then
+                local err
+                profile, err = profile_of(service, ws, args.profile)
+                if not profile then return mc.refused(err) end
+            end
+            return mc.expand_preview(project, profile, args.templates)
+        end)
+    end
+    return { methods = methods }
+end
+
 --- The `loomworks.DebugConfig/1` handlers (§19.20 `DebugConfig/1`): the
 --- workspace's debug-adapter mapping, read in a model segment of the
 --- requesting client's environment as a query is (loaded as for `snapshot`
@@ -756,6 +1033,7 @@ function M.mount(registry, service)
         { M.LAUNCH, M.launch_impl },
         { M.TOOLCHAINS, M.toolchains_impl },
         { M.PROFILES, M.profiles_impl },
+        { M.PROJECTS, M.projects_impl },
         { M.DEBUG, M.debug_impl },
         { M.LSP, M.lsp_impl },
         { require("loomworks.daemon.devices").WHERE, require("loomworks.daemon.devices").impl },

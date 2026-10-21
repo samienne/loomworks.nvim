@@ -122,6 +122,17 @@ like the `lw test` / launch deploy (`deploy_async`, the runner's
 `test_host.deploy`: each copy on the event loop, stopping between copies on a
 cancel), then remove this entry.
 
+## Daemon Projects/1: `candidates` detects toolchains synchronously
+
+`Projects/1.candidates` (and `add { tool }` for a toolchain the profiles do
+not use yet), step 5o B3, list a keyed module's toolchains through
+`keyed_tools` in `model_commands.lua`, which calls the module's
+`detect_tools` synchronously when the workspace has no scanned list. The
+scan probes compilers (process spawns), and while it runs the daemon's event
+loop is blocked: other clients wait. Make it async (a task, or the workspace's
+scan run off the loop) or serve it from the cached scan, then remove this
+entry.
+
 ## Editor tests view: apply a run's `done` cases to the held view
 
 The editor's `resolve` (`loomtest_adapter.lua`) puts a run's `done.result.cases`
