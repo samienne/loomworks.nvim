@@ -26,6 +26,7 @@ local editor_ops = require("loomworks.daemon.editor_ops")
 local session_tracker = require("loomworks.session_tracker")
 local dl = require("loomworks.device_log")
 local devices_mod = require("loomworks.daemon.devices")
+local views = require("loomworks.views")
 local H = require("tests.daemon_helpers")
 local FR = require("tests.daemon_fake_relay")
 
@@ -151,6 +152,12 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
             resolve = function() return "lw" end, relay = fr.relay })
         assert.is_true(vim.wait(60000, function()
             return obs:can_call("device_scan") and obs:can_call("set_device") and obs._devices ~= nil
+        end, 20), obs:runtime_line())
+        -- And the daemon has loaded the workspace: a launch before that is
+        -- refused as "unloaded" (§19.16), which a slow machine can reach.
+        assert.is_true(vim.wait(60000, function()
+            local header = views.daemon_state(obs, "header")
+            return type(header) == "table" and header.state == "loaded"
         end, 20), obs:runtime_line())
     end
 
