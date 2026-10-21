@@ -27,7 +27,7 @@
       "mutates": false
     },
     "rescan": {
-      "description": "Detect the toolchains again in the client's environment, every module type afresh, and take them into the model, as the status page's L does in-process; replies once the model took them in. Workspace/1 changed precedes the reply when the model's toolchains changed. A detection that does not finish in time is refused (it goes on in the background).",
+      "description": "Detect the toolchains again in the client's environment, every module type afresh, and take them into the model, as the status page's L does in-process; replies once the model took them in. Workspace/1 changed precedes the reply when the model's toolchains changed. It replies only after detection settled or 45 s passed (other model requests queue behind it; a client calls it with a timeout of at least 45 s). A detection that does not finish in time is ok with a warn note (it goes on in the background, and Workspace/1 changed follows when it finishes, if the toolchains changed).",
       "params": {
         "type": "object",
         "required": [],

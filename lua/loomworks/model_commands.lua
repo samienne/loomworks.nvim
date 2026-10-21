@@ -1391,7 +1391,11 @@ function M.sdk_detect(provider)
     return ok({ providers = providers })
 end
 
---- `add { provider, path }` — declare an SDK.
+--- `add { provider, path }` — declare an SDK, then start detecting the
+--- toolchains again (Workspace:rescan_tools, spec §1.5),
+--- so the SDK's kits are offered once detection settles. Detection is
+--- asynchronous: this never waits for it (the daemon waits before it
+--- replies; the editor does not).
 --- @param ws loomworks.Workspace
 --- @param provider string provider id
 --- @param path string|nil installation path (nil: the first detected)
@@ -1399,17 +1403,22 @@ end
 function M.sdk_add(ws, provider, path)
     local sdk, err = ws:add_sdk(provider, path)
     if not sdk then return refused(err or "failed to add SDK") end
+    ws:rescan_tools()
     return ok({ sdk = sdk })
 end
 
---- `remove { sdk }` — remove its declaration.
+--- `remove { sdk }` — remove its declaration, then start detecting the
+--- toolchains again (as `add`), so the SDK's kits leave the toolchains and
+--- no profile resolves against the removed SDK.
+--- @param ws loomworks.Workspace
 --- @param sdk loomworks.SDK
 --- @return loomworks.CommandOutcome
 function M.sdk_remove(ws, sdk)
     if sdk == nil or sdk._removed then return refused("no such SDK (a stale reference)") end
-    if not ws:remove_sdk(sdk.key) then
+    if not ws:remove_sdk(sdk) then
         return refused("SDK '" .. tostring(sdk.key) .. "' is not declared")
     end
+    ws:rescan_tools()
     return ok()
 end
 

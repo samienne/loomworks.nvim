@@ -7994,12 +7994,13 @@ function Workspace:add_sdk(sdk_type, path, opts)
     return sdk
 end
 
---- Remove an SDK from the workspace.
---- @param key string SDK key
---- @return boolean ok
-function Workspace:remove_sdk(key)
+--- Remove an SDK from the workspace: the declared object itself (by
+--- identity, never another SDK of its key).
+--- @param target loomworks.SDK
+--- @return boolean ok false: `target` is not declared
+function Workspace:remove_sdk(target)
     for i, sdk in ipairs(self._sdks) do
-        if sdk.key == key then
+        if sdk == target then
             sdk._removed = true
             table.remove(self._sdks, i)
             self:_save_user()

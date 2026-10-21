@@ -133,7 +133,10 @@ M.LOAD_WAIT_MS = 45000
 --- @field _lsp_seq integer|nil the `seq` of the last `changed` sent
 --- @field _lsp_force boolean|nil an owned database was written during a model segment: the deferred check
 ---   sends `changed` even when the state is unchanged (a raised `db_rev`)
---- @field _lsp_listeners table<string, function> the `lsp_database_written` / `lsp_ready` event handlers
+--- @field _lsp_listeners table<string, function> the `lsp_database_written` / `lsp_ready` / `tools_detected`
+---   event handlers
+--- @field _late_tools { ws: table, rows: table }|nil a toolchain detection a write started that did not finish
+---   within its wait (`tools_late`): the model and its toolchain rows before the write
 --- @field _attach_load boolean|nil an editor's attach queued a load (`on_editor_attached`) not yet run
 ---   (removed again when the service stops)
 local Service = {}
@@ -184,6 +187,9 @@ function M.attach(server, host)
             end
         end,
         lsp_ready = function() pcall(core_ifaces.lsp_check, self) end,
+        -- A toolchain detection that outran a write's wait finished
+        -- (`tools_late`).
+        tools_detected = function() pcall(self._tools_settled, self) end,
     }
     for ev, fn in pairs(self._lsp_listeners) do events.on(ev, fn) end
     -- The header `header_changed` compares with (unloaded: never loads).
@@ -1030,6 +1036,35 @@ function Service:on_run_done(run)
     -- The tests view: the units the run covered may no longer match their
     -- discovered trees (§19.13 "The tests view", `stale`).
     pcall(require("loomworks.daemon.test_store").on_run_done, self, run)
+end
+
+--- A toolchain detection a write started (Toolchains/1.rescan, Sdks/1.add /
+--- remove) did not finish within the write's wait: it goes on in the
+--- background, and Workspace/1 `changed` is signalled when it finishes
+--- (`_tools_settled`), if the toolchains changed.
+--- @param ws table the model the detection runs for
+--- @param rows table the toolchain rows before the write (snapshot.tool_rows)
+function Service:tools_late(ws, rows)
+    local late = self._late_tools
+    -- An earlier late detection's baseline is the older one: keep it.
+    if late and late.ws == ws then return end
+    self._late_tools = { ws = ws, rows = rows }
+end
+
+--- `tools_detected`: a late detection (`tools_late`) finished. It runs outside
+--- any model segment, so outside the requester's environment scope
+--- (daemon/envscope.lua): it only compares the toolchain rows and signals
+--- `changed`; the detection's result was taken in by the workspace's own
+--- callback, as a load's background detection is (§19.11).
+function Service:_tools_settled()
+    local late = self._late_tools
+    if not late then return end
+    local ws = late.ws
+    if ws ~= self.ws or ws._torn_down then self._late_tools = nil; return end
+    if ws._tool_state ~= "scanned" then return end
+    self._late_tools = nil
+    local rows = require("loomworks.daemon.snapshot").tool_rows(ws._tools_by_type)
+    if not vim.deep_equal(late.rows, rows) then self.server:model_changed() end
 end
 
 --- Is the daemon's own background work running (§19.11)? The loaded model's

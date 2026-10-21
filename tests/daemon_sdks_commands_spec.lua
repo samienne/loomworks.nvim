@@ -130,7 +130,7 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
         assert.same({ id = id_of(sdk), key = "fake_b4-1" }, r.sdk)
         assert.equals("fake_b4", working_copy(root).sdks["fake_b4-1"].type)
         assert.equals(1, shell_kits(ws), "the rescan took the SDK's kit in before the reply")
-        assert.is_true(srv.seq > seq)
+        assert.equals(seq + 1, srv.seq, "one changed for the add and its rescan")
 
         r = sdks("remove", { sdk = { id = id_of(sdk) } })
         assert.equals("ok", r.outcome, vim.inspect(r))
@@ -176,12 +176,56 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
         assert.is_true(srv.seq > seq, "new toolchains: changed before the reply")
     end)
 
-    it("a rescan whose detection does not finish in time is refused", function()
+    it("remove detects again: a profile of the SDK's kit no longer resolves to the removed SDK", function()
+        local ws = loaded()
+        assert.equals("ok", sdks("add", { provider = "fake_b4", path = root }).outcome)
+        local sdk = ws._sdks[#ws._sdks]
+        local function kit_profile()
+            for _, p in ipairs(ws._profiles) do
+                if not p._removed and vim.tbl_contains(p._tool_keys or {}, "fake-kit") then return p end
+            end
+        end
+        local mc = require("loomworks.model_commands")
+        local r = mc.profile_add_tool(assert(ws._profiles[1], "the workspace has a profile"), "fake-kit")
+        assert.equals("ok", r.outcome, r.message)
+        local profile = assert(kit_profile(), "a profile of the kit")
+        assert.equals(sdk, profile:sdk(), "the profile resolves to the SDK's kit")
+
+        r = sdks("remove", { sdk = { id = id_of(sdk) } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.equals(0, shell_kits(ws), "the removed SDK's kit left the toolchains")
+        for _, mod in ipairs(ws._modules) do
+            for _, tool in pairs(mod._tools or {}) do
+                assert.is_true(tool._removed or tool:sdk() ~= sdk, "a live tool of the removed SDK")
+            end
+        end
+        profile = kit_profile()
+        assert.is_true(profile == nil or profile:sdk() ~= sdk, "the profile still resolves to the removed SDK")
+    end)
+
+    it("a rescan whose detection does not finish in time replies ok with a warn note; changed when it finishes", function()
+        local ws = loaded()
+        local finish
+        ws._core._deps.detect_tools_async = function(_, _, cb) finish = cb end
+        service.LOAD_WAIT_MS = 200
+        local seq = srv.seq
+        local r = toolchains("rescan")
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.same({ "toolchain detection did not finish in time; it goes on in the background" }, r.notes)
+        assert.same({ "warn" }, r.note_roles)
+        assert.equals(seq, srv.seq)
+        assert.is_function(finish)
+        finish({ shell = { { tool_key = "late", tool_label = "late", tool_data = { id = "late" } } } })
+        assert.is_true(vim.wait(5000, function() return srv.seq > seq end, 10), "no changed when the late detection finished")
+    end)
+
+    it("an add whose rescan does not finish in time is ok with the warn note", function()
         local ws = loaded()
         ws._core._deps.detect_tools_async = function() end
         service.LOAD_WAIT_MS = 200
-        local r = toolchains("rescan")
-        assert.equals("refused", r.outcome, vim.inspect(r))
-        assert.truthy(r.message:find("did not finish", 1, true), r.message)
+        local r = sdks("add", { provider = "fake_b4", path = root })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.same({ "SDK 'fake_b4-1' added; toolchain detection did not finish in time; it goes on in the background" },
+            r.notes)
     end)
 end)

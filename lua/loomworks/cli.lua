@@ -7523,7 +7523,12 @@ function M.cmd_sdk(sub, root, args)
     local key = args[3]
     if not key then die("usage: lw sdk remove <key>  (`lw sdk list` shows keys)", 2) end
     local ws = load_workspace(root, false)
-    if not ws:remove_sdk(key) then
+    -- The key the user typed names the SDK (exactly, as before).
+    local target
+    for _, s in ipairs(ws._sdks) do
+      if s.key == key then target = s; break end
+    end
+    if not target or not ws:remove_sdk(target) then
       die("no SDK with key '" .. key .. "'. Run `lw sdk list`.")
     end
     out("removed SDK '" .. key .. "'")

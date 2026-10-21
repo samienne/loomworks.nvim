@@ -725,6 +725,11 @@ module-specific `data`).
 Tool detection runs asynchronously in the background:
 - Automatically after workspace initialization completes
 - On `rescan_tools()` / `L` key in the status page
+- After an SDK is added or removed (the shared command layer starts it, so
+  the SDK's kits are offered, or leave the toolchains and no profile resolves
+  against the removed SDK). The editor does not wait for it; the daemon's
+  `Sdks/1.add` / `remove` reply once it settled or the wait ran out
+  ([API.md](../protocol/API.md) §21)
 
 Detection results are cached in memory for the session. Merge and
 build operations work without detection results — cached profiles

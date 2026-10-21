@@ -579,40 +579,55 @@ local function settled_tools(ws)
     return require("loomworks.model_commands").refused("toolchains are still being detected")
 end
 
---- Detect the toolchains again in the segment's environment
---- (model_commands.tools_rescan) and wait, as a load waits for its detection
---- (service.LOAD_WAIT_MS), until the model took them in. A changed toolchain
---- list signals Workspace/1 `changed` (before the reply), unless a write
---- during the detection already did.
+--- The toolchains before a write that detects them again
+--- (model_commands.tools_rescan, sdk_add, sdk_remove): the `changed`
+--- sequence number and the toolchain rows. Taken before the write, so the
+--- write's own `changed` (a saved working copy) is the only one when the
+--- detection then changes nothing more.
 --- @param service loomworks.daemon.BuildService
 --- @param ws table
---- @return boolean finished false: the detection did not finish in time (it
---- goes on in the background)
-local function rescan_tools(service, ws)
+--- @return { seq: integer, rows: table }
+local function tools_before(service, ws)
+    return { seq = service.server.seq,
+        rows = require("loomworks.daemon.snapshot").tool_rows(ws._tools_by_type) }
+end
+
+--- Wait, as a load waits for its detection (service.LOAD_WAIT_MS), until the
+--- model took in the detection a write started. A changed toolchain list
+--- signals Workspace/1 `changed` (before the reply), unless a write since
+--- `before` already did. A detection that does not finish in time goes on in
+--- the background: the daemon signals `changed` when it finishes
+--- (Service:tools_late), outside the requester's environment scope.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @param before { seq: integer, rows: table } tools_before
+--- @return boolean finished false: the detection did not finish in time
+local function await_tools(service, ws, before)
     local snapshot = require("loomworks.daemon.snapshot")
-    local before = snapshot.tool_rows(ws._tools_by_type)
-    local seq = service.server.seq
-    require("loomworks.model_commands").tools_rescan(ws)
     vim.wait(require("loomworks.daemon.service").LOAD_WAIT_MS, function()
         return ws._tool_state == "scanned" or ws._torn_down == true
     end, 25)
-    if ws._tool_state ~= "scanned" or ws._torn_down then return false end
-    if service.server.seq == seq and not vim.deep_equal(before, snapshot.tool_rows(ws._tools_by_type)) then
+    if ws._torn_down then return false end
+    if ws._tool_state ~= "scanned" then
+        service:tools_late(ws, before.rows)
+        return false
+    end
+    if service.server.seq == before.seq and not vim.deep_equal(before.rows, snapshot.tool_rows(ws._tools_by_type)) then
         service.server:model_changed()
     end
     return true
 end
 
--- PLACEHOLDER (needs approval): the refusal of a rescan whose detection did
--- not finish within the wait, and the warn note of an SDK added whose
--- rescan did not.
+--- The warn note of a write whose detection did not finish within the wait
+--- (the reply stays `ok`: the write is done, API.md §11).
 local RESCAN_UNFINISHED = "toolchain detection did not finish in time; it goes on in the background"
 
 --- The `loomworks.Toolchains/1` handlers. `rescan` (API.md §11, step 5o
 --- part B4) is a command: in a model segment of the caller's environment it
 --- detects the toolchains again, as the status page's `L` does in-process,
 --- every module type afresh (no machine-level cached result reused,
---- spec §16.43), and replies once the model took them in.
+--- spec §16.43), and replies once the model took them in, or `ok` with a
+--- warn note when that did not happen within the wait.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.toolchains_impl(service)
@@ -620,8 +635,10 @@ function M.toolchains_impl(service)
         list = query(service, "tools", function(r) return { tools = r.tools or {} } end),
         rescan = function(ctx)
             return command(service, ctx, function(ws)
-                if not rescan_tools(service, ws) then
-                    return require("loomworks.model_commands").refused(RESCAN_UNFINISHED)
+                local before = tools_before(service, ws)
+                require("loomworks.model_commands").tools_rescan(ws)
+                if not await_tools(service, ws, before) then
+                    return { outcome = "ok", notes = { RESCAN_UNFINISHED }, note_roles = { "warn" } }
                 end
                 return { outcome = "ok" }
             end)
@@ -651,8 +668,9 @@ end
 --- is a read in a model segment of the caller's environment (the providers'
 --- detection probes it); `add` and `remove` are commands as Workspace/1's
 --- (`command`), the write the shared loomworks.model_commands function the
---- in-process editor calls; `add` then detects the toolchains again
---- (Toolchains/1.rescan), so the SDK's kits are offered. `list` is deferred
+--- in-process editor calls, which also starts detecting the toolchains
+--- again; the daemon waits for that detection (as Toolchains/1.rescan) before
+--- it replies, so the SDK's kits are offered (or gone). `list` is deferred
 --- (step 5o D9: view.Workspace/1 carries the SDKs).
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
@@ -666,11 +684,12 @@ function M.sdks_impl(service)
 
     function methods.add(ctx, args)
         return command(service, ctx, function(ws)
+            local before = tools_before(service, ws)
             local r = mc.sdk_add(ws, args.provider, args.path)
             if r.outcome ~= "ok" then return r end
             local sdk = r.sdk
             r.sdk = { id = service.ids:id(sdk), key = sdk.key }
-            if not rescan_tools(service, ws) then
+            if not await_tools(service, ws, before) then
                 r.notes, r.note_roles = { "SDK '" .. sdk.key .. "' added; " .. RESCAN_UNFINISHED }, { "warn" }
             end
             return r
@@ -681,7 +700,12 @@ function M.sdks_impl(service)
         return command(service, ctx, function(ws)
             local sdk, err = sdk_of(service, ws, args.sdk)
             if not sdk then return mc.refused(err) end
-            return mc.sdk_remove(ws, sdk)
+            local before = tools_before(service, ws)
+            local r = mc.sdk_remove(ws, sdk)
+            if r.outcome == "ok" and not await_tools(service, ws, before) then
+                r.notes, r.note_roles = { RESCAN_UNFINISHED }, { "warn" }
+            end
+            return r
         end)
     end
     return { methods = methods }
