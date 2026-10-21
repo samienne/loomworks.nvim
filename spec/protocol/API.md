@@ -319,14 +319,18 @@ it).
   copy holds that needs trust, as `lw trust` lists it) and `plan` a token of
   exactly that content. With `plan`: the working copy is signed as shown, or
   `refused` (`the working copy changed since it was shown — review it
-  again`) when its content differs. It is served while the header's state is
+  again`) when its content differs. A working copy that is already trusted
+  answers `ok` with a note, not `confirm`; with no working copy (no
+  `user.json`) it is `refused`. It is served while the header's state is
   `refused`; the server then loads the workspace again (`header_changed`),
   so every id issued before is stale;
 - `delete_user_prefs { plan? }` — removes the working copy (spec §17.10,
   `lw trust --discard`, its `.nvim` path checks), confirmed as
-  `trust_accept` is, under the workspace operation lock; also served while
-  the header's state is `refused`; the server then loads the workspace
-  again.
+  `trust_accept` is, under the workspace operation lock; the confirmed
+  content is checked again under that lock, and a file that changed since is
+  `refused` with nothing deleted. With no working copy it is `refused`.
+  Also served while the header's state is `refused`; the server then loads
+  the workspace again.
 
 *(Deferred, not in step 5o.)* Creating a workspace — writing a new
 `loomworks.json` at a root that has none (the status page's `N`) — is not a
