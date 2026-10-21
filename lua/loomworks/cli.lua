@@ -6600,8 +6600,10 @@ function M.cmd_profile_create(root, args)
   for i = 2, #order do profile:add_tool(resolved[order[i]].key) end
   -- Profiles default to `local`: the toolchains they pin were resolved on
   -- this machine, so publishing one by default would push a build environment
-  -- into the shared contract that other machines may not have.
-  profile._intent = created_intent("local")
+  -- into the shared contract that other machines may not have. Only a new
+  -- profile: an existing one keeps its intent (API.md §11 `Profiles/1.create`,
+  -- as model_commands.profile_create).
+  if not existed then profile._intent = created_intent("local") end
   if activate then profile:activate() else ws:_save_user() end
   M._apply_create_description(profile, "profile '" .. profile.key .. "'")
 
