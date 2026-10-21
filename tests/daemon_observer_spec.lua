@@ -91,6 +91,9 @@ local function mount_views(srv, o)
             set_device = function() return { outcome = "ok" } end,
             clear_device = function() return { outcome = "ok" } end,
             compiler_cache = function() return { outcome = "ok" } end,
+            -- Selection and authoring (step 5o B2): unused here.
+            set_active = refused, create = refused, tool_choices = refused,
+            add_tool = refused, remove_tool = refused,
         } }))
         VIEW_STATE.tests = { state = "unloaded", stale = false, units = {} }
         assert(reg:mount("/views", "core", "loomworks.view.Tests", 1, {
