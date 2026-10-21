@@ -162,7 +162,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   project, configuration or launch configuration by its id; the variable
   editor reads the project from the daemon. A refusal is an error
   notification and changes nothing; it is never done in Neovim instead. The
-  configuration, launch and deploy editors still write from Neovim. (#PR)
+  configuration, launch and deploy editors still write from Neovim. (#318)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor
