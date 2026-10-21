@@ -354,7 +354,10 @@ describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", fu
     after_each(function()
         L.cleanup()
         if s then
-            pcall(function() s.service().host.core()._nuke_begin = nil end)
+            pcall(function()
+                local core = s.service().host.core()
+                core._nuke_begin, core._nuke_move_aside = nil, nil
+            end)
             s.close(); s = nil
         end
     end)
@@ -553,6 +556,149 @@ describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", fu
         assert.equals("nuke stopped: cancelled by the client that started it", f.error)
         assert.is_true(exists(x) and exists(cache))
         s.service().host.core()._nuke_begin = nil
+        assert.equals("confirm", s.nuke().outcome)
+    end)
+
+    it("a cancel once the removal started is ignored: the nuke runs to its end and succeeds", function()
+        local x, cache = prepared()
+        local io_mod = s.service().host.core()._deps.io
+        local orig = io_mod.rm_rf_async
+        local cancelled = false
+        io_mod.rm_rf_async = function(...)
+            local run = nuke_run()
+            if run and not cancelled then
+                cancelled = true
+                run.cancel("cancelled by the client that started it", 130)
+            end
+            return orig(...)
+        end
+        local ok, err = pcall(function()
+            local r = s.nuke({ yes = true })
+            assert.equals("accepted", r.outcome, vim.inspect(r))
+            local f, lines = s.done(r.task_id, 60000)
+            assert.is_true(cancelled, "a cancel arrived during the removal")
+            assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
+            assert.is_nil(f.error)
+            for _, l in ipairs(lines) do assert.is_nil(l:find("nuke stopped", 1, true), l) end
+        end)
+        io_mod.rm_rf_async = orig
+        assert(ok, err)
+        assert.is_false(exists(x))
+        assert.is_false(exists(s.root .. "/.nvim/build"))
+        local fh = io.open(cache, "rb")
+        if fh then
+            local text = fh:read("*a"); fh:close()
+            assert.is_nil(text:find('"built"', 1, true), text)
+        end
+        assert.is_not_nil(s.ws(), "loaded again")
+        assert.is_nil(nuke_run(), "the run is done")
+    end)
+
+    it("is served while the workspace load is refused (an invalid build cache), and the workspace then loads", function()
+        local x, cache = prepared()
+        -- Copied from another machine (a signature this key did not make),
+        -- found by the next load.
+        s.service():_unload()
+        local fh = assert(io.open(cache, "rb"))
+        local text = fh:read("*a"); fh:close()
+        local sig = assert(trust.split(text), "the cache is signed")
+        local at = assert(text:find(sig, 1, true))
+        fh = assert(io.open(cache, "wb"))
+        fh:write(text:sub(1, at - 1) .. string.rep("0", 64) .. text:sub(at + 64)); fh:close()
+        local function state() return s.call("/workspace", "loomworks.Workspace", "header").state end
+        -- Another request loads it: refused.
+        local d = s.delete({ target = { orphans = true } })
+        assert.equals("refused", d.outcome, vim.inspect(d))
+        assert.equals("refused", state())
+        local c = s.nuke()
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        assert.equals(maint.NUKE_HEADER, c.lines[1])
+        assert.is_string(c.plan)
+        assert.is_true(exists(x) and exists(cache), "a confirm removes nothing")
+        local r = s.nuke({ yes = true, plan = c.plan })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f, lines = s.done(r.task_id, 60000)
+        assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
+        assert.is_false(exists(x))
+        assert.is_false(exists(s.root .. "/.nvim/build"))
+        assert.is_true(exists(s.root .. "/loomworks.json"))
+        local now = io.open(cache, "rb")
+        if now then
+            local t = now:read("*a"); now:close()
+            assert.are_not.equal(text:sub(at + 64), t:sub(at + 64))
+        end
+        assert.are_not.equal("refused", state())
+        assert.is_not_nil(s.ws(), "the workspace loads")
+        assert.is_nil(nuke_run(), "the run is done")
+    end)
+
+    it("a late save of the old model does not recreate the cache after the nuke", function()
+        local x, cache = prepared()
+        local before = s.ws()
+        local r = s.nuke({ yes = true })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        assert.equals(0, (s.done(r.task_id, 60000)).exit_code)
+        assert.is_false(exists(x))
+        assert.is_not_nil(before._no_write, "the old model writes nothing")
+        os.remove(cache)
+        -- Even one that missed its teardown.
+        local torn = before._torn_down
+        before._torn_down = nil
+        local ok, saved = pcall(before._save_cache, before)
+        before._torn_down = torn
+        assert.is_true(ok, tostring(saved))
+        assert.is_false(saved)
+        assert.is_false(exists(cache), "the old model's save recreated the cache")
+    end)
+
+    it("a removal that fails midway is reported, its locks released and the workspace loaded again", function()
+        local x, cache = prepared()
+        local core = s.service().host.core()
+        core._nuke_move_aside = function() return nil, "EBUSY: resource busy or locked" end
+        local r = s.nuke({ yes = true })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f = s.done(r.task_id, 60000)
+        assert.equals(1, f.exit_code, tostring(f.error))
+        assert.truthy(tostring(f.error):find("cannot nuke: could not move .nvim/build aside", 1, true),
+            tostring(f.error))
+        -- The caches went first; the tree is left as it is.
+        assert.is_false(exists(cache) and (function()
+            local h = io.open(cache, "rb"); local t = h:read("*a"); h:close()
+            return t:find('"built"', 1, true) ~= nil
+        end)(), "no cache claims a built tree")
+        assert.is_true(exists(x), "the tree was left")
+        assert.is_not_nil(s.ws(), "loaded again")
+        assert.is_nil(nuke_run(), "the run is done")
+        -- Its locks were released: a nuke confirms and then succeeds.
+        core._nuke_move_aside = nil
+        local c = s.nuke()
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        local r2 = s.nuke({ yes = true, plan = c.plan })
+        assert.equals("accepted", r2.outcome, vim.inspect(r2))
+        assert.equals(0, (s.done(r2.task_id, 60000)).exit_code)
+        assert.is_false(exists(x))
+    end)
+
+    it("is refused while a deletion of the daemon is still removing after its task ended", function()
+        local x, cache = prepared()
+        local svc = s.service()
+        local t = svc.tasks:create({ closed = true })
+        t:start({ name = "orphans", kind = "delete" })
+        t:done(1, "timed out")
+        local run = { op = "delete", task = t, deleting = true, deletion_settled = false, finished = true,
+            released = false, ctx = { ws = svc.ws }, cancel = function() end }
+        svc.runs[run] = true
+        local ok, err = pcall(function()
+            for _, args in ipairs({ vim.empty_dict(), { yes = true } }) do
+                local r = s.nuke(args)
+                assert.equals("refused", r.outcome, vim.inspect(r))
+                assert.truthy(r.message:find("delete still removing (task " .. tostring(t.id) .. ")", 1, true),
+                    r.message)
+            end
+            assert.is_true(exists(x) and exists(cache))
+        end)
+        svc.runs[run] = nil
+        assert(ok, err)
         assert.equals("confirm", s.nuke().outcome)
     end)
 end)

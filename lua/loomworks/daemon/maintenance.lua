@@ -31,7 +31,9 @@
 --- (its holder named) — both checked before the listing, also without
 --- `yes`, and again in the task under the locks, where the plan (the build
 --- directories it locks, the owned LSP database areas) is compared too.
---- The task then unloads the model, removes and loads the workspace again.
+--- The task then unloads the model, removes and loads the workspace again;
+--- a cancel once the removal started is ignored (it runs to its end). Served
+--- also while the workspace load is refused (as trust_accept is).
 --- Deletion safety: no deletion path here; every path is `_nuke_begin`'s
 --- (`_safe_nvim_path`, the area checks aborting the whole nuke first).
 
@@ -356,8 +358,9 @@ local function no_break(fn)
 end
 
 --- Run an accepted nuke as task `ctx.task`: in its own model segment (a
---- cancel that arrives first ends it `nuke stopped: <reason>` with nothing
---- taken), the daemon's own tasks and the locks are checked again —
+--- cancel that arrives before the removal ends it `nuke stopped: <reason>`
+--- with nothing removed; one that arrives after is ignored), the daemon's
+--- own tasks and the locks are checked again —
 --- `Core:_nuke_begin` takes the workspace operation lock and every build
 --- lock, a held one ends the task naming its holder — the plan is compared
 --- under them, the model is unloaded, `Core:_nuke_run` removes, and the
@@ -397,11 +400,12 @@ function M.nuke_run(svc, ctx)
     end
 
     --- Stop the nuke (idempotent). Before it executes it ends at once; while
-    --- it executes it stops at the next check, before the removal. A removal
-    --- that started runs to its end (the operation lock is held until it has,
-    --- spec §19.3); the task then ends stopped.
+    --- it executes it stops at the next check, before the removal. Once the
+    --- removal started (the model is unloaded) a cancel is ignored: the
+    --- removal runs to its end (the operation lock is held until it has,
+    --- spec §19.3) and the nuke ends as it would without the cancel.
     function run.cancel(reason, code)
-        if run.cancelled or run.finished then return end
+        if run.cancelled or run.finished or run.removing then return end
         run.cancelled = true
         run.cancel_reason = reason or "cancelled"
         run.cancel_code = code or 1
@@ -434,6 +438,8 @@ function M.nuke_run(svc, ctx)
             run.release_all()
             return finish(run.cancel_code, stopped())
         end
+        -- From here on the removal runs to its end; a cancel is ignored.
+        run.removing = true
         -- Unload the model (a late save of it writes nothing), then remove.
         if svc.ws then svc.ws._no_write = "the workspace is being nuked" end
         svc:_unload()
@@ -460,7 +466,6 @@ function M.nuke_run(svc, ctx)
             if #errors == 1 and errors[1]:find("^cannot nuke: ") then return finish(1, errors[1]) end
             return finish(1, #errors == 0 and "nuke failed" or ("nuke failed: " .. table.concat(errors, "; ")))
         end
-        if run.cancelled then return finish(run.cancel_code, stopped()) end
         return finish(0)
     end
 
@@ -480,7 +485,11 @@ end
 
 --- The model segment that answers a nuke: the daemon's own tasks, then the
 --- locks (checked, not held), then the plan: `refused`, `confirm { lines,
---- plan }` without `yes`, else `accepted` with the task.
+--- plan }` without `yes`, else `accepted` with the task. Like
+--- `Workspace/1.trust_accept` it is served while the workspace load is
+--- refused (an invalid build cache, spec §17.4: nuke is its remedy): with no
+--- model it acts on the core alone, through the same checks
+--- (`_nuke_begin`'s safety checks and locks, the busy check, the plan).
 --- @param svc loomworks.daemon.BuildService
 --- @param ctx table
 function M.nuke_accept(svc, ctx)
@@ -490,17 +499,17 @@ function M.nuke_accept(svc, ctx)
         return ctx.reply({ outcome = "refused", message = msg, exit_code = code or 1,
             notes = ctx.notes, note_roles = ctx.note_roles })
     end
-    if not ws then
-        if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
-        return refuse(refusal)
+    if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
+    if ws then
+        if ctx.refused then return refuse(ctx.refused) end
+        if ws._tracker and ws._tracker.sync then ws._tracker:sync() end
+        if svc.host.current() ~= ws then
+            return refuse("the workspace was reloaded (refused or changed .nvim files); try again")
+        end
     end
-    if ctx.refused then return refuse(ctx.refused) end
-    if ws._tracker and ws._tracker.sync then ws._tracker:sync() end
-    if svc.host.current() ~= ws then
-        return refuse("the workspace was reloaded (refused or changed .nvim files); try again")
-    end
+    -- No model (the load refused or failed): the core alone (as trust_accept).
     local core = nuke_core(svc, ws)
-    if not core then return refuse("cannot nuke: the workspace core is not available") end
+    if not core then return refuse(refusal or "cannot nuke: the workspace core is not available") end
     -- The daemon's own tasks are neither passed over nor stopped.
     local busy = M.nuke_busy(svc)
     if #busy > 0 then return refuse(busy_refusal(busy)) end
