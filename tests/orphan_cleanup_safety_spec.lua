@@ -460,6 +460,52 @@ describe("deletion unknown marks", function()
             "the skipped shared dir was left unknown on disk after a failed batch")
         assert.equals("built", shared_bd.state)
     end)
+
+    -- Crash rule (Deletion Safety 4): when the `unknown` marks cannot reach
+    -- the disk — the runtime lost its lock (`_no_write`), or the workspace
+    -- was torn down while the deletion waited for its tasks to stop — no tree
+    -- is removed; every item fails with the save error and the entries are
+    -- left as they were.
+    local function deletion_without_save(break_save)
+        local unit = ws._profiles[1]:projects()[1]._config_unit
+        assert.is_not_nil(unit and unit._build_dir, "test setup: the live unit has a BuildDir")
+        local prior = unit._build_dir.state
+        local handed = {}
+        io_mod.rm_rf_async = function(d, cb)
+            handed[#handed + 1] = d
+            return real_rm(d, cb)
+        end
+        local failed
+        ws:on("deletion_failed", function(p) failed = p end)
+        break_save(unit)
+        local done, result, work_ran = false, nil, false
+        ws:_run_deletion({
+            { project_key = "App", config_key = "Debug", build_dir = built, unit = unit },
+        }, function() work_ran = true end):next(function(v) done, result = true, v end)
+        assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        assert.is_false(result, "a deletion whose unknown marks never reached disk reported success")
+        assert.equals(0, #handed, "rm-rf was handed " .. table.concat(handed, ", "))
+        assert.is_not_nil(uv.fs_stat(built), "the tree was removed")
+        assert.equals(prior, unit._build_dir.state, "the entry was left marked unknown")
+        assert.is_false(unit:is_deleting(), "the unit was left deleting")
+        assert.is_not_nil(failed, "deletion_failed not emitted")
+        assert.equals(1, #failed.errors)
+        assert.is_false(work_ran, "the cache mutations ran")
+    end
+
+    it("removes nothing when the unknown marks cannot be saved (lost lock)", function()
+        deletion_without_save(function() ws._no_write = "lost the workspace lock" end)
+    end)
+
+    it("removes nothing when the workspace is torn down while tasks stop", function()
+        deletion_without_save(function()
+            local future = require("loomworks.future")
+            ws.stop_tasks_then = function(self)
+                self._torn_down = true
+                return future.resolved(true)
+            end
+        end)
+    end)
 end)
 
 -- The status page's "Clean all" action reports the outcome `on_done` gives

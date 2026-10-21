@@ -4169,6 +4169,26 @@ function Workspace:mark_cached_configs_cleaned(items)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
+--- Record the state `_mark_cache_unknown` may overwrite for `items` (each
+--- unit's `state_value` and BuildDir state, an orphaned item's BuildDir
+--- state). Returns a function that puts them back — used when the marks
+--- could not be saved and the deletion is abandoned.
+--- @param items loomworks.DeletionItem[]
+--- @return fun()
+function Workspace:_snapshot_build_states(items)
+    local units, bds = {}, {}
+    for _, item in ipairs(items) do
+        local unit = item.unit
+        if unit and units[unit] == nil then units[unit] = { v = unit.state_value } end
+        local bd = unit and unit._build_dir or item.build_dir_obj
+        if bd and bds[bd] == nil then bds[bd] = { v = bd.state } end
+    end
+    return function()
+        for unit, s in pairs(units) do unit.state_value = s.v end
+        for bd, s in pairs(bds) do bd.state = s.v end
+    end
+end
+
 --- Set cache state to "unknown" for items that have build directories. The
 --- unit's BuildDir is marked too: the cache serializes a unit that has one
 --- from the BuildDir (`_serialize_cache`), so marking only the unit would
@@ -4640,6 +4660,10 @@ end
 --- `false` when a removal failed (reported; units left `unknown`, cache not
 --- reset) — the outcome is explicit, never to be inferred from unit state
 --- (a unit with no cached build directory is not marked `unknown`).
+--- When the `unknown` marks cannot be saved (`_save_cache` false: lost lock,
+--- torn down while the tasks stopped, write failure) nothing is removed: the
+--- marks are undone in memory, every item fails with the save error and the
+--- Future resolves `false`.
 --- @param items table[]
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
@@ -4735,8 +4759,30 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
             "loomworks: a deletion's cache write ran inside a transaction")
         local to_remove = {}
         for _, d in ipairs(dirs) do to_remove[d] = true end
+        local prior = ws:_snapshot_build_states(items)
         ws:_mark_cache_unknown(items, to_remove)
-        ws:_save_cache()
+        if not ws:_save_cache() then
+            -- The marks never reached the disk (the runtime lost its lock, the
+            -- workspace was torn down while its tasks stopped, or the write
+            -- failed): removing a tree now would leave the cache claiming it.
+            -- Remove nothing; every item fails with the save error and the
+            -- entries keep the state they had.
+            prior()
+            local why = ws._torn_down and "the workspace was unloaded"
+                or (ws._no_write and ("cache is read-only: " .. tostring(ws._no_write)))
+                or "the cache could not be saved"
+            local failed, seen = {}, {}
+            for _, item in ipairs(items) do
+                local d = item.build_dir and ws._core._deps.normalize(item.build_dir)
+                    or ((item.project_key or "?") .. "/" .. (item.config_key or "?"))
+                if not seen[d] then
+                    seen[d] = true
+                    failed[#failed + 1] = { dir = d, ok = false,
+                        err = "not deleted — " .. why .. " before the removal" }
+                end
+            end
+            return failed
+        end
 
         return ws:_delete_build_dirs_async(dirs, nil, { stop = opts and opts.stop or nil })
     end):next(function(results)

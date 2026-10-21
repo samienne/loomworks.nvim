@@ -806,6 +806,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- A deletion whose `unknown` cache marks could not be saved (the runtime
+  lost its workspace lock, or the workspace was unloaded while the deletion
+  waited for its tasks to stop) still removed the build directories, leaving
+  the cache claiming trees that were gone. It now removes nothing, reports
+  every item as failed with the reason, and leaves the entries as they were
+  (#302).
 - The editor's project removal, orphan cleanup and stray build-directory
   deletion now take the workspace operation lock and the build-directory
   locks, like every other deletion: they are refused, with the holder named
