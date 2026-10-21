@@ -315,6 +315,104 @@ describe("view deletion safety", function()
             assert.is_nil(uv.fs_stat(dir))
             assert.equals(0, #ws:get_orphaned_configs())
         end)
+
+        -- The row's completion message reports what happened: removed, kept
+        -- (it holds a live build dir; only the entry was dropped), or failed.
+        describe("completion message", function()
+            -- The facade (`require("loomworks")`) is stubbed, never loaded:
+            -- loading it creates the editor's Core and subscribes view
+            -- redraws to the deletion events for the rest of the file.
+            local actions = require("loomworks.ui.actions")
+            local real_lw, real_select, real_notify
+            local notes
+            before_each(function()
+                real_lw, real_select, real_notify = package.loaded["loomworks"], vim.ui.select, vim.notify
+                package.loaded["loomworks"] = { get_workspace = function() return ws end }
+                vim.ui.select = function(_, _, cb) cb("Yes") end
+                notes = {}
+                vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+            end)
+            after_each(function()
+                package.loaded["loomworks"], vim.ui.select, vim.notify = real_lw, real_select, real_notify
+            end)
+            local function run_row()
+                local o = ws:get_orphaned_configs()[1]
+                actions.delete_orphaned_config(o)()
+                assert.is_true(vim.wait(5000, function() return #notes > 0 end, 20), "no message")
+                return notes[#notes]
+            end
+
+            it("says removed when the tree was removed", function()
+                add_orphan(ws, root)
+                local n = run_row()
+                assert.is_truthy(n.msg:find("removed", 1, true), n.msg)
+                assert.equals(vim.log.levels.INFO, n.level)
+            end)
+
+            it("says kept when the tree holds a live build dir", function()
+                add_orphan(ws, root, root .. "/.nvim/build/App")
+                local n = run_row()
+                assert.is_truthy(n.msg:find("kept", 1, true), n.msg)
+                assert.is_falsy(n.msg:find("orphaned build dir removed", 1, true), n.msg)
+            end)
+
+            it("warns when the removal failed", function()
+                add_orphan(ws, root)
+                io_mod.rm_rf_async = function(_, cb) cb(false, "boom") end
+                local n = run_row()
+                assert.equals(vim.log.levels.WARN, n.level, n.msg)
+                assert.is_truthy(n.msg:find("not removed", 1, true), n.msg)
+            end)
+        end)
+    end)
+
+    -- `lw reset --all`: every live unit's dir is removed in phase 1, so an
+    -- orphan dir that holds only those dirs is removed in phase 2 (a reset
+    -- leaves no build dirs, spec §16.30) — the plan listed it as removed and
+    -- the gone-from-disk check must agree.
+    describe("reset --all", function()
+        local reset_plan = require("loomworks.reset_plan")
+        -- Phase 1's cache write reaches a live host's file reconciliation
+        -- before phase 2 (the editor, the daemon): the remerge re-derives
+        -- each reset unit's build dir from the cache, so phase 2 sees the
+        -- live dirs it just removed.
+        before_each(function()
+            local real = ws.delete_orphaned_build_dir
+            ws.delete_orphaned_build_dir = function(w, ...)
+                w:remerge(nil, w:_serialize_cache())
+                return real(w, ...)
+            end
+        end)
+        local function reset_all()
+            local plan = reset_plan.plan(ws, { all = true })
+            local done, got = false, nil
+            reset_plan.execute(ws, plan, { verify_ms = 200 },
+                function(code, msg) done, got = true, { code = code, msg = msg } end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+            return plan, got
+        end
+
+        it("removes an orphan dir that contains a live build dir it also resets", function()
+            local dir = add_orphan(ws, root, root .. "/.nvim/build/App")
+            local plan, got = reset_all()
+            assert.is_true(vim.tbl_contains(plan.removal_dirs, dir), "test setup: listed as removed")
+            assert.equals(0, got.code, tostring(got.msg))
+            assert.is_nil(uv.fs_stat(dir), "the orphan's tree was kept")
+            assert.is_nil(uv.fs_stat(built))
+            assert.equals(0, #ws:get_orphaned_configs())
+        end)
+
+        it("still keeps an orphan dir whose live build dir the reset could not remove", function()
+            local dir = add_orphan(ws, root, root .. "/.nvim/build/App")
+            io_mod.rm_rf_async = function(d, cb)
+                if vim.startswith(d:lower(), built:lower()) then return cb(false, "boom") end
+                return real_rm(d, cb)
+            end
+            local _, got = reset_all()
+            assert.equals(1, got.code)
+            assert.is_not_nil(uv.fs_stat(dir))
+            assert.is_not_nil(uv.fs_stat(built), "the live build dir went with the orphan")
+        end)
     end)
 
     describe("stray directory deletion", function()

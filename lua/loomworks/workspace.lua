@@ -4027,7 +4027,8 @@ end
 --- during it. Runs through `_run_deletion`, so the tree is kept (the entry
 --- still dropped) when a live unit references the dir under any spelling or
 --- the dir contains / lies inside a live build dir — like the bulk cleanup.
---- @param opts? { stop?: fun(): boolean }
+--- `opts.overlap_exempt` / `opts.report`: as `_run_deletion`'s.
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
 function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
     local future_mod = require("loomworks.future")
     local stop = opts and opts.stop or nil
@@ -4058,7 +4059,9 @@ function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, o
                 return self:_run_deletion({
                     { project_key = bd.project_key, config_key = bd.config_key or bd.variant,
                       build_dir = bd.path, build_dir_obj = bd, disposition = "clean" },
-                }, drop, on_done, nil, { stop = stop })
+                }, drop, on_done, nil, { stop = stop,
+                    overlap_exempt = opts and opts.overlap_exempt or nil,
+                    report = opts and opts.report or nil })
             end
         end
         -- No path, or one outside the workspace root: nothing is removed from
@@ -4653,9 +4656,15 @@ end
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
 --- @param reason? "deleting"|"cleaning"
---- @param opts? { stop?: fun(): boolean } `stop`: asked before each entry of
----   the removal; a stopped removal is a failed one (resolves `false`, units
----   left `unknown`) without an error report of its own
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+---   `stop`: asked before each entry of the removal; a stopped removal is a
+---   failed one (resolves `false`, units left `unknown`) without an error
+---   report of its own. `overlap_exempt`: live build dirs an orphaned entry's
+---   tree may contain or lie inside (every form of each) — only the dirs a
+---   reset-all has itself just removed (`_reset_all_unlocked`); the shared-
+---   refs and root checks still apply. `report`: a table that receives
+---   `kept` = `{ dir, why = "shared"|"live" }[]`, the dirs left on disk by
+---   those checks (their entries still dropped).
 --- @return loomworks.Future
 function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     local future_mod = require("loomworks.future")
@@ -4701,6 +4710,25 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         local dirs = {}
         local seen_dirs = {}
         local live_forms -- lazily, only when an orphaned entry is present
+        local report = opts and opts.report or nil
+        if report then report.kept = {} end
+        local function kept(dir, why)
+            if report then report.kept[#report.kept + 1] = { dir = dir, why = why } end
+        end
+        local function live_build_dir_forms()
+            local forms = ws:_live_build_dir_forms()
+            local exempt_dirs = opts and opts.overlap_exempt
+            if not exempt_dirs or #exempt_dirs == 0 then return forms end
+            local exempt = {}
+            for _, d in ipairs(exempt_dirs) do
+                for _, f in ipairs(ws:_path_forms(d)) do exempt[f] = true end
+            end
+            local out = {}
+            for _, f in ipairs(forms) do
+                if not exempt[f] then out[#out + 1] = f end
+            end
+            return out
+        end
         for _, item in ipairs(items) do
             if item.build_dir then
                 local normalized = ws._core._deps.normalize(item.build_dir)
@@ -4713,6 +4741,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                                 "loomworks: skipped deleting " .. normalized
                                     .. " — still referenced by " .. remaining_refs .. " config(s)",
                                 vim.log.levels.INFO)
+                            kept(normalized, "shared")
                             goto skip_dir
                         end
                     end
@@ -4721,10 +4750,11 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                     -- a live build dir under another spelling (#293) — keep
                     -- the tree; the entry itself is still dropped.
                     if not item.unit then
-                        live_forms = live_forms or ws:_live_build_dir_forms()
+                        live_forms = live_forms or live_build_dir_forms()
                         if ws:_overlaps_live_build_dir(normalized, live_forms) then
                             ws._core._deps.notify("loomworks: skipped deleting " .. normalized
                                 .. " — it holds a live build dir", vim.log.levels.INFO)
+                            kept(normalized, "live")
                             goto skip_dir
                         end
                     end
@@ -4936,20 +4966,32 @@ function Workspace:_reset_all_unlocked(on_done, opts)
 
     local ws = self
     local all_ok = true
+    -- Every live unit's dir is removed in phase 1, so an orphan's tree that
+    -- contains or lies inside only those dirs is removed too (a reset-all
+    -- leaves no build dirs, spec §16.30; `reset_plan` lists it as removed).
+    -- Only after phase 1 succeeded: a live dir it failed to remove keeps the
+    -- overlap protection. Shared refs and the root check still apply.
+    local exempt = nil
     local function delete_orphans(i)
         if i > #orphan_keys or (stop and stop()) then
             if i <= #orphan_keys then all_ok = false end
             if on_done then on_done() end
             return future_mod.resolved(all_ok)
         end
-        return ws:delete_orphaned_build_dir(orphan_keys[i], nil, { stop = stop }):next(function(ok)
+        return ws:delete_orphaned_build_dir(orphan_keys[i], nil,
+                { stop = stop, overlap_exempt = exempt }):next(function(ok)
             if ok ~= true then all_ok = false end
             return delete_orphans(i + 1)
         end)
     end
 
     return self:execute_deletion({ items = items }, stop and { stop = stop } or nil):next(function(ok)
-        if ok ~= true then all_ok = false end
+        if ok ~= true then
+            all_ok = false
+        else
+            exempt = {}
+            for _, item in ipairs(items) do exempt[#exempt + 1] = item.build_dir end
+        end
         return delete_orphans(1)
     end)
 end
@@ -5189,7 +5231,7 @@ end
 --- holding the workspace operation lock and its build-directory lock.
 --- @param build_dir_key string
 --- @param on_done? function
---- @param opts? { stop?: fun(): boolean }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
 --- @return loomworks.Future
 function Workspace:delete_orphaned_build_dir(build_dir_key, on_done, opts)
     local norm = self._core._deps.normalize

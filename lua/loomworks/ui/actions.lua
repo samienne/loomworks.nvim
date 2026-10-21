@@ -254,9 +254,28 @@ function M.delete_orphaned_config(orphan)
         }, function(choice)
             if choice ~= "Yes" then return end
             if build_dir_key then
-                ws:delete_orphaned_build_dir(build_dir_key, function()
-                    vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
-                end)
+                -- Report the real outcome: a failed removal (already reported
+                -- in detail) warns; a tree kept because it is shared or holds
+                -- a live build dir says so (only the entry was dropped).
+                local report = {}
+                ws:delete_orphaned_build_dir(build_dir_key, nil, { report = report })
+                    :next(function(ok)
+                        if ok ~= true then
+                            vim.notify("loomworks: orphaned build dir not removed", vim.log.levels.WARN)
+                        elseif report.kept and #report.kept > 0 then
+                            local k = report.kept[1]
+                            vim.notify("loomworks: orphaned entry dropped; directory kept ("
+                                .. (k.why == "shared" and "still used by another configuration"
+                                    or "it holds a live build dir") .. "): " .. k.dir,
+                                vim.log.levels.INFO)
+                        else
+                            vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
+                        end
+                    end)
+                    :catch(function(err)
+                        vim.notify("loomworks: orphaned build dir not removed: " .. tostring(err),
+                            vim.log.levels.WARN)
+                    end)
             end
         end)
     end
