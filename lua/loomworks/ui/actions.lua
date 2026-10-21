@@ -246,8 +246,21 @@ function M.delete_orphaned_config(orphan)
         }, function(choice)
             if choice ~= "Yes" then return end
             if build_dir_key then
-                ws:delete_orphaned_build_dir(build_dir_key, function()
-                    vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
+                -- Report the real outcome: a failed removal was already
+                -- reported (error) and keeps the entry.
+                ws:delete_orphaned_build_dir(build_dir_key):next(function(outcome)
+                    if outcome == "removed" then
+                        vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
+                    elseif outcome == "kept" then
+                        vim.notify("loomworks: orphaned entry dropped; its directory was kept"
+                            .. " (it holds a live build dir)", vim.log.levels.INFO)
+                    elseif outcome == "dropped" then
+                        vim.notify("loomworks: orphaned entry dropped (no directory to remove)",
+                            vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: orphaned build dir NOT removed — the entry is kept",
+                            vim.log.levels.WARN)
+                    end
                 end)
             end
         end)

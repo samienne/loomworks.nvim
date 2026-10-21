@@ -3569,6 +3569,18 @@ end
 --- @param build_dir_key string relative build dir key
 --- @param on_done? function callback after deletion
 --- Delete an orphaned build directory. Returns a Future.
+--- Runs through `_run_deletion` like the bulk orphan cleanup (spec §4.6,
+--- §5.7): the tree is kept (only the entry is dropped) when a live unit still
+--- references the dir (shared refs) or the dir is, contains or lies inside a
+--- live build dir under any spelling (`_overlaps_live_build_dir`, e.g. an
+--- 8.3 short name, or a build-dir template that gained a level); otherwise the
+--- entry is `unknown` on disk before the removal and leaves the cache only
+--- after the removal succeeded. A dir outside the workspace root is never
+--- removed; its entry is dropped.
+--- Resolves the outcome: "removed" (tree removed, entry dropped), "kept"
+--- (tree kept as it holds a live build dir, entry dropped), "dropped" (no
+--- removable dir — none recorded, or outside the workspace root — entry
+--- dropped) or "failed" (removal failed, reported; the entry stays `unknown`).
 --- @param build_dir_key string
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
@@ -3576,39 +3588,41 @@ function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
     local future_mod = require("loomworks.future")
     local bd = self:find_build_dir(build_dir_key)
     if bd then
-        for i, b in ipairs(self._build_dirs) do
-            if b == bd then table.remove(self._build_dirs, i); break end
+        local normalize = self._core._deps.normalize
+        local dir = bd.path and normalize(bd.path) or nil
+        local outcome = "removed"
+        if dir and not self:_validate_build_dir(dir, normalize(self.root)) then
+            dir, outcome = nil, "dropped"
         end
-
-        if bd.path then
-            local abs_dir = self._core._deps.normalize(bd.path)
-            local safe_prefix = self._core._deps.normalize(self.root)
-            if self:_validate_build_dir(abs_dir, safe_prefix) then
-                local ws = self
-                local mod = self:_lsp_db_module_for(nil, bd)
-                local f = self:_delete_build_dirs_async({ abs_dir }):next(function(results)
-                    ws:_save_cache()
-                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
-                    -- Owned LSP database mirror only after confirmed removal (§4.6).
-                    local deleted = {}
-                    for _, r in ipairs(results or {}) do
-                        if r.ok then deleted[#deleted + 1] = { dir = r.dir, mod = mod } end
-                    end
-                    return ws:_remove_owned_lsp_dbs(deleted):next(function() return true end)
-                end)
-                if on_done then
-                    f:next(function() on_done() end)
-                     :catch(function() on_done() end)
-                end
-                return f
+        if dir and self:_overlaps_live_build_dir(dir) then
+            self._core._deps.notify("loomworks: kept " .. dir
+                .. " — it holds a live build dir; only its orphaned entry is dropped",
+                vim.log.levels.INFO)
+            dir, outcome = nil, "kept"
+        end
+        if not dir and outcome == "removed" then outcome = "dropped" end
+        -- Runs only once every removal succeeded (`_run_deletion`), which
+        -- then saves the cache and resyncs the refs.
+        local removed = false
+        local ws = self
+        local function drop()
+            removed = true
+            for i, b in ipairs(ws._build_dirs) do
+                if b == bd then table.remove(ws._build_dirs, i); break end
             end
         end
+        return self:_run_deletion({
+            { project_key = bd.project_key, config_key = bd.config_key,
+              build_dir = dir, build_dir_obj = bd, disposition = "clean" },
+        }, drop, on_done):next(function()
+            return removed and outcome or "failed"
+        end)
     end
 
     self:_save_cache()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     if on_done then on_done() end
-    return future_mod.resolved(true)
+    return future_mod.resolved("dropped")
 end
 
 function Workspace:delete_cached_configs(items)
@@ -3759,6 +3773,81 @@ function Workspace:_canonicalize_boundary_path(path)
         head = parent
     end
     return canon(path)
+end
+
+--- Every form of every build dir referenced by a ConfigUnit: its canonical
+--- form (`_canonicalize_boundary_path`: 8.3 short<->long + case reconciled,
+--- symlinks resolved) AND its plain normalized spelling. Stray/orphan
+--- detection and deletion compare DIRECTORY IDENTITY through these, never one
+--- raw spelling: a unit's build dir can be recorded in a different spelling of
+--- the same location than ws.root (e.g. an 8.3 short temp path on a Windows
+--- runner), and a mismatch would make a live build dir's parent look stray —
+--- and orphan cleanup would delete it. The normalized spelling is kept too
+--- because a build dir reached through a link/junction canonicalizes OUTSIDE
+--- .nvim/build, where only its recorded spelling still sits under its parent.
+--- Resolves (realpath) once per unit per call — i.e. per render/cleanup.
+--- @return string[]
+function Workspace:_live_build_dirs_canonical()
+    local normalize = self._core._deps.normalize
+    local known, seen = {}, {}
+    local function add(p)
+        if not seen[p] then
+            seen[p] = true
+            known[#known + 1] = p
+        end
+    end
+    for _, unit in pairs(self._config_units) do
+        local bd = unit:build_dir()
+        if bd and bd ~= "" then
+            add(normalize(bd))
+            add(self:_canonicalize_boundary_path(bd))
+        end
+    end
+    return known
+end
+
+--- Both comparable forms (normalized spelling, canonical) of `dir`.
+--- @param dir string
+--- @return string[]
+function Workspace:_path_forms(dir)
+    local n = self._core._deps.normalize(dir)
+    local c = self:_canonicalize_boundary_path(dir)
+    if n == c then return { n } end
+    return { n, c }
+end
+
+--- True when `a` is a strict, separator-bounded ancestor of `b`.
+local function is_path_ancestor(a, b)
+    return b:sub(1, #a + 1) == a .. "/"
+end
+
+--- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
+--- of each side, separator-bounded) — such a dir must never be deleted as
+--- stray/orphaned. "Lies inside" only counts for a live dir that is not a
+--- strict ancestor of `<root>/.nvim/build`: an in-source unit (build_dir ==
+--- workspace root, allowed by _pre_configure_reset) contains the whole build
+--- tree without owning any of it, and must not shield every stray dir.
+--- @param dir string
+--- @param known? string[] precomputed `_live_build_dirs_canonical()`
+--- @return boolean
+function Workspace:_overlaps_live_build_dir(dir, known)
+    known = known or self:_live_build_dirs_canonical()
+    local build_roots = self:_path_forms(self.root .. "/.nvim/build")
+    local function contains_build_root(k)
+        for _, br in ipairs(build_roots) do
+            if is_path_ancestor(k, br) then return true end
+        end
+        return false
+    end
+    for _, c in ipairs(self:_path_forms(dir)) do
+        for _, k in ipairs(known) do
+            if k == c or is_path_ancestor(c, k)
+                or (is_path_ancestor(k, c) and not contains_build_root(k)) then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 --- Validate a build directory path is safe to delete (under workspace root).
@@ -4306,6 +4395,10 @@ function Workspace:reset_all(on_done)
     end
 
     local ws = self
+    -- Phase 1 clears each confirmed-reset unit's build_dir_value, so its dir
+    -- no longer shields an orphan dir that held it (the orphan delete's
+    -- live-overlap check): the reset removes that tree too (§16.30). A unit
+    -- whose removal failed keeps its dir (`unknown`) and still protects it.
     local function delete_orphans(i)
         if i > #orphan_keys then
             if on_done then on_done() end

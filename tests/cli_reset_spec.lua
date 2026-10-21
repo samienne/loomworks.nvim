@@ -195,6 +195,33 @@ describe("lw reset (on-disk)", function()
     assert.equals("unconfigured", unit:state())
   end)
 
+  -- An orphan dir that held a live build dir (a build-dir template that gained
+  -- a level: build/App -> build/App/Debug) no longer shields anything once the
+  -- reset removed that live dir: it is removed too, and the reset succeeds
+  -- (no orphan tree left behind, no failed gone-from-disk check).
+  it("--all removes an orphan dir that held a live build dir", function()
+    local root = make_ws()
+    local ws, profile = load(root)
+    local prof_dir = root .. "/.nvim/build/App/Debug"
+    fake_build_dir(ws, profile, prof_dir)
+    local BuildDir = require("loomworks.build_dir")
+    local orphan_dir = root .. "/.nvim/build/App"
+    table.insert(ws._build_dirs, BuildDir.new("build/App", orphan_dir, {
+      state = "built", project_key = "App", config_key = "Old",
+      variant = "Old", type = "typescript", build_dir = orphan_dir,
+    }))
+    assert.equals(1, #ws:get_orphaned_configs(), "precondition: one orphan")
+
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", "--all", "-y" })
+    end)
+
+    assert.is_nil(r.exit_code, "reset --all should succeed: " .. r.stderr)
+    assert.is_nil(uv.fs_stat(prof_dir), "profile build dir must be removed")
+    assert.is_nil(uv.fs_stat(orphan_dir), "the orphan dir that held it must be removed")
+    assert.equals(0, #ws:get_orphaned_configs())
+  end)
+
   it("non-interactive without -y refuses and removes nothing", function()
     local root = make_ws()
     local ws, profile = load(root)
