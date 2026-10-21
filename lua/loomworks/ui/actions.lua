@@ -20,10 +20,11 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate an existing profile.
---- @param profile loomworks.Profile
-function M.activate(profile)
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.activate(row, ws)
     return function()
-        require("loomworks.ui.model_calls").call(nil, "Profiles/1.set_active", { profile = profile }, function(r)
+        require("loomworks.ui.model_calls").call(ws, "Profiles/1.set_active", { profile = row }, function(r)
             local ok, err = require("loomworks.ui.model_calls").result(r)
             if not ok then
                 vim.notify("loomworks: " .. tostring(err or "the profile was not activated"), vim.log.levels.ERROR)
@@ -290,119 +291,83 @@ end
 -- Profile creation flow
 -- ---------------------------------------------------------------------------
 
---- Build the multi-step profile creation picker.
---- @param ctx table { config_sets, lw }
+--- Build the multi-step profile creation picker: a configuration set (a
+--- declared one or an automatic candidate, `ConfigSets/1.candidates`), a
+--- toolchain (`Profiles/1.tool_choices`), then `Profiles/1.create` — which
+--- adds an automatic set itself (step 5o C2a: one call per user action).
+--- @param ctx table { view, ws }
 --- @return fun() closure
 function M.create_profile(ctx)
     return function()
-        local lw = ctx.lw
-        local config_sets = ctx.config_sets or {}
-        local ws = lw.get_workspace()
+        local ws = ctx.ws or require("loomworks").get_workspace()
         if not ws then return end
-
-        local wv = require("loomworks.workspace_view")
-        local items = wv.compute_config_set_candidates(ws, config_sets)
-
-        if #items == 0 then
-            vim.notify("loomworks: no configuration sets available (add projects first)", vim.log.levels.INFO)
-            return
-        end
-
-        vim.ui.select(items, {
-            prompt = "Select configuration set:",
-            format_item = function(item)
-                if item.auto then
-                    return item.name .. "  (" .. item.desc .. ")"
-                end
-                return item.name .. require("loomworks.ui.helpers").picker_summary(
-                    item.cs and item.cs.description)
-            end,
-        }, function(choice)
-            if not choice then return end
-
-            local function step2(cs)
-                local is_first = not next(lw.get_profiles())
-                M._create_profile_step2(cs, choice.name or choice.real_name, is_first)
+        local model = require("loomworks.ui.model_calls")
+        model.call(ws, "ConfigSets/1.candidates", {}, function(r)
+            if r.outcome ~= "ok" then
+                local _, err = model.result(r)
+                vim.notify("loomworks: " .. tostring(err or "the configuration sets were not listed"),
+                    vim.log.levels.ERROR)
+                return
             end
-            if not choice.auto then
-                if not choice.cs then
-                    vim.notify("loomworks: failed", vim.log.levels.ERROR)
-                    return
-                end
-                return step2(choice.cs)
+            local items = r.sets
+            if #items == 0 then
+                vim.notify("loomworks: no configuration sets available (add projects first)", vim.log.levels.INFO)
+                return
             end
-            -- An automatic set is added when picked (C0: the candidate form
-            -- of ConfigSets/1.add; see loomworks.ui.model_calls).
-            local model = require("loomworks.ui.model_calls")
-            model.call(ws, "ConfigSets/1.add",
-                { candidate = choice.candidate or wv.candidate_token(choice.real_name, choice.mappings) },
-                function(r)
-                    if not r.config_set then
-                        local _, err = model.result(r)
-                        vim.notify("loomworks: " .. (err or "failed"), vim.log.levels.ERROR)
-                        return
+            vim.ui.select(items, {
+                prompt = "Select configuration set:",
+                format_item = function(item)
+                    if item.auto then
+                        return item.name .. " (auto-detected)" .. (item.desc and ("  (" .. item.desc .. ")") or "")
                     end
-                    step2(r.config_set)
-                end)
+                    return item.name .. require("loomworks.ui.helpers").picker_summary(item.description)
+                end,
+            }, function(choice)
+                if not choice then return end
+                M._create_profile_step2(ws, choice, #((ctx.view or {}).profiles or {}) == 0)
+            end)
         end)
     end
 end
 
---- Step 2: Pick tool, then materialize (+ activate if first profile).
---- Re-fetches tool entries at call time (not render time) to avoid stale
---- data from before tool detection completed. Waits for tool detection
---- if still scanning.
---- @param cs loomworks.ConfigurationSet
---- @param set_name string
+--- Step 2: pick a toolchain of the set (`Profiles/1.tool_choices`, read when
+--- picked, not at render time: a tool scan may have ended since), then
+--- create the profile (+ activate it when it is the first).
+--- @param ws loomworks.Workspace|nil
+--- @param set table the set's row (a `view.Workspace/1` configuration set, or a candidates entry)
 --- @param activate boolean
-function M._create_profile_step2(cs, set_name, activate)
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
-
-    if ws._tool_state == "scanning" then
-        vim.notify("loomworks: waiting for tool detection...", vim.log.levels.INFO)
-        ws._tool_waiters[#ws._tool_waiters + 1] = function()
-            M._create_profile_step2(cs, set_name, activate)
+function M._create_profile_step2(ws, set, activate)
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "Profiles/1.tool_choices", { config_set = set }, function(r)
+        if r.outcome ~= "ok" then
+            local _, err = model.result(r)
+            vim.notify("loomworks: " .. tostring(err or "the toolchains were not listed"), vim.log.levels.ERROR)
+            return
         end
-        return
-    end
+        -- Always offer an explicit "no tool" pick so the user can deliberately
+        -- create a tool-less profile (e.g. to share the workspace with
+        -- collaborators on a host without the SDK installed). The build path
+        -- refuses to start an incomplete profile, so this entry is the
+        -- explicit opt-in: Profiles/1.create gets no tool.
+        local picker_items = {}
+        for _, e in ipairs(r.tools or {}) do picker_items[#picker_items + 1] = e end
+        picker_items[#picker_items + 1] = { _none = true, label = "(no tool — incomplete profile)" }
 
-    -- Re-fetch tool entries at call time; the render-time snapshot may
-    -- predate tool detection completing.
-    local tool_entries = lw.get_tool_entries()
-    local entries = tool_entries[set_name] or {}
-
-    -- Always offer an explicit "no tool" pick so the user can deliberately
-    -- create a tool-less profile (e.g. to share the workspace with
-    -- collaborators on a host without the SDK installed). The build path
-    -- refuses to start an incomplete profile, so this entry is the explicit
-    -- opt-in. The synthetic entry carries _none = true so
-    -- Profiles/1.create gets no tool.
-    local picker_items = {}
-    for _, e in ipairs(entries) do picker_items[#picker_items + 1] = e end
-    picker_items[#picker_items + 1] = {
-        _none = true,
-        tool_label = "(no tool — incomplete profile)",
-    }
-
-    vim.ui.select(picker_items, {
-        prompt = "Select tool:",
-        format_item = function(entry)
-            return entry.tool_label or entry.tool_key or "(default)"
-        end,
-    }, function(choice)
-        if not choice then return end
-        local tool = choice._none and nil or choice
-        local model = require("loomworks.ui.model_calls")
-        model.call(ws, "Profiles/1.create", { config_set = cs, tool = tool, activate = activate }, function(r)
-            local profile = r.profile
-            if not profile then
-                local _, err = model.result(r)
-                vim.notify("loomworks: " .. tostring(err or "the profile was not created"), vim.log.levels.ERROR)
-            elseif not activate then
-                vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
-            end
+        vim.ui.select(picker_items, {
+            prompt = "Select tool:",
+            format_item = function(entry) return entry.label or entry.key or "(default)" end,
+        }, function(choice)
+            if not choice then return end
+            local tool = not choice._none and choice or nil
+            model.call(ws, "Profiles/1.create", { config_set = set, tool = tool, activate = activate }, function(c)
+                local profile = c.profile
+                if not profile then
+                    local _, err = model.result(c)
+                    vim.notify("loomworks: " .. tostring(err or "the profile was not created"), vim.log.levels.ERROR)
+                elseif not activate then
+                    vim.notify("loomworks: profile '" .. profile.key .. "' created", vim.log.levels.INFO)
+                end
+            end)
         end)
     end)
 end

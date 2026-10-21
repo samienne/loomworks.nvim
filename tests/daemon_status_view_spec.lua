@@ -118,15 +118,15 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.truthy(text:find("Projects", 1, true), text)
         -- (Only the Debug Adapters section's own: DebugConfig/1 is not carried here.)
         assert.equals(1, count(lines, "unavailable —"))
-        -- The status buffer's 'modified' is the editor's model's until 5o
-        -- C2 (publish and revert act on it), not the view's.
+        -- The status buffer's 'modified' is the daemon's view's (5o C2a:
+        -- publish and revert run in the daemon).
         assert.is_false(status_source.modified(ws))
         v.modified = true
-        assert.is_false(status_source.modified(ws))
+        assert.is_true(status_source.modified(ws))
         assert.equals(0, built)
     end)
 
-    it("the rows' actions reach the editor's model objects by the keys they show (until 5o C2)", function()
+    it("the rows' actions not routed yet reach the editor's model objects by the keys they show (until 5o C2b/C2c)", function()
         fake_obs()
         header()
         views.set(obs, "workspace", daemon_view())
@@ -286,24 +286,20 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
-    it("an unpublished edit keeps the buffer modified while the view is not held: `:e` refused (until 5o C2)", function()
+    it("the buffer's 'modified' follows the daemon's view, not the editor's model: `:e` refused (5o C2a)", function()
         fake_obs()
         header()
-        assert.is_false(ws:has_any_modified())
-        -- An unpublished edit of the editor's model (publish and revert act
-        -- on it until 5o C2): a profile to share that loomworks.json lacks.
+        -- An edit of the editor's own model is not what `:w` / `:e!` act on
+        -- in daemon mode: it does not mark the buffer.
         ws:get_profiles()[1]._intent = "local+shared"
         assert.is_true(ws:has_any_modified())
-        -- Waiting for the view (none held yet).
+        -- Waiting for the view (none held yet): nothing known, not modified.
         assert.is_nil((obs:workspace_view()))
-        assert.is_true(status_source.modified(ws))
-        -- A stale view (its `get` after the write not yet answered).
+        assert.is_false(status_source.modified(ws))
         views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        assert.is_true(status_source.modified(ws))
-        -- Not connected at all.
-        views.clear(obs)
-        ws._daemon_observer = nil
-        obs = nil
+        assert.is_false(status_source.modified(ws))
+        -- The daemon's working copy has unpublished changes.
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = true end))
         assert.is_true(status_source.modified(ws))
         -- An acwrite buffer as the status page's (ui/view.lua: 'modified'
         -- from `is_modified`, `:e` -> BufReadCmd -> revert): Vim refuses
@@ -318,8 +314,14 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_false(ok)
         assert.truthy(tostring(err):find("E37", 1, true), tostring(err))
         assert.is_false(reverted)
-        assert.is_true(ws:has_any_modified())
         vim.api.nvim_buf_delete(buf, { force = true })
+        -- Selected for daemon mode but not connected at all: not modified
+        -- (`:w` / `:e!` are refused then).
+        views.clear(obs)
+        ws._daemon_observer = nil
+        ws._runtime_selection = { daemon = true }
+        obs = nil
+        assert.is_false(status_source.modified(ws))
     end)
 
     it("a unit's elapsed time comes only from a task running that unit's configuration", function()

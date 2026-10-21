@@ -2,8 +2,10 @@
 ---
 --- Renders from the workspace view's `profiles` rows
 --- (`loomworks.view.Workspace/1`, spec §19.13 "The workspace view"); the
---- actions below are kept apart and reach the domain objects only through
---- `ctx.ref(row)` (in-process) and the workspace `ctx.ws`.
+--- actions below are kept apart. The model writes go through
+--- loomworks/ui/model_calls.lua naming the profile by its row (step 5o C2a);
+--- the builds, cleans, cancels and deletions still reach the domain objects
+--- through `ctx.ref(row)` until step 5o C2c.
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
@@ -26,8 +28,11 @@ local function contains(list, item)
 end
 
 --- Remove a tool from a profile's toolchain.
-local function remove_tool(profile, key)
-    model.call(nil, "Profiles/1.remove_tool", { profile = profile, tool = key }, function(r)
+--- @param ws loomworks.Workspace|nil
+--- @param row table the profile's view row
+--- @param key string the tool's key
+local function remove_tool(ws, row, key)
+    model.call(ws, "Profiles/1.remove_tool", { profile = row, tool = key }, function(r)
         local ok, err = model.result(r)
         if not ok then
             vim.notify("loomworks: " .. tostring(err or "the tool was not removed"), vim.log.levels.ERROR)
@@ -36,13 +41,12 @@ local function remove_tool(profile, key)
 end
 
 --- The actions of a toolchain entry row.
-local function tool_actions(profile, entry)
-    if not profile then return {} end
+local function tool_actions(ws, row, entry)
     return {
         on_enter = function()
             local key = entry.key
             local choices = {
-                { label = "Delete tool", do_it = function() remove_tool(profile, key) end },
+                { label = "Delete tool", do_it = function() remove_tool(ws, row, key) end },
                 { label = "Cancel", do_it = function() end },
             }
             vim.ui.select(choices, {
@@ -52,21 +56,27 @@ local function tool_actions(profile, entry)
                 if choice and choice.do_it then choice.do_it() end
             end)
         end,
-        on_delete = function() remove_tool(profile, entry.key) end,
+        on_delete = function() remove_tool(ws, row, entry.key) end,
     }
 end
 
---- "+ Add tool": pick one of the workspace's tools the profile lacks.
-local function add_tool_action(ws, profile)
-    if not profile then return nil end
+--- "+ Add tool": pick one of the workspace's tools the profile lacks (its
+--- toolchain as the view lists it). *(Transition, until step 5o C2c.)* The
+--- tools offered are the editor's model's detected ones.
+--- @param ws loomworks.Workspace|nil
+--- @param row table the profile's view row
+local function add_tool_action(ws, row)
+    if not ws then return nil end
     return function()
         local items = {}
         local seen_keys = {}
+        local have = {}
+        for _, entry in ipairs(row.toolchain or {}) do have[#have + 1] = entry.key end
         for _, mod in pairs(ws._modules or {}) do
             for _, tool in pairs(mod._tools or {}) do
                 if tool.key and not tool._removed
                         and not seen_keys[tool.key]
-                        and not contains(profile._tool_keys or {}, tool.key) then
+                        and not contains(have, tool.key) then
                     seen_keys[tool.key] = true
                     items[#items + 1] = {
                         key = tool.key,
@@ -99,7 +109,7 @@ local function add_tool_action(ws, profile)
             end,
         }, function(choice)
             if not choice then return end
-            model.call(ws, "Profiles/1.add_tool", { profile = profile, tool = choice.key }, function(r)
+            model.call(ws, "Profiles/1.add_tool", { profile = row, tool = choice.key }, function(r)
                 local ok, err = model.result(r)
                 if not ok then
                     vim.notify("loomworks: " .. tostring(err or "the tool was not added"), vim.log.levels.ERROR)
@@ -181,12 +191,22 @@ local function unit_actions(lw, pp)
     }
 end
 
---- The actions of a profile row.
+--- `opts` with the entries of `acts` added.
+local function with(opts, acts)
+    for k, v in pairs(acts) do opts[k] = v end
+    return opts
+end
+
+--- The actions of a profile row: its model writes by the row (always), the
+--- operations on its domain object `profile` (only when the editor's model
+--- has it, `ctx.ref`; until step 5o C2c).
 local function profile_actions(lw, ws, profile, row)
-    if not profile then return {} end
-    return helpers.describe_action({
-        on_enter = actions.activate(profile),
-        on_publish = function() helpers.cycle_intent(profile) end,
+    local acts = helpers.describe_action({
+        on_enter = actions.activate(row, ws),
+        on_publish = function() helpers.cycle_intent(row, ws) end,
+    }, helpers.row_item("profile", row))
+    if not profile then return acts end
+    return with(acts, {
         on_build = actions.build(profile),
         on_build_serial = actions.build_serial(profile),
         on_rebuild = actions.rebuild(profile),
@@ -205,13 +225,7 @@ local function profile_actions(lw, ws, profile, row)
                 n, profile.key))
         end or nil,
         on_delete = actions.delete_profile(profile),
-    }, profile)
-end
-
---- `opts` with the entries of `acts` added.
-local function with(opts, acts)
-    for k, v in pairs(acts) do opts[k] = v end
-    return opts
+    })
 end
 
 -- ---------------------------------------------------------------------------
@@ -382,13 +396,13 @@ local function render_profile_details(tree, ctx, row)
                     hl = hl,
                     direct = true,
                     enter_label = "Tool actions",
-                }, tool_actions(profile, entry)))
+                }, tool_actions(ws, row, entry)))
             end
 
             tree:item("+ Add tool", {
                 hl = "LoomworksAdd",
                 direct = true,
-                on_enter = add_tool_action(ws, profile),
+                on_enter = add_tool_action(ws, row),
             })
         end)
     end

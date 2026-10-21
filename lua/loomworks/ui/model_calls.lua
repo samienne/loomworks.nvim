@@ -7,28 +7,45 @@
 --- layer, the view-model's write adapters or the workspace's write methods
 --- itself (a guard checks it, tests/ui_model_calls_spec.lua).
 ---
---- In C0 each method's body is the in-process write the editor ran before
---- (the view-model's adapters over loomworks.model_commands, or the existing
---- loomworks function), in `in_process` and `daemon` mode alike: no
---- behaviour changes. Part C2 replaces the bodies with calls by id to the
---- workspace daemon; the call sites keep their shape.
+--- In-process bodies (C0): each method's body is the in-process write the
+--- editor ran before (the view-model's adapters over loomworks.model_commands,
+--- or the existing loomworks function). Part C2 replaces them, in `daemon`
+--- mode, with calls by id to the workspace daemon; the call sites keep their
+--- shape. **C2a** routes `Workspace/1`, `Profiles/1` and `ConfigSets/1`
+--- (`ROUTED` below): in `daemon` mode those are only ever calls — refused
+--- (the outcome says why) when the daemon cannot carry them, never run
+--- in-process (spec §19.16 "Availability"). `Projects/1`, `Sdks/1`,
+--- `Toolchains/1` and `Maintenance/1` still run their in-process bodies in
+--- both modes until C2b / C2c.
 ---
---- Params mirror the method's (its schema under spec/protocol/interfaces),
---- with the domain object in place of a reference (C2 sends its id). Two
---- transitional params exist only until C2 changes the flow:
----   * `ConfigSets/1.add { candidate }` — the automatic set a candidate token
----     stands for, added when the create-profile picker picks it (the wire's
----     `add` takes `{ name, mappings }`; C2 sends `Profiles/1.create
----     { config_set = { candidate } }` instead);
----   * `Maintenance/1.execute_deletion { confirmed }`,
----     `Workspace/1.delete_user_prefs { root }`, `Maintenance/1.nuke
----     { root }` — the in-process confirmation the user accepted (its plan,
----     dialog context or root); C2 uses the methods' confirm + plan token.
+--- Params mirror the method's (its schema under spec/protocol/interfaces).
+--- An entity param of a routed method (`item`, `profile`, `config_set`) is
+--- the **row** the action was taken on — a `view.Workspace/1` row of the
+--- status page, a `ConfigSets/1.candidates` entry, or a description handle
+--- (`helpers.row_item`, `_row` its row) — never a domain object or a key:
+---   * `daemon` mode: the row's id, `{ id = row.id }` (API.md §1.2 ItemRef /
+---     Ref; a candidate entry `{ candidate }`); a row without one is
+---     refused, never looked up by key;
+---   * `in-process` mode: the domain object the in-process view bound to
+---     the row (loomworks.status_source.object_of); a domain object itself is
+---     taken as it is (the dialogs that still read the editor's model, C2b).
+--- A `tool` of `Profiles/1.create` is a `Profiles/1.tool_choices` entry; a
+--- `mappings` of `ConfigSets/1.add` / `update` is the dialog's Project →
+--- Configuration table (sent as project key → configuration name, the wire's
+--- form) or a generated template's project key → configuration name.
+---
+--- Transitional params (until C2c): `Maintenance/1.execute_deletion
+--- { confirmed }` and `Maintenance/1.nuke { root }` — the in-process
+--- confirmation the user accepted (its plan, dialog context or root); C2c
+--- uses the methods' confirm + plan token.
 ---
 --- `cb(r)` gets the outcome (API.md §4.1): `{ outcome = "ok", ... }` with
---- the method's result fields (a created object, `changed`, …), or
---- `{ outcome = "refused", message? }` (no message: already reported). In C0
---- it runs before `call` returns; callers must not rely on that.
+--- the method's result fields (a created object — in `daemon` mode its
+--- `{ id, key }` — `changed`, …), `{ outcome = "confirm", lines, plan }`
+--- (the call asks a confirmation: show `lines`, call again with `plan`), or
+--- `{ outcome = "refused", message? }` (no message: already reported). It
+--- may run before `call` returns (in-process) or later (a daemon call, on
+--- the main loop); callers must not rely on either.
 
 local M = {}
 
@@ -52,7 +69,18 @@ local function created(field, obj, err)
     return outcome(obj ~= nil, err, { [field] = obj })
 end
 
---- The method bodies: `fn(ws, params, cb)`.
+--- The domain object an entity param names, in the `in-process` mode: the
+--- object the in-process view bound to the row (a description handle's
+--- `_row`), or a domain object given as it is.
+--- @param x table|nil
+--- @return table|nil
+local function object(x)
+    if type(x) ~= "table" then return nil end
+    if getmetatable(x) ~= nil then return x end
+    return require("loomworks.status_source").object_of(x._row or x)
+end
+
+--- The in-process bodies: `fn(ws, params, cb)`.
 --- @type table<string, fun(ws: loomworks.Workspace|nil, p: table, cb: fun(r: table))>
 local CALLS = {}
 
@@ -62,53 +90,106 @@ local CALLS = {}
 
 CALLS["Workspace/1.publish"] = function(ws, _, cb) cb(outcome(wv().publish(ws))) end
 CALLS["Workspace/1.revert_to_baseline"] = function(ws, _, cb) cb(outcome(wv().revert_to_baseline(ws))) end
-CALLS["Workspace/1.publish_one"] = function(_, p, cb) cb(outcome(wv().publish_one(p.item))) end
-CALLS["Workspace/1.revert_one"] = function(_, p, cb) cb(outcome(wv().revert_one(p.item))) end
-CALLS["Workspace/1.set_intent"] = function(_, p, cb) cb(outcome(wv().set_intent(p.item, p.intent))) end
+CALLS["Workspace/1.publish_one"] = function(_, p, cb) cb(outcome(wv().publish_one(object(p.item)))) end
+CALLS["Workspace/1.revert_one"] = function(_, p, cb) cb(outcome(wv().revert_one(object(p.item)))) end
+CALLS["Workspace/1.set_intent"] = function(_, p, cb) cb(outcome(wv().set_intent(object(p.item), p.intent))) end
 --- `changed`: false when the text was already the description.
 CALLS["Workspace/1.set_description"] = function(_, p, cb)
-    local changed, err = wv().set_description(p.item, p.text)
+    local changed, err = wv().set_description(object(p.item), p.text)
     cb(outcome(changed ~= nil, err, { changed = changed }))
 end
---- The in-process review prompt and trust (spec §17.4); `trust` its result
---- ("trusted", "discarded", "cancelled", "valid" or "error").
+--- The in-process review prompt and trust (spec §17.4), which asks its own
+--- question (never `confirm`); `trust` its result ("trusted", "discarded",
+--- "cancelled", "valid" or "error").
 CALLS["Workspace/1.trust_accept"] = function(_, _, cb)
     cb(outcome(true, nil, { trust = require("loomworks").trust_user_prefs() }))
 end
-CALLS["Workspace/1.delete_user_prefs"] = function(_, p, cb)
-    require("loomworks").delete_user_prefs(p.root)
-    cb(outcome(true))
-end
+--- `{ plan? }`: without `plan` the `confirm` of what would be deleted; with
+--- it, the deletion of exactly that (loomworks.model_commands).
+CALLS["Workspace/1.delete_user_prefs"] = function(ws, p, cb) cb(wv().delete_user_prefs(ws, p.plan)) end
 
 -- ---------------------------------------------------------------------------
 -- Profiles/1
 -- ---------------------------------------------------------------------------
 
-CALLS["Profiles/1.set_active"] = function(_, p, cb) cb(outcome(wv().activate_profile(p.profile))) end
---- `{ config_set, tool?, activate? }` (`tool` the picked tool entry) →
---- `profile`.
-CALLS["Profiles/1.create"] = function(_, p, cb)
-    cb(created("profile", wv().execute_create_profile(p.config_set, p.tool, p.activate)))
+--- `config_set` of `create` / `tool_choices` in-process: a candidate entry's
+--- `{ candidate }`, else the set's object.
+local function set_object(x)
+    if type(x) == "table" and x.candidate ~= nil then return { candidate = x.candidate } end
+    return object(x)
 end
-CALLS["Profiles/1.add_tool"] = function(_, p, cb) cb(outcome(wv().add_profile_tool(p.profile, p.tool))) end
-CALLS["Profiles/1.remove_tool"] = function(_, p, cb) cb(outcome(wv().remove_profile_tool(p.profile, p.tool))) end
+
+CALLS["Profiles/1.set_active"] = function(_, p, cb) cb(outcome(wv().activate_profile(object(p.profile)))) end
+--- `{ config_set, tool?, activate? }` (`tool` a tool_choices entry) →
+--- `profile` (and `config_set`, an automatic set added first).
+CALLS["Profiles/1.create"] = function(ws, p, cb)
+    cb(wv().create_profile(ws, set_object(p.config_set), p.tool and p.tool._entry or nil, p.activate == true))
+end
+--- `{ config_set }` → `tools` (`{ label, _entry }`); waits for a running
+--- tool scan, as the picker did (`ws._tool_waiters`).
+CALLS["Profiles/1.tool_choices"] = function(ws, p, cb)
+    if ws and ws._tool_state == "scanning" then
+        vim.notify("loomworks: waiting for tool detection...", vim.log.levels.INFO)
+        ws._tool_waiters[#ws._tool_waiters + 1] = function() CALLS["Profiles/1.tool_choices"](ws, p, cb) end
+        return
+    end
+    local r = wv().profile_tool_choices(ws, set_object(p.config_set))
+    if r.outcome ~= "ok" then return cb(r) end
+    local tools = {}
+    for i, e in ipairs(r.tools) do
+        tools[i] = { label = e.tool_label or e.tool_key or "(default)", _entry = e }
+    end
+    cb({ outcome = "ok", tools = tools })
+end
+CALLS["Profiles/1.add_tool"] = function(_, p, cb) cb(outcome(wv().add_profile_tool(object(p.profile), p.tool))) end
+CALLS["Profiles/1.remove_tool"] = function(_, p, cb)
+    cb(outcome(wv().remove_profile_tool(object(p.profile), p.tool)))
+end
 
 -- ---------------------------------------------------------------------------
 -- ConfigSets/1
 -- ---------------------------------------------------------------------------
 
---- `{ name, mappings }` (Project → Configuration), or (C0) `{ candidate }`
---- → `config_set`.
+--- `{}` → `sets`: rows `{ name, auto, description?, candidate?, desc? }`,
+--- a declared set's row bound to its object, an automatic one's `desc` its
+--- mappings.
+CALLS["ConfigSets/1.candidates"] = function(ws, _, cb)
+    local r = wv().config_set_candidates(ws)
+    local sets = {}
+    for i, s in ipairs(r.sets) do
+        local row = { name = s.name, auto = s.auto, description = s.description, candidate = s.candidate }
+        if s.mappings then
+            local keys, parts = vim.tbl_keys(s.mappings), {}
+            table.sort(keys)
+            for _, k in ipairs(keys) do parts[#parts + 1] = k .. "→" .. s.mappings[k] end
+            row.desc = table.concat(parts, ", ")
+        end
+        require("loomworks.status_source").bind(row, s.config_set)
+        sets[i] = row
+    end
+    cb({ outcome = "ok", sets = sets })
+end
+--- Whether `mappings` is a generated template's (project key →
+--- configuration name), not the dialog's objects.
+local function template(mappings)
+    return type(next(mappings or {})) == "string"
+end
+--- `{ name, mappings }` → `config_set`.
 CALLS["ConfigSets/1.add"] = function(ws, p, cb)
-    if p.candidate then
-        return cb(created("config_set", wv().execute_create_config_set_from_candidate(ws, p.candidate)))
+    if template(p.mappings) then
+        -- The template the generated sets offered: exactly that set, or
+        -- refused when it changed since it was listed.
+        return cb(created("config_set",
+            wv().execute_create_config_set_from_candidate(ws, wv().candidate_token(p.name, p.mappings))))
     end
     cb(created("config_set", wv().execute_create_config_set(ws, p.name, p.mappings)))
 end
 CALLS["ConfigSets/1.update"] = function(_, p, cb)
-    cb(outcome(wv().execute_edit_config_set(p.config_set, p.name, p.mappings)))
+    cb(outcome(wv().execute_edit_config_set(object(p.config_set), p.name, p.mappings)))
 end
-CALLS["ConfigSets/1.remove"] = function(ws, p, cb) cb(outcome(wv().execute_delete_config_set(ws, p.config_set))) end
+CALLS["ConfigSets/1.remove"] = function(ws, p, cb)
+    cb(outcome(wv().execute_delete_config_set(ws, object(p.config_set))))
+end
 
 -- ---------------------------------------------------------------------------
 -- Projects/1
@@ -197,6 +278,177 @@ CALLS["Maintenance/1.nuke"] = function(_, p, cb)
     cb(outcome(true))
 end
 
+-- ---------------------------------------------------------------------------
+-- Daemon calls (step 5o C2a)
+-- ---------------------------------------------------------------------------
+
+--- What a refusal of each routed method names (as editor_ops' verbs).
+local VERB = {
+    ["Workspace/1.publish"] = "publish", ["Workspace/1.publish_one"] = "publish",
+    ["Workspace/1.revert_to_baseline"] = "revert", ["Workspace/1.revert_one"] = "revert",
+    ["Workspace/1.set_intent"] = "intent", ["Workspace/1.set_description"] = "description",
+    ["Workspace/1.trust_accept"] = "trust", ["Workspace/1.delete_user_prefs"] = "working copy deletion",
+    ["Profiles/1.set_active"] = "profile activation", ["Profiles/1.create"] = "profile creation",
+    ["Profiles/1.tool_choices"] = "toolchain choices", ["Profiles/1.add_tool"] = "toolchain",
+    ["Profiles/1.remove_tool"] = "toolchain", ["ConfigSets/1.candidates"] = "configuration sets",
+    ["ConfigSets/1.add"] = "configuration set", ["ConfigSets/1.update"] = "configuration set",
+    ["ConfigSets/1.remove"] = "configuration set",
+}
+
+--- A refused outcome of `method` with `why`.
+local function refusal(method, why)
+    return { outcome = "refused", message = (VERB[method] or method) .. ": " .. tostring(why) }
+end
+
+--- Send `method` with `args` to the workspace daemon of `ws` (the
+--- observer's plain call, as editor_ops.plain): `cb` gets the method's
+--- result — `ok` (passed through `shape` when given) or `confirm` as the
+--- daemon answered — or a refusal naming why: the method not carried now
+--- (§19.16 "Availability"), the daemon's `refused` / `declined`, a method
+--- it lacks, a failed or unanswered call. Nothing runs in-process.
+--- @param ws loomworks.Workspace|nil
+--- @param method string
+--- @param args table
+--- @param cb fun(r: table)
+--- @param shape? fun(res: table): table
+local function send(ws, method, args, cb, shape)
+    local eo = require("loomworks.daemon.editor_ops")
+    local obs = eo.carrier(method, ws)
+    if not obs then
+        local _, mode_obs = eo.daemon_of(ws)
+        return cb(refusal(method, mode_obs and mode_obs.state ~= "stopped" and mode_obs:refusal(method)
+            or "the workspace is no longer loaded"))
+    end
+    obs:request(method, args, function(r)
+        local res = r.outcome == "ok" and type(r.result) == "table" and r.result or nil
+        if res and res.outcome == "ok" then return cb(shape and shape(res) or res) end
+        if res and res.outcome == "confirm" then return cb(res) end
+        if r.outcome == "degraded" then return cb(refusal(method, obs:refusal(method))) end
+        if res and res.outcome == "refused" then
+            local out = refusal(method, res.message)
+            out.notes, out.note_roles = res.notes, res.note_roles
+            return cb(out)
+        end
+        if res and res.outcome == "declined" then
+            return cb(refusal(method, "the workspace daemon declined it (" .. tostring(res.reason) .. ")"))
+        end
+        cb(refusal(method, "the call to the workspace daemon failed: "
+            .. tostring(r.reason or (res and res.outcome) or "?")))
+    end)
+end
+
+--- The reference an entity param (a row, or a description handle's `_row`)
+--- is sent as: `{ id }`, or nil when the row carries none.
+local function id_ref(x)
+    local row = type(x) == "table" and (x._row or x) or nil
+    if row and row.id ~= nil then return { id = row.id } end
+    return nil
+end
+
+--- The params' entity refs (`fields`: `{ param, kind }` pairs) as the
+--- wire's, or nil + the refusal of the first that has no id.
+local function refs(method, p, fields)
+    local out = {}
+    for _, f in ipairs(fields) do
+        local r = id_ref(p[f[1]])
+        if not r then return nil, refusal(method, "no " .. f[2] .. " id (not a row of the workspace view)") end
+        out[f[1]] = r
+    end
+    return out
+end
+
+--- A Project → Configuration mapping (the dialog's) or a template's
+--- project key → configuration name as the wire's (project key →
+--- configuration name; an unmapped project absent).
+local function wire_mappings(mappings)
+    local out = {}
+    for project, cfg in pairs(mappings or {}) do
+        if type(project) == "string" then
+            out[project] = cfg
+        elseif cfg then
+            out[project.key] = cfg.name
+        end
+    end
+    return out
+end
+
+--- A `create` / `tool_choices` set: a candidate entry's `{ candidate }`, a
+--- row's `{ id }`, or nil.
+local function set_ref(x)
+    if type(x) == "table" and x.candidate ~= nil then return { candidate = x.candidate } end
+    return id_ref(x)
+end
+
+--- The routed methods' daemon bodies: `fn(ws, params, cb)`.
+--- @type table<string, fun(ws: loomworks.Workspace|nil, p: table, cb: fun(r: table))>
+local ROUTED = {}
+
+--- A method whose params are its entity refs plus the plain `extra` ones.
+local function by_ref(method, fields, extra)
+    ROUTED[method] = function(ws, p, cb)
+        local args, err = refs(method, p, fields)
+        if not args then return cb(err) end
+        for _, k in ipairs(extra or {}) do args[k] = p[k] end
+        send(ws, method, args, cb)
+    end
+end
+
+ROUTED["Workspace/1.publish"] = function(ws, _, cb) send(ws, "Workspace/1.publish", {}, cb) end
+ROUTED["Workspace/1.revert_to_baseline"] = function(ws, _, cb) send(ws, "Workspace/1.revert_to_baseline", {}, cb) end
+by_ref("Workspace/1.publish_one", { { "item", "item" } })
+by_ref("Workspace/1.revert_one", { { "item", "item" } })
+by_ref("Workspace/1.set_intent", { { "item", "item" } }, { "intent" })
+by_ref("Workspace/1.set_description", { { "item", "item" } }, { "text" })
+--- `{ plan? }`: without it the daemon's `confirm` (the review, spec §17.4),
+--- with it the trust of what it showed.
+ROUTED["Workspace/1.trust_accept"] = function(ws, p, cb)
+    send(ws, "Workspace/1.trust_accept", { plan = p.plan }, cb)
+end
+ROUTED["Workspace/1.delete_user_prefs"] = function(ws, p, cb)
+    send(ws, "Workspace/1.delete_user_prefs", { plan = p.plan }, cb)
+end
+
+by_ref("Profiles/1.set_active", { { "profile", "profile" } })
+by_ref("Profiles/1.add_tool", { { "profile", "profile" } }, { "tool" })
+by_ref("Profiles/1.remove_tool", { { "profile", "profile" } }, { "tool" })
+--- `tool`: a tool_choices entry (the wire's own) as `create` takes it.
+ROUTED["Profiles/1.create"] = function(ws, p, cb)
+    local set = set_ref(p.config_set)
+    if not set then return cb(refusal("Profiles/1.create", "no configuration set id")) end
+    local tool = nil
+    if p.tool then
+        tool = p.tool.sdk and { sdk = p.tool.key } or { module = p.tool.module, key = p.tool.key }
+    end
+    send(ws, "Profiles/1.create", { config_set = set, tool = tool, activate = p.activate == true or nil }, cb)
+end
+ROUTED["Profiles/1.tool_choices"] = function(ws, p, cb)
+    local set = set_ref(p.config_set)
+    if not set then return cb(refusal("Profiles/1.tool_choices", "no configuration set id")) end
+    send(ws, "Profiles/1.tool_choices", { config_set = set }, cb)
+end
+
+--- `sets` as rows: a declared set's `id` its own.
+ROUTED["ConfigSets/1.candidates"] = function(ws, _, cb)
+    send(ws, "ConfigSets/1.candidates", {}, cb, function(res)
+        local sets = {}
+        for i, s in ipairs(res.sets or {}) do
+            sets[i] = { id = s.config_set, name = s.name, auto = s.auto, description = s.description,
+                candidate = s.candidate }
+        end
+        return { outcome = "ok", sets = sets }
+    end)
+end
+ROUTED["ConfigSets/1.add"] = function(ws, p, cb)
+    send(ws, "ConfigSets/1.add", { name = p.name, mappings = wire_mappings(p.mappings) }, cb)
+end
+ROUTED["ConfigSets/1.update"] = function(ws, p, cb)
+    local args, err = refs("ConfigSets/1.update", p, { { "config_set", "configuration set" } })
+    if not args then return cb(err) end
+    args.name, args.mappings = p.name, wire_mappings(p.mappings)
+    send(ws, "ConfigSets/1.update", args, cb)
+end
+by_ref("ConfigSets/1.remove", { { "config_set", "configuration set" } })
+
 --- The methods the status page calls, sorted (tests).
 --- @return string[]
 function M.methods()
@@ -206,8 +458,18 @@ function M.methods()
     return names
 end
 
---- Call a model method of the workspace `ws` (nil when `params` carry the
---- domain object the method acts on). `cb(r)` gets its outcome (may be nil).
+--- Whether `method` is a call to the workspace daemon in `daemon` mode
+--- (step 5o C2a), never run in-process there.
+--- @param method string
+--- @return boolean
+function M.routed(method)
+    return ROUTED[method] ~= nil
+end
+
+--- Call a model method of the workspace `ws` (nil: the loaded workspace —
+--- the one the live observer observes; none in the `in-process` mode).
+--- In `daemon` mode a routed method is a call to the workspace daemon; any
+--- other runs its in-process body. `cb(r)` gets its outcome (may be nil).
 --- @param ws loomworks.Workspace|nil
 --- @param method string `"<Interface>/<version>.<method>"`
 --- @param params table|nil
@@ -215,7 +477,17 @@ end
 function M.call(ws, method, params, cb)
     local fn = CALLS[method]
     if not fn then error("loomworks.ui.model_calls: unknown method " .. tostring(method), 2) end
-    fn(ws, params or {}, cb or function() end)
+    params, cb = params or {}, cb or function() end
+    local route = ROUTED[method]
+    if route then
+        -- (No workspace given: the loaded one's — its observer's.)
+        if ws == nil then
+            local o = require("loomworks.daemon.observer").current()
+            ws = o and o.ws or nil
+        end
+        if require("loomworks.daemon.editor_ops").daemon_of(ws) then return route(ws, params, cb) end
+    end
+    fn(ws, params, cb)
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a

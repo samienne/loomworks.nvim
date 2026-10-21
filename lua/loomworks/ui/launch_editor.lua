@@ -93,7 +93,8 @@ function M.open(opts)
         end
         -- Existing launch: its description (ui §1.8 / §1.16), saved by the
         -- description editor itself.
-        local editing = opts.launch_project and opts.launch_project:find_launch(opts.original_name)
+        local editing = opts.describe_item
+            or (opts.launch_project and opts.launch_project:find_launch(opts.original_name))
         if editing then
             require("loomworks.ui.helpers").description_row(t, editing,
                 "Description", function() if view then view:refresh() end end)

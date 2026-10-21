@@ -181,9 +181,14 @@ M.TASKS = {
     object = "/tasks", iface = "loomworks.Tasks", v = 1, feature = "tasks",
     methods = { "cancel", "list" }, signals = { "started", "ended", "step" },
 }
+-- `/workspace`: subscribed to for `changed`; its commands (step 5o C2a,
+-- API.md §6) are the status page's publish / revert / intent / description
+-- / trust writes, called while subscribed (`callable`).
 M.WORKSPACE = {
     object = "/workspace", iface = "loomworks.Workspace", v = 1, feature = "model changes",
-    methods = {}, signals = { "changed" },
+    methods = { "publish", "publish_one", "revert_to_baseline", "revert_one", "set_intent", "set_description",
+        "trust_accept", "delete_user_prefs" },
+    signals = { "changed" }, callable = true,
 }
 -- The editor views (§19.13 "Views", step 5j): `initial`, then each full-state
 -- `update`, `get` after a `seq` gap, into the view store (loomworks.views)
@@ -267,15 +272,23 @@ M.DEVICES = {
     methods = { "list", "scan", "install", "launch", "stop" }, signals = { "changed" },
     callable = true, tasks = true, unavailable = "devices unavailable",
 }
--- A profile's device (step 5n C2, API.md §11): two plain writes, called,
--- never subscribed to.
+-- The profiles' commands (API.md §11): a profile's device (step 5n C2) and
+-- the status page's activation, creation and toolchain edits (step 5o C2a,
+-- with the `tool_choices` read); plain calls, never subscribed to.
 M.PROFILES = {
-    object = "/profiles", iface = "loomworks.Profiles", v = 1, feature = "device choice",
-    methods = { "set_device", "clear_device" }, signals = {}, call_only = true,
+    object = "/profiles", iface = "loomworks.Profiles", v = 1, feature = "profiles",
+    methods = { "set_device", "clear_device", "set_active", "create", "tool_choices", "add_tool", "remove_tool" },
+    signals = {}, call_only = true,
+}
+-- The configuration sets' commands (step 5o C2a, API.md §20) and their
+-- `candidates` read, on `/projects` beside Projects/1: plain calls.
+M.CONFIG_SETS = {
+    object = "/projects", iface = "loomworks.ConfigSets", v = 1, feature = "configuration sets",
+    methods = { "candidates", "add", "update", "remove" }, signals = {}, call_only = true,
 }
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE }
 M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE, M.BUILD,
-    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES }
+    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -2084,6 +2097,12 @@ local METHOD_IFACE = {
     device_stop = M.DEVICES,
     ["Profiles/1.set_device"] = M.PROFILES, ["Profiles/1.clear_device"] = M.PROFILES,
 }
+-- The status page's model writes (step 5o C2a): every method of the
+-- interface tables above, by its qualified name.
+for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS }) do
+    local iface = want.iface:match("^loomworks%.(.+)$")
+    for _, method in ipairs(want.methods) do METHOD_IFACE[iface .. "/" .. want.v .. "." .. method] = want end
+end
 
 --- The interface, version and method of a qualified call name
 --- (`"Profiles/1.set_device"` → "Profiles", 1, "set_device"), or nil.
@@ -2201,6 +2220,58 @@ local CALLS = {
     end,
     ["Profiles/1.clear_device"] = function(conn, args, cb, env)
         conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "clear_device", args, cb, env)
+    end,
+    -- The status page's model writes (step 5o C2a).
+    ["Workspace/1.publish"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "publish", args, cb, env)
+    end,
+    ["Workspace/1.publish_one"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "publish_one", args, cb, env)
+    end,
+    ["Workspace/1.revert_to_baseline"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "revert_to_baseline", args, cb, env)
+    end,
+    ["Workspace/1.revert_one"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "revert_one", args, cb, env)
+    end,
+    ["Workspace/1.set_intent"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "set_intent", args, cb, env)
+    end,
+    ["Workspace/1.set_description"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "set_description", args, cb, env)
+    end,
+    ["Workspace/1.trust_accept"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "trust_accept", args, cb, env)
+    end,
+    ["Workspace/1.delete_user_prefs"] = function(conn, args, cb, env)
+        conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "delete_user_prefs", args, cb, env)
+    end,
+    ["Profiles/1.set_active"] = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "set_active", args, cb, env)
+    end,
+    ["Profiles/1.create"] = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "create", args, cb, env)
+    end,
+    ["Profiles/1.tool_choices"] = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "tool_choices", args, cb, env)
+    end,
+    ["Profiles/1.add_tool"] = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "add_tool", args, cb, env)
+    end,
+    ["Profiles/1.remove_tool"] = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "remove_tool", args, cb, env)
+    end,
+    ["ConfigSets/1.candidates"] = function(conn, args, cb, env)
+        conn:call(M.CONFIG_SETS.object, M.CONFIG_SETS.iface, M.CONFIG_SETS.v, "candidates", args, cb, env)
+    end,
+    ["ConfigSets/1.add"] = function(conn, args, cb, env)
+        conn:call(M.CONFIG_SETS.object, M.CONFIG_SETS.iface, M.CONFIG_SETS.v, "add", args, cb, env)
+    end,
+    ["ConfigSets/1.update"] = function(conn, args, cb, env)
+        conn:call(M.CONFIG_SETS.object, M.CONFIG_SETS.iface, M.CONFIG_SETS.v, "update", args, cb, env)
+    end,
+    ["ConfigSets/1.remove"] = function(conn, args, cb, env)
+        conn:call(M.CONFIG_SETS.object, M.CONFIG_SETS.iface, M.CONFIG_SETS.v, "remove", args, cb, env)
     end,
 }
 

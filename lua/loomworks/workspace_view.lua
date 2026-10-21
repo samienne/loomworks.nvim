@@ -1061,6 +1061,43 @@ function M.resolve_config_set_choice(ws, choice)
         choice.candidate or commands.candidate_token(choice.real_name, choice.mappings))
 end
 
+--- The command outcomes the status page's profile-creation picker reads
+--- and writes in the `in-process` mode (loomworks.model_commands' own
+--- outcomes, API.md §4.1, not `ok, err`: the seam passes them on as the
+--- daemon's): the declared and automatic configuration sets, a set's
+--- toolchain choices and the creation itself. `set` a ConfigurationSet or
+--- `{ candidate = token }` (step 5o C2a).
+--- @param ws loomworks.Workspace
+--- @return loomworks.CommandOutcome
+function M.config_set_candidates(ws) return commands.config_set_candidates(ws) end
+--- @param ws loomworks.Workspace
+--- @param set loomworks.ConfigurationSet|{ candidate: string }|nil
+--- @return loomworks.CommandOutcome
+function M.profile_tool_choices(ws, set) return commands.profile_tool_choices(ws, set) end
+--- @param ws loomworks.Workspace
+--- @param set loomworks.ConfigurationSet|{ candidate: string }|nil
+--- @param tool_entry table|nil
+--- @param activate boolean
+--- @return loomworks.CommandOutcome
+function M.create_profile(ws, set, tool_entry, activate)
+    return commands.profile_create(ws, set, tool_entry, activate)
+end
+
+--- `Workspace/1.delete_user_prefs { plan? }` in the `in-process` mode: the
+--- working copy of the loaded workspace (else of the refused load, else of
+--- the cwd's root); without `plan` the `confirm` of what would be deleted,
+--- with it the deletion of exactly that (model_commands; the command's
+--- outcome).
+--- @param ws loomworks.Workspace|nil
+--- @param plan string|nil
+--- @return loomworks.CommandOutcome|{ outcome: "confirm", lines: string[], plan: string }
+function M.delete_user_prefs(ws, plan)
+    local lw = require("loomworks")
+    local r = commands.delete_user_prefs(lw._core(), (ws and ws.root) or lw.user_prefs_root(), plan)
+    r.reloaded = nil
+    return r
+end
+
 --- Execute profile creation: materialize, or return the existing profile of
 --- that set and tool; optionally activate.
 --- @param cs loomworks.ConfigurationSet

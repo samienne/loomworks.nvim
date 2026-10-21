@@ -236,10 +236,11 @@ end
 
 --- Cycle an item's intent (`P`) through the model command; a refusal is
 --- notified.
---- @param item table a profile, configuration set, project or configuration
-function M.cycle_intent(item)
+--- @param row table the `view.Workspace/1` row of a profile, configuration set, project or configuration
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.cycle_intent(row, ws)
     local model = require("loomworks.ui.model_calls")
-    model.call(nil, "Workspace/1.set_intent", { item = item, intent = M.next_intent(item._intent) }, function(r)
+    model.call(ws, "Workspace/1.set_intent", { item = row, intent = M.next_intent(row.intent) }, function(r)
         local ok, err = model.result(r)
         if not ok then
             vim.notify("loomworks: " .. tostring(err or "the intent was not saved"), vim.log.levels.ERROR)
@@ -248,10 +249,11 @@ function M.cycle_intent(item)
 end
 
 --- Publish one item now; a refusal is notified.
---- @param item table
-function M.publish_one(item)
+--- @param row table the item's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.publish_one(row, ws)
     local model = require("loomworks.ui.model_calls")
-    model.call(nil, "Workspace/1.publish_one", { item = item }, function(r)
+    model.call(ws, "Workspace/1.publish_one", { item = row }, function(r)
         local ok, err = model.result(r)
         if not ok then
             vim.notify("loomworks: " .. tostring(err or "publish failed: unknown"), vim.log.levels.ERROR)
@@ -260,10 +262,11 @@ function M.publish_one(item)
 end
 
 --- Revert one item to its baseline; a refusal is notified.
---- @param item table
-function M.revert_one(item)
+--- @param row table the item's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.revert_one(row, ws)
     local model = require("loomworks.ui.model_calls")
-    model.call(nil, "Workspace/1.revert_one", { item = item }, function(r)
+    model.call(ws, "Workspace/1.revert_one", { item = row }, function(r)
         local ok, err = model.result(r)
         if not ok then
             vim.notify("loomworks: " .. tostring(err or "revert failed: unknown"), vim.log.levels.ERROR)
@@ -437,6 +440,25 @@ function M.describe(opts, desc, from_module)
         end
     end
     return opts
+end
+
+--- A describable item named by its `view.Workspace/1` row (step 5o C2a): the
+--- description editor's item for a row — its kind and label, the row's
+--- description, and the row the edit names (`_row`: model_calls sends its
+--- id, or in the `in-process` mode the object bound to it). A generated
+--- configuration's row is read-only (`_readonly` the reason, core §1.10).
+--- @param kind "profile"|"configuration set"|"project"|"configuration"|"launch configuration"
+--- @param row table
+--- @param label? string the display name (default the row's key or name)
+--- @return table
+function M.row_item(kind, row, label)
+    local item = { _kind = kind, _label = label or row.key or row.name, _row = row, description = row.description }
+    if kind == "configuration" and (row.auto_gen or not row.user or row.source_missing) then
+        item._readonly = "configuration '" .. tostring(row.key) .. "' is generated from the project files, "
+            .. "which also supply its description; declare a configuration that inherits "
+            .. "it to give it your own"
+    end
+    return item
 end
 
 --- The action half of `with_description`: `e` / "Edit description".
