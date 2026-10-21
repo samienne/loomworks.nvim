@@ -5,7 +5,7 @@
   "description": "Object /maintenance (API.md §22, step 5o part B5): the workspace's maintenance. execute_deletion is task-streamed, in a model segment of the caller's environment, its deletion the in-process editor's (loomworks.model_commands deletion_request / deletion_run).",
   "methods": {
     "execute_deletion": {
-      "description": "Remove build state and what it belongs to (API.md §22), with the outcomes of reset (§8.5) and its confirmation (§8.6). The deletion is planned after resolution and before any lock: with a plan the new plan differs from it is refused (the build directories to delete changed since they were listed, exit 1), before the empty check; with nothing to delete refused (nothing to delete, exit 0, stream out); without yes confirm (lines, plan) with nothing locked or changed; with yes it is accepted (without plan the task prints the listing first). An accepted deletion takes the workspace operation lock, then the build-directory lock of every directory of the plan (exclusive, canonical order; a held one ends the task naming the holder, nothing removed), plans again under the locks (a changed plan ends the task with the same refusal) and removes as spec §4.6-§4.7 specify. A stray_dir outside the workspace (path outside workspace: <path>), not in the current stray set (not a stray build directory: <path>) or holding a live build directory (directory holds a live build dir: <path>) is refused. A project whose build directories are not all removed is kept and the task ends refused. A cancel stops between directories (delete stopped: <reason>). The task's writes' changed precede done. A stale id is refused (a stale reference).",
+      "description": "Remove build state and what it belongs to (API.md §22), with the outcomes of reset (§8.5) and its confirmation (§8.6). The deletion is planned after resolution and before any lock: with a plan the new plan differs from it is refused (the build directories to delete changed since they were listed, exit 1), before the empty check; with nothing to delete refused (nothing to delete, exit 0, stream out); without yes confirm (lines, plan) with nothing locked or changed; with yes it is accepted (without plan the task prints the listing first). An accepted deletion takes the workspace operation lock, then the build-directory lock of every directory of the plan (exclusive, canonical order; a held one ends the task naming the holder, nothing removed), plans again under the locks (a changed plan ends the task with the same refusal) and removes as spec §4.6-§4.7 specify. A stray_dir outside the workspace (path outside workspace: <path>), not in the current stray set (not a stray build directory: <path>) or holding a live build directory (directory holds a live build dir: <path>) is refused. A project whose build directories are not all removed is kept and the task ends refused. A cancel stops between directories (delete stopped: <reason>). A successful deletion's task prints DELETE OK: <label> last. A unit is also named { project, configuration }, an orphaned build_dir { key }; an unknown key is refused. The task's writes' changed precede done. A stale id is refused (a stale reference).",
       "params": {
         "type": "object",
         "required": [
@@ -37,17 +37,39 @@
                 "additionalProperties": false,
                 "properties": {
                   "unit": {
-                    "description": "A configuration unit (its id, as view.Workspace/1 lists it): its build directory and cached state.",
-                    "type": "object",
-                    "required": [
-                      "id"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "$ref": "loomworks.Common/1#/$defs/Id"
+                    "description": "A configuration unit: its id, as view.Workspace/1 lists it, or { project, configuration } (the snapshot.index config_units shape): its build directory and cached state.",
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "id"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "$ref": "loomworks.Common/1#/$defs/Id"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "project",
+                          "configuration"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "project": {
+                            "description": "The project key.",
+                            "type": "string"
+                          },
+                          "configuration": {
+                            "description": "The configuration key.",
+                            "type": "string"
+                          }
+                        }
                       }
-                    }
+                    ]
                   }
                 }
               },
@@ -59,17 +81,33 @@
                 "additionalProperties": false,
                 "properties": {
                   "build_dir": {
-                    "description": "An orphaned build directory: its id in view.Workspace/1 orphaned.configurations.",
-                    "type": "object",
-                    "required": [
-                      "id"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                      "id": {
-                        "$ref": "loomworks.Common/1#/$defs/Id"
+                    "description": "An orphaned build directory: its id in view.Workspace/1 orphaned.configurations, or { key }, that row's key (its cache key).",
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "id"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": {
+                            "$ref": "loomworks.Common/1#/$defs/Id"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "key"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          }
+                        }
                       }
-                    }
+                    ]
                   }
                 }
               },

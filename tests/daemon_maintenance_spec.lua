@@ -114,6 +114,7 @@ describe("Maintenance/1.execute_deletion in the workspace daemon (API.md §22)",
         assert.equals("execute_deletion", start.meta.method)
         local f, lines = s.done(r.task_id, 60000)
         assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
+        assert.equals("out: DELETE OK: " .. start.meta.name, lines[#lines], vim.inspect(lines))
         assert.is_false(exists(bd))
         -- Its cached state cleared, in the model and on disk.
         local u = s.unit()
@@ -127,6 +128,25 @@ describe("Maintenance/1.execute_deletion in the workspace daemon (API.md §22)",
         assert.equals(dp.NOTHING, again.message)
         assert.equals(0, again.exit_code)
         assert.equals("out", again.stream)
+    end)
+
+    it("a unit named { project, configuration } is the unit its id names; an unknown one is refused", function()
+        s = session()
+        s.build()
+        local bd = s.unit():build_dir()
+        local r = s.delete({ target = { unit = { project = "app", configuration = "Nope" } } })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("no configuration unit 'app/Nope'", r.message)
+        local by_id = s.delete({ target = { unit = { id = s.id(s.unit()) } } })
+        local target = { unit = { project = "app", configuration = "Debug" } }
+        local c = s.delete({ target = target })
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        assert.equals(by_id.plan, c.plan)
+        r = s.delete({ target = target, yes = true, plan = c.plan })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f, lines = s.done(r.task_id, 60000)
+        assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
+        assert.is_false(exists(bd))
     end)
 
     it("a stale plan token is refused before anything is removed", function()
@@ -208,6 +228,13 @@ describe("Maintenance/1.execute_deletion in the workspace daemon (API.md §22)",
         assert.is_not_nil(row, vim.inspect(v.orphaned))
         assert.is_string(row.id, vim.inspect(row))
         local target = { build_dir = { id = row.id } }
+        -- The row's key names the same directory; an unknown key is refused.
+        local nk = s.delete({ target = { build_dir = { key = "nope/Debug" } } })
+        assert.equals("refused", nk.outcome, vim.inspect(nk))
+        assert.equals("no build directory 'nope/Debug'", nk.message)
+        local by_key = s.delete({ target = { build_dir = { key = row.key } } })
+        assert.equals("confirm", by_key.outcome, vim.inspect(by_key))
+        target = { build_dir = { key = row.key } }
         local c = s.delete({ target = target })
         assert.equals("confirm", c.outcome, vim.inspect(c))
         local r = s.delete({ target = target, yes = true, plan = c.plan })

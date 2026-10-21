@@ -33,8 +33,10 @@ M.WHERE = { path = "/maintenance", iface = "loomworks.Maintenance", v = 1 }
 
 --- The deletion target a call names, resolved to the live objects, or nil +
 --- the refusal (a stale id, an unknown key). `profile` and `project` are a
---- reference (`{ id }` or `{ key }`); `unit` and `build_dir` an id from the
---- views (`view.Workspace/1`); `stray_dir` a path; `orphans` `true`.
+--- reference (`{ id }` or `{ key }`); `unit` an id from the views
+--- (`view.Workspace/1`) or `{ project, configuration }` (the `snapshot.index`
+--- config_units shape); `build_dir` an id or `{ key }` (the orphan row's cache
+--- key); `stray_dir` a path; `orphans` `true`. Keys resolve here, once.
 --- @param service loomworks.daemon.BuildService
 --- @param ws table
 --- @param t table the wire target
@@ -64,9 +66,30 @@ function M.resolve_target(service, ws, t)
         o, err = by_ref(t.project, ws._projects, "project")
         return o and { project = o } or nil, err
     elseif t.unit ~= nil then
+        if t.unit.id == nil and t.unit.project ~= nil then
+            -- `{ project, configuration }`: the `snapshot.index` config_units shape.
+            for _, u in pairs(ws._config_units or {}) do
+                local p = u._project
+                if not u._removed and p and not p._removed and p.key == t.unit.project
+                        and u.config_key and u:config_key() == t.unit.configuration then
+                    return { unit = u }
+                end
+            end
+            return nil, "no configuration unit '" .. tostring(t.unit.project) .. "/"
+                .. tostring(t.unit.configuration) .. "'"
+        end
         o, err = by_id(t.unit, ws._config_units, "configuration unit")
         return o and { unit = o } or nil, err
     elseif t.build_dir ~= nil then
+        if t.build_dir.id == nil and t.build_dir.key ~= nil then
+            -- `{ key }`: the view.Workspace/1 orphan row's cache key.
+            for _, oc in ipairs(ws:get_orphaned_configs()) do
+                if oc.build_dir_obj and (oc.build_dir_key or oc.config_key) == t.build_dir.key then
+                    return { build_dir = oc.build_dir_obj }
+                end
+            end
+            return nil, "no build directory '" .. tostring(t.build_dir.key) .. "'"
+        end
         o, err = by_id(t.build_dir, ws._build_dirs, "build directory")
         return o and { build_dir = o } or nil, err
     elseif t.stray_dir ~= nil then
@@ -125,6 +148,7 @@ function M.run(svc, ctx)
         svc:with_model(ctx, function()
             if outcome.outcome == "ok" then
                 for _, n in ipairs(outcome.notes or {}) do task:line("out", n, "warn") end
+                task:line("out", "DELETE OK: " .. deletion.label, "ok")
                 return finish(0)
             end
             local code = outcome.exit_code or 1
