@@ -200,6 +200,31 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         assert.equals(2, r.exit_code)
     end)
 
+    it("candidates refuses a link inside the root that resolves outside it", function()
+        loaded()
+        local outside = H.tmp() .. "/outside"
+        vim.fn.mkdir(outside, "p")
+        local link = root .. "/escape"
+        if vim.fn.has("win32") == 1 then
+            vim.fn.system({ "cmd", "/c", "mklink", "/J", (link:gsub("/", "\\")), (outside:gsub("/", "\\")) })
+        else
+            vim.uv.fs_symlink(outside, link)
+        end
+        if vim.fn.isdirectory(link) ~= 1 then
+            pending("could not create a junction/symlink")
+            return
+        end
+        local r = call("candidates", { path = "escape" })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals(2, r.exit_code)
+        r = call("candidates", { path = link })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals(2, r.exit_code)
+        r = call("candidates", { path = "missing" })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("no directory 'missing'", r.message)
+    end)
+
     it("expand_preview expands under the profile named; an unresolved reference stays", function()
         loaded()
         local templates = { "${project_path}/x", "${no_such_var}" }

@@ -524,8 +524,9 @@ end
 --- `add { key, type, path, mappings?, tool? }` — declare a project, map it
 --- into each configuration set, and with a toolchain upgrade the affected
 --- profiles to it. A keyed module's project without a toolchain is added
---- unmapped (it is mapped once a toolchain is chosen). A failed upgrade
---- after the project was added is a `warn` note (D1).
+--- unmapped (it is mapped once a toolchain is chosen), with a `warn` note
+--- naming the mappings not made; a mapping into an unknown set is a `warn`
+--- note too. A failed upgrade after the project was added is a `warn` note (D1).
 --- @param ws loomworks.Workspace
 --- @param key string
 --- @param mod_type string
@@ -540,14 +541,34 @@ function M.project_add(ws, key, mod_type, path, mappings, tool_entry)
 
     local mod = require("loomworks.modules").get(mod_type)
     local has_keyed = mod and mod.has_keyed_tools or false
-    if has_keyed and not tool_entry then return result end
+    local names = {}
+    for name in pairs(mappings or {}) do names[#names + 1] = tostring(name) end
+    table.sort(names)
+    if has_keyed and not tool_entry then
+        -- Mapped once a toolchain is chosen: say which mappings were not made.
+        if #names > 0 then
+            warn(result, "project added unmapped (a " .. tostring(mod_type) .. " project has no toolchain);"
+                .. " not mapped into '" .. table.concat(names, "', '") .. "'")
+        end
+        return result
+    end
 
+    local known = {}
     for _, cs in pairs(ws._config_sets) do
+        known[cs.name] = true
         local variant = mappings and mappings[cs.name]
         if variant then
             local cfg = project:get_configuration(variant) or project:ensure_configuration(variant)
             cs:update_mapping(project, cfg)
         end
+    end
+    local unknown = {}
+    for _, name in ipairs(names) do
+        if not known[name] then unknown[#unknown + 1] = name end
+    end
+    if #unknown > 0 then
+        warn(result, "project added, but there is no configuration set '" .. table.concat(unknown, "', '")
+            .. "' to map it into")
     end
 
     if tool_entry then
@@ -801,7 +822,10 @@ local function keyed_tools(ws, mod, mod_type)
 end
 
 --- The relative path of a project directory a caller names (relative to the
---- root, or absolute under it), or nil + the refusal.
+--- root, or absolute under it), or nil + the refusal. The boundary is checked
+--- on real paths (8.3 short names and case reconciled, links resolved), so a
+--- short spelling of a path under the root is accepted and a junction or
+--- symlink inside the root that resolves outside it is refused.
 --- @param root string
 --- @param path string
 --- @return string|nil rel ("" for the root itself), loomworks.CommandOutcome|nil
@@ -809,26 +833,34 @@ local function project_dir(root, path)
     local p = tostring(path or ""):gsub("\\", "/")
     local r = root:gsub("\\", "/")
     local outside = refused("'" .. tostring(path) .. "' is not under the workspace root", 2)
-    local rel = p
+    local abs
     if p:sub(1, 1) == "/" or p:match("^%a:/") then
-        local win = vim.fn.has("win32") == 1
-        local a, b = win and p:lower() or p, win and r:lower() or r
-        if a == b then
-            rel = ""
-        elseif a:sub(1, #b + 1) == b .. "/" then
-            rel = p:sub(#r + 2)
-        else
-            return nil, outside
+        abs = p
+    else
+        local rel = p:gsub("/+$", ""):gsub("^%./", "")
+        for seg in rel:gmatch("[^/]+") do
+            if seg == ".." then return nil, outside end
         end
+        abs = (rel == "" or rel == ".") and r or (r .. "/" .. rel)
     end
-    rel = rel:gsub("/+$", ""):gsub("^%./", "")
-    if rel == "." then rel = "" end
-    for seg in rel:gmatch("[^/]+") do
-        if seg == ".." or seg == "." then return nil, outside end
+    local realpath = (vim.uv or vim.loop).fs_realpath
+    local win = vim.fn.has("win32") == 1
+    local function real(x)
+        local rp = realpath(x)
+        return rp and (rp:gsub("\\", "/"):gsub("/+$", "")) or nil
     end
-    local abs = rel == "" and r or (r .. "/" .. rel)
-    if vim.fn.isdirectory(abs) ~= 1 then return nil, refused("no directory '" .. tostring(path) .. "'") end
-    return rel
+    local rroot = real(r) or r
+    local rabs = real(abs)
+    if not rabs then
+        -- Nothing to resolve: refused as outside when its text is, else as missing.
+        local a, b = win and abs:lower() or abs, win and r:lower() or r
+        if a ~= b and a:sub(1, #b + 1) ~= b .. "/" then return nil, outside end
+        return nil, refused("no directory '" .. tostring(path) .. "'")
+    end
+    local a, b = win and rabs:lower() or rabs, win and rroot:lower() or rroot
+    if a ~= b and a:sub(1, #b + 1) ~= b .. "/" then return nil, outside end
+    if vim.fn.isdirectory(rabs) ~= 1 then return nil, refused("no directory '" .. tostring(path) .. "'") end
+    return a == b and "" or rabs:sub(#rroot + 2)
 end
 
 --- `candidates { path, type? }` — what adding the directory as a project
