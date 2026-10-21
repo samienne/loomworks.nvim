@@ -258,6 +258,159 @@ describe("orphan cleanup deletion safety", function()
             "the skipped shared dir was left unknown on disk after a failed batch")
         assert.equals("built", shared_bd.state)
     end)
+
+    -- The status page's single-row orphan delete (`delete_orphaned_build_dir`)
+    -- gets the bulk cleanup's protections: a dir a live configuration still
+    -- references, one that contains a live build dir (a build-dir template
+    -- that gained a level, `.nvim/build/App` -> `.nvim/build/App/Debug`) or
+    -- that IS a live build dir under another spelling (8.3 short name) keeps
+    -- its tree (only the entry is dropped); the entry is `unknown` on disk
+    -- before a removal and is dropped only after the removal succeeded.
+    describe("single-row orphan delete", function()
+        local function count_rm()
+            local removed = {}
+            io_mod.rm_rf_async = function(d, cb)
+                removed[#removed + 1] = d
+                return real_rm(d, cb)
+            end
+            return removed
+        end
+
+        local function delete_row()
+            local key = ws:get_orphaned_configs()[1].build_dir_key
+            local done, ok = false, nil
+            ws:delete_orphaned_build_dir(key):next(function(v) done, ok = true, v end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "delete never finished")
+            return ok
+        end
+
+        it("never removes an orphan dir that contains a live build dir", function()
+            local dir = add_orphan(ws, root, root .. "/.nvim/build/App")
+            local removed = count_rm()
+            assert.equals("kept", delete_row())
+            assert.equals(0, #removed, "rm-rf was handed " .. table.concat(removed, ", "))
+            assert.is_not_nil(uv.fs_stat(dir))
+            assert.is_not_nil(uv.fs_stat(built), "the live build dir was removed")
+            assert.equals(0, #ws:get_orphaned_configs(), "the orphan's entry was not dropped")
+        end)
+
+        it("never removes an orphan dir a live configuration still references", function()
+            add_orphan(ws, root, built)
+            local removed = count_rm()
+            assert.equals("kept", delete_row())
+            assert.equals(0, #removed, "rm-rf was handed " .. table.concat(removed, ", "))
+            assert.is_not_nil(uv.fs_stat(built), "the live build dir was removed")
+            assert.equals(0, #ws:get_orphaned_configs(), "the orphan's entry was not dropped")
+        end)
+
+        it("never removes an orphan dir that is a live build dir under its 8.3 short name", function()
+            if vim.fn.has("win32") == 0 then
+                pending("8.3 short names are Windows-only"); return
+            end
+            local out = vim.fn.system({ "cmd", "/c",
+                "for %I in (\"" .. built:gsub("/", "\\") .. "\") do @echo %~sI" })
+            local short = vim.trim(out or ""):gsub("\\", "/")
+            if vim.v.shell_error ~= 0 or not short:find("~", 1, true) then
+                pending("8.3 short names unavailable on this volume"); return
+            end
+            add_orphan(ws, root, short)
+            local removed = count_rm()
+            assert.equals("kept", delete_row())
+            assert.equals(0, #removed, "rm-rf was handed " .. table.concat(removed, ", "))
+            assert.is_not_nil(uv.fs_stat(built), "the live build dir was removed")
+        end)
+
+        it("marks the entry unknown on disk before the removal and drops it after", function()
+            local dir = add_orphan(ws, root)
+            local on_disk
+            io_mod.rm_rf_async = function(d, cb)
+                if not on_disk then on_disk = read(root .. "/.nvim/loomworks.cache.json") or "" end
+                return real_rm(d, cb)
+            end
+            assert.equals("removed", delete_row())
+            assert.is_truthy(on_disk and on_disk:find('"unknown"', 1, true),
+                "the orphan was not marked unknown on disk before the removal")
+            assert.is_nil(uv.fs_stat(dir))
+            assert.equals(0, #ws:get_orphaned_configs())
+        end)
+
+        it("keeps the entry (unknown) when the removal fails", function()
+            add_orphan(ws, root)
+            io_mod.rm_rf_async = function(_, cb) cb(false, "boom") end
+            assert.equals("failed", delete_row(), "a failed removal reported success")
+            local orphans = ws:get_orphaned_configs()
+            assert.equals(1, #orphans, "the entry was dropped although its tree is still there")
+            assert.equals("unknown", orphans[1].build_dir_obj.state)
+            local disk = vim.json.decode(read(root .. "/.nvim/loomworks.cache.json") or "{}")
+            assert.is_not_nil((disk.build_dirs or {})["App/Release"],
+                "the entry was dropped from the cache on disk although its tree is still there")
+        end)
+
+        -- `lw reset --all` (reset_all) removes every live build dir first, so
+        -- an orphan dir that held one (template `.nvim/build/App` ->
+        -- `.nvim/build/App/Debug`) no longer shields anything: the reset
+        -- removes it too rather than leaving it on disk (spec 16.30).
+        it("reset_all removes an orphan dir that held a live dir the reset removed", function()
+            local dir = add_orphan(ws, root, root .. "/.nvim/build/App")
+            local done = false
+            ws:reset_all(function() done = true end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+            assert.is_nil(uv.fs_stat(built), "the live build dir survived the reset")
+            assert.is_nil(uv.fs_stat(dir), "the orphan dir survived the reset")
+            assert.equals(0, #ws:get_orphaned_configs())
+        end)
+
+        it("reset_all keeps an orphan dir holding a live dir whose removal failed", function()
+            local dir = add_orphan(ws, root, root .. "/.nvim/build/App")
+            local norm_built = ws._core._deps.normalize(built)
+            io_mod.rm_rf_async = function(d, cb)
+                if ws._core._deps.normalize(d) == norm_built then return cb(false, "boom") end
+                return real_rm(d, cb)
+            end
+            local done = false
+            ws:reset_all(function() done = true end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+            assert.is_not_nil(uv.fs_stat(built), "test setup: the live removal failed")
+            assert.is_not_nil(uv.fs_stat(dir), "the orphan dir holding the live dir was removed")
+        end)
+    end)
+    -- Crash rule (Deletion Safety 4, spec §5.7): when the `unknown` marks
+    -- cannot reach the disk (the cache write fails, or the concurrent-writer
+    -- guard refuses the save) no tree is removed; the in-memory marks are
+    -- undone and every item fails through the deletion_failed path.
+    it("removes nothing when the unknown marks cannot be saved", function()
+        local unit = ws._profiles[1]:projects()[1]._config_unit
+        assert.is_not_nil(unit and unit._build_dir, "test setup: the live unit has a BuildDir")
+        local prior_bd, prior_unit = unit._build_dir.state, unit.state_value
+        local handed = {}
+        io_mod.rm_rf_async = function(d, cb)
+            handed[#handed + 1] = d
+            return real_rm(d, cb)
+        end
+        local failed
+        ws:on("deletion_failed", function(p) failed = p end)
+        local real_cache = ws._core._deps.cache
+        ws._core._deps.cache = setmetatable({
+            save = function() return false, "disk full" end,
+        }, { __index = real_cache })
+        local done, work_ran = false, false
+        local ok_run, err_run = pcall(function()
+            ws:_run_deletion({
+                { project_key = "App", config_key = "Debug", build_dir = built, unit = unit },
+            }, function() work_ran = true end, function() done = true end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        end)
+        ws._core._deps.cache = real_cache
+        assert(ok_run, err_run)
+        assert.equals(0, #handed, "rm-rf was handed " .. table.concat(handed, ", "))
+        assert.is_not_nil(uv.fs_stat(built), "the tree was removed")
+        assert.equals(prior_bd, unit._build_dir.state, "the BuildDir was left marked unknown")
+        assert.equals(prior_unit, unit.state_value, "the unit was left marked unknown")
+        assert.is_false(unit:is_deleting(), "the unit was left deleting")
+        assert.is_not_nil(failed, "deletion_failed not emitted")
+        assert.equals(1, #failed.errors)
+        assert.is_false(work_ran, "the cache mutations ran")
+    end)
 end)
 
 -- The status page's "Clean all" action reports the outcome `on_done` gives

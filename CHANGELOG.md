@@ -84,6 +84,21 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   left its cache entry in its old state on disk while the build directory was
   being removed, so a crash mid-removal could not be recognized; the entry is
   now `unknown` on disk first (#298).
+- Deleting a single orphaned configuration on the status page (`D`) could
+  remove a live build directory: when the build-dir template gained a level
+  (`.nvim/build/App` -> `.nvim/build/App/Debug`) the orphan's directory
+  contained the live one, and an orphan naming a live directory by another
+  spelling (a Windows 8.3 short name) was removed outright. It also dropped
+  the entry before removing anything, so a failed removal lost it. It now
+  follows the same rules as Clean all: such a directory is kept (only the
+  entry is dropped), the entry is `unknown` on disk before a removal and kept
+  when the removal fails, and the notification says what actually happened
+  instead of always "removed" (#304).
+- Deleting, cleaning or resetting a configuration went on to remove its build
+  directory even when the cache could not be saved first (a failed write, or
+  a save refused because another process changed the cache), so a crash
+  mid-removal could not be recognized. Now nothing is removed, the entries
+  keep their state, and the deletion is reported as failed (#304).
 - `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
   the `--` as the first argument. A target-backed add has no command token, so
   its `--` is lw's separator and is dropped; before it an unknown option or a

@@ -362,7 +362,13 @@ Orphaned Items  [D] delete
 **Actions**: `D` (delete) is mapped on config nodes and stray dir items.
 All other action keys (`b`, `c`, `R`, `C`, `p`) are not bound — orphaned
 items cannot be built or configured. Deletion shows the standard
-confirmation dialog.
+confirmation dialog. `D` on a config node runs through `_run_deletion` like
+Clean all: its build dir is kept (only the entry is dropped) when a live
+configuration references it or it is, contains or lies inside a live build
+dir under any spelling; otherwise the entry is `unknown` on disk before the
+removal and dropped only after the removal succeeded (a failed removal keeps
+it). The notification reports the outcome: removed, entry dropped with the
+directory kept, entry dropped with no directory to remove, or not removed.
 
 **Sentinel: Clean all**
 
