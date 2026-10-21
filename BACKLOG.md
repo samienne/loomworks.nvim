@@ -1742,3 +1742,20 @@ severity.
     parent command's help; show the subcommand's section.
   - User-facing help still cites spec sections (§16.9 build, §16.16 test, §1.3.1
     config); help text should not reference the spec.
+
+## Remote runners read a replaced SDK through `tool:sdk()`
+
+`lua/loomworks/remote/runners.lua:179` and `lua/loomworks/remote/foreign.lua:39`
+take `tool:sdk()` without checking `_removed`. After an SDK's path changes in
+user.json and before the tool rescan, a unit's tool still points at the
+replaced SDK object, so runner selection and foreign-artifact detection can
+use it. Skip an SDK with `_removed` set, as `Profile:_sdk_of_tools` does.
+Predates PR #311.
+
+## A replaced SDK queues no tool rescan
+
+When an SDK is replaced (e.g. its path changes in user.json), no tool rescan
+is queued: its kits are not offered and profiles built from its kit
+toolchains lose their SDK until the next rescan or reload. Queuing a rescan
+on SDK replacement needs spec wording first (§1.5 tool detection, and the
+daemon spec's rescan triggers).

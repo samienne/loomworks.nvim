@@ -230,7 +230,9 @@ describe("tool picker: a profile made of an SDK", function()
             return ws, profile, sdk
         end
 
-        it("add_tool keeps it", function()
+        it("add_tool keeps it while its keys are unresolved", function()
+            -- Only the unresolved-keys guard holds it: `sdk` is never persisted,
+            -- so nothing pins it once the keys resolve.
             local _, profile, sdk = load_with_profile({ "undetected-kit" })
             profile:add_tool("another-undetected-kit")
             assert.equals(sdk, profile:sdk())
@@ -242,6 +244,23 @@ describe("tool picker: a profile made of an SDK", function()
             profile:remove_tool("undetected-kit2")
             assert.equals(sdk, profile:sdk())
             assert.equals("fake_tc-1", profile._sdk_key)
+        end)
+
+        it("drops its previous SDK when the persisted sdk names no known SDK", function()
+            local ws, profile = load_with_profile({ "undetected-kit" })
+            local user = ws:_serialize_user()
+            user.profiles["dev:undetected-kit"] =
+                { configuration_set = "dev", tools = { "undetected-kit" }, sdk = "no-such-sdk" }
+            ws:remerge(nil, nil, user)
+            local reloaded
+            for _, p in pairs(ws._profiles) do
+                if not p._removed and vim.deep_equal(p._tool_keys, { "undetected-kit" }) then
+                    reloaded = p
+                end
+            end
+            assert.equals(profile, reloaded, "the profile keeps its identity")
+            assert.is_nil(reloaded:sdk(), "no stale SDK object for an unknown key")
+            assert.equals("no-such-sdk", reloaded._sdk_key)
         end)
     end)
 end)

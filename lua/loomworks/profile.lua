@@ -177,8 +177,6 @@ end
 --- @field _sdk loomworks.SDK|nil SDK domain object reference (resolved at sync time
 ---        from the first kit-derived tool in `_tool_keys`)
 --- @field _sdk_key string|nil cached SDK key for runtime queries
---- @field _sdk_pinned boolean the profile data named an `sdk` explicitly (a
----        legacy working-copy field), which a tool change never re-derives
 --- @field _default_target_descriptor table|nil user.json default target for this profile
 --- @field _device_serial string|nil selected device serial for this profile
 --- @field description string|nil normalised description (spec §1.10), stored at
@@ -292,16 +290,19 @@ function Profile:_apply(data)
     self.description, self._description_invalid = description_mod.from_file(data.description)
     self._tool_keys = read_tool_keys(data.tools)
     self._sdk_key = data.sdk or nil
-    self._sdk_pinned = data.sdk ~= nil
     -- Read pre-resolved Tool domain objects (set by _sync_profiles)
     self._tool_objects = data._tool_objects
 
     -- SDK domain object resolved during _sync_profiles or set_sdk(); without
-    -- a pinned `sdk`, the SDK its tool keys carry (spec §1.6).
+    -- a legacy `sdk` in the data, the SDK its tool keys carry (spec §1.6).
     if data._sdk then
         self._sdk = data._sdk
         self._sdk_key = data._sdk.key
-    elseif not data.sdk then
+    elseif data.sdk then
+        -- A legacy `sdk` naming no known SDK: hold no (possibly removed)
+        -- previous SDK object under the new key.
+        self._sdk = nil
+    else
         -- Resolved against the modules this refresh built (`_tool_objects`'
         -- owners), not `workspace._modules`, which is assigned after it.
         local modules = {}
@@ -443,11 +444,8 @@ end
 
 --- Re-derive the SDK after a tool change, from the live modules. Left alone
 --- while a key resolves to no tool (detection not in yet): only a complete
---- set of tools decides it. `opts.keep_pinned` also leaves an `sdk` the
---- profile data named alone.
---- @param opts? { keep_pinned?: boolean }
-function Profile:_rederive_sdk(opts)
-    if opts and opts.keep_pinned and self._sdk_pinned then return end
+--- set of tools decides it.
+function Profile:_rederive_sdk()
     local sdk, resolved = self:_sdk_of_tools(self._workspace and self._workspace._modules)
     if not resolved then return end
     self._sdk = sdk
@@ -1126,9 +1124,8 @@ function Profile:add_tool(tool_key)
     end
     local old_key = self.key
     self._tool_keys[#self._tool_keys + 1] = tool_key
-    -- Re-derive the SDK: a host toolchain added to a kit profile ends it
-    -- (one the profile data named stays).
-    self:_rederive_sdk({ keep_pinned = true })
+    -- Re-derive the SDK: a host toolchain added to a kit profile ends it.
+    self:_rederive_sdk()
     self:_derive_key()
     self:_after_key_rename(old_key)
 end
