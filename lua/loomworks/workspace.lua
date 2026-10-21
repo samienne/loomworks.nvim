@@ -3732,17 +3732,17 @@ end
 --- marked too, for the same reason: marking only the unit would leave the
 --- persisted entry claiming its old state during the rm-rf (spec §4.6).
 --- Only items whose build dir is in `to_remove` (the dirs actually handed to
---- rm-rf) are marked: a skipped dir (shared with a live unit, or failing
+--- rm-rf, keyed by directory identity, `_build_dir_ref_key`) are marked —
+--- every item naming such a dir, under any spelling (long or 8.3 short): a skipped dir (shared with a live unit, or failing
 --- validation) stays as it is, since nothing would restore it if another
 --- removal in the batch failed — a shared BuildDir left `unknown` would block
 --- the surviving unit from configure/build.
 --- @param items loomworks.DeletionItem[]
---- @param to_remove? table<string, true> normalized build dirs handed to
----   rm-rf; nil marks every item (no skip set known)
+--- @param to_remove? table<string, true> identity keys (`_build_dir_ref_key`)
+---   of the build dirs handed to rm-rf; nil marks every item (no skip set known)
 function Workspace:_mark_cache_unknown(items, to_remove)
-    local normalize = self._core._deps.normalize
     for _, item in ipairs(items) do
-        if to_remove and not (item.build_dir and to_remove[normalize(item.build_dir)]) then
+        if to_remove and not (item.build_dir and to_remove[self:_build_dir_ref_key(item.build_dir)]) then
             goto continue
         end
         if not item.unit then
@@ -4118,8 +4118,10 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     local normalize = deps.normalize
     if not deleted or #deleted == 0 then return future_mod.resolved(true) end
 
+    -- Deleted dirs by directory identity, so a remaining entry naming one under
+    -- another spelling (8.3 short vs long) does not keep its mirror alive.
     local gone = {}
-    for _, d in ipairs(deleted) do gone[normalize(d.dir)] = true end
+    for _, d in ipairs(deleted) do gone[self:_build_dir_ref_key(d.dir)] = true end
 
     -- Candidates: mirror per deleted dir (deduplicated, normalized).
     local candidates, seen = {}, {}
@@ -4138,7 +4140,7 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     -- Rule 2: mirrors still mapped from a remaining build directory.
     local kept = {}
     local function keep_for(mod, dir)
-        if not dir or dir == "" or gone[normalize(dir)] then return end
+        if not dir or dir == "" or gone[self:_build_dir_ref_key(dir)] then return end
         local m = self:_lsp_db_mirror(mod, dir)
         if m then kept[normalize((m:gsub("\\", "/")))] = true end
     end
@@ -4255,6 +4257,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         local safe_prefix = ws._core._deps.normalize(ws.root)
         local dirs = {}
         local seen_dirs = {}
+        -- Identity keys of the dirs handed to rm-rf: every item naming one of
+        -- them, under any spelling, is marked `unknown` before the removal.
+        local to_remove = {}
         -- Re-index now so the refs keys and the lookups below are canonicalized
         -- against the same on-disk state (a dir created since the last sync
         -- would otherwise key differently on the two sides).
@@ -4285,6 +4290,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                         end
                     end
                     dirs[#dirs + 1] = normalized
+                    to_remove[ident] = true
                     -- An orphaned entry (no unit) carries its BuildDir.
                     dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
                         item.unit and item.unit._build_dir or item.build_dir_obj)
@@ -4294,9 +4300,8 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         end
 
         -- Crash safety (spec §4.6): every dir about to be removed is `unknown`
-        -- on disk before the async rm-rf starts; skipped dirs are untouched.
-        local to_remove = {}
-        for _, d in ipairs(dirs) do to_remove[d] = true end
+        -- on disk before the async rm-rf starts — every entry naming one, by
+        -- directory identity; skipped dirs are untouched.
         local restore = ws:_snapshot_build_states(items)
         ws:_mark_cache_unknown(items, to_remove)
         if not ws:_save_cache() then
