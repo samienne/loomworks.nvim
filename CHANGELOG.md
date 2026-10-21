@@ -52,21 +52,18 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
-<<<<<<< HEAD
 - Experimental daemon: `Maintenance/1.execute_deletion` deletes a profile, a
   configuration unit, an orphaned or stray build directory, every orphan or
   a project with its build state as a task, after a confirmation with a plan
   token, ending `DELETE OK: <label>`; a unit is named by its id or
   `{ project, configuration }`, an orphaned build directory by its id or
   `{ key }`; `view.Workspace/1` lists each orphaned configuration's `id`. (#314)
-=======
 - Experimental daemon: `Sdks/1` on `/toolchains` -- `detect` lists the SDK
   providers and the installation paths each finds in the client's
   environment, `add` declares an SDK and detects the toolchains again so its
   kits are offered, `remove` drops a declaration -- and
   `Toolchains/1.rescan` detects every toolchain again, as the status page's
-  `L` does. (#PRNUM)
->>>>>>> 3d2ab2d (Daemon Sdks/1 commands and Toolchains/1.rescan)
+  `L` does. (#313)
 - Experimental daemon: `Profiles/1.tool_choices` also lists the resolved
   SDKs relevant to the set, as `{ sdk = true, key, label }`, and
   `Profiles/1.create` takes one as `tool = { sdk = <key> }`, as the status

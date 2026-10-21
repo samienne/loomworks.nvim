@@ -1684,7 +1684,6 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `model_commands.project_candidates` / `project_declaration` /
   `expand_preview` in a model segment of the caller's environment (a
   toolchain detection for `candidates` is not stored in the model).
-<<<<<<< HEAD
 - *(Step 5o part B5.)* `daemon/maintenance.lua` serves `/maintenance`
   `loomworks.Maintenance/1.execute_deletion` (API.md §22), task-streamed
   (`meta.kind = "delete"`), mounted by `core_interfaces.mount`. Its target
@@ -1702,7 +1701,6 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `deletion_settled` (the daemon busy) until the deletion and its locks
   settled, also after its task ended; the header check (writes' `changed`,
   views' `update`) precedes `done`.
-=======
 - *(Step 5o part B4.)* `core_interfaces.sdks_impl` serves `/toolchains`
   `loomworks.Sdks/1` (API.md §21) and `toolchains_impl` adds
   `Toolchains/1.rescan` (API.md §11). `detect` is
@@ -1716,7 +1714,6 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   a wait in the segment, as a load waits (`service.LOAD_WAIT_MS`), for
   `_tool_state == "scanned"`; a changed `tool_rows` list emits
   `Server:model_changed` unless a write during the wait already did.
->>>>>>> 3d2ab2d (Daemon Sdks/1 commands and Toolchains/1.rescan)
 - `daemon/core_interfaces.lua` also mounts `/build` `loomworks.Build/1`
   (`build`, `clean`, `reset`), `/tests` `loomworks.Tests/1` (`run`) and
   `/launch` `loomworks.Launch/1` (`prepare_run`): each handler turns its

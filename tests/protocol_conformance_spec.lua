@@ -33,11 +33,8 @@ describe("conformance transcripts (§19.20)", function()
             "transcripts/loomworks/LspConfig.1.json", "transcripts/loomworks/view.Tests.1.json",
             "transcripts/loomworks/view.Workspace.1.json", "transcripts/loomworks/Devices.1.json",
             "transcripts/loomworks/Projects.1.json", "transcripts/loomworks/ConfigSets.1.json",
-<<<<<<< HEAD
-            "transcripts/loomworks/Maintenance.1.json" }) do
-=======
+            "transcripts/loomworks/Maintenance.1.json",
             "transcripts/loomworks/Sdks.1.json" }) do
->>>>>>> 3d2ab2d (Daemon Sdks/1 commands and Toolchains/1.rescan)
             assert.is_true(have[rel] == true, rel)
         end
     end)
