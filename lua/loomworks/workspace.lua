@@ -2316,7 +2316,9 @@ end
 --- The toolchain entries a profile of a configuration set named `set_name`
 --- whose projects use the module types `mod_types` can pick: the detected
 --- keyed host tools of those module types, then the resolved SDKs relevant
---- to them (every resolved SDK when the set has no projects yet). Each
+--- to them (every resolved SDK when the set has no projects yet). An SDK's
+--- entry carries its kit toolchains (`sdk_tools`: one per module type),
+--- which a profile made of it stores as its tool keys (spec §1.6). Each
 --- entry carries the existing profile of that set and toolchain, if any.
 --- @param set_name string
 --- @param mod_types table<string, true>
@@ -2361,21 +2363,34 @@ function Workspace:tool_entries_for(set_name, mod_types)
     -- type in this config set
     for _, sdk in ipairs(self._sdks) do
         if sdk:is_resolved() then
-            local relevant = false
-            for mod_type in pairs(mod_types) do
-                if sdk:query(mod_type) then
-                    relevant = true
-                    break
+            -- The SDK's choice is its kit toolchains (spec §1.6: a profile
+            -- carries tool keys, which carry the SDK): for each module type
+            -- of the set (each one when it has no projects yet), the first
+            -- keyed kit the SDK yields, as Profile:_resolve_sdk_tool picks.
+            -- An SDK yielding none for them has nothing to offer the set.
+            local kit_tools = {}
+            for mod_type, tools in pairs(self._tools_by_type or {}) do
+                if mod_types[mod_type] or not next(mod_types) then
+                    for _, tool in ipairs(tools) do
+                        if tool.tool_key and tool.sdk == sdk then
+                            kit_tools[mod_type] = {
+                                key = tool.tool_key,
+                                data = tool.tool_data,
+                                label = tool.tool_label,
+                            }
+                            break
+                        end
+                    end
                 end
             end
-            -- Also show if config set has no projects yet (user may add later)
-            if relevant or not next(mod_types) then
-                local pkey = set_name .. ":" .. sdk.key
+            if next(kit_tools) then
+                local pkey = merge_mod.profile_key(set_name, kit_tools)
                 entries[#entries + 1] = {
                     profile_key = pkey,
                     tool_key = sdk.key,
                     tool_label = sdk:display_name(),
                     sdk = sdk,
+                    sdk_tools = kit_tools,
                     cached = true,
                     profile = profiles_by_key[pkey],
                 }
@@ -2395,6 +2410,28 @@ end
 -- Profile materialization
 -- ===========================================================================
 
+--- The toolchains a tool entry (Workspace:tool_entries_for) stands for, by
+--- module type: a host tool's one, or an SDK's kit toolchains (spec §1.6);
+--- nil for no toolchain.
+--- @param tool_entry? loomworks.ToolEntry
+--- @return table<string, loomworks.ToolRef>|nil
+function M.tool_entry_tools(tool_entry)
+    if not tool_entry then return nil end
+    if tool_entry.sdk then
+        return tool_entry.sdk_tools and next(tool_entry.sdk_tools) and tool_entry.sdk_tools or nil
+    end
+    if tool_entry.tool_key and tool_entry.tool_mod_type then
+        return {
+            [tool_entry.tool_mod_type] = {
+                key = tool_entry.tool_key,
+                data = tool_entry.tool_data,
+                label = tool_entry.tool_label,
+            },
+        }
+    end
+    return nil
+end
+
 --- Materialize a profile: ensure skeleton ConfigUnits exist for all projects
 --- in the configuration set, save cache, and rebuild profile projects.
 --- The profile already exists as a runtime object (derived from config_sets × tools).
@@ -2411,20 +2448,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
     local set_name = config_set.name
 
-    -- Build tools dict from tool_entry (skip for SDK entries which have no mod_type)
-    local tools = nil
-    local tool_key = tool_entry and tool_entry.tool_key or nil
-    local tool_data = tool_entry and tool_entry.tool_data or nil
-    local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
-    if tool_entry and tool_key and tool_mod_type then
-        tools = {
-            [tool_mod_type] = {
-                key = tool_key,
-                data = tool_data,
-                label = tool_entry.tool_label,
-            },
-        }
-    end
+    local tools = M.tool_entry_tools(tool_entry)
 
     -- Find the profile (should already exist as runtime object)
     local profile_key = self._core._deps.merge.profile_key(set_name, tools)
@@ -7805,6 +7829,22 @@ function Workspace:_sync_sdks(config_sdks, user_sdks)
 
         ::next::
     end
+
+    -- Identity: an SDK that resolves exactly as before keeps its object, so
+    -- the Tools detection made from it (Tool:sdk()) and the profiles that
+    -- reference it keep holding the live one across a remerge.
+    local previous = {}
+    for _, old in ipairs(self._sdks or {}) do previous[old.key] = old end
+    for i, sdk in ipairs(new_sdks) do
+        local old = previous[sdk.key]
+        if old and old._type == sdk._type and old._path == sdk._path
+            and old._version == sdk._version and old._resolved == sdk._resolved
+            and old._provider == sdk._provider then
+            new_sdks[i] = old
+            previous[sdk.key] = nil
+        end
+    end
+    for _, old in pairs(previous) do old._removed = true end
 
     self._sdks = new_sdks
 end

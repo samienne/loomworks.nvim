@@ -975,7 +975,7 @@ Each reaches subscribers as `Workspace/1` `changed` and in
   result without `profile`) — materializes a profile of the set (spec §4.1):
   `config_set` a reference, or `{ candidate }`, a token
   `ConfigSets/1.candidates` (§20) gave for an automatic set, which is added
-  first; `tool` `{ module, key? }` one of `tool_choices`' toolchains, absent
+  first; `tool` one of `tool_choices`' toolchains, absent
   for a profile without one (shown incomplete, never a guessed default); an
   existing profile of that set and toolchain is returned, not duplicated. A
   new profile's intent is `local`. With `activate` it is also made active.
@@ -983,8 +983,10 @@ Each reaches subscribers as `Workspace/1` `changed` and in
   `toolchains are still being detected` (exit code 1, a state refusal the
   client may retry), never waiting for the detection;
 - **`Profiles/1.tool_choices { config_set }`** → `{ outcome = "ok", tools:
-  [{ module, key?, label }] }` — the toolchains a profile of that set can
-  use, detected in the client's environment; `config_set` as for `create`,
+  [{ module, key?, label } | { sdk = true, key, label }] }` — the toolchains
+  a profile of that set can use, detected in the client's environment: the
+  keyed toolchains of its projects' module types, then the resolved SDKs
+  relevant to them; `config_set` as for `create`,
   and refused as `create` is while a toolchain detection is running;
 - **`Profiles/1.add_tool { profile, tool }`** / **`remove_tool { profile,
   tool }`** — adds or removes a toolchain, `tool` its key (§1.2). The
@@ -994,8 +996,12 @@ Each reaches subscribers as `Workspace/1` `changed` and in
   `refused` with `no toolchain '<key>'`; `remove_tool` of a toolchain the
   profile does not have, with `no toolchain '<key>' on profile '<key>'`.
 
-SDK toolchains are not yet offered by `tool_choices` nor accepted by
-`create`; their support follows in a later change.
+An SDK's entry in `tool_choices` is `{ sdk = true, key, label }`;
+`create`'s `tool` may be `{ sdk = <key> }`. A module's toolchain is
+`{ module, key? }`. A `tool` not among `tool_choices`' is `refused` with
+`no <module> toolchain '<key>' for this configuration set (see
+Profiles/1.tool_choices)`, an SDK's with `no SDK toolchain '<key>' for this
+configuration set (see Profiles/1.tool_choices)`.
 
 A profile is deleted with `Maintenance/1.execute_deletion` (§22).
 

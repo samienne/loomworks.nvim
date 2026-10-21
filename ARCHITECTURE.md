@@ -1656,9 +1656,15 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `{ candidate }` (passed to `model_commands` as it is), a mapping's project
   by key and configuration by name in it. `create` and `tool_choices` wait
   for a running toolchain detection (`settled_tools`, as a full load waits);
-  `create`'s `tool { module, key? }` is matched against
-  `model_commands.profile_tool_choices`' entries (a module's keyed host
-  toolchains; SDK entries are not offered over the wire yet). A profile's
+  `create`'s `tool` (`{ module, key? }` or `{ sdk = <key> }`) is matched
+  exactly against `model_commands.profile_tool_choices`' entries (a
+  module's keyed host toolchains, then the relevant resolved SDKs, which
+  `tool_wire` sends as `{ sdk = true, key, label }`), so the entry handed
+  to `model_commands.profile_create` carries the live SDK object and its kit
+  toolchains (`sdk_tools`, the first keyed kit per module type of the set,
+  from `Workspace:tool_entries_for`, shared with the status page's picker);
+  `ConfigurationSet:ensure_profile` stores those as the profile's tool keys
+  (spec §1.6), so the profile keeps its SDK across a reload. A profile's
   toolchain change takes O in `model_commands` (`op_lock.guard` on its
   local `Toolchain.change`), a set rename through
   `Workspace:rename_configuration_set`'s guard.

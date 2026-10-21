@@ -190,6 +190,158 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.same({ id = id_of(cs), key = "Auto" }, r.config_set)
     end)
 
+    --- The shell module, given SDK kits for this test: one keyed kit
+    --- `fake-kit` per SDK (tool data carrying `sdk_key`, as cmake's do, spec
+    --- §10.6). Restored in after_each.
+    local shell_saved
+    after_each(function()
+        if shell_saved then
+            local shell = require("loomworks.modules").get("shell")
+            for k, v in pairs(shell_saved) do shell[k] = v ~= false and v or nil end
+            shell_saved = nil
+        end
+    end)
+    local function with_shell_kits()
+        local shell = require("loomworks.modules").get("shell")
+        shell_saved = {}
+        for _, k in ipairs({ "kits_from_sdk", "tool_key", "tool_label", "tools_match" }) do
+            shell_saved[k] = shell[k] or false
+        end
+        function shell.kits_from_sdk(_, sdk)
+            return { { tool_data = { id = "fake-kit", sdk_key = sdk.key } } }
+        end
+        function shell.tool_key(td) return td and td.id or nil end
+        function shell.tool_label(td) return td and td.id or nil end
+        function shell.tools_match(a, b) return (a and a.id) == (b and b.id) end
+    end
+
+    --- Stop the daemon and load the workspace of `root` again from disk (in
+    --- this process, as the CLI does, toolchain detection settled).
+    local function reloaded()
+        pcall(conn.close, conn)
+        srv:stop("reload", 0)
+        pcall(function() require("loomworks")._core():shutdown() end)
+        return assert(cli._load_workspace(root, true))
+    end
+
+    --- Declare a resolved SDK `fake_tc-1` (a fake provider, registered in
+    --- this Lua state) that offers the `shell` module capabilities, in the
+    --- signed working copy, before the model loads.
+    local function with_fake_sdk()
+        with_shell_kits()
+        package.preload["loomworks.sdks.fake_tc"] = function()
+            local SDK = require("loomworks.sdk")
+            local P = { id = "fake_tc", api_version = require("loomworks.api_versions").sdk,
+                display_name = "Fake TC" }
+            function P.validate() return { version = "1" } end
+            function P.create_sdk(key, path, version)
+                return SDK.new({ key = key, type = "fake_tc", version = version, path = path,
+                    resolved = true, provider = P })
+            end
+            function P.query_capabilities(_, mod) return mod == "shell" and {} or nil end
+            function P.detect_all() return {} end
+            function P.match_version() return true end
+            return P
+        end
+        local _, content = trust.verify("user", read(root .. "/.nvim/loomworks.user.json"))
+        local user = vim.json.decode(content)
+        user.sdks = { ["fake_tc-1"] = { type = "fake_tc", path = root } }
+        local signed = trust.sign("user", trust.encode(user))
+        local f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb"))
+        f:write(signed); f:close()
+    end
+
+    it("tool_choices offers a relevant SDK as { sdk = true, key, label }; create takes { sdk = key }", function()
+        with_fake_sdk()
+        local ws = loaded()
+        local sdk = find(ws._sdks, "key", "fake_tc-1")
+        assert.is_not_nil(sdk)
+        local r = profiles("tool_choices", { config_set = { key = "dev" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.same({ { sdk = true, key = "fake_tc-1", label = sdk:display_name() } }, r.tools)
+
+        -- A set with no profile yet: the SDK's choice is its kit toolchains
+        -- (spec §1.6: tool keys carry the SDK), so the key names the kit.
+        assert.equals("ok", sets("add", { name = "rel", mappings = { app = "Debug" } }).outcome)
+        r = profiles("create", { config_set = { key = "rel" }, tool = { sdk = "fake_tc-1" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        local profile = srv.service.ids:find(r.profile.id, ws._profiles)
+        assert.is_not_nil(profile, vim.inspect(r))
+        assert.equals(profile.key, r.profile.key)
+        assert.equals("rel:fake-kit", profile.key)
+        assert.same({ "fake-kit" }, profile._tool_keys)
+        assert.equals(sdk, profile._sdk)
+        -- Saved to the working copy with its kit keys (as the editor's pick
+        -- is: a profile entry carries no `sdk` field, spec §1.6).
+        assert.same({ "fake-kit" }, working_copy(root).profiles[r.profile.key].tools)
+
+        -- Created again: the existing profile, not a duplicate.
+        local count = #ws._profiles
+        local again = profiles("create", { config_set = { key = "rel" }, tool = { sdk = "fake_tc-1" } })
+        assert.equals("ok", again.outcome, vim.inspect(again))
+        assert.same(r.profile, again.profile)
+        assert.equals(count, #ws._profiles)
+    end)
+
+    it("a profile created from an SDK keeps its SDK toolchain across a reload, distinct from the toolless one", function()
+        with_fake_sdk()
+        local ws = loaded()
+        local toolless = find(ws._profiles, "key", "dev")
+        assert.is_not_nil(toolless)
+        local r = profiles("create", { config_set = { key = "dev" }, tool = { sdk = "fake_tc-1" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.are_not.equal("dev", r.profile.key)
+
+        ws = reloaded()
+        local sdk = find(ws._sdks, "key", "fake_tc-1")
+        local profile = find(ws._profiles, "key", r.profile.key)
+        assert.is_not_nil(profile, "profile " .. r.profile.key .. " lost on reload")
+        assert.same({ "fake-kit" }, profile._tool_keys)
+        assert.equals(sdk, profile:sdk())
+        assert.is_not_nil(find(ws._profiles, "key", "dev"))
+
+        -- Created again after the reload: that profile, not a new one.
+        local mc = require("loomworks.model_commands")
+        local cs = find(ws._config_sets, "name", "dev")
+        local entry
+        for _, e in ipairs(mc.profile_tool_choices(ws, cs).tools) do
+            if e.sdk == sdk then entry = e end
+        end
+        assert.is_not_nil(entry)
+        local count = #ws._profiles
+        local again = mc.profile_create(ws, cs, entry, false)
+        assert.equals("ok", again.outcome, vim.inspect(again))
+        assert.equals(profile, again.profile)
+        assert.equals(count, #ws._profiles)
+    end)
+
+    it("create of an SDK toolchain not among tool_choices' is refused and creates nothing", function()
+        with_fake_sdk()
+        local ws = loaded()
+        local count = #ws._profiles
+        -- Not a prefix match either (an exact key, API.md §1.2).
+        for _, key in ipairs({ "nope", "fake_tc" }) do
+            local r = profiles("create", { config_set = { key = "dev" }, tool = { sdk = key } })
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            assert.equals("no SDK toolchain '" .. key .. "' for this configuration set (see Profiles/1.tool_choices)",
+                r.message)
+        end
+        assert.equals(count, #ws._profiles)
+    end)
+
+    it("create with a non-string SDK key is invalid_args, like other malformed tool shapes", function()
+        with_fake_sdk()
+        local ws = loaded()
+        local count = #ws._profiles
+        for _, sdk in ipairs({ true, vim.NIL, 1 }) do
+            local r, e = profiles("create", { config_set = { key = "dev" }, tool = { sdk = sdk } })
+            assert.equals("invalid_args", e and e.code, vim.inspect({ r, e }))
+        end
+        local _, e = profiles("create", { config_set = { key = "dev" }, tool = { module = true } })
+        assert.equals("invalid_args", e and e.code, vim.inspect(e))
+        assert.equals(count, #ws._profiles)
+    end)
+
     it("add_tool / remove_tool re-derive the key under O, the id kept; refused while O is held", function()
         local ws = loaded()
         ws:get_or_create_tool("shell", "gcc-x", {}, "GCC x")

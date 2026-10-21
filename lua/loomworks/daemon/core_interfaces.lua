@@ -709,11 +709,30 @@ function M.profiles_impl(service)
         end)
     end
 
-    --- The wire form of a toolchain entry, or nil for an SDK's (not offered
-    --- over the wire yet: `tool` names a module's toolchain).
+    --- The wire form of a toolchain entry: a module's `{ module, key?,
+    --- label }`, an SDK's `{ sdk = true, key, label }` (API.md §11).
     local function tool_wire(e)
-        if not e.tool_mod_type then return nil end
+        if e.sdk then return { sdk = true, key = e.sdk.key, label = e.tool_label or e.sdk.key } end
         return { module = e.tool_mod_type, key = e.tool_key, label = e.tool_label or e.tool_key }
+    end
+
+    --- The entry among `choices` (tool_choices') that the wire `tool` names
+    --- — `{ module, key? }` or `{ sdk = <key> }`, matched exactly — or nil +
+    --- the refusal.
+    local function tool_entry_of(choices, tool)
+        if tool.sdk ~= nil then
+            for _, e in ipairs(choices) do
+                if e.sdk and e.sdk.key == tool.sdk then return e end
+            end
+            return nil, "no SDK toolchain '" .. tostring(tool.sdk)
+                .. "' for this configuration set (see Profiles/1.tool_choices)"
+        end
+        local key = tool.key ~= vim.NIL and tool.key or nil
+        for _, e in ipairs(choices) do
+            if not e.sdk and e.tool_mod_type == tool.module and e.tool_key == key then return e end
+        end
+        return nil, "no " .. tostring(tool.module) .. " toolchain '" .. tostring(key)
+            .. "' for this configuration set (see Profiles/1.tool_choices)"
     end
 
     function methods.set_active(ctx, args)
@@ -742,17 +761,13 @@ function M.profiles_impl(service)
             if wait then return wait end
             local entry
             if args.tool ~= nil then
-                -- One of tool_choices' toolchains (a value: module + key).
+                -- One of tool_choices' toolchains (a value: module + key,
+                -- or an SDK's key), resolved to its entry here, once.
                 local choices = mc.profile_tool_choices(ws, set)
                 if choices.outcome ~= "ok" then return choices end
-                local key = args.tool.key ~= vim.NIL and args.tool.key or nil
-                for _, e in ipairs(choices.tools) do
-                    if e.tool_mod_type == args.tool.module and e.tool_key == key then entry = e; break end
-                end
-                if not entry then
-                    return mc.refused("no " .. tostring(args.tool.module) .. " toolchain '" .. tostring(key)
-                        .. "' for this configuration set (see Profiles/1.tool_choices)")
-                end
+                local terr
+                entry, terr = tool_entry_of(choices.tools, args.tool)
+                if not entry then return mc.refused(terr) end
             end
             local r = mc.profile_create(ws, set, entry, args.activate == true)
             if r.outcome == "ok" then

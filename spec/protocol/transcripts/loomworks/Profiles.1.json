@@ -89,7 +89,7 @@
       ]
     },
     {
-      "name": "set_active, create and tool_choices refuse a stale id, an unknown set or token and a toolchain not offered (step 5o part B2)",
+      "name": "set_active, create and tool_choices refuse a stale id, an unknown set or token and a toolchain not offered, a module's or an SDK's; a tool naming both is invalid (step 5o part B2)",
       "fixture": "shell",
       "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
       "steps": [
@@ -102,7 +102,11 @@
         { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" }, "tool": { "module": "cmake", "key": "gcc" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "refused", "message": { "$pattern": "no cmake toolchain 'gcc'" }, "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 5, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "add_tool", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
-        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } }
+        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" }, "tool": { "sdk": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "refused", "message": "no SDK toolchain 'nope' for this configuration set (see Profiles/1.tool_choices)", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 7, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" }, "tool": { "sdk": "nope", "module": "cmake" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 7, "error": { "code": "invalid_args" } } }
       ]
     }
   ]
