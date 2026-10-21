@@ -832,6 +832,16 @@ unresolved inherits in `WarningMsg`.
 **ConfigurationSet** owns activation: `cs:activate(tool_entry)` finds or
 materializes a profile by property matching, never by computing a key.
 `cs:ensure_profile(tool_entry)` materializes without activating.
+A tool entry (`Workspace:get_tool_entries` / `tool_entries_for`, the
+status page's tool picker) for an SDK carries its kit toolchains
+(`sdk_tools`: the first keyed kit per module type of the set, matched by
+`tool.sdk == sdk`; an SDK with none for the set is not offered).
+`ensure_profile` stores those as the profile's tool keys (spec §1.6) and
+`find_profile` matches the profile whose tools are exactly those kits, so
+the profile keeps its SDK across a reload: `Profile:_apply` derives `_sdk`
+from its resolved tools when every key stands for a tool of one and the same
+live SDK (`_sdk_of_tools`). `_sync_sdks` keeps an SDK object whose resolution
+is unchanged, so detection's kits reference the live one.
 `cs:configuration(project)` returns the Configuration object for a project.
 
 **ConfigUnit** is the meeting point — Profile, Project, and task_tracker all
