@@ -1673,7 +1673,8 @@ failed query or a workspace the daemon cannot load; `outcome = "declined"`
 **As interfaces.** *(The query registry: implemented, step 5g.2 part B
 (`Toolchains/1.list`, `Profiles/1.compiler_cache`; the CLI calls them over
 transport 11); command methods: step 5o, §19.19 — `Workspace/1`
-(part B1) and `Projects/1` (part B3) implemented, the others planned.)* Commands are the
+(part B1), `Profiles/1` and `ConfigSets/1` (part B2) and `Projects/1` (part B3)
+implemented, the others planned.)* Commands are the
 **mutating methods** of the model interfaces (`loomworks.Workspace/1`,
 `Profiles/1`, `Projects/1`, `ConfigSets/1`, `Sdks/1`, `Maintenance/1`,
 `Toolchains/1.rescan`; §19.20), declared mutating in their schemas, with the

@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Profiles",
   "version": 1,
-  "description": "Object /profiles (API.md §11): compiler_cache, with references by key and by id; set_device and clear_device (step 5n part B2).",
+  "description": "Object /profiles (API.md §11): compiler_cache, with references by key and by id; set_device and clear_device (step 5n part B2); set_active, create, tool_choices, add_tool and remove_tool (step 5o part B2).",
   "cases": [
     {
       "name": "compiler_cache answers for a mapped project, by key and by id",
@@ -67,6 +67,42 @@
         { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_device", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "create returns the existing profile by id; set_active by id; add_tool of a toolchain that does not resolve and remove_tool of one the profile lacks are refused, the id kept (step 5o part B2)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "tool_choices", "args": { "config_set": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "tools": [] } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok", "profile": { "id": { "$bind": "dev_id" }, "key": "dev" } } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_active", "args": { "profile": { "id": { "$var": "dev_id" } } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "add_tool", "args": { "profile": { "id": { "$var": "dev_id" } }, "tool": "gcc-x" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "refused", "message": "no toolchain 'gcc-x'", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "remove_tool", "args": { "profile": { "id": { "$var": "dev_id" } }, "tool": "gcc-x" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "refused", "message": "no toolchain 'gcc-x' on profile 'dev'", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "ok", "profile": { "id": { "$var": "dev_id" }, "key": "dev" } } } }
+      ]
+    },
+    {
+      "name": "set_active, create and tool_choices refuse a stale id, an unknown set or token and a toolchain not offered (step 5o part B2)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_active", "args": { "profile": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": "no configuration set 'nope'", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "tool_choices", "args": { "config_set": { "candidate": "auto:nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": { "$pattern": "changed since it was listed" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" }, "tool": { "module": "cmake", "key": "gcc" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "refused", "message": { "$pattern": "no cmake toolchain 'gcc'" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "add_tool", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } }
       ]
     }
   ]

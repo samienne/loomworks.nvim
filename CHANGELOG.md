@@ -806,6 +806,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- `lw profile create` for a profile that already exists no longer resets its
+  intent to `local`; only a new profile starts `local`, so re-running it on a
+  published profile keeps it published. (#310)
 - A deletion whose `unknown` cache marks could not be saved (the runtime
   lost its workspace lock, or the workspace was unloaded while the deletion
   waited for its tasks to stop) still removed the build directories, leaving

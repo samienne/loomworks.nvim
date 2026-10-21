@@ -31,6 +31,25 @@ it. Compare by directory identity (`_build_dir_identity`, spec §4.6) instead.
 Deletion safety: needs a failing test first (set `TMPDIR` to a short path).
 Found by `tests/view_deletion_locks_spec.lua` on Windows CI (#292).
 
+## A failed commit under `op_lock.guard` keeps the in-memory change
+
+When `_txn_finish` fails inside `op_lock.guard` (op_lock.lua: lock lost
+before committing, commit journal not written, a failed apply), the guarded
+method's in-memory change stays although nothing (or not everything) was
+written, and the working copy's `_disk_baseline.user` keeps the aborted
+staged text, so the next save is refused as stale and reloads (API.md §11:
+a refused write changes neither user.json nor the model). Fixed for the
+profile toolchain change only (`change_toolchain` in model_commands.lua,
+PR #310: the profile's tools/key and the baseline put back). Still open for
+the other guarded methods: `Workspace:publish`, `publish_one`,
+`commit_import`, `rename_project`, `rename_configuration_set`,
+`remove_profile`, `upgrade_profiles_for_tool`,
+`downgrade_profiles_from_tool` (end of workspace.lua) and
+`Project:rename_configuration` (end of project.lua). Likely better solved
+once in the guard (a per-method undo, or reload from disk on a failed
+commit) than per method; the cache baseline may drift the same way. Test
+by stubbing `ws._txn_finish` to abort and return false.
+
 ## master: in-process deletions take no locks
 
 master: in-process deletions take no locks (no operation lock; cross-process

@@ -2,7 +2,7 @@
   "interface": "loomworks.Profiles",
   "version": 1,
   "status": "draft",
-  "description": "Object /profiles (API.md §11): queries of a profile and the choice of its device. Step 5g.2 lands compiler_cache (the protocol-10 query profile_cache stays as its v0 alias); step 5n (part B2) set_device and clear_device; list and the other command methods follow in step 5o.",
+  "description": "Object /profiles (API.md §11): the profiles' queries and commands. Step 5g.2 lands compiler_cache (the protocol-10 query profile_cache stays as its v0 alias); step 5n (part B2) set_device and clear_device; step 5o (part B2) set_active, create, tool_choices, add_tool and remove_tool. list and query are deferred.",
   "methods": {
     "compiler_cache": {
       "description": "The compiler cache the profile resolves for one of its projects, as lw profile query <profile> <project> cache prints it; cache is absent when the project's module does not cache C/C++. Probes the client's PATH. An unknown profile, a project the profile does not map, or a stale id is the refused result.",
@@ -102,6 +102,218 @@
       },
       "needs_env": true,
       "mutates": true
+    },
+    "set_active": {
+      "description": "Make the profile the active one (spec §4.2), as the in-process Profile:activate does, in a model segment of the caller's environment: Workspace/1 changed and header_changed precede the reply. An unknown or stale profile, or a refused or failed write, changes neither the file nor the model: the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Ok"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "create": {
+      "description": "Materialize a profile of the configuration set (spec §4.1): a { candidate } set is added first; tool one of tool_choices' toolchains (absent: a profile without one, shown incomplete); an existing profile of that set and toolchain is returned, not duplicated. A new profile's intent is local; with activate it is also made active. While a toolchain detection is running it is refused at once with 'toolchains are still being detected' (exit code 1; retry), never waiting. SDK toolchains are not yet accepted (a later change). A toolchain not among tool_choices', an unknown or stale set or a changed candidate is refused. When the automatic set was added but the profile could not be saved, the result is ok with config_set, without profile, and with a warn note (API.md §4.1).",
+      "params": {
+        "type": "object",
+        "required": [
+          "config_set"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "config_set": {
+            "description": "The configuration set: a reference (its id, or its key — its name), or { candidate }, the token ConfigSets/1.candidates gave for an automatic set.",
+            "oneOf": [
+              {
+                "$ref": "loomworks.Common/1#/$defs/Ref"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "candidate"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "candidate": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          "tool": {
+            "type": "object",
+            "required": [
+              "module"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "module": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              }
+            }
+          },
+          "activate": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/OkProfile"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "tool_choices": {
+      "description": "The toolchains a profile of the configuration set can use, detected in the client's environment (the keyed toolchains of its projects' module types); SDK toolchains are not yet offered (a later change). While a toolchain detection is running it is refused at once with 'toolchains are still being detected' (exit code 1; retry), never waiting. Changes nothing. An unknown or stale set or a changed candidate is refused.",
+      "params": {
+        "type": "object",
+        "required": [
+          "config_set"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "config_set": {
+            "description": "The configuration set: a reference (its id, or its key — its name), or { candidate }, the token ConfigSets/1.candidates gave for an automatic set.",
+            "oneOf": [
+              {
+                "$ref": "loomworks.Common/1#/$defs/Ref"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "candidate"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "candidate": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/ToolChoices"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    },
+    "add_tool": {
+      "description": "Add a toolchain to the profile. Its key is derived again (spec §1.6), its id kept; the new key propagates as a profile rename does, under the workspace operation lock (spec §19.3). A toolchain the model does not know is refused with \"no toolchain '<key>'\". An unknown or stale profile, a held lock, or a refused or failed write changes nothing: the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "profile",
+          "tool"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "tool": {
+            "description": "The toolchain's key (a value, API.md §1.2).",
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Ok"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "remove_tool": {
+      "description": "Remove a toolchain from the profile; as add_tool. A toolchain the profile does not have is refused with \"no toolchain '<key>' on profile '<key>'\".",
+      "params": {
+        "type": "object",
+        "required": [
+          "profile",
+          "tool"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "tool": {
+            "description": "The toolchain's key (a value, API.md §1.2).",
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/Ok"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": true
     }
   },
   "$defs": {
@@ -181,6 +393,66 @@
         },
         "note_roles": {
           "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    },
+    "OkProfile": {
+      "description": "The profile made (or the existing one of that set and toolchain).",
+      "type": "object",
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "profile": {
+          "$ref": "loomworks.Common/1#/$defs/Entity"
+        },
+        "config_set": {
+          "description": "The automatic set a { candidate } added (a created entity, API.md §4.1); absent for a set named by reference.",
+          "$ref": "loomworks.Common/1#/$defs/Entity"
+        },
+        "notes": {
+          "$ref": "loomworks.Common/1#/$defs/Notes"
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    },
+    "ToolChoices": {
+      "description": "The toolchains a profile of the set can use.",
+      "type": "object",
+      "required": [
+        "outcome",
+        "tools"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "module",
+              "label"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "module": {
+                "type": "string"
+              },
+              "key": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     }
