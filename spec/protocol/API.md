@@ -939,7 +939,15 @@ commands (§6).
 - **`Toolchains/1.rescan {}`** *(step 5o)* — detects the toolchains again in
   the client's environment and takes them into the model, as the status
   page's `L` does in-process; a command (§6), with a `changed` when the
-  model's toolchains changed.
+  model's toolchains changed. It replies only once detection settled or 45 s
+  (the daemon's load wait) passed, and other model requests queue behind it
+  meanwhile: a client calls it with a timeout of at least 45 s (the client's
+  default of 5 s is too short). A detection that outruns the wait does not
+  refuse it (the model may already have changed, §6): the reply is `ok` with
+  the warn note `toolchain detection did not finish in time; it goes on in the
+  background`, and the daemon signals `changed` when that detection finishes,
+  if the toolchains changed. The late detection's result is taken in outside
+  the requester's environment scope, as a load's background detection is.
 - **`Profiles/1.compiler_cache { profile, project }`** (on `/profiles`) →
   `{ outcome = "ok", cache? }` — `cache` the
   compiler cache that profile resolves for that project, as fields `{ policy,
@@ -1642,8 +1650,23 @@ a query; the others are commands (§6).
   found }] }` — the installed SDK providers (or the one named) and the SDK
   paths each finds, in the client's environment;
 - `add { provider, path }` → `ok` with `sdk { id, key }` — declares the SDK
-  and detects the toolchains again (`Toolchains/1.rescan`);
-- `remove { sdk }` — removes its declaration.
+  and detects the toolchains again (as `Toolchains/1.rescan`, §11), so its
+  kits are offered; `path` must be absolute (the daemon's working directory
+  is not the client's): with a known provider a relative one is `refused`
+  (`SDK path '<path>' is not absolute`), nothing declared;
+- `remove { sdk }` — removes its declaration and detects the toolchains
+  again, so its kits leave the toolchains and no profile resolves against
+  the removed SDK.
+
+`add` and `remove` wait for that detection as `rescan` does (§11): they
+answer only after it settled or 45 s passed, other model requests queue
+behind them, and a client calls them with a timeout of at least 45 s. A
+detection that outruns the wait leaves the reply `ok`, with a warn note
+(`add`: `SDK '<key>' added; toolchain detection did not finish in time; it
+goes on in the background`; `remove`: `SDK '<key>' removed; toolchain
+detection did not finish in time; it goes on in the background`), and `changed` follows when it
+finishes. The in-process editor's add and remove start the same detection
+without waiting for it.
 
 ## 22. `loomworks.Maintenance/1`
 

@@ -1,0 +1,34 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Sdks",
+  "version": 1,
+  "description": "Object /toolchains, interface loomworks.Sdks (API.md §21; step 5o part B4): detect in the client's environment, and the refusals of add and remove (a declaration that succeeds depends on an installed SDK, so it is covered by the daemon spec with a stub provider).",
+  "cases": [
+    {
+      "name": "detect lists the providers; an unknown provider is refused",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "detect", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "providers": { "$type": "array" } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "detect", "args": { "provider": "nope" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": "no provider for SDK type 'nope'", "exit_code": 1 } } }
+      ]
+    },
+    {
+      "name": "add of an unknown provider, remove of a stale id or an unknown key are refused; a missing argument is invalid",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "add", "args": { "provider": "nope", "path": "/nowhere" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": "no provider for SDK type 'nope'", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "remove", "args": { "sdk": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "remove", "args": { "sdk": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": "no SDK 'nope'", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "add", "args": { "provider": "nope" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } }
+      ]
+    }
+  ]
+}

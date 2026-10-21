@@ -5343,7 +5343,10 @@ function Workspace:_scan_tools()
 end
 
 --- Scan tools asynchronously and remerge when complete.
-function Workspace:_scan_tools_async()
+--- @param opts? { force?: boolean } `force`: detect every module type again,
+--- never reusing a machine-level cached result (a rescan, spec §16.43; a
+--- detector without that cache ignores it)
+function Workspace:_scan_tools_async(opts)
     self._tool_state = "scanning"
     -- A fresh scan cycle: the active profile's owned LSP databases must be
     -- re-evaluated, so the deferred-LSP gate (§9.7) holds again until the
@@ -5382,7 +5385,8 @@ function Workspace:_scan_tools_async()
         -- A detector that works per module type (the CLI's tool cache,
         -- §16.43) starts no further type once this workspace is torn down;
         -- merge.detect_tools_async ignores it.
-        { cancelled = function() return self._torn_down == true end }
+        { cancelled = function() return self._torn_down == true end,
+            force = opts and opts.force or nil }
     )
 end
 
@@ -5623,14 +5627,16 @@ end
 
 --- Re-scan tools and remerge. Used for manual rescan from UI.
 --- Each module may implement `invalidate_tools()` to clear its own
---- detection cache before the rescan. Core stays module-agnostic.
+--- detection cache before the rescan. Core stays module-agnostic. Every
+--- module type is detected again (`force`: no machine-level cached result is
+--- reused, as `lw tools` rescans, spec §16.43).
 function Workspace:rescan_tools()
     for _, mod in pairs(self._modules) do
         if mod.impl and mod.impl.invalidate_tools then
             pcall(mod.impl.invalidate_tools)
         end
     end
-    self:_scan_tools_async()
+    self:_scan_tools_async({ force = true })
 end
 
 -- ---------------------------------------------------------------------------
@@ -7988,12 +7994,13 @@ function Workspace:add_sdk(sdk_type, path, opts)
     return sdk
 end
 
---- Remove an SDK from the workspace.
---- @param key string SDK key
---- @return boolean ok
-function Workspace:remove_sdk(key)
+--- Remove an SDK from the workspace: the declared object itself (by
+--- identity, never another SDK of its key).
+--- @param target loomworks.SDK
+--- @return boolean ok false: `target` is not declared
+function Workspace:remove_sdk(target)
     for i, sdk in ipairs(self._sdks) do
-        if sdk.key == key then
+        if sdk == target then
             sdk._removed = true
             table.remove(self._sdks, i)
             self:_save_user()

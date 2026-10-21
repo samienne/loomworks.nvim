@@ -58,6 +58,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   token, ending `DELETE OK: <label>`; a unit is named by its id or
   `{ project, configuration }`, an orphaned build directory by its id or
   `{ key }`; `view.Workspace/1` lists each orphaned configuration's `id`. (#314)
+- Experimental daemon: `Sdks/1` on `/toolchains` -- `detect` lists the SDK
+  providers and the installation paths each finds in the client's
+  environment, `add` declares an SDK (an absolute path; a relative one is
+  refused) and detects the toolchains again so its kits are offered, `remove` drops a declaration and detects again so its
+  kits are gone -- and `Toolchains/1.rescan` detects every toolchain again,
+  as the status page's `L` does. A detection that outruns the 45 s wait
+  replies ok with a warning; `changed` follows when it finishes. Adding or
+  removing an SDK in the status page now also detects the toolchains again.
+  (#313)
 - Experimental daemon: `Profiles/1.tool_choices` also lists the resolved
   SDKs relevant to the set, as `{ sdk = true, key, label }`, and
   `Profiles/1.create` takes one as `tool = { sdk = <key> }`, as the status

@@ -518,6 +518,84 @@ describe("model_commands", function()
     it("remove refuses a missing SDK", function()
       assert_refused(mc.sdk_remove(ws, nil), "stale reference")
     end)
+
+    --- A fake provider whose installations always identify themselves.
+    local function fake_provider()
+      package.loaded["loomworks.sdks.fake_mc"] = nil
+      package.preload["loomworks.sdks.fake_mc"] = function()
+        local SDK = require("loomworks.sdk")
+        local P = { id = "fake_mc", api_version = require("loomworks.api_versions").sdk, display_name = "Fake MC" }
+        function P.validate() return { version = "1" } end
+        function P.create_sdk(key, path, version)
+          return SDK.new({ key = key, type = "fake_mc", version = version, path = path, resolved = true, provider = P })
+        end
+        function P.detect_all() return {} end
+        return P
+      end
+    end
+
+    it("remove removes the SDK object it is given, never another one of its key", function()
+      fake_provider()
+      local declared = assert(mc.sdk_add(ws, "fake_mc", root).sdk)
+      -- An SDK object of the same key that is not the declared one.
+      local other = require("loomworks.sdk").new({ key = declared.key, type = "fake_mc", version = "1",
+        path = root, resolved = true, provider = declared._provider })
+      assert_refused(mc.sdk_remove(ws, other), "is not declared")
+      assert.is_falsy(declared._removed)
+      assert.equals(declared, find(ws._sdks, "key", declared.key))
+      assert_ok(mc.sdk_remove(ws, declared))
+      assert.is_true(declared._removed)
+    end)
+
+    it("the editor's add and remove (workspace_view) detect the toolchains again, without waiting", function()
+      fake_provider()
+      local deps = ws._core._deps
+      local saved = deps.detect_tools_async
+      local scans, pending = {}, {}
+      -- Detection never completes here: the editor path must not wait for it.
+      deps.detect_tools_async = function(_, _, cb, opts) scans[#scans + 1] = opts; pending[#pending + 1] = cb end
+      local ok_, err = pcall(function()
+        local wv = require("loomworks.workspace_view")
+        local sdk = assert(wv.add_sdk(ws, "fake_mc", root))
+        assert.equals(1, #scans, "add started a detection")
+        assert.is_true(scans[1].force)
+        assert.equals("scanning", ws._tool_state)
+        local okr, rerr = wv.remove_sdk(ws, sdk)
+        assert(okr, rerr)
+        assert.equals(2, #scans, "remove started a detection")
+        assert.is_true(scans[2].force)
+      end)
+      deps.detect_tools_async = saved
+      assert(ok_, err)
+    end)
+
+    it("detect names each provider and the paths it finds; an unknown provider is refused", function()
+      package.preload["loomworks.sdks.fake_detect"] = function()
+        return { id = "fake_detect", api_version = require("loomworks.api_versions").sdk,
+          display_name = "Fake Detect",
+          detect_all = function() return { { path = "/opt/fake", version = "1" }, { version = "2" } } end }
+      end
+      local r = mc.sdk_detect("fake_detect")
+      assert_ok(r)
+      assert.same({ { id = "fake_detect", label = "Fake Detect", found = { "/opt/fake" } } }, r.providers)
+      assert_refused(mc.sdk_detect("no_such_provider"), "no provider for SDK type 'no_such_provider'")
+      r = mc.sdk_detect(nil)
+      assert_ok(r)
+      assert.is_table(r.providers)
+    end)
+  end)
+
+  describe("Toolchains/1", function()
+    it("rescan detects every module type again, never reusing a cached result", function()
+      local seen
+      local deps = ws._core._deps
+      local saved = deps.detect_tools_async
+      deps.detect_tools_async = function(_, _, cb, opts) seen = opts; cb({}) end
+      local ok_, err = pcall(function() assert_ok(mc.tools_rescan(ws)) end)
+      deps.detect_tools_async = saved
+      assert(ok_, err)
+      assert.is_true(seen and seen.force == true)
+    end)
   end)
 
   -- Guard ratchet (5o A1): the status page's sections and dialogs write the

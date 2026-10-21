@@ -696,7 +696,8 @@ local orig_detect_tools_async = nil
 
 --- Caching wrapper around core's detect_tools_async, honoring tool_cache_mode
 --- (spec §16.43 "Reuse"). `opts.cancelled` (Workspace:_scan_tools_async):
---- true once the workspace was torn down — no further type is detected.
+--- true once the workspace was torn down — no further type is detected;
+--- `opts.force` (Workspace:rescan_tools): every type is detected again.
 local function cached_detect_tools_async(config, cfg_cache, callback, opts)
   if tool_cache_mode == "cached" then
     local cache = read_tool_cache()
@@ -705,7 +706,7 @@ local function cached_detect_tools_async(config, cfg_cache, callback, opts)
   local detect = orig_detect_tools_async
   tool_cache.detect({
     needed = config_needed_types(config, cfg_cache),
-    force = tool_cache_mode == "force",
+    force = tool_cache_mode == "force" or (opts ~= nil and opts.force == true),
     cancelled = opts and opts.cancelled,
     detectable = tool_detectable,
     -- One module type at a time, so each is written when it finishes.
@@ -7522,7 +7523,12 @@ function M.cmd_sdk(sub, root, args)
     local key = args[3]
     if not key then die("usage: lw sdk remove <key>  (`lw sdk list` shows keys)", 2) end
     local ws = load_workspace(root, false)
-    if not ws:remove_sdk(key) then
+    -- The key the user typed names the SDK (exactly, as before).
+    local target
+    for _, s in ipairs(ws._sdks) do
+      if s.key == key then target = s; break end
+    end
+    if not target or not ws:remove_sdk(target) then
       die("no SDK with key '" .. key .. "'. Run `lw sdk list`.")
     end
     out("removed SDK '" .. key .. "'")

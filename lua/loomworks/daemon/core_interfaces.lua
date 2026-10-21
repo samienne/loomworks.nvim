@@ -14,7 +14,8 @@
 ---                                         device_log T (log; loomworks.daemon.devices)
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
----   /toolchains  loomworks.Toolchains/1   list
+---   /toolchains  loomworks.Toolchains/1   list, rescan
+---   /toolchains  loomworks.Sdks/1         detect, add, remove
 ---   /profiles    loomworks.Profiles/1     compiler_cache, set_device, clear_device, set_active, create,
 ---                                         tool_choices, add_tool, remove_tool
 ---   /projects    loomworks.Projects/1     candidates, add, declaration, configuration_save,
@@ -74,6 +75,7 @@ M.BUILD = { path = "/build", iface = "loomworks.Build", v = 1 }
 M.TESTS = { path = "/tests", iface = "loomworks.Tests", v = 1 }
 M.LAUNCH = { path = "/launch", iface = "loomworks.Launch", v = 1 }
 M.TOOLCHAINS = { path = "/toolchains", iface = "loomworks.Toolchains", v = 1 }
+M.SDKS = { path = "/toolchains", iface = "loomworks.Sdks", v = 1 }
 M.PROFILES = { path = "/profiles", iface = "loomworks.Profiles", v = 1 }
 M.DEBUG = { path = "/debug", iface = "loomworks.DebugConfig", v = 1 }
 M.LSP = { path = "/lsp", iface = "loomworks.LspConfig", v = 1 }
@@ -203,7 +205,7 @@ end
 
 --- The entity fields a command's result may carry (`{ id, key }` each, made
 --- by the handler from the created or kept object).
-local ENTITY_FIELDS = { "project", "configuration", "launch", "profile", "config_set" }
+local ENTITY_FIELDS = { "project", "configuration", "launch", "profile", "config_set", "sdk" }
 
 --- The reply of a command outcome: only the protocol's fields; a refused
 --- write reports the lock or save refusal the host recorded (it names
@@ -577,13 +579,144 @@ local function settled_tools(ws)
     return require("loomworks.model_commands").refused("toolchains are still being detected")
 end
 
---- The `loomworks.Toolchains/1` handlers.
+--- The toolchains before a write that detects them again
+--- (model_commands.tools_rescan, sdk_add, sdk_remove): the `changed`
+--- sequence number and the toolchain rows. Taken before the write, so the
+--- write's own `changed` (a saved working copy) is the only one when the
+--- detection then changes nothing more.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @return { seq: integer, rows: table }
+local function tools_before(service, ws)
+    return { seq = service.server.seq,
+        rows = require("loomworks.daemon.snapshot").tool_rows(ws._tools_by_type) }
+end
+
+--- Wait, as a load waits for its detection (service.LOAD_WAIT_MS), until the
+--- model took in the detection a write started. A changed toolchain list
+--- signals Workspace/1 `changed` (before the reply), unless a write since
+--- `before` already did. A detection that does not finish in time goes on in
+--- the background: the daemon signals `changed` when it finishes
+--- (Service:tools_late), outside the requester's environment scope.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @param before { seq: integer, rows: table } tools_before
+--- @return boolean finished false: the detection did not finish in time
+local function await_tools(service, ws, before)
+    local snapshot = require("loomworks.daemon.snapshot")
+    vim.wait(require("loomworks.daemon.service").LOAD_WAIT_MS, function()
+        return ws._tool_state == "scanned" or ws._torn_down == true
+    end, 25)
+    if ws._torn_down then return false end
+    if ws._tool_state ~= "scanned" then
+        service:tools_late(ws, before.rows)
+        return false
+    end
+    if service.server.seq == before.seq and not vim.deep_equal(before.rows, snapshot.tool_rows(ws._tools_by_type)) then
+        service.server:model_changed()
+    end
+    return true
+end
+
+--- The warn note of a write whose detection did not finish within the wait
+--- (the reply stays `ok`: the write is done, API.md §11).
+local RESCAN_UNFINISHED = "toolchain detection did not finish in time; it goes on in the background"
+
+--- The `loomworks.Toolchains/1` handlers. `rescan` (API.md §11, step 5o
+--- part B4) is a command: in a model segment of the caller's environment it
+--- detects the toolchains again, as the status page's `L` does in-process,
+--- every module type afresh (no machine-level cached result reused,
+--- spec §16.43), and replies once the model took them in, or `ok` with a
+--- warn note when that did not happen within the wait.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.toolchains_impl(service)
     return { methods = {
         list = query(service, "tools", function(r) return { tools = r.tools or {} } end),
+        rescan = function(ctx)
+            return command(service, ctx, function(ws)
+                local before = tools_before(service, ws)
+                require("loomworks.model_commands").tools_rescan(ws)
+                if not await_tools(service, ws, before) then
+                    return { outcome = "ok", notes = { RESCAN_UNFINISHED }, note_roles = { "warn" } }
+                end
+                return { outcome = "ok" }
+            end)
+        end,
     } }
+end
+
+--- The SDK a `Sdks/1` call names (`{ id }`, or `{ key }` matched exactly),
+--- or nil + the refusal.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @param ref table
+--- @return loomworks.SDK|nil, string|nil err
+local function sdk_of(service, ws, ref)
+    if ref.id ~= nil then
+        local sdk = service.ids:find(ref.id, ws._sdks)
+        if not sdk then return nil, "no SDK with id " .. tostring(ref.id) .. " (a stale reference)" end
+        return sdk
+    end
+    for _, sdk in ipairs(ws._sdks or {}) do
+        if not sdk._removed and sdk.key == ref.key then return sdk end
+    end
+    return nil, "no SDK '" .. tostring(ref.key) .. "'"
+end
+
+--- The `loomworks.Sdks/1` handlers (API.md §21, step 5o part B4). `detect`
+--- is a read in a model segment of the caller's environment (the providers'
+--- detection probes it); `add` and `remove` are commands as Workspace/1's
+--- (`command`), the write the shared loomworks.model_commands function the
+--- in-process editor calls, which also starts detecting the toolchains
+--- again; the daemon waits for that detection (as Toolchains/1.rescan) before
+--- it replies, so the SDK's kits are offered (or gone). `list` is deferred
+--- (step 5o D9: view.Workspace/1 carries the SDKs).
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.daemon.InterfaceImpl
+function M.sdks_impl(service)
+    local mc = require("loomworks.model_commands")
+    local methods = {}
+
+    function methods.detect(ctx, args)
+        return read_segment(service, ctx, function() return mc.sdk_detect(args.provider) end)
+    end
+
+    function methods.add(ctx, args)
+        return command(service, ctx, function(ws)
+            -- The daemon's cwd is not the caller's: a relative path would
+            -- resolve against the wrong directory (API.md §21). An unknown
+            -- provider is refused first (by sdk_add).
+            if type(args.path) == "string" and require("loomworks.sdks").get(args.provider)
+                and not require("loomworks.exe").is_absolute(args.path) then
+                return mc.refused("SDK path '" .. args.path .. "' is not absolute")
+            end
+            local before = tools_before(service, ws)
+            local r = mc.sdk_add(ws, args.provider, args.path)
+            if r.outcome ~= "ok" then return r end
+            local sdk = r.sdk
+            r.sdk = { id = service.ids:id(sdk), key = sdk.key }
+            if not await_tools(service, ws, before) then
+                r.notes, r.note_roles = { "SDK '" .. sdk.key .. "' added; " .. RESCAN_UNFINISHED }, { "warn" }
+            end
+            return r
+        end)
+    end
+
+    function methods.remove(ctx, args)
+        return command(service, ctx, function(ws)
+            local sdk, err = sdk_of(service, ws, args.sdk)
+            if not sdk then return mc.refused(err) end
+            local before = tools_before(service, ws)
+            local key = sdk.key
+            local r = mc.sdk_remove(ws, sdk)
+            if r.outcome == "ok" and not await_tools(service, ws, before) then
+                r.notes, r.note_roles = { "SDK '" .. key .. "' removed; " .. RESCAN_UNFINISHED }, { "warn" }
+            end
+            return r
+        end)
+    end
+    return { methods = methods }
 end
 
 --- A working-copy write in a model segment of the caller's environment (as
@@ -1259,6 +1392,7 @@ function M.mount(registry, service)
         { M.TESTS, M.tests_impl },
         { M.LAUNCH, M.launch_impl },
         { M.TOOLCHAINS, M.toolchains_impl },
+        { M.SDKS, M.sdks_impl },
         { M.PROFILES, M.profiles_impl },
         { M.PROJECTS, M.projects_impl },
         { M.CONFIG_SETS, M.config_sets_impl },
