@@ -124,7 +124,6 @@ return {
         },
         ["lua/loomworks/ui/tree.lua"] = {
             "loomworks.description",
-            "loomworks.user",
             "loomworks.workspace",
         },
         ["lua/loomworks/ui/view.lua"] = {
@@ -171,13 +170,12 @@ return {
         ["lua/loomworks/lsp_source.lua"] = 1,
         ["lua/loomworks/overseer.lua"] = 22,
         ["lua/loomworks/reload.lua"] = 1,
-        ["lua/loomworks/ui/actions.lua"] = 10,
+        ["lua/loomworks/ui/actions.lua"] = 9,
         ["lua/loomworks/ui/project_browser.lua"] = 4,
         -- config_sets.lua 4 -> 3, diagnostics.lua 1 -> 0, orphaned.lua 2 -> 1,
         -- profiles.lua 2 -> 0, projects.lua 6 -> 5, sdks.lua 1 -> 0: step 5n
         -- part A renders the body from `view.Workspace/1` (view_state.lua);
         -- what is left are the actions' own model reads (5o's commands).
-        ["lua/loomworks/ui/sections/config_sets.lua"] = 3,
         ["lua/loomworks/ui/sections/debug.lua"] = 1,
         ["lua/loomworks/ui/sections/orphaned.lua"] = 1,
         ["lua/loomworks/ui/sections/projects.lua"] = 5,
@@ -252,8 +250,15 @@ return {
     -- { object = M.LAUNCH.object, iface = M.LAUNCH.iface, v = M.LAUNCH.v };
     -- and _on_message's match of the `log` signal on M.LAUNCH.iface — the
     -- versioned tables Root/1 and Launch/1.
+    -- 32 -> 50: step 5o C2a adds seventeen CALLS naming their methods
+    -- literally, conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, ...) x8,
+    -- conn:call(M.PROFILES.object, M.PROFILES.iface, ...) x5 and
+    -- conn:call(M.CONFIG_SETS.object, M.CONFIG_SETS.iface, ...) x4, and the
+    -- qualified names of METHOD_IFACE built from `want.iface` (want one of
+    -- M.WORKSPACE, M.PROFILES, M.CONFIG_SETS) — the versioned tables
+    -- Workspace/1, Profiles/1 and ConfigSets/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 32,
+        ["lua/loomworks/daemon/observer.lua"] = 50,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

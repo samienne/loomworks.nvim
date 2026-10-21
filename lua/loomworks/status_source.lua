@@ -14,15 +14,46 @@
 ---     line. Progress comes from the tasks observed through `Tasks/1` (the
 ---     observer's remote and editor-owned tasks: their `start` meta names the
 ---     profile and units, `progress` frames the percent, `start` the elapsed
----     time). *(Transition, until step 5o part C2.)* The sections' actions
----     (through loomworks/ui/model_calls.lua, step 5o C0) still write the
----     editor's in-process model (§19.16 "Transition"): `ref` gives a row the
----     model object its keys name. The rows keep the view's ids for C2.
+---     time). The sections' actions go through
+---     loomworks/ui/model_calls.lua, which names a row's entity by the row's
+---     id (step 5o C2a: Workspace/1, Profiles/1, ConfigSets/1).
+---     *(Transition, until step 5o parts C2b and C2c.)* The actions not routed
+---     yet still write the editor's in-process model (§19.16 "Transition"):
+---     `ref` gives a row the model object its keys name.
 ---   * `in-process` mode (transition, until step 6b): the view built from the
 ---     editor's own model (Workspace:view_workspace), each row bound to the
 ---     object it describes; progress from the objects' task tracking.
 
 local M = {}
+
+--- The in-process view's rows, each bound to the domain object it describes
+--- (`Workspace:view_workspace`'s `bind`; weak: a row lives as long as the
+--- page that rendered it; all forgotten when a workspace is torn down,
+--- M.forget). The status page's actions name an entity by its
+--- row; in the `in-process` mode loomworks/ui/model_calls.lua finds the
+--- object here (M.object_of).
+local bound = setmetatable({}, { __mode = "k" })
+
+--- Bind a row of an in-process read to the domain object it describes.
+--- @param row table
+--- @param obj table|nil
+function M.bind(row, obj)
+    if row ~= nil then bound[row] = obj end
+end
+
+--- Forget every row's binding (Workspace:teardown: a torn-down workspace's
+--- objects are reached by no row of a page rendered before the swap).
+function M.forget()
+    for row in pairs(bound) do bound[row] = nil end
+end
+
+--- The domain object an in-process row was bound to, or nil (a daemon row:
+--- never bound).
+--- @param row table|nil
+--- @return table|nil
+function M.object_of(row)
+    return row ~= nil and bound[row] or nil
+end
 
 --- @class loomworks.StatusBody
 --- @field mode "daemon"|"in-process"
@@ -48,11 +79,11 @@ end
 --- @param ws loomworks.Workspace
 --- @return loomworks.StatusBody
 local function in_process(ws)
-    local refs = setmetatable({}, { __mode = "k" })
-    local view = ws:view_workspace({ bind = function(row, obj) refs[row] = obj end })
+    local view = ws:view_workspace({ bind = M.bind })
+    local refs = bound
     return {
         mode = "in-process", view = view, loaded = true,
-        ref = function(row) return refs[row] end,
+        ref = M.object_of,
         -- A busy profile's percent and elapsed time and a running unit's
         -- step progress: the rows' domain objects (their operations, units
         -- and observed tasks).
@@ -74,9 +105,12 @@ end
 -- Daemon
 -- ---------------------------------------------------------------------------
 
---- *(Transition, until step 5o part C2.)* The in-process model objects the daemon
---- view's rows name, for the sections' actions, which still write the
---- editor's model (§19.16 "Transition"). The daemon's ids name nothing
+--- *(Transition, until step 5o parts C2b and C2c.)* The in-process model
+--- objects the daemon view's rows name, for the sections' actions not routed
+--- through the daemon yet (Projects/1, Sdks/1, Maintenance/1, and the
+--- profile's builds, which name the profile by key), which still write or
+--- read the editor's model (§19.16 "Transition"); the routed ones send the
+--- row's id instead. The daemon's ids name nothing
 --- here ("Two sources, one shape"): a row names its object by the keys it
 --- shows (a profile's or project's key, a set's name, a configuration's,
 --- launch's or SDK's key, an orphaned entry's cache key). A row whose object
@@ -126,7 +160,7 @@ end
 --- unit row) of profile row `row`. A task of the row's profile runs it when
 --- it runs its project (a profile maps one configuration per project); any
 --- other task only when it runs that project's same configuration unit.
---- *(Transition, until step 5o part C2.)* The view's unit row names its
+--- *(Transition, until step 5o parts C2b and C2c.)* The view's unit row names its
 --- configuration, while a task's `start` meta names the configuration-unit
 --- key; the row's unit key comes from the editor's model (`ref`, its
 --- project-in-profile), and a row the model lacks matches no such task.
@@ -252,16 +286,31 @@ function M.read(ws)
 end
 
 --- Whether the workspace has changes not published (the status buffer's
---- 'modified', which makes Vim refuse `:e` with E37): the editor's model's in
---- both modes. *(Transition, until step 5o part C2.)* Publish and revert
---- (`:w`, `:e!`) still act on the editor's model, so its dirtiness — not the
---- daemon view's `modified`, absent while the view is not held and stale
---- until an editor write's `get` is answered — guards them.
+--- 'modified', which makes Vim refuse `:e` with E37). In `daemon` mode
+--- publish and revert (`:w`, `:e!`) run in the daemon (step 5o C2a): the
+--- daemon's view's `modified` while that view is held and knows the
+--- editor's own writes; otherwise — the view not held (connecting, waiting
+--- for it, lost, a daemon without it, not connected at all), or an
+--- in-process write (Projects/1, Sdks/1, Maintenance/1 until C2b/C2c) whose
+--- freshness `get` is not answered yet (Observer:workspace_view_stale) — it
+--- is not known, and the editor's model's is the best knowledge (the same
+--- files; it does not block `:qa` for a clean working copy). The flag can
+--- still lag the daemon (another client's write): a plain `:e` in `daemon`
+--- mode therefore never reverts (ui/status.lua `_on_revert`), only `:e!`
+--- does. In the `in-process` mode the editor's model's.
 --- @param ws loomworks.Workspace|nil
 --- @return boolean
 function M.modified(ws)
     if not ws then return false end
-    return ws:has_any_modified() and true or false
+    local editor = ws:has_any_modified() and true or false
+    local is_daemon, obs = daemon_of(ws)
+    if is_daemon then
+        local view = obs and obs:workspace_view() or nil
+        if type(view) ~= "table" then return editor end
+        if view.modified == true then return true end
+        return obs:workspace_view_stale() and editor
+    end
+    return editor
 end
 
 return M

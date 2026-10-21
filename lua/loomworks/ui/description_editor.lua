@@ -38,6 +38,7 @@ end
 --- @param item table
 --- @return boolean ok, string|nil reason
 function M.editable(item)
+    if item._readonly then return false, item._readonly end
     local Configuration = require("loomworks.configuration")
     if getmetatable(item) == Configuration then
         if item:is_auto_gen() or not item.is_user or item._source_missing then
@@ -72,8 +73,9 @@ end
 
 --- Apply the buffer's content to the item (the BufWriteCmd body, through
 --- `Workspace/1.set_description`). Returns true when saved (or unchanged),
---- false with the error when refused — nil while the outcome is pending
---- (none in C0, where it arrives before the call returns).
+--- false with the error when refused — nil while the outcome is pending (a
+--- call to the workspace daemon, step 5o C2a: its outcome arrives later).
+--- A row item (helpers.row_item) takes the saved text as its description.
 --- @param buf integer
 --- @param item table
 --- @param on_saved? fun(item: table) called after a successful save
@@ -84,8 +86,11 @@ function M.apply(buf, item, on_saved)
     local ok, err
     require("loomworks.ui.model_calls").call(nil, "Workspace/1.set_description", { item = item, text = text },
         function(r)
-            local changed = nil -- true when saved, false when unchanged, nil when refused
-            if r.outcome == "ok" then changed = r.changed end
+            -- true when saved, false when unchanged, nil when refused (a
+            -- daemon's `ok` carries no `changed`: saved).
+            local changed = nil
+            if r.outcome == "ok" then changed = r.changed ~= false end
+            if not vim.api.nvim_buf_is_valid(buf) then return end
             vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
             if changed == nil then
                 err = r.message
@@ -98,6 +103,7 @@ function M.apply(buf, item, on_saved)
                 return
             end
             vim.bo[buf].modified = false
+            if item._row then item.description = text end
             if on_saved then on_saved(item) end
             if changed then
                 local kind, name = M.describe_item(item)

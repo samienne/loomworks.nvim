@@ -9018,6 +9018,10 @@ function Workspace:teardown()
     -- A torn-down workspace writes nothing again (a late task callback must
     -- not resurrect state, e.g. a cache a nuke just removed).
     self._torn_down = true
+    -- The status page's rows bound to this workspace's objects
+    -- (status_source.bind) name nothing any more.
+    local status_source = package.loaded["loomworks.status_source"]
+    if status_source then status_source.forget() end
 
     local events = self._core._deps.events
     for _, entry in ipairs(self._event_handlers) do

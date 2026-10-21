@@ -40,7 +40,8 @@ describe("ui.model_calls", function()
 
     -- C0: each method's body is the in-process write the editor ran before.
     -- The view-model and the loomworks API are stubbed to record what each
-    -- method passes and to check how its answer becomes the outcome.
+    -- method passes and to check how its answer becomes the outcome. From
+    -- C2a an entity param is a row: in-process, the object bound to it.
     describe("in-process bodies", function()
         local saved, calls
         local function recorder(ret)
@@ -53,6 +54,10 @@ describe("ui.model_calls", function()
             end })
         end
         local WS, P, CS, PR, CFG, L, SDK, U = {}, {}, {}, {}, {}, {}, {}, {}
+        -- The rows the in-process view bound to the objects (step 5o C2a).
+        local ss = require("loomworks.status_source")
+        local PROW, CSROW, LROW = { key = "p" }, { name = "cs" }, { key = "l" }
+        ss.bind(PROW, P); ss.bind(CSROW, CS); ss.bind(LROW, L)
         before_each(function()
             calls = {}
             saved = { package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
@@ -87,13 +92,14 @@ describe("ui.model_calls", function()
             local m = { a = 1 }
             local r = {}
             r[#r + 1] = run(WS, "Workspace/1.publish", {})
-            r[#r + 1] = run(nil, "Workspace/1.set_intent", { item = P, intent = "shared" })
-            r[#r + 1] = run(nil, "Workspace/1.set_description", { item = L, text = "t" })
-            r[#r + 1] = run(nil, "Profiles/1.create", { config_set = CS, tool = m, activate = true })
-            r[#r + 1] = run(nil, "Profiles/1.add_tool", { profile = P, tool = "gcc" })
-            r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Dev", mappings = m })
-            r[#r + 1] = run(WS, "ConfigSets/1.add", { candidate = "tok" })
-            r[#r + 1] = run(nil, "ConfigSets/1.update", { config_set = CS, name = "D2", mappings = m })
+            r[#r + 1] = run(WS, "Workspace/1.set_intent", { item = PROW, intent = "shared" })
+            r[#r + 1] = run(WS, "Workspace/1.set_description", { item = { _kind = "launch", _row = LROW }, text = "t" })
+            r[#r + 1] = run(WS, "Profiles/1.add_tool", { profile = PROW, tool = "gcc" })
+            r[#r + 1] = run(WS, "Profiles/1.set_active", { profile = PROW })
+            local pm = { [PR] = CFG }
+            r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Dev", mappings = pm })
+            r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Auto", mappings = { app = "Debug" } })
+            r[#r + 1] = run(WS, "ConfigSets/1.update", { config_set = CSROW, name = "D2", mappings = pm })
             r[#r + 1] = run(WS, "Projects/1.add", { key = "app", type = "cmake", path = "app", mappings = m, tool = m })
             r[#r + 1] = run(nil, "Projects/1.configuration_save",
                 { project = PR, configuration = CFG, name = "Debug", fields = m })
@@ -107,11 +113,12 @@ describe("ui.model_calls", function()
                 { "publish", WS },
                 { "set_intent", P, "shared" },
                 { "set_description", L, "t" },
-                { "execute_create_profile", CS, m, true },
                 { "add_profile_tool", P, "gcc" },
-                { "execute_create_config_set", WS, "Dev", m },
-                { "execute_create_config_set_from_candidate", WS, "tok" },
-                { "execute_edit_config_set", CS, "D2", m },
+                { "activate_profile", P },
+                { "execute_create_config_set", WS, "Dev", pm },
+                { "candidate_token", "Auto", { app = "Debug" } },
+                { "execute_create_config_set_from_candidate", WS, true },
+                { "execute_edit_config_set", CS, "D2", pm },
                 { "execute_add_project", WS, "app", "cmake", "app", { mappings = m, tool_entry = m } },
                 { "execute_save_configuration", PR, CFG, "Debug", m },
                 { "execute_save_launch_config", PR, L, "run", m },
@@ -123,7 +130,6 @@ describe("ui.model_calls", function()
             }, calls)
             assert.same({ outcome = "ok" }, r[1])
             assert.same({ outcome = "ok", changed = false }, r[3])
-            assert.equals(P, r[4].profile)
             assert.same({ outcome = "refused", message = "taken" }, r[6])
             assert.equals(CS, r[7].config_set)
             assert.equals(PR, r[9].project)
@@ -166,13 +172,17 @@ describe("ui.model_calls", function()
                 { outcome = "refused", message = "locked" }, { outcome = "ok" } }, r)
         end)
 
-        it("runs the trust review, the user-prefs deletion, the rescan and the nuke as before", function()
-            assert.same({ outcome = "ok", trust = "trusted" }, run(nil, "Workspace/1.trust_accept", {}))
-            run(nil, "Workspace/1.delete_user_prefs", { root = "/w" })
+        it("runs the trust review, the rescan and the nuke as before", function()
+            assert.same({ outcome = "ok", trust = "trusted" }, run(WS, "Workspace/1.trust_accept", {}))
             run(WS, "Toolchains/1.rescan", {})
             run(nil, "Maintenance/1.nuke", { root = "/w" })
-            assert.same({ { "trust_user_prefs" }, { "delete_user_prefs", "/w" }, { "rescan_tools" },
-                { "nuke_cache", "/w" } }, calls)
+            assert.same({ { "trust_user_prefs" }, { "rescan_tools" }, { "nuke_cache", "/w" } }, calls)
+        end)
+
+        it("names an unbound row's entity by nothing (refused by the command), never by its key", function()
+            package.loaded["loomworks.workspace_view"] = saved[1]
+            local got = run(WS, "Workspace/1.set_intent", { item = { key = "p" }, intent = "shared" })
+            assert.equals("refused", got.outcome)
         end)
     end)
 
@@ -205,6 +215,9 @@ describe("ui.model_calls", function()
             ":revert_to_baseline%(", ":set_description%(", ":save_[%w_]+%(", ":rename_[%w_]+%(",
             ":delete_[%w_]+%(", ":add_configuration_set%(", ":remove_configuration_set%(", ":add_project%(",
             ":remove_project%(",
+            -- The domain objects' own writes (C0 review).
+            ":activate%(", ":set_intent%(", ":update_mapping%(", ":add_tool%(", ":remove_tool%(",
+            ":map_variant%(", "%.set_lsp_option%(",
         })
         -- Recorded exceptions (file → the exact line), each with its reason:
         -- the Projects section's project-row `D` removes only the project's
@@ -212,8 +225,18 @@ describe("ui.model_calls", function()
         -- Maintenance/1.execute_deletion { project }, which also deletes its
         -- build directories and downgrades its profiles (the project
         -- browser's removal) — open until it is decided which the row does.
+        -- The LSP section's options go through `lw.set_lsp_option`, which in
+        -- `daemon` mode is only `LspConfig/1.set_option` (editor_ops, step
+        -- 5l) -- already a daemon call, not a catalogue method of the seam.
         local allowed = {
             ["lua/loomworks/ui/sections/projects.lua"] = { ["local ok, err = ws:remove_project(proj)"] = true },
+            ["lua/loomworks/ui/sections/lsp.lua"] = {
+                ['lw.set_lsp_option("clangd", "clang_tidy", not opts.clang_tidy)'] = true,
+                ['lw.set_lsp_option("clangd", "background_index",'] = true,
+                ['lw.set_lsp_option("clangd", "background_index_priority", next_v)'] = true,
+                ['lw.set_lsp_option("clangd", "extra_args", parts)'] = true,
+                ['lw.set_lsp_option("clangd", "extra_args", {})'] = true,
+            },
         }
         local found = {}
         local base = root .. "/lua/loomworks/ui"

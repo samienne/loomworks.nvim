@@ -15,7 +15,7 @@
 --- @field _win_opts table Snacks.win config overrides
 --- @field _on_close fun()|nil
 --- @field _on_write fun()|nil
---- @field _on_revert fun()|nil
+--- @field _on_revert fun(force: boolean)|nil
 --- @field _is_modified (fun(): boolean)|nil
 --- @field _lock_to_items boolean
 --- @field _filetype string buffer filetype
@@ -35,6 +35,24 @@
 ---     Storage lives outside the view — typically on the workspace.
 local View = {}
 View.__index = View
+
+--- `:e` / `:e!` on the acwrite buffer `bufnr` (BufReadCmd): `on_revert(force)`,
+--- `force` true for `:e!` (v:cmdbang), then `after()`. Vim refuses a plain
+--- `:e` on a modified buffer (E37), so it reaches here only while the
+--- buffer is not marked modified; `on_revert` decides what a plain `:e`
+--- does then (the buffer's flag can lag the state the revert acts on).
+--- @param bufnr integer
+--- @param on_revert fun(force: boolean)
+--- @param after? fun()
+function View.attach_revert(bufnr, on_revert, after)
+    vim.api.nvim_create_autocmd("BufReadCmd", {
+        buffer = bufnr,
+        callback = function()
+            on_revert(vim.v.cmdbang == 1)
+            if after then after() end
+        end,
+    })
+end
 
 --- @param opts table
 --- @return loomworks.View
@@ -141,21 +159,9 @@ function View:open(win_overrides)
             end,
         })
     end
-    -- Set up BufReadCmd for :e / :e! support. Vim refuses :e on a modified
-    -- buffer (E37) and only fires this autocmd on :e!. The acwrite buffer's
-    -- modified flag mirrors `is_modified`, which returns true whenever the
-    -- workspace has any divergence from the published baseline. So this
-    -- handler runs only when the user said "yes, force-revert".
     if self._on_revert and self._bufnr then
-        local on_revert = self._on_revert
         local view = self
-        vim.api.nvim_create_autocmd("BufReadCmd", {
-            buffer = self._bufnr,
-            callback = function()
-                on_revert()
-                view:refresh()
-            end,
-        })
+        View.attach_revert(self._bufnr, self._on_revert, function() view:refresh() end)
     end
     self:refresh()
     if self._cursor_storage then

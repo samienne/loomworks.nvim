@@ -401,6 +401,14 @@ function M.nuke_check(root)
     return core:nuke_check(root, { skip_own = true })
 end
 
+--- The root whose working copy the deletion of the working copy acts on
+--- when no workspace is loaded: the refused load's, else the cwd's.
+--- @return string
+function M.user_prefs_root()
+    local err = M.get_setup_error()
+    return (err and err.root) or require("loomworks.workspace").resolve_root()
+end
+
 --- Delete user.json and reload the workspace.
 --- @param root string
 function M.delete_user_prefs(root)

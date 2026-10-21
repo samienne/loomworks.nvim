@@ -306,7 +306,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
     -- Devices/1.stop of the launch task. Nothing runs in the editor.
     it("a device target's launch is Launch/1.build, Devices/1.install and launch; stop is Devices/1.stop", function()
         obs = fake_observer({ operations = "available", launch = "available", tasks = "subscribed",
-            devices = "subscribed", ["device choice"] = "available" })
+            devices = "subscribed", profiles = "available" })
         local t = require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
         local st = require("loomworks.session_tracker")
         st.start(t, "launch")
@@ -354,7 +354,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     it("a device target without a chosen device: a Devices/1.scan task, then Profiles/1.set_device", function()
         obs = fake_observer({ operations = "available", launch = "available", tasks = "subscribed",
-            devices = "subscribed", ["device choice"] = "available" })
+            devices = "subscribed", profiles = "available" })
         local selects = {}
         stub(vim.ui, "select", function(items, opts, cb) selects[#selects + 1] = { items = items, cb = cb } end)
         local t = require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
@@ -400,7 +400,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     -- Step 5n C2 review fixes: the device run's chain, stop and disconnect.
     local DEVICE_FEAT = { operations = "available", launch = "available", tasks = "subscribed",
-        devices = "subscribed", ["device choice"] = "available" }
+        devices = "subscribed", profiles = "available" }
     local function device_target()
         return require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
     end
@@ -669,7 +669,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     it("a device target without a device whose choice the daemon cannot carry is refused before the build", function()
         local feat = vim.tbl_extend("force", {}, DEVICE_FEAT)
-        feat["device choice"] = nil
+        feat.profiles = nil
         obs = fake_observer(feat)
         obs._devices = { list = { SER1 } }
         require("loomworks.session_tracker").start(device_target(), "launch")
@@ -691,7 +691,7 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
 
     it("a device target with a device needs no scan or choice: not refused without them", function()
         local feat = vim.tbl_extend("force", {}, DEVICE_FEAT)
-        feat["device choice"] = nil
+        feat.profiles = nil
         obs = fake_observer(feat)
         obs._devices = { list = { vim.tbl_extend("force", {}, SER1, { profiles = { profile.key } }) } }
         require("loomworks.session_tracker").start(device_target(), "launch")

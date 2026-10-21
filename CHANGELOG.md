@@ -139,8 +139,22 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   progress from the daemon's tasks; while the daemon does not offer it each
   of them shows `unavailable` with the reason, and nothing of them is
   computed in Neovim. The "loomworks.json not on disk" banner no longer shows
-  before the daemon has loaded the workspace. Edits made from the status page
-  still write the files from Neovim and then refresh the view. (#286)
+  before the daemon has loaded the workspace. Edits of projects and SDKs and
+  the deletions made from the status page still write the files from Neovim
+  and then refresh the view. (#286)
+- Experimental daemon: in daemon mode the status page's publish (`:w`),
+  revert (`:e!`), publish or revert of one item, intent (`P`) and
+  description (`e`) edits, profile activation, creation and toolchain edits,
+  and configuration set creation, edits and removal are calls to the
+  workspace daemon that name the row's item by its id. One the daemon cannot
+  take, or refuses (for example a row made stale by a reload), is an error
+  notification and changes nothing; it is never done in Neovim instead. The
+  status page is marked modified (`:e` refused) while the daemon's working
+  copy has unpublished changes; a plain `:e` never reverts there, only
+  `:e!` does. `U` (discard the working copy) shows what it
+  deletes and refuses when the file changed since. Creating a profile from an
+  automatic configuration set now adds the set together with the profile,
+  not when the set is picked, in both runtime modes. (#317)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor

@@ -11,7 +11,8 @@ local actions = require("loomworks.ui.actions")
 local M = {}
 
 --- The editor's in-process workspace model (the page's one read of it: the
---- header's root, and the model the actions write until step 5o part C2).
+--- header's root, the workspace the actions' calls go to, and the model
+--- the actions not routed yet write, until step 5o parts C2b / C2c).
 --- @return loomworks.Workspace|nil
 local function model()
     return require("loomworks").get_workspace()
@@ -112,8 +113,9 @@ local function render_fn(tree)
         ref = body.ref,
         profile_progress = body.profile_progress,
         unit_progress = body.unit_progress,
-        -- For the sections' actions only (the in-process model they act on;
-        -- in `daemon` mode until step 5o part C2, spec §19.16 "Transition").
+        -- For the sections' actions only: the in-process model the actions
+        -- not routed yet act on (in `daemon` mode until step 5o C2b / C2c,
+        -- spec §19.16 "Transition"), and the workspace their calls go to.
         ws = ws,
         all_profiles = lw.get_profiles(),
         active_profile = lw.get_active_profile(),
@@ -176,6 +178,32 @@ end
 -- View instance
 -- ---------------------------------------------------------------------------
 
+--- Revert (`:e!`; `:e` on a buffer not marked modified — ui/view.lua
+--- attach_revert): `Workspace/1.revert_to_baseline`, in `daemon` mode a call
+--- to the workspace daemon (step 5o C2a), whose view `update` re-renders
+--- the page. In `daemon` mode only `:e!` reverts: the buffer's flag can lag
+--- the daemon's working copy (status_source.modified), so a plain `:e` Vim
+--- let through only re-renders — never a revert the user did not force.
+--- Test seam.
+--- @param force boolean `:e!`
+function M._on_revert(force)
+    local ws = model()
+    if not ws then
+        vim.notify("loomworks: no workspace", vim.log.levels.WARN)
+        return
+    end
+    if not force and require("loomworks.daemon.editor_ops").daemon_of(ws) then return end
+    local calls = require("loomworks.ui.model_calls")
+    calls.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
+        local ok, err = calls.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
+        else
+            vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
+        end
+    end)
+end
+
 local tree = Tree.new(render_fn)
 
 --- Test seam: the page's render function.
@@ -225,14 +253,15 @@ local view = View.new({
         ["?"]     = "help",
         ["K"]     = "hover",
     },
-    -- The editor's model's `modified` in both modes until step 5o part C2
-    -- (publish and revert act on it): guards `:e` (E37).
+    -- Unpublished changes (loomworks.status_source.modified): in `daemon`
+    -- mode the daemon's view's `modified` (publish and revert run there, step
+    -- 5o C2a), else the editor's model's. Guards `:e` (E37).
     is_modified = function()
         return require("loomworks.status_source").modified(model())
     end,
-    -- Publish and revert stay in-process until step 5o part C2 (spec §19.16
-    -- "Transition"); in `daemon` mode their writes make the observer fetch
-    -- the workspace view (§19.13 "Freshness of views").
+    -- Publish and revert (`:w`, `:e!`): `Workspace/1.publish` /
+    -- `revert_to_baseline`, in `daemon` mode calls to the workspace daemon
+    -- (step 5o C2a), whose view `update` re-renders the page.
     on_write = function()
         local ws = model()
         if not ws then
@@ -247,22 +276,7 @@ local view = View.new({
             end
         end)
     end,
-    on_revert = function()
-        local ws = model()
-        if not ws then
-            vim.notify("loomworks: no workspace", vim.log.levels.WARN)
-            return
-        end
-        local calls = require("loomworks.ui.model_calls")
-        calls.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
-            local ok, err = calls.result(r)
-            if not ok then
-                vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
-            else
-                vim.notify("loomworks: reverted workspace to published baseline", vim.log.levels.INFO)
-            end
-        end)
-    end,
+    on_revert = function(force) return M._on_revert(force) end,
     events = {
         "task_started",
         "task_stopped",

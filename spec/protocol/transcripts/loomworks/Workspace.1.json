@@ -96,6 +96,19 @@
       ]
     },
     {
+      "name": "revert_to_baseline after an unpublished edit is ok (step 5o C2a)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "index": { "profiles": { "dev": { "$bind": "dev_id" } } } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_intent", "args": { "item": { "id": { "$var": "dev_id" } }, "intent": "local+shared" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "revert_to_baseline", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } }
+      ]
+    },
+    {
       "name": "set_description takes a launch id; publish_one, revert_one and set_intent refuse one, naming its project (step 5o)",
       "fixture": "shell",
       "allow": [ { "kind": "model_change" } ],

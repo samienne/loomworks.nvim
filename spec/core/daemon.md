@@ -2516,8 +2516,11 @@ plan, a held lock) is an error notification and changes nothing; the page
 shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is
 not carried the action is refused ("Availability"), never run in-process.
-*(Until step 5o part C1 the status page's actions still work on the
-editor's in-process model, as transitional, not fallbacks.)*
+*(Until step 5o parts C2b and C2c the status page's `Projects/1`,
+`Sdks/1`, `Toolchains/1` and `Maintenance/1` actions still work on the
+editor's in-process model, as transitional, not fallbacks; its
+`Workspace/1`, `Profiles/1` and `ConfigSets/1` actions are calls from part
+C2a.)*
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the

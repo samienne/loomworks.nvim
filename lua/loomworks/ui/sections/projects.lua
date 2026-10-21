@@ -18,7 +18,8 @@ local model = require("loomworks.ui.model_calls")
 --- Open the launch editor for an existing or new launch config.
 --- @param project loomworks.Project
 --- @param launch? loomworks.LaunchConfiguration nil for new config
-local function edit_launch_config(project, launch)
+--- @param lrow? table the launch's view row (its description is edited by it)
+local function edit_launch_config(project, launch, lrow)
     local project_key = project.key
     local launch_name = launch and launch.name or nil
 
@@ -38,6 +39,7 @@ local function edit_launch_config(project, launch)
         env = ctx.env,
         deploy = ctx.deploy,
         debug = ctx.debug,
+        describe_item = lrow and helpers.row_item("launch configuration", lrow, project_key .. ":" .. lrow.key) or nil,
         projects = ws and ws:get_projects() or {},
         profile = ws and lw.get_active_profile() or nil,
         workspace = ws,
@@ -207,7 +209,8 @@ end
 --- Open the configuration editor for a project configuration.
 --- @param project loomworks.Project
 --- @param cfg? loomworks.Configuration nil for new configuration
-local function edit_project_configuration(project, cfg)
+--- @param crow? table the configuration's view row (its description is edited by it)
+local function edit_project_configuration(project, cfg, crow)
     local project_key = project.key
     local config_name = cfg and cfg.name or nil
     local lw = require("loomworks")
@@ -218,7 +221,7 @@ local function edit_project_configuration(project, cfg)
     if not ctx then return end
 
     require("loomworks.ui.config_editor_dialog").open({
-        item = cfg,
+        item = crow and helpers.row_item("configuration", crow, project_key .. "/" .. crow.key) or nil,
         title = config_name
             and ('Edit "' .. config_name .. '" — ' .. project_key)
             or ("New configuration — " .. project_key),
@@ -364,23 +367,26 @@ local function field_saver(project, name)
     end
 end
 
---- The publish / revert actions shared by project and configuration rows.
+--- The publish / revert actions shared by project and configuration rows,
+--- naming the item by its view row (step 5o C2a).
 --- @param ws loomworks.Workspace|nil
---- @param item table the Project or Configuration
-local function publish_actions(ws, item)
+--- @param row table the project's or configuration's view row
+local function publish_actions(ws, row)
     if not ws then return {} end
     return {
-        on_publish = function() helpers.cycle_intent(item) end,
-        on_publish_now = function() helpers.publish_one(item) end,
-        on_revert_one = function() helpers.revert_one(item) end,
+        on_publish = function() helpers.cycle_intent(row, ws) end,
+        on_publish_now = function() helpers.publish_one(row, ws) end,
+        on_revert_one = function() helpers.revert_one(row, ws) end,
     }
 end
 
---- The actions of a project row.
-local function project_actions(ws, proj)
-    if not proj then return {} end
+--- The actions of a project row: publish / revert / describe by the row;
+--- its removal on the domain object `proj` (`ctx.ref`, until step 5o C2b).
+local function project_actions(ws, proj, prow)
+    local acts = helpers.describe_action(publish_actions(ws, prow), helpers.row_item("project", prow))
+    if not proj then return acts end
     local key = proj.key
-    return helpers.describe_action(with({
+    return with(acts, {
         on_delete = function()
             vim.ui.select({ "Yes", "No" }, {
                 prompt = "Remove project '" .. key .. "'?",
@@ -397,7 +403,7 @@ local function project_actions(ws, proj)
                 end
             end)
         end,
-    }, publish_actions(ws, proj)), proj)
+    })
 end
 
 --- The actions of a configuration row.
@@ -405,17 +411,19 @@ end
 --- @param project loomworks.Project|nil
 --- @param cfg loomworks.Configuration|nil
 --- @param crow table the configuration's view row
-local function configuration_actions(ws, project, cfg, crow)
+--- @param pkey string the project's key (the configuration's label)
+local function configuration_actions(ws, project, cfg, crow, pkey)
     if not project then return {} end
     -- `cfg` is always bound in practice: every declared configuration has a
-    -- Configuration object (Project:_sync_configurations), so the nil guards
-    -- only keep a row without one inert rather than acting on a name.
+    -- Configuration object (Project:_sync_configurations), so the nil guard
+    -- only keeps a row without one inert rather than acting on a name.
+    if not cfg then return {} end
     local acts = {
-        on_enter = cfg and function() edit_project_configuration(project, cfg) end or nil,
-        on_delete = (crow.user and cfg) and function() delete_project_configuration(project, cfg) end or nil,
+        on_enter = function() edit_project_configuration(project, cfg, crow) end,
+        on_delete = crow.user and function() delete_project_configuration(project, cfg) end or nil,
     }
-    if cfg then helpers.describe_action(with(acts, publish_actions(ws, cfg)), cfg) end
-    return acts
+    local item = helpers.row_item("configuration", crow, pkey .. "/" .. crow.key)
+    return helpers.describe_action(with(acts, publish_actions(ws, crow)), item)
 end
 
 --- The deploy dict of `project` as an editable deep copy, and its saver.
@@ -815,7 +823,7 @@ local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
         publish_label = has_object and helpers.intent_action_label(crow.intent) or nil,
     }
     if has_object then helpers.describe(opts, crow.description, crow.description_from_module) end
-    ct:node(config_chunks, with(opts, configuration_actions(ctx.ws, project, cfg, crow)), function()
+    ct:node(config_chunks, with(opts, configuration_actions(ctx.ws, project, cfg, crow, key)), function()
         if has_object then
             tree:description(crow.description, crow.description_from_module)
             -- Saved test targets (read-only, ui "Saved test
@@ -950,10 +958,10 @@ local function render_project_details(tree, t, ctx, prow)
                 -- (view_state project_row); the guard is defensive only.
                 local launch = ctx.ref(l)
                 if project and launch then
-                    opts.on_enter = function() edit_launch_config(project, launch) end
+                    opts.on_enter = function() edit_launch_config(project, launch, l) end
                     opts.on_delete = function() delete_launch_config(project, launch) end
-                    helpers.describe_action(opts, launch)
                 end
+                helpers.describe_action(opts, helpers.row_item("launch configuration", l, prow.key .. ":" .. lname))
                 -- The summary is rendered as a column above, not appended.
                 opts.description = nil
                 -- K: the full description, else the full command line.
@@ -1091,7 +1099,7 @@ return function(tree, ctx)
             spinning = prow.running,
             hl = row_hl,
             publish_label = helpers.intent_action_label(prow.intent),
-        }, prow.description, prow.description_from_module), project_actions(ctx.ws, ctx.ref(prow))), function()
+        }, prow.description, prow.description_from_module), project_actions(ctx.ws, ctx.ref(prow), prow)), function()
             render_project_details(tree, t, ctx, prow)
         end)
     end)
