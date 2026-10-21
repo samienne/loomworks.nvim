@@ -225,7 +225,8 @@ local view = View.new({
         ["?"]     = "help",
         ["K"]     = "hover",
     },
-    -- The body's `modified` (the daemon's view in `daemon` mode).
+    -- The editor's model's `modified` in both modes until step 5o part C2
+    -- (publish and revert act on it): guards `:e` (E37).
     is_modified = function()
         return require("loomworks.status_source").modified(model())
     end,
@@ -238,9 +239,9 @@ local view = View.new({
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end
-        local model = require("loomworks.ui.model_calls")
-        model.call(ws, "Workspace/1.publish", {}, function(r)
-            local ok, err = model.result(r)
+        local calls = require("loomworks.ui.model_calls")
+        calls.call(ws, "Workspace/1.publish", {}, function(r)
+            local ok, err = calls.result(r)
             if not ok then
                 vim.notify("loomworks: " .. (err or "publish failed: unknown"), vim.log.levels.ERROR)
             end
@@ -252,9 +253,9 @@ local view = View.new({
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end
-        local model = require("loomworks.ui.model_calls")
-        model.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
-            local ok, err = model.result(r)
+        local calls = require("loomworks.ui.model_calls")
+        calls.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
+            local ok, err = calls.result(r)
             if not ok then
                 vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
             else

@@ -1576,7 +1576,7 @@ D).
 builder, in-process only; B1 the daemon side; C1 the editor's read path.)*
 `loomworks.view.Workspace/1` ([API.md](../protocol/API.md) §14.4), on `/views`
 like the views above, backs the status page's body: Diagnostics,
-Suggestions, Profiles, Orphaned Configurations, Configuration Sets, Projects
+Suggestions, Profiles, Orphaned Build Dirs, Configuration Sets, Projects
 and SDKs (spec/ui.md §1.1). The header, LSP, Debug Adapters and Tasks
 sections keep their own sources. In `daemon` mode the editor renders these
 sections only from the view; while the view is not offered, each section is

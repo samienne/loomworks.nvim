@@ -118,10 +118,11 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.truthy(text:find("Projects", 1, true), text)
         -- (Only the Debug Adapters section's own: DebugConfig/1 is not carried here.)
         assert.equals(1, count(lines, "unavailable —"))
-        -- The status buffer's 'modified' is the view's.
+        -- The status buffer's 'modified' is the editor's model's until 5o
+        -- C2 (publish and revert act on it), not the view's.
         assert.is_false(status_source.modified(ws))
         v.modified = true
-        assert.is_true(status_source.modified(ws))
+        assert.is_false(status_source.modified(ws))
         assert.equals(0, built)
     end)
 
@@ -283,6 +284,73 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_nil(text:find("42%", 1, true), text)
         assert.equals(0, count(lines, "1m05s"))
         assert.equals(0, built)
+    end)
+
+    it("an unpublished edit keeps the buffer modified while the view is not held: `:e` refused (until 5o C2)", function()
+        fake_obs()
+        header()
+        assert.is_false(ws:has_any_modified())
+        -- An unpublished edit of the editor's model (publish and revert act
+        -- on it until 5o C2): a profile to share that loomworks.json lacks.
+        ws:get_profiles()[1]._intent = "local+shared"
+        assert.is_true(ws:has_any_modified())
+        -- Waiting for the view (none held yet).
+        assert.is_nil((obs:workspace_view()))
+        assert.is_true(status_source.modified(ws))
+        -- A stale view (its `get` after the write not yet answered).
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        assert.is_true(status_source.modified(ws))
+        -- Not connected at all.
+        views.clear(obs)
+        ws._daemon_observer = nil
+        obs = nil
+        assert.is_true(status_source.modified(ws))
+        -- An acwrite buffer as the status page's (ui/view.lua: 'modified'
+        -- from `is_modified`, `:e` -> BufReadCmd -> revert): Vim refuses
+        -- `:e` (E37), so no revert runs.
+        local buf = vim.api.nvim_create_buf(false, true)
+        vim.bo[buf].buftype = "acwrite"
+        vim.api.nvim_buf_set_name(buf, "loomworks://status-e37-spec")
+        local reverted = false
+        vim.api.nvim_create_autocmd("BufReadCmd", { buffer = buf, callback = function() reverted = true end })
+        vim.bo[buf].modified = status_source.modified(ws)
+        local ok, err = pcall(vim.api.nvim_buf_call, buf, function() vim.cmd("edit") end)
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("E37", 1, true), tostring(err))
+        assert.is_false(reverted)
+        assert.is_true(ws:has_any_modified())
+        vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    it("a unit's elapsed time comes only from a task running that unit's configuration", function()
+        fake_obs()
+        header()
+        views.set(obs, "workspace", daemon_view(function(v)
+            local row = v.profiles[1]
+            row.busy, row.running, row.status = true, true, "building"
+            row.units[1].state = "building"
+        end))
+        local key = ws:get_profiles()[1]:projects()[1]:config_key()
+        assert.is_not_nil(key)
+        -- A units-scoped task (no profile) of another configuration of app.
+        local t = remote_task.new(nil, 8, { kind = "build", name = "app/Release",
+            units = { { project = "app", configuration = "Release" } } }, obs:_clock() - 65)
+        t.pct = 42
+        obs._tasks[8], obs._order = t, { 8 }
+        local body = status_source.read(ws)
+        local row = body.view.profiles[1]
+        assert.is_nil(body.unit_progress(row.units[1]))
+        assert.is_nil(body.profile_progress(row))
+        -- One of the row's unit's configuration: its elapsed time.
+        local t2 = remote_task.new(nil, 9, { kind = "build", name = "app/" .. key,
+            units = { { project = "app", configuration = key } } }, obs:_clock() - 65)
+        obs._tasks[9], obs._order = t2, { 8, 9 }
+        body = status_source.read(ws)
+        row = body.view.profiles[1]
+        local p = body.unit_progress(row.units[1])
+        assert.is_not_nil(p)
+        assert.equals(65, math.floor(p.elapsed + 0.5))
+        assert.is_not_nil(body.profile_progress(row))
     end)
 
     it("in-process mode still builds the view from the editor's model", function()

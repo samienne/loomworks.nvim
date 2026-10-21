@@ -1880,7 +1880,9 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `RemoteTask:outcome`). *(5n part C1)* The status page reads its body
   only through `status_source.lua` (`read(ws)` → `{ mode, view, why,
   loaded, ref, profile_progress, unit_progress }`, `modified(ws)` for the
-  buffer's 'modified'). In `daemon` mode the view is the observer's
+  buffer's 'modified' — the editor's model's in both modes until 5o C2, as
+  publish and revert act on it, so `:e` is refused (E37) while it has
+  unpublished edits whatever the view's state). In `daemon` mode the view is the observer's
   subscription to `view.Workspace/1` (`observer.VIEW_WORKSPACE`, held in
   the view store as `workspace`; `Observer:workspace_view()` gives it or why
   not) and nothing of the body is built in-process: while it is not held
@@ -1888,7 +1890,9 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   the daemon's header view (no "not on disk" banner from an unloaded
   daemon's `published = false`); progress is overlaid from the observer's
   `Tasks/1` tasks (`RemoteTask.profile_name` / `units` / `pct` /
-  `start_time`); `ref` (transitional, until 5o C2) resolves a row to the
+  `start_time`; a task of no profile counts for a unit row only when it runs
+  that row's configuration unit, whose key comes from the editor's model
+  until C2); `ref` (transitional, until 5o C2) resolves a row to the
   editor's model object by the keys the row shows, for the objects the
   sections pass to `ui/model_calls.lua` (in-process writes in both modes
   until C2; the rows keep the view's ids for C2). Every state-file write of the editor's model

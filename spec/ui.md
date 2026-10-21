@@ -100,8 +100,8 @@ flight, `the workspace daemon did not answer DebugConfig/1.adapters` after a
 failed or declined read (the section re-renders when the read ends), or `the
 workspace is no longer loaded`.
 
-The body sections — Diagnostics, Suggestions, Profiles, Orphaned
-Configurations, Configuration Sets, Projects and SDKs — render from
+The body sections — Diagnostics, Suggestions, Profiles, Orphaned Build
+Dirs, Configuration Sets, Projects and SDKs — render from
 `loomworks.view.Workspace/1` (core §19.13 "The workspace view"). In `daemon`
 mode only the daemon's: while the editor does not hold it, each of the seven
 is its title and one line in the warning highlight, `unavailable — <why>`

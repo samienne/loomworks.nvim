@@ -1,6 +1,6 @@
 --- loomworks/status_source.lua — where the status page's body reads
 --- (daemon.md §19.13 "The workspace view"; step 5n part C1). The body —
---- Diagnostics, Suggestions, Profiles, Orphaned Configurations,
+--- Diagnostics, Suggestions, Profiles, Orphaned Build Dirs,
 --- Configuration Sets, Projects and SDKs — renders only from one
 --- `loomworks.view.Workspace/1` table this module gives, with the overlays
 --- the view does not carry: build progress (API.md §14.4 "Progress is not in
@@ -122,39 +122,63 @@ local function model_refs(ws, view)
     return refs
 end
 
---- Whether a task observed through `Tasks/1` runs a unit of `project`.
+--- Whether a task observed through `Tasks/1` runs the unit `u` (a view's
+--- unit row) of profile row `row`. A task of the row's profile runs it when
+--- it runs its project (a profile maps one configuration per project); any
+--- other task only when it runs that project's same configuration unit.
+--- *(Transition, until step 5o part C2.)* The view's unit row names its
+--- configuration, while a task's `start` meta names the configuration-unit
+--- key; the row's unit key comes from the editor's model (`ref`, its
+--- project-in-profile), and a row the model lacks matches no such task.
 --- @param task loomworks.RemoteTask
---- @param project string|nil
+--- @param row loomworks.ViewProfile
+--- @param u table the view's unit row
+--- @param ref fun(row: table): table|nil
 --- @return boolean
-local function runs_project(task, project)
-    for _, u in ipairs(task.units or {}) do
-        if u.project == project then return true end
+local function runs_unit(task, row, u, ref)
+    if task.profile_name == row.key then
+        for _, tu in ipairs(task.units or {}) do
+            if tu.project == u.project then return true end
+        end
+        return false
+    end
+    local pp = ref(u)
+    local unit = pp and pp._config_unit
+    if not unit then return false end
+    for _, tu in ipairs(task.units or {}) do
+        if tu.project == u.project
+            and (tu.unit == unit or (tu.unit == nil and tu.configuration == unit:config_key())) then
+            return true
+        end
     end
     return false
 end
 
 --- The running task observed through `Tasks/1` of a profile row (its
---- `start` meta names the profile), else one scoped to units (or to every
---- build directory) that runs one of the row's running units' projects.
---- `project`: only a task running that project (a unit's).
+--- `start` meta names the profile), else one without a profile (scoped to
+--- units, or `scope = "all"`, whose `start` meta lists its units too) that
+--- runs one of the row's running units — as the editor's model counts a
+--- remote task as its units' profiles' operation (daemon/remote_task.lua).
+--- `u`: only a task running that unit row.
 --- @param tasks loomworks.RemoteTask[]
 --- @param row loomworks.ViewProfile
---- @param project? string
+--- @param ref fun(row: table): table|nil
+--- @param u? table
 --- @return loomworks.RemoteTask|nil
-local function task_of(tasks, row, project)
+local function task_of(tasks, row, ref, u)
     for _, t in ipairs(tasks) do
-        if not t.finished and t.profile_name == row.key and (project == nil or runs_project(t, project)) then
+        if not t.finished and t.profile_name == row.key and (u == nil or runs_unit(t, row, u, ref)) then
             return t
         end
     end
     for _, t in ipairs(tasks) do
         if not t.finished and t.profile_name == nil then
-            if project then
-                if runs_project(t, project) then return t end
+            if u then
+                if runs_unit(t, row, u, ref) then return t end
             else
-                for _, u in ipairs(row.units or {}) do
-                    if u.state == "configuring" or u.state == "building" or u.state == "deleting" then
-                        if runs_project(t, u.project) then return t end
+                for _, x in ipairs(row.units or {}) do
+                    if x.state == "configuring" or x.state == "building" or x.state == "deleting" then
+                        if runs_unit(t, row, x, ref) then return t end
                     end
                 end
             end
@@ -199,7 +223,7 @@ local function daemon(ws, obs)
     return {
         mode = "daemon", view = view, why = why, loaded = loaded, ref = ref,
         profile_progress = function(row)
-            local t = task_of(tasks, row)
+            local t = task_of(tasks, row, ref)
             if not t then return nil end
             return { pct = t.pct, elapsed = t:elapsed(clock()) }
         end,
@@ -207,7 +231,7 @@ local function daemon(ws, obs)
         -- a running unit shows its task's elapsed time.
         unit_progress = function(u)
             local row = profile_of(u)
-            local t = row and task_of(tasks, row, u.project)
+            local t = row and task_of(tasks, row, ref, u)
             if not t then return nil end
             return { elapsed = t:elapsed(clock()) }
         end,
@@ -228,17 +252,15 @@ function M.read(ws)
 end
 
 --- Whether the workspace has changes not published (the status buffer's
---- 'modified'): the view's `modified` in `daemon` mode (false while it is not
---- held), else the editor's model.
+--- 'modified', which makes Vim refuse `:e` with E37): the editor's model's in
+--- both modes. *(Transition, until step 5o part C2.)* Publish and revert
+--- (`:w`, `:e!`) still act on the editor's model, so its dirtiness — not the
+--- daemon view's `modified`, absent while the view is not held and stale
+--- until an editor write's `get` is answered — guards them.
 --- @param ws loomworks.Workspace|nil
 --- @return boolean
 function M.modified(ws)
     if not ws then return false end
-    local is_daemon, obs = daemon_of(ws)
-    if is_daemon then
-        local view = obs and obs:workspace_view()
-        return type(view) == "table" and view.modified == true
-    end
     return ws:has_any_modified() and true or false
 end
 
