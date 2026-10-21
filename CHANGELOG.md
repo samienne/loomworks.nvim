@@ -103,7 +103,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   build directory another configuration still used, when the two recorded it
   under different spellings (a long path and its 8.3 short name, such as
   `C:/Users/RUNNER~1/...`). Shared build directories are now recognized by
-  the directory itself, not its spelling, and are kept (#307).
+  the directory itself, not its spelling, and are kept (#308).
 - `lw launch add <project> <name> --from-target <target> ... -- <args>` stored
   the `--` as the first argument. A target-backed add has no command token, so
   its `--` is lw's separator and is dropped; before it an unknown option or a
