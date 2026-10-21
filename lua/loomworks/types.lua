@@ -193,6 +193,9 @@
 --- @field tool_data table
 --- @field tool_label? string
 --- @field tool_mod_type? string
+--- @field sdk? loomworks.SDK an SDK's entry: the SDK (tool_key its key)
+--- @field sdk_tools? table<string, loomworks.ToolRef> an SDK's entry: its kit
+---        toolchains by module type, a profile made of it stores as tool keys
 --- @field cached boolean whether a materialized profile exists
 --- @field profile? loomworks.Profile resolved profile object (if cached)
 
