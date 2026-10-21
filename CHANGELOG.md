@@ -153,7 +153,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   copy has unpublished changes. `U` (discard the working copy) shows what it
   deletes and refuses when the file changed since. Creating a profile from an
   automatic configuration set now adds the set together with the profile,
-  not when the set is picked, in both runtime modes. (#PR)
+  not when the set is picked, in both runtime modes. (#317)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor
