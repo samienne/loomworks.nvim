@@ -32,9 +32,16 @@ local function clean_all_orphans()
                 self:close()
                 workspace_view.execute_orphan_cleanup(
                     ws, ctx.orphaned_configs, ctx.stray_dirs, function(ok)
-                    if ok == false then return end -- lock refused (already reported)
-                    vim.notify("loomworks: orphaned build dirs cleaned",
-                        vim.log.levels.INFO)
+                    -- A refused lock or a failed removal was already
+                    -- reported; this is the summary, so never claim success
+                    -- after one.
+                    if ok then
+                        vim.notify("loomworks: orphaned build dirs cleaned",
+                            vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: orphan cleanup incomplete — some build dirs were not removed",
+                            vim.log.levels.WARN)
+                    end
                 end)
             end,
         },

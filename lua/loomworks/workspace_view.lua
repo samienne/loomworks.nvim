@@ -304,13 +304,19 @@ local function recheck_stray(ws, dirs)
     local function canon(p) return ws:_canonicalize_boundary_path(p) end
     local current = {}
     for _, d in ipairs(ws:find_stray_build_dirs()) do current[canon(d)] = true end
+    -- Belt and braces (#293): never a dir that IS, CONTAINS or lies INSIDE a
+    -- live build dir, whatever its spelling, even if the scan listed it.
+    local known = ws:_live_build_dir_forms()
     local out = {}
     for _, d in ipairs(dirs) do
-        if current[canon(d)] then
-            out[#out + 1] = d
-        else
+        if not current[canon(d)] then
             ws._core._deps.notify("loomworks: kept " .. d .. " — no longer a stray build directory",
                 vim.log.levels.INFO)
+        elseif ws:_overlaps_live_build_dir(d, known) then
+            ws._core._deps.notify("loomworks: refusing to delete stray dir holding a live build dir: " .. d,
+                vim.log.levels.ERROR)
+        else
+            out[#out + 1] = d
         end
     end
     return out
@@ -786,8 +792,12 @@ end
 --- The orphans go through `Workspace:_run_deletion` like every cache-backed
 --- deletion (spec §4.6, §5.7): their entries are marked `unknown` on disk
 --- before any tree is removed, a directory a live configuration still
---- references is kept, and the entries are dropped only when every removal
---- succeeded — a failed removal keeps them (`unknown`, reported).
+--- references is kept (the shared-dir refs check, plus
+--- `Workspace:_overlaps_live_build_dir` for a dir that is, contains or lies
+--- inside a live build dir under any spelling), and the entries are dropped
+--- only when every removal succeeded — a failed removal keeps them
+--- (`unknown`, reported). Confirmed-deleted orphan dirs hand their module to
+--- the owned LSP database cleanup.
 --- Returns a Future resolving `true` when everything was removed, `false`
 --- when a removal failed.
 --- @param ws loomworks.Workspace
@@ -1186,6 +1196,10 @@ end
 function M.execute_delete_stray_dir(ws, dir, on_done)
     on_done = on_done or function() end
     local safe_prefix = ws._core._deps.normalize(ws.root)
+    if ws:_overlaps_live_build_dir(dir) then
+        on_done(false, "directory holds a live build dir")
+        return
+    end
     if not ws:_validate_build_dir(dir, safe_prefix) then
         on_done(false, "path outside workspace")
         return
