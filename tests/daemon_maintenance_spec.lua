@@ -251,4 +251,65 @@ describe("Maintenance/1.execute_deletion in the workspace daemon (API.md §22)",
         io_mod.rm_rf_async = orig
         assert(ok, err)
     end)
+
+    it("a project whose build directory is not removed is kept and the task ends refused", function()
+        s = session()
+        s.build()
+        local bd = s.unit():build_dir()
+        local io_mod = s.ws()._core._deps.io
+        local orig = io_mod.rm_rf_async
+        io_mod.rm_rf_async = function(_, cb)
+            vim.schedule(function() cb(false, "simulated removal failure") end)
+        end
+        local ok, err = pcall(function()
+            local target = { project = { key = "app" } }
+            local c = s.delete({ target = target })
+            assert.equals("confirm", c.outcome, vim.inspect(c))
+            local r = s.delete({ target = target, yes = true, plan = c.plan })
+            assert.equals("accepted", r.outcome, vim.inspect(r))
+            local f = s.done(r.task_id, 60000)
+            assert.equals(1, f.exit_code, tostring(f.error))
+            assert.is_true(exists(bd))
+            local kept
+            for _, p in pairs(s.ws()._projects) do
+                if p.key == "app" and not p._removed then kept = p end
+            end
+            assert.is_not_nil(kept, "the project's declaration goes only after its build state did")
+        end)
+        io_mod.rm_rf_async = orig
+        assert(ok, err)
+    end)
+
+    it("a build directory another process holds names its holder and removes nothing", function()
+        s = session()
+        s.build()
+        local unit = s.unit()
+        local bd = unit:build_dir()
+        local target = { unit = { id = s.id(unit) } }
+        local c = s.delete({ target = target })
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        local h = L.hold(require("loomworks.build_lock").lock_path(bd), "build")
+        local r = s.delete({ target = target, yes = true, plan = c.plan })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f = s.done(r.task_id, 60000)
+        assert.equals(1, f.exit_code, tostring(f.error))
+        assert.truthy(tostring(f.error):find("cannot delete: ", 1, true), tostring(f.error))
+        assert.truthy(tostring(f.error):find("pid " .. h.pid, 1, true), tostring(f.error))
+        assert.is_true(exists(bd))
+        assert.equals("built", s.unit().state_value)
+    end)
+
+    it("a confirmed profile deletion removes its build directories", function()
+        s = session()
+        s.build()
+        local bd = s.unit():build_dir()
+        local target = { profile = { key = "dev" } }
+        local c = s.delete({ target = target })
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        local r = s.delete({ target = target, yes = true, plan = c.plan })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f, lines = s.done(r.task_id, 60000)
+        assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
+        assert.is_false(exists(bd))
+    end)
 end)
