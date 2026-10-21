@@ -353,6 +353,145 @@
       ]
     },
     {
+      "name": "variable_save declares and renames a variable; variable_remove removes it, a second time refused",
+      "fixture": "shell",
+      "allow": [
+        {
+          "kind": "model_change"
+        },
+        {
+          "kind": "signal",
+          "object": "/workspace",
+          "name": "changed"
+        }
+      ],
+      "steps": [
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 1,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "variable_save",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "name": "out",
+              "data": {
+                "type": "path",
+                "default": "${build_dir}/o"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 1,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 2,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "variable_save",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "variable": "out",
+              "name": "out2",
+              "data": {
+                "type": "string",
+                "default": "x"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 2,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 3,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "variable_remove",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "variable": "out2"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 3,
+            "result": {
+              "outcome": "ok"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 4,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "variable_remove",
+            "args": {
+              "project": {
+                "key": "app"
+              },
+              "variable": "out2"
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 4,
+            "result": {
+              "outcome": "refused",
+              "exit_code": 1,
+              "message": "no variable 'out2' in project 'app'"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "candidates and expand_preview read in the client's environment and change nothing",
       "fixture": "shell",
       "steps": [

@@ -2,7 +2,11 @@
 ---
 --- Snacks.win float with Tree widget. Scans workspace directories
 --- asynchronously and shows detected project types. Users can add or
---- remove projects from here.
+--- remove projects from here. Adding is `Projects/1.candidates` (the key and
+--- path the directory gets) then `Projects/1.add` through
+--- loomworks.ui.model_calls (in `daemon` mode the daemon's; step 5o C2b);
+--- the projects already added are the workspace view's rows in `daemon`
+--- mode. Removing still reads the editor's model (until C2c).
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
@@ -17,31 +21,29 @@ local M = {}
 --- @field abs_path string absolute path
 --- @field types { type: string, marker: string }[]
 
---- Build the set of project keys currently in loomworks.json.
---- Returns a set keyed by (relative_path, type) for checking "already added".
---- @param root string
+--- Build the set of the workspace's projects, keyed by (relative_path,
+--- type) for checking "already added": in `daemon` mode from the workspace
+--- view's project rows (none while it is not held), else from the editor's
+--- model.
 --- @return table<string, table<string, true>>  path -> { type -> true }
-local function build_added_set(root)
+local function build_added_set()
     local lw = require("loomworks")
     local ws = lw.get_workspace()
     if not ws then return {} end
 
     local added = {}
-    for _, proj in pairs(ws._projects) do
-        local rel = proj.path or proj.key
+    local function add(rel, type_name)
         if not added[rel] then added[rel] = {} end
-        added[rel][proj.type] = true
+        added[rel][type_name] = true
     end
+    local daemon, obs = require("loomworks.daemon.editor_ops").daemon_of(ws)
+    if daemon then
+        local view = obs and obs:workspace_view() or nil
+        for _, row in ipairs(type(view) == "table" and view.projects or {}) do add(row.path, row.type) end
+        return added
+    end
+    for _, proj in pairs(ws._projects) do add(proj.path or proj.key, proj.type) end
     return added
-end
-
---- Derive the project key and optional path for a browser entry.
---- Delegates to workspace_view for testability.
---- @param root string workspace root
---- @param entry loomworks.BrowserEntry
---- @return string key, string|nil path
-local function derive_key_and_path(root, entry)
-    return workspace_view.derive_key_and_path(root, entry.abs_path, entry.name)
 end
 
 --- Open the project browser for a workspace root.
@@ -77,72 +79,27 @@ function M.open(root)
         return added[rel] and added[rel][type_name] or false
     end
 
-    --- Open the mapping dialog with detected tools for a new project.
-    --- Chains decomposed operations on accept via workspace_view.
-    --- @param type_info { type: string, marker: string }
-    --- @param key string project key
-    --- @param path string|nil relative path
-    --- @param config_names string[] available configuration names
-    --- @param keyed_tools table[] detected keyed tools (may be empty)
-    local function open_mapping_dialog(type_info, key, path, config_names, keyed_tools)
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        local raw_config_sets = {}
-        for _, cs_obj in pairs(ws._config_sets) do
-            raw_config_sets[cs_obj.name] = cs_obj:raw_mappings()
-        end
-        local mod = modules.get(type_info.type)
-        local has_keyed = mod and mod.has_keyed_tools or false
-
-        local ctx = workspace_view.compute_add_project_context(ws, type_info.type)
-
-        require("loomworks.ui.mapping_dialog").open({
-            ws = ws,
-            project_key = key,
-            project_type = type_info.type,
-            available_configs = config_names,
-            config_sets = raw_config_sets,
-            mod = mod,
-            tools = ctx.inherited_tool and {} or keyed_tools,
-            has_keyed_tools = has_keyed,
-            inherited_tool = ctx.inherited_tool,
-            no_tool_profiles = ctx.no_tool_profiles,
-            on_accept = function(result)
-                model.call(ws, "Projects/1.add", { key = key, type = type_info.type, path = path,
-                    mappings = result.mappings, tool = result.tool_entry }, function(r)
-                    local ok, err = model.result(r)
-                    if not ok then
-                        vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-                    end
-                end)
-            end,
-            on_cancel = function() end,
-        })
-    end
-
-    --- Add a project from a browser entry.
-    --- If configuration sets exist, opens a mapping dialog first.
-    --- For keyed-module types, ensures tool detection completes first.
+    --- Add a project from a browser entry: its key and path
+    --- (`Projects/1.candidates`), then the project, unmapped — configuration
+    --- set mappings and tool/SDK selection happen separately via the status
+    --- page.
     --- @param entry loomworks.BrowserEntry
     --- @param type_info { type: string, marker: string }
     local function do_add(entry, type_info)
         local lw = require("loomworks")
         local ws = lw.get_workspace()
         if not ws then return end
-
-        local prep = workspace_view.prepare_add_project_from_browser(
-            ws, root, entry.abs_path, entry.name, type_info.type)
-
-        -- Add project directly with no mappings.
-        -- Config set mappings and tool/SDK selection happen separately
-        -- via the status page.
-        model.call(ws, "Projects/1.add", { key = prep.key, type = prep.mod_type, path = prep.path, mappings = {} },
-            function(r)
-                local ok, err = model.result(r)
-                if not ok then
-                    vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
-                end
-            end)
+        local function failed(err)
+            vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
+        end
+        model.call(ws, "Projects/1.candidates", { path = entry.abs_path, type = type_info.type }, function(c)
+            if c.outcome ~= "ok" then return failed(c.message) end
+            model.call(ws, "Projects/1.add", { key = c.key, type = type_info.type, path = c.path, mappings = {} },
+                function(r)
+                    local ok, err = model.result(r)
+                    if not ok then failed(err) end
+                end)
+        end)
     end
 
     --- Remove a project that matches a browser entry.
@@ -361,7 +318,7 @@ function M.open(root)
         t:leaf("Add Project", "Title")
         t:blank()
 
-        local added = build_added_set(root)
+        local added = build_added_set()
         local root_name = root:match("([^/]+)$") or root
 
         -- Root is the single top-level foldable node, open by default on first render

@@ -1381,20 +1381,12 @@ function M.get_variables(project)
     return result
 end
 
---- Context for editing a variable declaration.
+--- The project's declaration as the working copy holds it (for the
+--- variable editor; model_commands.project_declaration), without ids.
 --- @param project loomworks.Project
---- @param var_name string|nil nil for new variable
---- @return { name: string, type: string, default: string }
-function M.compute_edit_variable_context(project, var_name)
-    if var_name and project.variables and project.variables[var_name] then
-        local decl = project.variables[var_name]
-        return {
-            name = var_name,
-            type = decl.type,
-            default = decl.default,
-        }
-    end
-    return { name = "", type = "string", default = "" }
+--- @return loomworks.CommandOutcome
+function M.project_declaration(project)
+    return commands.project_declaration(project, function() return nil end)
 end
 
 --- Save a variable declaration.

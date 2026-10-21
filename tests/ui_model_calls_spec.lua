@@ -53,11 +53,11 @@ describe("ui.model_calls", function()
                 end
             end })
         end
-        local WS, P, CS, PR, CFG, L, SDK, U = {}, {}, {}, {}, {}, {}, {}, {}
+        local WS, P, CS, PR, CFG, L, SDK, U = { root = "/w" }, {}, {}, {}, {}, {}, {}, {}
         -- The rows the in-process view bound to the objects (step 5o C2a).
         local ss = require("loomworks.status_source")
-        local PROW, CSROW, LROW = { key = "p" }, { name = "cs" }, { key = "l" }
-        ss.bind(PROW, P); ss.bind(CSROW, CS); ss.bind(LROW, L)
+        local PROW, CSROW, LROW, CROW = { key = "p" }, { name = "cs" }, { key = "l" }, { key = "c" }
+        ss.bind(PROW, P); ss.bind(CSROW, CS); ss.bind(LROW, L); ss.bind(CROW, CFG)
         before_each(function()
             calls = {}
             saved = { package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
@@ -102,11 +102,11 @@ describe("ui.model_calls", function()
             r[#r + 1] = run(WS, "ConfigSets/1.update", { config_set = CSROW, name = "D2", mappings = pm })
             r[#r + 1] = run(WS, "Projects/1.add", { key = "app", type = "cmake", path = "app", mappings = m, tool = m })
             r[#r + 1] = run(nil, "Projects/1.configuration_save",
-                { project = PR, configuration = CFG, name = "Debug", fields = m })
-            r[#r + 1] = run(nil, "Projects/1.launch_save", { project = PR, launch = L, name = "run", data = m })
-            r[#r + 1] = run(nil, "Projects/1.variable_save", { project = PR, variable = "v", name = "w", data = m })
-            r[#r + 1] = run(nil, "Projects/1.type_config_set", { project = PR, field = "f", value = 3 })
-            r[#r + 1] = run(nil, "Projects/1.deploy_save", { project = PR, deploy = m })
+                { project = PROW, configuration = CROW, name = "Debug", fields = m })
+            r[#r + 1] = run(nil, "Projects/1.launch_save", { project = PROW, launch = LROW, name = "run", data = m })
+            r[#r + 1] = run(nil, "Projects/1.variable_save", { project = PROW, variable = "v", name = "w", data = m })
+            r[#r + 1] = run(nil, "Projects/1.type_config_set", { project = PROW, field = "f", value = 3 })
+            r[#r + 1] = run(nil, "Projects/1.deploy_save", { project = PROW, deploy = m })
             r[#r + 1] = run(WS, "Sdks/1.add", { provider = "ohos", path = "/sdk" })
             r[#r + 1] = run(WS, "Sdks/1.remove", { sdk = SDK })
             assert.same({
@@ -120,11 +120,11 @@ describe("ui.model_calls", function()
                 { "execute_create_config_set_from_candidate", WS, true },
                 { "execute_edit_config_set", CS, "D2", pm },
                 { "execute_add_project", WS, "app", "cmake", "app", { mappings = m, tool_entry = m } },
-                { "execute_save_configuration", PR, CFG, "Debug", m },
-                { "execute_save_launch_config", PR, L, "run", m },
-                { "execute_save_variable", PR, "v", "w", m },
-                { "save_type_config_field", PR, "f", 3 },
-                { "save_deploy", PR, m },
+                { "execute_save_configuration", P, CFG, "Debug", m },
+                { "execute_save_launch_config", P, L, "run", m },
+                { "execute_save_variable", P, "v", "w", m },
+                { "save_type_config_field", P, "f", 3 },
+                { "save_deploy", P, m },
                 { "add_sdk", WS, "ohos", "/sdk" },
                 { "remove_sdk", WS, SDK },
             }, calls)
@@ -136,6 +136,26 @@ describe("ui.model_calls", function()
             assert.equals(L, r[11].launch)
             assert.equals(SDK, r[15].sdk)
             assert.same({ outcome = "refused", message = "in use" }, r[16])
+        end)
+
+        it("names a project's configuration, launch and variable by their rows (step 5o C2b)", function()
+            local r = {}
+            r[#r + 1] = run(nil, "Projects/1.configuration_remove", { project = PROW, configuration = CROW })
+            r[#r + 1] = run(nil, "Projects/1.launch_remove", { project = PROW, launch = LROW })
+            r[#r + 1] = run(nil, "Projects/1.variable_remove", { project = PROW, variable = "v" })
+            r[#r + 1] = run(WS, "Projects/1.candidates", { path = "/w/sub/app", type = "cmake" })
+            -- A row the in-process view did not bind names nothing: refused,
+            -- nothing written.
+            r[#r + 1] = run(nil, "Projects/1.launch_remove", { project = PROW, launch = { key = "l" } })
+            r[#r + 1] = run(nil, "Projects/1.type_config_set", { project = { key = "p" }, field = "f" })
+            assert.same({ "execute_delete_configuration", P, CFG }, calls[1])
+            assert.same({ "execute_delete_launch_config", P, L }, calls[2])
+            assert.same({ "execute_delete_variable", P, "v" }, calls[3])
+            assert.same({ "derive_key_and_path", "/w", "/w/sub/app", "app" }, calls[4])
+            assert.equals(4, #calls)
+            assert.equals("ok", r[4].outcome)
+            assert.equals("refused", r[5].outcome)
+            assert.equals("refused", r[6].outcome)
         end)
 
         it("runs each deletion target's in-process deletion and reports when it ended", function()

@@ -4,8 +4,13 @@
 --- (`loomworks.view.Workspace/1`, spec §19.13 "The workspace view"): the
 --- project's configurations, presets, launches, deploy steps, variables and
 --- editable type_config fields. The actions (editors, dialogs, mutations)
---- are kept apart and reach the domain objects only through `ctx.ref(row)`
---- (in-process) and the workspace `ctx.ws`.
+--- are kept apart. The routed writes (step 5o C2b: removals of
+--- configurations and launch configurations, variables, `type_config`
+--- fields) name their project, configuration or launch by its view row
+--- (loomworks.ui.model_calls), and their dialogs read the project through
+--- `Projects/1.declaration`; the configuration, launch and deploy editors
+--- and the project's removal still reach the domain objects through
+--- `ctx.ref(row)` and the workspace `ctx.ws` (until C2b's second half / C2c).
 
 local helpers = require("loomworks.ui.helpers")
 local workspace_view = require("loomworks.workspace_view")
@@ -82,11 +87,11 @@ local function edit_launch_config(project, launch, lrow)
 end
 
 --- Delete a launch config with confirmation.
---- @param project loomworks.Project
---- @param launch loomworks.LaunchConfiguration
-local function delete_launch_config(project, launch)
-    local project_key = project.key
-    local launch_name = launch.name
+--- @param prow table the project's view row
+--- @param lrow table the launch configuration's view row
+local function delete_launch_config(prow, lrow)
+    local project_key = prow.key
+    local launch_name = lrow.key
 
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
@@ -106,7 +111,7 @@ local function delete_launch_config(project, launch)
             n = "close",
             y = function(self)
                 self:close()
-                model.call(nil, "Projects/1.launch_remove", { project = project, launch = launch }, function(r)
+                model.call(nil, "Projects/1.launch_remove", { project = prow, launch = lrow }, function(r)
                     local ok, err = model.result(r)
                     if ok then
                         vim.notify("loomworks: launch config '" .. launch_name .. "' deleted",
@@ -121,23 +126,22 @@ local function delete_launch_config(project, launch)
     })
 end
 
---- Open the variable editor for an existing or new variable.
---- @param project loomworks.Project
---- @param var_name? string nil for new variable
-local function edit_variable(project, var_name)
-    local ctx = workspace_view.compute_edit_variable_context(project, var_name)
-
+--- The variable editor for `var_name` of the project `prow`, on its
+--- declaration's `variables` (`Projects/1.declaration`).
+--- @param prow table the project's view row
+--- @param var_name string|nil nil for new variable
+--- @param variables table<string, { type: string, default?: string }>
+local function open_variable_editor(prow, var_name, variables)
+    local decl = var_name and variables[var_name] or nil
     require("loomworks.ui.variable_editor").open({
         title = var_name
-            and ('Edit "' .. var_name .. '" — ' .. project.key)
-            or ("New variable — " .. project.key),
-        name = ctx.name,
-        type = ctx.type,
-        default = ctx.default,
+            and ('Edit "' .. var_name .. '" — ' .. prow.key)
+            or ("New variable — " .. prow.key),
+        name = decl and var_name or "",
+        type = decl and decl.type or "string",
+        default = decl and decl.default or "",
         validate = function(result)
-            if result.name ~= (var_name or "")
-                    and project.variables
-                    and project.variables[result.name] then
+            if result.name ~= (var_name or "") and variables[result.name] then
                 return false, "variable '" .. result.name .. "' already exists"
             end
             local vars_mod = require("loomworks.variables")
@@ -148,7 +152,7 @@ local function edit_variable(project, var_name)
         end,
         on_accept = function(result)
             model.call(nil, "Projects/1.variable_save", {
-                project = project, variable = var_name, name = result.name, data = {
+                project = prow, variable = var_name, name = result.name, data = {
                     type = result.type,
                     default = result.default,
                 } }, function(r)
@@ -167,17 +171,32 @@ local function edit_variable(project, var_name)
     })
 end
 
+--- Open the variable editor for an existing or new variable of the project
+--- `prow`, once its declaration is read.
+--- @param prow table the project's view row
+--- @param var_name? string nil for new variable
+local function edit_variable(prow, var_name)
+    model.call(nil, "Projects/1.declaration", { project = prow }, function(r)
+        if r.outcome ~= "ok" then
+            vim.notify("loomworks: " .. tostring(r.message or "the project's declaration is unavailable"),
+                vim.log.levels.ERROR)
+            return
+        end
+        open_variable_editor(prow, var_name, r.variables or {})
+    end)
+end
+
 --- Delete a project variable with confirmation.
---- @param project loomworks.Project
+--- @param prow table the project's view row
 --- @param var_name string
-local function delete_variable(project, var_name)
+local function delete_variable(prow, var_name)
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
         title = "Confirm Delete",
         lines = {
             "  Delete variable: " .. var_name,
             "",
-            "  Project: " .. project.key,
+            "  Project: " .. prow.key,
             "  Config overrides for this variable will also be removed.",
             "",
             "  Press y to confirm, q to cancel",
@@ -191,7 +210,7 @@ local function delete_variable(project, var_name)
             n = "close",
             y = function(self)
                 self:close()
-                model.call(nil, "Projects/1.variable_remove", { project = project, variable = var_name }, function(r)
+                model.call(nil, "Projects/1.variable_remove", { project = prow, variable = var_name }, function(r)
                     local ok, err = model.result(r)
                     if ok then
                         vim.notify("loomworks: variable '" .. var_name .. "' deleted",
@@ -296,11 +315,11 @@ local function edit_project_configuration(project, cfg, crow)
 end
 
 --- Delete a user-defined project configuration with confirmation.
---- @param project loomworks.Project
---- @param cfg loomworks.Configuration
-local function delete_project_configuration(project, cfg)
-    local project_key = project.key
-    local config_name = cfg.name
+--- @param prow table the project's view row
+--- @param crow table the configuration's view row
+local function delete_project_configuration(prow, crow)
+    local project_key = prow.key
+    local config_name = crow.key
 
     local dialog = require("loomworks.ui.dialog")
     dialog.show({
@@ -322,7 +341,7 @@ local function delete_project_configuration(project, cfg)
             n = "close",
             y = function(self)
                 self:close()
-                model.call(nil, "Projects/1.configuration_remove", { project = project, configuration = cfg },
+                model.call(nil, "Projects/1.configuration_remove", { project = prow, configuration = crow },
                     function(r)
                         local ok, err = model.result(r)
                         if ok then
@@ -354,11 +373,12 @@ local function with(opts, acts)
     return opts
 end
 
---- Save a type_config field of `project` (nil project: no action).
-local function field_saver(project, name)
-    if not project then return nil end
+--- Save a type_config field of the project `prow` (its view row; `bound`
+--- false: no action, as for any row the editor's model lacks).
+local function field_saver(prow, name, bound)
+    if not bound then return nil end
     return function(value)
-        model.call(nil, "Projects/1.type_config_set", { project = project, field = name, value = value }, function(r)
+        model.call(nil, "Projects/1.type_config_set", { project = prow, field = name, value = value }, function(r)
             local ok, err = model.result(r)
             if not ok then
                 vim.notify("loomworks: " .. tostring(err or "failed to save " .. name), vim.log.levels.ERROR)
@@ -408,21 +428,23 @@ end
 
 --- The actions of a configuration row.
 --- @param ws loomworks.Workspace|nil
---- @param project loomworks.Project|nil
---- @param cfg loomworks.Configuration|nil
+--- @param project loomworks.Project|nil the project's object (the editor)
+--- @param cfg loomworks.Configuration|nil the configuration's object (the editor)
+--- @param prow table the project's view row
 --- @param crow table the configuration's view row
---- @param pkey string the project's key (the configuration's label)
-local function configuration_actions(ws, project, cfg, crow, pkey)
-    if not project then return {} end
-    -- `cfg` is always bound in practice: every declared configuration has a
-    -- Configuration object (Project:_sync_configurations), so the nil guard
-    -- only keeps a row without one inert rather than acting on a name.
-    if not cfg then return {} end
+local function configuration_actions(ws, project, cfg, prow, crow)
+    -- Only on a row whose objects the editor's model has (the editor still
+    -- reads them, until C2b's second half). `cfg` is always bound in
+    -- practice: every declared configuration has a Configuration object
+    -- (Project:_sync_configurations), so the nil guard only keeps a row
+    -- without one inert rather than acting on a name.
+    if not (project and cfg) then return {} end
     local acts = {
         on_enter = function() edit_project_configuration(project, cfg, crow) end,
-        on_delete = crow.user and function() delete_project_configuration(project, cfg) end or nil,
+        -- Named by its row (step 5o C2b).
+        on_delete = crow.user and function() delete_project_configuration(prow, crow) end or nil,
     }
-    local item = helpers.row_item("configuration", crow, pkey .. "/" .. crow.key)
+    local item = helpers.row_item("configuration", crow, prow.key .. "/" .. crow.key)
     return helpers.describe_action(with(acts, publish_actions(ws, crow)), item)
 end
 
@@ -553,11 +575,11 @@ end
 --- @param tree loomworks.Tree
 --- @param prow table the project's view row
 --- @param field table the field's view entry ({ name, label, kind, value })
---- @param project loomworks.Project|nil the project (actions)
-local function render_env_dict_field(tree, prow, field, project)
+--- @param bound boolean the editor's model has the project (actions)
+local function render_env_dict_field(tree, prow, field, bound)
     local current = field.value or {}
     if not next(current) and prow.orphaned then return end
-    local save = field_saver(project, field.name)
+    local save = field_saver(prow, field.name, bound)
 
     tree:group(field.label .. ":", "LoomworksSection", function()
         local keys = {}
@@ -618,10 +640,10 @@ end
 --- Render a single string-valued editable type_config field as a row.
 --- Empty values show "(unset)" in Comment hl. Enter opens a prompt
 --- pre-filled with the current value; submitting empty clears.
-local function render_string_field(tree, prow, field, project)
+local function render_string_field(tree, prow, field, bound)
     local current = field.value
     if not current and prow.orphaned then return end
-    local save = field_saver(project, field.name)
+    local save = field_saver(prow, field.name, bound)
 
     local display = current and current ~= "" and current or "(unset)"
     local hl = current and "LoomworksActionable" or "Comment"
@@ -653,10 +675,10 @@ end
 --- whitespace-joined command line; editing accepts a joined string and
 --- splits on whitespace. Quoted args / escapes are not supported here
 --- — for those the user edits user.json / loomworks.json directly.
-local function render_cmd_array_field(tree, prow, field, project)
+local function render_cmd_array_field(tree, prow, field, bound)
     local current = field.value
     if not current and prow.orphaned then return end
-    local save = field_saver(project, field.name)
+    local save = field_saver(prow, field.name, bound)
 
     local joined = ""
     if type(current) == "table" then
@@ -694,13 +716,13 @@ end
 
 --- Dispatch rendering for an editable type_config field based on its kind.
 --- Extend this switch as new kinds are introduced.
-local function render_editable_type_config_field(tree, prow, field, project)
+local function render_editable_type_config_field(tree, prow, field, bound)
     if field.kind == "env_dict" then
-        render_env_dict_field(tree, prow, field, project)
+        render_env_dict_field(tree, prow, field, bound)
     elseif field.kind == "string" then
-        render_string_field(tree, prow, field, project)
+        render_string_field(tree, prow, field, bound)
     elseif field.kind == "cmd_array" then
-        render_cmd_array_field(tree, prow, field, project)
+        render_cmd_array_field(tree, prow, field, bound)
     else
         tree:leaf(field.label .. ": (unsupported kind: "
             .. tostring(field.kind) .. ")", "DiagnosticWarn")
@@ -823,7 +845,7 @@ local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
         publish_label = has_object and helpers.intent_action_label(crow.intent) or nil,
     }
     if has_object then helpers.describe(opts, crow.description, crow.description_from_module) end
-    ct:node(config_chunks, with(opts, configuration_actions(ctx.ws, project, cfg, crow, key)), function()
+    ct:node(config_chunks, with(opts, configuration_actions(ctx.ws, project, cfg, prow, crow)), function()
         if has_object then
             tree:description(crow.description, crow.description_from_module)
             -- Saved test targets (read-only, ui "Saved test
@@ -956,10 +978,12 @@ local function render_project_details(tree, t, ctx, prow)
                 }, l.description)
                 -- Every launch row is bound to its LaunchConfiguration
                 -- (view_state project_row); the guard is defensive only.
+                -- The removal names it by its row (step 5o C2b); the editor
+                -- still reads the editor's model (until C2b's second half).
                 local launch = ctx.ref(l)
                 if project and launch then
                     opts.on_enter = function() edit_launch_config(project, launch, l) end
-                    opts.on_delete = function() delete_launch_config(project, launch) end
+                    opts.on_delete = function() delete_launch_config(prow, l) end
                 end
                 helpers.describe_action(opts, helpers.row_item("launch configuration", l, prow.key .. ":" .. lname))
                 -- The summary is rendered as a column above, not appended.
@@ -1026,20 +1050,20 @@ local function render_project_details(tree, t, ctx, prow)
                 }, {
                     hl = "LoomworksVariant",
                     enter_label = "Edit variable",
-                    on_enter = project and function() edit_variable(project, vname) end or nil,
-                    on_delete = project and function() delete_variable(project, vname) end or nil,
+                    on_enter = project and function() edit_variable(prow, vname) end or nil,
+                    on_delete = project and function() delete_variable(prow, vname) end or nil,
                 })
             end
             tree:item("▸ Add variable", {
                 hl = "LoomworksAdd",
                 direct = true,
-                on_enter = project and function() edit_variable(project, nil) end or nil,
+                on_enter = project and function() edit_variable(prow, nil) end or nil,
             })
         end)
     end
 
     for _, field in ipairs(prow.type_config.fields) do
-        render_editable_type_config_field(tree, prow, field, project)
+        render_editable_type_config_field(tree, prow, field, project ~= nil)
     end
 
     tree:blank()

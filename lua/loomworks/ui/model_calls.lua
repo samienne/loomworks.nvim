@@ -11,18 +11,27 @@
 --- editor ran before (the view-model's adapters over loomworks.model_commands,
 --- or the existing loomworks function). Part C2 replaces them, in `daemon`
 --- mode, with calls by id to the workspace daemon; the call sites keep their
---- shape. **C2a** routes `Workspace/1`, `Profiles/1` and `ConfigSets/1`
---- (`ROUTED` below): in `daemon` mode those are only ever calls — refused
---- (the outcome says why) when the daemon cannot carry them, never run
---- in-process (spec §19.16 "Availability"). `Projects/1`, `Sdks/1`,
---- `Toolchains/1` and `Maintenance/1` still run their in-process bodies in
---- both modes until C2b / C2c.
+--- shape. **C2a** routes `Workspace/1`, `Profiles/1` and `ConfigSets/1`,
+--- **C2b** (first half) the `Projects/1` methods whose dialogs need no read
+--- of the editor's model beyond `Projects/1.declaration` — the project
+--- browser's `candidates` + `add`, `declaration`, `configuration_remove`,
+--- `launch_remove`, `variable_save` / `variable_remove` and
+--- `type_config_set` (`ROUTED` below): in `daemon` mode those are only ever
+--- calls — refused (the outcome says why) when the daemon cannot carry them,
+--- never run in-process (spec §19.16 "Availability"). `Projects/1`'s
+--- `configuration_save`, `launch_save` and `deploy_save` (their editors still
+--- read the editor's model), `Sdks/1`, `Toolchains/1` and `Maintenance/1`
+--- still run their in-process bodies in both modes until C2b's second half /
+--- C2c.
 ---
 --- Params mirror the method's (its schema under spec/protocol/interfaces).
---- An entity param of a routed method (`item`, `profile`, `config_set`) is
---- the **row** the action was taken on — a `view.Workspace/1` row of the
---- status page, a `ConfigSets/1.candidates` entry, or a description handle
---- (`helpers.row_item`, `_row` its row) — never a domain object or a key:
+--- An entity param of a routed method (`item`, `profile`, `config_set`,
+--- `project`, `configuration`, `launch`) is the **row** the action was taken
+--- on — a `view.Workspace/1` row of the status page (a project's, or one of
+--- its `configurations[]` / `launches[]`), a `ConfigSets/1.candidates`
+--- entry, or a description handle (`helpers.row_item`, `_row` its row) —
+--- never a domain object or a key (a variable or `type_config` field is
+--- named by its name within its project's row):
 ---   * `daemon` mode: the row's id, `{ id = row.id }` (API.md §1.2 ItemRef /
 ---     Ref; a candidate entry `{ candidate }`); a row without one is
 ---     refused, never looked up by key;
@@ -195,6 +204,39 @@ end
 -- Projects/1
 -- ---------------------------------------------------------------------------
 
+--- The objects of a Projects/1 call's entity params (`fields`: param names)
+--- in the `in-process` mode, or nil + the refusal of the first a row does
+--- not name (an unbound row: nothing to write).
+local function objects(p, fields)
+    local out = {}
+    for _, f in ipairs(fields) do
+        out[f] = object(p[f])
+        if out[f] == nil then
+            return nil, { outcome = "refused", message = "no " .. f .. " (not a row of the workspace view)" }
+        end
+    end
+    return out
+end
+
+--- A Projects/1 body on the objects of its entity params: `fn(o, p)` → its
+--- outcome.
+local function on_objects(fields, fn)
+    return function(_, p, cb)
+        local o, err = objects(p, fields)
+        if not o then return cb(err) end
+        cb(fn(o, p))
+    end
+end
+
+--- `{ path, type }` (the browser's entry: its absolute directory and the
+--- type picked) → `key`, `path`: the project's key and path derived from the
+--- directory as the browser did (in-process the derivation only; the
+--- daemon's `candidates` also detects what the project would declare).
+CALLS["Projects/1.candidates"] = function(ws, p, cb)
+    local abs = tostring(p.path):gsub("\\", "/")
+    local key, path = wv().derive_key_and_path((ws.root:gsub("\\", "/")), abs, vim.fn.fnamemodify(abs, ":t"))
+    cb({ outcome = "ok", key = key, path = path })
+end
 --- `{ key, type, path?, mappings?, tool? }` (`tool` the picked tool entry)
 --- → `project`.
 CALLS["Projects/1.add"] = function(ws, p, cb)
@@ -202,30 +244,37 @@ CALLS["Projects/1.add"] = function(ws, p, cb)
         { mappings = p.mappings, tool_entry = p.tool })
     cb(outcome(ok, err, { project = project }))
 end
-CALLS["Projects/1.configuration_save"] = function(_, p, cb)
-    cb(outcome(wv().execute_save_configuration(p.project, p.configuration, p.name, p.fields)))
-end
-CALLS["Projects/1.configuration_remove"] = function(_, p, cb)
-    cb(outcome(wv().execute_delete_configuration(p.project, p.configuration)))
-end
+--- `{ project }` → the declaration (workspace_view.project_declaration: no
+--- ids in-process).
+CALLS["Projects/1.declaration"] = on_objects({ "project" }, function(o)
+    return wv().project_declaration(o.project)
+end)
+CALLS["Projects/1.configuration_save"] = on_objects({ "project" }, function(o, p)
+    return outcome(wv().execute_save_configuration(o.project, object(p.configuration), p.name, p.fields))
+end)
+CALLS["Projects/1.configuration_remove"] = on_objects({ "project", "configuration" }, function(o)
+    return outcome(wv().execute_delete_configuration(o.project, o.configuration))
+end)
 --- → `launch`.
-CALLS["Projects/1.launch_save"] = function(_, p, cb)
-    local ok, err, launch = wv().execute_save_launch_config(p.project, p.launch, p.name, p.data)
-    cb(outcome(ok, err, { launch = launch }))
-end
-CALLS["Projects/1.launch_remove"] = function(_, p, cb)
-    cb(outcome(wv().execute_delete_launch_config(p.project, p.launch)))
-end
-CALLS["Projects/1.variable_save"] = function(_, p, cb)
-    cb(outcome(wv().execute_save_variable(p.project, p.variable, p.name, p.data)))
-end
-CALLS["Projects/1.variable_remove"] = function(_, p, cb)
-    cb(outcome(wv().execute_delete_variable(p.project, p.variable)))
-end
-CALLS["Projects/1.type_config_set"] = function(_, p, cb)
-    cb(outcome(wv().save_type_config_field(p.project, p.field, p.value)))
-end
-CALLS["Projects/1.deploy_save"] = function(_, p, cb) cb(outcome(wv().save_deploy(p.project, p.deploy))) end
+CALLS["Projects/1.launch_save"] = on_objects({ "project" }, function(o, p)
+    local ok, err, launch = wv().execute_save_launch_config(o.project, object(p.launch), p.name, p.data)
+    return outcome(ok, err, { launch = launch })
+end)
+CALLS["Projects/1.launch_remove"] = on_objects({ "project", "launch" }, function(o)
+    return outcome(wv().execute_delete_launch_config(o.project, o.launch))
+end)
+CALLS["Projects/1.variable_save"] = on_objects({ "project" }, function(o, p)
+    return outcome(wv().execute_save_variable(o.project, p.variable, p.name, p.data))
+end)
+CALLS["Projects/1.variable_remove"] = on_objects({ "project" }, function(o, p)
+    return outcome(wv().execute_delete_variable(o.project, p.variable))
+end)
+CALLS["Projects/1.type_config_set"] = on_objects({ "project" }, function(o, p)
+    return outcome(wv().save_type_config_field(o.project, p.field, p.value))
+end)
+CALLS["Projects/1.deploy_save"] = on_objects({ "project" }, function(o, p)
+    return outcome(wv().save_deploy(o.project, p.deploy))
+end)
 
 -- ---------------------------------------------------------------------------
 -- Sdks/1 and Toolchains/1
@@ -293,6 +342,12 @@ local VERB = {
     ["Profiles/1.remove_tool"] = "toolchain", ["ConfigSets/1.candidates"] = "configuration sets",
     ["ConfigSets/1.add"] = "configuration set", ["ConfigSets/1.update"] = "configuration set",
     ["ConfigSets/1.remove"] = "configuration set",
+    ["Projects/1.candidates"] = "project", ["Projects/1.add"] = "project",
+    ["Projects/1.declaration"] = "project declaration",
+    ["Projects/1.configuration_remove"] = "configuration",
+    ["Projects/1.launch_remove"] = "launch config",
+    ["Projects/1.variable_save"] = "variable", ["Projects/1.variable_remove"] = "variable",
+    ["Projects/1.type_config_set"] = "project field",
 }
 
 --- A refused outcome of `method` with `why`.
@@ -449,6 +504,24 @@ ROUTED["ConfigSets/1.update"] = function(ws, p, cb)
 end
 by_ref("ConfigSets/1.remove", { { "config_set", "configuration set" } })
 
+ROUTED["Projects/1.candidates"] = function(ws, p, cb)
+    send(ws, "Projects/1.candidates", { path = p.path, type = p.type }, cb)
+end
+--- `mappings` as the wire's (absent when empty: an empty table is no JSON
+--- object); `tool` a picked tool entry, sent by its key.
+ROUTED["Projects/1.add"] = function(ws, p, cb)
+    local mappings = wire_mappings(p.mappings)
+    local tool = p.tool and { key = p.tool.tool_key or p.tool.key } or nil
+    send(ws, "Projects/1.add", { key = p.key, type = p.type, path = p.path,
+        mappings = next(mappings) and mappings or nil, tool = tool }, cb)
+end
+by_ref("Projects/1.declaration", { { "project", "project" } })
+by_ref("Projects/1.configuration_remove", { { "project", "project" }, { "configuration", "configuration" } })
+by_ref("Projects/1.launch_remove", { { "project", "project" }, { "launch", "launch configuration" } })
+by_ref("Projects/1.variable_save", { { "project", "project" } }, { "variable", "name", "data" })
+by_ref("Projects/1.variable_remove", { { "project", "project" } }, { "variable" })
+by_ref("Projects/1.type_config_set", { { "project", "project" } }, { "field", "value" })
+
 --- The methods the status page calls, sorted (tests).
 --- @return string[]
 function M.methods()
@@ -488,11 +561,17 @@ function M.call(ws, method, params, cb)
         if daemon then return route(target, params, cb) end
         return fn(target, params, cb)
     end
-    fn(ws, params, cb)
     -- Not routed yet (until C2b / C2c), run in-process in `daemon` mode too:
-    -- the daemon's view does not know this write until its freshness `get`
-    -- is answered (the status buffer's 'modified', status_source.modified).
-    if daemon and obs then obs:in_process_write() end
+    -- the daemon's view does not know this write until a freshness `get`
+    -- sent once it ended is answered (the status buffer's 'modified',
+    -- status_source.modified) — stale from its start, the `get` sent when
+    -- its outcome arrives (an async write lands later than `fn` returns).
+    if not (daemon and obs) then return fn(target, params, cb) end
+    obs:in_process_write_started()
+    fn(target, params, function(r)
+        obs:in_process_write()
+        cb(r)
+    end)
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a
