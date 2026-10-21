@@ -55,7 +55,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Experimental daemon: `Maintenance/1.execute_deletion` deletes a profile, a
   configuration unit, an orphaned or stray build directory, every orphan or
   a project with its build state as a task, after a confirmation with a plan
-  token; `view.Workspace/1` lists each orphaned configuration's `id`. (#PR)
+  token; `view.Workspace/1` lists each orphaned configuration's `id`. (#314)
 - Experimental daemon: `Profiles/1.tool_choices` also lists the resolved
   SDKs relevant to the set, as `{ sdk = true, key, label }`, and
   `Profiles/1.create` takes one as `tool = { sdk = <key> }`, as the status
