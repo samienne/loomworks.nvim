@@ -1701,6 +1701,19 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `deletion_settled` (the daemon busy) until the deletion and its locks
   settled, also after its task ended; the header check (writes' `changed`,
   views' `update`) precedes `done`.
+- *(Step 5o part B6.)* The same module serves `Maintenance/1.nuke`
+  (`meta.kind = "nuke"`): the in-process nuke (`Core:nuke_check`,
+  `_nuke_begin`, `_nuke_run`; the listing is `Core:nuke_targets`, shared
+  with `lw nuke`). The call refuses while any task of the daemon runs
+  (`nuke_busy`, listed) and checks the locks with `nuke_check` (taken and
+  released, `lock_break.requested` cleared) before it lists; its plan token
+  covers the build directories it locks (`_nuke_lock_dirs`) and the owned
+  LSP database areas. The task runs in its own model segment: tasks and
+  `_nuke_begin` (O, then every B) again, the plan compared under them, then
+  the model unloaded (`Service:_unload`, its late saves blocked by
+  `_no_write`), `_nuke_run` and a fresh load (`Service:live`). The run is
+  `keeps_on_reload` so its own unload does not cancel it; a cancel before
+  the removal ends it `nuke stopped: <reason>` with the locks released.
 - *(Step 5o part B4.)* `core_interfaces.sdks_impl` serves `/toolchains`
   `loomworks.Sdks/1` (API.md §21) and `toolchains_impl` adds
   `Toolchains/1.rescan` (API.md §11). `detect` is

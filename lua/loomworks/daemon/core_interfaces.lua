@@ -23,7 +23,7 @@
 ---                                         deploy_save, variable_save, variable_remove, type_config_set,
 ---                                         expand_preview
 ---   /projects    loomworks.ConfigSets/1   candidates, add, update, remove, generate_defaults
----   /maintenance loomworks.Maintenance/1 execute_deletion T (loomworks.daemon.maintenance)
+---   /maintenance loomworks.Maintenance/1 execute_deletion T, nuke T (loomworks.daemon.maintenance)
 ---   /devices     loomworks.Devices/1      list, scan T, install T, launch T, stop (changed;
 ---                                         loomworks.daemon.devices)
 ---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1, loomworks.view.Tests/1

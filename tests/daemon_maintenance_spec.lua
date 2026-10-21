@@ -3,7 +3,10 @@
 -- runner's `shell` fixture: the confirmation's plan token, a changed plan
 -- refused before anything is removed, the stray-directory refusals, a
 -- confirmed deletion removing the directory and its cached state, and a
--- cancel stopping the deletion between entries.
+-- cancel stopping the deletion between entries; and Maintenance/1.nuke
+-- (part B6): its locks and the daemon's own tasks refused before the
+-- listing and again under the locks, its plan token, a failed area check
+-- removing nothing, and a cancel ending `nuke stopped: <reason>`.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 _G.LW_CONFORMANCE_LIB = true
@@ -12,6 +15,7 @@ local H = require("tests.daemon_helpers")
 local L = require("tests.lock_helpers")
 local trust = require("loomworks.trust")
 local dp = require("loomworks.deletion_plan")
+local maint = require("loomworks.daemon.maintenance")
 local runner = dofile(H.REPO .. "/scripts/conformance.lua")
 
 --- A loopback daemon on a fresh `shell` fixture, handshaken.
@@ -46,6 +50,9 @@ local function session()
         return f.result
     end
     function s.delete(args) return s.call("/maintenance", "loomworks.Maintenance", "execute_deletion", args, s.env) end
+    function s.nuke(args)
+        return s.call("/maintenance", "loomworks.Maintenance", "nuke", args or vim.empty_dict(), s.env)
+    end
     function s.done(task_id, ms)
         local lines = {}
         while true do
@@ -338,5 +345,214 @@ describe("Maintenance/1.execute_deletion in the workspace daemon (API.md §22)",
         local f, lines = s.done(r.task_id, 60000)
         assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
         assert.is_false(exists(bd))
+    end)
+end)
+
+describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", function()
+    local s
+    local IS_WIN = vim.fn.has("win32") == 1
+    after_each(function()
+        L.cleanup()
+        if s then
+            pcall(function() s.service().host.core()._nuke_begin = nil end)
+            s.close(); s = nil
+        end
+    end)
+
+    --- A workspace with build state in `.nvim`: a build (its build directory
+    --- is `out/`, outside `.nvim`), a tree under `.nvim/build` and the cache.
+    local function prepared()
+        s = session()
+        s.build()
+        local x = stray(s.root, "x")
+        return x, s.root .. "/.nvim/loomworks.cache.json"
+    end
+
+    --- Wrap the core's `_nuke_begin`: `fn(n)` runs before its n-th call (the
+    --- first is the request's check, the second the task's).
+    local function on_begin(fn)
+        local core = s.service().host.core()
+        local orig = getmetatable(core).__index._nuke_begin
+        local n = 0
+        core._nuke_begin = function(self, ...)
+            n = n + 1
+            fn(n)
+            return orig(self, ...)
+        end
+    end
+
+    local function nuke_run()
+        for run in pairs(s.service().runs) do if run.op == "nuke" then return run end end
+    end
+
+    it("confirms with the listing and a plan token, then removes the build state and reloads", function()
+        local x, cache = prepared()
+        local bd = s.unit():build_dir()
+        assert.is_true(exists(bd), "built: " .. tostring(bd))
+        -- A file of the workspace outside `.nvim`.
+        vim.fn.mkdir(s.root .. "/keep", "p")
+        local kf = assert(io.open(s.root .. "/keep/f.txt", "w")); kf:write("x"); kf:close()
+        local before = s.ws()
+        local c = s.nuke()
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        assert.equals(maint.NUKE_HEADER, c.lines[1])
+        assert.truthy(table.concat(c.lines, "\n"):find("/.nvim/build/", 1, true), vim.inspect(c.lines))
+        assert.is_string(c.plan)
+        assert.is_true(exists(x) and exists(cache), "a confirm removes nothing")
+        local r = s.nuke({ yes = true, plan = c.plan })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local start = s.wait(function(m) return m.kind == "task" and m.task_id == r.task_id and m.phase == "start" end)
+        assert.equals("nuke", start.meta.kind)
+        assert.equals("nuke", start.meta.method)
+        local f, lines = s.done(r.task_id, 60000)
+        assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
+        assert.is_false(exists(x))
+        assert.is_false(exists(s.root .. "/.nvim/build"))
+        assert.is_false(exists(bd), "the unit's build directory under .nvim/build went with it")
+        -- Outside `.nvim` nothing is touched.
+        assert.is_true(exists(s.root .. "/keep/f.txt"), "a file outside .nvim is kept")
+        assert.is_true(exists(s.root .. "/loomworks.json"))
+        -- Loaded again: a new model, its cache claims nothing built.
+        assert.is_not_nil(s.ws())
+        assert.are_not.equal(before, s.ws())
+        assert.is_true(s.unit().state_value == nil or s.unit().state_value == "unconfigured",
+            tostring(s.unit().state_value))
+        local fh = io.open(cache, "rb")
+        if fh then
+            local text = fh:read("*a"); fh:close()
+            assert.is_nil(text:find('"built"', 1, true), text)
+        end
+        assert.is_nil(nuke_run(), "the run is done")
+    end)
+
+    it("yes without a plan prints the listing first", function()
+        local x = prepared()
+        local r = s.nuke({ yes = true })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f, lines = s.done(r.task_id, 60000)
+        assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
+        assert.equals("out: " .. maint.NUKE_HEADER, lines[1], vim.inspect(lines))
+        assert.is_false(exists(x))
+    end)
+
+    it("a build-directory lock another process holds is refused at the confirmation, naming the holder", function()
+        local x, cache = prepared()
+        local h = L.hold(require("loomworks.build_lock").lock_path(x), "build")
+        for _, args in ipairs({ vim.empty_dict(), { yes = true } }) do
+            local r = s.nuke(args)
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            assert.equals(1, r.exit_code)
+            assert.truthy(r.message:find("cannot nuke: ", 1, true), r.message)
+            assert.truthy(r.message:find("pid " .. h.pid, 1, true), r.message)
+        end
+        assert.is_true(exists(x) and exists(cache))
+    end)
+
+    it("a lock taken after the call is refused under the locks, naming the holder, with nothing removed", function()
+        local x, cache = prepared()
+        local c = s.nuke()
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        local h
+        on_begin(function(n)
+            if n == 2 then h = L.hold(require("loomworks.build_lock").lock_path(x), "build") end
+        end)
+        local r = s.nuke({ yes = true, plan = c.plan })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f = s.done(r.task_id, 60000)
+        assert.equals(1, f.exit_code, tostring(f.error))
+        assert.truthy(tostring(f.error):find("cannot nuke: ", 1, true), tostring(f.error))
+        assert.truthy(tostring(f.error):find("pid " .. h.pid, 1, true), tostring(f.error))
+        assert.is_true(exists(x) and exists(cache))
+        assert.is_not_nil(s.ws(), "the model was never unloaded")
+    end)
+
+    it("is refused while a task of the daemon runs, listing it", function()
+        local x, cache = prepared()
+        local t = s.service().tasks:create({ closed = true })
+        t:start({ name = "fake build", kind = "build" })
+        local ok, err = pcall(function()
+            for _, args in ipairs({ vim.empty_dict(), { yes = true } }) do
+                local r = s.nuke(args)
+                assert.equals("refused", r.outcome, vim.inspect(r))
+                assert.truthy(r.message:find("build fake build (task " .. tostring(t.id) .. ")", 1, true), r.message)
+            end
+            assert.is_true(exists(x) and exists(cache))
+        end)
+        t:done(0)
+        assert(ok, err)
+        -- Once it ended the nuke confirms.
+        assert.equals("confirm", s.nuke().outcome)
+    end)
+
+    it("a changed plan is refused before anything is removed, at the call and under the locks", function()
+        local x, cache = prepared()
+        local area = s.root .. "/.nvim/cache/cc"
+        local c = s.nuke()
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        -- A new owned database area changes the plan.
+        vim.fn.mkdir(area .. "/App", "p")
+        local r = s.nuke({ yes = true, plan = c.plan })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals(dp.CHANGED, r.message)
+        assert.is_true(exists(x) and exists(cache) and exists(area))
+        -- Under the locks: the area goes away between the call and the task.
+        local c2 = s.nuke()
+        assert.equals("confirm", c2.outcome, vim.inspect(c2))
+        on_begin(function(n) if n == 2 then vim.fn.delete(area, "rf") end end)
+        local r2 = s.nuke({ yes = true, plan = c2.plan })
+        assert.equals("accepted", r2.outcome, vim.inspect(r2))
+        local f = s.done(r2.task_id, 60000)
+        assert.equals(1, f.exit_code)
+        assert.equals(dp.CHANGED, f.error)
+        assert.is_true(exists(x) and exists(cache))
+        -- Its locks were released: a nuke confirms again.
+        s.service().host.core()._nuke_begin = nil
+        assert.equals("confirm", s.nuke().outcome)
+    end)
+
+    it("a failed owned-database area check aborts the whole nuke before anything is removed", function()
+        local x, cache = prepared()
+        local elsewhere = (vim.fn.tempname():gsub("\\", "/"))
+        vim.fn.mkdir(elsewhere, "p")
+        local precious = assert(io.open(elsewhere .. "/precious.txt", "w")); precious:write("x"); precious:close()
+        local area = s.root .. "/.nvim/cache/cc"
+        vim.fn.mkdir(s.root .. "/.nvim/cache", "p")
+        local function link() return uv.fs_symlink(elsewhere, area, IS_WIN and { junction = true } or nil) == true end
+        local c = s.nuke()
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        local linked
+        on_begin(function(n) if n == 2 then linked = link() end end)
+        local r = s.nuke({ yes = true })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f = s.done(r.task_id, 60000)
+        if not linked then pending("cannot create a directory link here") return end
+        assert.equals(1, f.exit_code)
+        assert.truthy(tostring(f.error):find("owned LSP database area", 1, true), tostring(f.error))
+        assert.is_true(exists(x) and exists(cache) and exists(elsewhere .. "/precious.txt"))
+        -- At the call, too.
+        s.service().host.core()._nuke_begin = nil
+        local again = s.nuke()
+        assert.equals("refused", again.outcome, vim.inspect(again))
+        assert.truthy(again.message:find("owned LSP database area", 1, true), again.message)
+        if not uv.fs_unlink(area) then uv.fs_rmdir(area) end
+        assert.is_true(exists(elsewhere .. "/precious.txt"))
+        vim.fn.delete(elsewhere, "rf")
+    end)
+
+    it("a cancel ends it nuke stopped: <reason>, nothing removed and its locks released", function()
+        local x, cache = prepared()
+        local c = s.nuke()
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        on_begin(function(n)
+            if n == 2 then nuke_run().cancel("cancelled by the client that started it", 130) end
+        end)
+        local r = s.nuke({ yes = true, plan = c.plan })
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        local f = s.done(r.task_id, 60000)
+        assert.equals(130, f.exit_code)
+        assert.equals("nuke stopped: cancelled by the client that started it", f.error)
+        assert.is_true(exists(x) and exists(cache))
+        s.service().host.core()._nuke_begin = nil
+        assert.equals("confirm", s.nuke().outcome)
     end)
 end)

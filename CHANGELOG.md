@@ -52,6 +52,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon: `Maintenance/1.nuke` is the editor's nuke as a task:
+  it lists what it removes and confirms with a plan token, refuses while a
+  build-directory or workspace lock is held (naming the holder) or while any
+  task of the daemon runs (listing them), and reloads the workspace after
+  the removal. (#PR)
 - Experimental daemon: `Maintenance/1.execute_deletion` deletes a profile, a
   configuration unit, an orphaned or stray build directory, every orphan or
   a project with its build state as a task, after a confirmation with a plan
