@@ -2,7 +2,7 @@
   "interface": "loomworks.Maintenance",
   "version": 1,
   "status": "draft",
-  "description": "Object /maintenance (API.md §22, step 5o part B5): the workspace's maintenance. execute_deletion is task-streamed, in a model segment of the caller's environment, its deletion the in-process editor's (loomworks.model_commands deletion_request / deletion_run).",
+  "description": "Object /maintenance (API.md §22, step 5o parts B5 and B6): the workspace's maintenance. execute_deletion and nuke are task-streamed, in a model segment of the caller's environment; execute_deletion's deletion is the in-process editor's (loomworks.model_commands deletion_request / deletion_run), nuke's the in-process nuke's (Core nuke_check / _nuke_begin / _nuke_run).",
   "methods": {
     "execute_deletion": {
       "description": "Remove build state and what it belongs to (API.md §22), with the outcomes of reset (§8.5) and its confirmation (§8.6). The deletion is planned after resolution and before any lock: with a plan the new plan differs from it is refused (the build directories to delete changed since they were listed, exit 1), before the empty check; with nothing to delete refused (nothing to delete, exit 0, stream out); without yes confirm (lines, plan) with nothing locked or changed; with yes it is accepted (without plan the task prints the listing first). An accepted deletion takes the workspace operation lock, then the build-directory lock of every directory of the plan (exclusive, canonical order; a held one ends the task naming the holder, nothing removed), plans again under the locks (a changed plan ends the task with the same refusal) and removes as spec §4.6-§4.7 specify. A stray_dir outside the workspace (path outside workspace: <path>), not in the current stray set (not a stray build directory: <path>) or holding a live build directory (directory holds a live build dir: <path>) is refused. A project whose build directories are not all removed is kept and the task ends refused. A cancel stops between directories (delete stopped: <reason>). A successful deletion's task prints DELETE OK: <label> last. A unit is also named { project, configuration }, an orphaned build_dir { key }; an unknown key is refused. The task's writes' changed precede done. A stale id is refused (a stale reference).",
@@ -171,6 +171,48 @@
         },
         "result": {
           "description": "The deletion's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "nuke": {
+      "description": "Optional (part B6). The editor's nuke and lw nuke (API.md §22): remove the workspace's build state (.nvim/build/, the build and health caches, the owned language-server database areas, spec §4.6). Its locks are checked before it lists, also without yes: a held workspace operation lock or build-directory lock is refused naming the holder. While any task of the server runs it is refused, the refusal listing those tasks (none is passed over or stopped). Otherwise it confirms as execute_deletion does: with a plan the new plan differs from refused (the build directories to delete changed since they were listed); without yes confirm (lines, plan) with nothing locked or changed; with yes accepted (without plan the task prints the listing first). An accepted nuke checks the server's tasks and the locks again, takes the workspace operation lock and every build-directory lock (a held one ends the task naming the holder, nothing removed), plans again under them (a changed plan ends the task with the same refusal), unloads the model, removes, and loads the workspace again (header_changed; every id issued before is stale). A failed area check aborts it before anything is removed. A cancel ends it nuke stopped: <reason>.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "yes": {
+            "description": "Confirmed: run without asking.",
+            "type": "boolean"
+          },
+          "plan": {
+            "description": "The token of the confirm result the user accepted; a changed plan is refused.",
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The nuke's end.",
           "type": "object",
           "required": [
             "exit_code"

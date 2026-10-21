@@ -706,6 +706,24 @@ function Core:nuke_check(root, opts)
     return true, nil, st.areas
 end
 
+--- What a nuke of `root` removes, as a host lists it before it asks to
+--- confirm (`lw nuke`, `Maintenance/1.nuke`): `.nvim/build/`, the build
+--- cache, the health cache and each owned LSP database area in `areas` (the
+--- ones `nuke_check` / `_nuke_begin` approved), directories with a trailing
+--- `/`. Display only: the removal itself is `_nuke_run`'s.
+--- @param root string
+--- @param areas string[]|nil
+--- @return string[]
+function Core:nuke_targets(root, areas)
+    local targets = {
+        root .. "/.nvim/build/",
+        self._deps.cache.filepath(root),
+        root .. "/.nvim/loomworks.health.json",
+    }
+    for _, a in ipairs(areas or {}) do targets[#targets + 1] = a .. "/" end
+    return targets
+end
+
 --- Release what `_nuke_begin` took, deleting nothing (a declined or
 --- refused nuke). Idempotent.
 --- @param st table

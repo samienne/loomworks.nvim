@@ -1734,3 +1734,4 @@ the workspace operation lock and every build-directory lock, unloads the
 model, removes, and loads the workspace again (`header_changed`; every id
 issued before is stale). A failed area check aborts it before anything is
 removed.
+Like trust_accept, nuke is served while the workspace load is refused.

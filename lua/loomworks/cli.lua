@@ -1688,18 +1688,13 @@ function M.cmd_nuke(root, args)
     lock_break.requested = requested
     if not ok and not requested then die(M._nuke_message(cwhy)) end
   end
-  local targets = {
-    root .. "/.nvim/build/",
-    require("loomworks.cache").filepath(root),
-    root .. "/.nvim/loomworks.health.json",
-  }
   -- Module-owned LSP database areas present on disk (spec §4.6, ui §1.11).
   -- `_nuke_begin` / `nuke_check` above already refused a failed area check;
   -- this lists them (with -y, the ones the held nuke state removes).
   local areas, area_err
   if st then areas = st.areas else areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root)) end
   if not areas then die("nuke refused: " .. tostring(area_err)) end
-  for _, a in ipairs(areas) do targets[#targets + 1] = a .. "/" end
+  local targets = core:nuke_targets(root, areas)
   out("Will delete (build state only; your configuration is kept):", "plain")
   for _, p in ipairs(targets) do out("  " .. p, "plain") end
   if not yes then
