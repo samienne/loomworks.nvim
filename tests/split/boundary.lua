@@ -76,7 +76,7 @@ local binary_toplevel = {
     "api_versions", "build_dir", "build_lock", "build_run", "cache", "cli", "cli_color",
     "cli_options", "cmake_kits", "compiler_cache", "config", "config_editor",
     "config_env", "config_transfer", "config_unit", "configuration",
-    "configuration_set", "core", "cpp_compilers", "data_model", "dependency",
+    "configuration_set", "core", "cpp_compilers", "data_model", "deletion_plan", "dependency",
     "deploy", "description", "device", "dir_identity", "env_policy", "events",
     "exe", "expand", "file_tracker", "future", "gtest", "health_cache",
     "housekeeping", "inventory", "io", "languages", "launch_configuration", "launch_target",

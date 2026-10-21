@@ -183,14 +183,17 @@ end
 --- The plan token (§19.15 "Reset"): an opaque digest of the planned scope,
 --- lock set and removal set, independent of their order. Equal for an equal
 --- plan; different when the scope, a directory to lock or a directory to
---- remove differs. Pure (no filesystem access).
---- @param scope_key string "all" or "profile:<key>"
+--- remove differs. Pure (no filesystem access). Shared with the deletion
+--- plans (loomworks.deletion_plan, API.md §22), which pass their own `kind`
+--- so a reset token never equals a deletion token.
+--- @param scope_key string "all" or "profile:<key>" (a deletion: its target)
 --- @param lock_dirs string[]
 --- @param removal_dirs string[]
 --- @param outside_dirs? string[] (a section only when non-empty)
+--- @param kind? string the plan family (default "reset-plan/1")
 --- @return string token
-function M.token(scope_key, lock_dirs, removal_dirs, outside_dirs)
-    local parts = { "reset-plan/1", "scope", tostring(scope_key) }
+function M.token(scope_key, lock_dirs, removal_dirs, outside_dirs, kind)
+    local parts = { kind or "reset-plan/1", "scope", tostring(scope_key) }
     parts[#parts + 1] = "lock"
     for _, d in ipairs(sorted_copy(lock_dirs)) do parts[#parts + 1] = d end
     parts[#parts + 1] = "remove"
