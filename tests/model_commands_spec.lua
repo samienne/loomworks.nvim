@@ -229,6 +229,54 @@ describe("model_commands", function()
       assert.equals(count, #ws._profiles)
       assert.equals(active, ws._active_profile)
     end)
+
+    it("set_active whose save fails is refused and keeps the active profile", function()
+      local dev = find(ws._profiles, "_configuration_set_name", "Dev")
+      local other = find(ws._profiles, "_configuration_set_name", "Other")
+      assert.equals(dev, ws._active_profile)
+      ws._no_write = "read-only working copy"
+      assert_refused(mc.profile_set_active(other), "read-only working copy")
+      assert.equals(dev, ws._active_profile)
+      assert.equals(dev.key, ws._active_profile_key)
+    end)
+
+    it("tool_choices lists the keyed toolchains of the set's module types, for a set or a candidate", function()
+      ws._tools_by_type = { typescript = { { tool_key = "t1", tool_label = "T one", tool_data = {} } },
+        cmake = { { tool_key = "c1", tool_label = "C one", tool_data = {} } } }
+      local dev = find(ws._config_sets, "name", "Dev")
+      local r = mc.profile_tool_choices(ws, dev)
+      assert_ok(r)
+      assert.equals(1, #r.tools)
+      assert.equals("typescript", r.tools[1].tool_mod_type)
+      assert.equals("t1", r.tools[1].tool_key)
+      ws.generate_default_config_sets = function() return { Auto = { App = "Debug" } } end
+      local auto
+      for _, s in ipairs(mc.config_set_candidates(ws).sets) do if s.auto then auto = s end end
+      r = mc.profile_tool_choices(ws, { candidate = auto.candidate })
+      assert_ok(r)
+      assert.equals("t1", r.tools[1].tool_key)
+      assert_refused(mc.profile_tool_choices(ws, { candidate = "auto:nope" }), "changed since it was listed")
+      dev._removed = true
+      assert_refused(mc.profile_tool_choices(ws, dev), "has been removed")
+    end)
+
+    it("add_tool is refused while another process holds the operation lock; nothing changes", function()
+      local L = require("tests.lock_helpers")
+      local op_lock = require("loomworks.op_lock")
+      local dev = find(ws._profiles, "_configuration_set_name", "Dev")
+      local before = dev.key
+      local file = io_mod.read_file(user_mod.filepath(root))
+      ws._core._deps.on_lock_refused = function() end -- the CLI's would exit
+      local h = L.hold(op_lock.path(root), "import")
+      local ok, r = pcall(mc.profile_add_tool, dev, "gcc-x")
+      L.cleanup()
+      assert.is_true(ok, r)
+      assert_refused(r, "pid " .. h.pid)
+      assert.equals(before, dev.key)
+      assert.equals(file, io_mod.read_file(user_mod.filepath(root)))
+      assert_ok(mc.profile_add_tool(dev, "gcc-x"))
+      assert.is_nil(op_lock.read(root), "O left behind")
+    end)
   end)
 
   describe("Projects/1", function()

@@ -15,11 +15,13 @@
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list
----   /profiles    loomworks.Profiles/1     compiler_cache, set_device, clear_device
+---   /profiles    loomworks.Profiles/1     compiler_cache, set_device, clear_device, set_active, create,
+---                                         tool_choices, add_tool, remove_tool
 ---   /projects    loomworks.Projects/1     candidates, add, declaration, configuration_save,
 ---                                         configuration_remove, options_save, launch_save, launch_remove,
 ---                                         deploy_save, variable_save, variable_remove, type_config_set,
 ---                                         expand_preview
+---   /projects    loomworks.ConfigSets/1   candidates, add, update, remove, generate_defaults
 ---   /devices     loomworks.Devices/1      list, scan T, install T, launch T, stop (changed;
 ---                                         loomworks.daemon.devices)
 ---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1, loomworks.view.Tests/1
@@ -75,6 +77,7 @@ M.PROFILES = { path = "/profiles", iface = "loomworks.Profiles", v = 1 }
 M.DEBUG = { path = "/debug", iface = "loomworks.DebugConfig", v = 1 }
 M.LSP = { path = "/lsp", iface = "loomworks.LspConfig", v = 1 }
 M.PROJECTS = { path = "/projects", iface = "loomworks.Projects", v = 1 }
+M.CONFIG_SETS = { path = "/projects", iface = "loomworks.ConfigSets", v = 1 }
 
 --- The header of `Workspace/1` (the welcome header's fields, §19.13), never
 --- loading.
@@ -199,7 +202,7 @@ end
 
 --- The entity fields a command's result may carry (`{ id, key }` each, made
 --- by the handler from the created or kept object).
-local ENTITY_FIELDS = { "project", "configuration", "launch" }
+local ENTITY_FIELDS = { "project", "configuration", "launch", "profile", "config_set" }
 
 --- The reply of a command outcome: only the protocol's fields; a refused
 --- write reports the lock or save refusal the host recorded (it names
@@ -543,6 +546,37 @@ local function query(service, name, map, query_args)
     end
 end
 
+--- A read in a model segment of the caller's environment: `fn(ws)` → a
+--- model_commands outcome (its fields the result; a refusal the refused
+--- result). Nothing is written.
+--- @param service loomworks.daemon.BuildService
+--- @param ctx table the call
+--- @param fn fun(ws: table): table
+--- @return any interfaces.ASYNC
+local function read_segment(service, ctx, fn)
+    service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws)
+        local r = fn(ws)
+        if r.outcome ~= "ok" then
+            return { outcome = "refused", message = r.message, exit_code = r.exit_code or 1 }
+        end
+        return r
+    end, nil, function(fields) ctx.reply(fields) end)
+    return require("loomworks.daemon.interfaces").ASYNC
+end
+
+--- Wait for a toolchain detection that is running (the in-process path's
+--- `_tool_waiters`), as a full load waits for it; nil when it settled, else
+--- the refusal.
+--- @param ws table
+--- @return table|nil refusal
+local function settled_tools(ws)
+    if ws._tool_state ~= "scanning" then return nil end
+    vim.wait(require("loomworks.daemon.service").LOAD_WAIT_MS, function() return ws._tool_state ~= "scanning" end, 25)
+    if ws._tool_state == "scanning" then
+        return require("loomworks.model_commands").refused("the toolchain detection is still running; try again")
+    end
+end
+
 --- The `loomworks.Toolchains/1` handlers.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
@@ -594,6 +628,32 @@ local function profile_of(service, ws, ref)
     return nil, "no profile '" .. tostring(ref.key) .. "'"
 end
 
+--- The configuration set a call names (`{ id }` or `{ key }`, its name),
+--- or nil + the refusal.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @param ref table
+--- @return loomworks.ConfigurationSet|nil, string|nil err
+local function config_set_of(service, ws, ref)
+    if ref.id ~= nil then
+        local cs = service.ids:find(ref.id, ws._config_sets)
+        if not cs then return nil, "no configuration set with id " .. tostring(ref.id) .. " (a stale reference)" end
+        return cs
+    end
+    for _, cs in pairs(ws._config_sets or {}) do
+        if not cs._removed and cs.name == ref.key then return cs end
+    end
+    return nil, "no configuration set '" .. tostring(ref.key) .. "'"
+end
+
+--- The set `Profiles/1.create` / `tool_choices` name: a reference, or
+--- `{ candidate }` (an automatic set's token from ConfigSets/1.candidates,
+--- passed on as it is); or nil + the refusal.
+local function set_or_candidate(service, ws, ref)
+    if ref.candidate ~= nil then return { candidate = ref.candidate } end
+    return config_set_of(service, ws, ref)
+end
+
 --- The `loomworks.Profiles/1` handlers. `set_device` / `clear_device`
 --- (API.md §11) write the profile's device to the working copy as the
 --- in-process Profile:set_device / clear_device do; `set_device`'s device
@@ -632,6 +692,84 @@ function M.profiles_impl(service)
             if not ok then return refused(err or "user.json was not written") end
             return { outcome = "ok" }
         end)
+    end
+
+    -- Step 5o part B2 (API.md §11): the commands run as Workspace/1's do
+    -- (`command`), the references resolved to the live objects once, here;
+    -- the write is the shared loomworks.model_commands function the
+    -- in-process editor calls. A toolchain change re-derives the profile's
+    -- key under the workspace operation lock (model_commands).
+    local mc = require("loomworks.model_commands")
+
+    --- A command on the profile `args.profile` names.
+    local function on_profile(ctx, args, fn)
+        return command(service, ctx, function(ws)
+            local profile, err = profile_of(service, ws, args.profile)
+            if not profile then return mc.refused(err) end
+            return fn(profile, ws)
+        end)
+    end
+
+    --- The wire form of a toolchain entry, or nil for an SDK's (not offered
+    --- over the wire yet: `tool` names a module's toolchain).
+    local function tool_wire(e)
+        if not e.tool_mod_type then return nil end
+        return { module = e.tool_mod_type, key = e.tool_key, label = e.tool_label or e.tool_key }
+    end
+
+    function methods.set_active(ctx, args)
+        return on_profile(ctx, args, function(profile) return mc.profile_set_active(profile) end)
+    end
+
+    function methods.tool_choices(ctx, args)
+        return read_segment(service, ctx, function(ws)
+            local set, err = set_or_candidate(service, ws, args.config_set)
+            if not set then return mc.refused(err) end
+            local wait = settled_tools(ws)
+            if wait then return wait end
+            local r = mc.profile_tool_choices(ws, set)
+            if r.outcome ~= "ok" then return r end
+            local tools = {}
+            for _, e in ipairs(r.tools) do tools[#tools + 1] = tool_wire(e) end
+            return { outcome = "ok", tools = tools }
+        end)
+    end
+
+    function methods.create(ctx, args)
+        return command(service, ctx, function(ws)
+            local set, err = set_or_candidate(service, ws, args.config_set)
+            if not set then return mc.refused(err) end
+            local wait = settled_tools(ws)
+            if wait then return wait end
+            local entry
+            if args.tool ~= nil then
+                -- One of tool_choices' toolchains (a value: module + key).
+                local choices = mc.profile_tool_choices(ws, set)
+                if choices.outcome ~= "ok" then return choices end
+                local key = args.tool.key ~= vim.NIL and args.tool.key or nil
+                for _, e in ipairs(choices.tools) do
+                    if e.tool_mod_type == args.tool.module and e.tool_key == key then entry = e; break end
+                end
+                if not entry then
+                    return mc.refused("no " .. tostring(args.tool.module) .. " toolchain '" .. tostring(key)
+                        .. "' for this configuration set (see Profiles/1.tool_choices)")
+                end
+            end
+            local r = mc.profile_create(ws, set, entry, args.activate == true)
+            if r.outcome == "ok" then
+                r.profile = r.profile and { id = service.ids:id(r.profile), key = r.profile.key } or nil
+                r.config_set = nil
+            end
+            return r
+        end)
+    end
+
+    function methods.add_tool(ctx, args)
+        return on_profile(ctx, args, function(profile) return mc.profile_add_tool(profile, args.tool) end)
+    end
+
+    function methods.remove_tool(ctx, args)
+        return on_profile(ctx, args, function(profile) return mc.profile_remove_tool(profile, args.tool) end)
     end
     return { methods = methods }
 end
@@ -738,7 +876,6 @@ end
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.projects_impl(service)
-    local interfaces = require("loomworks.daemon.interfaces")
     local mc = require("loomworks.model_commands")
     local methods = {}
 
@@ -749,16 +886,7 @@ function M.projects_impl(service)
     end
 
     --- A read: `fn(ws)` → a model_commands outcome (its fields the result).
-    local function read(ctx, fn)
-        service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws)
-            local r = fn(ws)
-            if r.outcome ~= "ok" then
-                return { outcome = "refused", message = r.message, exit_code = r.exit_code or 1 }
-            end
-            return r
-        end, nil, function(fields) ctx.reply(fields) end)
-        return interfaces.ASYNC
-    end
+    local function read(ctx, fn) return read_segment(service, ctx, fn) end
 
     --- A command or read on the project `args.project` names: `fn(project,
     --- ws)` → a model_commands outcome.
@@ -899,6 +1027,86 @@ function M.projects_impl(service)
     return { methods = methods }
 end
 
+--- The `loomworks.ConfigSets/1` handlers (API.md §20; step 5o part B2), on
+--- `/projects` beside Projects/1. `candidates` is a read; the others are
+--- commands run as Workspace/1's (`command`): the references (a set by id or
+--- name; a mapping's project by key and configuration by name in it)
+--- resolve to the live objects once, here, and the write is the shared
+--- loomworks.model_commands function the in-process editor calls. A rename
+--- propagates under the workspace operation lock O
+--- (Workspace:rename_configuration_set is guarded, spec §19.3).
+--- @param service loomworks.daemon.BuildService
+--- @return loomworks.daemon.InterfaceImpl
+function M.config_sets_impl(service)
+    local mc = require("loomworks.model_commands")
+    local methods = {}
+
+    --- `mappings` (project key → configuration name) as objects, or nil +
+    --- the refusal. A project absent is unmapped.
+    local function mappings_of(ws, raw)
+        local out = {}
+        for key, name in pairs(plain(raw) or {}) do
+            local project, perr = project_of(service, ws, { key = key })
+            if not project then return nil, mc.refused(perr) end
+            local cfg = project:get_configuration(name)
+            if not cfg or cfg._removed then
+                return nil, mc.refused("no configuration '" .. tostring(name) .. "' in project '" .. key .. "'")
+            end
+            out[project] = cfg
+        end
+        return out
+    end
+
+    function methods.candidates(ctx)
+        return read_segment(service, ctx, function(ws)
+            local r = mc.config_set_candidates(ws)
+            local sets = {}
+            for _, s in ipairs(r.sets) do
+                sets[#sets + 1] = { config_set = s.config_set and service.ids:id(s.config_set) or nil,
+                    name = s.name, auto = s.auto, description = s.description, candidate = s.candidate }
+            end
+            return { outcome = "ok", sets = sets }
+        end)
+    end
+
+    function methods.add(ctx, args)
+        return command(service, ctx, function(ws)
+            local mappings, refusal = mappings_of(ws, args.mappings)
+            if not mappings then return refusal end
+            local r = mc.config_set_add(ws, args.name, mappings)
+            if r.outcome == "ok" then r.config_set = { id = service.ids:id(r.config_set), key = r.config_set.name } end
+            return r
+        end)
+    end
+
+    function methods.update(ctx, args)
+        return command(service, ctx, function(ws)
+            local cs, err = config_set_of(service, ws, args.config_set)
+            if not cs then return mc.refused(err) end
+            local mappings, refusal = mappings_of(ws, args.mappings)
+            if not mappings then return refusal end
+            return mc.config_set_update(cs, plain(args.name), mappings)
+        end)
+    end
+
+    function methods.remove(ctx, args)
+        return command(service, ctx, function(ws)
+            local cs, err = config_set_of(service, ws, args.config_set)
+            if not cs then return mc.refused(err) end
+            return mc.config_set_remove(cs)
+        end)
+    end
+
+    function methods.generate_defaults(ctx)
+        return command(service, ctx, function(ws)
+            local r = mc.config_set_generate_defaults(ws)
+            r.config_sets = nil
+            return r
+        end)
+    end
+    return { methods = methods }
+end
+
 --- The `loomworks.DebugConfig/1` handlers (§19.20 `DebugConfig/1`): the
 --- workspace's debug-adapter mapping, read in a model segment of the
 --- requesting client's environment as a query is (loaded as for `snapshot`
@@ -1034,6 +1242,7 @@ function M.mount(registry, service)
         { M.TOOLCHAINS, M.toolchains_impl },
         { M.PROFILES, M.profiles_impl },
         { M.PROJECTS, M.projects_impl },
+        { M.CONFIG_SETS, M.config_sets_impl },
         { M.DEBUG, M.debug_impl },
         { M.LSP, M.lsp_impl },
         { require("loomworks.daemon.devices").WHERE, require("loomworks.daemon.devices").impl },

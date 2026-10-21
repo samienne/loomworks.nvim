@@ -343,7 +343,18 @@ end
 function M.profile_set_active(profile)
     local r = stale(profile, "profile")
     if r then return r end
-    profile:activate()
+    local ws = profile._workspace
+    local old_active, old_active_key = ws._active_profile, ws._active_profile_key
+    local saved, err, reason = profile:activate()
+    if not saved then
+        -- Nothing was written: the active profile stays (a stale refusal
+        -- already reloaded from disk).
+        if reason ~= "stale" then
+            ws._active_profile, ws._active_profile_key = old_active, old_active_key
+            ws:remerge()
+        end
+        return refused(err or "user.json was not written")
+    end
     return ok()
 end
 
@@ -386,6 +397,19 @@ function M.config_set_candidates(ws)
     return ok({ sets = sets })
 end
 
+--- The automatic set a candidate token stands for, or nil + the refusal.
+local function candidate_of(ws, token)
+    for _, s in ipairs(M.config_set_candidates(ws).sets) do
+        if s.auto and s.candidate == token then return s end
+    end
+    return nil, refused("the automatic configuration set changed since it was listed — choose it again")
+end
+
+--- Whether `set` is a `{ candidate = token }` (not a ConfigurationSet).
+local function is_candidate(set)
+    return type(set) == "table" and set.candidate ~= nil and getmetatable(set) == nil
+end
+
 --- Add the automatic configuration set a candidate token stands for (the
 --- first step of `Profiles/1.create { config_set = { candidate } }`; the
 --- in-process template pick). A token whose set changed or was added since
@@ -394,13 +418,8 @@ end
 --- @param token string
 --- @return loomworks.CommandOutcome config_set: loomworks.ConfigurationSet
 function M.config_set_add_candidate(ws, token)
-    local found
-    for _, s in ipairs(M.config_set_candidates(ws).sets) do
-        if s.auto and s.candidate == token then found = s; break end
-    end
-    if not found then
-        return refused("the automatic configuration set changed since it was listed — choose it again")
-    end
+    local found, refusal = candidate_of(ws, token)
+    if not found then return refusal end
     local cs, err = ws:add_configuration_set(found.name, found.mappings)
     if not cs then return refused(err or "failed to add config set") end
     return ok({ config_set = cs })
@@ -419,7 +438,7 @@ end
 --- @return loomworks.CommandOutcome profile: loomworks.Profile, config_set: loomworks.ConfigurationSet
 function M.profile_create(ws, set, tool_entry, activate)
     local cs = set
-    if type(set) == "table" and set.candidate ~= nil and getmetatable(set) == nil then
+    if is_candidate(set) then
         local r = M.config_set_add_candidate(ws, set.candidate)
         if r.outcome ~= "ok" then return r end
         cs = r.config_set
@@ -465,6 +484,48 @@ function M.profile_create(ws, set, tool_entry, activate)
     return ok({ profile = profile, config_set = cs })
 end
 
+--- The module types the projects of a mapping use (`projects`: the
+--- Project objects mapped).
+--- @param projects loomworks.Project[]
+--- @return table<string, true>
+local function module_types(projects)
+    local types = {}
+    for _, p in ipairs(projects) do
+        if not p._removed and p.type then types[p.type] = true end
+    end
+    return types
+end
+
+--- `Profiles/1.tool_choices { config_set }` — the toolchains a profile of
+--- the set can use (Workspace:tool_entries_for: the detected keyed host
+--- tools of its projects' module types, then the relevant resolved SDKs);
+--- `set` a ConfigurationSet, or `{ candidate = token }` for an automatic
+--- set not added yet (its projects as the token's set maps them).
+--- @param ws loomworks.Workspace
+--- @param set loomworks.ConfigurationSet|{ candidate: string }
+--- @return loomworks.CommandOutcome tools: loomworks.ToolEntry[]
+function M.profile_tool_choices(ws, set)
+    local name, projects = nil, {}
+    if is_candidate(set) then
+        local found, refusal = candidate_of(ws, set.candidate)
+        if not found then return refusal end
+        name = found.name
+        -- The generated set names its projects by key (file data): matched
+        -- once, here.
+        for _, p in pairs(ws._projects or {}) do
+            if found.mappings[p.key] ~= nil then projects[#projects + 1] = p end
+        end
+    else
+        local r = stale(set, "configuration set")
+        if r then return r end
+        name = set.name
+        for p in pairs(set.mappings or {}) do
+            if type(p) == "table" then projects[#projects + 1] = p end
+        end
+    end
+    return ok({ tools = ws:tool_entries_for(name, module_types(projects)) })
+end
+
 --- The toolchain state of a profile that a toolchain change alters.
 local function profile_tools_snapshot(profile)
     return { tool_keys = profile._tool_keys and vim.deepcopy(profile._tool_keys) or nil,
@@ -490,8 +551,33 @@ local function save_profile_tools(profile, snapshot)
     return ok()
 end
 
+--- A profile's toolchain change, which re-derives its key and propagates
+--- it as a profile rename does: run holding the workspace operation lock
+--- (spec §19.3, API.md §11; op_lock.guard below). Answers an outcome; a
+--- refused lock is `false, message` from the guard.
+local Toolchain = {}
+
+--- @param profile loomworks.Profile
+--- @param change fun(profile: loomworks.Profile)
+--- @return loomworks.CommandOutcome
+function Toolchain.change(profile, change)
+    local snapshot = profile_tools_snapshot(profile)
+    change(profile)
+    return save_profile_tools(profile, snapshot)
+end
+
+require("loomworks.op_lock").guard(Toolchain, "change", "rename", function(profile) return profile._workspace end)
+
+--- Run a toolchain change of `profile` under the operation lock.
+local function change_toolchain(profile, change)
+    local r, msg = Toolchain.change(profile, change)
+    if r == false then return refused(msg or "the workspace operation lock is held") end
+    return r
+end
+
 --- `add_tool { profile, tool }` — add a toolchain (its key, a value) to a
---- profile; its key is derived again (spec §1.6).
+--- profile; its key is derived again (spec §1.6), under the workspace
+--- operation lock.
 --- @param profile loomworks.Profile
 --- @param tool_key string
 --- @return loomworks.CommandOutcome
@@ -499,12 +585,11 @@ function M.profile_add_tool(profile, tool_key)
     local r = stale(profile, "profile")
     if r then return r end
     if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
-    local snapshot = profile_tools_snapshot(profile)
-    profile:add_tool(tool_key)
-    return save_profile_tools(profile, snapshot)
+    return change_toolchain(profile, function(p) p:add_tool(tool_key) end)
 end
 
---- `remove_tool { profile, tool }` — remove a toolchain from a profile.
+--- `remove_tool { profile, tool }` — remove a toolchain from a profile, under
+--- the workspace operation lock.
 --- @param profile loomworks.Profile
 --- @param tool_key string
 --- @return loomworks.CommandOutcome
@@ -512,9 +597,7 @@ function M.profile_remove_tool(profile, tool_key)
     local r = stale(profile, "profile")
     if r then return r end
     if type(tool_key) ~= "string" or tool_key == "" then return refused("no toolchain given", 2) end
-    local snapshot = profile_tools_snapshot(profile)
-    profile:remove_tool(tool_key)
-    return save_profile_tools(profile, snapshot)
+    return change_toolchain(profile, function(p) p:remove_tool(tool_key) end)
 end
 
 -- ---------------------------------------------------------------------------

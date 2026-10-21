@@ -2300,17 +2300,35 @@ end
 --- Builds entries from detected tools and domain Profile objects.
 --- @return table<string, loomworks.ToolEntry[]> set_name -> entries
 function Workspace:get_tool_entries()
-    local merge_mod = self._core._deps.merge
     local result = {}
-    if #self._config_sets == 0 then return result end
+    for _, cs in pairs(self._config_sets) do
+        -- The module types this config set's projects use.
+        local mod_types = {}
+        for proj_ref in pairs(cs.mappings or {}) do
+            local proj = type(proj_ref) == "table" and proj_ref or nil
+            if proj and proj.type then mod_types[proj.type] = true end
+        end
+        result[cs.name] = self:tool_entries_for(cs.name, mod_types)
+    end
+    return result
+end
 
-    -- Build profile lookup from domain objects
+--- The toolchain entries a profile of a configuration set named `set_name`
+--- whose projects use the module types `mod_types` can pick: the detected
+--- keyed host tools of those module types, then the resolved SDKs relevant
+--- to them (every resolved SDK when the set has no projects yet). Each
+--- entry carries the existing profile of that set and toolchain, if any.
+--- @param set_name string
+--- @param mod_types table<string, true>
+--- @return loomworks.ToolEntry[]
+function Workspace:tool_entries_for(set_name, mod_types)
+    local merge_mod = self._core._deps.merge
     local profiles_by_key = {}
     for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
 
     -- Collect all non-SDK keyed tools by module type
     local tools_per_mod = {}
-    for mod_type, tools in pairs(self._tools_by_type) do
+    for mod_type, tools in pairs(self._tools_by_type or {}) do
         for _, tool in ipairs(tools) do
             if tool.tool_key and not (tool.tool_data and tool.tool_data.sdk_key) then
                 tools_per_mod[mod_type] = tools_per_mod[mod_type] or {}
@@ -2319,72 +2337,52 @@ function Workspace:get_tool_entries()
         end
     end
 
-    for _, cs in pairs(self._config_sets) do
-        local entries = {}
-
-        -- Determine which module types this config set's projects use
-        local cs_mod_types = {}
-        if cs.mappings then
-            for proj_ref in pairs(cs.mappings) do
-                local proj = type(proj_ref) == "table" and proj_ref or nil
-                if proj and proj.type then
-                    cs_mod_types[proj.type] = true
-                end
+    local entries = {}
+    -- Host tools: only for module types present in this config set
+    for mod_type, tools in pairs(tools_per_mod) do
+        if mod_types[mod_type] then
+            for _, tool in ipairs(tools) do
+                local tools_dict = { [mod_type] = { key = tool.tool_key } }
+                local pkey = merge_mod.profile_key(set_name, tools_dict)
+                entries[#entries + 1] = {
+                    profile_key = pkey,
+                    tool_key = tool.tool_key,
+                    tool_data = tool.tool_data,
+                    tool_label = tool.tool_label,
+                    tool_mod_type = mod_type,
+                    cached = true,
+                    profile = profiles_by_key[pkey],
+                }
             end
         end
-
-        -- Host tools: only for module types present in this config set
-        for mod_type, tools in pairs(tools_per_mod) do
-            if cs_mod_types[mod_type] then
-                for _, tool in ipairs(tools) do
-                    local tools_dict = { [mod_type] = { key = tool.tool_key } }
-                    local pkey = merge_mod.profile_key(cs.name, tools_dict)
-                    local profile = profiles_by_key[pkey]
-                    entries[#entries + 1] = {
-                        profile_key = pkey,
-                        tool_key = tool.tool_key,
-                        tool_data = tool.tool_data,
-                        tool_label = tool.tool_label,
-                        tool_mod_type = mod_type,
-                        cached = true,
-                        profile = profile,
-                    }
-                end
-            end
-        end
-
-        -- SDK entries: show if SDK provides capabilities for any module
-        -- type in this config set
-        for _, sdk in ipairs(self._sdks) do
-            if sdk:is_resolved() then
-                -- Check if SDK is relevant to any project in this config set
-                local relevant = false
-                for mod_type in pairs(cs_mod_types) do
-                    if sdk:query(mod_type) then
-                        relevant = true
-                        break
-                    end
-                end
-                -- Also show if config set has no projects yet (user may add later)
-                if relevant or not next(cs_mod_types) then
-                    local pkey = cs.name .. ":" .. sdk.key
-                    local profile = profiles_by_key[pkey]
-                    entries[#entries + 1] = {
-                        profile_key = pkey,
-                        tool_key = sdk.key,
-                        tool_label = sdk:display_name(),
-                        sdk = sdk,
-                        cached = true,
-                        profile = profile,
-                    }
-                end
-            end
-        end
-
-        result[cs.name] = entries
     end
 
-    return result
+    -- SDK entries: show if SDK provides capabilities for any module
+    -- type in this config set
+    for _, sdk in ipairs(self._sdks) do
+        if sdk:is_resolved() then
+            local relevant = false
+            for mod_type in pairs(mod_types) do
+                if sdk:query(mod_type) then
+                    relevant = true
+                    break
+                end
+            end
+            -- Also show if config set has no projects yet (user may add later)
+            if relevant or not next(mod_types) then
+                local pkey = set_name .. ":" .. sdk.key
+                entries[#entries + 1] = {
+                    profile_key = pkey,
+                    tool_key = sdk.key,
+                    tool_label = sdk:display_name(),
+                    sdk = sdk,
+                    cached = true,
+                    profile = profiles_by_key[pkey],
+                }
+            end
+        end
+    end
+    return entries
 end
 
 --- Get detected tools organized by module type.
