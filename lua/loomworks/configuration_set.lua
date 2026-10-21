@@ -261,41 +261,61 @@ function ConfigurationSet:update_mapping(project, configuration)
     return true
 end
 
+--- Whether tool data `a` and `b` of module type `mod_type` are the same
+--- toolchain (the module's `tools_match`, else identity).
+--- @param ws loomworks.Workspace
+--- @param mod_type string
+--- @param a table|nil
+--- @param b table|nil
+--- @return boolean
+local function same_tool(ws, mod_type, a, b)
+    local mod = ws:find_module(mod_type)
+    local impl = mod and mod.impl or nil
+    if impl and impl.tools_match then return impl.tools_match(a, b) and true or false end
+    return a == b
+end
+
 --- Find a profile in the registry matching this set + tool properties.
---- Uses property-based matching, never key computation.
---- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
+--- Uses property-based matching, never key computation. An SDK's entry
+--- matches the profile whose toolchains are exactly its kit toolchains
+--- (`sdk_tools`, spec §1.6).
+--- @param tool_entry? loomworks.ToolEntry
 --- @return loomworks.Profile|nil
 function ConfigurationSet:find_profile(tool_entry)
+    local ws = self._workspace
     local tool_data = tool_entry and tool_entry.tool_data or nil
     local tool_mod_type = tool_entry and tool_entry.tool_mod_type or nil
     local sdk = tool_entry and tool_entry.sdk or nil
-    for _, profile in pairs(self._workspace._profiles) do
+    local sdk_tools = sdk and tool_entry.sdk_tools or nil
+    local kit_count = 0
+    for _ in pairs(sdk_tools or {}) do kit_count = kit_count + 1 end
+    for _, profile in pairs(ws._profiles) do
         if profile._configuration_set_name == self.name then
-            -- SDK matching
+            local profile_tools = profile:tools_data()
+            -- SDK matching: every kit, and nothing else
             if sdk then
-                if profile._sdk and profile._sdk.key == sdk.key then
-                    return profile
+                if kit_count > 0 and profile_tools and #(profile._tool_keys or {}) == kit_count then
+                    local all = true
+                    for mod_type, kit in pairs(sdk_tools) do
+                        local pt = profile_tools[mod_type]
+                        if not (pt and same_tool(ws, mod_type, pt.data, kit.data)) then
+                            all = false
+                            break
+                        end
+                    end
+                    if all then return profile end
                 end
                 goto next
             end
             -- No-SDK matching (host tools)
             if profile._sdk then goto next end
-            local profile_tools = profile:tools_data()
-            if not tool_data and not profile_tools then
+            if not tool_data and not profile_tools and #(profile._tool_keys or {}) == 0 then
                 return profile
             end
             if tool_mod_type and profile_tools then
                 local profile_tool = profile_tools[tool_mod_type]
-                if profile_tool then
-                    local mod = self._workspace:find_module(tool_mod_type)
-                    local impl = mod and mod.impl or nil
-                    if impl and impl.tools_match then
-                        if impl.tools_match(profile_tool.data, tool_data) then
-                            return profile
-                        end
-                    elseif profile_tool.data == tool_data then
-                        return profile
-                    end
+                if profile_tool and same_tool(ws, tool_mod_type, profile_tool.data, tool_data) then
+                    return profile
                 end
             end
         end
@@ -322,25 +342,12 @@ function ConfigurationSet:ensure_profile(tool_entry)
         -- Create a new pinned profile for this config set + tool combination.
         local Profile = require("loomworks.profile").Profile
 
-        -- Build tools dict and SDK from tool_entry
-        local tools = nil
-        local sdk = nil
-        local sdk_key = nil
-        if tool_entry and tool_entry.sdk then
-            -- SDK-based profile: tools derived from SDK at runtime
-            sdk = tool_entry.sdk
-            sdk_key = sdk.key
-        elseif tool_entry and tool_entry.tool_key then
-            -- Host tool-based profile
-            local mod_type = tool_entry.tool_mod_type
-            tools = {
-                [mod_type] = {
-                    key = tool_entry.tool_key,
-                    data = tool_entry.tool_data,
-                    label = tool_entry.tool_label,
-                },
-            }
-        end
+        -- The entry's toolchains by module type: a host tool's, or an SDK's
+        -- kit toolchains — stored as tool keys, which carry the SDK (spec
+        -- §1.6), so the profile keeps it across a reload.
+        local tools = require("loomworks.workspace").tool_entry_tools(tool_entry)
+        local sdk = tool_entry and tool_entry.sdk or nil
+        local sdk_key = sdk and sdk.key or nil
 
         local data = {
             configuration_set = self.name,

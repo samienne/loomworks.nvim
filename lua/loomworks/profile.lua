@@ -290,14 +290,17 @@ function Profile:_apply(data)
     self.description, self._description_invalid = description_mod.from_file(data.description)
     self._tool_keys = read_tool_keys(data.tools)
     self._sdk_key = data.sdk or nil
-    -- SDK domain object resolved during _sync_profiles or set_sdk()
+    -- Read pre-resolved Tool domain objects (set by _sync_profiles)
+    self._tool_objects = data._tool_objects
+
+    -- SDK domain object resolved during _sync_profiles or set_sdk(); without
+    -- a pinned `sdk`, the SDK its tool keys carry (spec §1.6).
     if data._sdk then
         self._sdk = data._sdk
         self._sdk_key = data._sdk.key
+    elseif not data.sdk then
+        self._sdk_key, self._sdk = self:_sdk_of_tools()
     end
-
-    -- Read pre-resolved Tool domain objects (set by _sync_profiles)
-    self._tool_objects = data._tool_objects
 
     -- Read pre-resolved ConfigurationSet reference (set by _sync_profiles)
     self._config_set_ref = data._config_set_ref
@@ -398,6 +401,23 @@ end
 function Profile:set_sdk(sdk)
     self._sdk = sdk
     self._sdk_key = sdk and sdk.key or nil
+end
+
+--- The SDK the profile's tool keys carry (spec §1.6): the first tool,
+--- in key order, whose data names an SDK (`sdk_key`).
+--- @return string|nil sdk_key, loomworks.SDK|nil sdk
+function Profile:_sdk_of_tools()
+    local ws = self._workspace
+    if not ws or not ws._modules then return nil, nil end
+    for _, k in ipairs(self._tool_keys or {}) do
+        for _, mod in pairs(ws._modules) do
+            local tool = mod:find_tool(k)
+            if tool and tool.data and tool.data.sdk_key then
+                return tool.data.sdk_key, ws:find_sdk(tool.data.sdk_key)
+            end
+        end
+    end
+    return nil, nil
 end
 
 --- Resolve SDK-derived tool for a module type.
@@ -1090,23 +1110,7 @@ function Profile:remove_tool(tool_key)
     local old_key = self.key
     self._tool_keys = #kept > 0 and kept or {}
     -- Re-derive SDK key from remaining tools (first tool with sdk_key wins).
-    local new_sdk_key, new_sdk = nil, nil
-    for _, k in ipairs(self._tool_keys) do
-        local ws = self._workspace
-        if ws and ws._modules then
-            for _, mod in pairs(ws._modules) do
-                local tool = mod:find_tool(k)
-                if tool and tool.data and tool.data.sdk_key then
-                    new_sdk_key = tool.data.sdk_key
-                    new_sdk = ws:find_sdk(new_sdk_key)
-                    break
-                end
-            end
-            if new_sdk_key then break end
-        end
-    end
-    self._sdk = new_sdk
-    self._sdk_key = new_sdk_key
+    self._sdk_key, self._sdk = self:_sdk_of_tools()
     self:_derive_key()
     self:_after_key_rename(old_key)
 end

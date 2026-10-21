@@ -810,6 +810,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- A profile created from an SDK in the status page's tool picker lost its
+  SDK on the next load: it was saved without toolchains, came back as the
+  configuration set's toolless profile, and its key clashed with an existing
+  toolless profile of that set. It now stores the SDK's kit toolchains as
+  its tools, as picking the kit does. The picker offers an SDK only when it
+  yields a kit for the set's project types. (#311)
 - `lw profile create` for a profile that already exists no longer resets its
   intent to `local`; only a new profile starts `local`, so re-running it on a
   published profile keeps it published. (#310)

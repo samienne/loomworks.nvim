@@ -1660,7 +1660,11 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   exactly against `model_commands.profile_tool_choices`' entries (a
   module's keyed host toolchains, then the relevant resolved SDKs, which
   `tool_wire` sends as `{ sdk = true, key, label }`), so the entry handed
-  to `model_commands.profile_create` carries the live SDK object. A profile's
+  to `model_commands.profile_create` carries the live SDK object and its kit
+  toolchains (`sdk_tools`, the first keyed kit per module type of the set,
+  from `Workspace:tool_entries_for`, shared with the status page's picker);
+  `ConfigurationSet:ensure_profile` stores those as the profile's tool keys
+  (spec §1.6), so the profile keeps its SDK across a reload. A profile's
   toolchain change takes O in `model_commands` (`op_lock.guard` on its
   local `Toolchain.change`), a set rename through
   `Workspace:rename_configuration_set`'s guard.
