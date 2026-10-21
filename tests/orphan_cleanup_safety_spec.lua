@@ -374,6 +374,43 @@ describe("orphan cleanup deletion safety", function()
             assert.is_not_nil(uv.fs_stat(dir), "the orphan dir holding the live dir was removed")
         end)
     end)
+    -- Crash rule (Deletion Safety 4, spec §5.7): when the `unknown` marks
+    -- cannot reach the disk (the cache write fails, or the concurrent-writer
+    -- guard refuses the save) no tree is removed; the in-memory marks are
+    -- undone and every item fails through the deletion_failed path.
+    it("removes nothing when the unknown marks cannot be saved", function()
+        local unit = ws._profiles[1]:projects()[1]._config_unit
+        assert.is_not_nil(unit and unit._build_dir, "test setup: the live unit has a BuildDir")
+        local prior_bd, prior_unit = unit._build_dir.state, unit.state_value
+        local handed = {}
+        io_mod.rm_rf_async = function(d, cb)
+            handed[#handed + 1] = d
+            return real_rm(d, cb)
+        end
+        local failed
+        ws:on("deletion_failed", function(p) failed = p end)
+        local real_cache = ws._core._deps.cache
+        ws._core._deps.cache = setmetatable({
+            save = function() return false, "disk full" end,
+        }, { __index = real_cache })
+        local done, work_ran = false, false
+        local ok_run, err_run = pcall(function()
+            ws:_run_deletion({
+                { project_key = "App", config_key = "Debug", build_dir = built, unit = unit },
+            }, function() work_ran = true end, function() done = true end)
+            assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        end)
+        ws._core._deps.cache = real_cache
+        assert(ok_run, err_run)
+        assert.equals(0, #handed, "rm-rf was handed " .. table.concat(handed, ", "))
+        assert.is_not_nil(uv.fs_stat(built), "the tree was removed")
+        assert.equals(prior_bd, unit._build_dir.state, "the BuildDir was left marked unknown")
+        assert.equals(prior_unit, unit.state_value, "the unit was left marked unknown")
+        assert.is_false(unit:is_deleting(), "the unit was left deleting")
+        assert.is_not_nil(failed, "deletion_failed not emitted")
+        assert.equals(1, #failed.errors)
+        assert.is_false(work_ran, "the cache mutations ran")
+    end)
 end)
 
 -- The status page's "Clean all" action reports the outcome `on_done` gives
