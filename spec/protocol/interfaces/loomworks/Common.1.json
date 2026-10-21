@@ -38,6 +38,13 @@
       "additionalProperties": false,
       "properties": { "id": { "$ref": "#/$defs/Id" } }
     },
+    "Entity": {
+      "description": "An entity a command created or kept (API.md §19): its id, and its key (a configuration's or launch configuration's name).",
+      "type": "object",
+      "required": ["id", "key"],
+      "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/Id" }, "key": { "type": "string" } }
+    },
     "Environment": {
       "description": "The client's environment (API.md §5), sent as the envelope's env.",
       "type": "object",
