@@ -74,7 +74,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   configuration set's toolless profile, and its key clashed with an existing
   toolless profile of that set. It now stores the SDK's kit toolchains as
   its tools, as picking the kit does. The picker offers an SDK only when it
-  yields a kit for the set's project types. (#TBD)
+  yields a kit for the set's project types. (#312)
 
 - Orphan cleanup could delete a live build directory when the workspace was
   reached through a different spelling of the same path (e.g. a Windows 8.3
