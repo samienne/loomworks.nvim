@@ -564,17 +564,16 @@ local function read_segment(service, ctx, fn)
     return require("loomworks.daemon.interfaces").ASYNC
 end
 
---- Wait for a toolchain detection that is running (the in-process path's
---- `_tool_waiters`), as a full load waits for it; nil when it settled, else
---- the refusal.
+--- The refusal while a toolchain detection is running (the in-process path's
+--- `_tool_state == "scanning"`), else nil. It never waits: the request runs in
+--- the serial model queue, and a wait there would stall every other model
+--- request past the clients' timeout. The refusal is transient (exit code 1);
+--- the caller tries again.
 --- @param ws table
 --- @return table|nil refusal
 local function settled_tools(ws)
     if ws._tool_state ~= "scanning" then return nil end
-    vim.wait(require("loomworks.daemon.service").LOAD_WAIT_MS, function() return ws._tool_state ~= "scanning" end, 25)
-    if ws._tool_state == "scanning" then
-        return require("loomworks.model_commands").refused("the toolchain detection is still running; try again")
-    end
+    return require("loomworks.model_commands").refused("toolchains are still being detected")
 end
 
 --- The `loomworks.Toolchains/1` handlers.

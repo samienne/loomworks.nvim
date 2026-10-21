@@ -123,6 +123,26 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
             assert.equals(count, #ws._profiles)
         end)
 
+    it("tool_choices and create refuse at once while toolchains are being detected; nothing is created", function()
+        local ws = loaded()
+        local count = #ws._profiles
+        ws._tool_state = "scanning"
+        local ok, err = pcall(function()
+            for _, method in ipairs({ "tool_choices", "create" }) do
+                local t0 = vim.uv.hrtime()
+                local r = profiles(method, { config_set = { key = "dev" } })
+                local ms = (vim.uv.hrtime() - t0) / 1e6
+                assert.equals("refused", r.outcome, vim.inspect(r))
+                assert.equals("toolchains are still being detected", r.message)
+                assert.equals(1, r.exit_code)
+                assert.is_true(ms < 5000, method .. " waited " .. ms .. " ms")
+            end
+        end)
+        ws._tool_state = "scanned"
+        assert(ok, err)
+        assert.equals(count, #ws._profiles)
+    end)
+
     it("candidates lists the declared sets by id and the automatic ones by token; create takes a token", function()
         local ws = loaded()
         ws.generate_default_config_sets = function() return { Auto = { app = "Debug" } } end

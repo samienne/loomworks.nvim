@@ -979,16 +979,23 @@ Each reaches subscribers as `Workspace/1` `changed` and in
   for a profile without one (shown incomplete, never a guessed default); an
   existing profile of that set and toolchain is returned, not duplicated. A
   new profile's intent is `local`. With `activate` it is also made active.
-  It waits for a toolchain detection that is running, as the in-process
-  path does;
+  While a toolchain detection is running it is `refused` at once with
+  `toolchains are still being detected` (exit code 1, a state refusal the
+  client may retry), never waiting for the detection;
 - **`Profiles/1.tool_choices { config_set }`** → `{ outcome = "ok", tools:
   [{ module, key?, label }] }` — the toolchains a profile of that set can
-  use, detected in the client's environment; `config_set` as for `create`;
+  use, detected in the client's environment; `config_set` as for `create`,
+  and refused as `create` is while a toolchain detection is running;
 - **`Profiles/1.add_tool { profile, tool }`** / **`remove_tool { profile,
   tool }`** — adds or removes a toolchain, `tool` its key (§1.2). The
   profile's key is derived again (spec §1.6); its id is kept, and the new
   key propagates as a profile rename does, under the workspace operation
-  lock (spec §19.3).
+  lock (spec §19.3). `add_tool` of a toolchain the model does not know is
+  `refused` with `no toolchain '<key>'`; `remove_tool` of a toolchain the
+  profile does not have, with `no toolchain '<key>' on profile '<key>'`.
+
+SDK toolchains are not yet offered by `tool_choices` nor accepted by
+`create`; their support follows in a later change.
 
 A profile is deleted with `Maintenance/1.execute_deletion` (§22).
 
