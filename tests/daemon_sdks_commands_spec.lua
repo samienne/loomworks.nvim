@@ -42,7 +42,7 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
             local SDK = require("loomworks.sdk")
             local P = { id = "fake_b4", api_version = require("loomworks.api_versions").sdk,
                 display_name = "Fake B4" }
-            function P.validate(path) return path ~= "/not/an/sdk" and { version = "1" } or nil end
+            function P.validate(path) return not path:find("not-an-sdk", 1, true) and { version = "1" } or nil end
             function P.create_sdk(key, path, version)
                 return SDK.new({ key = key, type = "fake_b4", version = version, path = path,
                     resolved = true, provider = P })
@@ -144,7 +144,7 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
 
     it("add refuses an invalid path and an SDK already declared; remove by key", function()
         loaded()
-        local r = sdks("add", { provider = "fake_b4", path = "/not/an/sdk" })
+        local r = sdks("add", { provider = "fake_b4", path = root .. "/not-an-sdk" })
         assert.equals("refused", r.outcome)
         assert.truthy(r.message:find("is not a valid fake_b4 installation", 1, true), r.message)
         assert.equals("ok", sdks("add", { provider = "fake_b4", path = root }).outcome)
@@ -154,6 +154,16 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
         assert.equals("ok", sdks("remove", { sdk = { key = "fake_b4-1" } }).outcome)
         r = sdks("remove", { sdk = { key = "fake_b4-1" } })
         assert.equals("no SDK 'fake_b4-1'", r.message)
+    end)
+
+    it("add refuses a relative path, nothing declared", function()
+        local ws = loaded()
+        local n = #(ws._sdks or {})
+        local r = sdks("add", { provider = "fake_b4", path = "relative/sdk" })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("SDK path 'relative/sdk' is not absolute", r.message)
+        assert.equals(n, #(ws._sdks or {}))
+        assert.is_nil((working_copy(root).sdks or {})["fake_b4-1"])
     end)
 
     it("rescan detects every type afresh; changed only when the toolchains changed", function()
@@ -227,5 +237,56 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
         assert.equals("ok", r.outcome, vim.inspect(r))
         assert.same({ "SDK 'fake_b4-1' added; toolchain detection did not finish in time; it goes on in the background" },
             r.notes)
+    end)
+
+    it("a remove whose rescan does not finish in time is ok with the warn note", function()
+        loaded()
+        assert.equals("ok", sdks("add", { provider = "fake_b4", path = root }).outcome)
+        srv.service.ws._core._deps.detect_tools_async = function() end
+        service.LOAD_WAIT_MS = 200
+        local r = sdks("remove", { sdk = { key = "fake_b4-1" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.same({ "SDK 'fake_b4-1' removed; toolchain detection did not finish in time; it goes on in the background" },
+            r.notes)
+        assert.same({ "warn" }, r.note_roles)
+    end)
+
+    it("a late detection that changes no toolchain sends no changed", function()
+        local ws = loaded()
+        local before = vim.deepcopy(ws._tools_by_type)
+        local finish
+        ws._core._deps.detect_tools_async = function(_, _, cb) finish = cb end
+        service.LOAD_WAIT_MS = 200
+        local seq = srv.seq
+        local r = toolchains("rescan")
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.same({ "warn" }, r.note_roles)
+        assert.is_function(finish)
+        finish(before)
+        assert.is_true(vim.wait(5000, function() return ws._tool_state == "scanned" end, 10))
+        assert.is_true(vim.wait(5000, function() return srv.service._late_tools == nil end, 10),
+            "the late detection never settled")
+        vim.wait(300)
+        assert.equals(seq, srv.seq, "the same toolchains: no changed")
+    end)
+
+    it("a late detection that finishes after its workspace was torn down sends nothing", function()
+        local ws = loaded()
+        local finish
+        local events = ws._core._deps.events
+        ws._core._deps.detect_tools_async = function(_, _, cb) finish = cb end
+        service.LOAD_WAIT_MS = 200
+        local seq = srv.seq
+        assert.equals("ok", toolchains("rescan").outcome)
+        assert.is_function(finish)
+        ws:teardown()
+        assert.is_true(ws._torn_down)
+        finish({ shell = { { tool_key = "late", tool_label = "late", tool_data = { id = "late" } } } })
+        vim.wait(300)
+        -- Even a `tools_detected` from elsewhere does not signal for the torn-down model.
+        assert.has_no.errors(function() events.emit("tools_detected") end)
+        vim.wait(300)
+        assert.equals(seq, srv.seq, "a torn-down workspace's late detection signalled changed")
+        assert.is_nil(srv.service._late_tools)
     end)
 end)

@@ -5,6 +5,24 @@ they don't get lost.
 
 ---
 
+## Toolchain scans have no generation counter
+
+`Workspace:_scan_tools_async` (`lua/loomworks/workspace.lua:5349`) starts a
+detection without a generation: every completion sets `_tool_state =
+"scanned"` and emits `tools_detected`, whichever scan it belongs to. If a
+late scan A (one that outran a daemon write's wait, `Service:tools_late`) is
+still running when a write starts scan B, A's completion marks `scanned`
+during B's wait (`await_tools`, `lua/loomworks/daemon/core_interfaces.lua`),
+so B replies early, and B's result then lands with no `_late_tools`
+registered: a toolchain change from B sends no Workspace/1 `changed`. A
+pre-existing race, made more reachable by the daemon's `Toolchains/1.rescan`
+and `Sdks/1.add` / `remove` (#313). Fix: a scan generation counter; only the
+newest scan's completion marks `scanned` (and settles `_late_tools`).
+
+Related (memory only): `Service._late_tools`
+(`lua/loomworks/daemon/service.lua:1051`) keeps a torn-down workspace alive
+until the next `tools_detected` clears it.
+
 ## `written_by` stamp from dev builds
 
 A dev build stamps the files it writes with e.g. `0.1.49+dev`: `M.version()`

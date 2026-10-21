@@ -684,6 +684,13 @@ function M.sdks_impl(service)
 
     function methods.add(ctx, args)
         return command(service, ctx, function(ws)
+            -- The daemon's cwd is not the caller's: a relative path would
+            -- resolve against the wrong directory (API.md §21). An unknown
+            -- provider is refused first (by sdk_add).
+            if type(args.path) == "string" and require("loomworks.sdks").get(args.provider)
+                and not require("loomworks.exe").is_absolute(args.path) then
+                return mc.refused("SDK path '" .. args.path .. "' is not absolute")
+            end
             local before = tools_before(service, ws)
             local r = mc.sdk_add(ws, args.provider, args.path)
             if r.outcome ~= "ok" then return r end
@@ -701,9 +708,10 @@ function M.sdks_impl(service)
             local sdk, err = sdk_of(service, ws, args.sdk)
             if not sdk then return mc.refused(err) end
             local before = tools_before(service, ws)
+            local key = sdk.key
             local r = mc.sdk_remove(ws, sdk)
             if r.outcome == "ok" and not await_tools(service, ws, before) then
-                r.notes, r.note_roles = { RESCAN_UNFINISHED }, { "warn" }
+                r.notes, r.note_roles = { "SDK '" .. key .. "' removed; " .. RESCAN_UNFINISHED }, { "warn" }
             end
             return r
         end)

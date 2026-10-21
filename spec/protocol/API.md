@@ -1651,7 +1651,9 @@ a query; the others are commands (§6).
   paths each finds, in the client's environment;
 - `add { provider, path }` → `ok` with `sdk { id, key }` — declares the SDK
   and detects the toolchains again (as `Toolchains/1.rescan`, §11), so its
-  kits are offered;
+  kits are offered; `path` must be absolute (the daemon's working directory
+  is not the client's): with a known provider a relative one is `refused`
+  (`SDK path '<path>' is not absolute`), nothing declared;
 - `remove { sdk }` — removes its declaration and detects the toolchains
   again, so its kits leave the toolchains and no profile resolves against
   the removed SDK.
@@ -1661,8 +1663,8 @@ answer only after it settled or 45 s passed, other model requests queue
 behind them, and a client calls them with a timeout of at least 45 s. A
 detection that outruns the wait leaves the reply `ok`, with a warn note
 (`add`: `SDK '<key>' added; toolchain detection did not finish in time; it
-goes on in the background`; `remove`: `toolchain detection did not finish in
-time; it goes on in the background`), and `changed` follows when it
+goes on in the background`; `remove`: `SDK '<key>' removed; toolchain
+detection did not finish in time; it goes on in the background`), and `changed` follows when it
 finishes. The in-process editor's add and remove start the same detection
 without waiting for it.
 
