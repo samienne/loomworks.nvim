@@ -568,7 +568,7 @@ end
 --- @field _tool_waiters function[]
 --- @field _lsp_ready boolean active profile's owned LSP databases are generated/settled (§9.7)
 --- @field _delete_waiters function[]
---- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
+--- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> build-dir identity key (`_build_dir_ref_key`) -> units
 --- @field _artifact_refs table<string, loomworks.ConfigUnit[]> normalized_artifact_path -> units (§5.9)
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 --- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
@@ -1155,6 +1155,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
             return self:_compute_build_dir(project, variant, tool_data)
         end,
         dir_exists = self._core._deps.dir_exists,
+        build_dir_ref_key = function(dir) return self:_build_dir_ref_key(dir) end,
     })
 
     self._modules = result.modules
@@ -1358,18 +1359,33 @@ function Workspace:_rebuild_profile_projects_for(profile)
 end
 
 
+--- Identity key of a build directory in the `_build_dir_refs` index: its
+--- canonical form (`_canonicalize_boundary_path` — 8.3 short<->long and case
+--- reconciled, links resolved), so two spellings of one directory (e.g. a
+--- Windows runner's `C:/Users/RUNNER~1/...` vs the long form) key the same
+--- entry and the shared-dir check in `_run_deletion` sees both users. A path
+--- that does not resolve falls back (inside `_canonicalize_boundary_path`) to
+--- its longest existing ancestor's canonical form + the missing tail, else to
+--- plain normalization — the same function on the insert and lookup sides.
+--- Display spellings (cached `build_dir`) are untouched.
+--- @param dir string
+--- @return string
+function Workspace:_build_dir_ref_key(dir)
+    return self:_canonicalize_boundary_path(dir)
+end
+
 --- Rebuild the build dir reverse index from ConfigUnit objects.
---- Delegates to data_model.sync_build_dir_refs.
+--- Delegates to data_model.sync_build_dir_refs, keyed by `_build_dir_ref_key`.
 function Workspace:_sync_build_dir_refs()
     self._build_dir_refs = data_model.sync_build_dir_refs(
-        self._config_units, self._core._deps.normalize)
+        self._config_units, function(dir) return self:_build_dir_ref_key(dir) end)
 end
 
 --- Get the ConfigUnits that share a build directory.
---- @param build_dir string normalized build directory path
+--- @param build_dir string build directory path (any spelling)
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
-    return self._build_dir_refs[build_dir] or {}
+    return self._build_dir_refs[self:_build_dir_ref_key(build_dir)] or {}
 end
 
 --- Rebuild the output-artifact reverse index from ConfigUnit objects (§5.9).
@@ -4239,12 +4255,20 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         local safe_prefix = ws._core._deps.normalize(ws.root)
         local dirs = {}
         local seen_dirs = {}
+        -- Re-index now so the refs keys and the lookups below are canonicalized
+        -- against the same on-disk state (a dir created since the last sync
+        -- would otherwise key differently on the two sides).
+        ws:_sync_build_dir_refs()
         for _, item in ipairs(items) do
             if item.build_dir then
                 local normalized = ws._core._deps.normalize(item.build_dir)
-                if not seen_dirs[normalized] and ws:_validate_build_dir(normalized, safe_prefix) then
-                    seen_dirs[normalized] = true
-                    local ref_units = ws._build_dir_refs[normalized]
+                -- Shared-dir check and dedup by directory IDENTITY, not
+                -- spelling: an 8.3 short and a long spelling of one dir are
+                -- the same tree (spec §4.6).
+                local ident = ws:_build_dir_ref_key(item.build_dir)
+                if not seen_dirs[ident] and ws:_validate_build_dir(normalized, safe_prefix) then
+                    seen_dirs[ident] = true
+                    local ref_units = ws._build_dir_refs[ident]
                     if ref_units then
                         local remaining_refs = 0
                         for _, ref_unit in ipairs(ref_units) do
