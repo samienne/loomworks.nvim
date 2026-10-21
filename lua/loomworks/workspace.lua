@@ -4664,7 +4664,9 @@ end
 ---   reset-all has itself just removed (`_reset_all_unlocked`); the shared-
 ---   refs and root checks still apply. `report`: a table that receives
 ---   `kept` = `{ dir, why = "shared"|"live" }[]`, the dirs left on disk by
----   those checks (their entries still dropped).
+---   those checks (their entries still dropped), and `removed` = the
+---   normalized dirs whose removal was confirmed (never a dir refused by
+---   `_validate_build_dir` or kept by those checks).
 --- @return loomworks.Future
 function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     local future_mod = require("loomworks.future")
@@ -4697,8 +4699,13 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     local dir_owner = {}
     local function deleted_ok(results)
         local out = {}
+        local report = opts and opts.report or nil
+        if report then report.removed = {} end
         for _, r in ipairs(results) do
-            if r.ok then out[#out + 1] = { dir = r.dir, mod = dir_owner[r.dir] } end
+            if r.ok then
+                out[#out + 1] = { dir = r.dir, mod = dir_owner[r.dir] }
+                if report then report.removed[#report.removed + 1] = r.dir end
+            end
         end
         return out
     end
@@ -4852,7 +4859,8 @@ end
 --- @param on_done? function called when deletion is complete
 --- Execute a deletion plan asynchronously. Returns a Future.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean }
+--- `opts.report`: as `_run_deletion`'s (`kept`, `removed`).
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table }
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
@@ -4920,7 +4928,7 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         if #eff_reset > 0 then
             self:reset_cached_configs(eff_reset)
         end
-    end, on_done, opts.reason, { stop = opts.stop })
+    end, on_done, opts.reason, { stop = opts.stop, report = opts.report })
 
     return f
 end
@@ -4969,28 +4977,36 @@ function Workspace:_reset_all_unlocked(on_done, opts)
     -- Every live unit's dir is removed in phase 1, so an orphan's tree that
     -- contains or lies inside only those dirs is removed too (a reset-all
     -- leaves no build dirs, spec §16.30; `reset_plan` lists it as removed).
-    -- Only after phase 1 succeeded: a live dir it failed to remove keeps the
-    -- overlap protection. Shared refs and the root check still apply.
+    -- Only after phase 1 succeeded, and only the dirs whose removal phase 1
+    -- CONFIRMED: a live dir it failed to remove, refused (`_validate_build_dir`,
+    -- e.g. a junction leading outside the root) or kept as shared keeps the
+    -- overlap protection, and an orphan kept for it is not removed (the reset
+    -- does not succeed). Shared refs and the root check still apply.
     local exempt = nil
+    local phase1 = {}
     local function delete_orphans(i)
         if i > #orphan_keys or (stop and stop()) then
             if i <= #orphan_keys then all_ok = false end
             if on_done then on_done() end
             return future_mod.resolved(all_ok)
         end
+        local report = {}
         return ws:delete_orphaned_build_dir(orphan_keys[i], nil,
-                { stop = stop, overlap_exempt = exempt }):next(function(ok)
+                { stop = stop, overlap_exempt = exempt, report = report }):next(function(ok)
             if ok ~= true then all_ok = false end
+            for _, k in ipairs(report.kept or {}) do
+                if k.why == "live" then all_ok = false end
+            end
             return delete_orphans(i + 1)
         end)
     end
 
-    return self:execute_deletion({ items = items }, stop and { stop = stop } or nil):next(function(ok)
+    return self:execute_deletion({ items = items }, { stop = stop, report = phase1 }):next(function(ok)
         if ok ~= true then
             all_ok = false
         else
             exempt = {}
-            for _, item in ipairs(items) do exempt[#exempt + 1] = item.build_dir end
+            for _, d in ipairs(phase1.removed or {}) do exempt[#exempt + 1] = d end
         end
         return delete_orphans(1)
     end)

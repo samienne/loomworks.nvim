@@ -413,6 +413,26 @@ describe("view deletion safety", function()
             assert.is_not_nil(uv.fs_stat(dir))
             assert.is_not_nil(uv.fs_stat(built), "the live build dir went with the orphan")
         end)
+
+        -- A live dir phase 1 refused (`_validate_build_dir`: e.g. a junction
+        -- leading outside the root) was never removed, so it must keep
+        -- protecting the orphan that contains it: the reset leaves both and
+        -- does not report success (spec §16.30: a refused dir is not removed).
+        it("keeps an orphan dir holding a live build dir the deletion refused", function()
+            local dir = add_orphan(ws, root, root .. "/.nvim/build/App")
+            local norm = ws._core._deps.normalize
+            local refused = norm(built)
+            local real_validate = ws._validate_build_dir
+            ws._validate_build_dir = function(w, d, ...)
+                if norm(d) == refused then return false end
+                return real_validate(w, d, ...)
+            end
+            local plan, got = reset_all()
+            assert.is_true(vim.tbl_contains(plan.outside_dirs, built), "test setup: listed as not removed")
+            assert.is_not_nil(uv.fs_stat(built), "the refused live build dir was removed")
+            assert.is_not_nil(uv.fs_stat(dir), "the orphan holding the refused live dir was removed")
+            assert.are_not.equal(0, got.code, "the reset reported success")
+        end)
     end)
 
     describe("stray directory deletion", function()
