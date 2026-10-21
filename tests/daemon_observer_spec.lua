@@ -98,10 +98,10 @@ local function mount_views(srv, o)
             initial = function() return VIEW_STATE.tests end,
         }))
     end
-    assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = {
+    assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = H.workspace_stub({
         header = function() return { root = srv.root, pid = srv.pid, lw_version = srv.identity,
             session_generation = srv.generation, state = "unloaded" } end,
-    } }))
+    }) }))
     -- A daemon that has not loaded the workspace: what a freshly launched
     -- one reports until a request loads it.
     VIEW_STATE.header = { root = srv.root, pid = srv.pid, lw_version = srv.identity,

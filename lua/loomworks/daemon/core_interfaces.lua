@@ -1,7 +1,9 @@
 --- loomworks/daemon/core_interfaces.lua — the core interfaces the build
 --- service serves (spec §19.20 "Interface catalogue", step 5g.2):
 ---
----   /workspace   loomworks.Workspace/1    header (changed, header_changed)
+---   /workspace   loomworks.Workspace/1    header, publish, publish_one, revert_one, revert_to_baseline,
+---                                         set_intent, set_description, trust_accept, delete_user_prefs
+---                                         (changed, header_changed)
 ---   /tasks       loomworks.Tasks/1        list, cancel (started, ended, step)
 ---   /internal    lw.internal.Snapshot/1   get (same_build)
 ---   /build       loomworks.Build/1        build T, configure T, clean T, reset T
@@ -164,12 +166,162 @@ function M.lsp_check(service, force)
     end
 end
 
---- The `loomworks.Workspace/1` handlers.
+--- The item an `ItemRef` (API.md §1.2) names: a profile, configuration set,
+--- project, configuration or launch configuration of `ws`, by its id alone
+--- (ids are unique across kinds), or nil + the stale-reference refusal.
+--- @param service loomworks.daemon.BuildService
+--- @param ws table
+--- @param ref { id: string }
+--- @return table|nil item, string|nil err
+local function item_of(service, ws, ref)
+    local candidates = {}
+    local function add(list)
+        for _, o in pairs(list or {}) do candidates[#candidates + 1] = o end
+    end
+    add(ws._profiles)
+    add(ws._config_sets)
+    add(ws._projects)
+    for _, p in pairs(ws._projects or {}) do
+        if not p._removed then
+            add(p._configurations)
+            add(p._launches)
+        end
+    end
+    local item = service.ids:find(ref.id, candidates)
+    if not item then return nil, "no item with id " .. tostring(ref.id) .. " (a stale reference)" end
+    return item
+end
+
+--- The `loomworks.Workspace/1` handlers (API.md §6). The commands run in a
+--- model segment of the caller's environment (as `write_segment`): ids
+--- resolve to the live objects once, here, and the write is the shared
+--- loomworks.model_commands function the in-process editor calls. A publish
+--- takes the workspace operation lock O (Workspace:publish / publish_one are
+--- guarded, spec §19.3); a refusal of a lock or a save names its cause (the
+--- holder). `trust_accept` / `delete_user_prefs` act on the core's working
+--- copy, also while the load is refused, and the daemon then serves the
+--- load they started.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.workspace_impl(service)
+    local interfaces = require("loomworks.daemon.interfaces")
+    local envscope = require("loomworks.daemon.envscope")
+    local mc = require("loomworks.model_commands")
     local methods = {}
     function methods.header() return M.header(service) end
+
+    --- The reply of a command outcome: only the protocol's fields; a refused
+    --- write reports the lock or save refusal the host recorded (it names
+    --- the holder), without repeating it as a note.
+    local function reply_of(r, seg)
+        local out = { outcome = r.outcome, message = r.message, exit_code = r.exit_code,
+            lines = r.lines, plan = r.plan, notes = r.notes, note_roles = r.note_roles }
+        if r.outcome == "refused" and seg and seg.refused then
+            out.message = seg.refused
+            local notes, roles = {}, {}
+            for i, n in ipairs(seg.notes or {}) do
+                if not n:find(seg.refused, 1, true) then
+                    notes[#notes + 1] = n
+                    roles[#roles + 1] = (seg.note_roles or {})[i]
+                end
+            end
+            seg.notes = #notes > 0 and notes or nil
+            seg.note_roles = #roles > 0 and roles or nil
+        end
+        return out
+    end
+
+    --- A command on the loaded model: `fn(ws)` → a model_commands outcome.
+    local function command(ctx, fn)
+        service:_on_model_request(ctx.conn, { kind = "workspace_command", env = ctx.env }, function(ws, seg)
+            -- A change another process wrote is taken in first: the write
+            -- then never refuses as stale for it (§2.7).
+            local tr = ws._tracker
+            if tr and tr.sync then tr:sync() end
+            if service.host.current() ~= ws then
+                return { outcome = "refused", exit_code = 1,
+                    message = "the workspace was reloaded (refused or changed .nvim files); try again" }
+            end
+            local out = reply_of(fn(ws), seg)
+            -- The outcome's own notes follow the segment's (the request
+            -- replies with the segment's list).
+            for i, n in ipairs(out.notes or {}) do
+                seg.notes, seg.note_roles = seg.notes or {}, seg.note_roles or {}
+                seg.notes[#seg.notes + 1] = n
+                seg.note_roles[#seg.notes] = (out.note_roles or {})[i] or "plain"
+            end
+            out.notes, out.note_roles = nil, nil
+            return out
+        end, nil, function(fields) ctx.reply(fields) end)
+        return interfaces.ASYNC
+    end
+
+    --- A command naming one item.
+    local function item_command(ctx, args, fn)
+        return command(ctx, function(ws)
+            local item, err = item_of(service, ws, args.item)
+            if not item then return mc.refused(err) end
+            return fn(item)
+        end)
+    end
+
+    function methods.publish(ctx) return command(ctx, mc.publish) end
+    function methods.revert_to_baseline(ctx) return command(ctx, mc.revert_to_baseline) end
+    function methods.publish_one(ctx, args) return item_command(ctx, args, mc.publish_one) end
+    function methods.revert_one(ctx, args) return item_command(ctx, args, mc.revert_one) end
+    function methods.set_intent(ctx, args)
+        return item_command(ctx, args, function(item) return mc.set_intent(item, args.intent) end)
+    end
+    function methods.set_description(ctx, args)
+        local text = args.text
+        if text == vim.NIL then text = nil end
+        return item_command(ctx, args, function(item) return mc.set_description(item, text) end)
+    end
+
+    --- A command on the working copy itself (served while the load is
+    --- refused): the load is tried first, so the core is this daemon's
+    --- (its handlers installed) whatever the outcome; `act(core, root)` then
+    --- runs, and a load it started is adopted.
+    local function prefs_command(ctx, act)
+        if service.stopping or service.server.stopped then
+            return { outcome = "declined", reason = "the workspace runtime is stopping" }
+        end
+        local env, eerr = envscope.validate(ctx.env)
+        if not env then return { outcome = "declined", reason = eerr } end
+        local seg = { op = "workspace_prefs", conn = ctx.conn, env = env, args = {} }
+        function seg.reply(fields)
+            seg.replied = true
+            service:_before_ack(seg)
+            ctx.reply(fields)
+        end
+        service:with_model(seg, function()
+            if ctx.conn.closed then return end
+            local _, _, decline = service:live(seg)
+            if decline then return seg.reply({ outcome = "declined", reason = decline }) end
+            local r = act(service.host.core(), service.server.root)
+            if r.reloaded then service:_adopt_reload(seg) end
+            local out = reply_of(r)
+            -- What the core reported meanwhile (a lock refusal, a failed
+            -- deletion) precedes the outcome's own notes.
+            if seg.notes then
+                local notes, roles = vim.list_extend({}, seg.notes), vim.list_extend({}, seg.note_roles or {})
+                for i, n in ipairs(out.notes or {}) do
+                    notes[#notes + 1] = n
+                    roles[#notes] = (out.note_roles or {})[i] or "plain"
+                end
+                out.notes, out.note_roles = notes, roles
+            end
+            seg.reply(out)
+        end)
+        return interfaces.ASYNC
+    end
+
+    function methods.trust_accept(ctx, args)
+        return prefs_command(ctx, function(core, root) return mc.trust_accept(core, root, args.plan) end)
+    end
+    function methods.delete_user_prefs(ctx, args)
+        return prefs_command(ctx, function(core, root) return mc.delete_user_prefs(core, root, args.plan) end)
+    end
     return { methods = methods }
 end
 

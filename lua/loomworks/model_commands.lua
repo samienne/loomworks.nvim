@@ -233,6 +233,99 @@ function M.set_description(item, text)
 end
 
 -- ---------------------------------------------------------------------------
+-- Workspace/1: the working copy's trust (API.md §6; spec §17.4, §17.10)
+-- ---------------------------------------------------------------------------
+
+--- The refusal of a confirmation whose plan no longer matches the file.
+M.PLAN_CHANGED = "the working copy changed since it was shown — review it again"
+
+--- The token of what a confirmation showed: the working copy's path and
+--- its exact content.
+--- @param path string
+--- @param content string
+--- @return string
+local function prefs_plan(path, content)
+    return vim.fn.sha256(path .. "\0" .. content)
+end
+
+--- The review of a working copy this machine did not sign (spec §17.4), as
+--- the trust prompt shows it: its path and status, then its program-bearing
+--- fields first and its other contents.
+--- @param review table `Core:review_user_prefs`'s `{ path, status, data }`
+--- @return string[]
+function M.trust_review_lines(review)
+    local prog, other = require("loomworks.program_fields").review(review.data, require("loomworks.modules"))
+    local lines = {
+        review.path,
+        review.status == "unsigned"
+            and "is not signed by this machine (written by hand, or by an earlier loomworks)."
+            or "was modified outside loomworks, or copied from another machine.",
+        "",
+        "Program settings — what loomworks may run on this file's word:",
+    }
+    if #prog == 0 then lines[#lines + 1] = "  (none)" end
+    for _, l in ipairs(prog) do lines[#lines + 1] = "  " .. l end
+    lines[#lines + 1] = "Other contents:"
+    for _, l in ipairs(other) do lines[#lines + 1] = "  " .. l end
+    return lines
+end
+
+--- `trust_accept { plan? }` — the review & trust of spec §17.4. Without
+--- `plan`: `confirm` with the review and a token of exactly that content;
+--- with it: the working copy is signed as shown (`Core:trust_user_prefs`,
+--- which loads the workspace again), or refused when it changed since. An
+--- already trusted working copy is `ok` with a note; none is refused.
+--- `reloaded` in the result: the core was put through setup again (a host
+--- serving the model adopts that load; it is not part of the reply).
+--- @param core loomworks.Core
+--- @param root string
+--- @param plan string|nil
+--- @return loomworks.CommandOutcome|{ outcome: "confirm", lines: string[], plan: string }
+function M.trust_accept(core, root, plan)
+    local review, rerr = core:review_user_prefs(root)
+    if not review then return refused(rerr) end
+    if review.status == "valid" then
+        local r = ok()
+        r.notes = { ".nvim/loomworks.user.json is already trusted (signed by this machine)" }
+        r.note_roles = { "plain" }
+        return r
+    end
+    local token = prefs_plan(review.path, review.content)
+    if plan == nil then
+        return { outcome = "confirm", lines = M.trust_review_lines(review), plan = token }
+    end
+    if plan ~= token then return refused(M.PLAN_CHANGED) end
+    local done, err = core:trust_user_prefs(root, review.content)
+    if not done then return refused(err or "the working copy was not signed") end
+    return ok({ reloaded = true })
+end
+
+--- `delete_user_prefs { plan? }` — remove the working copy and its backup
+--- (spec §17.10; `Core:delete_user_prefs`: the operation lock, the `.nvim`
+--- path check, then a reload), confirmed as `trust_accept` is: the token
+--- covers the file's exact text, so a file changed since it was shown is
+--- refused.
+--- @param core loomworks.Core
+--- @param root string
+--- @param plan string|nil
+--- @return loomworks.CommandOutcome|{ outcome: "confirm", lines: string[], plan: string }
+function M.delete_user_prefs(core, root, plan)
+    local deps = core._deps
+    local path = deps.user.filepath(deps.normalize(root))
+    local text = deps.io.read_file(path)
+    if not text then return refused("no working copy (" .. path .. ") — nothing to delete") end
+    local token = prefs_plan(path, text)
+    if plan == nil then
+        return { outcome = "confirm", plan = token,
+            lines = { "Will delete " .. path .. " (the working copy: profiles, local configuration, settings)." } }
+    end
+    if plan ~= token then return refused(M.PLAN_CHANGED) end
+    core:delete_user_prefs(root)
+    if deps.io.read_file(path) ~= nil then return refused("the working copy was not deleted") end
+    return ok({ reloaded = true })
+end
+
+-- ---------------------------------------------------------------------------
 -- Profiles/1 (API.md §11)
 -- ---------------------------------------------------------------------------
 

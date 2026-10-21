@@ -905,9 +905,9 @@ describe("the observer subscribes to /lsp and reads it (in-process server)", fun
         srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000 })
         assert(srv:start())
         local reg = srv:registry()
-        assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = {
+        assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = H.workspace_stub({
             header = function() return { root = srv.root, state = "loaded" } end,
-        } }))
+        }) }))
         assert(reg:mount("/lsp", "core", "loomworks.LspConfig", 1, { methods = {
             get = function() return vim.deepcopy(STATE) end,
             set_option = function() return { outcome = "ok" } end,

@@ -9745,6 +9745,10 @@ function M._daemon_build_host()
         trust = (kind == "user" or kind == "cache") and kind or nil }
     end,
     unknown_target_hint = function(ws, step, targets) return M._unknown_target_hint(ws, step, targets) end,
+    -- The workspace core itself: Workspace/1's trust_accept and
+    -- delete_user_prefs (API.md §6) act on its working copy, also while its
+    -- load is refused.
+    core = core,
   }
 end
 

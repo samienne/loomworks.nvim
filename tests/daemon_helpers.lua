@@ -429,4 +429,18 @@ function M.three_way(o)
     return ra, rb, rc
 end
 
+--- A stub `loomworks.Workspace/1` handler table: `methods` (its `header`)
+--- plus every command method (step 5o part B1) answering `refused`, so a
+--- test registry mounts the interface (a method without a handler is not
+--- mounted).
+--- @param methods table
+--- @return table methods
+function M.workspace_stub(methods)
+    for _, m in ipairs({ "publish", "publish_one", "revert_one", "revert_to_baseline", "set_intent",
+        "set_description", "trust_accept", "delete_user_prefs" }) do
+        methods[m] = methods[m] or function() return { outcome = "refused", message = "stub", exit_code = 1 } end
+    end
+    return methods
+end
+
 return M
