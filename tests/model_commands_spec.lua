@@ -663,6 +663,87 @@ describe("model_commands.nuke", function()
     assert.equals("refused", mc.nuke(core, "/w", c.plan, true).outcome)
   end)
 
+  -- A real core with a live workspace: the confirm-time plan includes the
+  -- unit build dirs, and the under-lock plan (after the workspace was
+  -- retired) must be computed over the same inputs.
+  local function real_core()
+    local is_win = vim.fn.has("win32") == 1
+    local function norm(p)
+      p = (p or ""):gsub("\\", "/"):gsub("/+$", "")
+      return is_win and p:lower() or p
+    end
+    local Core = require("loomworks.core")
+    local core = Core.new({ notify = function() end, normalize = norm,
+      modules = { list = function() return {} end, get = function() end } })
+    core.setup = function() end
+    return core
+  end
+  local function touch(p, text)
+    vim.fn.mkdir(vim.fn.fnamemodify(p, ":h"), "p")
+    local f = assert(io.open(p, "w")); f:write(text or "x"); f:close()
+  end
+  local function tmp_root()
+    local uv = vim.uv or vim.loop
+    local t = vim.fn.tempname():gsub("\\", "/")
+    vim.fn.mkdir(t, "p")
+    return (uv.fs_realpath(t):gsub("\\", "/"))
+  end
+  local function exists(p) return (vim.uv or vim.loop).fs_lstat(p) ~= nil end
+
+  it("runs a confirmed plan when the live workspace has a unit under .nvim/build", function()
+    local root = tmp_root()
+    touch(root .. "/loomworks.json", "{}")
+    touch(root .. "/.nvim/build/App/Debug/CMakeCache.txt")
+    local core = real_core()
+    core._workspace = { _config_units = { { build_dir_value = root .. "/.nvim/build/App/Debug" } } }
+    local c = mc.nuke(core, root, nil, false)
+    assert.equals("confirm", c.outcome)
+    local r = mc.nuke(core, root, c.plan, true)
+    assert.equals("ok", r.outcome, tostring(r.message))
+    assert.is_false(exists(root .. "/.nvim/build/App/Debug/CMakeCache.txt"))
+    vim.fn.delete(root, "rf")
+  end)
+
+  it("refuses a confirmed plan when a build dir appears while the workspace is retired", function()
+    local root = tmp_root()
+    touch(root .. "/loomworks.json", "{}")
+    touch(root .. "/.nvim/build/App/Debug/CMakeCache.txt")
+    local core = real_core()
+    core._workspace = {
+      _config_units = { { build_dir_value = root .. "/.nvim/build/App/Debug" } },
+      -- Retirement pumps the event loop: a lockfile appears meanwhile.
+      -- (A dead holder's record on this host: reclaimed, so the nuke would
+      -- otherwise run and remove a directory that was never listed.)
+      teardown = function()
+        local lr = require("loomworks.lock_record")
+        local rec = lr.new("build")
+        rec.pid, rec.start_time = 2147483000, "1"
+        vim.fn.mkdir(root .. "/.nvim/build/New", "p")
+        assert(lr.create(root .. "/.nvim/build/New/Rel.loomworks-lock", rec))
+      end,
+    }
+    local c = mc.nuke(core, root, nil, false)
+    assert.equals("confirm", c.outcome)
+    local r = mc.nuke(core, root, c.plan, true)
+    assert.same({ "refused", require("loomworks.deletion_plan").CHANGED }, { r.outcome, r.message })
+    assert.is_true(exists(root .. "/.nvim/build/App/Debug/CMakeCache.txt"))
+    vim.fn.delete(root, "rf")
+  end)
+
+  it("releases the locks and refuses when the under-lock check throws", function()
+    local root = tmp_root()
+    touch(root .. "/loomworks.json", "{}")
+    touch(root .. "/.nvim/build/App/Debug/CMakeCache.txt")
+    local core = real_core()
+    local ran, msg = core:nuke_cache(root, { quiet = true, check = function() error("boom") end })
+    assert.is_false(ran)
+    assert.matches("boom", tostring(msg))
+    assert.is_true(exists(root .. "/.nvim/build/App/Debug/CMakeCache.txt"))
+    -- The locks were released: a check takes them again.
+    assert.is_true(core:nuke_check(root))
+    vim.fn.delete(root, "rf")
+  end)
+
   it("is the daemon's plan and listing (one implementation)", function()
     local maint = require("loomworks.daemon.maintenance")
     assert.equals(mc.nuke_plan, maint.nuke_plan)

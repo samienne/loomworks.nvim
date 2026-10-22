@@ -1636,11 +1636,15 @@ M.NUKE_HEADER = "Will delete (build state only; your configuration is kept):"
 --- the caches) are the same for every nuke and not part of the token.
 --- @param core table
 --- @param root string normalized root
+--- `unit_dirs`: the workspace build directories to plan with in place of the
+--- live workspace's (`_nuke_begin`'s `state.unit_dirs`, taken before
+--- `nuke_cache` retired it — the confirmation planned with them live).
 --- @param areas string[]|nil
+--- @param unit_dirs? string[]
 --- @return { token: string, lock_keys: string[], areas: string[] }
-function M.nuke_plan(core, root, areas)
+function M.nuke_plan(core, root, areas, unit_dirs)
     local keys = {}
-    for _, e in ipairs(core:_nuke_lock_dirs(root .. "/.nvim/build")) do keys[#keys + 1] = e.key end
+    for _, e in ipairs(core:_nuke_lock_dirs(root .. "/.nvim/build", unit_dirs)) do keys[#keys + 1] = e.key end
     table.sort(keys)
     local token = require("loomworks.reset_plan").token("nuke", keys, areas or {}, nil, M.NUKE_KIND)
     return { token = token, lock_keys = keys, areas = areas or {} }
@@ -1685,11 +1689,14 @@ function M.nuke(core, root, plan, yes)
     -- (which pumps the event loop), under `_nuke_begin`'s locks — as the
     -- daemon does: an area or build directory that appeared meanwhile was
     -- never listed, so a different plan is refused and nothing is removed.
+    -- The retired workspace's build directories are the ones `nuke_cache`
+    -- took before retiring it (`st.unit_dirs`): the confirmation's plan had
+    -- them, so only what changed since differs; the scan and areas are fresh.
     local CHANGED = require("loomworks.deletion_plan").CHANGED
     local ran, why = core:nuke_cache(root, {
         quiet = true,
         check = function(st)
-            if plan ~= nil and M.nuke_plan(core, st.root, st.areas).token ~= plan then return CHANGED end
+            if plan ~= nil and M.nuke_plan(core, st.root, st.areas, st.unit_dirs).token ~= plan then return CHANGED end
         end,
     })
     if not ran then return refused(why or "the nuke was refused") end

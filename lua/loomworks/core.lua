@@ -659,7 +659,12 @@ function Core:nuke_cache(root, opts)
     -- it can no longer save — a callback that ran while the removal pumps the
     -- event loop must not recreate the cache with stale `built` states. The
     -- reload below builds a fresh one, also when the nuke was refused.
+    -- Its build directories are taken first: the removal locks them, and a
+    -- confirmed plan (`opts.check`) was computed with them while it was live
+    -- (`_nuke_lock_dirs`), so the plan under the locks has the same inputs.
+    local unit_dirs = self:_nuke_unit_dirs()
     self:_retire_workspace()
+    opts = vim.tbl_extend("force", opts or {}, { unit_dirs = unit_dirs })
     local norm_root, msg = self:_nuke_files(root, opts)
     self:setup({ root = norm_root or self._deps.normalize(root) })
     return norm_root ~= nil, msg
@@ -688,14 +693,18 @@ end
 --- reload shows what is left), nil + the refusal when refused (notified
 --- unless `opts.quiet`). `opts` as `nuke_cache`'s.
 --- @param root string
---- @param opts? { check?: fun(st: table): string|nil, quiet?: boolean }
+--- `opts.unit_dirs`: the retired workspace's build directories (`nuke_cache`),
+--- locked and planned in place of the (gone) live workspace's.
+--- @param opts? { check?: fun(st: table): string|nil, quiet?: boolean, unit_dirs?: string[] }
 --- @return string|nil norm_root, string|nil message
 function Core:_nuke_files(root, opts)
     opts = opts or {}
-    local st, msg = self:_nuke_begin(root)
+    local st, msg = self:_nuke_begin(root, { unit_dirs = opts.unit_dirs })
     if st and opts.check then
-        -- Under the locks: a refusal releases them, nothing removed.
-        msg = opts.check(st)
+        -- Under the locks: a refusal (or a check that throws) releases them,
+        -- nothing removed.
+        local okc, r = pcall(opts.check, st)
+        if okc then msg = r else msg = "the nuke's plan check failed: " .. tostring(r) end
         if msg then
             self:_nuke_release(st)
             st = nil
@@ -759,8 +768,9 @@ end
 --- order (spec §19.3). Nothing is removed. Returns the state `_nuke_run`
 --- deletes under (the caller must run or release it), or nil + the refusal
 --- message (no `loomworks:` prefix; nothing held).
+--- `opts.unit_dirs` as `_nuke_lock_dirs`'s (kept as `state.unit_dirs`).
 --- @param root string
---- @param opts? { skip_own?: boolean }
+--- @param opts? { skip_own?: boolean, unit_dirs?: string[] }
 --- @return table|nil state, string|nil message
 function Core:_nuke_begin(root, opts)
     -- Safety: root must be absolute (Unix /... or Windows C:/...)
@@ -808,7 +818,7 @@ function Core:_nuke_begin(root, opts)
         return nil, berr
     end
     return { root = norm_root, build_dir = build_dir, cache_path = cache_path, health_path = health_path,
-        areas = areas, locks = locks, tok = tok, held = held }
+        areas = areas, locks = locks, tok = tok, held = held, unit_dirs = opts and opts.unit_dirs }
 end
 
 --- The second half of a nuke, under the locks `_nuke_begin` took (released
@@ -951,12 +961,14 @@ end
 --- The build directories `nuke` removes that may be in use: every directory
 --- with a lockfile `<dir>.loomworks-lock` under `build_dir` (scanned to depth
 --- 12, never following links), plus the loaded workspace's build directories
---- under it. Read-only. Each entry is `{ key, path, shown }`:
+--- under it (`unit_dirs` in their place when given: a workspace retired by
+--- `nuke_cache`, `_nuke_unit_dirs` taken before). Read-only. Each entry is `{ key, path, shown }`:
 --- the normalized path (order, identity), the path as found (on-disk casing
 --- below `.nvim/build`) and its display form `.nvim/build/...`.
 --- @param build_dir string normalized `<root>/.nvim/build`
+--- @param unit_dirs? string[]
 --- @return table[]
-function Core:_nuke_lock_dirs(build_dir)
+function Core:_nuke_lock_dirs(build_dir, unit_dirs)
     local uv = vim.uv or vim.loop
     local normalize = self._deps.normalize
     local suffix = ".loomworks-lock"
@@ -991,11 +1003,20 @@ function Core:_nuke_lock_dirs(build_dir)
         end
     end
     scan(build_dir, 0)
+    for _, d in ipairs(unit_dirs or self:_nuke_unit_dirs()) do add(d) end
+    return found
+end
+
+--- The loaded workspace's build directories (its units' `build_dir_value`),
+--- as `_nuke_lock_dirs` adds them; empty without a workspace.
+--- @return string[]
+function Core:_nuke_unit_dirs()
+    local dirs = {}
     local ws = self._workspace
     for _, unit in pairs(ws and ws._config_units or {}) do
-        if unit.build_dir_value then add(unit.build_dir_value) end
+        if unit.build_dir_value then dirs[#dirs + 1] = unit.build_dir_value end
     end
-    return found
+    return dirs
 end
 
 --- Take the build lock of every directory `nuke` removes (canonical order,
@@ -1010,7 +1031,7 @@ function Core:_nuke_build_locks(root, build_dir, build_lock, opts)
     build_lock = build_lock or require("loomworks.op_lock").locks(self._deps, root).build
     local lock_break = require("loomworks.lock_break")
     local _ = root
-    local dirs = self:_nuke_lock_dirs(build_dir)
+    local dirs = self:_nuke_lock_dirs(build_dir, opts and opts.unit_dirs)
     table.sort(dirs, function(a, b) return a.key < b.key end)
     local held = {}
     -- The editor's check (`opts.skip_own`) passes over this process's own
