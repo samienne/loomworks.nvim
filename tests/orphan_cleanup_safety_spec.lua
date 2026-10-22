@@ -17,6 +17,7 @@ local op_lock = require("loomworks.op_lock")
 local wv = require("loomworks.workspace_view")
 local L = require("tests.lock_helpers")
 local uv = vim.uv or vim.loop
+local DONE_MS, RELEASE_MS = L.DONE_MS, L.RELEASE_MS
 
 local function load(root) return assert(cli._load_workspace(root, false)) end
 
@@ -67,12 +68,12 @@ describe("view deletion safety", function()
     local function wait_done(start)
         local done, ok, err = false, nil, nil
         start(function(o, e) done, ok, err = true, o, e end)
-        assert.is_true(vim.wait(5000, function() return done end, 20), "on_done never called")
+        assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "on_done never called")
         return ok, err
     end
 
     local function locks_released(dir)
-        return vim.wait(2000, function()
+        return vim.wait(RELEASE_MS, function()
             return op_lock.read(root) == nil and (not dir or bl.read(dir) == nil)
         end, 20)
     end
@@ -278,7 +279,7 @@ describe("view deletion safety", function()
             local key = ws:get_orphaned_configs()[1].build_dir_key
             local done, ok = false, nil
             ws:delete_orphaned_build_dir(key):next(function(v) done, ok = true, v end)
-            assert.is_true(vim.wait(5000, function() return done end, 20), "delete never finished")
+            assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "delete never finished")
             return ok
         end
 
@@ -338,7 +339,7 @@ describe("view deletion safety", function()
             local function run_row()
                 local o = ws:get_orphaned_configs()[1]
                 actions.delete_orphaned_config(o)()
-                assert.is_true(vim.wait(5000, function() return #notes > 0 end, 20), "no message")
+                assert.is_true(vim.wait(DONE_MS, function() return #notes > 0 end, 20), "no message")
                 return notes[#notes]
             end
 
@@ -388,7 +389,7 @@ describe("view deletion safety", function()
             local done, got = false, nil
             reset_plan.execute(ws, plan, { verify_ms = 200 },
                 function(code, msg) done, got = true, { code = code, msg = msg } end)
-            assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+            assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "reset never finished")
             return plan, got
         end
 
@@ -563,7 +564,7 @@ describe("deletion unknown marks", function()
         end
         local done = false
         ws._profiles[1]:reset(function() done = true end)
-        assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+        assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "reset never finished")
         assert.equals("unknown", entry_state,
             "the configured unit's entry was not unknown on disk before its removal")
         assert.is_nil(uv.fs_stat(built))
@@ -612,7 +613,7 @@ describe("deletion unknown marks", function()
             { project_key = "App", config_key = "Release", build_dir = orphan_dir,
               build_dir_obj = orphan.build_dir_obj },
         }, function() end, function() done = true end)
-        assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "deletion never finished")
 
         assert.equals(1, #handed, "only the unshared dir is handed to rm-rf")
         assert.equals("unknown", removed_state,
@@ -670,7 +671,7 @@ describe("deletion unknown marks", function()
         ws:_run_deletion({
             { project_key = "App", config_key = "Other", build_dir = short, unit = unit_b },
         }, function() end, function() done = true end)
-        assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "deletion never finished")
         assert.equals(0, #handed, "rm-rf was handed " .. table.concat(handed, ", "))
         assert.is_not_nil(uv.fs_stat(built), "the shared build dir was removed")
     end)
@@ -720,7 +721,7 @@ describe("deletion unknown marks", function()
         local function run(items)
             local done = false
             ws:_run_deletion(items, function() end, function() done = true end)
-            assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+            assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "deletion never finished")
         end
 
         it("marks both entries unknown on disk before the rm-rf", function()
@@ -790,7 +791,7 @@ describe("deletion unknown marks", function()
               build_dir_obj = orphan.build_dir_obj, disposition = "clean" },
         }, function() end, function() done = true end, nil,
             { overlap_exempt = { ws._core._deps.normalize(built) }, report = report })
-        assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "deletion never finished")
         assert.same({}, report.kept or {}, "kept: " .. vim.inspect(report.kept))
         assert.is_nil(uv.fs_stat(app), "the orphan's tree was kept")
     end)
@@ -848,7 +849,7 @@ describe("deletion unknown marks", function()
 
         local done, result = false, nil
         ws:reset_all():next(function(v) done, result = true, v end)
-        assert.is_true(vim.wait(5000, function() return done end, 20), "reset never finished")
+        assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "reset never finished")
         assert.equals("long-debug-directory", (rederived or ""):match("[^/]+$"),
             "test setup: the remerge re-derives the long leaf: " .. tostring(rederived))
         assert.is_true(result, "reset --all reported a failure")
@@ -877,7 +878,7 @@ describe("deletion unknown marks", function()
         ws:_run_deletion({
             { project_key = "App", config_key = "Debug", build_dir = built, unit = unit },
         }, function() work_ran = true end):next(function(v) done, result = true, v end)
-        assert.is_true(vim.wait(5000, function() return done end, 20), "deletion never finished")
+        assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "deletion never finished")
         assert.is_false(result, "a deletion whose unknown marks never reached disk reported success")
         assert.equals(0, #handed, "rm-rf was handed " .. table.concat(handed, ", "))
         assert.is_not_nil(uv.fs_stat(built), "the tree was removed")

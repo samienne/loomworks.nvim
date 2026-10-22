@@ -11,6 +11,7 @@ local op_lock = require("loomworks.op_lock")
 local wv = require("loomworks.workspace_view")
 local L = require("tests.lock_helpers")
 local uv = vim.uv or vim.loop
+local DONE_MS, RELEASE_MS = L.DONE_MS, L.RELEASE_MS
 
 local function load(root) return assert(cli._load_workspace(root, false)) end
 
@@ -112,7 +113,7 @@ for _, case in ipairs(cases) do
             end
             local done, ok, err = false, nil, nil
             case.run(ws, dir, function(o, e) done, ok, err = true, o, e end)
-            assert.is_true(vim.wait(5000, function() return done end, 20), "never finished")
+            assert.is_true(vim.wait(DONE_MS, function() return done end, 20), "never finished")
             return { root = root, ws = ws, dir = dir, h = h, errs = table.concat(errs, "\n"),
                 removed = removed, ok = ok, err = err }
         end
@@ -150,11 +151,11 @@ for _, case in ipairs(cases) do
             end
             local done = false
             case.run(ws, dir, function() done = true end)
-            assert.is_true(vim.wait(5000, function() return done end, 20))
+            assert.is_true(vim.wait(DONE_MS, function() return done end, 20))
             assert.is_true(saw_o, "O held during the deletion")
             assert.is_true(saw_b, "B held during the deletion")
             assert.is_nil(uv.fs_stat(dir), "the directory was not removed")
-            assert.is_true(vim.wait(2000, function()
+            assert.is_true(vim.wait(RELEASE_MS, function()
                 return op_lock.read(root) == nil and bl.read(dir) == nil
             end, 20), "locks not released")
         end)
