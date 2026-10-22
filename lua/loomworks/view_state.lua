@@ -360,6 +360,7 @@ end
 --- @field type_config { fields: loomworks.ViewTypeConfigField[] }
 
 --- @class loomworks.ViewSdk
+--- @field id? string daemon only (what Sdks/1.remove takes)
 --- @field key string
 --- @field label string
 --- @field path? string
@@ -764,6 +765,7 @@ function M.workspace(ws, opts)
         for _, kit in ipairs(resolved and sdk:kits() or {}) do
             row.kits[#row.kits + 1] = sdk:kit_label(kit.platform, kit.arch)
         end
+        if opts.id then row.id = opts.id(sdk) end
         out.sdks[#out.sdks + 1] = row
         if opts.bind then opts.bind(row, sdk) end
     end

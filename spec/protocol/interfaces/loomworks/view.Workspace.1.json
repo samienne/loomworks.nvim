@@ -412,6 +412,7 @@
       "type": "object",
       "required": ["key", "label", "resolved", "kits"],
       "properties": {
+        "id": { "description": "The SDK's opaque id: what Sdks/1.remove takes as sdk. Always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "label": { "type": "string" },
         "path": { "description": "The SDK's path.", "type": "string" },
