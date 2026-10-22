@@ -137,12 +137,12 @@ return {
         -- loomworks.deletion_plan (step 5o A2) replaces loomworks.deploy: the
         -- deletion re-checks the view's own dialogs still run moved into the
         -- deletion plans `Maintenance/1.execute_deletion` uses.
+        -- (loomworks.cpp_compilers and loomworks.variables dropped: step 5o
+        -- C2b2-1, the configuration editor's context is Projects/1.declaration.)
         ["lua/loomworks/workspace_view.lua"] = {
-            "loomworks.cpp_compilers",
             "loomworks.deletion_plan",
             "loomworks.model_commands",
             "loomworks.modules",
-            "loomworks.variables",
         },
     },
     dynamic = {
@@ -178,14 +178,16 @@ return {
         -- what is left are the actions' own model reads (5o's commands).
         ["lua/loomworks/ui/sections/debug.lua"] = 1,
         ["lua/loomworks/ui/sections/orphaned.lua"] = 1,
-        ["lua/loomworks/ui/sections/projects.lua"] = 5,
+        -- 5 -> 4: step 5o C2b2-1 (the configuration editor reads the declaration).
+        ["lua/loomworks/ui/sections/projects.lua"] = 4,
         -- 6 -> 1: step 5n C1 — the body and its `modified` read through
         -- status_source.lua (in `daemon` mode only the daemon's
         -- view.Workspace/1); the page's other model reads (the header's root,
         -- the cursor, publish/revert until 5o) share one helper.
         ["lua/loomworks/ui/status.lua"] = 1,
         ["lua/loomworks/ui/tree.lua"] = 4,
-        ["lua/loomworks/workspace_view.lua"] = 2,
+        -- 2 -> 1: step 5o C2b2-1 (compute_edit_configuration_context removed).
+        ["lua/loomworks/workspace_view.lua"] = 1,
         ["plugin/loomworks.lua"] = 1,
     },
     -- Plugin-side files: the editor's own starts. Binary-side files
@@ -261,8 +263,10 @@ return {
     -- conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...) x8 (candidates,
     -- add, declaration, configuration_remove, launch_remove, variable_save,
     -- variable_remove, type_config_set) — the versioned table Projects/1.
+    -- 58 -> 59: step 5o C2b2-1 adds configuration_save,
+    -- conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...) — Projects/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 58,
+        ["lua/loomworks/daemon/observer.lua"] = 59,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

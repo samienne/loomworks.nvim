@@ -539,6 +539,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- The status page's configuration editor lists every build directory of the
+  configuration (one per toolchain it was configured with), sorted, instead
+  of one picked in no fixed order. In daemon mode it reads the configuration
+  and saves it through the workspace daemon, and its variables show the
+  values of the active profile's compiler family, as the status page now
+  does too. (#322)
 - Every usage error now exits 2 (it was 1 for many of them): an unknown,
   repeated or misplaced option, a missing or malformed value (`--timeout 0`,
   an invalid launch name, an unknown `lw config set` parameter or health
@@ -862,6 +868,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- The status page's configuration editor never showed where a
+  configuration's variant comes from ("from X"; none when the
+  configuration sets its own variant) nor its read-only compiler-family
+  overrides. It does now. (#322)
+- In daemon mode a project just added from the status page could not have
+  its configurations edited or added until the editor reloaded. (#322)
 - A profile created from an SDK in the status page's tool picker lost its
   SDK on the next load: it was saved without toolchains, came back as the
   configuration set's toolless profile, and its key clashed with an existing

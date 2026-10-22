@@ -300,8 +300,8 @@ M.CONFIG_SETS = {
 -- fields; plain calls.
 M.PROJECTS = {
     object = "/projects", iface = "loomworks.Projects", v = 1, feature = "projects",
-    methods = { "candidates", "add", "declaration", "configuration_remove", "launch_remove", "variable_save",
-        "variable_remove", "type_config_set" },
+    methods = { "candidates", "add", "declaration", "configuration_save", "configuration_remove", "launch_remove",
+        "variable_save", "variable_remove", "type_config_set" },
     signals = {}, call_only = true,
 }
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE }
@@ -2352,6 +2352,10 @@ local CALLS = {
     end,
     ["Projects/1.declaration"] = function(conn, args, cb, env)
         conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "declaration", args, cb, env)
+    end,
+    -- (step 5o C2b2)
+    ["Projects/1.configuration_save"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "configuration_save", args, cb, env)
     end,
     ["Projects/1.configuration_remove"] = function(conn, args, cb, env)
         conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "configuration_remove", args, cb, env)

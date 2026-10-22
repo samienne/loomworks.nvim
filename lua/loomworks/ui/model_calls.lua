@@ -16,13 +16,13 @@
 --- of the editor's model beyond `Projects/1.declaration` — the project
 --- browser's `candidates` + `add`, `declaration`, `configuration_remove`,
 --- `launch_remove`, `variable_save` / `variable_remove` and
---- `type_config_set` (`ROUTED` below): in `daemon` mode those are only ever
---- calls — refused (the outcome says why) when the daemon cannot carry them,
---- never run in-process (spec §19.16 "Availability"). `Projects/1`'s
---- `configuration_save`, `launch_save` and `deploy_save` (their editors still
---- read the editor's model), `Sdks/1`, `Toolchains/1` and `Maintenance/1`
---- still run their in-process bodies in both modes until C2b's second half /
---- C2c.
+--- `type_config_set`, and **C2b2-1** `configuration_save` (the configuration
+--- editor reads `declaration`) (`ROUTED` below): in `daemon` mode those are
+--- only ever calls — refused (the outcome says why) when the daemon cannot
+--- carry them, never run in-process (spec §19.16 "Availability").
+--- `Projects/1`'s `launch_save` and `deploy_save` (their editors still read
+--- the editor's model), `Sdks/1`, `Toolchains/1` and `Maintenance/1` still
+--- run their in-process bodies in both modes until C2b2-2 / C2c.
 ---
 --- Params mirror the method's (its schema under spec/protocol/interfaces).
 --- An entity param of a routed method (`item`, `profile`, `config_set`,
@@ -249,8 +249,14 @@ end
 CALLS["Projects/1.declaration"] = on_objects({ "project" }, function(o)
     return wv().project_declaration(o.project)
 end)
+--- `{ project, configuration?, name, fields }` (`configuration` the row
+--- edited; none for a new configuration).
 CALLS["Projects/1.configuration_save"] = on_objects({ "project" }, function(o, p)
-    return outcome(wv().execute_save_configuration(o.project, object(p.configuration), p.name, p.fields))
+    local cfg = object(p.configuration)
+    if p.configuration ~= nil and cfg == nil then
+        return { outcome = "refused", message = "no configuration (not a row of the workspace view)" }
+    end
+    return outcome(wv().execute_save_configuration(o.project, cfg, p.name, p.fields))
 end)
 CALLS["Projects/1.configuration_remove"] = on_objects({ "project", "configuration" }, function(o)
     return outcome(wv().execute_delete_configuration(o.project, o.configuration))
@@ -344,7 +350,7 @@ local VERB = {
     ["ConfigSets/1.remove"] = "configuration set",
     ["Projects/1.candidates"] = "project", ["Projects/1.add"] = "project",
     ["Projects/1.declaration"] = "project declaration",
-    ["Projects/1.configuration_remove"] = "configuration",
+    ["Projects/1.configuration_save"] = "configuration", ["Projects/1.configuration_remove"] = "configuration",
     ["Projects/1.launch_remove"] = "launch config",
     ["Projects/1.variable_save"] = "variable", ["Projects/1.variable_remove"] = "variable",
     ["Projects/1.type_config_set"] = "project field",
@@ -516,6 +522,26 @@ ROUTED["Projects/1.add"] = function(ws, p, cb)
         mappings = next(mappings) and mappings or nil, tool = tool }, cb)
 end
 by_ref("Projects/1.declaration", { { "project", "project" } })
+--- The configuration editor's save: `configuration` the row edited (none for
+--- a new configuration); `fields` the dialog's (an empty `options` /
+--- `variables` sent as an object).
+ROUTED["Projects/1.configuration_save"] = function(ws, p, cb)
+    local method = "Projects/1.configuration_save"
+    local args, err = refs(method, p, { { "project", "project" } })
+    if not args then return cb(err) end
+    if p.configuration ~= nil then
+        args.configuration = id_ref(p.configuration)
+        if not args.configuration then
+            return cb(refusal(method, "no configuration id (not a row of the workspace view)"))
+        end
+    end
+    local fields = vim.deepcopy(p.fields or {})
+    for _, k in ipairs({ "options", "variables" }) do
+        if type(fields[k]) == "table" and next(fields[k]) == nil then fields[k] = vim.empty_dict() end
+    end
+    args.name, args.fields = p.name, fields
+    send(ws, method, args, cb)
+end
 by_ref("Projects/1.configuration_remove", { { "project", "project" }, { "configuration", "configuration" } })
 by_ref("Projects/1.launch_remove", { { "project", "project" }, { "launch", "launch configuration" } })
 by_ref("Projects/1.variable_save", { { "project", "project" } }, { "variable", "name", "data" })
@@ -599,9 +625,19 @@ function M.call(ws, method, params, cb)
         vim.notify(what .. tostring(err.traceback), vim.log.levels.ERROR)
         return
     end
-    vim.notify(what .. tostring(err.traceback), vim.log.levels.DEBUG)
-    answer(refusal(method, err.message))
+    -- The refusal (its message the error) is what the page shows; the
+    -- traceback goes to the workspace's log (without one, a DEBUG notify, so
+    -- it is never dropped silently). Marked thrown before the
+    -- refusal is answered, so a late answer still sends its `get` even when
+    -- the page's callback throws on the refusal (that error is the caller's).
+    local log = target and target._core and target._core._deps and target._core._deps.log
+    if log then
+        log:error("%s%s", what, tostring(err.traceback))
+    else
+        vim.notify(what .. tostring(err.traceback), vim.log.levels.DEBUG)
+    end
     write.threw = true
+    answer(refusal(method, err.message))
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a

@@ -602,10 +602,13 @@ local function configuration_row(ws, proj, cname, cdata, opts)
     end
     table.sort(list, function(a, b) return a.key < b.key end)
     row.options = list
-    -- Resolved variables (with the active profile, so a blank variable's fill
-    -- value shows; an unfilled blank has no `value`).
+    -- Resolved variables under the active profile and its compiler family
+    -- (spec §1.3.1: the family's `overrides` apply; a blank variable's fill
+    -- value shows; an unfilled blank has no `value`), as the configuration
+    -- editor shows them (Projects/1.declaration).
     if proj.variables and next(proj.variables) and cfg then
-        local resolved = require("loomworks.variables").resolve(proj, cfg, nil, ws._active_profile)
+        local resolved = require("loomworks.variables").resolve(proj, cfg, proj:active_compiler_family(),
+            ws._active_profile)
         local vars = {}
         for vn, entry in pairs(resolved) do
             local source = entry.from_profile and "profile"

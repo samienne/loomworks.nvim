@@ -43,7 +43,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         "execute_create_config_set", "execute_create_config_set_from_candidate", "execute_edit_config_set",
         "execute_delete_config_set", "execute_add_project", "execute_delete_configuration",
         "execute_delete_launch_config", "execute_save_variable", "execute_delete_variable",
-        "save_type_config_field" }
+        "save_type_config_field", "execute_save_configuration" }
 
     before_each(function()
         key = H.tmp() .. "/trust.key"
@@ -354,6 +354,83 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         assert.equals("refused", r.outcome, vim.inspect(r))
         assert.truthy(r.message:find("stale", 1, true), r.message)
         assert.is_nil(prow_of("app", "configurations", "Debug"))
+        assert.same({}, errors())
+    end)
+
+    it("Projects/1: the configuration editor reads the declaration and saves by the row's id (5o C2b2)", function()
+        serve()
+        local r = call("Projects/1.variable_save", { project = prow_of("app"), name = "out",
+            data = { type = "string", default = "x" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        until_view(function() return prow_of("app").variables.out ~= nil end)
+        local crow = assert(prow_of("app", "configurations", "Debug"))
+
+        -- The declaration's derived fields, the configuration by its row's id.
+        local d = call("Projects/1.declaration", { project = prow_of("app") })
+        assert.equals("ok", d.outcome, vim.inspect(d))
+        assert.is_false(d.module.has_options)
+        assert.is_table(d.module.languages)
+        local entry
+        for _, c in ipairs(d.configurations) do if c.key == "Debug" then entry = c end end
+        assert.equals(crow.id, entry.id)
+        assert.is_true(entry.user)
+        assert.same({ { name = "out", value = "x", from = "project" } }, entry.resolved_variables)
+
+        -- The editor opened from the page's row (the daemon's view and the
+        -- declaration), and its save: a rename keeping the id.
+        local body = status_source.read(ws)
+        assert.equals("daemon", body.mode)
+        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
+        setmetatable(page._folds, { __index = function() return true end })
+        local enter
+        for i, l in ipairs(page:render()) do
+            if l:find("[▼▸] %+?Debug%f[^%w_:%-]") and page.line_meta[i] and page.line_meta[i].on_enter then
+                enter = page.line_meta[i].on_enter
+                break
+            end
+        end
+        assert.is_function(enter)
+        local dialog = require("loomworks.ui.config_editor_dialog")
+        local orig_open, got = dialog.open, nil
+        dialog.open = function(o) got = o end
+        local ok, err = pcall(enter)
+        assert.is_true(vim.wait(30000, function() return got ~= nil end, 20))
+        dialog.open = orig_open
+        assert(ok, err)
+        assert.equals("Debug", got.name)
+        assert.equals("x", got.resolved_variables.out.value)
+        assert.equals("project", got.resolved_variables.out.from)
+        got.on_accept({ name = "Dbg", options = {}, variables = { out = "y" } })
+        until_view(function()
+            local c = prow_of("app", "configurations", "Dbg")
+            if not (c and c.id == crow.id and prow_of("app", "configurations", "Debug") == nil) then return false end
+            for _, v in ipairs(c.variables or {}) do
+                if v.name == "out" then return v.value == "y" end
+            end
+            return false
+        end)
+        assert.is_true(vim.wait(5000, function()
+            for _, n in ipairs(notes) do
+                if n.msg:find("configuration 'Dbg' updated", 1, true) then return true end
+            end
+            return false
+        end, 20))
+
+        -- A new configuration: no configuration, its id in the outcome.
+        r = call("Projects/1.configuration_save", { project = prow_of("app"), name = "Fast",
+            fields = { inherits = "Dbg", options = {}, variables = {} } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.equals("Fast", r.configuration.key)
+        until_view(function()
+            local c = prow_of("app", "configurations", "Fast")
+            return c ~= nil and c.id == r.configuration.id
+        end)
+        -- A row without an id is refused, never looked up by its name.
+        r = call("Projects/1.configuration_save", { project = prow_of("app"), configuration = { key = "Fast" },
+            name = "Fast2", fields = {} })
+        assert.equals("refused", r.outcome)
+        assert.truthy(r.message:find("no configuration id", 1, true), r.message)
         assert.same({}, errors())
     end)
 

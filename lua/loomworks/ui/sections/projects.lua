@@ -6,11 +6,13 @@
 --- editable type_config fields. The actions (editors, dialogs, mutations)
 --- are kept apart. The routed writes (step 5o C2b: removals of
 --- configurations and launch configurations, variables, `type_config`
---- fields) name their project, configuration or launch by its view row
---- (loomworks.ui.model_calls), and their dialogs read the project through
---- `Projects/1.declaration`; the configuration, launch and deploy editors
---- and the project's removal still reach the domain objects through
---- `ctx.ref(row)` and the workspace `ctx.ws` (until C2b's second half / C2c).
+--- fields; C2b2-1: the configuration editor's save) name their project,
+--- configuration or launch by its view row (loomworks.ui.model_calls), and
+--- their dialogs read the project through `Projects/1.declaration` (the
+--- configuration editor all it shows, with the view's configuration sets
+--- for a rename's effects); the launch and deploy editors and the project's
+--- removal still reach the domain objects through `ctx.ref(row)` and the
+--- workspace `ctx.ws` (until C2b2-2 / C2c).
 
 local helpers = require("loomworks.ui.helpers")
 local workspace_view = require("loomworks.workspace_view")
@@ -225,80 +227,131 @@ local function delete_variable(prow, var_name)
     })
 end
 
---- Open the configuration editor for a project configuration.
---- @param project loomworks.Project
---- @param cfg? loomworks.Configuration nil for new configuration
---- @param crow? table the configuration's view row (its description is edited by it)
-local function edit_project_configuration(project, cfg, crow)
-    local project_key = project.key
-    local config_name = cfg and cfg.name or nil
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
+--- The configuration-set mappings and the inheriting configurations a
+--- rename of `config_name` to `new_name` also updates: from the view's
+--- configuration sets (project key → configuration name) and the
+--- declaration's configurations' `inherits`.
+--- @param view table|nil the workspace view
+--- @param prow table the project's view row
+--- @param decl table the project's declaration (Projects/1.declaration)
+--- @param config_name string
+--- @param new_name string
+--- @return string[]|nil
+local function config_rename_effects(view, prow, decl, config_name, new_name)
+    if new_name == config_name or new_name == "" then return nil end
+    local effects = {}
+    for _, cs in ipairs(view and view.config_sets or {}) do
+        if (cs.mappings or {})[prow.key] == config_name then
+            effects[#effects + 1] = "Config set '" .. cs.name .. "' mapping → " .. new_name
+        end
+    end
+    for _, c in ipairs(decl.configurations or {}) do
+        local inherits = c.fields and c.fields.inherits
+        if type(inherits) == "string" then inherits = { inherits } end
+        if c.key ~= config_name and type(inherits) == "table" and vim.tbl_contains(inherits, config_name) then
+            effects[#effects + 1] = "Config '" .. c.key .. "' inherits → " .. new_name
+        end
+    end
+    return #effects > 0 and effects or nil
+end
 
-    local ctx = workspace_view.compute_edit_configuration_context(project, config_name)
-    if not ctx then return end
+--- The declaration's entry of the configuration row `crow`: by its id (a
+--- daemon's view and declaration share them), or by its name where neither
+--- carries one (the in-process view and declaration).
+--- @param decl table
+--- @param crow table
+--- @return table|nil
+local function declared_configuration(decl, crow)
+    for _, c in ipairs(decl.configurations or {}) do
+        if (crow.id ~= nil and c.id == crow.id) or (crow.id == nil and c.id == nil and c.key == crow.key) then
+            return c
+        end
+    end
+    return nil
+end
+
+--- Open the configuration editor on the project's declaration `decl`
+--- (Projects/1.declaration): its declared fields (a user configuration's;
+--- any other shows only its variables and languages) and what it derives
+--- (variant and its source, inherited options, resolved variables, build
+--- directories, the module's languages and options, the compiler family).
+--- @param prow table the project's view row
+--- @param crow table|nil the configuration's view row; nil for a new one
+--- @param decl table
+--- @param view table|nil the workspace view (rename effects)
+local function open_configuration_editor(prow, crow, decl, view)
+    local project_key = prow.key
+    local config_name = crow and crow.key or nil
+    local entry = crow and declared_configuration(decl, crow) or nil
+    if crow and not entry then
+        vim.notify("loomworks: configuration '" .. crow.key .. "' is no longer declared", vim.log.levels.ERROR)
+        return
+    end
+    local fields = entry and entry.fields or {}
+    local own = (entry and entry.user) and fields or {}
+    local inherited = {}
+    for _, o in ipairs(entry and entry.inherited_options or {}) do
+        inherited[o.key] = { value = o.value,
+            source = o.from == "configuration" and (o.configuration and o.configuration.key or "?") or "project" }
+    end
+    local resolved = {}
+    for _, v in ipairs(entry and entry.resolved_variables or {}) do
+        resolved[v.name] = { value = v.value, from = v.from, configuration = v.configuration and v.configuration.key }
+    end
+    local available = {}
+    for _, c in ipairs(decl.configurations or {}) do
+        if not c.source_missing then available[#available + 1] = c.key end
+    end
+    local module = decl.module or {}
 
     require("loomworks.ui.config_editor_dialog").open({
         item = crow and helpers.row_item("configuration", crow, project_key .. "/" .. crow.key) or nil,
         title = config_name
             and ('Edit "' .. config_name .. '" — ' .. project_key)
             or ("New configuration — " .. project_key),
-        name = ctx.name,
-        variant = ctx.variant,
-        inherits = ctx.inherits,
-        options = ctx.options,
-        variables = ctx.variables,
-        toolchain = ctx.toolchain,
-        generator = ctx.generator,
-        languages = ctx.languages,
-        module_languages = ctx.module_languages,
-        build_dir = ctx.build_dir,
-        is_default = ctx.is_default and config_name ~= nil,
-        has_options = ctx.has_options,
-        available_configs = ctx.available_configs,
-        project_options = ctx.project_options,
-        inherited_options = ctx.inherited_options,
-        project_variables = ctx.project_variables,
-        resolved_variables = ctx.resolved_variables,
+        name = config_name or "",
+        variant = entry and entry.variant or "",
+        variant_source = entry and entry.variant_from and entry.variant_from.key or nil,
+        inherits = own.inherits or "",
+        options = vim.deepcopy(own.options or {}),
+        variables = vim.deepcopy(fields.variables or {}),
+        toolchain = own.toolchain or "",
+        generator = own.generator or "",
+        languages = fields.languages and #fields.languages > 0 and vim.deepcopy(fields.languages) or nil,
+        module_languages = module.languages or {},
+        build_dirs = entry and entry.build_dirs or nil,
+        is_default = entry and entry.default or false,
+        has_options = module.has_options or false,
+        available_configs = available,
+        project_options = decl.options or {},
+        inherited_options = inherited,
+        project_variables = decl.variables or {},
+        resolved_variables = resolved,
+        config_compiler_overrides = fields.overrides or {},
+        active_compiler_family = decl.compiler_family,
         rename_effects = config_name and function(new_name)
-            if new_name == config_name or new_name == "" then return nil end
-            local effects = {}
-            for _, cs_obj in pairs(ws._config_sets) do
-                if cs_obj.mappings then
-                    for proj, config in pairs(cs_obj.mappings) do
-                        if proj.key == project_key and config.name == config_name then
-                            effects[#effects + 1] = "Config set '" .. cs_obj.name .. "' mapping → " .. new_name
-                        end
-                    end
-                end
-            end
-            for _, cfg in ipairs(project:get_configurations()) do
-                if cfg.name ~= config_name and cfg.inherits_names then
-                    for _, base in ipairs(cfg.inherits_names) do
-                        if base == config_name then
-                            effects[#effects + 1] = "Config '" .. cfg.name .. "' inherits → " .. new_name
-                            break
-                        end
-                    end
-                end
-            end
-            return #effects > 0 and effects or nil
+            return config_rename_effects(view, prow, decl, config_name, new_name)
         end or nil,
         validate = function(result)
             if result.name ~= (config_name or "") then
-                local existing = project:get_configuration(result.name)
-                if existing and existing.is_user then
-                    return false, "configuration '" .. result.name .. "' already exists"
+                for _, c in ipairs(decl.configurations or {}) do
+                    if c.key == result.name and c.user then
+                        return false, "configuration '" .. result.name .. "' already exists"
+                    end
                 end
             end
             return true
         end,
         on_accept = function(result)
             -- The save changes only the fields the dialog edits; every other
-            -- declared field (env, overrides, description, …) is kept.
+            -- declared field (env, overrides, description, …) is kept. The
+            -- name is the call's, not a field.
+            local edits = {}
+            for k, v in pairs(result) do
+                if k ~= "name" then edits[k] = v end
+            end
             model.call(nil, "Projects/1.configuration_save",
-                { project = project, configuration = cfg, name = result.name, fields = result }, function(r)
+                { project = prow, configuration = crow, name = result.name, fields = edits }, function(r)
                     local ok, err = model.result(r)
                     if ok then
                         local verb = config_name and "updated" or "created"
@@ -312,6 +365,22 @@ local function edit_project_configuration(project, cfg, crow)
         end,
         on_cancel = function() end,
     })
+end
+
+--- Open the configuration editor for a configuration of the project `prow`
+--- (or a new one), once its declaration is read (Projects/1.declaration).
+--- @param prow table the project's view row
+--- @param crow? table the configuration's view row; nil for a new configuration
+--- @param view? table the workspace view
+local function edit_project_configuration(prow, crow, view)
+    model.call(nil, "Projects/1.declaration", { project = prow }, function(r)
+        if r.outcome ~= "ok" then
+            vim.notify("loomworks: " .. tostring(r.message or "the project's declaration is unavailable"),
+                vim.log.levels.ERROR)
+            return
+        end
+        open_configuration_editor(prow, crow, r, view)
+    end)
 end
 
 --- Delete a user-defined project configuration with confirmation.
@@ -426,26 +495,20 @@ local function project_actions(ws, proj, prow)
     })
 end
 
---- The actions of a configuration row.
---- @param ws loomworks.Workspace|nil
---- @param project loomworks.Project|nil the project's object (the editor)
---- @param cfg loomworks.Configuration|nil the configuration's object (the editor)
+--- The actions of a configuration row: its editor and removal are routed
+--- (by the rows, helpers.actionable — in `daemon` mode a row with an id,
+--- even of a project the editor's model does not have yet).
+--- @param ctx table the section context
 --- @param prow table the project's view row
 --- @param crow table the configuration's view row
-local function configuration_actions(ws, project, cfg, prow, crow)
-    -- Only on a row whose objects the editor's model has (the editor still
-    -- reads them, until C2b's second half). `cfg` is always bound in
-    -- practice: every declared configuration has a Configuration object
-    -- (Project:_sync_configurations), so the nil guard only keeps a row
-    -- without one inert rather than acting on a name.
-    if not (project and cfg) then return {} end
+local function configuration_actions(ctx, prow, crow)
+    if not (helpers.actionable(ctx, prow) and helpers.actionable(ctx, crow)) then return {} end
     local acts = {
-        on_enter = function() edit_project_configuration(project, cfg, crow) end,
-        -- Named by its row (step 5o C2b).
+        on_enter = function() edit_project_configuration(prow, crow, ctx.view) end,
         on_delete = crow.user and function() delete_project_configuration(prow, crow) end or nil,
     }
     local item = helpers.row_item("configuration", crow, prow.key .. "/" .. crow.key)
-    return helpers.describe_action(with(acts, publish_actions(ws, crow)), item)
+    return helpers.describe_action(with(acts, publish_actions(ctx.ws, crow)), item)
 end
 
 --- The deploy dict of `project` as an editable deep copy, and its saver.
@@ -733,8 +796,6 @@ end
 local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
     local key = prow.key
     local cname = crow.key
-    local project = ctx.ref(prow)
-    local cfg = ctx.ref(crow)
 
     -- Abstract configs have no variant (mixin only)
     local is_abstract = crow.abstract
@@ -845,7 +906,7 @@ local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
         publish_label = has_object and helpers.intent_action_label(crow.intent) or nil,
     }
     if has_object then helpers.describe(opts, crow.description, crow.description_from_module) end
-    ct:node(config_chunks, with(opts, configuration_actions(ctx.ws, project, cfg, prow, crow)), function()
+    ct:node(config_chunks, with(opts, configuration_actions(ctx, prow, crow)), function()
         if has_object then
             tree:description(crow.description, crow.description_from_module)
             -- Saved test targets (read-only, ui "Saved test
@@ -936,7 +997,8 @@ local function render_project_details(tree, t, ctx, prow)
                 tree:item("▸ Add configuration", {
                     hl = "LoomworksAdd",
                     direct = true,
-                    on_enter = project and function() edit_project_configuration(project, nil) end or nil,
+                    on_enter = helpers.actionable(ctx, prow)
+                        and function() edit_project_configuration(prow, nil, ctx.view) end or nil,
                 })
             end
         end)

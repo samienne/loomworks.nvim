@@ -142,6 +142,57 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
+    it("a project the editor's model does not have yet: its configuration editor and Add configuration act by the row's id (5o C2b2)", function()
+        fake_obs({ [observer.VIEW_WORKSPACE.feature] = "subscribed", [observer.TASKS.feature] = "subscribed",
+            [observer.PROJECTS.feature] = "available" })
+        header()
+        -- A project the daemon just added: in its view with ids, not (yet) in
+        -- the editor's model.
+        views.set(obs, "workspace", daemon_view(function(v)
+            local p = vim.deepcopy(v.projects[1])
+            p.key, p.id = "fresh", "id:fresh"
+            p.configurations = { p.configurations[1] }
+            p.configurations[1].id = "id:fresh/Debug"
+            v.projects[#v.projects + 1] = p
+        end))
+        local body = status_source.read(ws)
+        local fresh = body.view.projects[#body.view.projects]
+        assert.equals("fresh", fresh.key)
+        assert.is_nil(body.ref(fresh))
+        local tree = Tree.new(require("loomworks.ui.status")._render_fn)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local lines = tree:render()
+        local at, cfg_enter, add_enter
+        for i, l in ipairs(lines) do
+            if l:find("fresh [shell]", 1, true) then at = i end
+            if at and i > at then
+                local meta = tree.line_meta[i]
+                if not cfg_enter and l:find("Debug", 1, true) and meta and meta.fold_key then
+                    cfg_enter = meta.on_enter or false
+                end
+                if not add_enter and l:find("Add configuration", 1, true) then
+                    add_enter = meta and meta.on_enter or false
+                end
+            end
+        end
+        assert.is_not_nil(at, table.concat(lines, "\n"))
+        assert.is_function(cfg_enter, "the configuration row has no editor")
+        assert.is_function(add_enter, "Add configuration is inert")
+        -- The editor's read names the project by the row's id.
+        local orig = observer.loaded_workspace
+        observer.loaded_workspace = function() return ws end
+        local ok, err = pcall(cfg_enter)
+        observer.loaded_workspace = orig
+        assert(ok, err)
+        local sent
+        for _, c in ipairs(calls) do
+            if c.method == "declaration" then sent = c end
+        end
+        assert.is_not_nil(sent, vim.inspect(calls))
+        assert.same({ project = { id = "id:fresh" } }, sent.args)
+        assert.equals(0, built)
+    end)
+
     it("a launch row reaches its launch configuration; the rows keep the view's ids (for 5o C2)", function()
         core:shutdown()
         root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
@@ -722,6 +773,74 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
         assert.equals(refused, box.r)
         assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
+    end)
+
+    it("a body that throws: its traceback is logged, the refusal shown; a refusal callback that throws still counts the late answer (5o C2b2)", function()
+        local fresh = daemon_view(function(v) v.modified = true end)
+        fake_obs(nil, function() return fresh end)
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        local log = require("loomworks.log").test()
+        local orig_log = ws._core._deps.log
+        ws._core._deps.log = log
+        local notes, orig_notify = {}, vim.notify
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+        local wv = require("loomworks.workspace_view")
+        local orig = wv.execute_delete_stray_dir
+        local late
+        wv.execute_delete_stray_dir = function(_, _, cb) late = cb; error("boom") end
+        local refused
+        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x)
+                refused = x
+                error("ui boom")
+            end)
+        wv.execute_delete_stray_dir = orig
+        vim.notify = orig_notify
+        ws._core._deps.log = orig_log
+        -- The page's callback threw on the refusal: that error is the caller's.
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("ui boom", 1, true), tostring(err))
+        assert.equals("refused", refused and refused.outcome)
+        assert.truthy(tostring(refused.message):find("boom", 1, true), tostring(refused.message))
+        -- The body's traceback went to the log, not to a notification.
+        local logged = table.concat(log:entries(), "\n")
+        assert.truthy(logged:find("boom", 1, true) and logged:find("traceback", 1, true), logged)
+        for _, n in ipairs(notes) do
+            assert.falsy(tostring(n.msg):find("traceback", 1, true), n.msg)
+        end
+        assert.is_function(late)
+        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
+        assert.equals(1, view_gets())
+        -- Its late answer still landed: one more freshness `get`.
+        late(true)
+        assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
+    end)
+
+    it("a body that throws with no workspace log: its traceback is a DEBUG notification, never dropped", function()
+        fake_obs(nil, function() return daemon_view(function(v) v.modified = true end) end)
+        header()
+        local orig_log = ws._core._deps.log
+        ws._core._deps.log = nil
+        local notes, orig_notify = {}, vim.notify
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+        local wv = require("loomworks.workspace_view")
+        local orig = wv.execute_delete_stray_dir
+        wv.execute_delete_stray_dir = function() error("boom") end
+        local refused
+        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x) refused = x end)
+        wv.execute_delete_stray_dir = orig
+        vim.notify = orig_notify
+        ws._core._deps.log = orig_log
+        assert(ok, err)
+        assert.equals("refused", refused and refused.outcome)
+        local debug_tb
+        for _, n in ipairs(notes) do
+            if n.level == vim.log.levels.DEBUG and tostring(n.msg):find("traceback", 1, true) then debug_tb = n end
+        end
+        assert.is_table(debug_tb, vim.inspect(notes))
+        assert.truthy(debug_tb.msg:find("boom", 1, true), debug_tb.msg)
     end)
 
     it("the answered freshness `get` ends it: the daemon's view's flag again", function()

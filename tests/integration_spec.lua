@@ -2976,61 +2976,260 @@ describe("project configuration lifecycle", function()
         assert.is_true(ok)
         assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.options)
     end)
+end)
 
-    it("compute_edit_configuration_context returns defaults for new config", function()
-        local ws = make_ws({
-            projects = { App = { cmake = {} } },
-        })
+-- =========================================================================
+-- Configuration editor opened from the status page (projects section)
+-- =========================================================================
 
-        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), nil)
-        assert.is_not_nil(ctx)
-        assert.equals("", ctx.name)
-        assert.equals("", ctx.variant)
-        assert.is_true(ctx.has_options)
-        assert.is_true(#ctx.available_configs > 0) -- defaults exist
+describe("configuration editor opened from the status page", function()
+    local cmake_real = require("loomworks.modules.cmake")
+    local saved
+
+    before_each(function()
+        -- The mock cmake has no provenance resolvers: lend it the real ones.
+        saved = { mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources }
+        mock_modules.cmake.resolve_variant_source = cmake_real.resolve_variant_source
+        mock_modules.cmake.resolve_options_with_sources = cmake_real.resolve_options_with_sources
+    end)
+    after_each(function()
+        mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources =
+            saved[1], saved[2]
     end)
 
-    it("compute_edit_configuration_context returns data for existing config", function()
+    --- Render the projects section of `ws` (in-process view, every fold
+    --- open), press <CR> on the first row matching `pattern` (`before_enter()`
+    --- run first) and return the options the configuration editor dialog was
+    --- opened with.
+    local function open_from_page(ws, pattern, before_enter)
+        local ss = require("loomworks.status_source")
+        local Tree = require("loomworks.ui.tree")
+        local view = ws:view_workspace({ bind = ss.bind })
+        local ctx = { lw = require("loomworks"), view = view, ref = ss.object_of, ws = ws, mode = "in-process" }
+        local tree = Tree.new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local lines = tree:render()
+        local line
+        for i, l in ipairs(lines) do
+            if l:find(pattern) and tree.line_meta[i] and tree.line_meta[i].on_enter then line = i; break end
+        end
+        assert(line, "no actionable row matching " .. pattern .. " in:\n" .. table.concat(lines, "\n"))
+        local dialog = require("loomworks.ui.config_editor_dialog")
+        local orig_open = dialog.open
+        local got
+        dialog.open = function(o) got = o end
+        if before_enter then before_enter() end
+        local ok, err = pcall(tree.line_meta[line].on_enter)
+        dialog.open = orig_open
+        assert(ok, err)
+        assert.is_table(got, "the configuration editor did not open")
+        return got
+    end
+
+    it("shows the variant's source and the read-only compiler overrides under the active family", function()
         local ws = make_ws({
             projects = {
                 App = {
                     cmake = {
                         configurations = {
-                            ["Debug-ASAN"] = {
-                                inherits = "Debug",
-                                options = { ASAN = "ON" },
-                            },
+                            Dev = { inherits = "variant:Debug", overrides = { gcc = { out = "z" } } },
+                        },
+                    },
+                    variables = { out = { type = "string", default = "x" } },
+                },
+            },
+            configuration_sets = { Dev = { App = "Dev" } },
+        }, {
+            active_profile = "Dev",
+            profiles = { Dev = { configuration_set = "Dev" } },
+        })
+        local profile = ws:get_active_profile()
+        assert.is_not_nil(profile)
+        profile.tool_for = function() return { data = { compiler_family = "gcc" } } end
+        local opts = open_from_page(ws, "▼ Dev ")
+        assert.equals("variant:Debug", opts.variant_source)
+        assert.same({ gcc = { out = "z" } }, opts.config_compiler_overrides)
+        assert.equals("gcc", opts.active_compiler_family)
+    end)
+
+    it("shows every build dir of the configuration's units; saves the row's configuration, the name apart", function()
+        local ws = make_ws({
+            projects = { App = { cmake = { configurations = { Dev = { inherits = "variant:Debug" } } } } },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local dev = app:get_configuration("Dev")
+        -- (Units the view does not render: added once the page is drawn.)
+        local opts = open_from_page(ws, "▼ Dev ", function()
+            for _, dir in ipairs({ "/b/2", "/b/1" }) do
+                ws._config_units[#ws._config_units + 1] = { _project = app, _configuration = dev, build_dir_value = dir }
+            end
+        end)
+        assert.same({ "/b/1", "/b/2" }, opts.build_dirs)
+        assert.equals("Dev", opts.name)
+        assert.is_false(opts.is_default)
+        assert.equals("variant:Debug", opts.inherits)
+
+        local saved
+        local orig = wv.execute_save_configuration
+        wv.execute_save_configuration = function(...) saved = { ... }; return true end
+        local ok, err = pcall(opts.on_accept, { name = "Dev2", inherits = "variant:Debug", options = {}, variables = {} })
+        wv.execute_save_configuration = orig
+        assert(ok, err)
+        assert.equals(app, saved[1])
+        assert.equals(dev, saved[2])
+        assert.equals("Dev2", saved[3])
+        assert.same({ inherits = "variant:Debug", options = {}, variables = {} }, saved[4])
+    end)
+end)
+
+-- =========================================================================
+-- Projects/1.declaration: what the configuration editor shows (API.md §19)
+-- =========================================================================
+
+describe("project declaration for the configuration editor", function()
+    local cmake_real = require("loomworks.modules.cmake")
+    local saved
+
+    before_each(function()
+        saved = { mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources,
+            mock_modules.cmake.languages }
+        mock_modules.cmake.resolve_variant_source = cmake_real.resolve_variant_source
+        mock_modules.cmake.resolve_options_with_sources = cmake_real.resolve_options_with_sources
+    end)
+    after_each(function()
+        mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources,
+            mock_modules.cmake.languages = saved[1], saved[2], saved[3]
+    end)
+
+    --- App (cmake) with project option FOO, variable `out` (default x), a user
+    --- configuration Dev on variant:Debug declaring OWN and a gcc override of
+    --- `out`; Dev active under a gcc tool.
+    local function dev_ws()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        options = { FOO = "bar" },
+                        configurations = {
+                            Dev = { inherits = "variant:Debug", options = { OWN = "1" },
+                                overrides = { gcc = { out = "z" } } },
+                        },
+                    },
+                    variables = { out = { type = "string", default = "x" }, blank = { type = "string" } },
+                },
+            },
+            configuration_sets = { Dev = { App = "Dev" } },
+        }, {
+            active_profile = "Dev",
+            profiles = { Dev = { configuration_set = "Dev" } },
+        })
+        ws:get_active_profile().tool_for = function() return { data = { compiler_family = "gcc" } } end
+        return ws, h.find_project_in(ws:get_projects(), "App")
+    end
+
+    local function entry(decl, key)
+        for _, c in ipairs(decl.configurations) do if c.key == key then return c end end
+    end
+
+    it("carries the module, the active compiler family and each configuration's derived fields", function()
+        local ws, app = dev_ws()
+        app._module.languages = { "c", "c++" }
+        local decl = wv.project_declaration(app)
+        assert.equals("ok", decl.outcome)
+        assert.same({ languages = { "c", "c++" }, has_options = true }, decl.module)
+        assert.equals("gcc", decl.compiler_family)
+
+        local dev = entry(decl, "Dev")
+        assert.is_true(dev.user)
+        assert.is_nil(dev.default)
+        assert.is_nil(dev.source_missing)
+        assert.same({ key = "variant:Debug" }, dev.variant_from)
+        assert.same({ { key = "FOO", value = "bar", from = "project" } }, dev.inherited_options)
+        assert.same({
+            { name = "blank", from = "project" },
+            { name = "out", value = "z", from = "configuration", configuration = { key = "Dev" } },
+        }, dev.resolved_variables)
+
+        local debug = entry(decl, "variant:Debug")
+        assert.is_true(debug.default)
+        assert.equals("Debug", debug.variant)
+        assert.is_nil(debug.variant_from)
+        assert.same({ { name = "blank", from = "project" }, { name = "out", value = "x", from = "project" } },
+            debug.resolved_variables)
+
+        -- The status page's view resolves with the same family (decision:
+        -- the page and the editor agree).
+        local view = ws:view_workspace({})
+        local shown
+        for _, c in ipairs(view.projects[1].configurations) do
+            if c.key == "Dev" then
+                for _, v in ipairs(c.variables) do if v.name == "out" then shown = v.value end end
+            end
+        end
+        assert.equals("z", shown)
+    end)
+
+    it("lists every build dir of the configuration's units once, sorted; flags a cache-only configuration", function()
+        local ws, app = dev_ws()
+        local dev = app:get_configuration("Dev")
+        -- (The profile's unit has one already.)
+        local expected = vim.deepcopy(entry(wv.project_declaration(app), "Dev").build_dirs)
+        assert.equals(1, #expected)
+        vim.list_extend(expected, { "/b/aa", "/b/zz" })
+        table.sort(expected)
+        for _, dir in ipairs({ "/b/zz", expected[1], "/b/aa", "/b/zz" }) do
+            ws._config_units[#ws._config_units + 1] = { _project = app, _configuration = dev, build_dir_value = dir }
+        end
+        ws._config_units[#ws._config_units + 1] = { _project = app, _configuration = dev }
+        dev._source_missing = true
+        local e = entry(wv.project_declaration(app), "Dev")
+        assert.same(expected, e.build_dirs)
+        assert.is_true(e.source_missing)
+    end)
+
+    it("a configuration declaring its own variant is its own source: no variant_from", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            Mine = { inherits = "variant:Debug", variant = "Release" },
+                            Kid = { inherits = "Mine" },
                         },
                     },
                 },
             },
         })
-
-        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN")
-        assert.is_not_nil(ctx)
-        assert.equals("Debug-ASAN", ctx.name)
-        assert.equals("Debug", ctx.inherits[1] or ctx.inherits)
-        assert.equals("ON", ctx.options.ASAN)
-        assert.is_true(ctx.has_options)
+        local decl = wv.project_declaration(h.find_project_in(ws:get_projects(), "App"))
+        local mine = entry(decl, "Mine")
+        assert.equals("Release", mine.variant)
+        assert.is_nil(mine.variant_from)
+        -- A configuration inheriting it credits it, not the default below.
+        assert.same({ key = "Mine" }, entry(decl, "Kid").variant_from)
     end)
 
-    it("compute_edit_configuration_context marks defaults correctly", function()
-        -- Auto-gens carry the canonical `<prefix>:<name>` key after
-        -- canonicalize. is_default reads from the Configuration
-        -- object, so the lookup must use the canonical form. The
-        -- bare-name lookup that used to "work" here was the bug
-        -- that flagged user-created `default` configs as defaults
-        -- (see fix/configuration-name-collisions).
+    it("an inherited option's value is untyped, as module options are (a number validates)", function()
         local ws = make_ws({
-            projects = { App = { cmake = {} } },
+            projects = {
+                App = { cmake = { options = { JOBS = 4, ON = true },
+                    configurations = { Dev = { inherits = "variant:Debug" } } } },
+            },
         })
+        local dev = entry(wv.project_declaration(h.find_project_in(ws:get_projects(), "App")), "Dev")
+        assert.same({ { key = "JOBS", value = 4, from = "project" }, { key = "ON", value = true, from = "project" } },
+            dev.inherited_options)
+        local set = require("loomworks.proto.documents").set()
+        local ok, err = set:validate("interfaces/loomworks/Projects.1.json",
+            "/$defs/Declaration/properties/configurations/items/properties/inherited_options", dev.inherited_options)
+        assert(ok, err)
+    end)
 
-        local ctx = wv.compute_edit_configuration_context(
-            h.find_project_in(ws:get_projects(), "App"), "variant:Debug")
-        assert.is_not_nil(ctx)
-        assert.equals("variant:Debug", ctx.name)
-        assert.equals("Debug", ctx.variant)
-        assert.is_true(ctx.is_default)
+    it("no active profile: no compiler family, and a module without options says so", function()
+        local ws = make_ws({ projects = { Web = { typescript = {} } } })
+        local decl = wv.project_declaration(h.find_project_in(ws:get_projects(), "Web"))
+        assert.is_nil(decl.compiler_family)
+        assert.is_false(decl.module.has_options)
+        assert.same({}, decl.module.languages)
     end)
 end)
 
@@ -4880,7 +5079,7 @@ describe("project variables", function()
             assert.is_not_nil(app.variables.new_name)
         end)
 
-        it("config editor context includes resolved variables", function()
+        it("the declaration resolves the variables for the configuration editor", function()
             local ws = make_ws({
                 projects = {
                     App = {
@@ -4904,22 +5103,23 @@ describe("project variables", function()
             })
 
             local app = h.find_project_in(ws:get_projects(), "App")
-            local ctx = wv.compute_edit_configuration_context(app, "Debug")
+            local decl = wv.project_declaration(app)
+            local debug
+            for _, c in ipairs(decl.configurations) do if c.key == "Debug" then debug = c end end
 
-            -- project_variables has declarations
-            assert.is_not_nil(ctx.project_variables.output_dir)
-            assert.equals("path", ctx.project_variables.output_dir.type)
+            -- variables has the declarations
+            assert.equals("path", decl.variables.output_dir.type)
 
-            -- variables has this config's own overrides
-            assert.equals("/debug", ctx.variables.output_dir)
-            assert.is_nil(ctx.variables.port)  -- not overridden
+            -- the configuration's fields have its own overrides
+            assert.equals("/debug", debug.fields.variables.output_dir)
+            assert.is_nil(debug.fields.variables.port)  -- not overridden
 
             -- resolved_variables has full resolution with provenance
-            assert.is_not_nil(ctx.resolved_variables.output_dir)
-            assert.equals("/debug", ctx.resolved_variables.output_dir.value)
-            -- port resolves to project default
-            assert.equals("9229", ctx.resolved_variables.port.value)
-            assert.is_nil(ctx.resolved_variables.port.source_config)
+            assert.same({
+                { name = "output_dir", value = "/debug", from = "configuration", configuration = { key = "Debug" } },
+                -- port resolves to project default
+                { name = "port", value = "9229", from = "project" },
+            }, debug.resolved_variables)
         end)
     end)
 end)
