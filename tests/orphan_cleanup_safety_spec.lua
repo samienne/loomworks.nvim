@@ -1,12 +1,14 @@
--- Deletion safety of the status page's orphan cleanup, stray-directory
--- deletion and project removal (spec §4.6, §5.7, §19.3): the orphaned
+-- Deletion safety of the orphan cleanup, stray-directory deletion and
+-- project removal (`model_commands.execute_deletion` with an `orphans`,
+-- `stray_dir` or `project` target, API.md §22; spec §4.6, §5.7, §19.3): the orphaned
 -- entries' cache state is `unknown` on disk before any tree is removed, an
 -- entry is dropped only after its directory's removal is confirmed (a failed
 -- removal keeps it), a directory a live configuration still references is
 -- never removed (nor one that contains or lies inside a live build dir), a
--- directory that stopped being stray before the lock was taken is kept, the
--- locks are released and `on_done` reports the outcome (false on a failed
--- removal, a failed stray removal or an error), only dirs actually handed to
+-- directory that stopped being stray (or an orphan re-adopted) before the
+-- lock was taken is kept — the re-check under the locks refuses the changed
+-- plan —, the locks are released and the final outcome reports it (refused
+-- on a failed removal, a failed stray removal or an error), only dirs actually handed to
 -- rm-rf are marked `unknown`, a removed orphan's owned LSP database is handed
 -- to the owned-database cleanup, and every mutation takes O.
 
@@ -14,7 +16,8 @@ _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
 local bl = require("loomworks.build_lock")
 local op_lock = require("loomworks.op_lock")
-local wv = require("loomworks.workspace_view")
+local commands = require("loomworks.model_commands")
+local dp = require("loomworks.deletion_plan")
 local L = require("tests.lock_helpers")
 local uv = vim.uv or vim.loop
 local DONE_MS, RELEASE_MS = L.DONE_MS, L.RELEASE_MS
@@ -44,7 +47,7 @@ local function add_orphan(ws, root, dir)
     return dir
 end
 
-describe("view deletion safety", function()
+describe("deletion safety (execute_deletion)", function()
     local io_mod = require("loomworks.io")
     local real_rm
     local root, built, ws, errs
@@ -78,10 +81,20 @@ describe("view deletion safety", function()
         end, 20)
     end
 
-    local function cleanup_now(done)
-        local ctx = wv.compute_orphan_cleanup_context(ws)
-        wv.execute_orphan_cleanup(ws, ctx.orphaned_configs, ctx.stray_dirs, done)
+    --- Start the confirmed deletion of `target`; `done(ok, message)` gets its
+    --- final outcome (the request's when it was not accepted).
+    local function delete(target, done)
+        local r = commands.execute_deletion(ws, target, {
+            yes = true,
+            done = function(o) done(o.outcome == "ok", o.message) end,
+        })
+        if r.outcome ~= "accepted" then done(false, r.message) end
     end
+
+    local function cleanup_now(done) delete({ orphans = true }, done) end
+
+    --- Everything reported: the ERROR notifications and the outcome's message.
+    local function reported(err) return table.concat(errs, "\n") .. "\n" .. tostring(err) end
 
     --- Run `extra()` after every `_tracker:sync()` (what the deletion's
     --- re-check under the locks applies).
@@ -122,12 +135,12 @@ describe("view deletion safety", function()
         it("keeps the entry (unknown), reports and releases the locks when the removal fails", function()
             local dir = add_orphan(ws, root)
             io_mod.rm_rf_async = function(_, cb) cb(false, "boom") end
-            local ok = wait_done(cleanup_now)
+            local ok, err = wait_done(cleanup_now)
             assert.is_false(ok, "a failed removal reported success")
             local orphans = ws:get_orphaned_configs()
             assert.equals(1, #orphans, "the orphan's entry was dropped although its tree is still there")
             assert.equals("unknown", orphans[1].build_dir_obj.state)
-            assert.is_truthy(table.concat(errs, "\n"):find("boom", 1, true), table.concat(errs, "\n"))
+            assert.is_truthy(reported(err):find("boom", 1, true), reported(err))
             assert.is_true(locks_released(dir), "locks not released after a failed removal")
         end)
 
@@ -157,8 +170,8 @@ describe("view deletion safety", function()
         it("keeps a stray directory that stopped being stray before the lock was taken", function()
             local stray = root .. "/.nvim/build/App/Stray"
             vim.fn.mkdir(stray, "p")
-            local ctx = wv.compute_orphan_cleanup_context(ws)
-            assert.equals(1, #ctx.stray_dirs, "test setup: one stray dir")
+            assert.equals(1, #dp.plan(ws, { orphans = true }).strays, "test setup: one stray dir")
+            local removed = count_rm()
             -- Another process configured into it; applying that change (an
             -- external cache write reloads the workspace, so it is applied
             -- in place here) makes it live.
@@ -167,11 +180,13 @@ describe("view deletion safety", function()
                 unit.build_dir_value = stray
                 ws:_sync_build_dir_refs()
             end)
-            local ok = wait_done(function(done)
-                wv.execute_orphan_cleanup(ws, ctx.orphaned_configs, ctx.stray_dirs, done)
-            end)
+            local ok, err = wait_done(cleanup_now)
             assert.is_not_nil(uv.fs_stat(stray), "a directory that is no longer stray was removed")
-            assert.is_true(ok)
+            assert.same({}, removed, "rm-rf was handed a directory of the changed plan")
+            -- The re-check under the locks refuses the changed plan.
+            assert.is_false(ok)
+            assert.equals(dp.CHANGED, err)
+            assert.is_true(locks_released(ws._core._deps.normalize(stray)))
         end)
 
         it("deletes nothing when applying external changes unloaded the workspace", function()
@@ -200,8 +215,10 @@ describe("view deletion safety", function()
                 unit.build_dir_value = dir
                 ws:_sync_build_dir_refs()
             end)
-            local ok = wait_done(cleanup_now)
-            assert.is_true(ok)
+            local ok, err = wait_done(cleanup_now)
+            -- The re-check under the locks refuses the changed plan.
+            assert.is_false(ok)
+            assert.equals(dp.CHANGED, err)
             assert.same({}, removed, "a re-adopted build directory was removed")
             assert.is_not_nil(uv.fs_stat(dir))
             assert.equals("built", bd.state, "the re-adopted BuildDir's state was cleared")
@@ -237,9 +254,9 @@ describe("view deletion safety", function()
             local stray = root .. "/.nvim/build/App/Stray"
             vim.fn.mkdir(stray, "p")
             io_mod.rm_rf_async = function(_, cb) cb(false, "stray boom") end
-            local ok = wait_done(cleanup_now)
+            local ok, err = wait_done(cleanup_now)
             assert.is_false(ok, "a failed stray removal reported success")
-            assert.is_truthy(table.concat(errs, "\n"):find("stray boom", 1, true), table.concat(errs, "\n"))
+            assert.is_truthy(reported(err):find("stray boom", 1, true), reported(err))
             assert.is_true(locks_released(stray))
         end)
 
@@ -465,9 +482,13 @@ describe("view deletion safety", function()
                 unit.build_dir_value = stray
                 ws:_sync_build_dir_refs()
             end)
-            local ok, err = wait_done(function(done) wv.execute_delete_stray_dir(ws, n, done) end)
+            local removed = count_rm()
+            local ok, err = wait_done(function(done) delete({ stray_dir = n }, done) end)
+            -- The re-check under the locks plans again and refuses: the
+            -- directory is no longer in the stray set.
             assert.is_false(ok)
-            assert.equals("no longer a stray build directory", err)
+            assert.is_truthy(tostring(err):find("not a stray build directory", 1, true), tostring(err))
+            assert.same({}, removed, "rm-rf was handed a directory that is no longer stray")
             assert.is_not_nil(uv.fs_stat(stray), "a directory that is no longer stray was removed")
             assert.is_true(locks_released(n))
         end)
@@ -477,7 +498,7 @@ describe("view deletion safety", function()
             vim.fn.mkdir(stray, "p")
             local removed = count_rm()
             on_sync(function() ws._torn_down = true end)
-            local ok = wait_done(function(done) wv.execute_delete_stray_dir(ws, stray, done) end)
+            local ok = wait_done(function(done) delete({ stray_dir = stray }, done) end)
             ws._torn_down = nil
             assert.is_false(ok)
             assert.same({}, removed)
@@ -489,7 +510,7 @@ describe("view deletion safety", function()
             local stray = ws._core._deps.normalize(root .. "/.nvim/build/App/Stray")
             vim.fn.mkdir(stray, "p")
             on_sync(function() error("sync exploded") end)
-            local ok = wait_done(function(done) wv.execute_delete_stray_dir(ws, stray, done) end)
+            local ok = wait_done(function(done) delete({ stray_dir = stray }, done) end)
             assert.is_false(ok)
             assert.is_not_nil(uv.fs_stat(stray))
             assert.is_true(locks_released(stray))
@@ -499,24 +520,37 @@ describe("view deletion safety", function()
             local stray = ws._core._deps.normalize(root .. "/.nvim/build/App/Stray")
             vim.fn.mkdir(stray, "p")
             io_mod.rm_rf_async = function(_, cb) cb(false, "boom") end
-            local ok, err = wait_done(function(done) wv.execute_delete_stray_dir(ws, stray, done) end)
+            local ok, err = wait_done(function(done) delete({ stray_dir = stray }, done) end)
             assert.is_false(ok)
-            assert.equals("boom", err)
+            assert.is_not_nil(uv.fs_stat(stray))
+            assert.equals("a build directory was not removed (see the log)", err)
             assert.is_true(locks_released(stray))
         end)
     end)
 
     describe("project removal without cached configurations", function()
+        --- Drop App's configuration units: the project has no build state.
+        local function without_units()
+            local app = find_app(ws)
+            local kept = {}
+            for _, u in ipairs(ws._config_units) do
+                if u._project ~= app then kept[#kept + 1] = u end
+            end
+            ws._config_units = kept
+            ws:_sync_build_dir_refs()
+            local plan = dp.plan(ws, { project = app })
+            assert.same({}, plan.items, "test setup: no cached configurations")
+            assert.same({}, plan.lock_dirs, "test setup: no build directory to lock")
+            return app
+        end
+
         it("takes O: refused while another process holds it", function()
             local h = L.hold(op_lock.path(root), "publish")
-            local app = find_app(ws)
-            local ok = wait_done(function(done)
-                wv.execute_remove_project(ws, app, { project_type = "typescript",
-                    cached_configs = {}, downgrade_preview = {} }, done)
-            end)
+            local app = without_units()
+            local ok, err = wait_done(function(done) delete({ project = app }, done) end)
             assert.is_not_true(ok)
             assert.is_not_nil(find_app(ws), "the project was removed under another process's operation lock")
-            assert.is_truthy(table.concat(errs, "\n"):find("workspace busy: publish", 1, true))
+            assert.is_truthy(reported(err):find("workspace busy: publish", 1, true), reported(err))
             assert.is_not_nil(h)
         end)
 
@@ -527,12 +561,9 @@ describe("view deletion safety", function()
                 saw_o = op_lock.read(root) ~= nil
                 return real_remove(self, p)
             end
-            local app = find_app(ws)
-            local ok = wait_done(function(done)
-                wv.execute_remove_project(ws, app, { project_type = "typescript",
-                    cached_configs = {}, downgrade_preview = {} }, done)
-            end)
-            assert.is_true(ok)
+            local app = without_units()
+            local ok, err = wait_done(function(done) delete({ project = app }, done) end)
+            assert.is_true(ok, tostring(err))
             assert.is_true(saw_o, "O not held while the project was removed")
             assert.is_nil(find_app(ws))
             assert.is_true(locks_released())
