@@ -599,6 +599,57 @@ describe("ui.model_calls", function()
         assert(ok, err)
     end)
 
+    it("confirm_deletion: the dialog lists the plan and description; `y` reports the confirmed call's end; q sends nothing (5o C2c-2)", function()
+        local actions = require("loomworks.ui.actions")
+        local saved_call, saved_dialog, saved_notify = model.call, package.loaded["loomworks.ui.dialog"], vim.notify
+        local sent, shown, notes, answer = {}, nil, {}, nil
+        model.call = function(ws, method, params, cb)
+            sent[#sent + 1] = { ws, method, params }
+            if not params.yes then return cb({ outcome = "confirm", lines = { "Delete everything:", "  /w/b" }, plan = "N1" }) end
+            cb(answer)
+        end
+        package.loaded["loomworks.ui.dialog"] = { show = function(o) shown = o end }
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg, level } end
+        local closed = 0
+        local dlg = { close = function() closed = closed + 1 end }
+        local ok, err = pcall(function()
+            -- The nuke: its own method, the loaded workspace (nil).
+            actions.nuke()
+            assert.equals("Confirm", shown.title)
+            assert.same({ "  Reset workspace cache", "", "  Delete everything:", "    /w/b", "",
+                "  Press y to confirm, q to cancel" }, shown.lines)
+            assert.same({ line = 1, hl_group = "DiagnosticError" }, shown.highlights[1])
+            assert.equals("close", shown.keys.n)
+            -- q / n / <Esc> close the dialog without a call: only the confirmation was sent.
+            assert.same({ { nil, "Maintenance/1.nuke", {} } }, sent)
+            -- y: closes, sends exactly the plan with yes; notes as warnings, then done.
+            answer = { outcome = "ok", notes = { "kept /w/b/shared (in use)" } }
+            shown.keys.y(dlg)
+            assert.equals(1, closed)
+            assert.same({ nil, "Maintenance/1.nuke", { plan = "N1", yes = true } }, sent[2])
+            assert.same({ { "loomworks: kept /w/b/shared (in use)", vim.log.levels.WARN },
+                { "loomworks: workspace cache reset", vim.log.levels.INFO } }, notes)
+            -- A confirmed call finding nothing to delete (stdout) is INFO ...
+            notes = {}
+            answer = { outcome = "refused", message = "nuke: nothing to delete", stream = "out" }
+            shown.keys.y(dlg)
+            assert.same({ { "loomworks: nuke: nothing to delete", vim.log.levels.INFO } }, notes)
+            -- ... any other refusal an ERROR, and no success reported.
+            notes = {}
+            answer = { outcome = "refused", message = "nuke: the build directories to delete changed" }
+            shown.keys.y(dlg)
+            assert.same({ { "loomworks: nuke: the build directories to delete changed", vim.log.levels.ERROR } }, notes)
+            -- A description is shown below the listing, dimmed.
+            local WS = {}
+            actions.delete_project({ id = "4:1", key = "app", description = "the app\nits tools" }, WS)()
+            assert.same({ "  Remove project: app", "", "  Delete everything:", "    /w/b", "",
+                "  the app", "  its tools", "", "  Press y to confirm, q to cancel" }, shown.lines)
+            assert.same({ line = 7, hl_group = "Comment" }, shown.highlights[#shown.highlights])
+        end)
+        model.call, package.loaded["loomworks.ui.dialog"], vim.notify = saved_call, saved_dialog, saved_notify
+        assert(ok, err)
+    end)
+
     it("editor_ops.cancel_owned_matching cancels the selected owned calls and waits for each to end (5o C2c-2)", function()
         local eo = require("loomworks.daemon.editor_ops")
         local saved = package.loaded["loomworks.daemon.observer"]
