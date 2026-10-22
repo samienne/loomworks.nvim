@@ -170,7 +170,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   typed relative path is taken from Neovim's working directory), and `D`
   removes the SDK by its id. A refusal is an error notification and changes
   nothing; it is never done in Neovim instead. `L` reports a detection that
-  did not finish in time. (#PR)
+  did not finish in time. (#324)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor
