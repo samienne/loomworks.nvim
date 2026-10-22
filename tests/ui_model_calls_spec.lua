@@ -455,6 +455,12 @@ describe("ui.model_calls", function()
             assert.equals("nuke: cannot nuke: a build holds it", outs[1].message)
             assert.equals("nuke: the workspace daemon disconnected", outs[2].message)
             assert.equals("nuke: the build directories to delete changed", outs[3].message)
+            local quiet
+            model.call(WS, "Maintenance/1.nuke", { plan = "N", yes = true }, function(x) quiet = x end)
+            owned[#owned].h.on_reply({ outcome = "refused", message = "nothing to delete", stream = "out",
+                notes = { "n" }, note_roles = { "info" } })
+            assert.same({ "refused", "nuke: nothing to delete", "out", { "n" }, { "info" } },
+                { quiet.outcome, quiet.message, quiet.stream, quiet.notes, quiet.note_roles })
             for _, o in ipairs(owned) do assert.same({ plan = "N", yes = true }, o.args) end
         end)
 

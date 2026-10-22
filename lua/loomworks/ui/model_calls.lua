@@ -681,7 +681,11 @@ local function follow(ws, method, args, cb)
         on_reply = function(r)
             if r.outcome == "accepted" then return end -- its `done` answers
             if r.outcome == "degraded" then return cb(refusal(method, obs:refusal(method))) end
-            if r.outcome == "refused" then return cb(refusal(method, r.message)) end
+            if r.outcome == "refused" then
+                local out = refusal(method, r.message)
+                out.notes, out.note_roles, out.stream = r.notes, r.note_roles, r.stream
+                return cb(out)
+            end
             if r.outcome == "declined" then
                 return cb(refusal(method, "the workspace daemon declined it (" .. tostring(r.reason) .. ")"))
             end

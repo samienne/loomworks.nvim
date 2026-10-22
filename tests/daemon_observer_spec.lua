@@ -1660,3 +1660,24 @@ describe("lw status running-task lines (§19.6)", function()
         s.srv:stop("test end", 0)
     end)
 end)
+
+-- A refused reply to an owned call keeps the refusal's stream and notes: a
+-- confirmed deletion that finds nothing to delete is reported as INFO, not
+-- as an error (ui/actions.confirm_deletion).
+describe("observer: start_owned refusal", function()
+    it("passes the refusal's stream and notes through", function()
+        local obs = setmetatable({ conn = {}, _owned = {} }, { __index = observer.Observer })
+        function obs:_icall(_, _, cb)
+            cb({ outcome = "refused", message = "nothing to delete", stream = "out", exit_code = 0,
+                notes = { "n" }, note_roles = { "info" } })
+        end
+        local got
+        obs:start_owned("Maintenance/1.execute_deletion", {}, {
+            on_reply = function(r) got = r end,
+            on_done = function() error("no task ran") end,
+        })
+        vim.wait(1000, function() return got ~= nil end)
+        assert.same({ outcome = "refused", message = "nothing to delete", stream = "out",
+            notes = { "n" }, note_roles = { "info" } }, got)
+    end)
+end)

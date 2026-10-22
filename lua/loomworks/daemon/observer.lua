@@ -2531,7 +2531,9 @@ end
 ---                                      (its `done`, whose task result is
 ---                                      `done`, or the connection lost:
 ---                                      `reason`);
----   { outcome = "refused", message }   fails as in-process would;
+---   { outcome = "refused", message, stream?, notes?, note_roles? }
+---                                      fails as in-process would (its
+---                                      stream and notes as answered);
 ---   { outcome = "declined", reason }   nothing ran: fails with the reason;
 ---   { outcome = "degraded", reason }   nothing ran (the daemon lacks the
 ---                                      method or a parameter): noted, the
@@ -2589,7 +2591,10 @@ function Observer:start_owned(method, args, h)
                 end
                 return
             elseif r.outcome == "refused" then
-                return h.on_reply({ outcome = "refused", message = tostring(r.message or "refused") })
+                -- Its stream and notes kept: a refusal on stdout (nothing to
+                -- delete) is not reported as an error.
+                return h.on_reply({ outcome = "refused", message = tostring(r.message or "refused"),
+                    stream = r.stream, notes = r.notes, note_roles = r.note_roles })
             elseif r.outcome == "declined" then
                 return h.on_reply({ outcome = "declined", reason = tostring(r.reason or "declined") })
             end
