@@ -17,19 +17,21 @@
 --- browser's `candidates` + `add`, `declaration`, `configuration_remove`,
 --- `launch_remove`, `variable_save` / `variable_remove` and
 --- `type_config_set`, **C2b2-1** `configuration_save` (the configuration
---- editor reads `declaration`) and **C2b2-2** `launch_save`, `deploy_save`
+--- editor reads `declaration`), **C2b2-2** `launch_save`, `deploy_save`
 --- and `expand_preview` (the launch, deploy and path editors read
---- `declaration`, the workspace view and `expand_preview`) (`ROUTED`
---- below): in `daemon` mode those are only ever calls — refused (the outcome
---- says why) when the daemon cannot carry them, never run in-process (spec
---- §19.16 "Availability"). `Sdks/1`, `Toolchains/1` and `Maintenance/1`
---- still run their in-process bodies in both modes until C2c.
+--- `declaration`, the workspace view and `expand_preview`), and **C2c-1**
+--- the SDK section's `Sdks/1` (`detect` — the picker's read — `add`,
+--- `remove`) and `L`'s `Toolchains/1.rescan` (`ROUTED` below): in
+--- `daemon` mode those are only ever calls — refused (the outcome says
+--- why) when the daemon cannot carry them, never run in-process (spec
+--- §19.16 "Availability"). `Maintenance/1` (and the project row's
+--- removal) still runs its in-process bodies in both modes until C2c-2.
 ---
 --- Params mirror the method's (its schema under spec/protocol/interfaces).
 --- An entity param of a routed method (`item`, `profile`, `config_set`,
---- `project`, `configuration`, `launch`) is the **row** the action was taken
---- on — a `view.Workspace/1` row of the status page (a project's, or one of
---- its `configurations[]` / `launches[]`), a `ConfigSets/1.candidates`
+--- `project`, `configuration`, `launch`, `sdk`) is the **row** the action
+--- was taken on — a `view.Workspace/1` row of the status page (a project's,
+--- one of its `configurations[]` / `launches[]`, an SDK's), a `ConfigSets/1.candidates`
 --- entry, or a description handle (`helpers.row_item`, `_row` its row) —
 --- never a domain object or a key (a variable or `type_config` field is
 --- named by its name within its project's row):
@@ -44,7 +46,7 @@
 --- Configuration table (sent as project key → configuration name, the wire's
 --- form) or a generated template's project key → configuration name.
 ---
---- Transitional params (until C2c): `Maintenance/1.execute_deletion
+--- Transitional params (until C2c-2): `Maintenance/1.execute_deletion
 --- { confirmed }` and `Maintenance/1.nuke { root }` — the in-process
 --- confirmation the user accepted (its plan, dialog context or root); C2c
 --- uses the methods' confirm + plan token.
@@ -297,9 +299,17 @@ end)
 -- Sdks/1 and Toolchains/1
 -- ---------------------------------------------------------------------------
 
---- → `sdk`.
+--- `{ provider? }` → `providers` (`{ id, label, path_prompt?, found }`,
+--- `found` the installations `{ path, version? }`).
+CALLS["Sdks/1.detect"] = function(_, p, cb) cb(wv().sdk_detect(p.provider)) end
+--- `{ provider, path }` (`path` absolute) → `sdk`.
 CALLS["Sdks/1.add"] = function(ws, p, cb) cb(created("sdk", wv().add_sdk(ws, p.provider, p.path))) end
-CALLS["Sdks/1.remove"] = function(ws, p, cb) cb(outcome(wv().remove_sdk(ws, p.sdk))) end
+--- `{ sdk }`: the SDK's row.
+CALLS["Sdks/1.remove"] = function(ws, p, cb)
+    local o, err = objects(p, { "sdk" })
+    if not o then return cb(err) end
+    cb(outcome(wv().remove_sdk(ws, o.sdk)))
+end
 CALLS["Toolchains/1.rescan"] = function(_, _, cb)
     require("loomworks").rescan_tools()
     cb(outcome(true))
@@ -366,6 +376,8 @@ local VERB = {
     ["Projects/1.deploy_save"] = "deploy steps", ["Projects/1.expand_preview"] = "preview",
     ["Projects/1.variable_save"] = "variable", ["Projects/1.variable_remove"] = "variable",
     ["Projects/1.type_config_set"] = "project field",
+    ["Sdks/1.detect"] = "SDK detection", ["Sdks/1.add"] = "SDK", ["Sdks/1.remove"] = "SDK",
+    ["Toolchains/1.rescan"] = "toolchain detection",
 }
 
 --- A refused outcome of `method` with `why`.
@@ -587,6 +599,13 @@ by_ref("Projects/1.expand_preview", { { "project", "project" } }, { "templates" 
 by_ref("Projects/1.variable_save", { { "project", "project" } }, { "variable", "name", "data" })
 by_ref("Projects/1.variable_remove", { { "project", "project" } }, { "variable" })
 by_ref("Projects/1.type_config_set", { { "project", "project" } }, { "field", "value" })
+
+-- (step 5o C2c-1) The SDK section and `L`. `add`'s `path` is absolute (the
+-- caller makes a typed one so: the daemon refuses a relative path).
+by_ref("Sdks/1.detect", {}, { "provider" })
+by_ref("Sdks/1.add", {}, { "provider", "path" })
+by_ref("Sdks/1.remove", { { "sdk", "SDK" } })
+ROUTED["Toolchains/1.rescan"] = function(ws, _, cb) send(ws, "Toolchains/1.rescan", {}, cb) end
 
 --- The methods the status page calls, sorted (tests).
 --- @return string[]

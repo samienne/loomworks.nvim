@@ -517,18 +517,18 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         return reverts, edit, done, buf
     end
 
-    --- A status-page write not routed to the daemon yet (Sdks/1 until 5o
-    --- C2c), run in-process through ui/model_calls: an SDK added (the
-    --- editor's model's write stubbed).
+    --- A status-page write not routed to the daemon yet (Maintenance/1 until
+    --- 5o C2c-2), run in-process through ui/model_calls: a stray dir deleted
+    --- (the editor's model's write stubbed).
     local function in_process_write()
         local wv = require("loomworks.workspace_view")
-        local orig = wv.add_sdk
+        local orig = wv.execute_delete_stray_dir
         local saved = false
-        wv.add_sdk = function() saved = true; return {} end
+        wv.execute_delete_stray_dir = function(_, _, done) saved = true; done(true) end
         local r
-        require("loomworks.ui.model_calls").call(ws, "Sdks/1.add",
-            { provider = "x", path = "/sdk" }, function(x) r = x end)
-        wv.add_sdk = orig
+        require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x) r = x end)
+        wv.execute_delete_stray_dir = orig
         assert.is_true(saved)
         assert.equals("ok", r and r.outcome)
     end
@@ -742,16 +742,17 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(fresh, views.daemon_state(obs, "workspace"))
     end)
 
-    --- Run `Sdks/1.add` in-process in daemon mode with the view-model's
-    --- `add_sdk` replaced by `body`; returns the outcome box.
+    --- Run `Maintenance/1.execute_deletion` of a stray dir in-process in
+    --- daemon mode with the view-model's `execute_delete_stray_dir` replaced
+    --- by `body`; returns the outcome box.
     local function in_process_call(body)
         local wv = require("loomworks.workspace_view")
-        local orig = wv.add_sdk
-        wv.add_sdk = body
+        local orig = wv.execute_delete_stray_dir
+        wv.execute_delete_stray_dir = body
         local box = {}
-        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Sdks/1.add",
-            { provider = "x", path = "/sdk" }, function(x) box.r = x end)
-        wv.add_sdk = orig
+        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x) box.r = x end)
+        wv.execute_delete_stray_dir = orig
         box.ok, box.err = ok, err
         return box
     end

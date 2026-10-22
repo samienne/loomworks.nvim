@@ -57,7 +57,8 @@ describe("ui.model_calls", function()
         -- The rows the in-process view bound to the objects (step 5o C2a).
         local ss = require("loomworks.status_source")
         local PROW, CSROW, LROW, CROW = { key = "p" }, { name = "cs" }, { key = "l" }, { key = "c" }
-        ss.bind(PROW, P); ss.bind(CSROW, CS); ss.bind(LROW, L); ss.bind(CROW, CFG)
+        local SDKROW = { key = "ohos-1" }
+        ss.bind(PROW, P); ss.bind(CSROW, CS); ss.bind(LROW, L); ss.bind(CROW, CFG); ss.bind(SDKROW, SDK)
         before_each(function()
             calls = {}
             saved = { package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
@@ -70,6 +71,8 @@ describe("ui.model_calls", function()
                 execute_save_launch_config = function() return true, nil, L end,
                 add_sdk = function() return SDK end,
                 remove_sdk = function() return false, "in use" end,
+                sdk_detect = function() return { outcome = "ok", providers = { { id = "ohos", label = "OHOS",
+                    found = { { path = "/sdk", version = "5" } } } } } end,
                 execute_delete_stray_dir = function(_, _, done) done(false, nil) end,
                 execute_orphan_cleanup = function(_, _, _, done) done(true) end,
                 execute_remove_project = function(_, _, _, done) done(false, "locked") end,
@@ -108,7 +111,7 @@ describe("ui.model_calls", function()
             r[#r + 1] = run(nil, "Projects/1.type_config_set", { project = PROW, field = "f", value = 3 })
             r[#r + 1] = run(nil, "Projects/1.deploy_save", { project = PROW, deploy = m })
             r[#r + 1] = run(WS, "Sdks/1.add", { provider = "ohos", path = "/sdk" })
-            r[#r + 1] = run(WS, "Sdks/1.remove", { sdk = SDK })
+            r[#r + 1] = run(WS, "Sdks/1.remove", { sdk = SDKROW })
             assert.same({
                 { "publish", WS },
                 { "set_intent", P, "shared" },
@@ -192,6 +195,15 @@ describe("ui.model_calls", function()
                 { outcome = "refused", message = "locked" }, { outcome = "ok" } }, r)
         end)
 
+        it("detects SDKs; an SDK row the in-process view did not bind is refused, nothing removed (step 5o C2c-1)", function()
+            local r = run(WS, "Sdks/1.detect", { provider = "ohos" })
+            assert.same({ { "sdk_detect", "ohos" } }, calls)
+            assert.same({ { path = "/sdk", version = "5" } }, r.providers[1].found)
+            r = run(WS, "Sdks/1.remove", { sdk = { key = "ohos-1" } })
+            assert.equals("refused", r.outcome)
+            assert.equals(1, #calls)
+        end)
+
         it("runs the trust review, the rescan and the nuke as before", function()
             assert.same({ outcome = "ok", trust = "trusted" }, run(WS, "Workspace/1.trust_accept", {}))
             run(WS, "Toolchains/1.rescan", {})
@@ -203,6 +215,141 @@ describe("ui.model_calls", function()
             package.loaded["loomworks.workspace_view"] = saved[1]
             local got = run(WS, "Workspace/1.set_intent", { item = { key = "p" }, intent = "shared" })
             assert.equals("refused", got.outcome)
+        end)
+    end)
+
+    -- Step 5o C2c-1: in `daemon` mode the SDK section's Sdks/1 calls and
+    -- `L`'s Toolchains/1.rescan are calls to the workspace daemon (a fake
+    -- observer here; the real one in tests/daemon_model_calls_e2e_spec.lua):
+    -- an SDK by its row's id, a row without one refused, never in-process.
+    describe("daemon mode: SDKs and the toolchain rescan", function()
+        local saved, sent, carried, answer
+        local WS = { root = "/w" }
+        local obs = { state = "connected" }
+        function obs:request(method, args, cb)
+            sent[#sent + 1] = { method, args }
+            cb({ outcome = "ok", result = answer or { outcome = "ok" } })
+        end
+        function obs:refusal(method) return "the daemon does not carry " .. method end
+        before_each(function()
+            sent, carried, answer = {}, true, nil
+            saved = { package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
+                package.loaded["loomworks"] }
+            package.loaded["loomworks.daemon.editor_ops"] = {
+                daemon_of = function() return true, carried and obs or nil end,
+                carrier = function() return carried and obs or nil end,
+            }
+            -- No in-process body may run.
+            local function never(_, name) return function() error("in-process " .. name .. " in daemon mode") end end
+            package.loaded["loomworks.workspace_view"] = setmetatable({}, { __index = never })
+            package.loaded["loomworks"] = setmetatable({}, { __index = never })
+        end)
+        after_each(function()
+            package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
+                package.loaded["loomworks"] = saved[1], saved[2], saved[3]
+        end)
+        local function run(method, params)
+            local got
+            model.call(WS, method, params, function(r) got = r end)
+            return got
+        end
+
+        it("routes detect, add, remove and rescan", function()
+            for _, m in ipairs({ "Sdks/1.detect", "Sdks/1.add", "Sdks/1.remove", "Toolchains/1.rescan" }) do
+                assert.is_true(model.routed(m), m)
+            end
+        end)
+
+        it("sends the SDK row's id, the provider and the absolute path as given; the outcomes as answered", function()
+            answer = { outcome = "ok", providers = { { id = "ohos", label = "OHOS", path_prompt = "p",
+                found = { { path = "/sdk", version = "5" } } } } }
+            local r = run("Sdks/1.detect", {})
+            assert.same(answer, r)
+            answer = { outcome = "ok", sdk = { id = "7:1", key = "ohos-1" } }
+            r = run("Sdks/1.add", { provider = "ohos", path = "/sdk" })
+            assert.same({ id = "7:1", key = "ohos-1" }, r.sdk)
+            answer = nil
+            assert.equals("ok", run("Sdks/1.remove", { sdk = { id = "7:1", key = "ohos-1", label = "OHOS" } }).outcome)
+            answer = { outcome = "ok", notes = { "detection still running" }, note_roles = { "warn" } }
+            r = run("Toolchains/1.rescan", {})
+            assert.same({ false, "detection still running" }, { model.result(r) })
+            assert.same({
+                { "Sdks/1.detect", {} },
+                { "Sdks/1.add", { provider = "ohos", path = "/sdk" } },
+                { "Sdks/1.remove", { sdk = { id = "7:1" } } },
+                { "Toolchains/1.rescan", {} },
+            }, sent)
+        end)
+
+        it("refuses an SDK row without an id (never by its key) and a call the daemon cannot carry", function()
+            local r = run("Sdks/1.remove", { sdk = { key = "ohos-1", label = "OHOS" } })
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("no SDK id", 1, true), r.message)
+            answer = { outcome = "refused", message = "stale reference" }
+            r = run("Sdks/1.remove", { sdk = { id = "9:9" } })
+            assert.equals("SDK: stale reference", r.message)
+            carried = false
+            r = run("Toolchains/1.rescan", {})
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("^toolchain detection: "), r.message)
+            r = run("Sdks/1.add", { provider = "ohos", path = "/sdk" })
+            assert.equals("refused", r.outcome)
+            assert.same({ { "Sdks/1.remove", { sdk = { id = "9:9" } } } }, sent)
+        end)
+    end)
+
+    -- Step 5o C2c-1: the SDK section's picker lists Sdks/1.detect's
+    -- installations (version, the provider's prompt), makes a typed path
+    -- absolute, and offers `D` on a row only when actionable.
+    describe("the SDK section", function()
+        local saved, sent, picks, typed
+        before_each(function()
+            sent, picks = {}, {}
+            saved = { model.call, vim.ui.select, vim.ui.input, vim.notify, package.loaded["loomworks.ui.status"] }
+            model.call = function(_, method, params, cb)
+                sent[#sent + 1] = { method, params }
+                if method == "Sdks/1.detect" then
+                    return cb({ outcome = "ok", providers = { { id = "fake", label = "Fake", path_prompt = "Path to fake",
+                        found = { { path = "/opt/fake", version = "2" }, { path = "/declared" } } } } })
+                end
+                cb({ outcome = "ok", sdk = { id = "1:1", key = "fake-2" } })
+            end
+            vim.ui.select = function(items, _, cb) picks[#picks + 1] = items; cb(items[#items]) end
+            vim.ui.input = function(opts, cb) typed = opts.prompt; cb("rel/sdk") end
+            vim.notify = function() end
+            package.loaded["loomworks.ui.status"] = { refresh = function() end }
+        end)
+        after_each(function()
+            model.call, vim.ui.select, vim.ui.input, vim.notify, package.loaded["loomworks.ui.status"] =
+                saved[1], saved[2], saved[3], saved[4], saved[5]
+        end)
+        local function render(ctx)
+            local nodes, items = {}, {}
+            local tree = { blank = function() end, leaf = function() end,
+                node = function(_, label, opts) nodes[#nodes + 1] = { label = label, opts = opts } end,
+                item = function(_, label, opts) items[#items + 1] = { label = label, opts = opts } end }
+            package.loaded["loomworks.ui.sections.sdks"] = nil
+            require("loomworks.ui.sections.sdks")(tree, ctx)
+            return nodes, items
+        end
+
+        it("picks from detect; a typed path is sent absolute; `D` only on a row with an id (daemon mode)", function()
+            local view = { sdk_providers = 1, sdks = {
+                { id = "1:1", key = "a", label = "A", path = "/declared", resolved = true, kits = {} },
+                { key = "b", label = "B", resolved = false, kits = {} } } }
+            local nodes, items = render({ mode = "daemon", view = view, ws = {}, ref = function() return nil end })
+            assert.is_function(nodes[1].opts.on_delete)
+            assert.is_nil(nodes[2].opts.on_delete)
+            items[1].opts.on_enter()
+            -- The declared path is not offered again; the browse entry last.
+            assert.same({ "Fake 2  /opt/fake", "Fake  (browse for path...)" },
+                vim.tbl_map(function(c) return c.label end, picks[1]))
+            assert.equals("Path to fake: ", typed)
+            assert.same({ "Sdks/1.add", { provider = "fake", path = vim.fn.fnamemodify("rel/sdk", ":p") } }, sent[2])
+            assert.is_true(vim.fn.fnamemodify(sent[2][2].path, ":p") == sent[2][2].path)
+            vim.ui.select = function(choices, _, cb) cb(choices[1]) end -- "Yes"
+            nodes[1].opts.on_delete()
+            assert.same({ "Sdks/1.remove", { sdk = view.sdks[1] } }, sent[3])
         end)
     end)
 

@@ -163,6 +163,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   editor reads the project from the daemon. A refusal is an error
   notification and changes nothing; it is never done in Neovim instead. The
   configuration, launch and deploy editors still write from Neovim. (#318)
+- Experimental daemon: in daemon mode the status page's SDK section and `L`
+  (detect the toolchains again) are calls to the workspace daemon: "Add SDK"
+  lists the installations the daemon detects (with their versions and the
+  provider's own prompt for a typed path), adds the one picked or typed (a
+  typed relative path is taken from Neovim's working directory), and `D`
+  removes the SDK by its id. A refusal is an error notification and changes
+  nothing; it is never done in Neovim instead. `L` reports a detection that
+  did not finish in time. (#PR)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor
