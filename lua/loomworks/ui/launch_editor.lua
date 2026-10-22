@@ -31,6 +31,9 @@ local M = {}
 ---   projects: table[]|nil — the workspace view's project rows (deploy editor)
 ---   profiles: table[]|nil — the workspace view's profile rows (deploy editor)
 ---   preview_for: function|nil — a project row's preview (deploy editor)
+---   target_context: boolean|nil — the launch is target-backed, so its
+---     path and deploy editors offer `${target_dir}` (spec §8.7: unavailable
+---     for a command-type launch)
 ---   debug_adapters: (fun(): table[]|nil)|nil — the debug adapter records
 ---     (`DebugConfig/1.adapters`: `{ language, adapter?, default? }`), nil
 ---     while unknown; read at each render
@@ -158,6 +161,7 @@ function M.open(opts)
                                         path = val,
                                         variables = opts.variables,
                                         preview = opts.preview,
+                                        target_context = opts.target_context,
                                         on_accept = function(path)
                                             args[captured_ai] = key .. "=" .. path
                                             if view then view:refresh() end
@@ -189,6 +193,7 @@ function M.open(opts)
                                         path = args[captured_ai],
                                         variables = opts.variables,
                                         preview = opts.preview,
+                                        target_context = opts.target_context,
                                         on_accept = function(path)
                                             args[captured_ai] = path
                                             if view then view:refresh() end
@@ -243,6 +248,7 @@ function M.open(opts)
                                 path = "",
                                 variables = opts.variables,
                                 preview = opts.preview,
+                                target_context = opts.target_context,
                                 on_accept = function(path)
                                     args[#args + 1] = key .. "=" .. path
                                     if view then view:refresh() end
@@ -263,6 +269,7 @@ function M.open(opts)
                     path = "",
                     variables = opts.variables,
                     preview = opts.preview,
+                    target_context = opts.target_context,
                     on_accept = function(path)
                         args[#args + 1] = path
                         if view then view:refresh() end
@@ -282,6 +289,7 @@ function M.open(opts)
                     path = working_dir,
                     variables = opts.variables,
                     preview = opts.preview,
+                    target_context = opts.target_context,
                     on_accept = function(path)
                         working_dir = path
                         if view then view:refresh() end
@@ -405,6 +413,7 @@ function M.open(opts)
                                 profiles = opts.profiles,
                                 variables = opts.variables,
                                 preview = opts.preview,
+                                target_context = opts.target_context,
                                 preview_for = opts.preview_for,
                                 existing_destinations = deploy_keys,
                                 current_destination = captured_dest,
@@ -470,6 +479,7 @@ function M.open(opts)
                     profiles = opts.profiles,
                     variables = opts.variables,
                     preview = opts.preview,
+                    target_context = opts.target_context,
                     preview_for = opts.preview_for,
                     existing_destinations = deploy_keys,
                     on_accept = function(new_dest, new_source)

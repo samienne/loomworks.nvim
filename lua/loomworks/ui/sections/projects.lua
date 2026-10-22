@@ -100,6 +100,9 @@ local function open_launch_editor(ctx, prow, lrow, decl)
         projects = dctx.projects,
         profiles = dctx.profiles,
         preview_for = dctx.preview_for,
+        -- A target-backed launch resolves ${target_dir} (§8.7); a
+        -- command-type (or new) one does not.
+        target_context = fields.target ~= nil,
         debug_adapters = function()
             if not ws then return nil end
             return (require("loomworks.daemon.editor_ops").debug_adapters(ws))
