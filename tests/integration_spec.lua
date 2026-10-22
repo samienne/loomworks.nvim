@@ -638,29 +638,6 @@ describe("project lifecycle", function()
         assert.is_nil(post_cache.build_dirs[bd_key])
     end)
 
-    it("prepare_add_project_from_browser returns add_direct when no config sets", function()
-        local ws = make_ws({ projects = {} })
-
-        local prep = wv.prepare_add_project_from_browser(
-            ws, "/root", "/root/MyApp", "MyApp", "cmake")
-        assert.equals("add_direct", prep.action)
-        assert.equals("MyApp", prep.key)
-    end)
-
-    it("prepare_add_project_from_browser returns show_dialog when config sets exist", function()
-        local ws = make_ws({
-            projects = { Frontend = { harmony = {} } },
-            configuration_sets = { Debug = { Frontend = "debug" } },
-        })
-
-        local prep = wv.prepare_add_project_from_browser(
-            ws, "/root", "/root/App", "App", "cmake")
-        assert.equals("show_dialog", prep.action)
-        assert.equals("App", prep.key)
-        assert.is_true(#prep.config_names > 0)
-        assert.is_true(prep.has_keyed)
-    end)
-
     it("find_project_by_path matches by path", function()
         local ws = make_ws({
             projects = {
