@@ -9,6 +9,18 @@ local merge = require("loomworks.merge")
 local cache_mod = require("loomworks.cache")
 local h = require("tests.helpers")
 local wv = require("loomworks.workspace_view")
+local commands = require("loomworks.model_commands")
+local dp = require("loomworks.deletion_plan")
+
+--- Run the confirmed deletion of `target` (model_commands.execute_deletion)
+--- to its end; the final outcome (the request's when it was not accepted).
+local function run_deletion(ws, target)
+    local final
+    local r = commands.execute_deletion(ws, target, { yes = true, done = function(o) final = o end })
+    if r.outcome ~= "accepted" then return r end
+    assert.is_true(vim.wait(5000, function() return final ~= nil end, 10), "deletion never finished")
+    return final
+end
 
 local Workspace = workspace.Workspace
 
@@ -619,20 +631,14 @@ describe("project lifecycle", function()
         }
         ws:remerge(nil, injected_cache)
 
-        -- Compute removal context
+        -- Plan the removal
         local app = h.find_project_in(ws:get_projects(), "App")
-        local ctx = wv.compute_remove_context(ws, app)
-        assert.is_not_nil(ctx)
-        assert.equals("cmake", ctx.project_type)
-        assert.equals(1, #ctx.cached_configs)
+        assert.equals("cmake", app.type)
+        assert.equals(1, #dp.plan(ws, { project = app }).items)
 
         -- Execute removal
-        local done = false
-        wv.execute_remove_project(ws, app, ctx, function(success)
-            done = true
-            assert.is_true(success)
-        end)
-        assert.is_true(done)
+        local r = run_deletion(ws, { project = app })
+        assert.equals("ok", r.outcome, r.message)
         assert.is_nil(h.find_project_in(ws:get_projects(), "App"))
         local post_cache = ws:_serialize_cache()
         assert.is_nil(post_cache.build_dirs[bd_key])
@@ -770,15 +776,10 @@ describe("profile upgrade and downgrade", function()
         )
 
         local app = h.find_project_in(ws:get_projects(), "App")
-        local ctx = wv.compute_remove_context(ws, app)
-        assert.equals(1, #ctx.downgrade_preview)
+        assert.equals(1, #dp.plan(ws, { project = app }).downgrade)
 
-        local done = false
-        wv.execute_remove_project(ws, app, ctx, function(ok)
-            done = true
-            assert.is_true(ok)
-        end)
-        assert.is_true(done)
+        local r = run_deletion(ws, { project = app })
+        assert.equals("ok", r.outcome, r.message)
 
         -- Profile downgraded: Debug:ninja-gcc-12 → Debug
         local cache = ws:_serialize_cache()
@@ -873,16 +874,12 @@ describe("orphan lifecycle", function()
         assert.equals("Frontend", orphans[1].project_key)
         assert.equals("release", orphans[1].config_key)
 
-        -- Compute cleanup context
-        local ctx = wv.compute_orphan_cleanup_context(ws)
-        assert.equals(1, #ctx.orphaned_configs)
+        -- Plan the cleanup
+        assert.equals(1, #dp.plan(ws, { orphans = true }).orphans)
 
         -- Execute cleanup
-        local done = false
-        wv.execute_orphan_cleanup(ws, ctx.orphaned_configs, ctx.stray_dirs, function()
-            done = true
-        end)
-        assert.is_true(done)
+        local r = run_deletion(ws, { orphans = true })
+        assert.equals("ok", r.outcome, r.message)
 
         -- Orphan cleaned, referenced config still exists
         assert.equals(0, #ws:get_orphaned_configs())
