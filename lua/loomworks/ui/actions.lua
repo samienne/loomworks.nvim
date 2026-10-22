@@ -111,20 +111,14 @@ function M.clean(profile)
     end
 end
 
---- @param profile loomworks.Profile
-function M.delete_profile(profile)
+--- `D` on a profile row: delete the profile and the build directories only
+--- it uses (`Maintenance/1.execute_deletion { profile }`, M.confirm_deletion).
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.delete_profile(row, ws)
     return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local plan = profile:plan_deletion()
-        local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: " .. profile.key, plan,
-            profile.description)
-        M._show_confirmation(ctx, function()
-            require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
-                { target = { profile = profile }, confirmed = plan }, function()
-                    vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
-                end)
-        end)
+        M.confirm_deletion(ws, { title = "Delete profile: " .. tostring(row.key), target = { profile = row },
+            description = row.description, done = "profile '" .. tostring(row.key) .. "' removed" })
     end
 end
 
@@ -183,83 +177,73 @@ function M.clean_configuration(unit)
     end
 end
 
---- @param unit loomworks.ConfigUnit
-function M.delete_config(unit)
+--- `D` on a profile's unit row: delete the unit's build directory and cached
+--- state (`Maintenance/1.execute_deletion { unit }`).
+--- @param u table the unit's row (one of a profile row's `units`)
+--- @param ws? loomworks.Workspace
+function M.delete_config(u, ws)
     return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local plan = unit:plan_deletion()
-        local pkey, ckey = unit_display_keys(unit)
-        local cfg = unit.configuration and unit:configuration() or nil
-        local ctx = wv.compute_delete_confirmation_context(ws,
-            "Delete: " .. pkey .. " / " .. ckey, plan, cfg and cfg.description)
-        M._show_confirmation(ctx, function()
-            require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
-                { target = { unit = unit } }, function()
-                    vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
-                end)
-        end)
+        M.confirm_deletion(ws, { title = "Delete: " .. tostring(u.project or "?") .. " / "
+            .. tostring(u.configuration or "?"), target = { unit = u }, done = "configuration cleaned" })
     end
 end
 
---- @param orphan { project_key: string, config_key: string, build_dir_obj: loomworks.BuildDir }
-function M.delete_orphaned_config(orphan)
+--- `D` on an orphaned entry's row: delete its build directory and cache
+--- entry (`{ build_dir }`; a directory still shared or holding a live build
+--- dir is kept, only the entry dropped).
+--- @param row table the `orphaned.configurations[]` row
+--- @param ws? loomworks.Workspace
+function M.delete_orphaned_config(row, ws)
     return function()
-        local ws = require("loomworks").get_workspace()
-        if not ws then return end
-        local pkey = orphan.project_key or "?"
-        local ckey = orphan.config_key or "?"
-        local build_dir = orphan.build_dir_obj
-        vim.ui.select({ "Yes", "No" }, {
-            prompt = "Delete orphaned build dir: " .. pkey .. "/" .. ckey .. "?",
-        }, function(choice)
-            if choice ~= "Yes" then return end
-            if build_dir and build_dir.rel_path then
-                -- Report the real outcome: a failed removal (already reported
-                -- in detail) warns; a tree kept because it is shared or holds
-                -- a live build dir says so (only the entry was dropped).
-                require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
-                    { target = { build_dir = build_dir } }, function(r)
-                        local report = r.report or {}
-                        if r.outcome ~= "ok" then
-                            vim.notify("loomworks: orphaned build dir not removed"
-                                .. (r.message and (": " .. r.message) or ""), vim.log.levels.WARN)
-                        elseif report.kept and #report.kept > 0 then
-                            local k = report.kept[1]
-                            vim.notify("loomworks: orphaned entry dropped; directory kept ("
-                                .. (k.why == "shared" and "still used by another configuration"
-                                    or "it holds a live build dir") .. "): " .. k.dir,
-                                vim.log.levels.INFO)
-                        else
-                            vim.notify("loomworks: orphaned build dir removed", vim.log.levels.INFO)
-                        end
-                    end)
-            end
-        end)
+        M.confirm_deletion(ws, { title = "Delete orphaned build dir: " .. tostring(row.key),
+            target = { build_dir = row },
+            -- (A tree another configuration shares, or one holding a live build
+            -- dir, is kept: only its entry goes. The outcome cannot say which.)
+            done = "orphaned entry deleted (its directory too, unless still in use)" })
     end
 end
 
---- Delete a stray build directory (not in cache).
---- @param dir string absolute normalized path
+--- `D` on a stray build directory (on disk, in no cache entry): `{ stray_dir }`,
+--- the path exactly as the view lists it (the daemon matches it against its
+--- current stray set).
+--- @param dir string the path as listed
+--- @param ws? loomworks.Workspace
 --- @return fun() closure
-function M.delete_stray_dir(dir)
+function M.delete_stray_dir(dir, ws)
     return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        if not ws then return end
-
-        local ctx = wv.compute_delete_stray_dir_context(ws, dir)
-        M._show_confirmation(ctx, function()
-            require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
-                { target = { stray_dir = dir } }, function(r)
-                    if r.outcome == "ok" then
-                        vim.notify("loomworks: stray directory removed", vim.log.levels.INFO)
-                    elseif r.message then -- none: the lock was refused (already reported)
-                        vim.notify("loomworks: failed to delete: " .. r.message, vim.log.levels.ERROR)
-                    end
-                end)
-        end)
+        M.confirm_deletion(ws, { title = "Delete stray directory", target = { stray_dir = dir },
+            done = "stray directory removed" })
     end
+end
+
+--- "Clean all" of the orphaned section: every orphaned and stray build
+--- directory (`{ orphans = true }`).
+--- @param ws? loomworks.Workspace
+function M.delete_orphans(ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Clean Orphaned Build Dirs", target = { orphans = true },
+            done = "orphaned build dirs cleaned" })
+    end
+end
+
+--- `D` on a project row (and the project browser's `d`): delete the
+--- project's build state, then its declaration, then its profiles'
+--- toolchain downgrade (`{ project }`).
+--- @param prow table the project's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace
+function M.delete_project(prow, ws)
+    return function()
+        M.confirm_deletion(ws, { title = "Remove project: " .. tostring(prow.key), target = { project = prow },
+            description = prow.description, done = "project '" .. tostring(prow.key) .. "' removed" })
+    end
+end
+
+--- `<C-n>`: nuke the workspace's build state (`Maintenance/1.nuke`); its
+--- workspace is the loaded one (nil to model_calls — also while its load is
+--- refused).
+function M.nuke()
+    M.confirm_deletion(nil, { title = "Reset workspace cache", method = "Maintenance/1.nuke",
+        done = "workspace cache reset" })
 end
 
 --- Open the overseer task output for a ConfigUnit.
@@ -471,6 +455,63 @@ end
 -- ---------------------------------------------------------------------------
 -- Confirmation dialog (thin UI wrapper)
 -- ---------------------------------------------------------------------------
+
+--- The one confirmation flow of a deletion or nuke, in both modes (step 5o
+--- C2c-2; ui/model_calls): call `o.method` (default
+--- `Maintenance/1.execute_deletion`) without a plan; its `confirm` shows the
+--- listing it answered (`lines`), `y` calls again with exactly the `plan`
+--- that confirmation returned and `yes`, so a deletion never removes what
+--- the listing did not show (a changed plan is refused). The outcome is
+--- reported once the deletion ended — never when it was only accepted:
+--- `o.done` on success, the refusal otherwise ("nothing to delete" as INFO).
+--- @param ws loomworks.Workspace|nil the page's workspace (nil: the loaded one)
+--- @param o { title: string, target?: table, description?: string, done: string, method?: string }
+function M.confirm_deletion(ws, o)
+    local model = require("loomworks.ui.model_calls")
+    local method = o.method or "Maintenance/1.execute_deletion"
+    local function failed(r, fallback)
+        local _, err = model.result(r)
+        vim.notify("loomworks: " .. tostring(err or fallback),
+            r.stream == "out" and vim.log.levels.INFO or vim.log.levels.ERROR)
+    end
+    model.call(ws, method, { target = o.target }, function(r)
+        if r.outcome ~= "confirm" then return failed(r, "nothing was deleted") end
+        local lines = { "  " .. o.title, "" }
+        local highlights = { { line = 1, hl_group = "DiagnosticError" } }
+        for _, l in ipairs(r.lines or {}) do
+            lines[#lines + 1] = "  " .. l
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        if type(o.description) == "string" and o.description ~= "" then
+            lines[#lines + 1] = ""
+            for _, l in ipairs(vim.split(o.description, "\n", { plain = true })) do
+                lines[#lines + 1] = "  " .. l
+                highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+            end
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+        require("loomworks.ui.dialog").show({
+            title = "Confirm",
+            lines = lines,
+            highlights = highlights,
+            max_height = 30,
+            keys = {
+                n = "close",
+                y = function(self)
+                    self:close()
+                    model.call(ws, method, { target = o.target, plan = r.plan, yes = true }, function(d)
+                        if d.outcome ~= "ok" then return failed(d, "the deletion failed") end
+                        for _, note in ipairs(d.notes or {}) do
+                            vim.notify("loomworks: " .. note, vim.log.levels.WARN)
+                        end
+                        vim.notify("loomworks: " .. o.done, vim.log.levels.INFO)
+                    end)
+                end,
+            },
+        })
+    end)
+end
 
 --- Show a confirmation dialog from pre-computed context.
 --- @param ctx { lines: string[], highlights: table[] }

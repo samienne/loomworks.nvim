@@ -110,11 +110,6 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `describe` reports `delivery = "subscription"`, step 5g.3)
 --- @field _view_seq integer|nil the last `seq` of the `/views` object seen on this connection (a gap re-fetches the views, step 5j)
 --- @field _own_write_pending boolean|nil a `get` of the workspace view after an editor write is scheduled (`_own_write`, step 5n C1)
---- @field _view_stale_gen integer|nil bumped by every start and end of the status page's in-process writes; nil once a `get` sent after the last of them, with none open, was answered (Observer:workspace_view_stale)
---- @field _view_open_writes integer|nil the status page's in-process writes started and not ended yet (Observer:in_process_write_started / in_process_write); the held view is stale while any is open, whatever a `get` answers
---- @field _view_retries integer|nil failed freshness `get`s retried so far since the last answered one (Observer:_view_get_failed)
---- @field _view_retry_due table|nil the token of the scheduled retry of the freshness `get` (a reset drops it: the retry then does nothing)
---- @field _view_sub_ids table<string, any>|nil per view feature: the `sub_id` of its subscription on this connection (a resubscribe unsubscribes it first)
 --- @field generation any session generation of the observed daemon
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
@@ -315,19 +310,22 @@ M.SDKS = {
     object = "/toolchains", iface = "loomworks.Sdks", v = 1, feature = "sdks",
     methods = { "detect", "add", "remove" }, signals = {}, call_only = true,
 }
+-- The status page's deletions and nuke (step 5o C2c-2, API.md §22):
+-- `execute_deletion` and `nuke` answer `confirm` without `yes` (a plain
+-- call) and, confirmed, `accepted` with a task the editor owns and follows
+-- to its `done` (ui/model_calls), so they need Tasks/1 as Build/1 does.
+M.MAINTENANCE = {
+    object = "/maintenance", iface = "loomworks.Maintenance", v = 1, feature = "maintenance",
+    methods = { "execute_deletion", "nuke" }, signals = {}, call_only = true, tasks = true,
+}
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE }
 M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE, M.BUILD,
-    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS }
+    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS,
+    M.MAINTENANCE }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
 M.DESCRIBE_MS = 3000
-
---- The backoff of a failed freshness `get` of the workspace view (after an
---- in-process write, Observer:_own_write): one retry per entry, in ms; once
---- they all failed the view is subscribed to again (its `initial` is a fresh
---- read).
-M.VIEW_RETRY_MS = { 250, 1000, 4000 }
 
 --- The versions of `want.iface` the daemon offers on `want.object`, from
 --- `welcome.objects` (§19.20; describe().objects without digests).
@@ -398,8 +396,6 @@ end
 ---   keepalive_ms, retire_check_ms
 ---   channel_tick_ms  replaces CHANNEL_TICK_MS
 ---   environ     fun() → table<string, string> (vim.fn.environ: the environment a Build/1 call carries)
----   defer       fun(fn, ms) (vim.defer_fn: the freshness `get`'s retries)
----   view_retry_ms integer[]  replaces VIEW_RETRY_MS
 --- @param ws loomworks.Workspace
 --- @param opts? table
 --- @return loomworks.daemon.Observer|nil
@@ -480,10 +476,6 @@ end
 --- stop) goes through here.
 --- @param name? loomworks.ViewName
 function Observer:_clear_views(name)
-    -- A workspace view held again is a new read's: no ended write it misses
-    -- (a write still open keeps it stale, Observer:workspace_view_stale; one
-    -- ending while its subscription is pending marks it again).
-    if name == nil or name == "workspace" then self._view_stale_gen = nil end
     if views.clear(self, name) then
         self:_emit("daemon_view_changed", { view = name })
     end
@@ -1542,7 +1534,6 @@ function Observer:_subscribe(conn, done)
     self:_drop_devices()
     self._log_subs = nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
-    self._view_sub_ids, self._view_retries, self._view_retry_due = nil, nil, nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
@@ -1674,10 +1665,6 @@ end
 --- @param result table|nil the subscribe result `{ sub_id, seq, initial? }`
 function Observer:_view_subscribed(want, result)
     if type(result) ~= "table" then return end
-    if result.sub_id ~= nil then
-        self._view_sub_ids = self._view_sub_ids or {}
-        self._view_sub_ids[want.feature] = result.sub_id
-    end
     local seq = tonumber(result.seq)
     -- Both views share the `/views` object's `seq` (counted per object and
     -- connection, §19.12): the baseline is the highest one seen.
@@ -1685,9 +1672,6 @@ function Observer:_view_subscribed(want, result)
     if type(result.initial) == "table" then
         self:_set_view(want.view, result.initial)
     end
-    -- An in-process write started or ended while this subscription was
-    -- pending: its `initial` may predate it — a freshness `get` sent now.
-    if want == M.VIEW_WORKSPACE and self._view_stale_gen ~= nil then self:_own_write() end
 end
 
 --- A view's `update` (§19.13 "Views"): the full state replaces the store's
@@ -1962,7 +1946,6 @@ function Observer:_on_closed(c)
     self:_drop_devices()
     self._log_subs = nil
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
-    self._view_sub_ids, self._view_retries, self._view_retry_due = nil, nil, nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
     self:_lsp_changed()
@@ -2178,9 +2161,10 @@ local METHOD_IFACE = {
     device_stop = M.DEVICES,
     ["Profiles/1.set_device"] = M.PROFILES, ["Profiles/1.clear_device"] = M.PROFILES,
 }
--- The status page's model writes (step 5o C2a, C2b, C2c-1): every method of the
+-- The status page's model writes (step 5o C2a, C2b, C2c): every method of the
 -- interface tables above, by its qualified name.
-for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS }) do
+for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS,
+    M.MAINTENANCE }) do
     local iface = want.iface:match("^loomworks%.(.+)$")
     for _, method in ipairs(want.methods) do METHOD_IFACE[iface .. "/" .. want.v .. "." .. method] = want end
 end
@@ -2406,6 +2390,13 @@ local CALLS = {
     ["Sdks/1.remove"] = function(conn, args, cb, env)
         conn:call(M.SDKS.object, M.SDKS.iface, M.SDKS.v, "remove", args, cb, env)
     end,
+    -- (step 5o C2c-2)
+    ["Maintenance/1.execute_deletion"] = function(conn, args, cb, env)
+        conn:call(M.MAINTENANCE.object, M.MAINTENANCE.iface, M.MAINTENANCE.v, "execute_deletion", args, cb, env)
+    end,
+    ["Maintenance/1.nuke"] = function(conn, args, cb, env)
+        conn:call(M.MAINTENANCE.object, M.MAINTENANCE.iface, M.MAINTENANCE.v, "nuke", args, cb, env)
+    end,
 }
 
 --- An interface call of CALLS on the observed connection; every call but
@@ -2540,7 +2531,9 @@ end
 ---                                      (its `done`, whose task result is
 ---                                      `done`, or the connection lost:
 ---                                      `reason`);
----   { outcome = "refused", message }   fails as in-process would;
+---   { outcome = "refused", message, stream?, notes?, note_roles? }
+---                                      fails as in-process would (its
+---                                      stream and notes as answered);
 ---   { outcome = "declined", reason }   nothing ran: fails with the reason;
 ---   { outcome = "degraded", reason }   nothing ran (the daemon lacks the
 ---                                      method or a parameter): noted, the
@@ -2598,7 +2591,10 @@ function Observer:start_owned(method, args, h)
                 end
                 return
             elseif r.outcome == "refused" then
-                return h.on_reply({ outcome = "refused", message = tostring(r.message or "refused") })
+                -- Its stream and notes kept: a refusal on stdout (nothing to
+                -- delete) is not reported as an error.
+                return h.on_reply({ outcome = "refused", message = tostring(r.message or "refused"),
+                    stream = r.stream, notes = r.notes, note_roles = r.note_roles })
             elseif r.outcome == "declined" then
                 return h.on_reply({ outcome = "declined", reason = tostring(r.reason or "declined") })
             end
@@ -2683,7 +2679,7 @@ function Observer:unsubscribe_log(task_id)
 end
 
 --- Send Root `unsubscribe` for `sub` on its connection, when still open.
---- @param sub loomworks.daemon.LogSub|{ conn: table, sub_id: any } a log subscription, or a view's (Observer:_resubscribe_view)
+--- @param sub loomworks.daemon.LogSub a log subscription
 function Observer:_send_unsubscribe(sub)
     local conn = sub.conn
     if not conn or conn.closed or type(conn.call) ~= "function" then return end
@@ -3110,11 +3106,10 @@ function Observer:workspace_view()
 end
 
 --- The editor wrote a state file of this observer's workspace itself (an
---- in-process write before step 5o: a publish, a revert, a status-page
---- mutation): fetch the workspace view (`get`), whose freshness check
---- applies the write in the daemon (§19.13 "Freshness of views"); the
---- views' `update`s follow from it. One `get` per event-loop turn however
---- many files the write touched.
+--- in-process write of the editor's model, `state_file_written`): fetch the
+--- workspace view (`get`), whose freshness check applies the write in the
+--- daemon (§19.13 "Freshness of views"); the views' `update`s follow from it.
+--- One `get` per event-loop turn however many files the write touched.
 function Observer:_own_write()
     if self._own_write_pending then return end
     if not (self._feat and self._feat[M.VIEW_WORKSPACE.feature] == "subscribed") then return end
@@ -3122,132 +3117,8 @@ function Observer:_own_write()
     vim.schedule(function()
         self._own_write_pending = nil
         if self.state == "stopped" then return end
-        -- This `get` is sent after every in-process write that ended so far:
-        -- its answer knows them — unless one is still open (it may land
-        -- after the read) or one started or ended meanwhile (the gen moved).
-        local gen = self._view_stale_gen
-        self:_refetch_views(M.VIEW_WORKSPACE, gen and function()
-            self._view_retries = nil
-            if self._view_stale_gen == gen and (self._view_open_writes or 0) == 0 then
-                self._view_stale_gen = nil
-            end
-        end, gen and function() self:_view_get_failed() end)
+        self:_refetch_views(M.VIEW_WORKSPACE)
     end)
-end
-
---- A freshness `get` of the workspace view failed while it is stale: sent
---- again after the next VIEW_RETRY_MS delay; once every retry failed, the
---- view is subscribed to again (Observer:_resubscribe_view) — never left
---- stale for good. A later answered `get` (or a clear) ends the retries; a
---- reset (a stop, a close, a new connection's subscriptions) drops the
---- scheduled one. While a write is open nothing is retried: its end sends
---- its own `get`.
-function Observer:_view_get_failed()
-    if not self:_view_retry_wanted() or self._view_retry_due then return end
-    local delays = self.opts.view_retry_ms or M.VIEW_RETRY_MS
-    local n = (self._view_retries or 0) + 1
-    if n > #delays then
-        self._view_retries = nil
-        return self:_resubscribe_view(M.VIEW_WORKSPACE)
-    end
-    self._view_retries = n
-    local token = {}
-    self._view_retry_due = token
-    local defer = self.opts.defer or vim.defer_fn
-    defer(function()
-        if self._view_retry_due ~= token then return end
-        self._view_retry_due = nil
-        if not self:_view_retry_wanted() then
-            self._view_retries = nil
-            return
-        end
-        self:_own_write()
-    end, delays[n])
-end
-
---- Whether a freshness `get` answered now could end the stale mark: the
---- view is stale and no in-process write is open.
---- @return boolean
-function Observer:_view_retry_wanted()
-    return self.state ~= "stopped" and self._view_stale_gen ~= nil and (self._view_open_writes or 0) == 0
-end
-
---- Subscribe to the view `want` again on this connection (its `get`s keep
---- failing): the old subscription is unsubscribed, the held state dropped
---- (`waiting for the workspace daemon` until the answer), and the answer's
---- `initial` held — a read sent after every write so far.
---- @param want table one of M.VIEWS
-function Observer:_resubscribe_view(want)
-    local conn, f = self.conn, want.feature
-    if not conn or type(conn.call) ~= "function" or self.mode ~= "interfaces" or not self._feat then return end
-    if self._feat[f] ~= "subscribed" then return end
-    -- The old subscription goes first: without its `sub_id` (the daemon gave
-    -- none) a second one would deliver every update twice — the view stays
-    -- held and stale (the editor's model's flag) until a later write's `get`
-    -- is answered or the connection is renewed.
-    local sub_id = self._view_sub_ids and self._view_sub_ids[f]
-    if sub_id == nil then return end
-    self._view_sub_ids[f] = nil
-    self:_send_unsubscribe({ conn = conn, sub_id = sub_id })
-    self._feat[f] = "pending"
-    self:_clear_views(want.view)
-    self:_root_subscribe(conn, want, function(result, err)
-            vim.schedule(function()
-                if self.state == "stopped" or self.conn ~= conn or not self._feat then return end
-                if self._feat[f] ~= "pending" then return end
-                if err then
-                    -- Refused: retried once, on the next `objects_changed`.
-                    self._feat[f] = "refused"
-                    self._why[f] = M.feature_note(want, { want.v },
-                        type(err) == "table" and (err.message or err.code) or err)
-                else
-                    self._feat[f], self._why[f] = "subscribed", nil
-                    self:_view_subscribed(want, result)
-                end
-                self:_connected_note()
-            end)
-        end)
-end
-
---- The status page starts a model write in-process in `daemon` mode (a
---- method not routed to the daemon yet — Maintenance/1 and the project
---- row's removal until step 5o C2c-2; ui/model_calls): the
---- held workspace view does not know it until a freshness `get` sent after
---- it landed is answered (Observer:workspace_view_stale). Marks the view
---- stale only; Observer:in_process_write, once the write ended (an async
---- one — a deletion's cache write — lands later), sends that `get`.
---- Counted whatever the view's subscription state (a write started while it
---- is pending is still open when the `initial` arrives); stale until the
---- write ended and a `get` sent after that, with no write open, is answered.
-function Observer:in_process_write_started()
-    if self.state == "stopped" then return end
-    self._view_open_writes = (self._view_open_writes or 0) + 1
-    self._view_stale_gen = (self._view_stale_gen or 0) + 1
-end
-
---- The status page's in-process write (Observer:in_process_write_started)
---- ended — or, `again` true, one that already ended landed once more (a
---- body that threw and answered later; not counted again): the held
---- workspace view does not know it until a freshness `get` sent now, with no
---- write open, is answered. Ensures that `get`: at once when the view is
---- subscribed, else once it is (Observer:_view_subscribed).
---- @param again? boolean
-function Observer:in_process_write(again)
-    if self.state == "stopped" then return end
-    if not again and (self._view_open_writes or 0) > 0 then
-        self._view_open_writes = self._view_open_writes - 1
-    end
-    self._view_stale_gen = (self._view_stale_gen or 0) + 1
-    self:_own_write()
-end
-
---- Whether an in-process write of the status page (Observer:in_process_write)
---- is not yet known to the held workspace view: the freshness `get` sent
---- after it not answered yet. The status buffer's 'modified' does not rely
---- on the view's `modified` alone then (status_source.modified).
---- @return boolean
-function Observer:workspace_view_stale()
-    return self._view_stale_gen ~= nil or (self._view_open_writes or 0) > 0
 end
 
 --- Where the tests stand with this observer (§19.16 "Tests" Unavailable or
@@ -3461,9 +3332,6 @@ function Observer:stop()
     self.conn = nil
     if c then c.on_close = nil; c:close() end
     self._view_seq, self._tests_seq, self._tests_early = nil, nil, nil
-    self._view_sub_ids, self._view_retries, self._view_retry_due = nil, nil, nil
-    -- Stopped: no view to keep stale (a write still running ends unseen).
-    self._view_open_writes = nil
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)

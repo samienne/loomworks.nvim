@@ -358,50 +358,13 @@ end
 -- Cache nuke confirmation dialog
 -- -----------------------------------------------------------------------
 
+--- `<C-n>`: `Maintenance/1.nuke` through ui/model_calls (step 5o C2c-2):
+--- its confirmation lists what it removes (or is refused — a lock another
+--- process holds, in `daemon` mode a task of the daemon running); `y` sends
+--- the plan back. The workspace is the loaded one, also while its load is
+--- refused; no root is ever sent.
 function Tree:_confirm_nuke()
-    local dialog = require("loomworks.ui.dialog")
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    local err = lw.get_setup_error()
-    local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
-
-    -- Refuse before listing what would be deleted (a build of another
-    -- process, or its workspace operation, is in the way): the refusal only.
-    local ok, why, areas = lw.nuke_check(root)
-    if not ok then
-        vim.notify("loomworks: " .. tostring(why), vim.log.levels.ERROR)
-        return
-    end
-
-    local lines = {
-        "  Reset workspace cache",
-        "",
-        "  This will permanently delete:",
-        "    " .. root .. "/.nvim/build/",
-        "    " .. root .. "/.nvim/loomworks.cache.json",
-    }
-    -- Module-owned LSP database areas present on disk (spec ui §1.11), as
-    -- `nuke_check` found them; a failed area check already refused above.
-    for _, a in ipairs(areas or {}) do lines[#lines + 1] = "    " .. a .. "/" end
-    local last_path = #lines
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "  Press y to confirm, q to cancel"
-
-    local highlights = { { line = 1, hl_group = "DiagnosticError" } }
-    for i = 3, last_path do highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn" } end
-
-    dialog.show({
-        title = "Confirm Reset",
-        lines = lines,
-        highlights = highlights,
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                require("loomworks.ui.model_calls").call(ws, "Maintenance/1.nuke", { root = root })
-            end,
-        },
-    })
+    require("loomworks.ui.actions").nuke()
 end
 
 -- -----------------------------------------------------------------------

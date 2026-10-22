@@ -740,22 +740,6 @@ function M.derive_key_and_path(root, abs_path, name)
     end
 end
 
---- Find the project key in workspace config that matches a browser entry path.
---- Find a project by its relative path or basename.
---- @param ws loomworks.Workspace
---- @param rel_path string relative path from root
---- @param basename string directory basename
---- @return loomworks.Project|nil
-function M.find_project_by_path(ws, rel_path, basename)
-    for _, proj in pairs(ws._projects) do
-        local proj_rel = proj.path or proj.key
-        if proj_rel == rel_path or proj_rel == basename then
-            return proj
-        end
-    end
-    return nil
-end
-
 -- =========================================================================
 -- Confirmation Dialog Content
 -- =========================================================================
@@ -926,27 +910,6 @@ function M.compute_delete_confirmation_context(ws, title, plan, description)
     add("  Press y to confirm, q to cancel", "Comment")
 
     return { lines = lines, highlights = highlights }
-end
-
---- Build confirmation dialog content for stray dir deletion.
---- @param ws loomworks.Workspace
---- @param dir string absolute normalized path
---- @return { lines: string[], highlights: table[] }
-function M.compute_delete_stray_dir_context(ws, dir)
-    local display = rel_path(ws, dir) or dir
-    return {
-        lines = {
-            "  Delete stray build directory:",
-            "",
-            "    " .. display,
-            "",
-            "  Press y to confirm, q to cancel",
-        },
-        highlights = {
-            { line = 1, hl_group = "DiagnosticWarn" },
-            { line = 3, hl_group = "DiagnosticWarn" },
-        },
-    }
 end
 
 --- Execute stray build dir deletion.
@@ -1254,6 +1217,49 @@ function M.save_deploy(project, deploy) return as_result(commands.deploy_save(pr
 --- @return boolean ok, string|nil err
 function M.save_type_config_field(project, field, value)
     return as_result(commands.type_config_set(project, field, value))
+end
+
+--- `Maintenance/1.execute_deletion { target, plan?, yes? }` in-process
+--- (model_commands.execute_deletion; step 5o C2c-2): `cb` gets the request's
+--- `refused` or `confirm { lines, plan }` at once (its lines end with the
+--- running tasks the deletion stops, if any), or — accepted — the
+--- deletion's final outcome once it ended (`ok`, or `refused`: a held lock,
+--- a changed plan, a failed removal). Never `cb` at the acceptance.
+--- @param ws loomworks.Workspace
+--- @param target table a deletion target (its objects; loomworks.deletion_plan)
+--- @param plan string|nil the token the confirmation returned
+--- @param yes boolean|nil
+--- @param cb fun(r: loomworks.CommandOutcome)
+function M.execute_deletion(ws, target, plan, yes, cb)
+    local r = commands.execute_deletion(ws, target, { plan = plan, yes = yes, done = cb })
+    if r.outcome == "confirm" then
+        -- The editor's own running tasks the deletion stops first
+        -- (Workspace:_run_deletion; spec/ui.md §1.10), after the listing.
+        local running = ws:find_running_tasks_for_items(require("loomworks.deletion_plan").plan(ws, target).items)
+        local stopped = {}
+        for _, info in pairs(running) do
+            stopped[#stopped + 1] = "  " .. tostring(info.project_key) .. ": " .. tostring(info.action) .. " "
+                .. tostring(info.configuration_key)
+        end
+        if #stopped > 0 then
+            table.sort(stopped)
+            r.lines[#r.lines + 1] = "Will stop running tasks:"
+            vim.list_extend(r.lines, stopped)
+        end
+    end
+    if r.outcome ~= "accepted" then cb(r) end
+end
+
+--- `Maintenance/1.nuke { plan?, yes? }` in-process (model_commands.nuke) on
+--- the root of `ws`, else the refused load's or the cwd's
+--- (`user_prefs_root`): the command's outcome.
+--- @param ws loomworks.Workspace|nil
+--- @param plan string|nil
+--- @param yes boolean|nil
+--- @return loomworks.CommandOutcome
+function M.nuke(ws, plan, yes)
+    local lw = require("loomworks")
+    return commands.nuke(lw._core(), (ws and ws.root) or lw.user_prefs_root(), plan, yes)
 end
 
 --- The installed SDK providers (or the one named) and the installations

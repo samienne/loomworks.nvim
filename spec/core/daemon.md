@@ -2154,17 +2154,19 @@ the daemon's operations as with any other process:
 
 - `lw nuke` — removes the workspace's build state (`.nvim/build/`, the build
   and health caches), taking every build-directory lock first (§19.3); the
-  editor's nuke is `Maintenance/1.nuke` from step 5o *(optional part B6)*;
+  editor's nuke in `daemon` mode is `Maintenance/1.nuke` (§19.16 "Model
+  writes");
 - `lw device clean` (§16.34) — its device locks and the device's staging stay
   with the client process, as for a device run;
 - the editor's own operations, including its clean, delete and configure
   actions (§19.16) — until step 5k, which routes its builds, configures,
   module cleans and launch preparations (§19.16 "Editor operations"); its
   deletions (a profile, a configuration unit, an orphaned or stray build
-  directory, all orphans, a project with its build state) stay here until
-  step 5o, which makes them `Maintenance/1.execute_deletion` tasks holding
-  the workspace operation lock and the build-directory locks of §19.3 like
-  every other deletion path (§4.6); its device-target launches until
+  directory, all orphans, a project with its build state) are, in `daemon`
+  mode, `Maintenance/1.execute_deletion` tasks (§19.16 "Model writes"), and
+  in-process ones otherwise, holding the workspace operation lock and the
+  build-directory locks of §19.3 like every other deletion path (§4.6); its
+  device-target launches until
   `Devices/1` (step 5n, §19.16 "Editor operations"). Its test discovery, test runs
   and test debug preparations move to `Tests/1` in step 5m (§19.16 "Tests").
 
@@ -2516,16 +2518,16 @@ plan, a held lock) is an error notification and changes nothing; the page
 shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is
 not carried the action is refused ("Availability"), never run in-process.
-*(Until step 5o part C2c-2 the status page's `Maintenance/1` actions (a
-project's removal among them) still work on the editor's in-process
-model, as transitional, not fallbacks; its `Workspace/1`, `Profiles/1`
-and `ConfigSets/1` actions are calls from part C2a, and its `Projects/1`
-actions from C2b: the removals, variable and `type_config` edits and
-project add from its first half, the configuration editor (C2b2-1) and
-the launch, deploy and path editors (C2b2-2, reading `declaration`, the
-workspace view and `expand_preview`) from its second. The SDK section's
-`Sdks/1` actions and the toolchain rescan (`Toolchains/1.rescan`) are
-calls from part C2c-1.)*
+*(Status: every status-page action is a call. Its `Workspace/1`,
+`Profiles/1` and `ConfigSets/1` actions are calls from step 5o part C2a,
+its `Projects/1` actions from C2b (the removals, variable and
+`type_config` edits and project add from its first half, the
+configuration editor (C2b2-1) and the launch, deploy and path editors
+(C2b2-2) from its second), the SDK section's `Sdks/1` actions and the
+toolchain rescan from C2c-1, and its deletions and nuke — the project
+row's removal and the project browser's among them — from C2c-2: a
+confirmed `Maintenance/1` call is a task the editor owns, reported when
+it ends.)*
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the

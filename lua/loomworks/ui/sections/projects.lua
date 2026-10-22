@@ -15,10 +15,12 @@
 --- editor its fields and variables, a deploy change the declared deploy),
 --- the workspace view's rows (the deploy editor's projects, configurations,
 --- targets and source preview) and `Projects/1.expand_preview` (the path
---- previews). Only the project's removal still reaches its domain object
---- through `ctx.ref(row)` and the workspace `ctx.ws` (until C2c).
+--- previews). The project's removal (`D`, step 5o C2c-2) is
+--- `Maintenance/1.execute_deletion { project }` by the row too
+--- (loomworks.ui.actions.delete_project).
 
 local helpers = require("loomworks.ui.helpers")
+local actions = require("loomworks.ui.actions")
 local model = require("loomworks.ui.model_calls")
 
 -- ---------------------------------------------------------------------------
@@ -548,30 +550,17 @@ local function publish_actions(ws, row)
     }
 end
 
---- The actions of a project row: publish / revert / describe by the row;
---- its removal on the domain object `proj` (`ctx.ref`, until step 5o C2c).
-local function project_actions(ws, proj, prow)
+--- The actions of a project row: publish / revert / describe and its
+--- removal (`D`: its build state, then its declaration, then its profiles'
+--- toolchain downgrade — `Maintenance/1.execute_deletion { project }`, step
+--- 5o C2c-2), all by the row (the removal on an actionable row).
+--- @param ctx table the section context
+--- @param prow table the project's view row
+local function project_actions(ctx, prow)
+    local ws = ctx.ws
     local acts = helpers.describe_action(publish_actions(ws, prow), helpers.row_item("project", prow))
-    if not proj then return acts end
-    local key = proj.key
-    return with(acts, {
-        on_delete = function()
-            vim.ui.select({ "Yes", "No" }, {
-                prompt = "Remove project '" .. key .. "'?",
-            }, function(choice)
-                if choice ~= "Yes" then return end
-                if ws then
-                    local ok, err = ws:remove_project(proj)
-                    if ok then
-                        vim.notify("loomworks: project '" .. key .. "' removed", vim.log.levels.INFO)
-                        require("loomworks.ui.status").refresh()
-                    else
-                        vim.notify("loomworks: " .. (err or "failed to remove project"), vim.log.levels.ERROR)
-                    end
-                end
-            end)
-        end,
-    })
+    if helpers.actionable(ctx, prow) then acts.on_delete = actions.delete_project(prow, ws) end
+    return acts
 end
 
 --- The actions of a configuration row: its editor and removal are routed
@@ -1297,7 +1286,7 @@ return function(tree, ctx)
             spinning = prow.running,
             hl = row_hl,
             publish_label = helpers.intent_action_label(prow.intent),
-        }, prow.description, prow.description_from_module), project_actions(ctx.ws, ctx.ref(prow), prow)), function()
+        }, prow.description, prow.description_from_module), project_actions(ctx, prow)), function()
             render_project_details(tree, t, ctx, prow)
         end)
     end)

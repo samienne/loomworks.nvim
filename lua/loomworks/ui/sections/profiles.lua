@@ -4,8 +4,9 @@
 --- (`loomworks.view.Workspace/1`, spec §19.13 "The workspace view"); the
 --- actions below are kept apart. The model writes go through
 --- loomworks/ui/model_calls.lua naming the profile by its row (step 5o C2a);
---- the builds, cleans, cancels and deletions still reach the domain objects
---- through `ctx.ref(row)` until step 5o C2c.
+--- the deletions go through it too, naming the profile or unit by its row
+--- (step 5o C2c-2); the builds, cleans and cancels still reach the domain
+--- objects through `ctx.ref(row)` until step 5o C2d.
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
@@ -164,9 +165,15 @@ local function pick_device_action(ws, profile)
     end
 end
 
---- The actions of a profile's project row (its configuration unit).
-local function unit_actions(lw, pp)
+--- The actions of a profile's project row (its configuration unit): `u` the
+--- view's unit row, `pp` its project-in-profile (`ctx.ref`, until step 5o
+--- C2d). Its deletion names the row (in `daemon` mode by its `unit_id`; none
+--- while the profile has no unit there).
+local function unit_actions(ctx, u, pp)
+    local lw = ctx.lw
     local unit = pp and pp._config_unit
+    local deletable
+    if ctx.mode == "daemon" then deletable = u.unit_id ~= nil else deletable = unit ~= nil end
     return {
         on_enter = actions.open_task(unit),
         on_task = actions.open_task(unit),
@@ -186,7 +193,7 @@ local function unit_actions(lw, pp)
                     tostring(unit._task_id))
             end
         end or nil,
-        on_delete = actions.delete_config(unit),
+        on_delete = deletable and actions.delete_config(u, ctx.ws) or nil,
         on_options = actions.show_options(unit),
     }
 end
@@ -197,13 +204,16 @@ local function with(opts, acts)
     return opts
 end
 
---- The actions of a profile row: its model writes by the row (always), the
---- operations on its domain object `profile` (only when the editor's model
---- has it, `ctx.ref`; until step 5o C2c).
-local function profile_actions(lw, ws, profile, row)
+--- The actions of a profile row: its model writes and its deletion by the
+--- row (always; the deletion on an actionable row), the operations on its
+--- domain object `profile` (only when the editor's model has it, `ctx.ref`;
+--- until step 5o C2d).
+local function profile_actions(ctx, profile, row)
+    local lw, ws = ctx.lw, ctx.ws
     local acts = helpers.describe_action({
         on_enter = actions.activate(row, ws),
         on_publish = function() helpers.cycle_intent(row, ws) end,
+        on_delete = helpers.actionable(ctx, row) and actions.delete_profile(row, ws) or nil,
     }, helpers.row_item("profile", row))
     if not profile then return acts end
     return with(acts, {
@@ -224,7 +234,6 @@ local function profile_actions(lw, ws, profile, row)
                 "loomworks: cancelled %d task(s) for profile '%s'",
                 n, profile.key))
         end or nil,
-        on_delete = actions.delete_profile(profile),
     })
 end
 
@@ -301,7 +310,7 @@ local function render_unit(tree, ctx, row, u)
         spinning = is_spinning,
         hl = "LoomworksProject",
         enter_label = "Open task output",
-    }, unit_actions(ctx.lw, ctx.ref(u))), function()
+    }, unit_actions(ctx, u, ctx.ref(u))), function()
         -- Surface the compat-error reason at the top of
         -- the expansion so the user sees *why* the row is
         -- blocked without scrolling to the diagnostics
@@ -591,7 +600,7 @@ return function(tree, ctx)
             hl = hl,
             enter_label = "Activate",
             publish_label = helpers.intent_action_label(row.intent),
-        }, row.description), profile_actions(ctx.lw, ctx.ws, ctx.ref(row), row)), function()
+        }, row.description), profile_actions(ctx, ctx.ref(row), row)), function()
             render_profile_details(t, ctx, row)
         end)
     end)

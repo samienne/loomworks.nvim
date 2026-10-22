@@ -105,17 +105,16 @@ end
 -- Daemon
 -- ---------------------------------------------------------------------------
 
---- *(Transition, until step 5o parts C2c-2 and C2d.)* The in-process model
---- objects the daemon view's rows name, for the sections' actions not routed
---- through the daemon yet (Maintenance/1, the project row's removal, and
---- the profile's builds, which name the profile by key), which still write or
---- read the editor's model (§19.16 "Transition"); the routed ones send the
---- row's id instead. The daemon's ids name nothing
---- here ("Two sources, one shape"): a row names its object by the keys it
---- shows (a profile's or project's key, a set's name, a configuration's
---- or launch's key, an orphaned entry's cache key). A row whose object
---- the editor's model does not have gets none: its actions are absent until
---- the model catches up (its file change arrives).
+--- *(Transition, until step 5o part C2d.)* The in-process model objects the
+--- daemon view's profile rows (and their unit rows) name, for the profile's
+--- and unit's operations not routed through the daemon by id yet (builds,
+--- cleans, cancels, options, which name the profile by key), which still
+--- read the editor's model (§19.16 "Transition"); every model write and
+--- deletion sends the row's id instead (step 5o C2c-2). The daemon's ids
+--- name nothing here ("Two sources, one shape"): a row names its object by
+--- the keys it shows (a profile's key, a unit row's project key). A row
+--- whose object the editor's model does not have gets none: its operations
+--- are absent until the model catches up (its file change arrives).
 --- @param ws loomworks.Workspace
 --- @param view loomworks.ViewWorkspace
 --- @return table<table, table>
@@ -132,24 +131,6 @@ local function model_refs(ws, view)
             for _, u in ipairs(row.units or {}) do refs[u] = u.project and pps[u.project] or nil end
         end
     end
-    by = {}
-    for _, cs in pairs(ws:get_config_sets() or {}) do by[cs.name] = cs end
-    for _, row in ipairs(view.config_sets or {}) do refs[row] = by[row.name] end
-    by = {}
-    for _, proj in pairs(ws:get_projects() or {}) do by[proj.key] = proj end
-    for _, row in ipairs(view.projects or {}) do
-        local proj = by[row.key]
-        if proj then
-            refs[row] = proj
-            for _, c in ipairs(row.configurations or {}) do refs[c] = proj:get_configuration(c.key) end
-            local launches = {}
-            for _, launch in ipairs(proj:launch_configs()) do launches[launch.name] = launch end
-            for _, l in ipairs(row.launches or {}) do refs[l] = launches[l.key] end
-        end
-    end
-    by = {}
-    for _, o in ipairs(ws:get_orphaned_configs() or {}) do by[o.build_dir_key or o.config_key] = o end
-    for _, row in ipairs(view.orphaned and view.orphaned.configurations or {}) do refs[row] = by[row.key] end
     return refs
 end
 
@@ -284,30 +265,25 @@ end
 
 --- Whether the workspace has changes not published (the status buffer's
 --- 'modified', which makes Vim refuse `:e` with E37). In `daemon` mode
---- publish and revert (`:w`, `:e!`) run in the daemon (step 5o C2a): the
---- daemon's view's `modified` while that view is held and knows the
---- editor's own writes; otherwise — the view not held (connecting, waiting
---- for it, lost, a daemon without it, not connected at all), or an
---- in-process write (Maintenance/1 until C2c-2) whose
---- freshness `get` is not answered yet (Observer:workspace_view_stale) — it
---- is not known, and the editor's model's is the best knowledge (the same
---- files; it does not block `:qa` for a clean working copy). The flag can
---- still lag the daemon (another client's write): a plain `:e` in `daemon`
---- mode therefore never reverts (ui/status.lua `_on_revert`), only `:e!`
---- does. In the `in-process` mode the editor's model's.
+--- publish and revert (`:w`, `:e!`) run in the daemon (step 5o C2a), as does
+--- every other status-page write (C2c-2): the daemon's view's `modified`
+--- while that view is held; while it is not (connecting, waiting for it,
+--- lost, a daemon without it, not connected at all) it is not known, and the
+--- editor's model's is the best knowledge (the same files; it does not block
+--- `:qa` for a clean working copy). The flag can still lag the daemon
+--- (another client's write): a plain `:e` in `daemon` mode therefore never
+--- reverts (ui/status.lua `_on_revert`), only `:e!` does. In the
+--- `in-process` mode the editor's model's.
 --- @param ws loomworks.Workspace|nil
 --- @return boolean
 function M.modified(ws)
     if not ws then return false end
-    local editor = ws:has_any_modified() and true or false
     local is_daemon, obs = daemon_of(ws)
     if is_daemon then
         local view = obs and obs:workspace_view() or nil
-        if type(view) ~= "table" then return editor end
-        if view.modified == true then return true end
-        return obs:workspace_view_stale() and editor
+        if type(view) == "table" then return view.modified == true end
     end
-    return editor
+    return ws:has_any_modified() and true or false
 end
 
 return M

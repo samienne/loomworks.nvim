@@ -115,6 +115,11 @@ local function mount_views(srv, o)
         assert(reg:mount("/toolchains", "core", "loomworks.Sdks", 1, { methods = {
             detect = refused, add = refused, remove = refused,
         } }))
+        -- The deletions and the nuke (step 5o C2c-2): called, never
+        -- subscribed to.
+        assert(reg:mount("/maintenance", "core", "loomworks.Maintenance", 1, { methods = {
+            execute_deletion = refused, nuke = refused,
+        } }))
         VIEW_STATE.tests = { state = "unloaded", stale = false, units = {} }
         assert(reg:mount("/views", "core", "loomworks.view.Tests", 1, {
             methods = { get = function() return VIEW_STATE.tests end },
@@ -428,7 +433,8 @@ describe("the observer (§19.16)", function()
             .. "configuration sets: daemon offers no loomworks.ConfigSets, editor needs /1; "
             .. "projects: daemon offers no loomworks.Projects, editor needs /1; "
             .. "toolchains: daemon offers no loomworks.Toolchains, editor needs /1; "
-            .. "sdks: daemon offers no loomworks.Sdks, editor needs /1",
+            .. "sdks: daemon offers no loomworks.Sdks, editor needs /1; "
+            .. "maintenance: daemon offers no loomworks.Maintenance, editor needs /1",
             obs.feature_note)
         -- The LSP configuration is never run in-process: its own note
         -- (§19.16 "LSP configuration" Unavailable).
@@ -1652,5 +1658,26 @@ describe("lw status running-task lines (§19.6)", function()
         assert.same({}, reply.tasks)
         assert.is_string(reply._lw_version)
         s.srv:stop("test end", 0)
+    end)
+end)
+
+-- A refused reply to an owned call keeps the refusal's stream and notes: a
+-- confirmed deletion that finds nothing to delete is reported as INFO, not
+-- as an error (ui/actions.confirm_deletion).
+describe("observer: start_owned refusal", function()
+    it("passes the refusal's stream and notes through", function()
+        local obs = setmetatable({ conn = {}, _owned = {} }, { __index = observer.Observer })
+        function obs:_icall(_, _, cb)
+            cb({ outcome = "refused", message = "nothing to delete", stream = "out", exit_code = 0,
+                notes = { "n" }, note_roles = { "info" } })
+        end
+        local got
+        obs:start_owned("Maintenance/1.execute_deletion", {}, {
+            on_reply = function(r) got = r end,
+            on_done = function() error("no task ran") end,
+        })
+        vim.wait(1000, function() return got ~= nil end)
+        assert.same({ outcome = "refused", message = "nothing to delete", stream = "out",
+            notes = { "n" }, note_roles = { "info" } }, got)
     end)
 end)

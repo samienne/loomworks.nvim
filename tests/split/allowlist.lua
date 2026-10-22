@@ -163,14 +163,16 @@ return {
         ["lua/loomworks/lsp_source.lua"] = 1,
         ["lua/loomworks/overseer.lua"] = 22,
         ["lua/loomworks/reload.lua"] = 1,
-        ["lua/loomworks/ui/actions.lua"] = 9,
+        -- actions.lua 9 -> 5, orphaned.lua 1 -> 0, tree.lua 4 -> 3: step 5o
+        -- C2c-2 (the deletions and the nuke name their rows; their
+        -- confirmations come from Maintenance/1).
+        ["lua/loomworks/ui/actions.lua"] = 5,
         ["lua/loomworks/ui/project_browser.lua"] = 3,
         -- config_sets.lua 4 -> 3, diagnostics.lua 1 -> 0, orphaned.lua 2 -> 1,
         -- profiles.lua 2 -> 0, projects.lua 6 -> 5, sdks.lua 1 -> 0: step 5n
         -- part A renders the body from `view.Workspace/1` (view_state.lua);
         -- what is left are the actions' own model reads (5o's commands).
         ["lua/loomworks/ui/sections/debug.lua"] = 1,
-        ["lua/loomworks/ui/sections/orphaned.lua"] = 1,
         -- 5 -> 4: step 5o C2b2-1 (the configuration editor reads the declaration).
         -- 4 -> 1: step 5o C2b2-2 (the launch and deploy editors read the
         -- declaration, the view and expand_preview; the project's removal is left).
@@ -180,7 +182,7 @@ return {
         -- view.Workspace/1); the page's other model reads (the header's root,
         -- the cursor, publish/revert until 5o) share one helper.
         ["lua/loomworks/ui/status.lua"] = 1,
-        ["lua/loomworks/ui/tree.lua"] = 4,
+        ["lua/loomworks/ui/tree.lua"] = 3,
         -- 2 -> 1: step 5o C2b2-1 (compute_edit_configuration_context removed).
         ["lua/loomworks/workspace_view.lua"] = 1,
         ["plugin/loomworks.lua"] = 1,
@@ -268,7 +270,10 @@ return {
     -- rescan and conn:call(M.SDKS.object, M.SDKS.iface, ...) x3 (detect, add,
     -- remove) — the versioned tables Toolchains/1 and Sdks/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 66,
+    -- 66 -> 68: step 5o C2c-2 adds two CALLS naming their methods literally,
+    -- conn:call(M.MAINTENANCE.object, M.MAINTENANCE.iface, ...) for
+    -- execute_deletion and nuke — the versioned table Maintenance/1.
+        ["lua/loomworks/daemon/observer.lua"] = 68,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

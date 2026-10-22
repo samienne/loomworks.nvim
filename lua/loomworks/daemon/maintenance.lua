@@ -256,11 +256,14 @@ end
 -- nuke (step 5o part B6)
 -- ---------------------------------------------------------------------------
 
---- The token family of a nuke plan (never equal to a reset or delete token).
-M.NUKE_KIND = "nuke-plan/1"
-
---- The header of a nuke's listing (as `lw nuke` prints it).
-M.NUKE_HEADER = "Will delete (build state only; your configuration is kept):"
+--- The token family of a nuke plan, the header of its listing, its plan and
+--- its listing: the command layer's (loomworks.model_commands, shared with
+--- the in-process nuke the status page runs, step 5o C2c-2).
+local mc_nuke = require("loomworks.model_commands")
+M.NUKE_KIND = mc_nuke.NUKE_KIND
+M.NUKE_HEADER = mc_nuke.NUKE_HEADER
+M.nuke_plan = mc_nuke.nuke_plan
+M.nuke_listing = mc_nuke.nuke_listing
 
 --- The workspace core the nuke runs on (the host's, else the model's).
 --- @param svc loomworks.daemon.BuildService
@@ -314,33 +317,6 @@ end
 local function busy_refusal(busy)
     return "cannot nuke: tasks are running in the workspace daemon — wait for them, or cancel them: "
         .. table.concat(busy, ", ")
-end
-
---- The nuke's plan: the build directories it locks (`Core:_nuke_lock_dirs`,
---- by normalized path) and the owned LSP database areas it removes (the ones
---- `nuke_check` / `_nuke_begin` approved). The fixed targets (`.nvim/build`,
---- the caches) are the same for every nuke and not part of the token.
---- @param core table
---- @param root string normalized root
---- @param areas string[]|nil
---- @return { token: string, lock_keys: string[], areas: string[] }
-function M.nuke_plan(core, root, areas)
-    local keys = {}
-    for _, e in ipairs(core:_nuke_lock_dirs(root .. "/.nvim/build")) do keys[#keys + 1] = e.key end
-    table.sort(keys)
-    local token = require("loomworks.reset_plan").token("nuke", keys, areas or {}, nil, M.NUKE_KIND)
-    return { token = token, lock_keys = keys, areas = areas or {} }
-end
-
---- The confirmation listing of a nuke of `root` (`lw nuke`'s).
---- @param core table
---- @param root string
---- @param areas string[]|nil
---- @return string[]
-function M.nuke_listing(core, root, areas)
-    local lines = { M.NUKE_HEADER }
-    for _, p in ipairs(core:nuke_targets(root, areas)) do lines[#lines + 1] = "  " .. p end
-    return lines
 end
 
 --- `fn()` with `lock_break.requested` cleared: the daemon's nuke never

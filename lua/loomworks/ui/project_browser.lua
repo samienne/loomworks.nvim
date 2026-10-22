@@ -6,12 +6,11 @@
 --- path the directory gets) then `Projects/1.add` through
 --- loomworks.ui.model_calls (in `daemon` mode the daemon's; step 5o C2b);
 --- the projects already added are the workspace view's rows in `daemon`
---- mode. Removing still reads the editor's model (until C2c).
+--- mode. Removing names the project's view row (step 5o C2c-2).
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
 local modules = require("loomworks.modules")
-local workspace_view = require("loomworks.workspace_view")
 local model = require("loomworks.ui.model_calls")
 
 local M = {}
@@ -102,44 +101,28 @@ function M.open(root)
         end)
     end
 
-    --- Remove a project that matches a browser entry.
+    --- Remove the project a browser entry shows as added: the workspace
+    --- view's project row of its directory (the input boundary: the entry
+    --- names a directory, the row is what the call names — in `daemon` mode
+    --- by its id), then `Maintenance/1.execute_deletion { project }` with its
+    --- confirmation (loomworks.ui.actions.delete_project; step 5o C2c-2).
     --- @param entry loomworks.BrowserEntry
     local function do_remove(entry)
         local rel = entry.abs_path:sub(#root + 2)
         if rel == "" then rel = "." end
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
+        local ws = require("loomworks").get_workspace()
         if not ws then return end
-
-        local project = workspace_view.find_project_by_path(ws, rel, entry.name)
-        if not project then
+        local body = require("loomworks.status_source").read(ws)
+        local prow
+        for _, row in ipairs(type(body.view) == "table" and body.view.projects or {}) do
+            local where = row.path or row.key
+            if where == rel or where == entry.name then prow = row; break end
+        end
+        if not (prow and require("loomworks.ui.helpers").actionable(body, prow)) then
             vim.notify("loomworks: project not found in workspace", vim.log.levels.WARN)
             return
         end
-
-        local ctx = workspace_view.compute_remove_context(ws, project)
-        if not ctx then return end
-
-        local dialog = require("loomworks.ui.dialog")
-        dialog.show({
-            title = "Confirm Remove",
-            lines = ctx.lines,
-            highlights = ctx.highlights,
-            keys = {
-                n = "close",
-                y = function(self)
-                    self:close()
-                    model.call(ws, "Maintenance/1.execute_deletion",
-                        { target = { project = project }, confirmed = ctx }, function(r)
-                            -- no message when the deletion's lock was refused
-                            -- (already reported by the workspace)
-                            if r.outcome ~= "ok" and r.message then
-                                vim.notify("loomworks: " .. r.message, vim.log.levels.ERROR)
-                            end
-                        end)
-                end,
-            },
-        })
+        require("loomworks.ui.actions").delete_project(prow, ws)()
     end
 
     --- Render a single browser entry line.

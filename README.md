@@ -2184,7 +2184,7 @@ don't use this — install the module plugin the usual way.)
 | `o` | Show build options (cmake cache variables) |
 | `R` | Clean + rebuild (destructive) |
 | `C` | Clean — reset to unconfigured, delete build dir (destructive) |
-| `D` | Delete profile or configuration (destructive, with confirmation) |
+| `D` | Delete profile or configuration; on a project, remove it with its build state (destructive, with confirmation) |
 | `P` | Cycle publish intent (`local` → `local+shared` → `shared`) |
 | `L` | Load workspace from cwd / rescan tools |
 | `K` | Hover popup with the full content of the current line (paths, diagnostic messages, etc.); on a described item, its full description |
