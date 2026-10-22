@@ -539,6 +539,15 @@ function M.routed(method)
     return ROUTED[method] ~= nil
 end
 
+--- How long an in-process write of the status page in `daemon` mode may
+--- run before its bookkeeping is ended regardless (M.call's watchdog: a body
+--- that never calls back must not leave the held workspace view stale for
+--- good). A slower write's late answer still ends it once more.
+M.WRITE_WATCHDOG_MS = 30000
+
+--- Schedules the watchdog: `vim.defer_fn(fn, ms)` (replaced by tests).
+M._defer = function(fn, ms) return vim.defer_fn(fn, ms) end
+
 --- Call a model method of the workspace `ws` (nil: the loaded workspace,
 --- loomworks.daemon.observer.loaded_workspace).
 --- In `daemon` mode a routed method is a call to the workspace daemon; any
@@ -568,10 +577,36 @@ function M.call(ws, method, params, cb)
     -- its outcome arrives (an async write lands later than `fn` returns).
     if not (daemon and obs) then return fn(target, params, cb) end
     obs:in_process_write_started()
-    fn(target, params, function(r)
+    -- This write's own token: ended (the freshness `get` sent) once — by
+    -- its answer, by its body throwing (refused, the error its message), or
+    -- by the watchdog when the body never calls back. An answer after the
+    -- watchdog still lands: the write may only have landed now, so it ends
+    -- once more (another `get`).
+    local write = { ended = false, answered = false }
+    local function end_write()
+        if write.ended then return end
+        write.ended = true
         obs:in_process_write()
+    end
+    local watchdog = M._defer(function()
+        if not write.answered then end_write() end
+    end, M.WRITE_WATCHDOG_MS)
+    local function answer(r)
+        if write.answered then return end
+        write.answered = true
+        if watchdog and type(watchdog) == "userdata" then
+            pcall(function() watchdog:stop(); if not watchdog:is_closing() then watchdog:close() end end)
+        end
+        if write.ended then obs:in_process_write() else end_write() end
         cb(r)
-    end)
+    end
+    local ok, err = xpcall(fn, function(e) return e end, target, params, answer)
+    if ok then return end
+    if write.answered then
+        vim.notify("loomworks: " .. (VERB[method] or method) .. ": " .. tostring(err), vim.log.levels.ERROR)
+        return
+    end
+    answer(refusal(method, err))
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a
