@@ -952,94 +952,17 @@ are cached in a browser-local dict. Pending scans show "scanning...".
 - Single add action: always shows picker (user confirms)
 - Mixed state: both add and remove options appear
 
-**Configuration mapping dialog**: When adding a project to a workspace
-that already has configuration sets, a mapping dialog opens instead of
-adding immediately.
+**Adding a project**: the browser adds the project unmapped
+(`Projects/1.candidates` → `Projects/1.add`, no mappings, no tool).
+Configuration-set mappings are made later, in the config-set editor or by
+creating a profile from an automatic candidate (`ConfigSets/1.candidates` →
+`Profiles/1.create { candidate }`, which adds the automatic set itself).
+Tools and SDKs are chosen when the profile is created. Errors only via
+`vim.notify`.
 
-The dialog layout depends on the module type and workspace state:
-
-**Keyed module, no tool selected** — tool row first, no mappings:
-
-```
-  Add "<project>" [<module>]
-
-  Tool:  None ▸
-
-  Project will be added without configuration mappings.
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Keyed module, tool selected** — tool row first, then mappings:
-
-```
-  Add "<project>" [<module>]
-
-  Tool:  <tool label> ▸
-
-  Debug     Debug ▸
-  Release   Release ▸
-
-  Profiles to upgrade:
-    Debug → Debug:<tool_key>
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Keyed module, tool inherited** — when existing profiles already have
-a tool, the tool is inherited automatically. No tool row; mappings only:
-
-```
-  Add "<project>" [<module>] — Map configurations
-
-  Debug     Debug ▸
-  Release   Release ▸
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-**Non-keyed module** — mappings only:
-
-```
-  Add "<project>" [<module>] — Map configurations
-
-  Debug     <variant> ▸
-  Release   <variant> ▸
-
-  [Enter] change  [y] accept  [q] cancel
-```
-
-The profile upgrade preview shows only profiles whose config set has
-a non-None mapping for the new project.
-
-- Enter on a mapping row opens `vim.ui.select` with configurations + "None"
-- Enter on the tool row opens `vim.ui.select` with detected tools
-- `y` accepts: chains decomposed operations (see below)
-- `q`/Esc cancels: project is NOT added
-- Skipped when no config sets exist or project has no detectable configs
-- No success notifications — UI state changes are sufficient. Only
-  errors are shown via `vim.notify`.
-
-**Tool detection gating**: When the module has keyed tools, the project
-browser ensures tool detection has completed before opening the mapping
-dialog. If detection is still running, the dialog opens in the callback
-after detection completes.
-
-**Decomposed add-project operations**: On accept, the mapping dialog
-chains three atomic operations. Each operation saves to disk and
-remerges independently. Each intermediate state is valid — if the
-process crashes between steps, no data is lost or corrupted.
-
-1. `ws:add_project(key, type, path)` — adds the project entry to
-   user.json. Project shows as unmapped.
-2. For each config set with a non-nil mapping:
-   `ws:update_config_set_mapping(set, key, variant)` — adds one
-   mapping to one config set.
-3. If a tool was selected or inherited:
-   `ws:upgrade_profiles_for_tool(tool_entry)` — upgrades cached
-   no-tool profiles to keyed profiles (renames, adds tool fields,
-   creates skeleton cache entries). Extends existing keyed profiles
-   with skeleton entries for the new project.
+**Add-project operation**: one atomic operation, saved to disk and
+remerged on its own — the project entry is added to user.json and shows
+as unmapped.
 
 **Cache cleanup on removal**: The removal confirmation dialog shows all
 cached configurations for the project that will be deleted. Entries with
