@@ -775,6 +775,48 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
     end)
 
+    it("a body that throws: its traceback is logged, the refusal shown; a refusal callback that throws still counts the late answer (5o C2b2)", function()
+        local fresh = daemon_view(function(v) v.modified = true end)
+        fake_obs(nil, function() return fresh end)
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        local log = require("loomworks.log").test()
+        local orig_log = ws._core._deps.log
+        ws._core._deps.log = log
+        local notes, orig_notify = {}, vim.notify
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+        local wv = require("loomworks.workspace_view")
+        local orig = wv.execute_delete_stray_dir
+        local late
+        wv.execute_delete_stray_dir = function(_, _, cb) late = cb; error("boom") end
+        local refused
+        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x)
+                refused = x
+                error("ui boom")
+            end)
+        wv.execute_delete_stray_dir = orig
+        vim.notify = orig_notify
+        ws._core._deps.log = orig_log
+        -- The page's callback threw on the refusal: that error is the caller's.
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("ui boom", 1, true), tostring(err))
+        assert.equals("refused", refused and refused.outcome)
+        assert.truthy(tostring(refused.message):find("boom", 1, true), tostring(refused.message))
+        -- The body's traceback went to the log, not to a notification.
+        local logged = table.concat(log:entries(), "\n")
+        assert.truthy(logged:find("boom", 1, true) and logged:find("traceback", 1, true), logged)
+        for _, n in ipairs(notes) do
+            assert.falsy(tostring(n.msg):find("traceback", 1, true), n.msg)
+        end
+        assert.is_function(late)
+        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
+        assert.equals(1, view_gets())
+        -- Its late answer still landed: one more freshness `get`.
+        late(true)
+        assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
+    end)
+
     it("the answered freshness `get` ends it: the daemon's view's flag again", function()
         local fresh = daemon_view(function(v) v.modified = true end)
         fake_obs(nil, function() return fresh end)
