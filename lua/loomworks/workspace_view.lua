@@ -1105,36 +1105,6 @@ end
 -- Launch Config Editing
 -- =========================================================================
 
---- Get all launch configs for a project.
---- @param project loomworks.Project
---- @return { name: string, launch: loomworks.LaunchConfiguration }[]
-function M.get_launch_configs(project)
-    local result = {}
-    for _, launch in ipairs(project:launch_configs()) do
-        result[#result + 1] = { name = launch.name, launch = launch }
-    end
-    return result
-end
-
---- Context for editing a launch config.
---- @param project loomworks.Project
---- @param launch loomworks.LaunchConfiguration|nil nil for a new config
---- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table, debug: table }
-function M.compute_edit_launch_context(project, launch)
-    local config = launch or {}
-
-    return {
-        project_key = project.key,
-        name = launch and launch.name or "",
-        command = config.command or "",
-        args = config.args or {},
-        working_dir = config.working_dir or "",
-        env = config.env and vim.deepcopy(config.env) or {},
-        deploy = config.deploy and vim.deepcopy(config.deploy) or {},
-        debug = config.debug and vim.deepcopy(config.debug) or {},
-    }
-end
-
 --- Save a launch config (create or update, with optional rename;
 --- model_commands.launch_save).
 --- @param project loomworks.Project
@@ -1180,6 +1150,16 @@ end
 --- @return loomworks.CommandOutcome
 function M.project_declaration(project)
     return commands.project_declaration(project, function() return nil end)
+end
+
+--- Each template expanded as a launch of `project` would expand it, under
+--- the active profile (the launch, deploy and path editors' previews;
+--- model_commands.expand_preview).
+--- @param project loomworks.Project
+--- @param templates string[]
+--- @return loomworks.CommandOutcome values: string[]
+function M.expand_preview(project, templates)
+    return commands.expand_preview(project, nil, templates)
 end
 
 --- Save a variable declaration.

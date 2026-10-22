@@ -88,7 +88,6 @@ return {
             "loomworks.future",
         },
         ["lua/loomworks/ui/deploy_editor.lua"] = {
-            "loomworks.expand",
             "loomworks.paths",
         },
         ["lua/loomworks/ui/description_editor.lua"] = {
@@ -104,9 +103,6 @@ return {
         },
         ["lua/loomworks/ui/launch_editor.lua"] = {
             "loomworks.deploy",
-        },
-        ["lua/loomworks/ui/path_editor.lua"] = {
-            "loomworks.expand",
         },
         ["lua/loomworks/ui/project_browser.lua"] = {
             "loomworks.modules",
@@ -179,7 +175,9 @@ return {
         ["lua/loomworks/ui/sections/debug.lua"] = 1,
         ["lua/loomworks/ui/sections/orphaned.lua"] = 1,
         -- 5 -> 4: step 5o C2b2-1 (the configuration editor reads the declaration).
-        ["lua/loomworks/ui/sections/projects.lua"] = 4,
+        -- 4 -> 1: step 5o C2b2-2 (the launch and deploy editors read the
+        -- declaration, the view and expand_preview; the project's removal is left).
+        ["lua/loomworks/ui/sections/projects.lua"] = 1,
         -- 6 -> 1: step 5n C1 — the body and its `modified` read through
         -- status_source.lua (in `daemon` mode only the daemon's
         -- view.Workspace/1); the page's other model reads (the header's root,
@@ -265,8 +263,11 @@ return {
     -- variable_remove, type_config_set) — the versioned table Projects/1.
     -- 58 -> 59: step 5o C2b2-1 adds configuration_save,
     -- conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...) — Projects/1.
+    -- 59 -> 62: step 5o C2b2-2 adds launch_save, deploy_save and
+    -- expand_preview, conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...)
+    -- x3 — Projects/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 59,
+        ["lua/loomworks/daemon/observer.lua"] = 62,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

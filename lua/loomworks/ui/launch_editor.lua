@@ -2,6 +2,12 @@
 ---
 --- Tree+View dialog for editing launch config properties: name, command,
 --- args, working directory, and environment variables.
+---
+--- Everything it shows beyond the launch's fields comes from the caller (the
+--- status page: the project's declared variables, the workspace view's
+--- projects and profiles for the deploy steps, `Projects/1.expand_preview`
+--- for the path previews and `DebugConfig/1`'s records for the debug
+--- adapters; step 5o C2b2-2) — never the editor's model.
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
@@ -18,12 +24,18 @@ local M = {}
 ---   env: table<string, string>
 ---   validate?: fun(result): boolean, string|nil
 ---   deploy: table<string, table>|nil — destination → source descriptor
----   projects: loomworks.Project[]|nil — workspace projects for deploy editor
----   profile: loomworks.Profile|nil — active profile for deploy target resolution
----   workspace: loomworks.Workspace|nil — for deploy destination preview
----   launch_project: loomworks.Project|nil — the project owning this launch config
----   original_name: string|nil — the existing launch's name (edit mode): adds a
----     `Description ▸` row; a changed name is a rename (spec §8.7)
+---   variables: table<string, { type: string }>|nil — the launch project's
+---     variables (path segments, "Add from project variable")
+---   preview: fun(template: string, cb: fun(value: string|nil))|nil — a
+---     template expanded for the launch project (the path editors' previews)
+---   projects: table[]|nil — the workspace view's project rows (deploy editor)
+---   profiles: table[]|nil — the workspace view's profile rows (deploy editor)
+---   preview_for: function|nil — a project row's preview (deploy editor)
+---   debug_adapters: (fun(): table[]|nil)|nil — the debug adapter records
+---     (`DebugConfig/1.adapters`: `{ language, adapter?, default? }`), nil
+---     while unknown; read at each render
+---   describe_item: table|nil — the existing launch's description handle
+---     (helpers.row_item): adds a `Description ▸` row
 ---   debug: string[]|nil — debug languages (first = primary, rest = attach)
 ---   on_accept: fun(result: { name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table<string, table>|nil })
 ---   on_cancel: fun()
@@ -94,7 +106,6 @@ function M.open(opts)
         -- Existing launch: its description (ui §1.8 / §1.16), saved by the
         -- description editor itself.
         local editing = opts.describe_item
-            or (opts.launch_project and opts.launch_project:find_launch(opts.original_name))
         if editing then
             require("loomworks.ui.helpers").description_row(t, editing,
                 "Description", function() if view then view:refresh() end end)
@@ -142,9 +153,8 @@ function M.open(opts)
                                     require("loomworks.ui.path_editor").open({
                                         title = "Argument Value: " .. key,
                                         path = val,
-                                        project = opts.launch_project,
-                                        workspace = opts.workspace,
-                                        profile = opts.profile,
+                                        variables = opts.variables,
+                                        preview = opts.preview,
                                         on_accept = function(path)
                                             args[captured_ai] = key .. "=" .. path
                                             if view then view:refresh() end
@@ -174,9 +184,8 @@ function M.open(opts)
                                     require("loomworks.ui.path_editor").open({
                                         title = "Argument Path",
                                         path = args[captured_ai],
-                                        project = opts.launch_project,
-                                        workspace = opts.workspace,
-                                        profile = opts.profile,
+                                        variables = opts.variables,
+                                        preview = opts.preview,
                                         on_accept = function(path)
                                             args[captured_ai] = path
                                             if view then view:refresh() end
@@ -229,9 +238,8 @@ function M.open(opts)
                             require("loomworks.ui.path_editor").open({
                                 title = "Value for " .. key,
                                 path = "",
-                                project = opts.launch_project,
-                                workspace = opts.workspace,
-                                profile = opts.profile,
+                                variables = opts.variables,
+                                preview = opts.preview,
                                 on_accept = function(path)
                                     args[#args + 1] = key .. "=" .. path
                                     if view then view:refresh() end
@@ -250,9 +258,8 @@ function M.open(opts)
                 require("loomworks.ui.path_editor").open({
                     title = "Path Argument",
                     path = "",
-                    project = opts.launch_project,
-                    workspace = opts.workspace,
-                    profile = opts.profile,
+                    variables = opts.variables,
+                    preview = opts.preview,
                     on_accept = function(path)
                         args[#args + 1] = path
                         if view then view:refresh() end
@@ -270,9 +277,8 @@ function M.open(opts)
                 require("loomworks.ui.path_editor").open({
                     title = "Working Directory",
                     path = working_dir,
-                    project = opts.launch_project,
-                    workspace = opts.workspace,
-                    profile = opts.profile,
+                    variables = opts.variables,
+                    preview = opts.preview,
                     on_accept = function(path)
                         working_dir = path
                         if view then view:refresh() end
@@ -334,14 +340,14 @@ function M.open(opts)
             end,
         })
 
-        local proj = opts.launch_project
-        if proj and proj.variables and next(proj.variables) then
+        local variables = opts.variables
+        if variables and next(variables) then
             t:item("  ▸ Add from project variable", {
                 hl = "LoomworksActionable",
                 direct = true,
                 on_enter = function()
                     local var_names = {}
-                    for vn in pairs(proj.variables) do
+                    for vn in pairs(variables) do
                         var_names[#var_names + 1] = vn
                     end
                     table.sort(var_names)
@@ -393,9 +399,10 @@ function M.open(opts)
                                 destination = captured_dest,
                                 source = vim.deepcopy(src),
                                 projects = opts.projects or {},
-                                profile = opts.profile,
-                                workspace = opts.workspace,
-                                launch_project = opts.launch_project,
+                                profiles = opts.profiles,
+                                variables = opts.variables,
+                                preview = opts.preview,
+                                preview_for = opts.preview_for,
                                 existing_destinations = deploy_keys,
                                 current_destination = captured_dest,
                                 on_accept = function(new_dest, new_source)
@@ -457,9 +464,10 @@ function M.open(opts)
                     destination = "",
                     source = nil,
                     projects = opts.projects or {},
-                    profile = opts.profile,
-                    workspace = opts.workspace,
-                    launch_project = opts.launch_project,
+                    profiles = opts.profiles,
+                    variables = opts.variables,
+                    preview = opts.preview,
+                    preview_for = opts.preview_for,
                     existing_destinations = deploy_keys,
                     on_accept = function(new_dest, new_source)
                         local existing = deploy[new_dest]
@@ -478,14 +486,19 @@ function M.open(opts)
         })
 
         t:blank()
+        -- The adapter records (one per language the workspace knows), read
+        -- at each render: they may arrive while the dialog is open.
+        local records = opts.debug_adapters and opts.debug_adapters() or nil
+        local by_lang = {}
+        for _, r in ipairs(records or {}) do
+            if type(r) == "table" and type(r.language) == "string" then by_lang[r.language] = r end
+        end
         if #debug_langs > 0 then
             t:leaf("Debug:", "Comment")
             for di, lang in ipairs(debug_langs) do
                 local captured_di = di
-                local debug_config = require("loomworks.debug_config")
-                local adapter = opts.workspace
-                    and debug_config.resolve_adapter(opts.workspace, lang)
-                    or debug_config.default_adapter(lang) or "?"
+                local rec = by_lang[lang]
+                local adapter = rec and (rec.adapter or rec.default) or "?"
                 local prefix = di == 1 and " (primary) " or " (attach)  "
                 t:item("  " .. lang .. prefix .. "→ " .. adapter, {
                     hl = "LoomworksActionable",
@@ -516,21 +529,15 @@ function M.open(opts)
             on_enter = function()
                 local available = {}
                 local seen = {}
-                for _, lang in ipairs(require("loomworks.debug_config").known_languages()) do
-                    if not seen[lang] then
-                        seen[lang] = true
-                        available[#available + 1] = lang
+                for _, r in ipairs(records or {}) do
+                    if type(r) == "table" and type(r.language) == "string" and not seen[r.language] then
+                        seen[r.language] = true
+                        available[#available + 1] = r.language
                     end
                 end
-                if opts.workspace and opts.workspace._modules then
-                    for _, mod in ipairs(opts.workspace._modules) do
-                        for _, lang in ipairs(mod.languages) do
-                            if not seen[lang] then
-                                seen[lang] = true
-                                available[#available + 1] = lang
-                            end
-                        end
-                    end
+                if not records then
+                    vim.notify("loomworks: the debug languages are not known yet", vim.log.levels.INFO)
+                    return
                 end
                 local filtered = {}
                 local added = {}

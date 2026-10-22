@@ -16,13 +16,14 @@
 --- of the editor's model beyond `Projects/1.declaration` — the project
 --- browser's `candidates` + `add`, `declaration`, `configuration_remove`,
 --- `launch_remove`, `variable_save` / `variable_remove` and
---- `type_config_set`, and **C2b2-1** `configuration_save` (the configuration
---- editor reads `declaration`) (`ROUTED` below): in `daemon` mode those are
---- only ever calls — refused (the outcome says why) when the daemon cannot
---- carry them, never run in-process (spec §19.16 "Availability").
---- `Projects/1`'s `launch_save` and `deploy_save` (their editors still read
---- the editor's model), `Sdks/1`, `Toolchains/1` and `Maintenance/1` still
---- run their in-process bodies in both modes until C2b2-2 / C2c.
+--- `type_config_set`, **C2b2-1** `configuration_save` (the configuration
+--- editor reads `declaration`) and **C2b2-2** `launch_save`, `deploy_save`
+--- and `expand_preview` (the launch, deploy and path editors read
+--- `declaration`, the workspace view and `expand_preview`) (`ROUTED`
+--- below): in `daemon` mode those are only ever calls — refused (the outcome
+--- says why) when the daemon cannot carry them, never run in-process (spec
+--- §19.16 "Availability"). `Sdks/1`, `Toolchains/1` and `Maintenance/1`
+--- still run their in-process bodies in both modes until C2c.
 ---
 --- Params mirror the method's (its schema under spec/protocol/interfaces).
 --- An entity param of a routed method (`item`, `profile`, `config_set`,
@@ -37,7 +38,7 @@
 ---     refused, never looked up by key;
 ---   * `in-process` mode: the domain object the in-process view bound to
 ---     the row (loomworks.status_source.object_of); a domain object itself is
----     taken as it is (the dialogs that still read the editor's model, C2b).
+---     taken as it is (the dialogs that still read the editor's model, C2c).
 --- A `tool` of `Profiles/1.create` is a `Profiles/1.tool_choices` entry; a
 --- `mappings` of `ConfigSets/1.add` / `update` is the dialog's Project →
 --- Configuration table (sent as project key → configuration name, the wire's
@@ -261,10 +262,15 @@ end)
 CALLS["Projects/1.configuration_remove"] = on_objects({ "project", "configuration" }, function(o)
     return outcome(wv().execute_delete_configuration(o.project, o.configuration))
 end)
---- → `launch`.
+--- `{ project, launch?, name, data }` (`launch` the row edited; none for a
+--- new launch configuration) → `launch`.
 CALLS["Projects/1.launch_save"] = on_objects({ "project" }, function(o, p)
-    local ok, err, launch = wv().execute_save_launch_config(o.project, object(p.launch), p.name, p.data)
-    return outcome(ok, err, { launch = launch })
+    local launch = object(p.launch)
+    if p.launch ~= nil and launch == nil then
+        return { outcome = "refused", message = "no launch configuration (not a row of the workspace view)" }
+    end
+    local ok, err, saved = wv().execute_save_launch_config(o.project, launch, p.name, p.data)
+    return outcome(ok, err, { launch = saved })
 end)
 CALLS["Projects/1.launch_remove"] = on_objects({ "project", "launch" }, function(o)
     return outcome(wv().execute_delete_launch_config(o.project, o.launch))
@@ -280,6 +286,11 @@ CALLS["Projects/1.type_config_set"] = on_objects({ "project" }, function(o, p)
 end)
 CALLS["Projects/1.deploy_save"] = on_objects({ "project" }, function(o, p)
     return outcome(wv().save_deploy(o.project, p.deploy))
+end)
+--- `{ project, templates }` → `values` (each template expanded under the
+--- active profile; refused without one).
+CALLS["Projects/1.expand_preview"] = on_objects({ "project" }, function(o, p)
+    return wv().expand_preview(o.project, p.templates)
 end)
 
 -- ---------------------------------------------------------------------------
@@ -351,7 +362,8 @@ local VERB = {
     ["Projects/1.candidates"] = "project", ["Projects/1.add"] = "project",
     ["Projects/1.declaration"] = "project declaration",
     ["Projects/1.configuration_save"] = "configuration", ["Projects/1.configuration_remove"] = "configuration",
-    ["Projects/1.launch_remove"] = "launch config",
+    ["Projects/1.launch_save"] = "launch config", ["Projects/1.launch_remove"] = "launch config",
+    ["Projects/1.deploy_save"] = "deploy steps", ["Projects/1.expand_preview"] = "preview",
     ["Projects/1.variable_save"] = "variable", ["Projects/1.variable_remove"] = "variable",
     ["Projects/1.type_config_set"] = "project field",
 }
@@ -543,7 +555,35 @@ ROUTED["Projects/1.configuration_save"] = function(ws, p, cb)
     send(ws, method, args, cb)
 end
 by_ref("Projects/1.configuration_remove", { { "project", "project" }, { "configuration", "configuration" } })
+--- The launch editor's save: `launch` the row edited (none for a new
+--- launch configuration); an empty `env` / `deploy` of `data` is absent on
+--- the wire (an empty table is no JSON object; absent or empty removes it).
+ROUTED["Projects/1.launch_save"] = function(ws, p, cb)
+    local method = "Projects/1.launch_save"
+    local args, err = refs(method, p, { { "project", "project" } })
+    if not args then return cb(err) end
+    if p.launch ~= nil then
+        args.launch = id_ref(p.launch)
+        if not args.launch then
+            return cb(refusal(method, "no launch configuration id (not a row of the workspace view)"))
+        end
+    end
+    local data = vim.deepcopy(p.data or {})
+    for _, k in ipairs({ "env", "deploy" }) do
+        if type(data[k]) == "table" and next(data[k]) == nil then data[k] = nil end
+    end
+    args.name, args.data = p.name, data
+    send(ws, method, args, cb)
+end
 by_ref("Projects/1.launch_remove", { { "project", "project" }, { "launch", "launch configuration" } })
+--- The project's whole deploy declaration; an empty one is absent (removes it).
+ROUTED["Projects/1.deploy_save"] = function(ws, p, cb)
+    local args, err = refs("Projects/1.deploy_save", p, { { "project", "project" } })
+    if not args then return cb(err) end
+    if type(p.deploy) == "table" and next(p.deploy) ~= nil then args.deploy = vim.deepcopy(p.deploy) end
+    send(ws, "Projects/1.deploy_save", args, cb)
+end
+by_ref("Projects/1.expand_preview", { { "project", "project" } }, { "templates" })
 by_ref("Projects/1.variable_save", { { "project", "project" } }, { "variable", "name", "data" })
 by_ref("Projects/1.variable_remove", { { "project", "project" } }, { "variable" })
 by_ref("Projects/1.type_config_set", { { "project", "project" } }, { "field", "value" })

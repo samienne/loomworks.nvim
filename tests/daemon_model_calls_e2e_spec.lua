@@ -43,7 +43,8 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         "execute_create_config_set", "execute_create_config_set_from_candidate", "execute_edit_config_set",
         "execute_delete_config_set", "execute_add_project", "execute_delete_configuration",
         "execute_delete_launch_config", "execute_save_variable", "execute_delete_variable",
-        "save_type_config_field", "execute_save_configuration" }
+        "save_type_config_field", "execute_save_configuration", "execute_save_launch_config", "save_deploy",
+        "expand_preview", "project_declaration" }
 
     before_each(function()
         key = H.tmp() .. "/trust.key"
@@ -431,6 +432,164 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
             name = "Fast2", fields = {} })
         assert.equals("refused", r.outcome)
         assert.truthy(r.message:find("no configuration id", 1, true), r.message)
+        assert.same({}, errors())
+    end)
+
+    --- The working copy's declaration of project `key` (the signed file is
+    --- JSON).
+    local function user_project(key)
+        local text = table.concat(vim.fn.readfile(root .. "/.nvim/loomworks.user.json"), "\n")
+        return vim.json.decode(text).projects[key]
+    end
+
+    --- The projects section of the page as the daemon's view renders it,
+    --- and the `on_enter` of its first line matching `pat` after the line
+    --- matching `after` (a plain find).
+    local function page_action(pat, after)
+        local body = status_source.read(ws)
+        assert.equals("daemon", body.mode)
+        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
+        setmetatable(page._folds, { __index = function() return true end })
+        local seen = after == nil
+        for i, l in ipairs(page:render()) do
+            if not seen and l:find(after, 1, true) then seen = true end
+            if seen and l:find(pat) and page.line_meta[i] and page.line_meta[i].on_enter then
+                return page.line_meta[i].on_enter
+            end
+        end
+        return nil
+    end
+
+    --- Run `enter` with `mod.open` stubbed; the opts it was opened with.
+    local function opened(mod, enter)
+        local m = require(mod)
+        local orig, got = m.open, nil
+        m.open = function(o) got = o end
+        local ok, err = pcall(enter)
+        assert.is_true(vim.wait(30000, function() return got ~= nil end, 20), mod)
+        m.open = orig
+        assert(ok, err)
+        return got
+    end
+
+    --- Activate the profile `dev` (a preview expands under the active one).
+    local function activate()
+        local r = call("Profiles/1.set_active", { profile = row("profiles", "dev") })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        until_view(function() return row("profiles", "dev").active == true end)
+    end
+
+    it("Projects/1: expand_preview expands in the daemon; an unresolved reference stays as written (5o C2b2-2)", function()
+        serve()
+        activate()
+        local r = call("Projects/1.expand_preview", { project = prow_of("app"),
+            templates = { "${workspace_root}/x", "${nope}/y" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.equals(vim.fs.normalize(root) .. "/x", vim.fs.normalize(r.values[1]))
+        assert.equals("${nope}/y", r.values[2])
+        -- A row without an id is refused, never looked up by its key.
+        r = call("Projects/1.expand_preview", { project = { key = "app" }, templates = { "a" } })
+        assert.equals("refused", r.outcome)
+        assert.truthy(r.message:find("no project id", 1, true), r.message)
+        assert.same({}, errors())
+    end)
+
+    it("Projects/1: the launch editor reads the declaration, previews through the daemon and saves by the row's id (5o C2b2-2)", function()
+        serve()
+        activate()
+        local hello = assert(prow_of("app", "launches", "hello"))
+        local enter = page_action("hello", "Launch:")
+        assert.is_function(enter)
+        local got = opened("loomworks.ui.launch_editor", enter)
+        assert.equals("hello", got.name)
+        assert.same({ "--version" }, got.args)
+        -- The path editors' preview: Projects/1.expand_preview, asynchronous.
+        local value
+        got.preview("${workspace_root}/w", function(v) value = v end)
+        assert.is_true(vim.wait(30000, function() return value ~= nil end, 20))
+        assert.equals(vim.fs.normalize(root) .. "/w", vim.fs.normalize(value))
+        -- The deploy editor's view rows.
+        assert.is_table(got.projects)
+        assert.is_table(got.profiles)
+        -- A rename with a deploy of both shapes: one source, and an array.
+        got.on_accept({ name = "hi", command = got.command, args = got.args, working_dir = "", env = {},
+            deploy = { ["one/"] = { project = "app", path = "a" },
+                ["two/"] = { { project = "app", path = "b" }, { project = "lib", path = "c" } } } })
+        until_view(function()
+            local l = prow_of("app", "launches", "hi")
+            return l ~= nil and l.id == hello.id and prow_of("app", "launches", "hello") == nil
+        end)
+        local saved = user_project("app").launch.hi
+        assert.same({ project = "app", path = "a" }, saved.deploy["one/"])
+        assert.same({ { project = "app", path = "b" }, { project = "lib", path = "c" } }, saved.deploy["two/"])
+        assert.is_nil(saved.env)
+
+        -- A new one (no launch): created, its id in the outcome.
+        local r = call("Projects/1.launch_save", { project = prow_of("app"), name = "fresh",
+            data = { command = "x", env = {} } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.equals("fresh", r.launch.key)
+        -- A row without an id is refused, never looked up by its name.
+        r = call("Projects/1.launch_save", { project = prow_of("app"), launch = { key = "fresh" },
+            name = "fresh", data = { command = "y" } })
+        assert.equals("refused", r.outcome)
+        assert.truthy(r.message:find("no launch configuration id", 1, true), r.message)
+        assert.same({}, errors())
+    end)
+
+    it("Projects/1: a deploy step's change saves the declared deploy in its own shape by the row's id (5o C2b2-2)", function()
+        serve()
+        local r = call("Projects/1.deploy_save", { project = prow_of("app"), deploy = {
+            ["one/"] = { project = "app", path = "a" },
+            ["two/"] = { { project = "app", path = "b" }, { project = "app", path = "c" } } } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        until_view(function() return #prow_of("app").deploy == 2 end)
+
+        -- "Add deploy step" from the page: the editor gets the view's rows;
+        -- its accept reads the declaration and saves the whole deploy.
+        local enter = page_action("Add deploy step")
+        assert.is_function(enter)
+        local got = opened("loomworks.ui.deploy_editor", enter)
+        local keys = {}
+        for _, p in ipairs(got.projects) do keys[#keys + 1] = p.key end
+        table.sort(keys)
+        assert.same({ "app", "lib" }, keys)
+        got.on_accept("three/", { project = "lib", path = "d" })
+        until_view(function() return #prow_of("app").deploy == 3 end)
+        local deploy = user_project("app").deploy
+        -- The sources keep the shape they were declared in (the view's are
+        -- arrays; never saved back).
+        assert.same({ project = "app", path = "a" }, deploy["one/"])
+        assert.same({ { project = "app", path = "b" }, { project = "app", path = "c" } }, deploy["two/"])
+        assert.same({ project = "lib", path = "d" }, deploy["three/"])
+
+        -- A step's removal (D): the rest unchanged.
+        local body = status_source.read(ws)
+        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
+        setmetatable(page._folds, { __index = function() return true end })
+        local delete
+        for i, l in ipairs(page:render()) do
+            if l:find("<- app : c", 1, true) and page.line_meta[i] then delete = page.line_meta[i].on_delete end
+        end
+        assert.is_function(delete)
+        -- (Its save's outcome awaited: the daemon stops at the test's end.)
+        local orig_call, saved = model.call, nil
+        model.call = function(w, m, p, cb)
+            return orig_call(w, m, p, function(x)
+                if m == "Projects/1.deploy_save" then saved = x end
+                if cb then cb(x) end
+            end)
+        end
+        local ok, err = pcall(delete)
+        assert.is_true(vim.wait(30000, function() return saved ~= nil end, 20))
+        model.call = orig_call
+        assert(ok, err)
+        assert.equals("ok", saved.outcome, vim.inspect(saved))
+        deploy = user_project("app").deploy
+        assert.same({ project = "app", path = "b" }, deploy["two/"])
+        assert.same({ project = "app", path = "a" }, deploy["one/"])
         assert.same({}, errors())
     end)
 

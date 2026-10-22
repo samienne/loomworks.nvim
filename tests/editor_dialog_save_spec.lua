@@ -226,13 +226,15 @@ describe("launch editor dialog save", function()
     }))
     ws = load(root)
     project = find_project(ws, "App")
-    local ctx = wv.compute_edit_launch_context(project, project:find_launch("run"))
+    -- The fields the status page opens it with: the declaration's.
+    local decl = wv.project_declaration(project)
+    local f
+    for _, l in ipairs(decl.launches) do if l.key == "run" then f = l.fields end end
     local saved
     local tree = open_dialog("loomworks.ui.launch_editor", {
-      title = "Edit", name = ctx.name, command = ctx.command, args = ctx.args,
-      working_dir = ctx.working_dir, env = ctx.env, deploy = ctx.deploy,
-      debug = ctx.debug, projects = ws:get_projects(), workspace = ws,
-      launch_project = project,
+      title = "Edit", name = "run", command = f.command, args = f.args,
+      working_dir = f.working_dir, env = f.env, deploy = f.deploy,
+      debug = f.debug, variables = decl.variables,
       on_accept = function(result)
         saved = { wv.execute_save_launch_config(project, project:find_launch("run"), result.name, result) }
       end,
@@ -314,9 +316,8 @@ describe("launch save of a target-backed launch", function()
     assert(project:save_launch_config("tgt", { target = "app", args = { "-v" } }))
     ws = load(root)
     project = find_project(ws, "App")
-    local ctx = wv.compute_edit_launch_context(project, project:find_launch("tgt"))
     local ok, err = wv.execute_save_launch_config(project, project:find_launch("tgt"), "tgt", {
-      command = ctx.command, args = {}, working_dir = "", env = {},
+      command = "", args = {}, working_dir = "", env = {},
       deploy = {}, debug = {},
     })
     assert.is_true(ok, err)

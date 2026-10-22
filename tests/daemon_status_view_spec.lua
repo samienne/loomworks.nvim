@@ -915,6 +915,44 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_nil(text:find("unavailable —", 1, true))
     end)
 
+    it("in-process mode: a launch row's editor opens on the declaration, its preview answered at once (5o C2b2-2)", function()
+        core:shutdown()
+        root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
+        core:setup({ root = root })
+        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
+        ws = core:get_workspace()
+        -- (A preview expands under the active profile.)
+        assert(require("loomworks.workspace_view").activate_profile(ws:get_profiles()[1]))
+        local body = status_source.read(ws)
+        assert.equals("in-process", body.mode)
+        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local page = Tree.new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
+        setmetatable(page._folds, { __index = function() return true end })
+        local enter
+        for i, l in ipairs(page:render()) do
+            if l:find("run ", 1, true) and page.line_meta[i] and page.line_meta[i].on_enter then
+                enter = page.line_meta[i].on_enter
+                break
+            end
+        end
+        assert.is_function(enter)
+        local le = require("loomworks.ui.launch_editor")
+        local orig, got = le.open, nil
+        le.open = function(o) got = o end
+        local ok, err = pcall(enter)
+        le.open = orig
+        assert(ok, err)
+        assert.is_table(got)
+        assert.equals("run", got.name)
+        assert.equals("tool", got.command)
+        assert.same({ "-v" }, got.args)
+        local value
+        got.preview("${workspace_root}/w", function(v) value = v end)
+        assert.equals(vim.fs.normalize(ws.root) .. "/w", vim.fs.normalize(value))
+        -- In-process the debug adapter records are the working copy's.
+        assert.is_table(got.debug_adapters())
+    end)
+
     it("an in-process row no longer reaches its object once its workspace is torn down", function()
         local body = status_source.read(ws)
         local row = body.view.profiles[1]

@@ -6,55 +6,107 @@
 --- editable type_config fields. The actions (editors, dialogs, mutations)
 --- are kept apart. The routed writes (step 5o C2b: removals of
 --- configurations and launch configurations, variables, `type_config`
---- fields; C2b2-1: the configuration editor's save) name their project,
---- configuration or launch by its view row (loomworks.ui.model_calls), and
---- their dialogs read the project through `Projects/1.declaration` (the
---- configuration editor all it shows, with the view's configuration sets
---- for a rename's effects); the launch and deploy editors and the project's
---- removal still reach the domain objects through `ctx.ref(row)` and the
---- workspace `ctx.ws` (until C2b2-2 / C2c).
+--- fields; C2b2-1: the configuration editor's save; C2b2-2: the launch and
+--- deploy editors' saves) name their project, configuration or launch by
+--- its view row (loomworks.ui.model_calls) and are offered on a row that
+--- can be named (helpers.actionable); their dialogs read the project
+--- through `Projects/1.declaration` (the configuration editor all it shows,
+--- with the view's configuration sets for a rename's effects; the launch
+--- editor its fields and variables, a deploy change the declared deploy),
+--- the workspace view's rows (the deploy editor's projects, configurations,
+--- targets and source preview) and `Projects/1.expand_preview` (the path
+--- previews). Only the project's removal still reaches its domain object
+--- through `ctx.ref(row)` and the workspace `ctx.ws` (until C2c).
 
 local helpers = require("loomworks.ui.helpers")
-local workspace_view = require("loomworks.workspace_view")
 local model = require("loomworks.ui.model_calls")
 
 -- ---------------------------------------------------------------------------
 -- Actions (editors, dialogs, mutations)
 -- ---------------------------------------------------------------------------
 
---- Open the launch editor for an existing or new launch config.
---- @param project loomworks.Project
---- @param launch? loomworks.LaunchConfiguration nil for new config
---- @param lrow? table the launch's view row (its description is edited by it)
-local function edit_launch_config(project, launch, lrow)
-    local project_key = project.key
-    local launch_name = launch and launch.name or nil
+--- The preview of templates expanded for the project of the view row
+--- `prow` (`Projects/1.expand_preview`, under the active profile): the
+--- editors' `preview(template, cb)`, `cb(nil)` when it is refused.
+--- @param prow table
+--- @return fun(template: string, cb: fun(value: string|nil))
+local function previewer(prow)
+    return function(template, cb)
+        model.call(nil, "Projects/1.expand_preview", { project = prow, templates = { template } }, function(r)
+            cb(r.outcome == "ok" and type(r.values) == "table" and r.values[1] or nil)
+        end)
+    end
+end
 
-    local ctx = workspace_view.compute_edit_launch_context(project, launch)
+--- What the launch and deploy editors read of the workspace view `view`:
+--- its project rows, profile rows and each project row's preview.
+local function deploy_context(view)
+    return { projects = view.projects or {}, profiles = view.profiles or {}, preview_for = previewer }
+end
 
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
+--- The declaration's entry of the launch row `lrow`: by its id (a daemon's
+--- view and declaration share them), or by its name where neither carries
+--- one (the in-process view and declaration).
+--- @param decl table
+--- @param lrow table
+--- @return table|nil
+local function declared_launch(decl, lrow)
+    for _, l in ipairs(decl.launches or {}) do
+        if (lrow.id ~= nil and l.id == lrow.id) or (lrow.id == nil and l.id == nil and l.key == lrow.key) then
+            return l
+        end
+    end
+    return nil
+end
+
+--- Open the launch editor on the project's declaration `decl`
+--- (Projects/1.declaration) for the launch row `lrow` (nil: a new one).
+--- @param ctx table the section context (`view`, `ws`)
+--- @param prow table the project's view row
+--- @param lrow table|nil
+--- @param decl table
+local function open_launch_editor(ctx, prow, lrow, decl)
+    local project_key = prow.key
+    local launch_name = lrow and lrow.key or nil
+    local fields = {}
+    if lrow then
+        local entry = declared_launch(decl, lrow)
+        if not entry or not entry.fields then
+            vim.notify("loomworks: launch config '" .. launch_name .. "' is not declared as a table in project '"
+                .. project_key .. "'", vim.log.levels.ERROR)
+            return
+        end
+        fields = entry.fields
+    end
+    local taken = {}
+    for _, l in ipairs(decl.launches or {}) do taken[l.key] = true end
+    local ws = ctx.ws
+    local dctx = deploy_context(ctx.view)
 
     require("loomworks.ui.launch_editor").open({
         title = launch_name
             and ('Edit "' .. launch_name .. '" — ' .. project_key)
             or ("New launch — " .. project_key),
-        name = ctx.name,
-        command = ctx.command,
-        args = ctx.args,
-        working_dir = ctx.working_dir,
-        env = ctx.env,
-        deploy = ctx.deploy,
-        debug = ctx.debug,
+        name = launch_name or "",
+        command = fields.command or "",
+        args = vim.deepcopy(fields.args or {}),
+        working_dir = fields.working_dir or "",
+        env = vim.deepcopy(fields.env or {}),
+        deploy = vim.deepcopy(fields.deploy or {}),
+        debug = vim.deepcopy(fields.debug or {}),
         describe_item = lrow and helpers.row_item("launch configuration", lrow, project_key .. ":" .. lrow.key) or nil,
-        projects = ws and ws:get_projects() or {},
-        profile = ws and lw.get_active_profile() or nil,
-        workspace = ws,
-        launch_project = project,
-        original_name = launch_name,
+        variables = decl.variables,
+        preview = previewer(prow),
+        projects = dctx.projects,
+        profiles = dctx.profiles,
+        preview_for = dctx.preview_for,
+        debug_adapters = function()
+            if not ws then return nil end
+            return (require("loomworks.daemon.editor_ops").debug_adapters(ws))
+        end,
         validate = function(result)
             if result.name ~= (launch_name or "") then
-                if project:find_launch(result.name) then
+                if taken[result.name] then
                     return false, "launch config '" .. result.name .. "' already exists"
                 end
                 -- A new name must be valid (spec §8.7).
@@ -65,7 +117,7 @@ local function edit_launch_config(project, launch, lrow)
         end,
         on_accept = function(result)
             model.call(nil, "Projects/1.launch_save", {
-                project = project, launch = launch, name = result.name, data = {
+                project = prow, launch = lrow, name = result.name, data = {
                     command = result.command,
                     args = result.args,
                     working_dir = result.working_dir,
@@ -86,6 +138,22 @@ local function edit_launch_config(project, launch, lrow)
         end,
         on_cancel = function() end,
     })
+end
+
+--- Open the launch editor for the launch row `lrow` of the project row
+--- `prow` (nil: a new launch config), once its declaration is read.
+--- @param ctx table the section context
+--- @param prow table
+--- @param lrow table|nil
+local function edit_launch_config(ctx, prow, lrow)
+    model.call(nil, "Projects/1.declaration", { project = prow }, function(r)
+        if r.outcome ~= "ok" then
+            vim.notify("loomworks: " .. tostring(r.message or "the project's declaration is unavailable"),
+                vim.log.levels.ERROR)
+            return
+        end
+        open_launch_editor(ctx, prow, lrow, r)
+    end)
 end
 
 --- Delete a launch config with confirmation.
@@ -511,121 +579,119 @@ local function configuration_actions(ctx, prow, crow)
     return helpers.describe_action(with(acts, publish_actions(ctx.ws, crow)), item)
 end
 
---- The deploy dict of `project` as an editable deep copy, and its saver.
-local function deploy_editing(project)
-    local function get_editable_copy()
-        return project.deploy and vim.deepcopy(project.deploy) or {}
-    end
-    local function save(new_deploy)
-        model.call(nil, "Projects/1.deploy_save", { project = project, deploy = new_deploy }, function(r)
-            local ok, err = model.result(r)
+--- Change the deploy declaration of the project row `prow`: `mutate(deploy)`
+--- on an editable copy of the declared one (Projects/1.declaration — never
+--- the view's, whose sources are normalized to arrays: saving those would
+--- rewrite the file's shape), then saved whole (Projects/1.deploy_save).
+--- @param prow table
+--- @param mutate fun(deploy: table)
+local function update_deploy(prow, mutate)
+    model.call(nil, "Projects/1.declaration", { project = prow }, function(r)
+        if r.outcome ~= "ok" then
+            vim.notify("loomworks: " .. tostring(r.message or "the project's declaration is unavailable"),
+                vim.log.levels.ERROR)
+            return
+        end
+        local editable = vim.deepcopy(r.deploy or {})
+        mutate(editable)
+        model.call(nil, "Projects/1.deploy_save", { project = prow, deploy = editable }, function(sr)
+            local ok, err = model.result(sr)
             if not ok then
                 vim.notify("loomworks: " .. tostring(err or "failed to save deploy steps"), vim.log.levels.ERROR)
             end
         end)
-    end
-    return get_editable_copy, save
+    end)
 end
 
---- The actions of one deploy step (`dest`, source index `si`).
-local function deploy_step_actions(lw, project, dest_keys, dest, si, src)
-    if not project then return {} end
+--- Put `source` under `dest` of `deploy`: the destination's only source, or
+--- appended to the ones it has.
+local function add_source(deploy, dest, source)
+    local existing = deploy[dest]
+    if existing then
+        local arr = require("loomworks.deploy").normalize_sources(existing)
+        arr[#arr + 1] = source
+        deploy[dest] = arr
+    else
+        deploy[dest] = source
+    end
+end
+
+--- Set `dest` of `deploy` to the sources `cur`: removed when none, the one
+--- source itself, else the array.
+local function set_sources(deploy, dest, cur)
+    if #cur == 0 then
+        deploy[dest] = nil
+    elseif #cur == 1 then
+        deploy[dest] = cur[1]
+    else
+        deploy[dest] = cur
+    end
+end
+
+--- The deploy editor's opts common to a project's steps.
+local function deploy_editor_opts(ctx, prow, dest_keys)
+    local dctx = deploy_context(ctx.view)
+    return {
+        projects = dctx.projects,
+        profiles = dctx.profiles,
+        preview_for = dctx.preview_for,
+        variables = prow.variables,
+        preview = previewer(prow),
+        -- A project-level step also runs for its build targets (§8.7),
+        -- so ${target_dir} is offered; it also runs for command launches,
+        -- where ${target_dir} is unresolved and fails that deploy.
+        target_context = true,
+        existing_destinations = dest_keys,
+        on_cancel = function() end,
+    }
+end
+
+--- The actions of one deploy step (`dest`, source index `si`) of the
+--- project row `prow` (routed by the row).
+local function deploy_step_actions(ctx, prow, dest_keys, dest, si, src)
+    if not ctx.ref(prow) then return {} end
     local deploy_mod = require("loomworks.deploy")
-    local get_editable_copy, save = deploy_editing(project)
-    local captured_dest, captured_si = dest, si
     return {
         on_enter = function()
-            require("loomworks.ui.deploy_editor").open({
-                destination = captured_dest,
-                source = vim.deepcopy(src),
-                projects = lw.get_projects() or {},
-                profile = lw.get_active_profile(),
-                workspace = lw.get_workspace(),
-                launch_project = project,
-                -- A project-level step also runs for its build targets (§8.7),
-                -- so ${target_dir} is offered; it also runs for command launches,
-                -- where ${target_dir} is unresolved and fails that deploy.
-                target_context = true,
-                existing_destinations = dest_keys,
-                current_destination = captured_dest,
-                on_accept = function(new_dest, new_source)
-                    local editable = get_editable_copy()
-                    local cur = deploy_mod.normalize_sources(editable[captured_dest])
-                    cur[captured_si] = new_source
-                    if new_dest ~= captured_dest then
-                        table.remove(cur, captured_si)
-                        if #cur == 0 then
-                            editable[captured_dest] = nil
-                        elseif #cur == 1 then
-                            editable[captured_dest] = cur[1]
-                        else
-                            editable[captured_dest] = cur
-                        end
-                        local existing = editable[new_dest]
-                        if existing then
-                            local arr = deploy_mod.normalize_sources(existing)
-                            arr[#arr + 1] = new_source
-                            editable[new_dest] = arr
-                        else
-                            editable[new_dest] = new_source
-                        end
+            local opts = deploy_editor_opts(ctx, prow, dest_keys)
+            opts.destination = dest
+            opts.source = vim.deepcopy(src)
+            opts.current_destination = dest
+            opts.on_accept = function(new_dest, new_source)
+                update_deploy(prow, function(editable)
+                    local cur = deploy_mod.normalize_sources(editable[dest])
+                    cur[si] = new_source
+                    if new_dest ~= dest then
+                        table.remove(cur, si)
+                        set_sources(editable, dest, cur)
+                        add_source(editable, new_dest, new_source)
                     else
-                        if #cur == 1 then
-                            editable[captured_dest] = cur[1]
-                        else
-                            editable[captured_dest] = cur
-                        end
+                        set_sources(editable, dest, cur)
                     end
-                    save(editable)
-                end,
-                on_cancel = function() end,
-            })
+                end)
+            end
+            require("loomworks.ui.deploy_editor").open(opts)
         end,
         on_delete = function()
-            local editable = get_editable_copy()
-            local cur = deploy_mod.normalize_sources(editable[captured_dest])
-            table.remove(cur, captured_si)
-            if #cur == 0 then
-                editable[captured_dest] = nil
-            elseif #cur == 1 then
-                editable[captured_dest] = cur[1]
-            else
-                editable[captured_dest] = cur
-            end
-            save(editable)
+            update_deploy(prow, function(editable)
+                local cur = deploy_mod.normalize_sources(editable[dest])
+                table.remove(cur, si)
+                set_sources(editable, dest, cur)
+            end)
         end,
     }
 end
 
---- "▸ Add deploy step".
-local function add_deploy_action(lw, project, dest_keys)
-    if not project then return nil end
-    local deploy_mod = require("loomworks.deploy")
-    local get_editable_copy, save = deploy_editing(project)
+--- "▸ Add deploy step" of the project row `prow`.
+local function add_deploy_action(ctx, prow, dest_keys)
+    if not ctx.ref(prow) then return nil end
     return function()
-        require("loomworks.ui.deploy_editor").open({
-            destination = "",
-            source = nil,
-            projects = lw.get_projects() or {},
-            profile = lw.get_active_profile(),
-            workspace = lw.get_workspace(),
-            launch_project = project,
-            target_context = true,
-            existing_destinations = dest_keys,
-            on_accept = function(new_dest, new_source)
-                local editable = get_editable_copy()
-                local existing = editable[new_dest]
-                if existing then
-                    local arr = deploy_mod.normalize_sources(existing)
-                    arr[#arr + 1] = new_source
-                    editable[new_dest] = arr
-                else
-                    editable[new_dest] = new_source
-                end
-                save(editable)
-            end,
-            on_cancel = function() end,
-        })
+        local opts = deploy_editor_opts(ctx, prow, dest_keys)
+        opts.destination = ""
+        opts.on_accept = function(new_dest, new_source)
+            update_deploy(prow, function(editable) add_source(editable, new_dest, new_source) end)
+        end
+        require("loomworks.ui.deploy_editor").open(opts)
     end
 end
 
@@ -974,8 +1040,8 @@ end
 
 --- Render a project's expansion.
 local function render_project_details(tree, t, ctx, prow)
-    local lw = ctx.lw
-    local project = ctx.ref(prow)
+    -- (Offered while the editor's model has the project.)
+    local actionable = ctx.ref(prow) ~= nil
     tree:description(prow.description)
     tree:leaf("Path: " .. prow.path, "Comment")
     -- Project-wide saved test targets (ui "Saved test targets line").
@@ -1038,13 +1104,10 @@ local function render_project_details(tree, t, ctx, prow)
                     hl = "LoomworksVariant",
                     enter_label = "Edit launch config",
                 }, l.description)
-                -- Every launch row is bound to its LaunchConfiguration
-                -- (view_state project_row); the guard is defensive only.
-                -- The removal names it by its row (step 5o C2b); the editor
-                -- still reads the editor's model (until C2b's second half).
-                local launch = ctx.ref(l)
-                if project and launch then
-                    opts.on_enter = function() edit_launch_config(project, launch, l) end
+                -- The editor and the removal name it by its row (step 5o
+                -- C2b / C2b2-2).
+                if actionable and ctx.ref(l) then
+                    opts.on_enter = function() edit_launch_config(ctx, prow, l) end
                     opts.on_delete = function() delete_launch_config(prow, l) end
                 end
                 helpers.describe_action(opts, helpers.row_item("launch configuration", l, prow.key .. ":" .. lname))
@@ -1057,7 +1120,7 @@ local function render_project_details(tree, t, ctx, prow)
             tree:item("▸ Add launch config", {
                 hl = "LoomworksAdd",
                 direct = true,
-                on_enter = project and function() edit_launch_config(project, nil) end or nil,
+                on_enter = actionable and function() edit_launch_config(ctx, prow, nil) end or nil,
             })
         end)
     end
@@ -1082,7 +1145,7 @@ local function render_project_details(tree, t, ctx, prow)
                     tree:item("    <- " .. format_source(src), with({
                         hl = "LoomworksActionable",
                         enter_label = "Edit deploy step",
-                    }, deploy_step_actions(lw, project, dest_keys, d.destination, si, src)))
+                    }, deploy_step_actions(ctx, prow, dest_keys, d.destination, si, src)))
                 end
             end
 
@@ -1090,7 +1153,7 @@ local function render_project_details(tree, t, ctx, prow)
                 tree:item("▸ Add deploy step", {
                     hl = "LoomworksAdd",
                     direct = true,
-                    on_enter = add_deploy_action(lw, project, dest_keys),
+                    on_enter = add_deploy_action(ctx, prow, dest_keys),
                 })
             end
         end)
@@ -1112,20 +1175,20 @@ local function render_project_details(tree, t, ctx, prow)
                 }, {
                     hl = "LoomworksVariant",
                     enter_label = "Edit variable",
-                    on_enter = project and function() edit_variable(prow, vname) end or nil,
-                    on_delete = project and function() delete_variable(prow, vname) end or nil,
+                    on_enter = actionable and function() edit_variable(prow, vname) end or nil,
+                    on_delete = actionable and function() delete_variable(prow, vname) end or nil,
                 })
             end
             tree:item("▸ Add variable", {
                 hl = "LoomworksAdd",
                 direct = true,
-                on_enter = project and function() edit_variable(prow, nil) end or nil,
+                on_enter = actionable and function() edit_variable(prow, nil) end or nil,
             })
         end)
     end
 
     for _, field in ipairs(prow.type_config.fields) do
-        render_editable_type_config_field(tree, prow, field, project ~= nil)
+        render_editable_type_config_field(tree, prow, field, actionable)
     end
 
     tree:blank()
