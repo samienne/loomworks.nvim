@@ -25,16 +25,22 @@ local M = {}
 ---   available_configs: string[] — for inherits picker
 ---   project_options: table<string, string> — project-wide options (display only)
 ---   inherited_options: table<string, { value: string, source: string }> — resolved inherited options
----   variant_source: string|nil — provenance hint for the variant (display only)
----   build_dir: string|nil — computed build dir (display only)
+---     (`source` "project" or the base configuration's name)
+---   variant_source: string|nil — the configuration supplying the variant (display only)
+---   build_dirs: string[]|nil — the configuration's units' build dirs, sorted (display only)
 ---   project_variables: table|nil — project-wide variable declarations (display only)
----   resolved_variables: table|nil — resolved variable values (display only)
+---   resolved_variables: table<string, { value?: string, from: "project"|"configuration"|"profile",
+---     configuration?: string }>|nil — each variable's resolved value and its source (display only)
+---   config_compiler_overrides: table<string, table>|nil — the configuration's compiler-family
+---     overrides (family → name → value; shown read-only)
+---   active_compiler_family: string|nil — the active profile's compiler family (marks its overrides)
 ---   rename_effects?: fun(name: string) — compute cascade effects of a rename
 ---   validate?: fun(result): boolean, string|nil
 ---   on_accept: fun(result)
 ---   on_cancel: fun()
----   item?: loomworks.Configuration — the existing user configuration (edit
----     mode): adds a `Description ▸` row that opens the description editor
+---   item?: table — the existing configuration's description handle
+---     (helpers.row_item of its view row; edit mode): adds a `Description ▸`
+---     row that opens the description editor
 function M.open(opts)
     local name = opts.name
     local variant = opts.variant or ""
@@ -268,8 +274,8 @@ function M.open(opts)
             t:leaf("Variant    " .. var_display .. var_hint, "Comment")
         end
 
-        if opts.build_dir then
-            t:leaf("Build dir  " .. opts.build_dir .. "  (computed)", "Comment")
+        for i, dir in ipairs(opts.build_dirs or {}) do
+            t:leaf((i == 1 and "Build dir  " or "           ") .. dir, "Comment")
         end
 
         if opts.has_options then
@@ -383,8 +389,8 @@ function M.open(opts)
 
                 if is_own then
                     local source_hint = ""
-                    if resolved and resolved.source_config then
-                        source_hint = "  (overrides " .. resolved.source_config.name .. ")"
+                    if resolved and resolved.configuration then
+                        source_hint = "  (overrides " .. resolved.configuration .. ")"
                     else
                         source_hint = "  (overrides project default)"
                     end
@@ -410,10 +416,10 @@ function M.open(opts)
                 else
                     local value = (resolved and resolved.value) or decl.default
                     local source
-                    if resolved and resolved.from_profile then
+                    if resolved and resolved.from == "profile" then
                         source = "profile"
-                    elseif resolved and resolved.source_config then
-                        source = resolved.source_config.name
+                    elseif resolved and resolved.configuration then
+                        source = resolved.configuration
                     elseif value == nil then
                         source = "blank — set per profile"
                     else

@@ -3,8 +3,9 @@
 -- editor, the launch editor, and the configuration-set editor's rename). Each
 -- spec drives the real dialog widget — View is stubbed so no window opens —
 -- edits one shown field through its row, accepts, and hands the result to the
--- same workspace_view save the status page uses. The on-disk working copy is
--- then re-read from a fresh load.
+-- same workspace_view save the status page uses (the configuration editor is
+-- opened from the status page's projects section itself). The on-disk
+-- working copy is then re-read from a fresh load.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
@@ -100,28 +101,50 @@ local function enter_row(tree, pattern, answer)
 end
 
 --- Open the configuration editor on App/<name> exactly as the status page
---- does (projects section), saving through workspace_view.
+--- does: the projects section rendered from the in-process view, <CR> on the
+--- configuration's row (the editor reads Projects/1.declaration and saves
+--- through Projects/1.configuration_save). `on_saved(ok, msg)` gets the
+--- save's notification once the dialog is accepted.
 local function open_config_editor(ws, name, on_saved)
-  local project = find_project(ws, "App")
-  local ctx = wv.compute_edit_configuration_context(project, name)
-  return open_dialog("loomworks.ui.config_editor_dialog", {
-    item = project:get_configuration(name),
-    title = "Edit",
-    name = ctx.name, variant = ctx.variant, inherits = ctx.inherits,
-    options = ctx.options, variables = ctx.variables,
-    toolchain = ctx.toolchain, generator = ctx.generator,
-    languages = ctx.languages, module_languages = ctx.module_languages,
-    is_default = ctx.is_default, has_options = ctx.has_options,
-    available_configs = ctx.available_configs,
-    project_options = ctx.project_options,
-    inherited_options = ctx.inherited_options,
-    project_variables = ctx.project_variables,
-    resolved_variables = ctx.resolved_variables,
-    on_accept = function(result)
-      on_saved(wv.execute_save_configuration(project, name and project:get_configuration(name), result.name, result))
-    end,
-    on_cancel = function() end,
-  })
+  local ss = require("loomworks.status_source")
+  local view = ws:view_workspace({ bind = ss.bind })
+  local ctx = { lw = require("loomworks"), view = view, ref = ss.object_of, ws = ws, mode = "in-process" }
+  local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
+  setmetatable(page._folds, { __index = function() return true end })
+  local lines = page:render()
+  local row
+  for i, l in ipairs(lines) do
+    if l:find("[▼▸] %+?" .. vim.pesc(name) .. "%f[^%w_:%-]") and page.line_meta[i] and page.line_meta[i].on_enter then
+      row = i; break
+    end
+  end
+  assert(row, "no configuration row " .. name .. " in:\n" .. table.concat(lines, "\n"))
+  local tree
+  local orig = View.new
+  View.new = function(vopts)
+    tree = vopts.widget
+    return { open = function() end, close = function() end, refresh = function() end }
+  end
+  local ok, err = pcall(page.line_meta[row].on_enter)
+  View.new = orig
+  assert(ok, err)
+  assert(tree, "the configuration editor did not open")
+  local on_key = tree.on_key
+  tree.on_key = function(self, action, line)
+    local notify = vim.notify
+    vim.notify = function(msg, level)
+      if tostring(msg):find("configuration '", 1, true) or level == vim.log.levels.ERROR then
+        on_saved(level == vim.log.levels.INFO, msg)
+      else
+        notify(msg, level)
+      end
+    end
+    local kok, r = pcall(on_key, self, action, line)
+    vim.notify = notify
+    assert(kok, r)
+    return r
+  end
+  return tree
 end
 
 local function assert_dev_fields(cfg, name)

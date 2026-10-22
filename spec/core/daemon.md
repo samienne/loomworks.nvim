@@ -2520,7 +2520,9 @@ not carried the action is refused ("Availability"), never run in-process.
 `Sdks/1`, `Toolchains/1` and `Maintenance/1` actions still work on the
 editor's in-process model, as transitional, not fallbacks; its
 `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions are calls from part
-C2a.)*
+C2a, and of `Projects/1` the configuration editor and the removals, variable
+and `type_config` edits and project add are calls from part C2b; the launch
+and deploy editors follow in C2b's second half.)*
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the

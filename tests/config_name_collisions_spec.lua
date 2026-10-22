@@ -1,9 +1,9 @@
 --- Tests for the configuration name-collision fixes:
 ---
 --- 1. _serialize_user filters auto-gens (same as _serialize_project_shared).
---- 2. compute_edit_configuration_context uses the Configuration's
----    is_default flag, not a raw bare-name lookup against
----    default_configurations() (which used to flag a user-created
+--- 2. The configuration editor's `default` (Projects/1.declaration) is
+---    the Configuration's is_default flag, not a raw bare-name lookup
+---    against default_configurations() (which used to flag a user-created
 ---    config named "default" as a default).
 --- 3. data_model.sync_config_sets warns once per stale mapping
 ---    (configuration_set references a variant that doesn't exist
@@ -138,9 +138,16 @@ end)
 describe("Issue 3: edit dialog uses Configuration.is_default flag", function()
     local workspace_view = require("loomworks.workspace_view")
 
+    --- The declaration's entry of the configuration `name` of `project`.
+    local function declared(project, name)
+        for _, c in ipairs(workspace_view.project_declaration(project).configurations) do
+            if c.key == name then return c end
+        end
+    end
+
     it("user-created config named 'default' is NOT flagged as is_default", function()
         -- Regression: the bare-name `defaults["default"]` lookup
-        -- in compute_edit_configuration_context flagged a user
+        -- in the editor's context flagged a user
         -- config named "default" as a default config — name became
         -- read-only, inherits picker hidden, dialog effectively
         -- empty. After the fix, is_default reflects the
@@ -158,8 +165,7 @@ describe("Issue 3: edit dialog uses Configuration.is_default flag", function()
             },
         })
         local project = find_project(ws, "App")
-        local ctx = workspace_view.compute_edit_configuration_context(project, "default")
-        assert.is_false(ctx.is_default,
+        assert.is_nil(declared(project, "default").default,
             "user config 'default' incorrectly flagged is_default — "
             .. "edit dialog will lock its name and hide editable fields")
     end)
@@ -172,8 +178,7 @@ describe("Issue 3: edit dialog uses Configuration.is_default flag", function()
             projects = { App = { typescript = {} } },
         })
         local project = find_project(ws, "App")
-        local ctx = workspace_view.compute_edit_configuration_context(project, "variant:default")
-        assert.is_true(ctx.is_default,
+        assert.is_true(declared(project, "variant:default").default,
             "auto-gen variant:default should be flagged is_default")
     end)
 end)

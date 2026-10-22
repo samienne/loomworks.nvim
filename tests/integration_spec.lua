@@ -2976,62 +2976,6 @@ describe("project configuration lifecycle", function()
         assert.is_true(ok)
         assert.is_nil(h.find_project_in(ws:get_projects(), "App").type_config.options)
     end)
-
-    it("compute_edit_configuration_context returns defaults for new config", function()
-        local ws = make_ws({
-            projects = { App = { cmake = {} } },
-        })
-
-        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), nil)
-        assert.is_not_nil(ctx)
-        assert.equals("", ctx.name)
-        assert.equals("", ctx.variant)
-        assert.is_true(ctx.has_options)
-        assert.is_true(#ctx.available_configs > 0) -- defaults exist
-    end)
-
-    it("compute_edit_configuration_context returns data for existing config", function()
-        local ws = make_ws({
-            projects = {
-                App = {
-                    cmake = {
-                        configurations = {
-                            ["Debug-ASAN"] = {
-                                inherits = "Debug",
-                                options = { ASAN = "ON" },
-                            },
-                        },
-                    },
-                },
-            },
-        })
-
-        local ctx = wv.compute_edit_configuration_context(h.find_project_in(ws:get_projects(), "App"), "Debug-ASAN")
-        assert.is_not_nil(ctx)
-        assert.equals("Debug-ASAN", ctx.name)
-        assert.equals("Debug", ctx.inherits[1] or ctx.inherits)
-        assert.equals("ON", ctx.options.ASAN)
-        assert.is_true(ctx.has_options)
-    end)
-
-    it("compute_edit_configuration_context marks defaults correctly", function()
-        -- Auto-gens carry the canonical `<prefix>:<name>` key after
-        -- canonicalize. is_default reads from the Configuration
-        -- object, so the lookup must use the canonical form. The
-        -- bare-name lookup that used to "work" here was the bug
-        -- that flagged user-created `default` configs as defaults
-        -- (see fix/configuration-name-collisions).
-        local ws = make_ws({
-            projects = { App = { cmake = {} } },
-        })
-
-        local ctx = wv.compute_edit_configuration_context(
-            h.find_project_in(ws:get_projects(), "App"), "variant:Debug")
-        assert.is_not_nil(ctx)
-        assert.equals("variant:Debug", ctx.name)
-        assert.equals("Debug", ctx.variant)
-        assert.is_true(ctx.is_default)
-    end)
 end)
 
 -- =========================================================================
@@ -3054,9 +2998,10 @@ describe("configuration editor opened from the status page", function()
     end)
 
     --- Render the projects section of `ws` (in-process view, every fold
-    --- open), press <CR> on the first row matching `pattern` and return the
-    --- options the configuration editor dialog was opened with.
-    local function open_from_page(ws, pattern)
+    --- open), press <CR> on the first row matching `pattern` (`before_enter()`
+    --- run first) and return the options the configuration editor dialog was
+    --- opened with.
+    local function open_from_page(ws, pattern, before_enter)
         local ss = require("loomworks.status_source")
         local Tree = require("loomworks.ui.tree")
         local view = ws:view_workspace({ bind = ss.bind })
@@ -3070,13 +3015,12 @@ describe("configuration editor opened from the status page", function()
         end
         assert(line, "no actionable row matching " .. pattern .. " in:\n" .. table.concat(lines, "\n"))
         local dialog = require("loomworks.ui.config_editor_dialog")
-        local lw = require("loomworks")
-        local orig_open, orig_ws = dialog.open, lw.get_workspace
+        local orig_open = dialog.open
         local got
         dialog.open = function(o) got = o end
-        lw.get_workspace = function() return ws end
+        if before_enter then before_enter() end
         local ok, err = pcall(tree.line_meta[line].on_enter)
-        dialog.open, lw.get_workspace = orig_open, orig_ws
+        dialog.open = orig_open
         assert(ok, err)
         assert.is_table(got, "the configuration editor did not open")
         return got
@@ -3106,6 +3050,35 @@ describe("configuration editor opened from the status page", function()
         assert.equals("variant:Debug", opts.variant_source)
         assert.same({ gcc = { out = "z" } }, opts.config_compiler_overrides)
         assert.equals("gcc", opts.active_compiler_family)
+    end)
+
+    it("shows every build dir of the configuration's units; saves the row's configuration, the name apart", function()
+        local ws = make_ws({
+            projects = { App = { cmake = { configurations = { Dev = { inherits = "variant:Debug" } } } } },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local dev = app:get_configuration("Dev")
+        -- (Units the view does not render: added once the page is drawn.)
+        local opts = open_from_page(ws, "▼ Dev ", function()
+            for _, dir in ipairs({ "/b/2", "/b/1" }) do
+                ws._config_units[#ws._config_units + 1] = { _project = app, _configuration = dev, build_dir_value = dir }
+            end
+        end)
+        assert.same({ "/b/1", "/b/2" }, opts.build_dirs)
+        assert.equals("Dev", opts.name)
+        assert.is_false(opts.is_default)
+        assert.equals("variant:Debug", opts.inherits)
+
+        local saved
+        local orig = wv.execute_save_configuration
+        wv.execute_save_configuration = function(...) saved = { ... }; return true end
+        local ok, err = pcall(opts.on_accept, { name = "Dev2", inherits = "variant:Debug", options = {}, variables = {} })
+        wv.execute_save_configuration = orig
+        assert(ok, err)
+        assert.equals(app, saved[1])
+        assert.equals(dev, saved[2])
+        assert.equals("Dev2", saved[3])
+        assert.same({ inherits = "variant:Debug", options = {}, variables = {} }, saved[4])
     end)
 end)
 
@@ -5069,7 +5042,7 @@ describe("project variables", function()
             assert.is_not_nil(app.variables.new_name)
         end)
 
-        it("config editor context includes resolved variables", function()
+        it("the declaration resolves the variables for the configuration editor", function()
             local ws = make_ws({
                 projects = {
                     App = {
@@ -5093,22 +5066,23 @@ describe("project variables", function()
             })
 
             local app = h.find_project_in(ws:get_projects(), "App")
-            local ctx = wv.compute_edit_configuration_context(app, "Debug")
+            local decl = wv.project_declaration(app)
+            local debug
+            for _, c in ipairs(decl.configurations) do if c.key == "Debug" then debug = c end end
 
-            -- project_variables has declarations
-            assert.is_not_nil(ctx.project_variables.output_dir)
-            assert.equals("path", ctx.project_variables.output_dir.type)
+            -- variables has the declarations
+            assert.equals("path", decl.variables.output_dir.type)
 
-            -- variables has this config's own overrides
-            assert.equals("/debug", ctx.variables.output_dir)
-            assert.is_nil(ctx.variables.port)  -- not overridden
+            -- the configuration's fields have its own overrides
+            assert.equals("/debug", debug.fields.variables.output_dir)
+            assert.is_nil(debug.fields.variables.port)  -- not overridden
 
             -- resolved_variables has full resolution with provenance
-            assert.is_not_nil(ctx.resolved_variables.output_dir)
-            assert.equals("/debug", ctx.resolved_variables.output_dir.value)
-            -- port resolves to project default
-            assert.equals("9229", ctx.resolved_variables.port.value)
-            assert.is_nil(ctx.resolved_variables.port.source_config)
+            assert.same({
+                { name = "output_dir", value = "/debug", from = "configuration", configuration = { key = "Debug" } },
+                -- port resolves to project default
+                { name = "port", value = "9229", from = "project" },
+            }, debug.resolved_variables)
         end)
     end)
 end)
