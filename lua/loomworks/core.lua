@@ -645,6 +645,7 @@ end
 --- Nuke the cache: delete .nvim/build/ and loomworks.cache.json, then reload.
 --- Caller must confirm with the user before calling this.
 --- @param root string workspace root to nuke
+--- @return boolean ran the removal ran (false: `_nuke_begin` refused it, notified)
 function Core:nuke_cache(root)
     -- The live workspace goes first (spec §19.3): its tasks are stopped (an
     -- editor build would keep writing into the tree, and hold its lock) and
@@ -654,6 +655,7 @@ function Core:nuke_cache(root)
     self:_retire_workspace()
     local norm_root = self:_nuke_files(root)
     self:setup({ root = norm_root or self._deps.normalize(root) })
+    return norm_root ~= nil
 end
 
 --- Stop the live workspace's tasks (waiting, bounded, for them to end) and

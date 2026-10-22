@@ -1624,4 +1624,65 @@ function M.execute_deletion(ws, target, opts)
     return r
 end
 
+--- The token family of a nuke plan (never equal to a reset or delete token).
+M.NUKE_KIND = "nuke-plan/1"
+
+--- The header of a nuke's listing (as `lw nuke` prints it).
+M.NUKE_HEADER = "Will delete (build state only; your configuration is kept):"
+
+--- The nuke's plan: the build directories it locks (`Core:_nuke_lock_dirs`,
+--- by normalized path) and the owned LSP database areas it removes (the ones
+--- `nuke_check` / `_nuke_begin` approved). The fixed targets (`.nvim/build`,
+--- the caches) are the same for every nuke and not part of the token.
+--- @param core table
+--- @param root string normalized root
+--- @param areas string[]|nil
+--- @return { token: string, lock_keys: string[], areas: string[] }
+function M.nuke_plan(core, root, areas)
+    local keys = {}
+    for _, e in ipairs(core:_nuke_lock_dirs(root .. "/.nvim/build")) do keys[#keys + 1] = e.key end
+    table.sort(keys)
+    local token = require("loomworks.reset_plan").token("nuke", keys, areas or {}, nil, M.NUKE_KIND)
+    return { token = token, lock_keys = keys, areas = areas or {} }
+end
+
+--- The confirmation listing of a nuke of `root` (`lw nuke`'s).
+--- @param core table
+--- @param root string
+--- @param areas string[]|nil
+--- @return string[]
+function M.nuke_listing(core, root, areas)
+    local lines = { M.NUKE_HEADER }
+    for _, p in ipairs(core:nuke_targets(root, areas)) do lines[#lines + 1] = "  " .. p end
+    return lines
+end
+
+--- `nuke { plan?, yes? }` in the editor's own process (the status page's
+--- `<C-n>` in the `in-process` mode; step 5o C2c-2): the daemon's order
+--- (loomworks.daemon.maintenance) on the editor's core. A lock another
+--- process holds is refused before the listing (`Core:nuke_check`, the
+--- editor's own builds passed over: `nuke_cache` stops them first); a `plan`
+--- the fresh one differs from is refused (`deletion_plan.CHANGED`); without
+--- `yes` it is `confirm { lines, plan }`; otherwise `Core:nuke_cache` (the
+--- live workspace retired, `_nuke_begin`'s checks and locks, the removal,
+--- the reload) — `ok` when the removal ran, refused when `_nuke_begin`
+--- refused it (already notified). Deletion safety: no deletion path here;
+--- every path is `_nuke_begin`'s.
+--- @param core table the editor's core
+--- @param root string the workspace root
+--- @param plan string|nil the token a confirmation returned
+--- @param yes boolean|nil
+--- @return loomworks.CommandOutcome
+function M.nuke(core, root, plan, yes)
+    local okc, why, areas = core:nuke_check(root, { skip_own = true })
+    if not okc then return refused(tostring(why)) end
+    local p = M.nuke_plan(core, core._deps.normalize(root), areas)
+    if plan ~= nil and plan ~= p.token then return refused(require("loomworks.deletion_plan").CHANGED) end
+    if not yes then
+        return { outcome = "confirm", lines = M.nuke_listing(core, root, areas), plan = p.token }
+    end
+    if not core:nuke_cache(root) then return refused("the nuke was refused (see the message above)") end
+    return ok()
+end
+
 return M

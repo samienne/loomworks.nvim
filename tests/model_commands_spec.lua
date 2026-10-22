@@ -623,3 +623,51 @@ describe("model_commands", function()
     assert.same({}, found)
   end)
 end)
+
+-- Step 5o C2c-2: the in-process `Maintenance/1.nuke` (the status page's
+-- `<C-n>` in the `in-process` mode): the daemon's order on the editor's core.
+describe("model_commands.nuke", function()
+  local function fake_core(check)
+    local core = { nuked = {}, checked = {} }
+    core._deps = { normalize = function(p) return p end }
+    function core:nuke_check(root, opts)
+      self.checked[#self.checked + 1] = { root, opts }
+      return check()
+    end
+    function core:_nuke_lock_dirs() return { { key = "/w/.nvim/build/a" } } end
+    function core:nuke_targets(root, areas)
+      local t = { root .. "/.nvim/build/" }
+      for _, a in ipairs(areas or {}) do t[#t + 1] = a .. "/" end
+      return t
+    end
+    function core:nuke_cache(root) self.nuked[#self.nuked + 1] = root; return self.ran ~= false end
+    return core
+  end
+
+  it("refuses a held lock before the listing, confirms with the plan, refuses a changed plan, then nukes", function()
+    local core = fake_core(function() return nil, "cannot nuke: held by lw build (pid 7)" end)
+    local r = mc.nuke(core, "/w", nil, false)
+    assert.same({ "refused", "cannot nuke: held by lw build (pid 7)" }, { r.outcome, r.message })
+    assert.same({ { "/w", { skip_own = true } } }, core.checked)
+    core = fake_core(function() return true, nil, { "/w/.nvim/cache/cc" } end)
+    local c = mc.nuke(core, "/w", nil, false)
+    assert.equals("confirm", c.outcome)
+    assert.same({ mc.NUKE_HEADER, "  /w/.nvim/build/", "  /w/.nvim/cache/cc/" }, c.lines)
+    assert.equals(mc.nuke_plan(core, "/w", { "/w/.nvim/cache/cc" }).token, c.plan)
+    r = mc.nuke(core, "/w", "stale", true)
+    assert.same({ "refused", require("loomworks.deletion_plan").CHANGED }, { r.outcome, r.message })
+    assert.same({}, core.nuked)
+    assert.same({ outcome = "ok" }, mc.nuke(core, "/w", c.plan, true))
+    assert.same({ "/w" }, core.nuked)
+    core.ran = false
+    assert.equals("refused", mc.nuke(core, "/w", c.plan, true).outcome)
+  end)
+
+  it("is the daemon's plan and listing (one implementation)", function()
+    local maint = require("loomworks.daemon.maintenance")
+    assert.equals(mc.nuke_plan, maint.nuke_plan)
+    assert.equals(mc.nuke_listing, maint.nuke_listing)
+    assert.equals(mc.NUKE_HEADER, maint.NUKE_HEADER)
+  end)
+end)
+

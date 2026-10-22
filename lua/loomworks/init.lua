@@ -388,8 +388,9 @@ end
 --- Nuke the cache: delete .nvim/build/ and loomworks.cache.json, then reload.
 --- Caller must confirm with the user before calling this.
 --- @param root string workspace root to nuke
+--- @return boolean ran the removal ran (false: refused, notified)
 function M.nuke_cache(root)
-    core:nuke_cache(root)
+    return core:nuke_cache(root)
 end
 
 --- Would a nuke of `root` run now (no other process's build or workspace
