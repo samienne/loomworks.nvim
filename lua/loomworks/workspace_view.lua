@@ -60,7 +60,8 @@ local function collect_keyed_tools(tools_for_type)
     return keyed
 end
 
---- Context for the mapping dialog: inherited tool, no-tool profiles,
+--- Context for adding a project of `mod_type` (the add command's initial
+--- mappings and tool, model_commands): inherited tool, no-tool profiles,
 --- keyed tools. Pure query over cached profiles.
 --- @param ws loomworks.Workspace
 --- @param mod_type string module type (e.g. "cmake")
@@ -140,9 +141,10 @@ end
 --- @param result { mappings: table, tool_entry: table|nil }
 --- @return boolean ok, string|nil err
 function M.execute_add_project(ws, key, mod_type, path, result)
-    -- A keyed module's project without a toolchain is added unmapped: the
-    -- mapping dialog hides its mappings until a tool is chosen, so the
-    -- initial ones it still carries are not a request (no warn note).
+    -- A keyed module's project without a toolchain is added unmapped: its
+    -- configurations are mapped once a tool is chosen (when a profile is
+    -- created), so initial mappings passed without one are not a request
+    -- (no warn note).
     local mod = require("loomworks.modules").get(mod_type)
     local mappings = result.mappings
     if mod and mod.has_keyed_tools and not result.tool_entry then mappings = nil end
@@ -319,7 +321,7 @@ function M.execute_remove_project(ws, project, ctx, on_done)
 end
 
 -- =========================================================================
--- Mapping Dialog Data
+-- Initial Configuration-Set Mappings (adding a project)
 -- =========================================================================
 
 --- Auto-detect variant mappings for configuration sets.
@@ -752,52 +754,6 @@ function M.find_project_by_path(ws, rel_path, basename)
         end
     end
     return nil
-end
-
---- Prepare context for adding a project from the browser. Determines
---- whether a mapping dialog is needed or the project can be added directly.
---- @param ws loomworks.Workspace
---- @param root string workspace root
---- @param abs_path string entry's absolute path
---- @param name string entry's directory basename
---- @param mod_type string module type
---- @return { action: "add_direct"|"show_dialog", key: string, path: string|nil, mod_type: string, config_names?: string[], has_keyed?: boolean }
-function M.prepare_add_project_from_browser(ws, root, abs_path, name, mod_type)
-    local key, path = M.derive_key_and_path(root, abs_path, name)
-
-    local has_config_sets = #ws._config_sets > 0
-
-    if not has_config_sets then
-        return { action = "add_direct", key = key, path = path, mod_type = mod_type }
-    end
-
-    -- Detect available configurations for the new project
-    local mod = modules.get(mod_type)
-    local config_names = {}
-    if mod and mod.info and mod.map_variant then
-        local info = mod.info(abs_path, {})
-        if info and info.configurations then
-            for cfg_name in pairs(info.configurations) do
-                config_names[#config_names + 1] = cfg_name
-            end
-            table.sort(config_names)
-        end
-    end
-
-    if #config_names == 0 then
-        return { action = "add_direct", key = key, path = path, mod_type = mod_type }
-    end
-
-    local has_keyed = mod and mod.has_keyed_tools or false
-
-    return {
-        action = "show_dialog",
-        key = key,
-        path = path,
-        mod_type = mod_type,
-        config_names = config_names,
-        has_keyed = has_keyed,
-    }
 end
 
 -- =========================================================================

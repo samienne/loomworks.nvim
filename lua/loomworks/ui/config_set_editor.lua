@@ -1,8 +1,7 @@
 --- loomworks/ui/config_set_editor.lua — Edit dialog for config set mappings.
 ---
 --- Purpose-built dialog for editing project→variant mappings within a
---- configuration set. Simpler than mapping_dialog (no tool picker, no
---- upgrade preview).
+--- configuration set (no tool picker, no upgrade preview).
 ---
 --- Used for both "create new config set" and "edit existing config set".
 --- Works with Project and Configuration domain objects — no string keys.

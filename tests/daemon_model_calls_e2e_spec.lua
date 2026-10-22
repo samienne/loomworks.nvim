@@ -334,12 +334,26 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
 
         local crow = assert(prow_of("app", "configurations", "Debug"))
         assert.is_not_nil(crow.id)
+        -- A configuration the user declared (removable), not a module's.
+        assert.is_true(crow.user)
+        local others = {}
+        for _, c in ipairs(prow_of("app").configurations) do
+            if c.key ~= "Debug" then others[#others + 1] = c.key end
+        end
+        table.sort(others)
         r = call("Projects/1.configuration_remove", { project = prow_of("app"), configuration = crow })
         assert.equals("ok", r.outcome, vim.inspect(r))
-        until_view(function()
-            local c = prow_of("app", "configurations", "Debug")
-            return c == nil or c.user ~= true
-        end)
+        until_view(function() return prow_of("app", "configurations", "Debug") == nil end)
+        -- Gone, the project's other configurations untouched.
+        local left = {}
+        for _, c in ipairs(prow_of("app").configurations) do left[#left + 1] = c.key end
+        table.sort(left)
+        assert.same(others, left)
+        -- Its id is stale now: a second removal is refused.
+        r = call("Projects/1.configuration_remove", { project = prow_of("app"), configuration = crow })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.truthy(r.message:find("stale", 1, true), r.message)
+        assert.is_nil(prow_of("app", "configurations", "Debug"))
         assert.same({}, errors())
     end)
 
