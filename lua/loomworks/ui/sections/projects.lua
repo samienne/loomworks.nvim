@@ -495,26 +495,20 @@ local function project_actions(ws, proj, prow)
     })
 end
 
---- The actions of a configuration row.
---- @param ws loomworks.Workspace|nil
---- @param project loomworks.Project|nil the project's object (the editor)
---- @param cfg loomworks.Configuration|nil the configuration's object (the editor)
+--- The actions of a configuration row: its editor and removal are routed
+--- (by the rows, helpers.actionable — in `daemon` mode a row with an id,
+--- even of a project the editor's model does not have yet).
+--- @param ctx table the section context
 --- @param prow table the project's view row
 --- @param crow table the configuration's view row
-local function configuration_actions(ws, project, cfg, prow, crow, view)
-    -- Only on a row whose objects the editor's model has (the editor still
-    -- reads them, until C2b's second half). `cfg` is always bound in
-    -- practice: every declared configuration has a Configuration object
-    -- (Project:_sync_configurations), so the nil guard only keeps a row
-    -- without one inert rather than acting on a name.
-    if not (project and cfg) then return {} end
+local function configuration_actions(ctx, prow, crow)
+    if not (helpers.actionable(ctx, prow) and helpers.actionable(ctx, crow)) then return {} end
     local acts = {
-        on_enter = function() edit_project_configuration(prow, crow, view) end,
-        -- Named by its row (step 5o C2b).
+        on_enter = function() edit_project_configuration(prow, crow, ctx.view) end,
         on_delete = crow.user and function() delete_project_configuration(prow, crow) end or nil,
     }
     local item = helpers.row_item("configuration", crow, prow.key .. "/" .. crow.key)
-    return helpers.describe_action(with(acts, publish_actions(ws, crow)), item)
+    return helpers.describe_action(with(acts, publish_actions(ctx.ws, crow)), item)
 end
 
 --- The deploy dict of `project` as an editable deep copy, and its saver.
@@ -802,8 +796,6 @@ end
 local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
     local key = prow.key
     local cname = crow.key
-    local project = ctx.ref(prow)
-    local cfg = ctx.ref(crow)
 
     -- Abstract configs have no variant (mixin only)
     local is_abstract = crow.abstract
@@ -914,7 +906,7 @@ local function render_configuration(tree, ct, ctx, prow, crow, cfg_group)
         publish_label = has_object and helpers.intent_action_label(crow.intent) or nil,
     }
     if has_object then helpers.describe(opts, crow.description, crow.description_from_module) end
-    ct:node(config_chunks, with(opts, configuration_actions(ctx.ws, project, cfg, prow, crow, ctx.view)), function()
+    ct:node(config_chunks, with(opts, configuration_actions(ctx, prow, crow)), function()
         if has_object then
             tree:description(crow.description, crow.description_from_module)
             -- Saved test targets (read-only, ui "Saved test
@@ -1005,7 +997,8 @@ local function render_project_details(tree, t, ctx, prow)
                 tree:item("▸ Add configuration", {
                     hl = "LoomworksAdd",
                     direct = true,
-                    on_enter = project and function() edit_project_configuration(prow, nil, ctx.view) end or nil,
+                    on_enter = helpers.actionable(ctx, prow)
+                        and function() edit_project_configuration(prow, nil, ctx.view) end or nil,
                 })
             end
         end)

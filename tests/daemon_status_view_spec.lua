@@ -142,6 +142,57 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
+    it("a project the editor's model does not have yet: its configuration editor and Add configuration act by the row's id (5o C2b2)", function()
+        fake_obs({ [observer.VIEW_WORKSPACE.feature] = "subscribed", [observer.TASKS.feature] = "subscribed",
+            [observer.PROJECTS.feature] = "available" })
+        header()
+        -- A project the daemon just added: in its view with ids, not (yet) in
+        -- the editor's model.
+        views.set(obs, "workspace", daemon_view(function(v)
+            local p = vim.deepcopy(v.projects[1])
+            p.key, p.id = "fresh", "id:fresh"
+            p.configurations = { p.configurations[1] }
+            p.configurations[1].id = "id:fresh/Debug"
+            v.projects[#v.projects + 1] = p
+        end))
+        local body = status_source.read(ws)
+        local fresh = body.view.projects[#body.view.projects]
+        assert.equals("fresh", fresh.key)
+        assert.is_nil(body.ref(fresh))
+        local tree = Tree.new(require("loomworks.ui.status")._render_fn)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local lines = tree:render()
+        local at, cfg_enter, add_enter
+        for i, l in ipairs(lines) do
+            if l:find("fresh [shell]", 1, true) then at = i end
+            if at and i > at then
+                local meta = tree.line_meta[i]
+                if not cfg_enter and l:find("Debug", 1, true) and meta and meta.fold_key then
+                    cfg_enter = meta.on_enter or false
+                end
+                if not add_enter and l:find("Add configuration", 1, true) then
+                    add_enter = meta and meta.on_enter or false
+                end
+            end
+        end
+        assert.is_not_nil(at, table.concat(lines, "\n"))
+        assert.is_function(cfg_enter, "the configuration row has no editor")
+        assert.is_function(add_enter, "Add configuration is inert")
+        -- The editor's read names the project by the row's id.
+        local orig = observer.loaded_workspace
+        observer.loaded_workspace = function() return ws end
+        local ok, err = pcall(cfg_enter)
+        observer.loaded_workspace = orig
+        assert(ok, err)
+        local sent
+        for _, c in ipairs(calls) do
+            if c.method == "declaration" then sent = c end
+        end
+        assert.is_not_nil(sent, vim.inspect(calls))
+        assert.same({ project = { id = "id:fresh" } }, sent.args)
+        assert.equals(0, built)
+    end)
+
     it("a launch row reaches its launch configuration; the rows keep the view's ids (for 5o C2)", function()
         core:shutdown()
         root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })

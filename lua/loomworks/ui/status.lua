@@ -110,6 +110,9 @@ local function render_fn(tree)
     local ctx = {
         lw = lw,
         view = view,
+        -- The body's mode: a routed action is offered on a row with an id in
+        -- `daemon` mode (helpers.actionable).
+        mode = body.mode,
         ref = body.ref,
         profile_progress = body.profile_progress,
         unit_progress = body.unit_progress,
