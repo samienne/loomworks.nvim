@@ -647,9 +647,9 @@ local function deploy_editor_opts(ctx, prow, dest_keys)
 end
 
 --- The actions of one deploy step (`dest`, source index `si`) of the
---- project row `prow` (routed by the row).
+--- project row `prow` (routed by the row, helpers.actionable).
 local function deploy_step_actions(ctx, prow, dest_keys, dest, si, src)
-    if not ctx.ref(prow) then return {} end
+    if not helpers.actionable(ctx, prow) then return {} end
     local deploy_mod = require("loomworks.deploy")
     return {
         on_enter = function()
@@ -684,7 +684,7 @@ end
 
 --- "▸ Add deploy step" of the project row `prow`.
 local function add_deploy_action(ctx, prow, dest_keys)
-    if not ctx.ref(prow) then return nil end
+    if not helpers.actionable(ctx, prow) then return nil end
     return function()
         local opts = deploy_editor_opts(ctx, prow, dest_keys)
         opts.destination = ""
@@ -1040,8 +1040,10 @@ end
 
 --- Render a project's expansion.
 local function render_project_details(tree, t, ctx, prow)
-    -- (Offered while the editor's model has the project.)
-    local actionable = ctx.ref(prow) ~= nil
+    -- The project's rows act by the row (helpers.actionable): in `daemon`
+    -- mode a row with an id, even of a project the editor's model does not
+    -- have yet.
+    local actionable = helpers.actionable(ctx, prow)
     tree:description(prow.description)
     tree:leaf("Path: " .. prow.path, "Comment")
     -- Project-wide saved test targets (ui "Saved test targets line").
@@ -1063,7 +1065,7 @@ local function render_project_details(tree, t, ctx, prow)
                 tree:item("▸ Add configuration", {
                     hl = "LoomworksAdd",
                     direct = true,
-                    on_enter = helpers.actionable(ctx, prow)
+                    on_enter = actionable
                         and function() edit_project_configuration(prow, nil, ctx.view) end or nil,
                 })
             end
@@ -1106,7 +1108,7 @@ local function render_project_details(tree, t, ctx, prow)
                 }, l.description)
                 -- The editor and the removal name it by its row (step 5o
                 -- C2b / C2b2-2).
-                if actionable and ctx.ref(l) then
+                if actionable and helpers.actionable(ctx, l) then
                     opts.on_enter = function() edit_launch_config(ctx, prow, l) end
                     opts.on_delete = function() delete_launch_config(prow, l) end
                 end
