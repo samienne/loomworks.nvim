@@ -817,6 +817,32 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
     end)
 
+    it("a body that throws with no workspace log: its traceback is a DEBUG notification, never dropped", function()
+        fake_obs(nil, function() return daemon_view(function(v) v.modified = true end) end)
+        header()
+        local orig_log = ws._core._deps.log
+        ws._core._deps.log = nil
+        local notes, orig_notify = {}, vim.notify
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+        local wv = require("loomworks.workspace_view")
+        local orig = wv.execute_delete_stray_dir
+        wv.execute_delete_stray_dir = function() error("boom") end
+        local refused
+        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x) refused = x end)
+        wv.execute_delete_stray_dir = orig
+        vim.notify = orig_notify
+        ws._core._deps.log = orig_log
+        assert(ok, err)
+        assert.equals("refused", refused and refused.outcome)
+        local debug_tb
+        for _, n in ipairs(notes) do
+            if n.level == vim.log.levels.DEBUG and tostring(n.msg):find("traceback", 1, true) then debug_tb = n end
+        end
+        assert.is_table(debug_tb, vim.inspect(notes))
+        assert.truthy(debug_tb.msg:find("boom", 1, true), debug_tb.msg)
+    end)
+
     it("the answered freshness `get` ends it: the daemon's view's flag again", function()
         local fresh = daemon_view(function(v) v.modified = true end)
         fake_obs(nil, function() return fresh end)

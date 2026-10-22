@@ -869,8 +869,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 - The status page's configuration editor never showed where a
-  configuration's variant comes from ("from X") nor its read-only
-  compiler-family overrides. It does now. (#322)
+  configuration's variant comes from ("from X"; none when the
+  configuration sets its own variant) nor its read-only compiler-family
+  overrides. It does now. (#322)
 - In daemon mode a project just added from the status page could not have
   its configurations edited or added until the editor reloaded. (#322)
 - A profile created from an SDK in the status page's tool picker lost its

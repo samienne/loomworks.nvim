@@ -845,7 +845,7 @@
                 "type": "string"
               },
               "variant_from": {
-                "description": "The configuration in its inheritance chain that supplies the variant, when not itself.",
+                "description": "The configuration in its inheritance chain that supplies the variant; absent when it declares its variant itself.",
                 "$ref": "loomworks.Common/1#/$defs/Entity"
               },
               "inherited_options": {
@@ -863,7 +863,7 @@
                       "type": "string"
                     },
                     "value": {
-                      "type": "string"
+                      "description": "As the module declares it (module options are untyped)."
                     },
                     "from": {
                       "enum": [

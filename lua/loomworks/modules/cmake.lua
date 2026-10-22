@@ -985,8 +985,10 @@ function M.resolve_options_with_sources(config, configurations, config_name)
 end
 
 --- Find the source config that provides the variant for a configuration.
---- Walks the inheritance chain depth-first to find the first config with
---- a variant defined as a default (is_default) or explicitly set.
+--- Walks the inheritance chain depth-first to find the first config that
+--- declares its variant itself: a default (is_default) or one whose
+--- `variant` is set on it rather than taken from a base (`_derived.variant`).
+--- A configuration declaring its own variant is its own source.
 --- @param configurations table<string, table> resolved configurations
 --- @param config_name string
 --- @return string|nil source config name that provides the variant
@@ -996,8 +998,11 @@ function M.resolve_variant_source(configurations, config_name)
         visited[name] = true
         local cfg = configurations[name]
         if not cfg then return nil end
-        -- Defaults define their own variant
-        if cfg.is_default and cfg.variant then return name end
+        -- Defaults, and a configuration that sets `variant` itself, define
+        -- their own variant
+        if cfg.variant and (cfg.is_default or not (cfg._derived and cfg._derived.variant)) then
+            return name
+        end
         -- Walk bases to find who provides the variant
         local bases = normalize_inherits(cfg.inherits)
         for _, base_name in ipairs(bases) do

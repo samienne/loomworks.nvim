@@ -3187,6 +3187,43 @@ describe("project declaration for the configuration editor", function()
         assert.is_true(e.source_missing)
     end)
 
+    it("a configuration declaring its own variant is its own source: no variant_from", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            Mine = { inherits = "variant:Debug", variant = "Release" },
+                            Kid = { inherits = "Mine" },
+                        },
+                    },
+                },
+            },
+        })
+        local decl = wv.project_declaration(h.find_project_in(ws:get_projects(), "App"))
+        local mine = entry(decl, "Mine")
+        assert.equals("Release", mine.variant)
+        assert.is_nil(mine.variant_from)
+        -- A configuration inheriting it credits it, not the default below.
+        assert.same({ key = "Mine" }, entry(decl, "Kid").variant_from)
+    end)
+
+    it("an inherited option's value is untyped, as module options are (a number validates)", function()
+        local ws = make_ws({
+            projects = {
+                App = { cmake = { options = { JOBS = 4, ON = true },
+                    configurations = { Dev = { inherits = "variant:Debug" } } } },
+            },
+        })
+        local dev = entry(wv.project_declaration(h.find_project_in(ws:get_projects(), "App")), "Dev")
+        assert.same({ { key = "JOBS", value = 4, from = "project" }, { key = "ON", value = true, from = "project" } },
+            dev.inherited_options)
+        local set = require("loomworks.proto.documents").set()
+        local ok, err = set:validate("interfaces/loomworks/Projects.1.json",
+            "/$defs/Declaration/properties/configurations/items/properties/inherited_options", dev.inherited_options)
+        assert(ok, err)
+    end)
+
     it("no active profile: no compiler family, and a module without options says so", function()
         local ws = make_ws({ projects = { Web = { typescript = {} } } })
         local decl = wv.project_declaration(h.find_project_in(ws:get_projects(), "Web"))

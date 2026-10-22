@@ -626,11 +626,16 @@ function M.call(ws, method, params, cb)
         return
     end
     -- The refusal (its message the error) is what the page shows; the
-    -- traceback goes to the workspace's log. Marked thrown before the
+    -- traceback goes to the workspace's log (without one, a DEBUG notify, so
+    -- it is never dropped silently). Marked thrown before the
     -- refusal is answered, so a late answer still sends its `get` even when
     -- the page's callback throws on the refusal (that error is the caller's).
     local log = target and target._core and target._core._deps and target._core._deps.log
-    if log then log:error("%s%s", what, tostring(err.traceback)) end
+    if log then
+        log:error("%s%s", what, tostring(err.traceback))
+    else
+        vim.notify(what .. tostring(err.traceback), vim.log.levels.DEBUG)
+    end
     write.threw = true
     answer(refusal(method, err.message))
 end
