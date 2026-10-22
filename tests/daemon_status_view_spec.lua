@@ -346,6 +346,49 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.same({ REC }, opened.debug_adapters())
     end)
 
+    it("the launch editor is told a target-backed launch resolves ${target_dir}; a command launch not (§8.7)", function()
+        fake_obs()
+        header()
+        views.set(obs, "workspace", daemon_view(function(v)
+            v.projects[1].launches = { { key = "chk", id = "id:app:chk", target = "CoreTests" },
+                { key = "go", id = "id:app:go", command = "tool" } }
+        end))
+        local tree = Tree.new(require("loomworks.ui.status")._render_fn)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local enters = {}
+        for i, l in ipairs(tree:render()) do
+            for _, k in ipairs({ "chk", "go" }) do
+                if not enters[k] and l:find(k .. " ", 1, true) and tree.line_meta[i] then
+                    enters[k] = tree.line_meta[i].on_enter
+                end
+            end
+        end
+        local model = require("loomworks.ui.model_calls")
+        local le = require("loomworks.ui.launch_editor")
+        local orig_call, orig_open, opened = model.call, le.open, nil
+        model.call = function(_, m, _, cb)
+            if m == "Projects/1.declaration" then
+                return cb({ outcome = "ok", launches = {
+                    { key = "chk", id = "id:app:chk", fields = { target = "CoreTests" } },
+                    { key = "go", id = "id:app:go", fields = { command = "tool" } } } })
+            end
+        end
+        le.open = function(o) opened = o end
+        local ok, err = pcall(function()
+            assert.is_function(enters.chk)
+            enters.chk()
+            assert.is_table(opened)
+            assert.is_true(opened.target_context)
+            opened = nil
+            assert.is_function(enters.go)
+            enters.go()
+            assert.is_table(opened)
+            assert.is_falsy(opened.target_context)
+        end)
+        model.call, le.open = orig_call, orig_open
+        assert(ok, err)
+    end)
+
     it("a launch row reaches its launch configuration; the rows keep the view's ids (for 5o C2)", function()
         core:shutdown()
         root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
@@ -1103,6 +1146,10 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local value
         got.preview("${workspace_root}/w", function(v) value = v end)
         assert.equals(vim.fs.normalize(ws.root) .. "/w", vim.fs.normalize(value))
+        -- The preview is the project's, outside a launch target: ${target_dir}
+        -- is unresolved there (§8.7) and stays as written (API.md §19).
+        got.preview("${target_dir}/w", function(v) value = v end)
+        assert.equals("${target_dir}/w", value)
         -- In-process the debug adapter records are the working copy's.
         assert.is_table(got.debug_adapters())
     end)
