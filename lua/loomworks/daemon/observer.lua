@@ -315,9 +315,18 @@ M.SDKS = {
     object = "/toolchains", iface = "loomworks.Sdks", v = 1, feature = "sdks",
     methods = { "detect", "add", "remove" }, signals = {}, call_only = true,
 }
+-- The status page's deletions and nuke (step 5o C2c-2, API.md §22):
+-- `execute_deletion` and `nuke` answer `confirm` without `yes` (a plain
+-- call) and, confirmed, `accepted` with a task the editor owns and follows
+-- to its `done` (ui/model_calls), so they need Tasks/1 as Build/1 does.
+M.MAINTENANCE = {
+    object = "/maintenance", iface = "loomworks.Maintenance", v = 1, feature = "maintenance",
+    methods = { "execute_deletion", "nuke" }, signals = {}, call_only = true, tasks = true,
+}
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE }
 M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE, M.BUILD,
-    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS }
+    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS,
+    M.MAINTENANCE }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -2178,9 +2187,10 @@ local METHOD_IFACE = {
     device_stop = M.DEVICES,
     ["Profiles/1.set_device"] = M.PROFILES, ["Profiles/1.clear_device"] = M.PROFILES,
 }
--- The status page's model writes (step 5o C2a, C2b, C2c-1): every method of the
+-- The status page's model writes (step 5o C2a, C2b, C2c): every method of the
 -- interface tables above, by its qualified name.
-for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS }) do
+for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS,
+    M.MAINTENANCE }) do
     local iface = want.iface:match("^loomworks%.(.+)$")
     for _, method in ipairs(want.methods) do METHOD_IFACE[iface .. "/" .. want.v .. "." .. method] = want end
 end
@@ -2405,6 +2415,13 @@ local CALLS = {
     end,
     ["Sdks/1.remove"] = function(conn, args, cb, env)
         conn:call(M.SDKS.object, M.SDKS.iface, M.SDKS.v, "remove", args, cb, env)
+    end,
+    -- (step 5o C2c-2)
+    ["Maintenance/1.execute_deletion"] = function(conn, args, cb, env)
+        conn:call(M.MAINTENANCE.object, M.MAINTENANCE.iface, M.MAINTENANCE.v, "execute_deletion", args, cb, env)
+    end,
+    ["Maintenance/1.nuke"] = function(conn, args, cb, env)
+        conn:call(M.MAINTENANCE.object, M.MAINTENANCE.iface, M.MAINTENANCE.v, "nuke", args, cb, env)
     end,
 }
 

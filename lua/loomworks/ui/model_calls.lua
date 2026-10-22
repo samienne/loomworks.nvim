@@ -19,13 +19,25 @@
 --- `type_config_set`, **C2b2-1** `configuration_save` (the configuration
 --- editor reads `declaration`), **C2b2-2** `launch_save`, `deploy_save`
 --- and `expand_preview` (the launch, deploy and path editors read
---- `declaration`, the workspace view and `expand_preview`), and **C2c-1**
+--- `declaration`, the workspace view and `expand_preview`), **C2c-1**
 --- the SDK section's `Sdks/1` (`detect` — the picker's read — `add`,
---- `remove`) and `L`'s `Toolchains/1.rescan` (`ROUTED` below): in
---- `daemon` mode those are only ever calls — refused (the outcome says
---- why) when the daemon cannot carry them, never run in-process (spec
---- §19.16 "Availability"). `Maintenance/1` (and the project row's
---- removal) still runs its in-process bodies in both modes until C2c-2.
+--- `remove`) and `L`'s `Toolchains/1.rescan`, and **C2c-2**
+--- `Maintenance/1.execute_deletion` (every deletion of the page, the
+--- project row's `D` and the project browser's `d` included) and
+--- `Maintenance/1.nuke` (`ROUTED` below) — every method here: in `daemon`
+--- mode those are only ever calls — refused (the outcome says why) when the
+--- daemon cannot carry them, never run in-process (spec §19.16
+--- "Availability").
+---
+--- A deletion or nuke is confirmed (ui/actions.confirm_deletion, both
+--- modes): called without `plan` it answers `confirm { lines, plan }` (or
+--- refused — nothing to delete with `stream = "out"`); called again with
+--- that `plan` and `yes` it runs. In `daemon` mode the confirmed call is a
+--- task the editor owns (Observer:start_owned), followed to its `done`: `cb`
+--- runs then — `ok` only for exit 0 — never at the acceptance; the
+--- editor's own tasks on the target (every one, for a nuke) are cancelled
+--- first, as a clean does. A nuke never sends a root (the daemon nukes its
+--- own workspace); after it every row id is stale (the view is re-read).
 ---
 --- Params mirror the method's (its schema under spec/protocol/interfaces).
 --- An entity param of a routed method (`item`, `profile`, `config_set`,
@@ -40,16 +52,14 @@
 ---     refused, never looked up by key;
 ---   * `in-process` mode: the domain object the in-process view bound to
 ---     the row (loomworks.status_source.object_of); a domain object itself is
----     taken as it is (the dialogs that still read the editor's model, C2c).
+---     taken as it is.
+--- A deletion's `target` is one such row (a profile's, a profile's unit row —
+--- sent by its `unit_id` — an orphaned entry's, a project's), a stray
+--- directory's path exactly as the view lists it, or `orphans = true`.
 --- A `tool` of `Profiles/1.create` is a `Profiles/1.tool_choices` entry; a
 --- `mappings` of `ConfigSets/1.add` / `update` is the dialog's Project →
 --- Configuration table (sent as project key → configuration name, the wire's
 --- form) or a generated template's project key → configuration name.
----
---- Transitional params (until C2c-2): `Maintenance/1.execute_deletion
---- { confirmed }` and `Maintenance/1.nuke { root }` — the in-process
---- confirmation the user accepted (its plan, dialog context or root); C2c
---- uses the methods' confirm + plan token.
 ---
 --- `cb(r)` gets the outcome (API.md §4.1): `{ outcome = "ok", ... }` with
 --- the method's result fields (a created object — in `daemon` mode its
@@ -319,39 +329,75 @@ end
 -- Maintenance/1
 -- ---------------------------------------------------------------------------
 
---- `{ target, confirmed }`: `target` exactly one of `{ profile }`,
---- `{ unit }`, `{ build_dir }` (an orphaned BuildDir), `{ stray_dir }` (the
---- path as listed), `{ orphans = true }`, `{ project }`; `confirmed` (C0)
---- what the user accepted — the profile's DeletionPlan, the project's
---- removal context, the orphan cleanup context (`orphaned_configs`,
---- `stray_dirs`). `cb` runs when the deletion ended; a `build_dir` outcome
---- carries `report` (`kept`).
-CALLS["Maintenance/1.execute_deletion"] = function(ws, p, cb)
-    local t = p.target or {}
-    if t.profile then
-        require("loomworks").execute_deletion(p.confirmed, { deactivate_profile = t.profile },
-            function() cb(outcome(true)) end)
-    elseif t.unit then
-        t.unit:delete(function() cb(outcome(true)) end)
-    elseif t.build_dir then
-        local report = {}
-        ws:delete_orphaned_build_dir(t.build_dir.rel_path, nil, { report = report })
-            :next(function(ok) cb(outcome(ok == true, nil, { report = report })) end)
-            :catch(function(err) cb(outcome(false, tostring(err))) end)
-    elseif t.stray_dir then
-        wv().execute_delete_stray_dir(ws, t.stray_dir, function(ok, err) cb(outcome(ok, err)) end)
-    elseif t.orphans then
-        wv().execute_orphan_cleanup(ws, p.confirmed.orphaned_configs, p.confirmed.stray_dirs,
-            function(ok) cb(outcome(ok)) end)
-    elseif t.project then
-        wv().execute_remove_project(ws, t.project, p.confirmed, function(ok, err) cb(outcome(ok, err)) end)
-    else
-        error("loomworks.ui.model_calls: Maintenance/1.execute_deletion without a target", 3)
+--- The deletion targets (API.md §22): exactly one of `profile` (a profile
+--- row), `unit` (a profile's unit row), `build_dir` (an orphaned entry's
+--- row), `project` (a project row), `stray_dir` (the path exactly as the view
+--- lists it) or `orphans = true`.
+local TARGETS = { "profile", "unit", "build_dir", "stray_dir", "orphans", "project" }
+
+--- The one kind `t` names, or nil when it names none or several.
+--- @param t table|nil
+--- @return string|nil
+local function target_kind(t)
+    local kind
+    for _, k in ipairs(TARGETS) do
+        if type(t) == "table" and t[k] ~= nil and t[k] ~= false then
+            if kind then return nil end
+            kind = k
+        end
     end
+    return kind
 end
-CALLS["Maintenance/1.nuke"] = function(_, p, cb)
-    require("loomworks").nuke_cache(p.root)
-    cb(outcome(true))
+
+--- A deletion target's objects in-process (the rows' bound objects:
+--- loomworks.deletion_plan's target shape), or nil + the refusal.
+--- @param t table|nil
+--- @return table|nil target, table|nil refusal
+local function deletion_object(t)
+    local kind = target_kind(t)
+    local function no(what)
+        return nil, { outcome = "refused", message = "no " .. what .. " (not a row of the workspace view)" }
+    end
+    if not kind then
+        return nil, { outcome = "refused", message = "a deletion target is exactly one of profile, unit, "
+            .. "build_dir, stray_dir, orphans, project" }
+    end
+    if kind == "stray_dir" then
+        if type(t.stray_dir) ~= "string" then return no("stray directory") end
+        return { stray_dir = t.stray_dir }
+    elseif kind == "orphans" then
+        return { orphans = true }
+    end
+    local o = object(t[kind])
+    if kind == "unit" and o and not o.mark_deleting then o = o._config_unit end -- a unit row's project-in-profile
+    if kind == "build_dir" and o and getmetatable(o) == nil then o = o.build_dir_obj end -- an orphaned entry
+    if o == nil then return no(kind == "build_dir" and "build directory" or kind) end
+    return { [kind] = o }
+end
+
+--- `{ target, plan?, yes? }` (step 5o C2c-2): without `yes` the `confirm
+--- { lines, plan }` of what would be deleted (or refused: a stale target,
+--- nothing to delete — `stream = "out"`); with `yes` and the `plan` the
+--- confirmation returned, the deletion of exactly that, `cb` once it ended
+--- (loomworks.model_commands `execute_deletion`: planned, then the workspace
+--- operation lock and every build-directory lock, planned again under them,
+--- executed through the Workspace's deletion paths).
+CALLS["Maintenance/1.execute_deletion"] = function(ws, p, cb)
+    local target, err = deletion_object(p.target)
+    if not target then return cb(err) end
+    if p.yes and p.plan == nil then
+        return cb({ outcome = "refused", message = "a deletion is confirmed with the plan it listed" })
+    end
+    wv().execute_deletion(ws, target, p.plan, p.yes == true, cb)
+end
+--- `{ plan?, yes? }`: without `yes` the `confirm` listing what the nuke
+--- removes; with it and the plan, the nuke of the workspace (its root: the
+--- loaded workspace's, else the refused load's; never a param).
+CALLS["Maintenance/1.nuke"] = function(ws, p, cb)
+    if p.yes and p.plan == nil then
+        return cb({ outcome = "refused", message = "a nuke is confirmed with the plan it listed" })
+    end
+    cb(wv().nuke(ws, p.plan, p.yes == true))
 end
 
 -- ---------------------------------------------------------------------------
@@ -378,6 +424,7 @@ local VERB = {
     ["Projects/1.type_config_set"] = "project field",
     ["Sdks/1.detect"] = "SDK detection", ["Sdks/1.add"] = "SDK", ["Sdks/1.remove"] = "SDK",
     ["Toolchains/1.rescan"] = "toolchain detection",
+    ["Maintenance/1.execute_deletion"] = "deletion", ["Maintenance/1.nuke"] = "nuke",
 }
 
 --- A refused outcome of `method` with `why`.
@@ -411,7 +458,7 @@ local function send(ws, method, args, cb, shape)
         if r.outcome == "degraded" then return cb(refusal(method, obs:refusal(method))) end
         if res and res.outcome == "refused" then
             local out = refusal(method, res.message)
-            out.notes, out.note_roles = res.notes, res.note_roles
+            out.notes, out.note_roles, out.stream = res.notes, res.note_roles, res.stream
             return cb(out)
         end
         if res and res.outcome == "declined" then
@@ -607,6 +654,152 @@ by_ref("Sdks/1.add", {}, { "provider", "path" })
 by_ref("Sdks/1.remove", { { "sdk", "SDK" } })
 ROUTED["Toolchains/1.rescan"] = function(ws, _, cb) send(ws, "Toolchains/1.rescan", {}, cb) end
 
+-- (step 5o C2c-2) The deletions and the nuke: a confirmation (a plain call
+-- answering `confirm` or `refused`), then — confirmed — a task the editor
+-- owns, followed to its end.
+
+--- Send a confirmed `method` with `args` to the workspace daemon of `ws` as
+--- a call whose task the editor owns (Observer:start_owned) and follow it:
+--- `cb` once, at its `done` — `ok` for exit 0 (DELETE OK), else a refusal
+--- naming the task's end (`delete stopped: …`, a held lock's holder, a
+--- failed removal) — or at once when nothing ran: the method not carried
+--- now, the daemon's `refused` / `declined`, a method it lacks, a failed
+--- call. Never at the acceptance; nothing runs in-process.
+--- @param ws loomworks.Workspace|nil
+--- @param method string
+--- @param args table
+--- @param cb fun(r: table)
+local function follow(ws, method, args, cb)
+    local eo = require("loomworks.daemon.editor_ops")
+    local obs = eo.carrier(method, ws)
+    if not obs then
+        local _, mode_obs = eo.daemon_of(ws)
+        return cb(refusal(method, mode_obs and mode_obs.state ~= "stopped" and mode_obs:refusal(method)
+            or "the workspace is no longer loaded"))
+    end
+    obs:start_owned(method, args, {
+        on_reply = function(r)
+            if r.outcome == "accepted" then return end -- its `done` answers
+            if r.outcome == "degraded" then return cb(refusal(method, obs:refusal(method))) end
+            if r.outcome == "refused" then return cb(refusal(method, r.message)) end
+            if r.outcome == "declined" then
+                return cb(refusal(method, "the workspace daemon declined it (" .. tostring(r.reason) .. ")"))
+            end
+            cb(refusal(method, "the call to the workspace daemon failed: " .. tostring(r.reason or r.outcome)))
+        end,
+        on_done = function(task, reason)
+            if reason then return cb(refusal(method, reason)) end
+            if task and task.exit_code == 0 then return cb({ outcome = "ok" }) end
+            cb(refusal(method, task and task.error
+                or ("its task ended with exit " .. tostring(task and task.exit_code))))
+        end,
+    })
+end
+
+--- A deletion target as the wire's (API.md §22): a row's id (`{ id }`; a
+--- unit row's `unit_id`), the stray path exactly as the view listed it, or
+--- `orphans`; nil + the refusal of a row without an id (never by its key).
+--- @param method string
+--- @param t table|nil
+--- @return table|nil target, table|nil refusal
+local function wire_target(method, t)
+    local kind = target_kind(t)
+    if not kind then
+        return nil, refusal(method, "a deletion target is exactly one of profile, unit, build_dir, stray_dir, "
+            .. "orphans, project")
+    end
+    if kind == "stray_dir" then
+        if type(t.stray_dir) ~= "string" then return nil, refusal(method, "no stray directory") end
+        return { stray_dir = t.stray_dir } -- verbatim: the daemon matches it against its stray set
+    elseif kind == "orphans" then
+        return { orphans = true }
+    end
+    local row = type(t[kind]) == "table" and (t[kind]._row or t[kind]) or nil
+    local id = nil
+    if row then
+        if kind == "unit" then id = row.unit_id else id = row.id end
+    end
+    if id == nil then
+        local what = ({ unit = "configuration unit", build_dir = "build directory" })[kind] or kind
+        return nil, refusal(method, "no " .. what .. " id (not a row of the workspace view)")
+    end
+    return { [kind] = { id = id } }
+end
+
+--- The editor's own running tasks a confirmed deletion of `t` (its rows)
+--- would meet on a build-directory lock: a profile's (by the profile the
+--- task's `start` names) and any task on one of the target's build
+--- directories (a profile's or a unit row's), or a project's (a task naming
+--- a unit of it); none for orphaned and stray directories (no live build
+--- uses them; the daemon refuses one that does).
+--- @param t table
+--- @return fun(task: loomworks.RemoteTask|nil): boolean
+local function deletion_tasks(t)
+    local kind = target_kind(t)
+    local row = kind and type(t[kind]) == "table" and (t[kind]._row or t[kind]) or {}
+    local norm = function(d) return vim.fs.normalize(d):lower() end
+    local dirs, project, profile = {}, nil, nil
+    if kind == "profile" then
+        profile = row.key
+        for _, u in ipairs(row.units or {}) do if u.build_dir then dirs[norm(u.build_dir)] = true end end
+    elseif kind == "unit" then
+        if row.build_dir then dirs[norm(row.build_dir)] = true end
+    elseif kind == "project" then
+        project = row.key
+    end
+    return function(task)
+        if not task then return false end
+        if profile ~= nil and task.profile_name == profile then return true end
+        for _, tu in ipairs(task.units or {}) do
+            if project ~= nil and tu.project == project then return true end
+            local d = tu.unit and tu.unit.build_dir_value
+            if d and dirs[norm(d)] then return true end
+        end
+        return false
+    end
+end
+
+--- Without `yes` the daemon's confirmation; with it (and the `plan` the
+--- confirmation returned — never `yes` alone), the editor's own tasks on the
+--- target cancelled first (as a clean does), then the deletion, followed.
+ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
+    local method = "Maintenance/1.execute_deletion"
+    local target, err = wire_target(method, p.target)
+    if not target then return cb(err) end
+    if not p.yes then
+        return send(ws, method, { target = target }, function(r)
+            -- The editor's own running tasks the confirmed deletion cancels
+            -- first (spec/ui.md §1.10), after the daemon's listing.
+            local obs = r.outcome == "confirm" and require("loomworks.daemon.observer").of(ws) or nil
+            local match, stopped = deletion_tasks(p.target), {}
+            for _, call in ipairs(obs and obs:owned_calls() or {}) do
+                if call.task and match(call.task) then stopped[#stopped + 1] = "  " .. tostring(call.task.name) end
+            end
+            if #stopped > 0 then
+                table.sort(stopped)
+                r.lines = vim.list_extend(vim.list_extend({}, r.lines or {}), { "Will stop running tasks:" })
+                vim.list_extend(r.lines, stopped)
+            end
+            cb(r)
+        end)
+    end
+    if p.plan == nil then return cb(refusal(method, "a deletion is confirmed with the plan it listed")) end
+    require("loomworks.daemon.editor_ops").cancel_owned_matching(ws, deletion_tasks(p.target), function()
+        follow(ws, method, { target = target, plan = p.plan, yes = true }, cb)
+    end)
+end
+--- The daemon nukes its own workspace: no root is ever sent. Confirmed,
+--- every task the editor owns is cancelled first (the daemon refuses while
+--- any of its tasks runs; the in-process nuke stops the editor's own).
+ROUTED["Maintenance/1.nuke"] = function(ws, p, cb)
+    local method = "Maintenance/1.nuke"
+    if not p.yes then return send(ws, method, {}, cb) end
+    if p.plan == nil then return cb(refusal(method, "a nuke is confirmed with the plan it listed")) end
+    require("loomworks.daemon.editor_ops").cancel_owned_matching(ws, function() return true end, function()
+        follow(ws, method, { plan = p.plan, yes = true }, cb)
+    end)
+end
+
 --- The methods the status page calls, sorted (tests).
 --- @return string[]
 function M.methods()
@@ -626,8 +819,10 @@ end
 
 --- Call a model method of the workspace `ws` (nil: the loaded workspace,
 --- loomworks.daemon.observer.loaded_workspace).
---- In `daemon` mode a routed method is a call to the workspace daemon; any
---- other runs its in-process body. `cb(r)` gets its outcome (may be nil).
+--- In `daemon` mode it is a call to the workspace daemon (every method is
+--- routed, step 5o C2c-2; a guard checks it, tests/ui_model_calls_spec.lua);
+--- in the `in-process` mode its in-process body runs. `cb(r)` gets its
+--- outcome (may be nil).
 --- @param ws loomworks.Workspace|nil
 --- @param method string `"<Interface>/<version>.<method>"`
 --- @param params table|nil
@@ -638,65 +833,15 @@ function M.call(ws, method, params, cb)
     params, cb = params or {}, cb or function() end
     -- (No workspace given: the loaded one. Its mode is its runtime
     -- selection's — never whether an observer is attached: in `daemon` mode
-    -- with its observer gone a routed method is refused, not run in-process.)
+    -- with its observer gone a method is refused, not run in-process.)
     local target = ws or require("loomworks.daemon.observer").loaded_workspace()
-    local daemon, obs = require("loomworks.daemon.editor_ops").daemon_of(target)
-    local route = ROUTED[method]
-    if route then
-        if daemon then return route(target, params, cb) end
-        return fn(target, params, cb)
+    local daemon = require("loomworks.daemon.editor_ops").daemon_of(target)
+    if daemon then
+        local route = ROUTED[method]
+        if not route then error("loomworks.ui.model_calls: " .. method .. " is not routed to the daemon", 2) end
+        return route(target, params, cb)
     end
-    -- Not routed yet (until C2c-2), run in-process in `daemon` mode too:
-    -- the daemon's view does not know this write until a freshness `get`
-    -- sent once it ended is answered (the status buffer's 'modified',
-    -- status_source.modified) — stale from its start, the `get` sent when
-    -- its outcome arrives (an async write lands later than `fn` returns).
-    if not (daemon and obs) then return fn(target, params, cb) end
-    obs:in_process_write_started()
-    -- This write ends exactly once (Observer:in_process_write: the freshness
-    -- `get` sent, the mark ended once it is answered with no write open): by
-    -- its answer, or by its body throwing before answering (refused, the
-    -- error its message). Never by a timer: a slow body (a long deletion)
-    -- keeps the mark until it answers, so the buffer's 'modified' never
-    -- reports the daemon's view alone while it runs. A body that never
-    -- answers keeps it until the observer stops (the editor's model's flag,
-    -- the safe side). A body that threw and answers later still landed then:
-    -- one more `get` (Observer:in_process_write(true)), no second `cb`.
-    local write = { answered = false, threw = false }
-    local function answer(r)
-        if write.answered then
-            if write.threw then
-                write.threw = false
-                obs:in_process_write(true)
-            end
-            return
-        end
-        write.answered = true
-        obs:in_process_write()
-        cb(r)
-    end
-    local ok, err = xpcall(fn, function(e)
-        return { message = e, traceback = debug.traceback(tostring(e), 2) }
-    end, target, params, answer)
-    if ok then return end
-    local what = "loomworks: " .. (VERB[method] or method) .. ": "
-    if write.answered then
-        vim.notify(what .. tostring(err.traceback), vim.log.levels.ERROR)
-        return
-    end
-    -- The refusal (its message the error) is what the page shows; the
-    -- traceback goes to the workspace's log (without one, a DEBUG notify, so
-    -- it is never dropped silently). Marked thrown before the
-    -- refusal is answered, so a late answer still sends its `get` even when
-    -- the page's callback throws on the refusal (that error is the caller's).
-    local log = target and target._core and target._core._deps and target._core._deps.log
-    if log then
-        log:error("%s%s", what, tostring(err.traceback))
-    else
-        vim.notify(what .. tostring(err.traceback), vim.log.levels.DEBUG)
-    end
-    write.threw = true
-    answer(refusal(method, err.message))
+    return fn(target, params, cb)
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a

@@ -73,13 +73,18 @@ describe("ui.model_calls", function()
                 remove_sdk = function() return false, "in use" end,
                 sdk_detect = function() return { outcome = "ok", providers = { { id = "ohos", label = "OHOS",
                     found = { { path = "/sdk", version = "5" } } } } } end,
-                execute_delete_stray_dir = function(_, _, done) done(false, nil) end,
-                execute_orphan_cleanup = function(_, _, _, done) done(true) end,
-                execute_remove_project = function(_, _, _, done) done(false, "locked") end,
+                -- Confirms without `yes`; with it, ends (ok) through `cb`.
+                execute_deletion = function(_, _, plan, yes, cb)
+                    if not yes then return cb({ outcome = "confirm", lines = { "Delete x:" }, plan = "T" }) end
+                    cb({ outcome = plan == "T" and "ok" or "refused" })
+                end,
+                nuke = function(_, _, yes)
+                    if not yes then return { outcome = "confirm", lines = { "Will delete" }, plan = "N" } end
+                    return { outcome = "ok" }
+                end,
             })
             package.loaded["loomworks"] = recorder({
                 trust_user_prefs = function() return "trusted" end,
-                execute_deletion = function(_, _, done) done() end,
             })
         end)
         after_each(function()
@@ -161,38 +166,44 @@ describe("ui.model_calls", function()
             assert.equals("refused", r[6].outcome)
         end)
 
-        it("runs each deletion target's in-process deletion and reports when it ended", function()
-            local plan, ctx = {}, { orphaned_configs = { 1 }, stray_dirs = { 2 } }
+        it("resolves each deletion target's row to its object; confirm, then the deletion with its plan (step 5o C2c-2)", function()
+            local BD, UNIT = {}, setmetatable({ mark_deleting = function() end }, {})
+            local OROW, UROW, PRROW = { key = "gone/Debug" }, { project = "p" }, { key = "app" }
+            ss.bind(OROW, { build_dir_obj = BD }); ss.bind(UROW, { _config_unit = UNIT }); ss.bind(PRROW, PR)
+            local c = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW } })
+            assert.same({ outcome = "confirm", lines = { "Delete x:" }, plan = "T" }, c)
             local r = {}
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = P }, confirmed = plan })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { stray_dir = "/w/.nvim/build/x" } })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { orphans = true }, confirmed = ctx })
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { project = PR }, confirmed = ctx })
-            local unit_done = false
-            local unit = { delete = function(_, done) unit_done = true; done() end }
-            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { unit = unit } })
-            assert.equals("execute_deletion", calls[1][1])
-            assert.equals(plan, calls[1][2])
-            assert.same({ deactivate_profile = P }, calls[1][3])
-            assert.same({ "execute_delete_stray_dir", WS, "/w/.nvim/build/x" }, { calls[2][1], calls[2][2], calls[2][3] })
-            assert.same({ "execute_orphan_cleanup", WS, { 1 }, { 2 } }, { calls[3][1], calls[3][2], calls[3][3], calls[3][4] })
-            assert.same({ "execute_remove_project", WS, PR, ctx }, { calls[4][1], calls[4][2], calls[4][3], calls[4][4] })
-            assert.is_true(unit_done)
-            -- An orphaned BuildDir: the workspace's deletion of it, its report.
-            local seen
-            local fake_ws = { delete_orphaned_build_dir = function(_, key, on_done, opts)
-                seen = { key, on_done }
-                opts.report.kept = { { dir = "d", why = "shared" } }
-                local f = {}
-                function f:next(fn) fn(true); return f end
-                function f:catch() return f end
-                return f
-            end }
-            local got = run(fake_ws, "Maintenance/1.execute_deletion", { target = { build_dir = { rel_path = "build/x" } } })
-            assert.same({ "build/x" }, seen)
-            assert.same({ outcome = "ok", report = { kept = { { dir = "d", why = "shared" } } } }, got)
-            assert.same({ { outcome = "ok" }, { outcome = "refused" }, { outcome = "ok" },
-                { outcome = "refused", message = "locked" }, { outcome = "ok" } }, r)
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW }, plan = "T", yes = true })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { unit = UROW }, plan = "T", yes = true })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { build_dir = OROW }, plan = "T", yes = true })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { project = PRROW }, plan = "T", yes = true })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion",
+                { target = { stray_dir = "/w/.nvim/build/x" }, plan = "T", yes = true })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { orphans = true }, plan = "old", yes = true })
+            assert.same({ { outcome = "ok" }, { outcome = "ok" }, { outcome = "ok" }, { outcome = "ok" },
+                { outcome = "ok" }, { outcome = "refused" } }, r)
+            local targets = {}
+            for i, call in ipairs(calls) do
+                assert.equals("execute_deletion", call[1])
+                assert.equals(WS, call[2])
+                targets[i] = call[3]
+            end
+            assert.same({ { profile = P }, { profile = P }, { unit = UNIT }, { build_dir = BD }, { project = PR },
+                { stray_dir = "/w/.nvim/build/x" }, { orphans = true } }, targets)
+            assert.same({ nil, false }, { calls[1][4], calls[1][5] })
+            assert.same({ "T", true }, { calls[2][4], calls[2][5] })
+        end)
+
+        it("refuses a deletion of an unbound row, of no single target, and `yes` without the plan; nothing runs", function()
+            local r = {}
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = { key = "p" } } })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { unit = { project = "p" } } })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = {} })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW, orphans = true } })
+            r[#r + 1] = run(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW }, yes = true })
+            r[#r + 1] = run(WS, "Maintenance/1.nuke", { yes = true })
+            for i, x in ipairs(r) do assert.equals("refused", x.outcome, i) end
+            assert.same({}, calls)
         end)
 
         it("detects SDKs; an SDK row the in-process view did not bind is refused, nothing removed (step 5o C2c-1)", function()
@@ -204,11 +215,13 @@ describe("ui.model_calls", function()
             assert.equals(1, #calls)
         end)
 
-        it("runs the trust review, the rescan and the nuke as before", function()
+        it("runs the trust review and the rescan as before; the nuke confirms, then runs with its plan", function()
             assert.same({ outcome = "ok", trust = "trusted" }, run(WS, "Workspace/1.trust_accept", {}))
             run(WS, "Toolchains/1.rescan", {})
-            run(nil, "Maintenance/1.nuke", { root = "/w" })
-            assert.same({ { "trust_user_prefs" }, { "rescan_tools" }, { "nuke_cache", "/w" } }, calls)
+            assert.same({ outcome = "confirm", lines = { "Will delete" }, plan = "N" }, run(nil, "Maintenance/1.nuke", {}))
+            assert.same({ outcome = "ok" }, run(nil, "Maintenance/1.nuke", { plan = "N", yes = true, root = "/x" }))
+            assert.same({ { "trust_user_prefs" }, { "rescan_tools" }, { "nuke", nil, nil, false },
+                { "nuke", nil, "N", true } }, calls)
         end)
 
         it("names an unbound row's entity by nothing (refused by the command), never by its key", function()
@@ -298,6 +311,174 @@ describe("ui.model_calls", function()
         end)
     end)
 
+    -- Step 5o C2c-2: in `daemon` mode Maintenance/1's deletions and nuke are
+    -- calls to the workspace daemon (a fake observer here; the real one in
+    -- tests/daemon_model_calls_e2e_spec.lua): the confirmation a plain call,
+    -- the confirmed one a task the editor owns, followed to its `done`.
+    describe("daemon mode: deletions and the nuke", function()
+        local saved, sent, owned, carried, answer, cancelled_by
+        local WS = { root = "/w" }
+        local obs = { state = "connected" }
+        function obs:request(method, args, cb)
+            sent[#sent + 1] = { method, args }
+            cb({ outcome = "ok", result = answer or { outcome = "confirm", lines = { "Delete x:" }, plan = "T" } })
+        end
+        function obs:start_owned(method, args, h)
+            owned[#owned + 1] = { method = method, args = args, h = h }
+        end
+        function obs:refusal(method) return "the daemon does not carry " .. method end
+        before_each(function()
+            sent, owned, carried, answer, cancelled_by = {}, {}, true, nil, nil
+            saved = { package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
+                package.loaded["loomworks"] }
+            package.loaded["loomworks.daemon.editor_ops"] = {
+                daemon_of = function() return true, carried and obs or nil end,
+                carrier = function() return carried and obs or nil end,
+                cancel_owned_matching = function(ws, match, done)
+                    assert.equals(WS, ws)
+                    cancelled_by = match
+                    done()
+                end,
+            }
+            -- No in-process body may run.
+            local function never(_, name) return function() error("in-process " .. name .. " in daemon mode") end end
+            package.loaded["loomworks.workspace_view"] = setmetatable({}, { __index = never })
+            package.loaded["loomworks"] = setmetatable({}, { __index = never })
+        end)
+        after_each(function()
+            package.loaded["loomworks.daemon.editor_ops"], package.loaded["loomworks.workspace_view"],
+                package.loaded["loomworks"] = saved[1], saved[2], saved[3]
+        end)
+        local function run(method, params)
+            local got, n = nil, 0
+            model.call(WS, method, params, function(r) got = r; n = n + 1 end)
+            return got, function() return n end
+        end
+        local PROW = { id = "1:1", key = "dev", units = { { project = "app", unit_id = "2:1", build_dir = "/w/b/Dbg" } } }
+
+        it("routes execute_deletion and nuke; every status-page method is routed", function()
+            assert.is_true(model.routed("Maintenance/1.execute_deletion"))
+            assert.is_true(model.routed("Maintenance/1.nuke"))
+            -- (step 5o C2c-2) In `daemon` mode no status-page method runs in-process.
+            for _, m in ipairs(model.methods()) do assert.is_true(model.routed(m), m) end
+        end)
+
+        it("asks the confirmation by the rows' ids, the stray path verbatim; never a plan or yes", function()
+            local SROW = { key = "s", unit_id = nil }
+            local c = run("Maintenance/1.execute_deletion", { target = { profile = PROW } })
+            assert.same({ outcome = "confirm", lines = { "Delete x:" }, plan = "T" }, c)
+            run("Maintenance/1.execute_deletion", { target = { unit = PROW.units[1] } })
+            run("Maintenance/1.execute_deletion", { target = { build_dir = { id = "3:1", key = "gone/Debug" } } })
+            run("Maintenance/1.execute_deletion", { target = { project = { id = "4:1", key = "app" } } })
+            run("Maintenance/1.execute_deletion", { target = { stray_dir = "C:/W/.nvim/Build/X" } })
+            run("Maintenance/1.execute_deletion", { target = { orphans = true } })
+            run("Maintenance/1.nuke", { root = "/elsewhere" })
+            assert.same({
+                { "Maintenance/1.execute_deletion", { target = { profile = { id = "1:1" } } } },
+                { "Maintenance/1.execute_deletion", { target = { unit = { id = "2:1" } } } },
+                { "Maintenance/1.execute_deletion", { target = { build_dir = { id = "3:1" } } } },
+                { "Maintenance/1.execute_deletion", { target = { project = { id = "4:1" } } } },
+                { "Maintenance/1.execute_deletion", { target = { stray_dir = "C:/W/.nvim/Build/X" } } },
+                { "Maintenance/1.execute_deletion", { target = { orphans = true } } },
+                { "Maintenance/1.nuke", {} },
+            }, sent)
+            assert.same({}, owned)
+            assert.is_nil(SROW.unit_id)
+        end)
+
+        it("refuses an id-less row (never by its key), no single target, and yes without the plan; nothing sent", function()
+            local r = {}
+            r[#r + 1] = run("Maintenance/1.execute_deletion", { target = { profile = { key = "dev" } } })
+            r[#r + 1] = run("Maintenance/1.execute_deletion", { target = { unit = { project = "app", id = "x" } } })
+            r[#r + 1] = run("Maintenance/1.execute_deletion", { target = { project = { key = "app" } } })
+            r[#r + 1] = run("Maintenance/1.execute_deletion", { target = { build_dir = { key = "gone/Debug" } } })
+            r[#r + 1] = run("Maintenance/1.execute_deletion", { target = { profile = PROW, orphans = true } })
+            r[#r + 1] = run("Maintenance/1.execute_deletion", { target = { profile = PROW }, yes = true })
+            r[#r + 1] = run("Maintenance/1.nuke", { yes = true })
+            for i, x in ipairs(r) do assert.equals("refused", x.outcome, i) end
+            assert.truthy(r[1].message:find("no profile id", 1, true), r[1].message)
+            assert.truthy(r[2].message:find("no configuration unit id", 1, true), r[2].message)
+            assert.same({}, sent)
+            assert.same({}, owned)
+        end)
+
+        it("a refusal keeps its stream (nothing to delete); a call the daemon cannot carry is refused", function()
+            answer = { outcome = "refused", message = "nothing to delete", stream = "out", exit_code = 0 }
+            local r = run("Maintenance/1.execute_deletion", { target = { orphans = true } })
+            assert.same({ "refused", "deletion: nothing to delete", "out" }, { r.outcome, r.message, r.stream })
+            carried = false
+            sent = {}
+            r = run("Maintenance/1.execute_deletion", { target = { orphans = true } })
+            assert.equals("refused", r.outcome)
+            r = run("Maintenance/1.nuke", { plan = "N", yes = true })
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("^nuke: the workspace is no longer loaded"), r.message)
+            assert.same({}, sent)
+            assert.same({}, owned)
+        end)
+
+        it("a confirmed deletion is a task the editor owns: answered only at its done", function()
+            local r, n = nil, 0
+            model.call(WS, "Maintenance/1.execute_deletion", { target = { profile = PROW }, plan = "T", yes = true },
+                function(x) r = x; n = n + 1 end)
+            assert.equals(1, #owned)
+            assert.equals("Maintenance/1.execute_deletion", owned[1].method)
+            assert.same({ target = { profile = { id = "1:1" } }, plan = "T", yes = true }, owned[1].args)
+            owned[1].h.on_reply({ outcome = "accepted", task_id = 7 })
+            assert.equals(0, n)
+            owned[1].h.on_done({ exit_code = 0 })
+            assert.same({ outcome = "ok" }, r)
+            assert.equals(1, n)
+            local got
+            model.call(WS, "Maintenance/1.execute_deletion", { target = { orphans = true }, plan = "T", yes = true },
+                function(x) got = x end)
+            owned[2].h.on_reply({ outcome = "accepted", task_id = 8 })
+            assert.is_nil(got)
+            owned[2].h.on_done({ exit_code = 1, error = "delete stopped: cancelled" })
+            assert.same({ "refused", "deletion: delete stopped: cancelled" }, { got.outcome, got.message })
+        end)
+
+        it("reports a failed task, a lost connection, a refusal, a decline and a degraded method as refused", function()
+            local outs = {}
+            local function start()
+                model.call(WS, "Maintenance/1.nuke", { plan = "N", yes = true }, function(x) outs[#outs + 1] = x end)
+                return owned[#owned].h
+            end
+            start().on_done({ exit_code = 1, error = "cannot nuke: a build holds it" })
+            start().on_done(nil, "the workspace daemon disconnected")
+            start().on_reply({ outcome = "refused", message = "the build directories to delete changed" })
+            start().on_reply({ outcome = "declined", reason = "retiring" })
+            start().on_reply({ outcome = "degraded", reason = "unknown_method" })
+            start().on_reply({ outcome = "failed", reason = "timeout" })
+            assert.equals(6, #outs)
+            for _, o in ipairs(outs) do assert.equals("refused", o.outcome) end
+            assert.equals("nuke: cannot nuke: a build holds it", outs[1].message)
+            assert.equals("nuke: the workspace daemon disconnected", outs[2].message)
+            assert.equals("nuke: the build directories to delete changed", outs[3].message)
+            for _, o in ipairs(owned) do assert.same({ plan = "N", yes = true }, o.args) end
+        end)
+
+        it("cancels the editor's own tasks on the target first: the profile's, its build dirs', the project's; all for a nuke", function()
+            local function task(t) t.units = t.units or {}; return t end
+            local of_profile = task({ profile_name = "dev" })
+            local on_dir = task({ units = { { project = "app", unit = { build_dir_value = "/W/B/Dbg" } } } })
+            local other = task({ profile_name = "rel", units = { { project = "lib", unit = { build_dir_value = "/w/b/R" } } } })
+            local on_app = task({ units = { { project = "app" } } })
+            run("Maintenance/1.execute_deletion", { target = { profile = PROW }, plan = "T", yes = true })
+            assert.same({ true, true, false, false }, { cancelled_by(of_profile), cancelled_by(on_dir),
+                cancelled_by(other), cancelled_by(nil) })
+            run("Maintenance/1.execute_deletion", { target = { unit = PROW.units[1] }, plan = "T", yes = true })
+            assert.same({ false, true, false }, { cancelled_by(of_profile), cancelled_by(on_dir), cancelled_by(other) })
+            run("Maintenance/1.execute_deletion", { target = { project = { id = "4:1", key = "app" } }, plan = "T", yes = true })
+            assert.same({ true, false, false }, { cancelled_by(on_app), cancelled_by(other), cancelled_by(of_profile) })
+            run("Maintenance/1.execute_deletion", { target = { orphans = true }, plan = "T", yes = true })
+            assert.same({ false, false }, { cancelled_by(on_app), cancelled_by(of_profile) })
+            run("Maintenance/1.nuke", { plan = "N", yes = true })
+            assert.same({ true, true }, { cancelled_by(other), cancelled_by(nil) })
+            assert.equals(5, #owned)
+        end)
+    end)
+
     -- Step 5o C2c-1: the SDK section's picker lists Sdks/1.detect's
     -- installations (version, the provider's prompt), makes a typed path
     -- absolute, and offers `D` on a row only when actionable.
@@ -377,6 +558,73 @@ describe("ui.model_calls", function()
         end)
     end)
 
+    it("a deletion's confirmation shows the listing; `y` sends exactly its plan with yes; success only once ended (5o C2c-2)", function()
+        local actions = require("loomworks.ui.actions")
+        local saved_call, saved_dialog, saved_notify = model.call, package.loaded["loomworks.ui.dialog"], vim.notify
+        local sent, shown, notes, finish = {}, nil, {}, nil
+        model.call = function(ws, method, params, cb)
+            sent[#sent + 1] = { ws, method, params }
+            if not params.yes then return cb({ outcome = "confirm", lines = { "Delete project 'app':" }, plan = "P1" }) end
+            finish = cb
+        end
+        package.loaded["loomworks.ui.dialog"] = { show = function(o) shown = o end }
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg, level } end
+        local ok, err = pcall(function()
+            local WS, PROW = {}, { id = "4:1", key = "app" }
+            actions.delete_project(PROW, WS)()
+            assert.is_table(shown)
+            assert.truthy(table.concat(shown.lines, " "):find("Delete project 'app':", 1, true))
+            shown.keys.y({ close = function() end })
+            assert.same({ { WS, "Maintenance/1.execute_deletion", { target = { project = PROW } } },
+                { WS, "Maintenance/1.execute_deletion", { target = { project = PROW }, plan = "P1", yes = true } } }, sent)
+            assert.same({}, notes)
+            finish({ outcome = "ok" })
+            assert.same({ { "loomworks: project 'app' removed", vim.log.levels.INFO } }, notes)
+            -- Nothing to delete is information, not an error; no dialog.
+            shown, notes = nil, {}
+            model.call = function(_, _, _, cb)
+                cb({ outcome = "refused", message = "deletion: nothing to delete", stream = "out" })
+            end
+            actions.delete_orphans(WS)()
+            assert.is_nil(shown)
+            assert.same({ { "loomworks: deletion: nothing to delete", vim.log.levels.INFO } }, notes)
+        end)
+        model.call, package.loaded["loomworks.ui.dialog"], vim.notify = saved_call, saved_dialog, saved_notify
+        assert(ok, err)
+    end)
+
+    it("editor_ops.cancel_owned_matching cancels the selected owned calls and waits for each to end (5o C2c-2)", function()
+        local eo = require("loomworks.daemon.editor_ops")
+        local saved = package.loaded["loomworks.daemon.observer"]
+        local ended, asked = {}, {}
+        local T1, T2 = { name = "a" }, { name = "b" }
+        local fake = {}
+        function fake:owned_calls() return { { id = 1, task = T1 }, { id = 2, task = T2 }, { id = 3 } } end
+        function fake:cancel_owned_id(id, cb) asked[#asked + 1] = id; ended[id] = cb end
+        package.loaded["loomworks.daemon.observer"] = { of = function() return fake end }
+        local ok, err = pcall(function()
+            local done = 0
+            eo.cancel_owned_matching({}, function(t) return t == T1 or t == nil end, function() done = done + 1 end)
+            table.sort(asked)
+            assert.same({ 1, 3 }, asked)
+            assert.equals(0, done)
+            ended[1](true)
+            assert.equals(0, done)
+            ended[3](true)
+            assert.equals(1, done)
+            -- Nothing selected (or no observer): done at once.
+            asked = {}
+            eo.cancel_owned_matching({}, function() return false end, function() done = done + 1 end)
+            assert.same({}, asked)
+            assert.equals(2, done)
+            package.loaded["loomworks.daemon.observer"] = { of = function() return nil end }
+            eo.cancel_owned_matching({}, function() return true end, function() done = done + 1 end)
+            assert.equals(3, done)
+        end)
+        package.loaded["loomworks.daemon.observer"] = saved
+        assert(ok, err)
+    end)
+
     it("reads an outcome as ok, err (a warn note of an ok is the error shown)", function()
         assert.same({ true }, { model.result({ outcome = "ok" }) })
         assert.same({ false, "no" }, { model.result({ outcome = "refused", message = "no" }) })
@@ -411,16 +659,10 @@ describe("ui.model_calls", function()
             ":map_variant%(", "%.set_lsp_option%(",
         })
         -- Recorded exceptions (file → the exact line), each with its reason:
-        -- the Projects section's project-row `D` removes only the project's
-        -- declaration, while the catalogue routes a project's removal through
-        -- Maintenance/1.execute_deletion { project }, which also deletes its
-        -- build directories and downgrades its profiles (the project
-        -- browser's removal) — open until it is decided which the row does.
-        -- The LSP section's options go through `lw.set_lsp_option`, which in
+        -- the LSP section's options go through `lw.set_lsp_option`, which in
         -- `daemon` mode is only `LspConfig/1.set_option` (editor_ops, step
         -- 5l) -- already a daemon call, not a catalogue method of the seam.
         local allowed = {
-            ["lua/loomworks/ui/sections/projects.lua"] = { ["local ok, err = ws:remove_project(proj)"] = true },
             ["lua/loomworks/ui/sections/lsp.lua"] = {
                 ['lw.set_lsp_option("clangd", "clang_tidy", not opts.clang_tidy)'] = true,
                 ['lw.set_lsp_option("clangd", "background_index",'] = true,

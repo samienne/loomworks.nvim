@@ -697,4 +697,103 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         package.loaded["loomworks.sdks.fake_c2c"] = nil
         assert(ok_, err_)
     end)
+
+    -- Step 5o C2c-2: Maintenance/1 — the confirmation a plain call, the
+    -- confirmed deletion a task the editor owns, its outcome at `done`.
+    it("Maintenance/1: an orphaned build dir and the project row's D by their ids; stale afterwards; none in-process", function()
+        local uv = vim.uv or vim.loop
+        local wv = require("loomworks.workspace_view")
+        local saved = { wv.execute_deletion, wv.nuke }
+        wv.execute_deletion = function() error("in-process deletion in daemon mode") end
+        wv.nuke = function() error("in-process nuke in daemon mode") end
+        local ok_, err_ = pcall(function()
+            serve()
+            local dws = srv.service.ws
+            -- An orphaned entry: a cache entry no configuration has, its tree on disk.
+            local dir = root .. "/.nvim/build/gone/Debug"
+            vim.fn.mkdir(dir .. "/sub", "p")
+            local fh = assert(io.open(dir .. "/sub/f.txt", "w")); fh:write("x"); fh:close()
+            local cache = dws:_serialize_cache()
+            cache.build_dirs = cache.build_dirs or {}
+            cache.build_dirs["gone/Debug"] = { project_key = "gone", config_key = "Debug", type = "shell",
+                variant = "Debug", state = "built", build_dir = dir }
+            dws:remerge(nil, cache)
+            dws:_save_cache()
+            obs:_own_write() -- a fresh read of the view
+            local orow
+            until_view(function(v)
+                for _, o in ipairs(v.orphaned and v.orphaned.configurations or {}) do
+                    if o.key == "gone/Debug" then orow = o end
+                end
+                return orow ~= nil
+            end)
+            assert.is_string(orow.id)
+            local c = call("Maintenance/1.execute_deletion", { target = { build_dir = orow } })
+            assert.equals("confirm", c.outcome, vim.inspect(c))
+            assert.is_string(c.plan)
+            assert.is_not_nil(uv.fs_stat(dir))
+            local r = call("Maintenance/1.execute_deletion", { target = { build_dir = orow }, plan = c.plan, yes = true })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.is_nil(uv.fs_stat(dir))
+            -- Its id is stale now: refused by the daemon, nothing run.
+            r = call("Maintenance/1.execute_deletion", { target = { build_dir = orow } })
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("stale", 1, true), r.message)
+
+            -- The project row's `D`: its build state, then its declaration.
+            local unit
+            for _, p in pairs(dws._profiles) do
+                if p.key == "dev" and not p._removed then unit = p:projects()[1]._config_unit end
+            end
+            local bd = assert(unit and unit:build_dir(), "the dev profile's unit has a build dir")
+            vim.fn.mkdir(bd, "p")
+            fh = assert(io.open(bd .. "/out.txt", "w")); fh:write("x"); fh:close()
+            local prow = assert(prow_of("app"))
+            c = call("Maintenance/1.execute_deletion", { target = { project = prow } })
+            assert.equals("confirm", c.outcome, vim.inspect(c))
+            assert.truthy(table.concat(c.lines, " "):find("Removes the project from the configuration.", 1, true),
+                vim.inspect(c.lines))
+            -- A changed plan is refused before anything is removed.
+            r = call("Maintenance/1.execute_deletion", { target = { project = prow }, plan = "x", yes = true })
+            assert.equals("refused", r.outcome)
+            assert.is_not_nil(uv.fs_stat(bd))
+            r = call("Maintenance/1.execute_deletion", { target = { project = prow }, plan = c.plan, yes = true })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.is_nil(uv.fs_stat(bd))
+            until_view(function() return row("projects", "app") == nil end)
+            for _, proj in pairs(dws._projects) do assert.not_equals("app", proj.key) end
+            r = call("Maintenance/1.execute_deletion", { target = { project = prow } })
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("^deletion: "), r.message)
+            assert.truthy(r.message:find("stale", 1, true), r.message)
+        end)
+        wv.execute_deletion, wv.nuke = saved[1], saved[2]
+        assert(ok_, err_)
+    end)
+
+    -- Step 5o C2c-2: the project row's `D` means the same in the deprecated
+    -- `in-process` mode (no observer): its build state, then its declaration.
+    it("in-process mode: the project row's D confirms, then deletes its build state and its declaration", function()
+        local uv = vim.uv or vim.loop
+        assert.is_nil(observer.of(ws))
+        local unit
+        for _, p in pairs(ws._profiles) do
+            if p.key == "dev" and not p._removed then unit = p:projects()[1]._config_unit end
+        end
+        local bd = assert(unit and unit:build_dir(), "the dev profile's unit has a build dir")
+        vim.fn.mkdir(bd, "p")
+        local fh = assert(io.open(bd .. "/out.txt", "w")); fh:write("x"); fh:close()
+        local prow
+        for _, x in ipairs(status_source.read(ws).view.projects) do
+            if x.key == "app" then prow = x end
+        end
+        assert.is_not_nil(prow)
+        local c = call("Maintenance/1.execute_deletion", { target = { project = prow } })
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        assert.is_not_nil(uv.fs_stat(bd))
+        local r = call("Maintenance/1.execute_deletion", { target = { project = prow }, plan = c.plan, yes = true })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.is_nil(uv.fs_stat(bd))
+        for _, proj in pairs(ws:get_projects()) do assert.not_equals("app", proj.key) end
+    end)
 end)

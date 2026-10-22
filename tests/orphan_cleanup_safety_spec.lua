@@ -336,33 +336,46 @@ describe("view deletion safety", function()
             after_each(function()
                 package.loaded["loomworks"], vim.ui.select, vim.notify = real_lw, real_select, real_notify
             end)
+            -- (step 5o C2c-2) The row the in-process view bound to the
+            -- entry, confirmed in its dialog.
+            local real_dialog
+            before_each(function()
+                real_dialog = package.loaded["loomworks.ui.dialog"]
+                package.loaded["loomworks.ui.dialog"] = {
+                    show = function(opts) opts.keys.y({ close = function() end }) end,
+                }
+            end)
+            after_each(function() package.loaded["loomworks.ui.dialog"] = real_dialog end)
             local function run_row()
                 local o = ws:get_orphaned_configs()[1]
-                actions.delete_orphaned_config(o)()
+                local row = { key = o.build_dir_key or o.config_key }
+                require("loomworks.status_source").bind(row, o)
+                actions.delete_orphaned_config(row, ws)()
                 assert.is_true(vim.wait(DONE_MS, function() return #notes > 0 end, 20), "no message")
                 return notes[#notes]
             end
 
-            it("says removed when the tree was removed", function()
-                add_orphan(ws, root)
+            it("reports the deletion once it ended", function()
+                local dir = add_orphan(ws, root)
                 local n = run_row()
-                assert.is_truthy(n.msg:find("removed", 1, true), n.msg)
+                assert.is_truthy(n.msg:find("orphaned entry deleted", 1, true), n.msg)
                 assert.equals(vim.log.levels.INFO, n.level)
+                assert.is_nil(uv.fs_stat(dir))
             end)
 
-            it("says kept when the tree holds a live build dir", function()
+            it("never claims the tree removed when it holds a live build dir (kept)", function()
                 add_orphan(ws, root, root .. "/.nvim/build/App")
                 local n = run_row()
-                assert.is_truthy(n.msg:find("kept", 1, true), n.msg)
-                assert.is_falsy(n.msg:find("orphaned build dir removed", 1, true), n.msg)
+                assert.is_falsy(n.msg:find("removed", 1, true), n.msg)
+                assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App"))
             end)
 
-            it("warns when the removal failed", function()
+            it("reports a failed removal as an error, never success", function()
                 add_orphan(ws, root)
                 io_mod.rm_rf_async = function(_, cb) cb(false, "boom") end
                 local n = run_row()
-                assert.equals(vim.log.levels.WARN, n.level, n.msg)
-                assert.is_truthy(n.msg:find("not removed", 1, true), n.msg)
+                assert.equals(vim.log.levels.ERROR, n.level, n.msg)
+                assert.is_falsy(n.msg:find("deleted", 1, true), n.msg)
             end)
         end)
     end)
@@ -931,12 +944,14 @@ describe("orphaned section Clean all notification", function()
             get_orphaned_configs = function() return { { config_key = "App/Release" } } end,
         }
         package.loaded["loomworks"] = lw
+        -- (step 5o C2c-2) Maintenance/1.execute_deletion { orphans } in-process.
         package.loaded["loomworks.workspace_view"] = {
-            find_stray_build_dirs = function() return {} end,
-            compute_orphan_cleanup_context = function()
-                return { orphaned_configs = { {} }, stray_dirs = {}, lines = {}, highlights = {} }
+            execute_deletion = function(_, target, plan, yes, cb)
+                assert.same({ orphans = true }, target)
+                if not yes then return cb({ outcome = "confirm", lines = { "Delete x:" }, plan = "T" }) end
+                assert.equals("T", plan)
+                cb(cleanup_ok and { outcome = "ok" } or { outcome = "refused", message = "failed to delete d" })
             end,
-            execute_orphan_cleanup = function(_, _, _, on_done) on_done(cleanup_ok) end,
         }
         package.loaded["loomworks.ui.dialog"] = {
             show = function(opts) opts.keys.y({ close = function() end }) end,
@@ -969,7 +984,7 @@ describe("orphaned section Clean all notification", function()
     it("reports a failure when the cleanup failed", function()
         local n = run_clean_all(false)
         assert.equals(1, #n)
-        assert.equals(vim.log.levels.WARN, n[1].level, n[1].msg)
+        assert.equals(vim.log.levels.ERROR, n[1].level, n[1].msg)
         assert.is_falsy(n[1].msg:find("orphaned build dirs cleaned", 1, true), n[1].msg)
     end)
 end)

@@ -115,6 +115,11 @@ local function mount_views(srv, o)
         assert(reg:mount("/toolchains", "core", "loomworks.Sdks", 1, { methods = {
             detect = refused, add = refused, remove = refused,
         } }))
+        -- The deletions and the nuke (step 5o C2c-2): called, never
+        -- subscribed to.
+        assert(reg:mount("/maintenance", "core", "loomworks.Maintenance", 1, { methods = {
+            execute_deletion = refused, nuke = refused,
+        } }))
         VIEW_STATE.tests = { state = "unloaded", stale = false, units = {} }
         assert(reg:mount("/views", "core", "loomworks.view.Tests", 1, {
             methods = { get = function() return VIEW_STATE.tests end },
@@ -428,7 +433,8 @@ describe("the observer (§19.16)", function()
             .. "configuration sets: daemon offers no loomworks.ConfigSets, editor needs /1; "
             .. "projects: daemon offers no loomworks.Projects, editor needs /1; "
             .. "toolchains: daemon offers no loomworks.Toolchains, editor needs /1; "
-            .. "sdks: daemon offers no loomworks.Sdks, editor needs /1",
+            .. "sdks: daemon offers no loomworks.Sdks, editor needs /1; "
+            .. "maintenance: daemon offers no loomworks.Maintenance, editor needs /1",
             obs.feature_note)
         -- The LSP configuration is never run in-process: its own note
         -- (§19.16 "LSP configuration" Unavailable).

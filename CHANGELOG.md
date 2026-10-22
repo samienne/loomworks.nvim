@@ -547,6 +547,18 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- The status page's `D` on a project now also deletes the project's build
+  state: after a confirmation listing its build directories, they are
+  deleted, then the project is removed from the configuration and its
+  profiles' toolchains are downgraded (it used to remove only the
+  declaration and leave the build directories behind). (#325)
+- In daemon mode the status page's deletions (a profile, a configuration, an
+  orphaned or stray build directory, all orphaned ones, a project, also from
+  the project browser) and `<C-n>` (reset the workspace cache) run in the
+  workspace daemon: the confirmation lists what the daemon will delete, the
+  editor's own running tasks on it are stopped first, and the result is
+  reported once the deletion has finished. A refusal is an error
+  notification and deletes nothing; it is never done in Neovim instead. (#325)
 - In daemon mode the status page's launch and deploy editors read and save
   through the workspace daemon, and their path previews are expanded there
   (they appear a moment after the dialog opens). The deploy step editor's

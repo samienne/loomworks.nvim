@@ -582,6 +582,10 @@ Where:
   `[overwritten]` tag (highlight `LoomworksConflict`), matching the profile-side
   rendering (§1.5).
 
+**Project actions**: `D` removes the project after confirmation (§1.10): its
+build directories and cached build state are deleted, then its declaration is
+removed and its profiles' toolchains are downgraded.
+
 **Shared-only items** (exist only in loomworks.json, not in user.json) are
 displayed with `Comment` highlight (dimmed). Module-generated default
 configurations are also dimmed. Dimmed items become normal on first

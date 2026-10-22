@@ -126,7 +126,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
-    it("the rows' actions not routed yet reach the editor's model objects by the keys they show (until 5o C2b/C2c)", function()
+    it("the profile rows' operations not routed yet reach the editor's model objects by the keys they show (until 5o C2d)", function()
         fake_obs()
         header()
         views.set(obs, "workspace", daemon_view())
@@ -135,10 +135,10 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(ws:get_active_profile() or ws:get_profiles()[1], body.ref(prow))
         assert.equals("dev", body.ref(prow).key)
         assert.equals("app", body.ref(prow.units[1]):project_key())
-        assert.equals("dev", body.ref(body.view.config_sets[1]).name)
-        local proj = body.ref(body.view.projects[1])
-        assert.equals("app", proj.key)
-        assert.equals(proj:get_configuration("Debug"), body.ref(body.view.projects[1].configurations[1]))
+        -- Every other row's action is routed by its id (5o C2c-2): none bound.
+        assert.is_nil(body.ref(body.view.config_sets[1]))
+        assert.is_nil(body.ref(body.view.projects[1]))
+        assert.is_nil(body.ref(body.view.projects[1].configurations[1]))
         assert.equals(0, built)
     end)
 
@@ -389,7 +389,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert(ok, err)
     end)
 
-    it("a launch row reaches its launch configuration; the rows keep the view's ids (for 5o C2)", function()
+    it("the rows keep the view's ids (for 5o C2)", function()
         core:shutdown()
         root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
         core:setup({ root = root })
@@ -402,10 +402,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local prow = body.view.projects[1]
         local lrow = prow.launches[1]
         assert.equals("run", lrow.key)
-        local launch = body.ref(lrow)
-        assert.is_not_nil(launch)
-        assert.equals("run", launch.name)
-        assert.equals(body.ref(prow):launch_configs()[1], launch)
         -- The ids the daemon's view carries are on the rows the page renders.
         assert.equals("id:dev", body.view.profiles[1].id)
         assert.equals("id:dev", body.view.config_sets[1].id)
@@ -560,20 +556,23 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         return reverts, edit, done, buf
     end
 
-    --- A status-page write not routed to the daemon yet (Maintenance/1 until
-    --- 5o C2c-2), run in-process through ui/model_calls: a stray dir deleted
-    --- (the editor's model's write stubbed).
+    --- An in-process write of the status page in daemon mode, as the
+    --- observer is told of one (no status-page method writes in-process any
+    --- more since step 5o C2c-2; the marks go in the next step).
     local function in_process_write()
-        local wv = require("loomworks.workspace_view")
-        local orig = wv.execute_delete_stray_dir
-        local saved = false
-        wv.execute_delete_stray_dir = function(_, _, done) saved = true; done(true) end
-        local r
-        require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
-            { target = { stray_dir = "/w/x" } }, function(x) r = x end)
-        wv.execute_delete_stray_dir = orig
-        assert.is_true(saved)
-        assert.equals("ok", r and r.outcome)
+        obs:in_process_write_started()
+        obs:in_process_write()
+    end
+
+    --- An in-process write still running: `late` ends it (its answer).
+    local function held_write()
+        local box = {}
+        obs:in_process_write_started()
+        box.late = function()
+            obs:in_process_write()
+            box.r = { outcome = "ok" }
+        end
+        return box
     end
 
     --- The `get`s of the workspace view sent so far.
@@ -693,22 +692,15 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         header()
         views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
         ws:get_profiles()[1]._intent = "local+shared"
-        local wv = require("loomworks.workspace_view")
-        local orig = wv.execute_delete_stray_dir
-        local done
-        wv.execute_delete_stray_dir = function(_, _, cb) done = cb end
-        local r
-        require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
-            { target = { stray_dir = "/w/x" } }, function(x) r = x end)
-        wv.execute_delete_stray_dir = orig
+        local w = held_write()
         -- Running: stale, and no `get` yet (its answer could not know the write).
         vim.wait(50)
         assert.is_true(obs:workspace_view_stale())
         assert.equals(0, view_gets())
-        assert.is_nil(r)
+        assert.is_nil(w.r)
         -- Ended: the `get` is sent; its answer ends the mark.
-        done(true)
-        assert.equals("ok", r and r.outcome)
+        w.late(true)
+        assert.equals("ok", w.r and w.r.outcome)
         assert.is_true(vim.wait(1000, function() return views.daemon_state(obs, "workspace") == fresh end, 10))
         assert.is_false(obs:workspace_view_stale())
     end)
@@ -784,50 +776,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals("subscribed", obs._feat[observer.VIEW_WORKSPACE.feature])
         assert.equals(fresh, views.daemon_state(obs, "workspace"))
     end)
-
-    --- Run `Maintenance/1.execute_deletion` of a stray dir in-process in
-    --- daemon mode with the view-model's `execute_delete_stray_dir` replaced
-    --- by `body`; returns the outcome box.
-    local function in_process_call(body)
-        local wv = require("loomworks.workspace_view")
-        local orig = wv.execute_delete_stray_dir
-        wv.execute_delete_stray_dir = body
-        local box = {}
-        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
-            { target = { stray_dir = "/w/x" } }, function(x) box.r = x end)
-        wv.execute_delete_stray_dir = orig
-        box.ok, box.err = ok, err
-        return box
-    end
-
-    it("an in-process write whose body throws is refused and ends the write: the freshness `get` is sent (5o C2b)", function()
-        local fresh = daemon_view(function(v) v.modified = true end)
-        fake_obs(nil, function() return fresh end)
-        header()
-        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        local box = in_process_call(function() error("boom") end)
-        assert.is_true(box.ok, tostring(box.err))
-        assert.equals("refused", box.r and box.r.outcome)
-        assert.truthy(tostring(box.r.message):find("boom", 1, true), tostring(box.r.message))
-        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
-        assert.equals(1, view_gets())
-    end)
-
-    --- Start `Maintenance/1.execute_deletion` of a stray dir in-process in
-    --- daemon mode with a body that holds its callback (an async write still
-    --- running, e.g. a long deletion). Returns `{ late = <the held callback>, r = <the outcome once called> }`.
-    local function held_write()
-        local mc = require("loomworks.ui.model_calls")
-        local wv = require("loomworks.workspace_view")
-        local orig = wv.execute_delete_stray_dir
-        local box = {}
-        wv.execute_delete_stray_dir = function(_, _, cb) box.late = cb end
-        mc.call(ws, "Maintenance/1.execute_deletion", { target = { stray_dir = "/w/x" } },
-            function(x) box.r = x end)
-        wv.execute_delete_stray_dir = orig
-        assert.is_function(box.late)
-        return box
-    end
 
     it("an in-process write still running stays unknown: no timer or `get` ends its mark (5o C2b)", function()
         local fresh = daemon_view(function(v) v.modified = true end)
@@ -945,99 +893,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         for _, c in ipairs(calls) do assert.is_not.equals("subscribe", c.method) end
         assert.equals("subscribed", obs._feat[observer.VIEW_WORKSPACE.feature])
         assert.is_true(obs:workspace_view_stale())
-    end)
-
-    it("a body that throws after starting async work: its late answer still sends a freshness `get` (5o C2b)", function()
-        local fresh = daemon_view(function(v) v.modified = true end)
-        fake_obs(nil, function() return fresh end)
-        header()
-        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        local wv = require("loomworks.workspace_view")
-        local orig = wv.execute_delete_stray_dir
-        local late
-        wv.execute_delete_stray_dir = function(_, _, cb) late = cb; error("boom") end
-        local box = {}
-        box.ok, box.err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
-            { target = { stray_dir = "/w/x" } }, function(x) box.r = x end)
-        wv.execute_delete_stray_dir = orig
-        assert.is_true(box.ok, tostring(box.err))
-        assert.equals("refused", box.r and box.r.outcome)
-        assert.is_function(late)
-        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
-        assert.equals(1, view_gets())
-        local refused = box.r
-        late(true)
-        assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
-        assert.equals(refused, box.r)
-        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
-    end)
-
-    it("a body that throws: its traceback is logged, the refusal shown; a refusal callback that throws still counts the late answer (5o C2b2)", function()
-        local fresh = daemon_view(function(v) v.modified = true end)
-        fake_obs(nil, function() return fresh end)
-        header()
-        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        local log = require("loomworks.log").test()
-        local orig_log = ws._core._deps.log
-        ws._core._deps.log = log
-        local notes, orig_notify = {}, vim.notify
-        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
-        local wv = require("loomworks.workspace_view")
-        local orig = wv.execute_delete_stray_dir
-        local late
-        wv.execute_delete_stray_dir = function(_, _, cb) late = cb; error("boom") end
-        local refused
-        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
-            { target = { stray_dir = "/w/x" } }, function(x)
-                refused = x
-                error("ui boom")
-            end)
-        wv.execute_delete_stray_dir = orig
-        vim.notify = orig_notify
-        ws._core._deps.log = orig_log
-        -- The page's callback threw on the refusal: that error is the caller's.
-        assert.is_false(ok)
-        assert.truthy(tostring(err):find("ui boom", 1, true), tostring(err))
-        assert.equals("refused", refused and refused.outcome)
-        assert.truthy(tostring(refused.message):find("boom", 1, true), tostring(refused.message))
-        -- The body's traceback went to the log, not to a notification.
-        local logged = table.concat(log:entries(), "\n")
-        assert.truthy(logged:find("boom", 1, true) and logged:find("traceback", 1, true), logged)
-        for _, n in ipairs(notes) do
-            assert.falsy(tostring(n.msg):find("traceback", 1, true), n.msg)
-        end
-        assert.is_function(late)
-        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
-        assert.equals(1, view_gets())
-        -- Its late answer still landed: one more freshness `get`.
-        late(true)
-        assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
-    end)
-
-    it("a body that throws with no workspace log: its traceback is a DEBUG notification, never dropped", function()
-        fake_obs(nil, function() return daemon_view(function(v) v.modified = true end) end)
-        header()
-        local orig_log = ws._core._deps.log
-        ws._core._deps.log = nil
-        local notes, orig_notify = {}, vim.notify
-        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
-        local wv = require("loomworks.workspace_view")
-        local orig = wv.execute_delete_stray_dir
-        wv.execute_delete_stray_dir = function() error("boom") end
-        local refused
-        local ok, err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
-            { target = { stray_dir = "/w/x" } }, function(x) refused = x end)
-        wv.execute_delete_stray_dir = orig
-        vim.notify = orig_notify
-        ws._core._deps.log = orig_log
-        assert(ok, err)
-        assert.equals("refused", refused and refused.outcome)
-        local debug_tb
-        for _, n in ipairs(notes) do
-            if n.level == vim.log.levels.DEBUG and tostring(n.msg):find("traceback", 1, true) then debug_tb = n end
-        end
-        assert.is_table(debug_tb, vim.inspect(notes))
-        assert.truthy(debug_tb.msg:find("boom", 1, true), debug_tb.msg)
     end)
 
     it("the answered freshness `get` ends it: the daemon's view's flag again", function()

@@ -2,51 +2,13 @@
 ---
 --- Shows leftover build directories not referenced by any profile.
 --- Flat list of paths — no project grouping, no status labels.
---- Actions: delete individual dirs, or clean all at once.
+--- Actions: delete individual dirs, or clean all at once — each a
+--- `Maintenance/1.execute_deletion` through ui/model_calls naming the row
+--- (an orphaned entry's id in `daemon` mode, a stray directory's path as
+--- listed; step 5o C2c-2), confirmed with the listing it answers.
 
 local actions = require("loomworks.ui.actions")
-
---- Show the orphan cleanup dialog and execute cleanup on confirm.
-local function clean_all_orphans()
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if not ws then return end
-
-    local workspace_view = require("loomworks.workspace_view")
-    local ctx = workspace_view.compute_orphan_cleanup_context(ws)
-
-    if #ctx.orphaned_configs == 0 and #ctx.stray_dirs == 0 then
-        vim.notify("loomworks: nothing to clean", vim.log.levels.INFO)
-        return
-    end
-
-    local dialog = require("loomworks.ui.dialog")
-    dialog.show({
-        title = "Clean Orphaned Build Dirs",
-        lines = ctx.lines,
-        highlights = ctx.highlights,
-        max_height = 30,
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
-                    { target = { orphans = true }, confirmed = ctx }, function(r)
-                    -- A refused lock or a failed removal was already
-                    -- reported; this is the summary, so never claim success
-                    -- after one.
-                    if r.outcome == "ok" then
-                        vim.notify("loomworks: orphaned build dirs cleaned",
-                            vim.log.levels.INFO)
-                    else
-                        vim.notify("loomworks: orphan cleanup incomplete — some build dirs were not removed",
-                            vim.log.levels.WARN)
-                    end
-                end)
-            end,
-        },
-    })
-end
+local helpers = require("loomworks.ui.helpers")
 
 --- Make a path relative to workspace root for display.
 --- @param ws_root string normalized workspace root
@@ -66,7 +28,7 @@ end
 --- Render the orphaned build dirs section.
 --- Flat list of paths — orphaned cache entries and stray dirs merged together.
 --- @param tree loomworks.Tree
---- @param ctx table { view, ref, ws } the workspace view's `orphaned`
+--- @param ctx table { view, mode, ref, ws } the workspace view's `orphaned`
 return function(tree, ctx)
     local orphans = ctx.view.orphaned.configurations
     local stray_dirs = ctx.view.orphaned.stray_dirs
@@ -88,10 +50,9 @@ return function(tree, ctx)
     local ws_root = ctx.ws and ctx.ws.root or ""
     for _, orphan in ipairs(orphans) do
         local display = ".nvim/" .. orphan.key
-        local obj = ctx.ref(orphan)
         tree:item(display, {
             hl = "Comment",
-            on_delete = obj and actions.delete_orphaned_config(obj) or nil,
+            on_delete = helpers.actionable(ctx, orphan) and actions.delete_orphaned_config(orphan, ctx.ws) or nil,
         })
         -- Track the absolute path to avoid duplicating with stray dirs
         if orphan.build_dir then
@@ -105,7 +66,7 @@ return function(tree, ctx)
             local display = rel_display(ws_root, dir)
             tree:item(display, {
                 hl = "Comment",
-                on_delete = actions.delete_stray_dir(dir),
+                on_delete = actions.delete_stray_dir(dir, ctx.ws),
             })
         end
     end
@@ -113,7 +74,7 @@ return function(tree, ctx)
     tree:item("▸ Clean all", {
         hl = "LoomworksActionable",
         direct = true,
-        on_enter = clean_all_orphans,
+        on_enter = actions.delete_orphans(ctx.ws),
     })
 
     tree:blank()

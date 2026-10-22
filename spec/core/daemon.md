@@ -2516,16 +2516,16 @@ plan, a held lock) is an error notification and changes nothing; the page
 shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is
 not carried the action is refused ("Availability"), never run in-process.
-*(Until step 5o part C2c-2 the status page's `Maintenance/1` actions (a
-project's removal among them) still work on the editor's in-process
-model, as transitional, not fallbacks; its `Workspace/1`, `Profiles/1`
-and `ConfigSets/1` actions are calls from part C2a, and its `Projects/1`
-actions from C2b: the removals, variable and `type_config` edits and
-project add from its first half, the configuration editor (C2b2-1) and
-the launch, deploy and path editors (C2b2-2, reading `declaration`, the
-workspace view and `expand_preview`) from its second. The SDK section's
-`Sdks/1` actions and the toolchain rescan (`Toolchains/1.rescan`) are
-calls from part C2c-1.)*
+*(Status: every status-page action is a call. Its `Workspace/1`,
+`Profiles/1` and `ConfigSets/1` actions are calls from step 5o part C2a,
+its `Projects/1` actions from C2b (the removals, variable and
+`type_config` edits and project add from its first half, the
+configuration editor (C2b2-1) and the launch, deploy and path editors
+(C2b2-2) from its second), the SDK section's `Sdks/1` actions and the
+toolchain rescan from C2c-1, and its deletions and nuke — the project
+row's removal and the project browser's among them — from C2c-2: a
+confirmed `Maintenance/1` call is a task the editor owns, reported when
+it ends.)*
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the

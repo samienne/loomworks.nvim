@@ -78,7 +78,7 @@ local VERB = { build = "build", configure = "configure", clean = "clean",
 --- A device log (step 5n C3) likewise: its records go to the view that
 --- started it, which a restart alone would not feed.
 M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true, device_launch = true,
-    device_log = true }
+    device_log = true, ["Maintenance/1.execute_deletion"] = true, ["Maintenance/1.nuke"] = true }
 
 --- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil) }
 
@@ -1046,6 +1046,32 @@ function M.clean(scope, k)
         end
     end
     return true
+end
+
+--- Cancel the running calls the editor owns that `match` selects and call
+--- `done()` once each has ended (step 5o C2c-2: before a confirmed deletion
+--- or nuke, so the daemon does not refuse it on the editor's own build's
+--- lock — as M.clean pre-empts the units' tasks). `match(task)` gets the
+--- call's RemoteTask, or nil while its `start` has not arrived. No observer
+--- (or nothing selected): `done()` at once. Another client's task is never
+--- cancelled; the daemon refuses on its lock, naming it.
+--- @param ws loomworks.Workspace|nil
+--- @param match fun(task: loomworks.RemoteTask|nil): boolean
+--- @param done fun()
+function M.cancel_owned_matching(ws, match, done)
+    local obs = require("loomworks.daemon.observer").of(ws)
+    local ids = {}
+    for _, call in ipairs(obs and obs:owned_calls() or {}) do
+        if match(call.task) then ids[#ids + 1] = call.id end
+    end
+    local left = #ids
+    if left == 0 then return done() end
+    for _, id in ipairs(ids) do
+        obs:cancel_owned_id(id, function()
+            left = left - 1
+            if left == 0 then done() end
+        end)
+    end
 end
 
 --- Send an owned task's call again (its task-runner restart, §19.16 "Tasks in
