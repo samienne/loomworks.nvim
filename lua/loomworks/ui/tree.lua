@@ -234,9 +234,10 @@ function Tree:on_key(action, line)
         local lw = require("loomworks")
         local ws = lw.get_workspace()
         if ws then
-            -- In `daemon` mode the daemon's rescan (it waits for detection);
-            -- a refusal, or a detection that outran the wait (a warn note),
-            -- is notified.
+            -- In `daemon` mode the daemon's rescan (it waits for detection,
+            -- up to 45 s: announced at once); a refusal, or a detection that
+            -- outran the wait (a warn note), is notified.
+            vim.notify("loomworks: Rescanning toolchains…", vim.log.levels.INFO)
             local model = require("loomworks.ui.model_calls")
             model.call(ws, "Toolchains/1.rescan", {}, function(r)
                 local ok, err = model.result(r)

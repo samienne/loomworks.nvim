@@ -646,7 +646,7 @@ function M.call(ws, method, params, cb)
         if daemon then return route(target, params, cb) end
         return fn(target, params, cb)
     end
-    -- Not routed yet (until C2b / C2c), run in-process in `daemon` mode too:
+    -- Not routed yet (until C2c-2), run in-process in `daemon` mode too:
     -- the daemon's view does not know this write until a freshness `get`
     -- sent once it ended is answered (the status buffer's 'modified',
     -- status_source.modified) — stale from its start, the `get` sent when

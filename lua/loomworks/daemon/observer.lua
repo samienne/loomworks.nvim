@@ -3210,8 +3210,8 @@ function Observer:_resubscribe_view(want)
 end
 
 --- The status page starts a model write in-process in `daemon` mode (a
---- method not routed to the daemon yet — the rest of Projects/1 and
---- Maintenance/1 until step 5o C2b2 / C2c-2; ui/model_calls): the
+--- method not routed to the daemon yet — Maintenance/1 and the project
+--- row's removal until step 5o C2c-2; ui/model_calls): the
 --- held workspace view does not know it until a freshness `get` sent after
 --- it landed is answered (Observer:workspace_view_stale). Marks the view
 --- stale only; Observer:in_process_write, once the write ended (an async

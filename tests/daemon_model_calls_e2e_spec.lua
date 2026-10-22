@@ -688,6 +688,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
             r = call("Sdks/1.remove", { sdk = srow })
             assert.equals("refused", r.outcome)
             assert.truthy(r.message:find("^SDK: "), r.message)
+            assert.truthy(r.message:find("a stale reference", 1, true), r.message)
             -- The editor's model never declared it.
             for _, sdk in ipairs(ws:sdks() or {}) do assert.not_equals(skey, sdk.key) end
         end)

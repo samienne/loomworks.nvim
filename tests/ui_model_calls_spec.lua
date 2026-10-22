@@ -302,9 +302,9 @@ describe("ui.model_calls", function()
     -- installations (version, the provider's prompt), makes a typed path
     -- absolute, and offers `D` on a row only when actionable.
     describe("the SDK section", function()
-        local saved, sent, picks, typed
+        local saved, sent, picks, typed, input, notes
         before_each(function()
-            sent, picks = {}, {}
+            sent, picks, input, notes = {}, {}, "rel/sdk", {}
             saved = { model.call, vim.ui.select, vim.ui.input, vim.notify, package.loaded["loomworks.ui.status"] }
             model.call = function(_, method, params, cb)
                 sent[#sent + 1] = { method, params }
@@ -315,8 +315,8 @@ describe("ui.model_calls", function()
                 cb({ outcome = "ok", sdk = { id = "1:1", key = "fake-2" } })
             end
             vim.ui.select = function(items, _, cb) picks[#picks + 1] = items; cb(items[#items]) end
-            vim.ui.input = function(opts, cb) typed = opts.prompt; cb("rel/sdk") end
-            vim.notify = function() end
+            vim.ui.input = function(opts, cb) typed = opts.prompt; cb(input) end
+            vim.notify = function(msg) notes[#notes + 1] = msg end
             package.loaded["loomworks.ui.status"] = { refresh = function() end }
         end)
         after_each(function()
@@ -350,6 +350,30 @@ describe("ui.model_calls", function()
             vim.ui.select = function(choices, _, cb) cb(choices[1]) end -- "Yes"
             nodes[1].opts.on_delete()
             assert.same({ "Sdks/1.remove", { sdk = view.sdks[1] } }, sent[3])
+        end)
+
+        it("a typed path is trimmed of whitespace and one pair of quotes; blank adds nothing; the added message names the entry", function()
+            local view = { sdk_providers = 1, sdks = {} }
+            local abs = vim.fn.fnamemodify("rel/sdk", ":p")
+            for _, typed_in in ipairs({ '  "rel/sdk"  ', "'rel/sdk'", "\t rel/sdk \n" }) do
+                sent, input = {}, typed_in
+                local _, items = render({ mode = "daemon", view = view, ws = {}, ref = function() return nil end })
+                items[1].opts.on_enter()
+                assert.same({ "Sdks/1.add", { provider = "fake", path = abs } }, sent[2], typed_in)
+            end
+            -- The picked entry's name (the provider's label), not the SDK's key.
+            assert.equals("loomworks: SDK 'Fake' added", notes[#notes])
+            for _, blank in ipairs({ "", "   ", '""', "' '" }) do
+                sent, input = {}, blank
+                local _, items = render({ mode = "daemon", view = view, ws = {}, ref = function() return nil end })
+                items[1].opts.on_enter()
+                assert.equals(1, #sent, blank) -- only the detect
+            end
+            vim.ui.select = function(choices, _, cb) cb(choices[1]) end
+            notes = {}
+            local _, items = render({ mode = "daemon", view = view, ws = {}, ref = function() return nil end })
+            items[1].opts.on_enter()
+            assert.equals("loomworks: SDK 'Fake 2' added", notes[#notes])
         end)
     end)
 

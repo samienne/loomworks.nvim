@@ -9,10 +9,16 @@ local helpers = require("loomworks.ui.helpers")
 
 --- A typed SDK path made absolute against the editor's working directory
 --- (the workspace daemon refuses a relative one: its working directory is
---- not the editor's); `~` expanded, a trailing separator dropped.
---- @param path string
---- @return string
-local function absolute(path)
+--- not the editor's); surrounding whitespace and one pair of surrounding
+--- double or single quotes trimmed (Windows' "Copy as path" pastes them),
+--- `~` expanded, a trailing separator dropped. Nothing typed: nil.
+--- @param input string|nil
+--- @return string|nil
+local function absolute(input)
+    local path = vim.trim(input or "")
+    local q = path:sub(1, 1)
+    if #path >= 2 and (q == '"' or q == "'") and path:sub(-1) == q then path = vim.trim(path:sub(2, -2)) end
+    if path == "" then return nil end
     local abs = vim.fn.fnamemodify(path, ":p")
     if #abs > 1 and abs:match("[/\\]$") and not abs:match("^%a:[/\\]$") then abs = abs:sub(1, -2) end
     return abs
@@ -22,12 +28,14 @@ end
 --- @param ws loomworks.Workspace|nil
 --- @param provider string
 --- @param path string absolute
-local function add_sdk(ws, provider, path)
+--- @param name string the picked entry's name for the SDK (the provider's
+---   label, with the detected version when known), for the message
+local function add_sdk(ws, provider, path, name)
     local model = require("loomworks.ui.model_calls")
     model.call(ws, "Sdks/1.add", { provider = provider, path = path }, function(r)
         local ok, err = model.result(r)
         if r.sdk then
-            vim.notify("loomworks: SDK '" .. tostring(r.sdk.key) .. "' added", vim.log.levels.INFO)
+            vim.notify("loomworks: SDK '" .. name .. "' added", vim.log.levels.INFO)
             -- A detection that outran the wait (a warn note): reported too.
             if not ok then vim.notify("loomworks: " .. tostring(err), vim.log.levels.WARN) end
         else
@@ -48,15 +56,15 @@ local function candidates_of(providers, declared)
     for _, p in ipairs(providers or {}) do
         for _, inst in ipairs(p.found or {}) do
             if not declared[(inst.path or ""):lower()] then
-                local label = p.label
-                if inst.version then label = label .. " " .. inst.version end
-                out[#out + 1] = { provider_id = p.id, path = inst.path, label = label .. "  " .. inst.path }
+                local name = p.label
+                if inst.version then name = name .. " " .. inst.version end
+                out[#out + 1] = { provider_id = p.id, path = inst.path, name = name, label = name .. "  " .. inst.path }
             end
         end
         -- The provider's own prompt for a typed path (e.g. "Path to C/C++
         -- compiler executable"), else a generic "<label> SDK path".
         out[#out + 1] = { provider_id = p.id, browse = true, prompt = p.path_prompt or (p.label .. " SDK path"),
-            label = p.label .. "  (browse for path...)" }
+            name = p.label, label = p.label .. "  (browse for path...)" }
     end
     return out
 end
@@ -145,10 +153,13 @@ return function(tree, ctx)
                         format_item = function(item) return item.label end,
                     }, function(choice)
                         if not choice then return end
-                        if not choice.browse then return add_sdk(ws, choice.provider_id, choice.path) end
-                        vim.ui.input({ prompt = choice.prompt .. ": " }, function(path)
-                            if not path or path == "" then return end
-                            add_sdk(ws, choice.provider_id, absolute(path))
+                        if not choice.browse then
+                            return add_sdk(ws, choice.provider_id, choice.path, choice.name)
+                        end
+                        vim.ui.input({ prompt = choice.prompt .. ": " }, function(input)
+                            local path = absolute(input)
+                            if not path then return end
+                            add_sdk(ws, choice.provider_id, path, choice.name)
                         end)
                     end)
                 end)
