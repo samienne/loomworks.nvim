@@ -212,7 +212,7 @@ When a configuration set is removed from `loomworks.json`:
 4. Profile remains fully functional — builds still work using cached mappings
 5. UI shows `[stale]` tag and a warning about the removed set
 
-### 4.5 Orphaned Configurations
+### 4.5 Orphaned Build Dirs
 
 A cached configuration is **orphaned** when it has build state
 (configured/built/failed) but is not referenced by any profile's `projects`
@@ -221,7 +221,7 @@ one branch but the configuration set that produced it no longer exists.
 
 **On startup**:
 - Cached configs with state but no profile reference → kept as orphans
-  (shown in the Orphaned Configurations UI section)
+  (shown in the Orphaned Build Dirs UI section)
 - Cached configs without state (unconfigured skeletons) and no profile
   reference → silently dropped from cache
 
