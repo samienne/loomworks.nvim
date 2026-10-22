@@ -1664,8 +1664,10 @@ A project is removed with `Maintenance/1.execute_deletion` (§22).
 a query; the others are commands (§6).
 
 - `detect { provider? }` → `{ outcome = "ok", providers: [{ id, label,
-  found }] }` — the installed SDK providers (or the one named) and the SDK
-  paths each finds, in the client's environment;
+  path_prompt?, found: [{ path, version? }] }] }` — the installed SDK
+  providers (or the one named) and the installations each finds (path, and
+  version when known), in the client's environment; `path_prompt` is what
+  the provider calls a typed path;
 - `add { provider, path }` → `ok` with `sdk { id, key }` — declares the SDK
   and detects the toolchains again (as `Toolchains/1.rescan`, §11), so its
   kits are offered; `path` must be absolute (the daemon's working directory

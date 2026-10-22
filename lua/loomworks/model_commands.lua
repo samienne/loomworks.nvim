@@ -1439,12 +1439,13 @@ end
 -- ---------------------------------------------------------------------------
 
 --- `detect { provider? }` — the installed SDK providers (or the one named)
---- and the installation paths each detects, in the current environment.
---- Changes nothing. A provider whose detection raises finds none (as the
---- status page's SDK picker); an unknown provider is refused with
---- Workspace:add_sdk's message.
+--- and the installations each detects (path, and version when the provider
+--- reports one), in the current environment, with the provider's
+--- `path_prompt` (what it calls a typed path) when it has one. Changes
+--- nothing. A provider whose detection raises finds none; an unknown
+--- provider is refused with Workspace:add_sdk's message.
 --- @param provider string|nil provider id
---- @return loomworks.CommandOutcome providers: { id: string, label: string, found: string[] }[]
+--- @return loomworks.CommandOutcome providers: { id: string, label: string, path_prompt: string|nil, found: { path: string, version: string|nil }[] }[]
 function M.sdk_detect(provider)
     local registry = require("loomworks.sdks")
     local ids
@@ -1465,12 +1466,14 @@ function M.sdk_detect(provider)
                 local okd, res = pcall(p.detect_all)
                 for _, inst in ipairs(okd and type(res) == "table" and res or {}) do
                     if type(inst) == "table" and type(inst.path) == "string" and inst.path ~= "" then
-                        found[#found + 1] = inst.path
+                        local version = inst.version ~= nil and tostring(inst.version) or nil
+                        found[#found + 1] = { path = inst.path, version = version }
                     end
                 end
             end
             providers[#providers + 1] = { id = id,
-                label = type(p.display_name) == "string" and p.display_name or id, found = found }
+                label = type(p.display_name) == "string" and p.display_name or id,
+                path_prompt = type(p.path_prompt) == "string" and p.path_prompt or nil, found = found }
         end
     end
     return ok({ providers = providers })

@@ -569,15 +569,18 @@ describe("model_commands", function()
       assert(ok_, err)
     end)
 
-    it("detect names each provider and the paths it finds; an unknown provider is refused", function()
+    it("detect names each provider, its path prompt and the installations it finds; an unknown provider is refused", function()
       package.preload["loomworks.sdks.fake_detect"] = function()
         return { id = "fake_detect", api_version = require("loomworks.api_versions").sdk,
-          display_name = "Fake Detect",
-          detect_all = function() return { { path = "/opt/fake", version = "1" }, { version = "2" } } end }
+          display_name = "Fake Detect", path_prompt = "Path to the fake",
+          detect_all = function()
+            return { { path = "/opt/fake", version = "1" }, { version = "2" }, { path = "/opt/fake-nover" } }
+          end }
       end
       local r = mc.sdk_detect("fake_detect")
       assert_ok(r)
-      assert.same({ { id = "fake_detect", label = "Fake Detect", found = { "/opt/fake" } } }, r.providers)
+      assert.same({ { id = "fake_detect", label = "Fake Detect", path_prompt = "Path to the fake",
+        found = { { path = "/opt/fake", version = "1" }, { path = "/opt/fake-nover" } } } }, r.providers)
       assert_refused(mc.sdk_detect("no_such_provider"), "no provider for SDK type 'no_such_provider'")
       r = mc.sdk_detect(nil)
       assert_ok(r)

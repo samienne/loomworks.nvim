@@ -167,11 +167,27 @@
               "label": {
                 "type": "string"
               },
+              "path_prompt": {
+                "description": "What the provider calls the path a user types (e.g. 'Path to C/C++ compiler executable'); absent: '<label> SDK path'.",
+                "type": "string"
+              },
               "found": {
-                "description": "The installation paths the provider detects.",
+                "description": "The installations the provider detects: each one's path, and its version when the provider reports one.",
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "object",
+                  "required": [
+                    "path"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }

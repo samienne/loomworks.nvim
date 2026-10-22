@@ -111,12 +111,13 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
         return n
     end
 
-    it("detect names the provider and the paths it finds", function()
+    it("detect names the provider and the installations it finds (path and version)", function()
         loaded()
         local r, e = sdks("detect", { provider = "fake_b4" })
         assert.is_nil(e, vim.inspect(e))
         assert.equals("ok", r.outcome, vim.inspect(r))
-        assert.same({ { id = "fake_b4", label = "Fake B4", found = { "/opt/fake-b4" } } }, r.providers)
+        assert.same({ { id = "fake_b4", label = "Fake B4", found = { { path = "/opt/fake-b4", version = "1" } } } },
+            r.providers)
     end)
 
     it("add declares the SDK and detects again (its kit offered); remove by id drops the declaration", function()
