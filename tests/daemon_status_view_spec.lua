@@ -565,39 +565,162 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(1, view_gets())
     end)
 
-    it("an in-process write that never calls back is ended by the watchdog; a late answer still lands (5o C2b)", function()
+    --- Start `Maintenance/1.execute_deletion` of a stray dir in-process in
+    --- daemon mode with a body that holds its callback (an async write still
+    --- running, e.g. a long deletion). Returns `{ late = <the held callback>, r = <the outcome once called> }`.
+    local function held_write()
+        local mc = require("loomworks.ui.model_calls")
+        local wv = require("loomworks.workspace_view")
+        local orig = wv.execute_delete_stray_dir
+        local box = {}
+        wv.execute_delete_stray_dir = function(_, _, cb) box.late = cb end
+        mc.call(ws, "Maintenance/1.execute_deletion", { target = { stray_dir = "/w/x" } },
+            function(x) box.r = x end)
+        wv.execute_delete_stray_dir = orig
+        assert.is_function(box.late)
+        return box
+    end
+
+    it("an in-process write still running stays unknown: no timer or `get` ends its mark (5o C2b)", function()
         local fresh = daemon_view(function(v) v.modified = true end)
         fake_obs(nil, function() return fresh end)
         header()
         views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        local mc = require("loomworks.ui.model_calls")
-        local orig_defer = mc._defer
-        local due = {}
-        mc._defer = function(fn, ms) due[#due + 1] = { fn = fn, ms = ms } end
-        -- An async write (a stray dir's deletion) whose body never calls back.
+        -- No watchdog: the module schedules nothing that could end it.
+        assert.is_nil(require("loomworks.ui.model_calls").WRITE_WATCHDOG_MS)
+        local w = held_write()
+        vim.wait(50)
+        assert.is_true(obs:workspace_view_stale())
+        -- An editor file write's `get` is answered meanwhile.
+        obs:_own_write()
+        assert.is_true(vim.wait(1000, function() return view_gets() >= 1 end, 10))
+        vim.wait(50)
+        assert.is_true(obs:workspace_view_stale())
+        assert.is_nil(w.r)
+        -- The body's answer ends the write: its `get` ends the mark.
+        local before = view_gets()
+        w.late(true)
+        assert.equals("ok", w.r and w.r.outcome)
+        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
+        assert.equals(before + 1, view_gets())
+    end)
+
+    it("a write started while a failed `get` waits for its retry: the retry's answer leaves the mark (5o C2b)", function()
+        local fresh = daemon_view(function(v) v.modified = true end)
+        local fails = 1
+        fake_obs(nil, function()
+            if fails > 0 then fails = fails - 1; return nil end
+            return fresh
+        end)
+        local due = capture_retries()
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        -- W1 ends; its `get` fails: a retry is due.
+        in_process_write()
+        assert.is_true(vim.wait(1000, function() return #due == 1 end, 10))
+        -- W2 starts (still running) before the retry fires.
+        local w2 = held_write()
+        -- The retry fires while W2 runs: no `get` could end the mark now.
+        due[1].fn()
+        vim.wait(50)
+        assert.equals(1, view_gets())
+        assert.is_true(obs:workspace_view_stale())
+        -- An editor file write's `get` answered meanwhile leaves it too.
+        obs:_own_write()
+        assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
+        vim.wait(50)
+        assert.is_true(obs:workspace_view_stale())
+        -- W2 ends: its `get` ends the mark.
+        w2.late(true)
+        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
+        assert.equals(3, view_gets())
+    end)
+
+    it("stop with a retry of the freshness `get` pending: the retry state is reset, the retry sends nothing (5o C2b)", function()
+        fake_obs(nil, function() return nil end)
+        local due = capture_retries()
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        in_process_write()
+        assert.is_true(vim.wait(1000, function() return #due == 1 end, 10))
+        assert.is_not_nil(obs._view_retry_due)
+        obs:stop()
+        assert.is_nil(obs._view_retry_due)
+        assert.is_nil(obs._view_retries)
+        local n = view_gets()
+        due[1].fn()
+        vim.wait(50)
+        assert.equals(n, view_gets())
+        assert.equals(1, #due)
+    end)
+
+    it("a write that ends while the view is resubscribing: a `get` once subscribed, the mark kept until it is answered (5o C2b)", function()
+        local old = daemon_view(function(v) v.modified = false end)
+        local fresh = daemon_view(function(v) v.modified = true end)
+        fake_obs(nil, function() return fresh end)
+        local conn = obs.conn
+        local orig_call = conn.call
+        local sub_cb
+        function conn:call(object, iface, v, method, args, cb)
+            orig_call(self, object, iface, v, method, args, cb)
+            if method == "subscribe" then sub_cb = cb end
+        end
+        header()
+        obs:_view_subscribed(observer.VIEW_WORKSPACE, { sub_id = 7, seq = 1, initial = old })
+        obs:_resubscribe_view(observer.VIEW_WORKSPACE)
+        assert.equals("pending", obs._feat[observer.VIEW_WORKSPACE.feature])
+        assert.is_function(sub_cb)
+        -- A write starts and ends while the subscribe is unanswered.
+        in_process_write()
+        assert.is_true(obs:workspace_view_stale())
+        vim.wait(50)
+        assert.equals(0, view_gets())
+        -- The `initial` may predate the write: held, but still stale until a
+        -- `get` sent now is answered.
+        sub_cb({ sub_id = 8, seq = 2, initial = old }, nil)
+        assert.is_true(vim.wait(1000, function() return view_gets() == 1 end, 10))
+        assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
+        assert.equals(fresh, views.daemon_state(obs, "workspace"))
+    end)
+
+    it("freshness `get` retries exhausted without a known `sub_id`: no second subscription, the mark kept (5o C2b)", function()
+        fake_obs(nil, function() return nil end)
+        local due = capture_retries({ 10 })
+        header()
+        obs:_view_subscribed(observer.VIEW_WORKSPACE,
+            { seq = 1, initial = daemon_view(function(v) v.modified = false end) })
+        in_process_write()
+        assert.is_true(vim.wait(1000, function() return #due == 1 end, 10))
+        due[1].fn()
+        assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
+        vim.wait(50)
+        for _, c in ipairs(calls) do assert.is_not.equals("subscribe", c.method) end
+        assert.equals("subscribed", obs._feat[observer.VIEW_WORKSPACE.feature])
+        assert.is_true(obs:workspace_view_stale())
+    end)
+
+    it("a body that throws after starting async work: its late answer still sends a freshness `get` (5o C2b)", function()
+        local fresh = daemon_view(function(v) v.modified = true end)
+        fake_obs(nil, function() return fresh end)
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
         local wv = require("loomworks.workspace_view")
         local orig = wv.execute_delete_stray_dir
         local late
-        wv.execute_delete_stray_dir = function(_, _, cb) late = cb end
+        wv.execute_delete_stray_dir = function(_, _, cb) late = cb; error("boom") end
         local box = {}
-        mc.call(ws, "Maintenance/1.execute_deletion", { target = { stray_dir = "/w/x" } },
-            function(x) box.r = x end)
+        box.ok, box.err = pcall(require("loomworks.ui.model_calls").call, ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x) box.r = x end)
         wv.execute_delete_stray_dir = orig
-        mc._defer = orig_defer
-        assert.equals(1, #due)
-        assert.equals(mc.WRITE_WATCHDOG_MS, due[1].ms)
-        vim.wait(50)
-        assert.is_true(obs:workspace_view_stale())
-        assert.equals(0, view_gets())
-        -- The watchdog ends the write: the `get` is sent, its answer ends the mark.
-        due[1].fn()
+        assert.is_true(box.ok, tostring(box.err))
+        assert.equals("refused", box.r and box.r.outcome)
+        assert.is_function(late)
         assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
         assert.equals(1, view_gets())
-        assert.is_nil(box.r)
-        -- The body's late answer: delivered, and one more `get`.
+        local refused = box.r
         late(true)
         assert.is_true(vim.wait(1000, function() return view_gets() == 2 end, 10))
-        assert.equals("ok", box.r and box.r.outcome)
+        assert.equals(refused, box.r)
         assert.is_true(vim.wait(1000, function() return not obs:workspace_view_stale() end, 10))
     end)
 

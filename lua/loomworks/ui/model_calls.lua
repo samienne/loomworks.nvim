@@ -539,15 +539,6 @@ function M.routed(method)
     return ROUTED[method] ~= nil
 end
 
---- How long an in-process write of the status page in `daemon` mode may
---- run before its bookkeeping is ended regardless (M.call's watchdog: a body
---- that never calls back must not leave the held workspace view stale for
---- good). A slower write's late answer still ends it once more.
-M.WRITE_WATCHDOG_MS = 30000
-
---- Schedules the watchdog: `vim.defer_fn(fn, ms)` (replaced by tests).
-M._defer = function(fn, ms) return vim.defer_fn(fn, ms) end
-
 --- Call a model method of the workspace `ws` (nil: the loaded workspace,
 --- loomworks.daemon.observer.loaded_workspace).
 --- In `daemon` mode a routed method is a call to the workspace daemon; any
@@ -577,36 +568,40 @@ function M.call(ws, method, params, cb)
     -- its outcome arrives (an async write lands later than `fn` returns).
     if not (daemon and obs) then return fn(target, params, cb) end
     obs:in_process_write_started()
-    -- This write's own token: ended (the freshness `get` sent) once — by
-    -- its answer, by its body throwing (refused, the error its message), or
-    -- by the watchdog when the body never calls back. An answer after the
-    -- watchdog still lands: the write may only have landed now, so it ends
-    -- once more (another `get`).
-    local write = { ended = false, answered = false }
-    local function end_write()
-        if write.ended then return end
-        write.ended = true
-        obs:in_process_write()
-    end
-    local watchdog = M._defer(function()
-        if not write.answered then end_write() end
-    end, M.WRITE_WATCHDOG_MS)
+    -- This write ends exactly once (Observer:in_process_write: the freshness
+    -- `get` sent, the mark ended once it is answered with no write open): by
+    -- its answer, or by its body throwing before answering (refused, the
+    -- error its message). Never by a timer: a slow body (a long deletion)
+    -- keeps the mark until it answers, so the buffer's 'modified' never
+    -- reports the daemon's view alone while it runs. A body that never
+    -- answers keeps it until the observer stops (the editor's model's flag,
+    -- the safe side). A body that threw and answers later still landed then:
+    -- one more `get` (Observer:in_process_write(true)), no second `cb`.
+    local write = { answered = false, threw = false }
     local function answer(r)
-        if write.answered then return end
-        write.answered = true
-        if watchdog and type(watchdog) == "userdata" then
-            pcall(function() watchdog:stop(); if not watchdog:is_closing() then watchdog:close() end end)
+        if write.answered then
+            if write.threw then
+                write.threw = false
+                obs:in_process_write(true)
+            end
+            return
         end
-        if write.ended then obs:in_process_write() else end_write() end
+        write.answered = true
+        obs:in_process_write()
         cb(r)
     end
-    local ok, err = xpcall(fn, function(e) return e end, target, params, answer)
+    local ok, err = xpcall(fn, function(e)
+        return { message = e, traceback = debug.traceback(tostring(e), 2) }
+    end, target, params, answer)
     if ok then return end
+    local what = "loomworks: " .. (VERB[method] or method) .. ": "
     if write.answered then
-        vim.notify("loomworks: " .. (VERB[method] or method) .. ": " .. tostring(err), vim.log.levels.ERROR)
+        vim.notify(what .. tostring(err.traceback), vim.log.levels.ERROR)
         return
     end
-    answer(refusal(method, err))
+    vim.notify(what .. tostring(err.traceback), vim.log.levels.DEBUG)
+    answer(refusal(method, err.message))
+    write.threw = true
 end
 
 --- An outcome as the editor's `ok, err`: refused is `false, message`; a

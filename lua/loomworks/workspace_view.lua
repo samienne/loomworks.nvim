@@ -60,7 +60,8 @@ local function collect_keyed_tools(tools_for_type)
     return keyed
 end
 
---- Context for the mapping dialog: inherited tool, no-tool profiles,
+--- Context for adding a project of `mod_type` (the add command's initial
+--- mappings and tool, model_commands): inherited tool, no-tool profiles,
 --- keyed tools. Pure query over cached profiles.
 --- @param ws loomworks.Workspace
 --- @param mod_type string module type (e.g. "cmake")
@@ -140,9 +141,10 @@ end
 --- @param result { mappings: table, tool_entry: table|nil }
 --- @return boolean ok, string|nil err
 function M.execute_add_project(ws, key, mod_type, path, result)
-    -- A keyed module's project without a toolchain is added unmapped: the
-    -- mapping dialog hides its mappings until a tool is chosen, so the
-    -- initial ones it still carries are not a request (no warn note).
+    -- A keyed module's project without a toolchain is added unmapped: its
+    -- configurations are mapped once a tool is chosen (when a profile is
+    -- created), so initial mappings passed without one are not a request
+    -- (no warn note).
     local mod = require("loomworks.modules").get(mod_type)
     local mappings = result.mappings
     if mod and mod.has_keyed_tools and not result.tool_entry then mappings = nil end
@@ -319,7 +321,7 @@ function M.execute_remove_project(ws, project, ctx, on_done)
 end
 
 -- =========================================================================
--- Mapping Dialog Data
+-- Initial Configuration-Set Mappings (adding a project)
 -- =========================================================================
 
 --- Auto-detect variant mappings for configuration sets.
