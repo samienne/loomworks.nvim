@@ -80,7 +80,7 @@ directly to `Snacks.win`. The page contains these sections in order:
    first-shipping provider flags a workspace that has C/C++ projects but no
    compiler cache on the toolchain path (see §16.31).
 4. **Profiles** — all materialized and explicit profiles
-5. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
+5. **Orphaned Build Dirs** — unreferenced cached configs (hidden when empty)
 6. **Configuration Sets** — declared sets with tool entries
 7. **Projects** — all projects with their configurations
 8. **Tasks** — active loomworks-managed tasks, tasks observed in the
@@ -100,8 +100,8 @@ flight, `the workspace daemon did not answer DebugConfig/1.adapters` after a
 failed or declined read (the section re-renders when the read ends), or `the
 workspace is no longer loaded`.
 
-The body sections — Diagnostics, Suggestions, Profiles, Orphaned
-Configurations, Configuration Sets, Projects and SDKs — render from
+The body sections — Diagnostics, Suggestions, Profiles, Orphaned Build
+Dirs, Configuration Sets, Projects and SDKs — render from
 `loomworks.view.Workspace/1` (core §19.13 "The workspace view"). In `daemon`
 mode only the daemon's: while the editor does not hold it, each of the seven
 is its title and one line in the warning highlight, `unavailable — <why>`
@@ -229,7 +229,7 @@ title listing available actions for top-level nodes.
 | Section | Hint line |
 |---------|-----------|
 | Profiles | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Orphaned Configurations | `[D] delete` (appended to title via chunks) |
+| Orphaned Build Dirs | `[D] delete` (appended to title via chunks) |
 
 **Group header hints**: Inner groups that contain actionable items append a
 hint suffix to the group label. The label uses `LoomworksActionable` highlight
@@ -500,7 +500,7 @@ discards changes.
 
 Changed mappings may orphan existing cached configs (old variant no longer
 referenced). This is intentional — orphans are cleaned explicitly via the
-"Clean all orphaned items" action in the Orphaned Configurations section.
+"Clean all orphaned items" action in the Orphaned Build Dirs section.
 
 **Config set deletion** (`D` on a set node):
 

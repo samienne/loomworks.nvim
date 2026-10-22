@@ -1252,7 +1252,7 @@ Output and error locations are not in the view: a client reads them with
 ### 14.4 `loomworks.view.Workspace/1`
 
 *(Step 5n.)* What the status page's body shows (spec/ui.md §1.1):
-Diagnostics, Suggestions, Profiles, Orphaned Configurations, Configuration
+Diagnostics, Suggestions, Profiles, Orphaned Build Dirs, Configuration
 Sets, Projects and SDKs. The header, LSP, Debug Adapters and Tasks sections
 have their own sources. The view is the body's whole contract: every field
 the status page reads to render these sections is listed here, and the page

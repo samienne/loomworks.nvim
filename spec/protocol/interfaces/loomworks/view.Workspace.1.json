@@ -2,7 +2,7 @@
   "interface": "loomworks.view.Workspace",
   "version": 1,
   "status": "draft",
-  "description": "Object /views (API.md §14.4; step 5n): what the status page's body shows - Diagnostics, Suggestions, Profiles, Orphaned Configurations, Configuration Sets, Projects and SDKs; the header, LSP, Debug Adapters and Tasks sections have their own sources. It lists every field the status page reads for these sections. It carries no build progress (percent, elapsed time, progress or last-operation messages): a client overlays those from loomworks.Tasks/1. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
+  "description": "Object /views (API.md §14.4; step 5n): what the status page's body shows - Diagnostics, Suggestions, Profiles, Orphaned Build Dirs, Configuration Sets, Projects and SDKs; the header, LSP, Debug Adapters and Tasks sections have their own sources. It lists every field the status page reads for these sections. It carries no build progress (percent, elapsed time, progress or last-operation messages): a client overlays those from loomworks.Tasks/1. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
   "methods": {
     "get": {
       "description": "The view's full state. Never loads the workspace: an unloaded one has empty arrays.",
