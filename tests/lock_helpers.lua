@@ -19,6 +19,16 @@ M.HELPER = (function()
     return dir .. "/cli.lua"
 end)()
 
+-- Ceilings for waiting on an async deletion's completion callback and on its
+-- locks' release. A ceiling, not a delay: the wait returns as soon as the
+-- callback runs. The CI runner starts every spec file at once on a few cores,
+-- and the deletion's scheduled half (save-lock, atomic cache write with its
+-- Windows retries, rm-rf) can then take well over 5 s for the first test of a
+-- file; every path of these deletions calls its callback, so only a genuine
+-- hang ever reaches the ceiling.
+M.DONE_MS = 30000
+M.RELEASE_MS = 10000
+
 local spawned = {}
 
 --- Start a helper holding `lockfile`; returns { pid, start, child, child_start }.
