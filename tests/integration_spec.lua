@@ -638,29 +638,6 @@ describe("project lifecycle", function()
         assert.is_nil(post_cache.build_dirs[bd_key])
     end)
 
-    it("find_project_by_path matches by path", function()
-        local ws = make_ws({
-            projects = {
-                MyApp = { cmake = {}, path = "src/app" },
-            },
-        })
-
-        local proj = wv.find_project_by_path(ws, "src/app", "app")
-        assert.is_not_nil(proj)
-        assert.equals("MyApp", proj.key)
-        assert.is_nil(wv.find_project_by_path(ws, "other", "other"))
-    end)
-
-    it("find_project_by_path matches by basename", function()
-        local ws = make_ws({
-            projects = { App = { cmake = {} } },
-        })
-
-        local proj = wv.find_project_by_path(ws, "App", "App")
-        assert.is_not_nil(proj)
-        assert.equals("App", proj.key)
-    end)
-
     it("derive_key_and_path handles root, root-level, and nested", function()
         local key, path
 
@@ -1022,17 +999,6 @@ describe("confirmation contexts", function()
         local found = false
         for _, line in ipairs(ctx.lines) do
             if line:find("No configurations to clean") then found = true; break end
-        end
-        assert.is_true(found)
-    end)
-
-    it("stray dir confirmation shows relative path", function()
-        local ws = make_ws({ projects = {} })
-
-        local ctx = wv.compute_delete_stray_dir_context(ws, "/root/.nvim/build/OldProject")
-        local found = false
-        for _, line in ipairs(ctx.lines) do
-            if line:find("OldProject") then found = true; break end
         end
         assert.is_true(found)
     end)

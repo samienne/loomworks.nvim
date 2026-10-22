@@ -740,22 +740,6 @@ function M.derive_key_and_path(root, abs_path, name)
     end
 end
 
---- Find the project key in workspace config that matches a browser entry path.
---- Find a project by its relative path or basename.
---- @param ws loomworks.Workspace
---- @param rel_path string relative path from root
---- @param basename string directory basename
---- @return loomworks.Project|nil
-function M.find_project_by_path(ws, rel_path, basename)
-    for _, proj in pairs(ws._projects) do
-        local proj_rel = proj.path or proj.key
-        if proj_rel == rel_path or proj_rel == basename then
-            return proj
-        end
-    end
-    return nil
-end
-
 -- =========================================================================
 -- Confirmation Dialog Content
 -- =========================================================================
@@ -926,27 +910,6 @@ function M.compute_delete_confirmation_context(ws, title, plan, description)
     add("  Press y to confirm, q to cancel", "Comment")
 
     return { lines = lines, highlights = highlights }
-end
-
---- Build confirmation dialog content for stray dir deletion.
---- @param ws loomworks.Workspace
---- @param dir string absolute normalized path
---- @return { lines: string[], highlights: table[] }
-function M.compute_delete_stray_dir_context(ws, dir)
-    local display = rel_path(ws, dir) or dir
-    return {
-        lines = {
-            "  Delete stray build directory:",
-            "",
-            "    " .. display,
-            "",
-            "  Press y to confirm, q to cancel",
-        },
-        highlights = {
-            { line = 1, hl_group = "DiagnosticWarn" },
-            { line = 3, hl_group = "DiagnosticWarn" },
-        },
-    }
 end
 
 --- Execute stray build dir deletion.
