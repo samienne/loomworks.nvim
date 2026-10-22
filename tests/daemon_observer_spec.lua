@@ -107,6 +107,14 @@ local function mount_views(srv, o)
             launch_remove = refused, deploy_save = refused, variable_save = refused,
             variable_remove = refused, type_config_set = refused, expand_preview = refused,
         } }))
+        -- The toolchain rescan and the SDKs (step 5o C2c-1): called, never
+        -- subscribed to.
+        assert(reg:mount("/toolchains", "core", "loomworks.Toolchains", 1, { methods = {
+            list = refused, rescan = refused,
+        } }))
+        assert(reg:mount("/toolchains", "core", "loomworks.Sdks", 1, { methods = {
+            detect = refused, add = refused, remove = refused,
+        } }))
         VIEW_STATE.tests = { state = "unloaded", stale = false, units = {} }
         assert(reg:mount("/views", "core", "loomworks.view.Tests", 1, {
             methods = { get = function() return VIEW_STATE.tests end },
@@ -418,7 +426,9 @@ describe("the observer (§19.16)", function()
             .. "devices: daemon offers no loomworks.Devices, editor needs /1 — devices unavailable; "
             .. "profiles: daemon offers no loomworks.Profiles, editor needs /1; "
             .. "configuration sets: daemon offers no loomworks.ConfigSets, editor needs /1; "
-            .. "projects: daemon offers no loomworks.Projects, editor needs /1",
+            .. "projects: daemon offers no loomworks.Projects, editor needs /1; "
+            .. "toolchains: daemon offers no loomworks.Toolchains, editor needs /1; "
+            .. "sdks: daemon offers no loomworks.Sdks, editor needs /1",
             obs.feature_note)
         -- The LSP configuration is never run in-process: its own note
         -- (§19.16 "LSP configuration" Unavailable).

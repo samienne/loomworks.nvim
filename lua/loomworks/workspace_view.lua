@@ -1256,6 +1256,12 @@ function M.save_type_config_field(project, field, value)
     return as_result(commands.type_config_set(project, field, value))
 end
 
+--- The installed SDK providers (or the one named) and the installations
+--- each detects (model_commands.sdk_detect): the command's outcome.
+--- @param provider string|nil
+--- @return loomworks.CommandOutcome
+function M.sdk_detect(provider) return commands.sdk_detect(provider) end
+
 --- Declare an SDK.
 --- @param ws loomworks.Workspace
 --- @param provider string

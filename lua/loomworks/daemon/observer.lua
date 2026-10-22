@@ -304,9 +304,20 @@ M.PROJECTS = {
         "launch_remove", "deploy_save", "variable_save", "variable_remove", "type_config_set", "expand_preview" },
     signals = {}, call_only = true,
 }
+-- The status page's toolchain rescan (`L`) and SDK section (step 5o C2c-1,
+-- API.md §11, §21): the SDK picker's `detect` read, `add` and `remove`;
+-- plain calls on `/toolchains`.
+M.TOOLCHAINS = {
+    object = "/toolchains", iface = "loomworks.Toolchains", v = 1, feature = "toolchains",
+    methods = { "rescan" }, signals = {}, call_only = true,
+}
+M.SDKS = {
+    object = "/toolchains", iface = "loomworks.Sdks", v = 1, feature = "sdks",
+    methods = { "detect", "add", "remove" }, signals = {}, call_only = true,
+}
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE }
 M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE, M.BUILD,
-    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS, M.PROJECTS }
+    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -2167,9 +2178,9 @@ local METHOD_IFACE = {
     device_stop = M.DEVICES,
     ["Profiles/1.set_device"] = M.PROFILES, ["Profiles/1.clear_device"] = M.PROFILES,
 }
--- The status page's model writes (step 5o C2a, C2b): every method of the
+-- The status page's model writes (step 5o C2a, C2b, C2c-1): every method of the
 -- interface tables above, by its qualified name.
-for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS, M.PROJECTS }) do
+for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS, M.PROJECTS, M.TOOLCHAINS, M.SDKS }) do
     local iface = want.iface:match("^loomworks%.(.+)$")
     for _, method in ipairs(want.methods) do METHOD_IFACE[iface .. "/" .. want.v .. "." .. method] = want end
 end
@@ -2381,6 +2392,19 @@ local CALLS = {
     end,
     ["Projects/1.type_config_set"] = function(conn, args, cb, env)
         conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "type_config_set", args, cb, env)
+    end,
+    -- (step 5o C2c-1)
+    ["Toolchains/1.rescan"] = function(conn, args, cb, env)
+        conn:call(M.TOOLCHAINS.object, M.TOOLCHAINS.iface, M.TOOLCHAINS.v, "rescan", args, cb, env)
+    end,
+    ["Sdks/1.detect"] = function(conn, args, cb, env)
+        conn:call(M.SDKS.object, M.SDKS.iface, M.SDKS.v, "detect", args, cb, env)
+    end,
+    ["Sdks/1.add"] = function(conn, args, cb, env)
+        conn:call(M.SDKS.object, M.SDKS.iface, M.SDKS.v, "add", args, cb, env)
+    end,
+    ["Sdks/1.remove"] = function(conn, args, cb, env)
+        conn:call(M.SDKS.object, M.SDKS.iface, M.SDKS.v, "remove", args, cb, env)
     end,
 }
 
@@ -3186,8 +3210,8 @@ function Observer:_resubscribe_view(want)
 end
 
 --- The status page starts a model write in-process in `daemon` mode (a
---- method not routed to the daemon yet — the rest of Projects/1, Sdks/1,
---- Toolchains/1, Maintenance/1 until step 5o C2b / C2c; ui/model_calls): the
+--- method not routed to the daemon yet — Maintenance/1 and the project
+--- row's removal until step 5o C2c-2; ui/model_calls): the
 --- held workspace view does not know it until a freshness `get` sent after
 --- it landed is answered (Observer:workspace_view_stale). Marks the view
 --- stale only; Observer:in_process_write, once the write ended (an async

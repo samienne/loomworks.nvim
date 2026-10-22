@@ -44,7 +44,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         "execute_delete_config_set", "execute_add_project", "execute_delete_configuration",
         "execute_delete_launch_config", "execute_save_variable", "execute_delete_variable",
         "save_type_config_field", "execute_save_configuration", "execute_save_launch_config", "save_deploy",
-        "expand_preview", "project_declaration" }
+        "expand_preview", "project_declaration", "sdk_detect", "add_sdk", "remove_sdk" }
 
     before_each(function()
         key = H.tmp() .. "/trust.key"
@@ -635,5 +635,66 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         for _, proj in pairs(ws:get_projects()) do
             if proj.key == "app" then assert.is_nil((proj.type_config or {}).clangd) end
         end
+    end)
+    -- Step 5o C2c-1: the SDK section and `L`.
+
+    it("SDKs: the picker's detect, add by path, remove by the row's id; the rescan; none in-process", function()
+        local sdk_dir = H.tmp() .. "/fake-sdk"
+        vim.fn.mkdir(sdk_dir, "p")
+        package.loaded["loomworks.sdks.fake_c2c"] = nil
+        package.preload["loomworks.sdks.fake_c2c"] = function()
+            local SDK = require("loomworks.sdk")
+            local P = { id = "fake_c2c", api_version = require("loomworks.api_versions").sdk,
+                display_name = "Fake C2c", path_prompt = "Path to the fake SDK" }
+            function P.validate(path) return vim.fn.isdirectory(path) == 1 and { version = "3" } or nil end
+            function P.create_sdk(key, path, version)
+                return SDK.new({ key = key, type = "fake_c2c", version = version, path = path,
+                    resolved = true, provider = P })
+            end
+            function P.detect_all() return { { path = sdk_dir, version = "3" } } end
+            function P.match_version() return true end
+            return P
+        end
+        local lw = require("loomworks")
+        local rescan_saved = lw.rescan_tools
+        lw.rescan_tools = function() error("in-process rescan in daemon mode") end
+        local ok_, err_ = pcall(function()
+            serve()
+            local r = call("Sdks/1.detect", { provider = "fake_c2c" })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.same({ { id = "fake_c2c", label = "Fake C2c", path_prompt = "Path to the fake SDK",
+                found = { { path = sdk_dir, version = "3" } } } }, r.providers)
+
+            r = call("Sdks/1.add", { provider = "fake_c2c", path = sdk_dir })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            local skey = r.sdk.key
+            assert.equals("fake_c2c-3", skey)
+            assert.is_not_nil(r.sdk.id)
+            until_view(function() return row("sdks", skey) ~= nil end)
+            local srow = row("sdks", skey)
+            assert.equals(r.sdk.id, srow.id)
+
+            -- `L`: the daemon's rescan.
+            r = call("Toolchains/1.rescan", {})
+            assert.equals("ok", r.outcome, vim.inspect(r))
+
+            -- A row without an id is refused without a call; a stale one by the daemon.
+            r = call("Sdks/1.remove", { sdk = { key = skey } })
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("no SDK id", 1, true), r.message)
+            r = call("Sdks/1.remove", { sdk = srow })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            until_view(function() return row("sdks", skey) == nil end)
+            r = call("Sdks/1.remove", { sdk = srow })
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("^SDK: "), r.message)
+            assert.truthy(r.message:find("a stale reference", 1, true), r.message)
+            -- The editor's model never declared it.
+            for _, sdk in ipairs(ws:sdks() or {}) do assert.not_equals(skey, sdk.key) end
+        end)
+        lw.rescan_tools = rescan_saved
+        package.preload["loomworks.sdks.fake_c2c"] = nil
+        package.loaded["loomworks.sdks.fake_c2c"] = nil
+        assert(ok_, err_)
     end)
 end)

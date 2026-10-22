@@ -112,9 +112,6 @@ return {
             "loomworks.project",
             "loomworks.variables",
         },
-        ["lua/loomworks/ui/sections/sdks.lua"] = {
-            "loomworks.sdks",
-        },
         ["lua/loomworks/ui/status.lua"] = {
             "loomworks.events",
         },
@@ -266,8 +263,12 @@ return {
     -- 59 -> 62: step 5o C2b2-2 adds launch_save, deploy_save and
     -- expand_preview, conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...)
     -- x3 — Projects/1.
+    -- 62 -> 66: step 5o C2c-1 adds four CALLS naming their methods
+    -- literally, conn:call(M.TOOLCHAINS.object, M.TOOLCHAINS.iface, ...) for
+    -- rescan and conn:call(M.SDKS.object, M.SDKS.iface, ...) x3 (detect, add,
+    -- remove) — the versioned tables Toolchains/1 and Sdks/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 62,
+        ["lua/loomworks/daemon/observer.lua"] = 66,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

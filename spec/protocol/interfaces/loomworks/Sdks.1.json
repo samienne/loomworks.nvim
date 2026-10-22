@@ -5,7 +5,7 @@
   "description": "Object /toolchains (API.md §21, step 5o part B4): the workspace's SDKs (spec §10). detect is a query; add and remove are commands, each in a model segment of the caller's environment, its write the in-process editor's (loomworks.model_commands); Workspace/1 changed precedes the reply. A refused or failed write changes neither the file nor the model: the refused result. list is deferred (view.Workspace/1 carries the SDKs).",
   "methods": {
     "detect": {
-      "description": "The installed SDK providers (or the one named) and the installation paths each finds, in the client's environment. Changes nothing. An unknown provider is refused.",
+      "description": "The installed SDK providers (or the one named) and the installations each finds (path, and version when known), in the client's environment. Changes nothing. An unknown provider is refused.",
       "params": {
         "type": "object",
         "required": [],
@@ -167,11 +167,27 @@
               "label": {
                 "type": "string"
               },
+              "path_prompt": {
+                "description": "What the provider calls the path a user types (e.g. 'Path to C/C++ compiler executable'); absent: '<label> SDK path'.",
+                "type": "string"
+              },
               "found": {
-                "description": "The installation paths the provider detects.",
+                "description": "The installations the provider detects: each one's path, and its version when the provider reports one.",
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "object",
+                  "required": [
+                    "path"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
