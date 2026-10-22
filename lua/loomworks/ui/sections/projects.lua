@@ -246,6 +246,7 @@ local function edit_project_configuration(project, cfg, crow)
             or ("New configuration — " .. project_key),
         name = ctx.name,
         variant = ctx.variant,
+        variant_source = ctx.variant_source,
         inherits = ctx.inherits,
         options = ctx.options,
         variables = ctx.variables,
@@ -261,6 +262,8 @@ local function edit_project_configuration(project, cfg, crow)
         inherited_options = ctx.inherited_options,
         project_variables = ctx.project_variables,
         resolved_variables = ctx.resolved_variables,
+        config_compiler_overrides = ctx.config_compiler_overrides,
+        active_compiler_family = ctx.active_compiler_family,
         rename_effects = config_name and function(new_name)
             if new_name == config_name or new_name == "" then return nil end
             local effects = {}

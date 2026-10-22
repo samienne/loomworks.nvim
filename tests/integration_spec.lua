@@ -3035,6 +3035,81 @@ describe("project configuration lifecycle", function()
 end)
 
 -- =========================================================================
+-- Configuration editor opened from the status page (projects section)
+-- =========================================================================
+
+describe("configuration editor opened from the status page", function()
+    local cmake_real = require("loomworks.modules.cmake")
+    local saved
+
+    before_each(function()
+        -- The mock cmake has no provenance resolvers: lend it the real ones.
+        saved = { mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources }
+        mock_modules.cmake.resolve_variant_source = cmake_real.resolve_variant_source
+        mock_modules.cmake.resolve_options_with_sources = cmake_real.resolve_options_with_sources
+    end)
+    after_each(function()
+        mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources =
+            saved[1], saved[2]
+    end)
+
+    --- Render the projects section of `ws` (in-process view, every fold
+    --- open), press <CR> on the first row matching `pattern` and return the
+    --- options the configuration editor dialog was opened with.
+    local function open_from_page(ws, pattern)
+        local ss = require("loomworks.status_source")
+        local Tree = require("loomworks.ui.tree")
+        local view = ws:view_workspace({ bind = ss.bind })
+        local ctx = { lw = require("loomworks"), view = view, ref = ss.object_of, ws = ws, mode = "in-process" }
+        local tree = Tree.new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local lines = tree:render()
+        local line
+        for i, l in ipairs(lines) do
+            if l:find(pattern) and tree.line_meta[i] and tree.line_meta[i].on_enter then line = i; break end
+        end
+        assert(line, "no actionable row matching " .. pattern .. " in:\n" .. table.concat(lines, "\n"))
+        local dialog = require("loomworks.ui.config_editor_dialog")
+        local lw = require("loomworks")
+        local orig_open, orig_ws = dialog.open, lw.get_workspace
+        local got
+        dialog.open = function(o) got = o end
+        lw.get_workspace = function() return ws end
+        local ok, err = pcall(tree.line_meta[line].on_enter)
+        dialog.open, lw.get_workspace = orig_open, orig_ws
+        assert(ok, err)
+        assert.is_table(got, "the configuration editor did not open")
+        return got
+    end
+
+    it("shows the variant's source and the read-only compiler overrides under the active family", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            Dev = { inherits = "variant:Debug", overrides = { gcc = { out = "z" } } },
+                        },
+                    },
+                    variables = { out = { type = "string", default = "x" } },
+                },
+            },
+            configuration_sets = { Dev = { App = "Dev" } },
+        }, {
+            active_profile = "Dev",
+            profiles = { Dev = { configuration_set = "Dev" } },
+        })
+        local profile = ws:get_active_profile()
+        assert.is_not_nil(profile)
+        profile.tool_for = function() return { data = { compiler_family = "gcc" } } end
+        local opts = open_from_page(ws, "▼ Dev ")
+        assert.equals("variant:Debug", opts.variant_source)
+        assert.same({ gcc = { out = "z" } }, opts.config_compiler_overrides)
+        assert.equals("gcc", opts.active_compiler_family)
+    end)
+end)
+
+-- =========================================================================
 -- cmake options resolution
 -- =========================================================================
 
