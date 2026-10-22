@@ -288,9 +288,20 @@ M.CONFIG_SETS = {
     object = "/projects", iface = "loomworks.ConfigSets", v = 1, feature = "configuration sets",
     methods = { "candidates", "add", "update", "remove" }, signals = {}, call_only = true,
 }
+-- The projects' commands the status page sends (step 5o C2b, API.md §19):
+-- the project browser's add (with its `candidates` read), the declaration
+-- read of the variable editor, and the removals and edits of
+-- configurations, launch configurations, variables and `type_config`
+-- fields; plain calls.
+M.PROJECTS = {
+    object = "/projects", iface = "loomworks.Projects", v = 1, feature = "projects",
+    methods = { "candidates", "add", "declaration", "configuration_remove", "launch_remove", "variable_save",
+        "variable_remove", "type_config_set" },
+    signals = {}, call_only = true,
+}
 M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE }
 M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TESTS, M.VIEW_WORKSPACE, M.BUILD,
-    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS }
+    M.LAUNCH, M.DEBUG, M.LSP, M.TESTS, M.DEVICES, M.PROFILES, M.CONFIG_SETS, M.PROJECTS }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -1663,8 +1674,10 @@ function Observer:_refetch_views(only, answered)
             conn:call(want.object, want.iface, want.v, "get", {}, function(state, err)
                 vim.schedule(function()
                     if self.state == "stopped" or self.conn ~= conn then return end
-                    if answered then answered() end
                     if err or type(state) ~= "table" then return end
+                    -- Only a view read now knows the writes before it: a
+                    -- failed `get` leaves them unknown (`answered` not run).
+                    if answered then answered() end
                     self:_set_view(want.view, state)
                 end)
             end)
@@ -2115,9 +2128,9 @@ local METHOD_IFACE = {
     device_stop = M.DEVICES,
     ["Profiles/1.set_device"] = M.PROFILES, ["Profiles/1.clear_device"] = M.PROFILES,
 }
--- The status page's model writes (step 5o C2a): every method of the
+-- The status page's model writes (step 5o C2a, C2b): every method of the
 -- interface tables above, by its qualified name.
-for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS }) do
+for _, want in ipairs({ M.WORKSPACE, M.PROFILES, M.CONFIG_SETS, M.PROJECTS }) do
     local iface = want.iface:match("^loomworks%.(.+)$")
     for _, method in ipairs(want.methods) do METHOD_IFACE[iface .. "/" .. want.v .. "." .. method] = want end
 end
@@ -2290,6 +2303,31 @@ local CALLS = {
     end,
     ["ConfigSets/1.remove"] = function(conn, args, cb, env)
         conn:call(M.CONFIG_SETS.object, M.CONFIG_SETS.iface, M.CONFIG_SETS.v, "remove", args, cb, env)
+    end,
+    -- (step 5o C2b)
+    ["Projects/1.candidates"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "candidates", args, cb, env)
+    end,
+    ["Projects/1.add"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "add", args, cb, env)
+    end,
+    ["Projects/1.declaration"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "declaration", args, cb, env)
+    end,
+    ["Projects/1.configuration_remove"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "configuration_remove", args, cb, env)
+    end,
+    ["Projects/1.launch_remove"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "launch_remove", args, cb, env)
+    end,
+    ["Projects/1.variable_save"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "variable_save", args, cb, env)
+    end,
+    ["Projects/1.variable_remove"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "variable_remove", args, cb, env)
+    end,
+    ["Projects/1.type_config_set"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "type_config_set", args, cb, env)
     end,
 }
 
@@ -3016,11 +3054,21 @@ function Observer:_own_write()
     end)
 end
 
---- The status page ran a model write in-process in `daemon` mode (a method
---- not routed to the daemon yet — Projects/1, Sdks/1, Maintenance/1 until
---- step 5o C2b / C2c; ui/model_calls): the held workspace view does not
---- know it until a freshness `get` sent after it is answered
---- (Observer:workspace_view_stale). Ensures that `get`.
+--- The status page starts a model write in-process in `daemon` mode (a
+--- method not routed to the daemon yet — the rest of Projects/1, Sdks/1,
+--- Toolchains/1, Maintenance/1 until step 5o C2b / C2c; ui/model_calls): the
+--- held workspace view does not know it until a freshness `get` sent after
+--- it landed is answered (Observer:workspace_view_stale). Marks the view
+--- stale only; Observer:in_process_write, once the write ended (an async
+--- one — a deletion's cache write — lands later), sends that `get`.
+function Observer:in_process_write_started()
+    if not (self._feat and self._feat[M.VIEW_WORKSPACE.feature] == "subscribed") then return end
+    self._view_stale_gen = (self._view_stale_gen or 0) + 1
+end
+
+--- The status page's in-process write (Observer:in_process_write_started)
+--- ended: the held workspace view does not know it until a freshness `get`
+--- sent now is answered. Ensures that `get`.
 function Observer:in_process_write()
     if not (self._feat and self._feat[M.VIEW_WORKSPACE.feature] == "subscribed") then return end
     self._view_stale_gen = (self._view_stale_gen or 0) + 1

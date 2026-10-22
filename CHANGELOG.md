@@ -155,6 +155,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   deletes and refuses when the file changed since. Creating a profile from an
   automatic configuration set now adds the set together with the profile,
   not when the set is picked, in both runtime modes. (#317)
+- Experimental daemon: in daemon mode the status page's project add (from
+  the project browser), removal of a configuration or launch configuration,
+  variable edits and removal, and edits of a project's fields (build dir,
+  commands, environment, ...) are calls to the workspace daemon that name the
+  project, configuration or launch configuration by its id; the variable
+  editor reads the project from the daemon. A refusal is an error
+  notification and changes nothing; it is never done in Neovim instead. The
+  configuration, launch and deploy editors still write from Neovim. (#318)
 - Experimental daemon: in daemon mode the editor's builds, configures and
   module cleans (of a profile, of one configuration, a target's build and
   the clean of a rebuild) run in the workspace daemon as tasks the editor

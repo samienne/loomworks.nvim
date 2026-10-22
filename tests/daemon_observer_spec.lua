@@ -100,6 +100,13 @@ local function mount_views(srv, o)
             candidates = function() return { outcome = "ok", sets = {} } end,
             add = refused, update = refused, remove = refused, generate_defaults = refused,
         } }))
+        -- The projects (step 5o C2b): called, never subscribed to.
+        assert(reg:mount("/projects", "core", "loomworks.Projects", 1, { methods = {
+            candidates = refused, add = refused, declaration = refused, configuration_save = refused,
+            configuration_remove = refused, options_save = refused, launch_save = refused,
+            launch_remove = refused, deploy_save = refused, variable_save = refused,
+            variable_remove = refused, type_config_set = refused, expand_preview = refused,
+        } }))
         VIEW_STATE.tests = { state = "unloaded", stale = false, units = {} }
         assert(reg:mount("/views", "core", "loomworks.view.Tests", 1, {
             methods = { get = function() return VIEW_STATE.tests end },
@@ -410,7 +417,8 @@ describe("the observer (§19.16)", function()
             .. "tests: daemon offers no loomworks.Tests, editor needs /1 — tests unavailable; "
             .. "devices: daemon offers no loomworks.Devices, editor needs /1 — devices unavailable; "
             .. "profiles: daemon offers no loomworks.Profiles, editor needs /1; "
-            .. "configuration sets: daemon offers no loomworks.ConfigSets, editor needs /1",
+            .. "configuration sets: daemon offers no loomworks.ConfigSets, editor needs /1; "
+            .. "projects: daemon offers no loomworks.Projects, editor needs /1",
             obs.feature_note)
         -- The LSP configuration is never run in-process: its own note
         -- (§19.16 "LSP configuration" Unavailable).

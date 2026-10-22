@@ -171,7 +171,7 @@ return {
         ["lua/loomworks/overseer.lua"] = 22,
         ["lua/loomworks/reload.lua"] = 1,
         ["lua/loomworks/ui/actions.lua"] = 9,
-        ["lua/loomworks/ui/project_browser.lua"] = 4,
+        ["lua/loomworks/ui/project_browser.lua"] = 3,
         -- config_sets.lua 4 -> 3, diagnostics.lua 1 -> 0, orphaned.lua 2 -> 1,
         -- profiles.lua 2 -> 0, projects.lua 6 -> 5, sdks.lua 1 -> 0: step 5n
         -- part A renders the body from `view.Workspace/1` (view_state.lua);
@@ -257,8 +257,12 @@ return {
     -- qualified names of METHOD_IFACE built from `want.iface` (want one of
     -- M.WORKSPACE, M.PROFILES, M.CONFIG_SETS) — the versioned tables
     -- Workspace/1, Profiles/1 and ConfigSets/1.
+    -- 50 -> 58: step 5o C2b adds eight CALLS naming their methods literally,
+    -- conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...) x8 (candidates,
+    -- add, declaration, configuration_remove, launch_remove, variable_save,
+    -- variable_remove, type_config_set) — the versioned table Projects/1.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 50,
+        ["lua/loomworks/daemon/observer.lua"] = 58,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

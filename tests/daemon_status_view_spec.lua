@@ -313,20 +313,29 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         return reverts, edit, done, buf
     end
 
-    --- A status-page write not routed to the daemon yet (Projects/1 until
-    --- 5o C2b), run in-process through ui/model_calls: a project's
-    --- `type_config` field saved (the editor's model's write stubbed).
+    --- A status-page write not routed to the daemon yet (Sdks/1 until 5o
+    --- C2c), run in-process through ui/model_calls: an SDK added (the
+    --- editor's model's write stubbed).
     local function in_process_write()
         local wv = require("loomworks.workspace_view")
-        local orig = wv.save_type_config_field
+        local orig = wv.add_sdk
         local saved = false
-        wv.save_type_config_field = function() saved = true; return true end
+        wv.add_sdk = function() saved = true; return {} end
         local r
-        require("loomworks.ui.model_calls").call(ws, "Projects/1.type_config_set",
-            { project = ws:get_projects()[1], field = "x", value = "y" }, function(x) r = x end)
-        wv.save_type_config_field = orig
+        require("loomworks.ui.model_calls").call(ws, "Sdks/1.add",
+            { provider = "x", path = "/sdk" }, function(x) r = x end)
+        wv.add_sdk = orig
         assert.is_true(saved)
         assert.equals("ok", r and r.outcome)
+    end
+
+    --- The `get`s of the workspace view sent so far.
+    local function view_gets()
+        local n = 0
+        for _, c in ipairs(calls) do
+            if c.method == "get" and c.iface == "loomworks.view.Workspace" then n = n + 1 end
+        end
+        return n
     end
 
     it("the buffer's 'modified' follows the daemon's view while it is held and fresh, else the editor's model (5o C2a)", function()
@@ -414,6 +423,45 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         edit("edit")
         done()
         assert.equals(0, #reverts)
+    end)
+
+    it("a failed freshness `get` leaves the write unknown: still the editor's model's flag (5o C2b)", function()
+        -- The `get` is answered with nothing usable (a failed read).
+        fake_obs(nil, function() return nil end)
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        ws:get_profiles()[1]._intent = "local+shared"
+        in_process_write()
+        assert.is_true(vim.wait(1000, function() return view_gets() > 0 end, 10))
+        vim.wait(50)
+        assert.is_true(obs:workspace_view_stale())
+        assert.is_true(status_source.modified(ws))
+    end)
+
+    it("an async in-process write is stale from its start; the freshness `get` is sent once it ended (5o C2b)", function()
+        local fresh = daemon_view(function(v) v.modified = true end)
+        fake_obs(nil, function() return fresh end)
+        header()
+        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
+        ws:get_profiles()[1]._intent = "local+shared"
+        local wv = require("loomworks.workspace_view")
+        local orig = wv.execute_delete_stray_dir
+        local done
+        wv.execute_delete_stray_dir = function(_, _, cb) done = cb end
+        local r
+        require("loomworks.ui.model_calls").call(ws, "Maintenance/1.execute_deletion",
+            { target = { stray_dir = "/w/x" } }, function(x) r = x end)
+        wv.execute_delete_stray_dir = orig
+        -- Running: stale, and no `get` yet (its answer could not know the write).
+        vim.wait(50)
+        assert.is_true(obs:workspace_view_stale())
+        assert.equals(0, view_gets())
+        assert.is_nil(r)
+        -- Ended: the `get` is sent; its answer ends the mark.
+        done(true)
+        assert.equals("ok", r and r.outcome)
+        assert.is_true(vim.wait(1000, function() return views.daemon_state(obs, "workspace") == fresh end, 10))
+        assert.is_false(obs:workspace_view_stale())
     end)
 
     it("the answered freshness `get` ends it: the daemon's view's flag again", function()
