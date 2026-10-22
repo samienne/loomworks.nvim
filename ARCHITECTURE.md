@@ -1903,7 +1903,7 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `Tasks/1` tasks (`RemoteTask.profile_name` / `units` / `pct` /
   `start_time`; a task of no profile counts for a unit row only when it runs
   that row's configuration unit, whose key comes from the editor's model
-  until C2c); the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
+  through `ref` until 5o C2d); the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
   pass the row itself to `ui/model_calls.lua`, which sends its id (5o
   C2a), as do the Projects section's configuration and launch removals,
   variable edits (the editor reading `Projects/1.declaration`) and

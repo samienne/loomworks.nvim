@@ -2154,17 +2154,19 @@ the daemon's operations as with any other process:
 
 - `lw nuke` — removes the workspace's build state (`.nvim/build/`, the build
   and health caches), taking every build-directory lock first (§19.3); the
-  editor's nuke is `Maintenance/1.nuke` from step 5o *(optional part B6)*;
+  editor's nuke in `daemon` mode is `Maintenance/1.nuke` (§19.16 "Model
+  writes");
 - `lw device clean` (§16.34) — its device locks and the device's staging stay
   with the client process, as for a device run;
 - the editor's own operations, including its clean, delete and configure
   actions (§19.16) — until step 5k, which routes its builds, configures,
   module cleans and launch preparations (§19.16 "Editor operations"); its
   deletions (a profile, a configuration unit, an orphaned or stray build
-  directory, all orphans, a project with its build state) stay here until
-  step 5o, which makes them `Maintenance/1.execute_deletion` tasks holding
-  the workspace operation lock and the build-directory locks of §19.3 like
-  every other deletion path (§4.6); its device-target launches until
+  directory, all orphans, a project with its build state) are, in `daemon`
+  mode, `Maintenance/1.execute_deletion` tasks (§19.16 "Model writes"), and
+  in-process ones otherwise, holding the workspace operation lock and the
+  build-directory locks of §19.3 like every other deletion path (§4.6); its
+  device-target launches until
   `Devices/1` (step 5n, §19.16 "Editor operations"). Its test discovery, test runs
   and test debug preparations move to `Tests/1` in step 5m (§19.16 "Tests").
 

@@ -12,7 +12,8 @@ local M = {}
 
 --- The editor's in-process workspace model (the page's one read of it: the
 --- header's root, the workspace the actions' calls go to, and the model
---- the actions not routed yet write, until step 5o parts C2b / C2c).
+--- `ref` resolves a row to for the operations not called through
+--- ui/model_calls — builds, cleans, cancels — until step 5o C2d).
 --- @return loomworks.Workspace|nil
 local function model()
     return require("loomworks").get_workspace()
@@ -116,9 +117,10 @@ local function render_fn(tree)
         ref = body.ref,
         profile_progress = body.profile_progress,
         unit_progress = body.unit_progress,
-        -- For the sections' actions only: the in-process model the actions
-        -- not routed yet act on (in `daemon` mode until step 5o C2b / C2c,
-        -- spec §19.16 "Transition"), and the workspace their calls go to.
+        -- For the sections' actions only: the workspace their calls go to
+        -- (every status-page model write is a ui/model_calls call, in both
+        -- modes), and the in-process model the builds, cleans and cancels
+        -- act on (in `daemon` mode until step 5o C2d).
         ws = ws,
         all_profiles = lw.get_profiles(),
         active_profile = lw.get_active_profile(),
