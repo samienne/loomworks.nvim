@@ -1664,9 +1664,9 @@ end
 --- editor's own builds passed over: `nuke_cache` stops them first); a `plan`
 --- the fresh one differs from is refused (`deletion_plan.CHANGED`); without
 --- `yes` it is `confirm { lines, plan }`; otherwise `Core:nuke_cache` (the
---- live workspace retired, `_nuke_begin`'s checks and locks, the removal,
---- the reload) — `ok` when the removal ran, refused when `_nuke_begin`
---- refused it (already notified). Deletion safety: no deletion path here;
+--- live workspace retired, `_nuke_begin`'s checks and locks, the `plan`
+--- compared again under them, the removal, the reload) — `ok` when the
+--- removal ran, refused (with its message; not also notified) otherwise. Deletion safety: no deletion path here;
 --- every path is `_nuke_begin`'s.
 --- @param core table the editor's core
 --- @param root string the workspace root
@@ -1681,7 +1681,18 @@ function M.nuke(core, root, plan, yes)
     if not yes then
         return { outcome = "confirm", lines = M.nuke_listing(core, root, areas), plan = p.token }
     end
-    if not core:nuke_cache(root) then return refused("the nuke was refused (see the message above)") end
+    -- The plan is compared again AFTER `nuke_cache` retired the live workspace
+    -- (which pumps the event loop), under `_nuke_begin`'s locks — as the
+    -- daemon does: an area or build directory that appeared meanwhile was
+    -- never listed, so a different plan is refused and nothing is removed.
+    local CHANGED = require("loomworks.deletion_plan").CHANGED
+    local ran, why = core:nuke_cache(root, {
+        quiet = true,
+        check = function(st)
+            if plan ~= nil and M.nuke_plan(core, st.root, st.areas).token ~= plan then return CHANGED end
+        end,
+    })
+    if not ran then return refused(why or "the nuke was refused") end
     return ok()
 end
 

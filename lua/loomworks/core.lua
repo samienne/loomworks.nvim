@@ -644,18 +644,25 @@ end
 
 --- Nuke the cache: delete .nvim/build/ and loomworks.cache.json, then reload.
 --- Caller must confirm with the user before calling this.
+--- `opts.check(st)` runs after `_nuke_begin`, under its locks (after the
+--- live workspace was retired, which pumps the event loop): a string it
+--- returns refuses the nuke, nothing removed — how a confirmed plan is
+--- compared with the one the removal would act on (model_commands.nuke).
+--- `opts.quiet`: a refusal is returned, not notified (the caller reports it).
 --- @param root string workspace root to nuke
---- @return boolean ran the removal ran (false: `_nuke_begin` refused it, notified)
-function Core:nuke_cache(root)
+--- @param opts? { check?: fun(st: table): string|nil, quiet?: boolean }
+--- @return boolean ran the removal ran (false: refused)
+--- @return string|nil message the refusal (no `loomworks:` prefix)
+function Core:nuke_cache(root, opts)
     -- The live workspace goes first (spec §19.3): its tasks are stopped (an
     -- editor build would keep writing into the tree, and hold its lock) and
     -- it can no longer save — a callback that ran while the removal pumps the
     -- event loop must not recreate the cache with stale `built` states. The
     -- reload below builds a fresh one, also when the nuke was refused.
     self:_retire_workspace()
-    local norm_root = self:_nuke_files(root)
+    local norm_root, msg = self:_nuke_files(root, opts)
     self:setup({ root = norm_root or self._deps.normalize(root) })
-    return norm_root ~= nil
+    return norm_root ~= nil, msg
 end
 
 --- Stop the live workspace's tasks (waiting, bounded, for them to end) and
@@ -678,15 +685,27 @@ end
 --- nuke in `_nuke_begin`), each checked to be
 --- under `root/.nvim/`. Shared by the editor's nuke and `lw nuke` (spec §17.4).
 --- Returns the normalized root when it ran (a failed rm is reported, and the
---- reload shows what is left), nil when refused.
+--- reload shows what is left), nil + the refusal when refused (notified
+--- unless `opts.quiet`). `opts` as `nuke_cache`'s.
 --- @param root string
---- @return string|nil norm_root
-function Core:_nuke_files(root)
+--- @param opts? { check?: fun(st: table): string|nil, quiet?: boolean }
+--- @return string|nil norm_root, string|nil message
+function Core:_nuke_files(root, opts)
+    opts = opts or {}
     local st, msg = self:_nuke_begin(root)
-    if not st then
-        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
-        return nil
+    if st and opts.check then
+        -- Under the locks: a refusal releases them, nothing removed.
+        msg = opts.check(st)
+        if msg then
+            self:_nuke_release(st)
+            st = nil
+        end
     end
+    if not st then
+        if not opts.quiet then self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR) end
+        return nil, msg
+    end
+    st.quiet = opts.quiet
     return self:_nuke_run(st)
 end
 
@@ -793,9 +812,10 @@ function Core:_nuke_begin(root, opts)
 end
 
 --- The second half of a nuke, under the locks `_nuke_begin` took (released
---- here). Returns the normalized root when it ran, nil when refused.
+--- here). Returns the normalized root when it ran, nil + the refusal when
+--- refused (notified unless `st.quiet`).
 --- @param st table
---- @return string|nil norm_root
+--- @return string|nil norm_root, string|nil message
 function Core:_nuke_run(st)
     local norm_root, build_dir, locks, held = st.root, st.build_dir, st.locks, st.held
     local cache_path, health_path = st.cache_path, st.health_path
@@ -833,11 +853,12 @@ function Core:_nuke_run(st)
         targets[#targets + 1] = aside
     elseif rerr then
         self:_nuke_release(st)
-        self._deps.notify("loomworks: cannot nuke: could not move .nvim/build aside (" .. rerr
+        local msg = "cannot nuke: could not move .nvim/build aside (" .. rerr
             .. ") — close programs using files in it (the editor's build, a file explorer, a "
             .. "running program), then nuke again. The build caches were removed; the tree was "
-            .. "left as it is.", vim.log.levels.ERROR)
-        return nil
+            .. "left as it is."
+        if not st.quiet then self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR) end
+        return nil, msg
     else
         -- No real directory to move (none, or a host's fake root).
         targets[#targets + 1] = build_dir

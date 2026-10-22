@@ -506,3 +506,76 @@ describe("nuke removes owned LSP database areas", function()
         assert.is_true(exists(root .. "/.nvim/build/App/Debug/CMakeCache.txt"))
     end)
 end)
+
+-- The editor's own nuke (model_commands.nuke, `<C-n>` in-process): the
+-- confirmed plan is compared AFTER the workspace is retired, under the locks
+-- (as the daemon does), so a plan that changed meanwhile removes nothing.
+describe("in-process nuke compares the confirmed plan under the locks", function()
+    local Core = require("loomworks.core")
+    local mc = require("loomworks.model_commands")
+    local root
+    local function make_core(notes)
+        local core = Core.new({
+            notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end,
+            normalize = norm,
+            modules = {
+                list = function() return { "cmake", "late" } end,
+                get = function(id)
+                    if id == "cmake" then return { lsp_database_root = "cc" } end
+                    return { lsp_database_root = "cc3" }
+                end,
+            },
+        })
+        core.setup = function() end -- the reload is not under test
+        return core
+    end
+
+    before_each(function()
+        root = new_tmp()
+        touch(root .. "/loomworks.json", "{}")
+        touch(root .. "/.nvim/build/App/Debug/CMakeCache.txt")
+        touch(root .. "/.nvim/cache/cc/App/Debug/compile_commands.json")
+    end)
+    after_each(function() vim.fn.delete(root, "rf") end)
+
+    it("an area created during the retire wait refuses the nuke, deleting nothing", function()
+        local notes = {}
+        local core = make_core(notes)
+        local c = mc.nuke(core, root, nil, false)
+        assert.equals("confirm", c.outcome)
+        -- While the live workspace is retired (the loop is pumped), a new
+        -- owned LSP database area appears: it was never listed.
+        core._retire_workspace = function()
+            touch(root .. "/.nvim/cache/cc3/App/compile_commands.json")
+        end
+        local r = mc.nuke(core, root, c.plan, true)
+        assert.equals("refused", r.outcome)
+        assert.equals(require("loomworks.deletion_plan").CHANGED, r.message)
+        assert.is_true(exists(root .. "/.nvim/cache/cc3/App/compile_commands.json"))
+        assert.is_true(exists(root .. "/.nvim/cache/cc/App/Debug/compile_commands.json"))
+        assert.is_true(exists(root .. "/.nvim/build/App/Debug/CMakeCache.txt"))
+        -- The locks were released: a nuke runs afterwards.
+        assert.is_true((core:nuke_check(root)))
+    end)
+
+    it("an unchanged plan runs the nuke", function()
+        local core = make_core({})
+        local c = mc.nuke(core, root, nil, false)
+        core._retire_workspace = function() end
+        assert.equals("ok", mc.nuke(core, root, c.plan, true).outcome)
+        assert.is_false(exists(root .. "/.nvim/build"))
+        assert.is_false(exists(root .. "/.nvim/cache/cc"))
+    end)
+
+    it("a refusal is reported once: in the outcome, not also notified", function()
+        local notes = {}
+        local core = make_core(notes)
+        local c = mc.nuke(core, root, nil, false)
+        core._retire_workspace = function() vim.fn.delete(root .. "/loomworks.json") end
+        local r = mc.nuke(core, root, c.plan, true)
+        assert.equals("refused", r.outcome)
+        assert.truthy(r.message:find("aborting nuke", 1, true))
+        assert.equals(0, #notes)
+        assert.is_true(exists(root .. "/.nvim/build/App/Debug/CMakeCache.txt"))
+    end)
+end)
