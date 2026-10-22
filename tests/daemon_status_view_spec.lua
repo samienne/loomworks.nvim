@@ -251,6 +251,101 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
+    it("a deploy step's edit and removal find the shown source in the re-read declaration by content; gone is refused; the editor's variables are the declaration's (5o C2b2-2)", function()
+        fake_obs({ [observer.VIEW_WORKSPACE.feature] = "subscribed", [observer.TASKS.feature] = "subscribed",
+            [observer.PROJECTS.feature] = "available" })
+        header()
+        local A, B = { project = "fresh", path = "a" }, { project = "fresh", path = "b" }
+        views.set(obs, "workspace", daemon_view(function(v)
+            local p = vim.deepcopy(v.projects[1])
+            p.key, p.id = "fresh", "id:fresh"
+            p.deploy = { { destination = "out/", sources = { vim.deepcopy(A), vim.deepcopy(B) } } }
+            v.projects[#v.projects + 1] = p
+        end))
+        local tree = Tree.new(require("loomworks.ui.status")._render_fn)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local meta
+        for i, l in ipairs(tree:render()) do
+            if l:find("<- fresh : b", 1, true) then meta = tree.line_meta[i] end
+        end
+        assert.is_table(meta)
+        assert.is_function(meta.on_delete)
+        assert.is_function(meta.on_enter)
+        -- The declaration as re-read (changed since the page was shown).
+        local model = require("loomworks.ui.model_calls")
+        local decl, saves = nil, {}
+        local orig_call, orig_notify = model.call, vim.notify
+        local notes = {}
+        model.call = function(_, m, p, cb)
+            if m == "Projects/1.declaration" then
+                return cb({ outcome = "ok", deploy = decl, variables = { declared = { type = "path" } } })
+            end
+            if m == "Projects/1.deploy_save" then saves[#saves + 1] = p.deploy; return cb({ outcome = "ok" }) end
+        end
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+        local editor = require("loomworks.ui.deploy_editor")
+        local orig_open, opened = editor.open, nil
+        editor.open = function(o) opened = o end
+        local ok, err = pcall(function()
+            -- Reordered: the removal takes B, not whatever is at B's shown index.
+            decl = { ["out/"] = { vim.deepcopy(B), vim.deepcopy(A) } }
+            meta.on_delete()
+            assert.same({ ["out/"] = A }, saves[1])
+            -- The edit replaces B where it now is.
+            meta.on_enter()
+            -- Its variables are the declaration's, as the launch editor's.
+            assert.same({ declared = { type = "path" } }, opened.variables)
+            opened.on_accept("out/", { project = "fresh", path = "c" })
+            assert.same({ ["out/"] = { { project = "fresh", path = "c" }, A } }, saves[2])
+            -- Gone from the declaration: refused, nothing saved.
+            decl = { ["out/"] = vim.deepcopy(A) }
+            meta.on_delete()
+            opened.on_accept("out/", { project = "fresh", path = "c" })
+            assert.equals(2, #saves)
+            assert.equals(2, #notes)
+            assert.truthy(notes[1].msg:find("changed since", 1, true), notes[1].msg)
+        end)
+        model.call, vim.notify, editor.open = orig_call, orig_notify, orig_open
+        assert(ok, err)
+    end)
+
+    it("the launch editor re-renders when the daemon's debug adapter records arrive (5o C2b2-2)", function()
+        fake_obs()
+        header()
+        views.set(obs, "workspace", daemon_view(function(v)
+            v.projects[1].launches = { { key = "go", id = "id:app:go", command = "tool" } }
+        end))
+        local tree = Tree.new(require("loomworks.ui.status")._render_fn)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local enter
+        for i, l in ipairs(tree:render()) do
+            if not enter and l:find("go ", 1, true) and tree.line_meta[i] then enter = tree.line_meta[i].on_enter end
+        end
+        assert.is_function(enter)
+        local model = require("loomworks.ui.model_calls")
+        local le = require("loomworks.ui.launch_editor")
+        local orig_call, orig_open, opened = model.call, le.open, nil
+        model.call = function(_, m, _, cb)
+            if m == "Projects/1.declaration" then
+                return cb({ outcome = "ok", launches = { { key = "go", id = "id:app:go", fields = { command = "tool" } } } })
+            end
+        end
+        le.open = function(o) opened = o end
+        local ok, err = pcall(enter)
+        model.call, le.open = orig_call, orig_open
+        assert(ok, err)
+        assert.is_table(opened)
+        assert.is_function(opened.on_debug_adapters)
+        -- The read answers: the dialog's `arrived` runs.
+        local REC = { language = "c++", adapter = "codelldb" }
+        obs.can_call = function() return true end
+        obs._debug_adapters = { languages = { REC } }
+        local arrived = 0
+        opened.on_debug_adapters(function() arrived = arrived + 1 end)
+        assert.equals(1, arrived)
+        assert.same({ REC }, opened.debug_adapters())
+    end)
+
     it("a launch row reaches its launch configuration; the rows keep the view's ids (for 5o C2)", function()
         core:shutdown()
         root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })

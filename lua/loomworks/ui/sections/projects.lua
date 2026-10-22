@@ -104,6 +104,14 @@ local function open_launch_editor(ctx, prow, lrow, decl)
             if not ws then return nil end
             return (require("loomworks.daemon.editor_ops").debug_adapters(ws))
         end,
+        -- The daemon's records arrive after the dialog opens: it re-renders.
+        on_debug_adapters = function(arrived)
+            if not ws then return end
+            local daemon, obs = require("loomworks.daemon.editor_ops").daemon_of(ws)
+            if daemon and obs and obs.state ~= "stopped" and obs:can_call("adapters") then
+                obs:with_debug_adapters(function() arrived() end)
+            end
+        end,
         validate = function(result)
             if result.name ~= (launch_name or "") then
                 if taken[result.name] then
@@ -538,7 +546,7 @@ local function publish_actions(ws, row)
 end
 
 --- The actions of a project row: publish / revert / describe by the row;
---- its removal on the domain object `proj` (`ctx.ref`, until step 5o C2b).
+--- its removal on the domain object `proj` (`ctx.ref`, until step 5o C2c).
 local function project_actions(ws, proj, prow)
     local acts = helpers.describe_action(publish_actions(ws, prow), helpers.row_item("project", prow))
     if not proj then return acts end
@@ -579,21 +587,31 @@ local function configuration_actions(ctx, prow, crow)
     return helpers.describe_action(with(acts, publish_actions(ctx.ws, crow)), item)
 end
 
---- Change the deploy declaration of the project row `prow`: `mutate(deploy)`
---- on an editable copy of the declared one (Projects/1.declaration — never
---- the view's, whose sources are normalized to arrays: saving those would
---- rewrite the file's shape), then saved whole (Projects/1.deploy_save).
+--- `cb(decl)` with the project row `prow`'s declaration as read now
+--- (Projects/1.declaration); a failed read is notified.
 --- @param prow table
---- @param mutate fun(deploy: table)
-local function update_deploy(prow, mutate)
+--- @param cb fun(decl: table)
+local function with_declaration(prow, cb)
     model.call(nil, "Projects/1.declaration", { project = prow }, function(r)
         if r.outcome ~= "ok" then
             vim.notify("loomworks: " .. tostring(r.message or "the project's declaration is unavailable"),
                 vim.log.levels.ERROR)
             return
         end
+        cb(r)
+    end)
+end
+
+--- Change the deploy declaration of the project row `prow`: `mutate(deploy)`
+--- on an editable copy of the declared one (Projects/1.declaration — never
+--- the view's, whose sources are normalized to arrays: saving those would
+--- rewrite the file's shape), then saved whole (Projects/1.deploy_save).
+--- @param prow table
+--- @param mutate fun(deploy: table): boolean? false: nothing saved
+local function update_deploy(prow, mutate)
+    with_declaration(prow, function(r)
         local editable = vim.deepcopy(r.deploy or {})
-        mutate(editable)
+        if mutate(editable) == false then return end
         model.call(nil, "Projects/1.deploy_save", { project = prow, deploy = editable }, function(sr)
             local ok, err = model.result(sr)
             if not ok then
@@ -628,14 +646,15 @@ local function set_sources(deploy, dest, cur)
     end
 end
 
---- The deploy editor's opts common to a project's steps.
-local function deploy_editor_opts(ctx, prow, dest_keys)
+--- The deploy editor's opts common to a project's steps; its variables
+--- the declaration's `decl` (as the launch editor's).
+local function deploy_editor_opts(ctx, prow, dest_keys, decl)
     local dctx = deploy_context(ctx.view)
     return {
         projects = dctx.projects,
         profiles = dctx.profiles,
         preview_for = dctx.preview_for,
-        variables = prow.variables,
+        variables = decl.variables,
         preview = previewer(prow),
         -- A project-level step also runs for its build targets (§8.7),
         -- so ${target_dir} is offered; it also runs for command launches,
@@ -646,36 +665,61 @@ local function deploy_editor_opts(ctx, prow, dest_keys)
     }
 end
 
---- The actions of one deploy step (`dest`, source index `si`) of the
---- project row `prow` (routed by the row, helpers.actionable).
+--- The index in `cur` (a destination's sources, as re-read from the
+--- declaration) of the shown source `src`: the shown index `si` when it
+--- still holds `src`, else the first source equal to it; nil when gone.
+local function locate_source(cur, si, src)
+    if cur[si] ~= nil and vim.deep_equal(cur[si], src) then return si end
+    for i, s in ipairs(cur) do
+        if vim.deep_equal(s, src) then return i end
+    end
+    return nil
+end
+
+--- The actions of one deploy step (`dest`, the shown source `src` at index
+--- `si`) of the project row `prow` (routed by the row, helpers.actionable).
+--- The write runs on the declaration as re-read, so the source is found
+--- there by its content; one no longer there is refused, never guessed.
 local function deploy_step_actions(ctx, prow, dest_keys, dest, si, src)
     if not helpers.actionable(ctx, prow) then return {} end
     local deploy_mod = require("loomworks.deploy")
+    --- `edit(editable, cur, i)` on the re-read sources of `dest`, `i` the
+    --- shown source's index there; false when it is gone.
+    local function on_source(edit)
+        update_deploy(prow, function(editable)
+            local cur = editable[dest] and deploy_mod.normalize_sources(editable[dest]) or {}
+            local i = locate_source(cur, si, src)
+            if not i then
+                vim.notify("loomworks: the deploy step '" .. dest .. "' changed since shown; reopen it",
+                    vim.log.levels.WARN)
+                return false
+            end
+            edit(editable, cur, i)
+        end)
+    end
     return {
-        on_enter = function()
-            local opts = deploy_editor_opts(ctx, prow, dest_keys)
+        on_enter = function() with_declaration(prow, function(decl)
+            local opts = deploy_editor_opts(ctx, prow, dest_keys, decl)
             opts.destination = dest
             opts.source = vim.deepcopy(src)
             opts.current_destination = dest
             opts.on_accept = function(new_dest, new_source)
-                update_deploy(prow, function(editable)
-                    local cur = deploy_mod.normalize_sources(editable[dest])
-                    cur[si] = new_source
+                on_source(function(editable, cur, i)
                     if new_dest ~= dest then
-                        table.remove(cur, si)
+                        table.remove(cur, i)
                         set_sources(editable, dest, cur)
                         add_source(editable, new_dest, new_source)
                     else
+                        cur[i] = new_source
                         set_sources(editable, dest, cur)
                     end
                 end)
             end
             require("loomworks.ui.deploy_editor").open(opts)
-        end,
+        end) end,
         on_delete = function()
-            update_deploy(prow, function(editable)
-                local cur = deploy_mod.normalize_sources(editable[dest])
-                table.remove(cur, si)
+            on_source(function(editable, cur, i)
+                table.remove(cur, i)
                 set_sources(editable, dest, cur)
             end)
         end,
@@ -685,14 +729,14 @@ end
 --- "▸ Add deploy step" of the project row `prow`.
 local function add_deploy_action(ctx, prow, dest_keys)
     if not helpers.actionable(ctx, prow) then return nil end
-    return function()
-        local opts = deploy_editor_opts(ctx, prow, dest_keys)
+    return function() with_declaration(prow, function(decl)
+        local opts = deploy_editor_opts(ctx, prow, dest_keys, decl)
         opts.destination = ""
         opts.on_accept = function(new_dest, new_source)
             update_deploy(prow, function(editable) add_source(editable, new_dest, new_source) end)
         end
         require("loomworks.ui.deploy_editor").open(opts)
-    end
+    end) end
 end
 
 -- ---------------------------------------------------------------------------

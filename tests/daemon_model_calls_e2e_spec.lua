@@ -474,6 +474,12 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     end
 
     --- Activate the profile `dev` (a preview expands under the active one).
+    -- The daemon expands against its canonical root (the long form of an
+    -- 8.3 short temp dir, e.g. RUNNER~1 on the Windows runner).
+    local function canon_root()
+        return vim.fs.normalize(vim.uv.fs_realpath(root) or root)
+    end
+
     local function activate()
         local r = call("Profiles/1.set_active", { profile = row("profiles", "dev") })
         assert.equals("ok", r.outcome, vim.inspect(r))
@@ -486,7 +492,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         local r = call("Projects/1.expand_preview", { project = prow_of("app"),
             templates = { "${workspace_root}/x", "${nope}/y" } })
         assert.equals("ok", r.outcome, vim.inspect(r))
-        assert.equals(vim.fs.normalize(root) .. "/x", vim.fs.normalize(r.values[1]))
+        assert.equals(canon_root() .. "/x", vim.fs.normalize(r.values[1]))
         assert.equals("${nope}/y", r.values[2])
         -- A row without an id is refused, never looked up by its key.
         r = call("Projects/1.expand_preview", { project = { key = "app" }, templates = { "a" } })
@@ -508,7 +514,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         local value
         got.preview("${workspace_root}/w", function(v) value = v end)
         assert.is_true(vim.wait(30000, function() return value ~= nil end, 20))
-        assert.equals(vim.fs.normalize(root) .. "/w", vim.fs.normalize(value))
+        assert.equals(canon_root() .. "/w", vim.fs.normalize(value))
         -- The deploy editor's view rows.
         assert.is_table(got.projects)
         assert.is_table(got.profiles)

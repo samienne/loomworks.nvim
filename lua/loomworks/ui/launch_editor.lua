@@ -34,6 +34,9 @@ local M = {}
 ---   debug_adapters: (fun(): table[]|nil)|nil — the debug adapter records
 ---     (`DebugConfig/1.adapters`: `{ language, adapter?, default? }`), nil
 ---     while unknown; read at each render
+---   on_debug_adapters: (fun(arrived: fun()))|nil — calls `arrived` once the
+---     records are read (`debug_adapters` then has them): the open dialog
+---     re-renders, so its adapters do not stay "?"
 ---   describe_item: table|nil — the existing launch's description handle
 ---     (helpers.row_item): adds a `Description ▸` row
 ---   debug: string[]|nil — debug languages (first = primary, rest = attach)
@@ -632,6 +635,11 @@ function M.open(opts)
     })
 
     view:open()
+    if opts.on_debug_adapters then
+        opts.on_debug_adapters(function()
+            if view then view:refresh() end
+        end)
+    end
 end
 
 return M
