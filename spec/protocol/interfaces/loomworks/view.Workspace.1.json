@@ -379,7 +379,7 @@
           }
         },
         "variables": {
-          "description": "The project's variables resolved for it under the active profile, ordered by name; present when the project declares variables.",
+          "description": "The project's variables resolved for it (spec §1.3.1) under the active profile and its compiler family (as Projects/1.declaration's compiler_family), ordered by name; present when the project declares variables.",
           "type": "array",
           "items": {
             "type": "object",

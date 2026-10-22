@@ -831,6 +831,89 @@
               },
               "fields": {
                 "type": "object"
+              },
+              "default": {
+                "description": "A configuration the module generates by default (its name is fixed: the editor does not rename it).",
+                "type": "boolean"
+              },
+              "source_missing": {
+                "description": "Known only from the cache: the project files no longer supply it (spec §4.5). Not offered as a base to inherit.",
+                "type": "boolean"
+              },
+              "variant": {
+                "description": "The configuration's resolved variant (module-specific, e.g. CMAKE_BUILD_TYPE); absent for an abstract configuration.",
+                "type": "string"
+              },
+              "variant_from": {
+                "description": "The configuration in its inheritance chain that supplies the variant, when not itself.",
+                "$ref": "loomworks.Common/1#/$defs/Entity"
+              },
+              "inherited_options": {
+                "description": "Options the configuration has from the project or its bases and does not declare itself, ordered by key, each with where it comes from.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "key",
+                    "value",
+                    "from"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "enum": [
+                        "project",
+                        "configuration"
+                      ]
+                    },
+                    "configuration": {
+                      "description": "With from configuration: the base that supplies it.",
+                      "$ref": "loomworks.Common/1#/$defs/Entity"
+                    }
+                  }
+                }
+              },
+              "resolved_variables": {
+                "description": "Each project variable's value for this configuration (spec §1.3.1) under the active profile and compiler_family, ordered by name; no value when it is blank (no default, override or profile fill).",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "from"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "enum": [
+                        "project",
+                        "configuration",
+                        "profile"
+                      ]
+                    },
+                    "configuration": {
+                      "description": "With from configuration: the configuration (itself or a base) whose override applies.",
+                      "$ref": "loomworks.Common/1#/$defs/Entity"
+                    }
+                  }
+                }
+              },
+              "build_dirs": {
+                "description": "The build directories of its configuration units (one per tool it was configured with), as cached, sorted; absent when none has one.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -930,6 +1013,29 @@
               }
             }
           }
+        },
+        "module": {
+          "description": "The project's module as its configuration editor shows it: the languages a configuration inherits when it declares none, and whether the module has build options (spec §8; a module without them has no options, toolchain, generator or variant rows).",
+          "type": "object",
+          "required": [
+            "languages",
+            "has_options"
+          ],
+          "properties": {
+            "languages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "has_options": {
+              "type": "boolean"
+            }
+          }
+        },
+        "compiler_family": {
+          "description": "The compiler family of the active profile's tool for this project's module (spec §1.3.1): the family whose configuration overrides apply. Absent with no active profile, or a tool with no family.",
+          "type": "string"
         },
         "notes": {
           "$ref": "loomworks.Common/1#/$defs/Notes"

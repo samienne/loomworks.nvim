@@ -331,6 +331,17 @@ function Project:config_units_for_configuration(configuration)
     return result
 end
 
+--- The compiler family of the active profile's tool for this project's
+--- module (spec §1.3.1): the family whose configuration `overrides` apply.
+--- nil with no active profile, or a tool with no family.
+--- @return string|nil
+function Project:active_compiler_family()
+    local profile = self._workspace and self._workspace:get_active_profile() or nil
+    if not (profile and profile.tool_for) then return nil end
+    local tref = profile:tool_for(self.type)
+    return require("loomworks.cpp_compilers").family_from_tool_data(tref and tref.data or nil)
+end
+
 --- Get the running action shown for this project (any config) — its own
 --- tasks' or a task observed in the workspace daemon (spec §19.16). Display only.
 --- @return string|nil action ("configure" or "build")

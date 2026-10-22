@@ -3110,6 +3110,120 @@ describe("configuration editor opened from the status page", function()
 end)
 
 -- =========================================================================
+-- Projects/1.declaration: what the configuration editor shows (API.md §19)
+-- =========================================================================
+
+describe("project declaration for the configuration editor", function()
+    local cmake_real = require("loomworks.modules.cmake")
+    local saved
+
+    before_each(function()
+        saved = { mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources,
+            mock_modules.cmake.languages }
+        mock_modules.cmake.resolve_variant_source = cmake_real.resolve_variant_source
+        mock_modules.cmake.resolve_options_with_sources = cmake_real.resolve_options_with_sources
+    end)
+    after_each(function()
+        mock_modules.cmake.resolve_variant_source, mock_modules.cmake.resolve_options_with_sources,
+            mock_modules.cmake.languages = saved[1], saved[2], saved[3]
+    end)
+
+    --- App (cmake) with project option FOO, variable `out` (default x), a user
+    --- configuration Dev on variant:Debug declaring OWN and a gcc override of
+    --- `out`; Dev active under a gcc tool.
+    local function dev_ws()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        options = { FOO = "bar" },
+                        configurations = {
+                            Dev = { inherits = "variant:Debug", options = { OWN = "1" },
+                                overrides = { gcc = { out = "z" } } },
+                        },
+                    },
+                    variables = { out = { type = "string", default = "x" }, blank = { type = "string" } },
+                },
+            },
+            configuration_sets = { Dev = { App = "Dev" } },
+        }, {
+            active_profile = "Dev",
+            profiles = { Dev = { configuration_set = "Dev" } },
+        })
+        ws:get_active_profile().tool_for = function() return { data = { compiler_family = "gcc" } } end
+        return ws, h.find_project_in(ws:get_projects(), "App")
+    end
+
+    local function entry(decl, key)
+        for _, c in ipairs(decl.configurations) do if c.key == key then return c end end
+    end
+
+    it("carries the module, the active compiler family and each configuration's derived fields", function()
+        local ws, app = dev_ws()
+        app._module.languages = { "c", "c++" }
+        local decl = wv.project_declaration(app)
+        assert.equals("ok", decl.outcome)
+        assert.same({ languages = { "c", "c++" }, has_options = true }, decl.module)
+        assert.equals("gcc", decl.compiler_family)
+
+        local dev = entry(decl, "Dev")
+        assert.is_true(dev.user)
+        assert.is_nil(dev.default)
+        assert.is_nil(dev.source_missing)
+        assert.same({ key = "variant:Debug" }, dev.variant_from)
+        assert.same({ { key = "FOO", value = "bar", from = "project" } }, dev.inherited_options)
+        assert.same({
+            { name = "blank", from = "project" },
+            { name = "out", value = "z", from = "configuration", configuration = { key = "Dev" } },
+        }, dev.resolved_variables)
+
+        local debug = entry(decl, "variant:Debug")
+        assert.is_true(debug.default)
+        assert.equals("Debug", debug.variant)
+        assert.is_nil(debug.variant_from)
+        assert.same({ { name = "blank", from = "project" }, { name = "out", value = "x", from = "project" } },
+            debug.resolved_variables)
+
+        -- The status page's view resolves with the same family (decision:
+        -- the page and the editor agree).
+        local view = ws:view_workspace({})
+        local shown
+        for _, c in ipairs(view.projects[1].configurations) do
+            if c.key == "Dev" then
+                for _, v in ipairs(c.variables) do if v.name == "out" then shown = v.value end end
+            end
+        end
+        assert.equals("z", shown)
+    end)
+
+    it("lists every build dir of the configuration's units once, sorted; flags a cache-only configuration", function()
+        local ws, app = dev_ws()
+        local dev = app:get_configuration("Dev")
+        -- (The profile's unit has one already.)
+        local expected = vim.deepcopy(entry(wv.project_declaration(app), "Dev").build_dirs)
+        assert.equals(1, #expected)
+        vim.list_extend(expected, { "/b/aa", "/b/zz" })
+        table.sort(expected)
+        for _, dir in ipairs({ "/b/zz", expected[1], "/b/aa", "/b/zz" }) do
+            ws._config_units[#ws._config_units + 1] = { _project = app, _configuration = dev, build_dir_value = dir }
+        end
+        ws._config_units[#ws._config_units + 1] = { _project = app, _configuration = dev }
+        dev._source_missing = true
+        local e = entry(wv.project_declaration(app), "Dev")
+        assert.same(expected, e.build_dirs)
+        assert.is_true(e.source_missing)
+    end)
+
+    it("no active profile: no compiler family, and a module without options says so", function()
+        local ws = make_ws({ projects = { Web = { typescript = {} } } })
+        local decl = wv.project_declaration(h.find_project_in(ws:get_projects(), "Web"))
+        assert.is_nil(decl.compiler_family)
+        assert.is_false(decl.module.has_options)
+        assert.same({}, decl.module.languages)
+    end)
+end)
+
+-- =========================================================================
 -- cmake options resolution
 -- =========================================================================
 

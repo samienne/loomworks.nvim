@@ -1159,23 +1159,108 @@ function M.editable_type_config_field(project, field)
     return false
 end
 
+--- A configuration as a reference of the declaration: `{ id, key }`.
+local function config_ref(cfg, id_of)
+    return { id = id_of(cfg), key = cfg.name }
+end
+
+--- What the configuration editor shows of `cfg` beside its declared fields,
+--- derived under the active profile (API.md §19 `declaration`): `default`,
+--- `source_missing`, the resolved `variant` and the base supplying it
+--- (`variant_from`), the options it has from the project or a base and does
+--- not declare (`inherited_options`), each project variable's value for it
+--- (`resolved_variables`) and its units' build directories (`build_dirs`).
+--- Set on `entry`.
+--- @param entry table the declaration's configuration entry
+--- @param project loomworks.Project
+--- @param cfg loomworks.Configuration
+--- @param d { impl: table|nil, type_config: table, family: string|nil, profile: loomworks.Profile|nil, id_of: fun(obj: table): string }
+local function derived_configuration(entry, project, cfg, d)
+    local resolved = project.configurations and project.configurations[cfg.name] or nil
+    entry.default = cfg.is_default and true or nil
+    entry.source_missing = cfg._source_missing and true or nil
+    entry.variant = resolved and resolved.variant or nil
+    if d.impl and d.impl.resolve_variant_source then
+        local from = d.impl.resolve_variant_source(project.configurations or {}, cfg.name)
+        local base = from and from ~= cfg.name and project:get_configuration(from) or nil
+        if base then entry.variant_from = config_ref(base, d.id_of) end
+    end
+    if d.impl and d.impl.resolve_options_with_sources then
+        local own = cfg.options or {}
+        local list = {}
+        for k, info in pairs(d.impl.resolve_options_with_sources(d.type_config, project.configurations or {},
+                cfg.name)) do
+            if own[k] == nil then
+                local o = { key = k, value = info.value, from = "project" }
+                if info.source ~= "project" then
+                    local base = project:get_configuration(info.source)
+                    o.from = "configuration"
+                    o.configuration = base and config_ref(base, d.id_of) or nil
+                end
+                list[#list + 1] = o
+            end
+        end
+        table.sort(list, function(a, b) return a.key < b.key end)
+        if #list > 0 then entry.inherited_options = list end
+    end
+    if project.variables and next(project.variables) then
+        local list = {}
+        for name, v in pairs(require("loomworks.variables").resolve(project, cfg, d.family, d.profile)) do
+            local e = { name = name, value = v.value, from = "project" }
+            if v.from_profile then
+                e.from = "profile"
+            elseif v.source_config then
+                e.from = "configuration"
+                e.configuration = config_ref(v.source_config, d.id_of)
+            end
+            list[#list + 1] = e
+        end
+        table.sort(list, function(a, b) return a.name < b.name end)
+        entry.resolved_variables = list
+    end
+    local dirs, seen = {}, {}
+    for _, unit in ipairs(project:config_units_for_configuration(cfg)) do
+        local dir = unit.build_dir_value
+        if dir and not seen[dir] then
+            seen[dir] = true
+            dirs[#dirs + 1] = dir
+        end
+    end
+    table.sort(dirs)
+    if #dirs > 0 then entry.build_dirs = dirs end
+end
+
 --- `declaration { project }` — the project's declaration as the working
 --- copy holds it, for a client's editors: each configuration (by name;
 --- `user` when it is a user configuration) and launch configuration (by
 --- name; `invalid` when its declaration is not a table) with its id
 --- (`id_of`) and declared fields, the deploy declaration, the variables, the
---- project options and the module's editable `type_config` fields.
+--- project options and the module's editable `type_config` fields; and,
+--- derived under the active profile, what the configuration editor shows:
+--- the module's default `languages` and whether it `has_options`
+--- (`module`), the active `compiler_family`, and per configuration its
+--- derived fields (derived_configuration).
 --- @param project loomworks.Project
 --- @param id_of fun(obj: table): string
 --- @return loomworks.CommandOutcome
 function M.project_declaration(project, id_of)
     local r = stale(project, "project")
     if r then return r end
-    local out = ok({ configurations = {}, launches = {}, variables = vim.empty_dict() })
+    local mod = project._module
+    local impl = mod and mod.impl or nil
+    local family = project:active_compiler_family()
+    local out = ok({ configurations = {}, launches = {}, variables = vim.empty_dict(),
+        module = { languages = vim.deepcopy(mod and mod.languages or {}),
+            has_options = impl and impl.has_options and true or false },
+        compiler_family = family })
+    local d = { impl = impl, type_config = project:_type_config_for_module(), family = family,
+        profile = project._workspace and project._workspace:get_active_profile() or nil, id_of = id_of }
     for _, cfg in ipairs(project._configurations or {}) do
         if not cfg._removed then
-            out.configurations[#out.configurations + 1] = { id = id_of(cfg), key = cfg.name,
-                user = cfg.is_user or nil, fields = dict(cfg:declared_data()) }
+            local entry = { id = id_of(cfg), key = cfg.name, user = cfg.is_user or nil,
+                fields = dict(cfg:declared_data()) }
+            derived_configuration(entry, project, cfg, d)
+            out.configurations[#out.configurations + 1] = entry
         end
     end
     table.sort(out.configurations, function(a, b) return a.key < b.key end)
