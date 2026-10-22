@@ -2635,10 +2635,10 @@ describe("launch config lifecycle", function()
         assert.is_not_nil(app:find_launch("debug"))
         assert.equals("node", app:find_launch("debug").command)
 
-        -- 2. Get launch configs
-        local configs = wv.get_launch_configs(app)
-        assert.equals(1, #configs)
-        assert.equals("debug", configs[1].name)
+        -- 2. The declaration lists it (what the launch editor opens with)
+        local decl = wv.project_declaration(app)
+        assert.equals(1, #decl.launches)
+        assert.equals("debug", decl.launches[1].key)
 
         -- 3. Edit: change command and add env var
         ok = wv.execute_save_launch_config(app, app:find_launch("debug"), "debug", {
@@ -2669,19 +2669,7 @@ describe("launch config lifecycle", function()
         assert.is_false(h.find_project_in(ws:get_projects(), "App"):has_launches())
     end)
 
-    it("compute_edit_launch_context returns defaults for new config", function()
-        local ws = make_ws({ projects = { App = { cmake = {} } } })
-
-        local ctx = wv.compute_edit_launch_context(h.find_project_in(ws:get_projects(), "App"), nil)
-        assert.equals("App", ctx.project_key)
-        assert.equals("", ctx.name)
-        assert.equals("", ctx.command)
-        assert.equals(0, #ctx.args)
-        assert.equals("", ctx.working_dir)
-        assert.is_true(not next(ctx.env))
-    end)
-
-    it("compute_edit_launch_context returns existing config data", function()
+    it("the declaration carries a launch config's declared fields (the launch editor's)", function()
         -- Launch commands are honored only from the working copy (spec §17.6).
         local cfg = {
             projects = {
@@ -2701,8 +2689,9 @@ describe("launch config lifecycle", function()
         local ws = make_ws(cfg, cfg)
 
         local app = h.find_project_in(ws:get_projects(), "App")
-        local ctx = wv.compute_edit_launch_context(app, app:find_launch("debug"))
-        assert.equals("debug", ctx.name)
+        local l = wv.project_declaration(app).launches[1]
+        assert.equals("debug", l.key)
+        local ctx = l.fields
         assert.equals("node", ctx.command)
         assert.equals(2, #ctx.args)
         assert.equals("app.js", ctx.args[1])
@@ -2727,7 +2716,7 @@ describe("launch config lifecycle", function()
         assert.is_nil(saved.env)
     end)
 
-    it("compute_edit_launch_context includes deploy data", function()
+    it("the declaration's launch fields include its deploy data", function()
         -- Launch commands are honored only from the working copy (spec §17.6).
         local cfg = {
             projects = {
@@ -2750,7 +2739,7 @@ describe("launch config lifecycle", function()
         local ws = make_ws(cfg, cfg)
 
         local app = h.find_project_in(ws:get_projects(), "App")
-        local ctx = wv.compute_edit_launch_context(app, app:find_launch("debug"))
+        local ctx = wv.project_declaration(app).launches[1].fields
         assert.is_not_nil(ctx.deploy)
         assert.is_not_nil(ctx.deploy["${build_dir}/native.node"])
         assert.equals("NativeLib", ctx.deploy["${build_dir}/native.node"].project)
@@ -2798,13 +2787,13 @@ describe("launch config lifecycle", function()
         assert.is_not_nil(err)
     end)
 
-    it("get_launch_configs returns empty for project without launches", function()
+    it("the declaration lists no launches for a project without any", function()
         local ws = make_ws({ projects = { App = { cmake = {} } } })
-        local configs = wv.get_launch_configs(h.find_project_in(ws:get_projects(), "App"))
-        assert.equals(0, #configs)
+        local decl = wv.project_declaration(h.find_project_in(ws:get_projects(), "App"))
+        assert.equals(0, #decl.launches)
     end)
 
-    it("get_launch_configs returns sorted entries", function()
+    it("the declaration lists the launches sorted by name", function()
         -- Launch commands are honored only from the working copy (spec §17.6).
         local cfg = {
             projects = {
@@ -2819,10 +2808,10 @@ describe("launch config lifecycle", function()
         }
         local ws = make_ws(cfg, cfg)
 
-        local configs = wv.get_launch_configs(h.find_project_in(ws:get_projects(), "App"))
+        local configs = wv.project_declaration(h.find_project_in(ws:get_projects(), "App")).launches
         assert.equals(2, #configs)
-        assert.equals("debug", configs[1].name)
-        assert.equals("release", configs[2].name)
+        assert.equals("debug", configs[1].key)
+        assert.equals("release", configs[2].key)
     end)
 end)
 

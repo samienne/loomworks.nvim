@@ -539,6 +539,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- In daemon mode the status page's launch and deploy editors read and save
+  through the workspace daemon, and their path previews are expanded there
+  (they appear a moment after the dialog opens). The deploy step editor's
+  target picker offers the targets of the units profiles use. (#323)
 - The status page's configuration editor lists every build directory of the
   configuration (one per toolchain it was configured with), sorted, instead
   of one picked in no fixed order. In daemon mode it reads the configuration
@@ -874,6 +878,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   overrides. It does now. (#322)
 - In daemon mode a project just added from the status page could not have
   its configurations edited or added until the editor reloaded. (#322)
+- In daemon mode a project just added from the status page could not have
+  its launch configs, deploy steps, variables or fields edited or added until
+  the editor reloaded. (#323)
 - A profile created from an SDK in the status page's tool picker lost its
   SDK on the next load: it was saved without toolchains, came back as the
   configuration set's toolless profile, and its key clashed with an existing
