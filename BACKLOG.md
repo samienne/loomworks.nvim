@@ -194,6 +194,14 @@ re-render before the view's `update` keeps them."
 - Daemon log lines include the client name/version unescaped (newline
   injection into the log).
 - `lw trust --discard` from the CLI does not make the editor reload.
+- No workspace loaded in `daemon` mode (step 5o): the status page refuses
+  every model write and points `T` / `U` / `<C-n>` to `lw trust` /
+  `lw trust --discard` / `lw nuke` (spec §19.16 "Model writes"). Follow-ups:
+  a root-level daemon connection for a root the editor has not loaded, so the
+  nuke and trust run as calls again; and `N` (create workspace) still writes
+  `loomworks.json` in-process in daemon mode (no daemon exists for a root
+  without one) — move it to that connection, or refuse it pointing to
+  `lw init`.
 - Idea: show client-executed runs (the daemon only prepares `lw run`; its
   task ends before the program exits) in `lw status` and the status page.
 - An attached selection whose runtime lock is held on another host still

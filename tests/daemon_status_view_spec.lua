@@ -693,6 +693,9 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         core:setup({ root = root })
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
         ws = core:get_workspace()
+        -- (Loaded as the editor's setup does, in the in-process mode: its
+        -- calls given no workspace go to it.)
+        require("loomworks.daemon.observer").attach(ws, { configured = "in-process" })
         -- (A preview expands under the active profile.)
         assert(require("loomworks.workspace_view").activate_profile(ws:get_profiles()[1]))
         local body = status_source.read(ws)

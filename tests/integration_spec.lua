@@ -2954,6 +2954,9 @@ describe("configuration editor opened from the status page", function()
     --- run first) and return the options the configuration editor dialog was
     --- opened with.
     local function open_from_page(ws, pattern, before_enter)
+        -- (Loaded as the editor's setup does, in the in-process mode: the
+        -- page's calls given no workspace go to it.)
+        require("loomworks.daemon.observer").attach(ws, { configured = "in-process" })
         local ss = require("loomworks.status_source")
         local Tree = require("loomworks.ui.tree")
         local view = ws:view_workspace({ bind = ss.bind })

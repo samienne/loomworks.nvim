@@ -2518,6 +2518,12 @@ plan, a held lock) is an error notification and changes nothing; the page
 shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is
 not carried the action is refused ("Availability"), never run in-process.
+With no workspace loaded in the editor (its load failed, or a trust or
+schema refusal unloaded it) the mode is the editor's setup selection; in
+`daemon` mode every action is refused, nothing sent and nothing run — the
+nuke, trust and the removal of the working copy name their command
+(`lw nuke`, `lw trust`, `lw trust --discard`) *(until the editor can
+connect to a daemon for a root it has not loaded)*.
 *(Status: every status-page action is a call. Its `Workspace/1`,
 `Profiles/1` and `ConfigSets/1` actions are calls from step 5o part C2a,
 its `Projects/1` actions from C2b (the removals, variable and

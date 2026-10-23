@@ -86,6 +86,8 @@ describe("ui.model_calls", function()
             package.loaded["loomworks"] = recorder({
                 trust_user_prefs = function() return "trusted" end,
             })
+            -- (With no workspace given or loaded, the setup selection: in-process.)
+            rawset(package.loaded["loomworks"], "runtime_mode", function() return "in-process" end)
         end)
         after_each(function()
             package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] = saved[1], saved[2]
@@ -482,6 +484,120 @@ describe("ui.model_calls", function()
             run("Maintenance/1.nuke", { plan = "N", yes = true })
             assert.same({ true, true }, { cancelled_by(other), cancelled_by(nil) })
             assert.equals(5, #owned)
+        end)
+    end)
+
+    -- Step 5o: with no workspace loaded in the editor (its load failed, or a
+    -- trust or schema refusal unloaded it) the mode is the setup selection;
+    -- in `daemon` mode every method is refused — nothing sent, nothing run
+    -- in-process — and the recovery methods name their lw command (spec
+    -- §19.16 "Model writes").
+    describe("daemon mode: no loaded workspace", function()
+        local saved, ran, sent, mode, loaded
+        before_each(function()
+            ran, sent, mode, loaded = {}, {}, "daemon", nil
+            saved = { package.loaded["loomworks.daemon.observer"], package.loaded["loomworks.daemon.editor_ops"],
+                package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
+            package.loaded["loomworks.daemon.observer"] = {
+                loaded_workspace = function() return loaded end,
+                of = function() return nil end,
+                -- (Any request reaching an observer would be a send.)
+                request = function(_, method) sent[#sent + 1] = method end,
+            }
+            package.loaded["loomworks.daemon.editor_ops"] = {
+                -- A loaded workspace selected for `daemon` whose observer is gone.
+                daemon_of = function(ws) return ws ~= nil, nil end,
+                carrier = function() return nil end,
+            }
+            local function recording(_, name)
+                return function()
+                    ran[#ran + 1] = name
+                    if name == "runtime_mode" then return mode end
+                    return { outcome = "ok" }
+                end
+            end
+            package.loaded["loomworks.workspace_view"] = setmetatable({}, { __index = recording })
+            package.loaded["loomworks"] = setmetatable({}, { __index = recording })
+        end)
+        after_each(function()
+            package.loaded["loomworks.daemon.observer"], package.loaded["loomworks.daemon.editor_ops"],
+                package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] =
+                saved[1], saved[2], saved[3], saved[4]
+        end)
+        local function run(method, params)
+            local got, n = nil, 0
+            model.call(nil, method, params or {}, function(r) got = r; n = n + 1 end)
+            assert.equals(1, n)
+            return got
+        end
+        local function bodies()
+            return vim.tbl_filter(function(n) return n ~= "runtime_mode" end, ran)
+        end
+
+        it("refuses the nuke, naming lw nuke; nothing sent or run", function()
+            local r = run("Maintenance/1.nuke")
+            assert.same({ outcome = "refused",
+                message = "nuke: the workspace is not loaded in the editor — run lw nuke in a terminal" }, r)
+            r = run("Maintenance/1.nuke", { plan = "N", yes = true })
+            assert.equals("refused", r.outcome)
+            assert.same({}, bodies())
+            assert.same({}, sent)
+        end)
+
+        it("refuses trust and the working copy's deletion, naming lw trust / lw trust --discard", function()
+            assert.same({ outcome = "refused", message = "trust: the workspace is not loaded in the editor — "
+                .. "run lw trust in a terminal (lw trust --discard discards the working copy)" },
+                run("Workspace/1.trust_accept"))
+            assert.same({ outcome = "refused", message = "working copy deletion: the workspace is not loaded "
+                .. "in the editor — run lw trust --discard in a terminal" }, run("Workspace/1.delete_user_prefs"))
+            assert.same({}, bodies())
+        end)
+
+        it("refuses every other method: the workspace is not loaded", function()
+            assert.same({ outcome = "refused", message = "description: the workspace is not loaded" },
+                run("Workspace/1.set_description", { item = {}, text = "x" }))
+            for _, m in ipairs(model.methods()) do
+                assert.equals("refused", run(m, {}).outcome, m)
+            end
+            assert.same({}, bodies())
+            assert.same({}, sent)
+        end)
+
+        it("in the in-process mode the bodies still run on the root fallback", function()
+            mode = "in-process"
+            run("Maintenance/1.nuke")
+            run("Workspace/1.trust_accept")
+            run("Workspace/1.delete_user_prefs")
+            assert.same({ "nuke", "trust_user_prefs", "delete_user_prefs" }, bodies())
+        end)
+
+        it("a loaded workspace whose observer is gone is refused as before (no setup selection read)", function()
+            loaded = { root = "/w" }
+            mode = "in-process"
+            assert.same({ outcome = "refused", message = "nuke: the workspace is no longer loaded" },
+                run("Maintenance/1.nuke"))
+            assert.same({}, ran)
+        end)
+
+        it("the status page's T and <C-n> notify the command and ask nothing", function()
+            local notes, asked, shown = {}, false, false
+            local saved_notify, saved_dialog = vim.notify, package.loaded["loomworks.ui.dialog"]
+            vim.notify = function(msg, lvl) notes[#notes + 1] = { msg, lvl } end
+            package.loaded["loomworks.ui.dialog"] = { show = function() shown = true end }
+            local ok, err = pcall(function()
+                require("loomworks.ui.tree").new():_trust(function() asked = true; return 3 end)
+                require("loomworks.ui.actions").nuke()
+            end)
+            vim.notify, package.loaded["loomworks.ui.dialog"] = saved_notify, saved_dialog
+            assert(ok, err)
+            assert.is_false(asked)
+            assert.is_false(shown)
+            assert.same({
+                { "loomworks: trust: the workspace is not loaded in the editor — run lw trust in a terminal "
+                    .. "(lw trust --discard discards the working copy)", vim.log.levels.ERROR },
+                { "loomworks: nuke: the workspace is not loaded in the editor — run lw nuke in a terminal",
+                    vim.log.levels.ERROR },
+            }, notes)
         end)
     end)
 

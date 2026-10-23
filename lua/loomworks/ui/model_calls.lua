@@ -427,6 +427,18 @@ local VERB = {
     ["Maintenance/1.execute_deletion"] = "deletion", ["Maintenance/1.nuke"] = "nuke",
 }
 
+--- In `daemon` mode with no workspace loaded in the editor, why a recovery
+--- method is refused: the lw command that does it (spec §19.16 "Model
+--- writes"; until the editor can connect to a daemon for a root it has not
+--- loaded).
+local NO_WORKSPACE = {
+    ["Maintenance/1.nuke"] = "the workspace is not loaded in the editor — run lw nuke in a terminal",
+    ["Workspace/1.trust_accept"] = "the workspace is not loaded in the editor — run lw trust in a terminal "
+        .. "(lw trust --discard discards the working copy)",
+    ["Workspace/1.delete_user_prefs"] = "the workspace is not loaded in the editor — "
+        .. "run lw trust --discard in a terminal",
+}
+
 --- A refused outcome of `method` with `why`.
 local function refusal(method, why)
     return { outcome = "refused", message = (VERB[method] or method) .. ": " .. tostring(why) }
@@ -825,8 +837,9 @@ end
 --- loomworks.daemon.observer.loaded_workspace).
 --- In `daemon` mode it is a call to the workspace daemon (every method is
 --- routed, step 5o C2c-2; a guard checks it, tests/ui_model_calls_spec.lua);
---- in the `in-process` mode its in-process body runs. `cb(r)` gets its
---- outcome (may be nil).
+--- in the `in-process` mode its in-process body runs. With no workspace
+--- loaded, `daemon` mode (the setup selection) refuses every method. `cb(r)`
+--- gets its outcome (may be nil).
 --- @param ws loomworks.Workspace|nil
 --- @param method string `"<Interface>/<version>.<method>"`
 --- @param params table|nil
@@ -837,9 +850,19 @@ function M.call(ws, method, params, cb)
     params, cb = params or {}, cb or function() end
     -- (No workspace given: the loaded one. Its mode is its runtime
     -- selection's — never whether an observer is attached: in `daemon` mode
-    -- with its observer gone a method is refused, not run in-process.)
+    -- with its observer gone a method is refused, not run in-process. With
+    -- no workspace loaded at all the mode is the setup selection's; in
+    -- `daemon` mode every method is then refused, nothing sent and nothing
+    -- run — the recovery methods name their lw command, spec §19.16 "Model
+    -- writes".)
     local target = ws or require("loomworks.daemon.observer").loaded_workspace()
-    local daemon = require("loomworks.daemon.editor_ops").daemon_of(target)
+    local daemon
+    if target then
+        daemon = require("loomworks.daemon.editor_ops").daemon_of(target)
+    else
+        daemon = require("loomworks").runtime_mode() == "daemon"
+        if daemon then return cb(refusal(method, NO_WORKSPACE[method] or "the workspace is not loaded")) end
+    end
     if daemon then
         local route = ROUTED[method]
         if not route then error("loomworks.ui.model_calls: " .. method .. " is not routed to the daemon", 2) end

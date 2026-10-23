@@ -47,12 +47,16 @@ local function render_fn(tree)
             tree:blank()
             tree:leaf(tostring(hdr.error or ""), "DiagnosticWarn")
             if hdr.trust then
-                -- A refused .nvim file (spec §17.4): its actions.
+                -- A refused .nvim file (spec §17.4): its actions. In `daemon`
+                -- mode the keys are refused while no workspace is loaded
+                -- (§19.16 "Model writes"): the lw commands instead.
                 tree:blank()
+                local daemon = lw.runtime_mode() == "daemon"
                 if hdr.trust == "user" then
-                    tree:leaf("[T] review & trust  [U] discard working copy", "Comment")
+                    tree:leaf(daemon and "lw trust  ·  lw trust --discard"
+                        or "[T] review & trust  [U] discard working copy", "Comment")
                 else
-                    tree:leaf("[<C-n>] reset build cache", "Comment")
+                    tree:leaf(daemon and "lw nuke" or "[<C-n>] reset build cache", "Comment")
                 end
             end
         else

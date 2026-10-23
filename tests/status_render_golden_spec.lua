@@ -363,3 +363,36 @@ describe("status page rendering (golden)", function()
         end)
     end
 end)
+
+-- The refused-state hint (spec ui.md §1.4): the keys in the `in-process`
+-- mode; in `daemon` mode, where those keys are refused while no workspace is
+-- loaded (core §19.16 "Model writes"), the lw commands instead.
+describe("status page refused-state hint", function()
+    local function render(mode, trust)
+        local lw = require("loomworks")
+        local saved = { lw.get_workspace, lw.view_header, lw.runtime_mode }
+        lw.get_workspace = function() return nil end
+        lw.view_header = function()
+            return { state = "refused", root = "/root", error = "refused", trust = trust, version = "test" }
+        end
+        lw.runtime_mode = function() return mode end
+        local ok, lines = pcall(function()
+            local tree = Tree.new(require("loomworks.ui.status")._render_fn)
+            tree.width = 100
+            return (tree:render())
+        end)
+        lw.get_workspace, lw.view_header, lw.runtime_mode = saved[1], saved[2], saved[3]
+        assert(ok, lines)
+        return lines[#lines]
+    end
+
+    it("names the keys in the in-process mode", function()
+        assert.matches("[T] review & trust  [U] discard working copy", render("in-process", "user"), 1, true)
+        assert.matches("[<C-n>] reset build cache", render("in-process", "cache"), 1, true)
+    end)
+
+    it("names the lw commands in daemon mode", function()
+        assert.equals("lw trust  ·  lw trust --discard", vim.trim(render("daemon", "user")))
+        assert.equals("lw nuke", vim.trim(render("daemon", "cache")))
+    end)
+end)

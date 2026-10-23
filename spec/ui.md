@@ -221,6 +221,10 @@ file was refused (core §17.4), the page shows only the load error (title,
 - refused working copy (`user.json`): `[T] review & trust  [U] discard working copy`
 - refused build cache: `[<C-n>] reset build cache`
 
+In `daemon` mode these keys are refused while no workspace is loaded
+(core daemon.md §19.16 "Model writes"); the hint then names the commands
+instead: `lw trust  ·  lw trust --discard` and `lw nuke`.
+
 **Group header hints with `[t]`**: Profile project groups also include `[t] task output`.
 
 **Section title hints**: Some sections show a `Comment` hint line after the
@@ -862,8 +866,10 @@ Shown when `<C-n>` is pressed. Floating window centered in editor.
      database cleanup*) — listed only when present on disk
 3. Confirmation prompt
 
-**Root resolution**: Uses `ws.root` if a workspace is loaded, otherwise
-resolves from cwd via `workspace.resolve_root()`.
+**Root resolution**: Uses `ws.root` if a workspace is loaded. Otherwise,
+in the `in-process` mode, it resolves from cwd via
+`workspace.resolve_root()`; in `daemon` mode the nuke is refused with an
+error notification naming `lw nuke` (core daemon.md §19.16 "Model writes").
 
 **Refused before it is shown**: the nuke's safety checks and locks are
 checked first (`nuke_check(root)`, spec §19.3 — another process's build or
