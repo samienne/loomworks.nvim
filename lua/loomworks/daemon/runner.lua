@@ -888,16 +888,19 @@ function M.run(svc, ctx)
         next_phase()
     end
 
-    -- The profile and its units as semantic keys: an observer resolves them
-    -- to its own domain objects (spec §19.15, §19.16).
+    -- The profile and its units by key and by id (API.md §4.2): a client
+    -- matches the task to its records by the ids (step 5o C2d); the keys are
+    -- for display (spec §19.15, §19.16).
+    local tasks_mod = require("loomworks.daemon.tasks")
     local units = {}
     if units_scope then
         for _, u in ipairs(units_scope) do
-            units[#units + 1] = { project = u._project and u._project.key or nil, configuration = u:config_key() }
+            units[#units + 1] = tasks_mod.meta_unit(svc.ids, u._project and u._project.key or nil,
+                u:config_key(), u)
         end
     else
         for _, pp in ipairs(profile:projects()) do
-            units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
+            units[#units + 1] = tasks_mod.meta_unit(svc.ids, pp:project_key(), pp:config_key(), pp._config_unit)
         end
     end
     -- A target-scoped task's phases are planned before it starts: its steps
@@ -923,7 +926,7 @@ function M.run(svc, ctx)
         plan_steps[#plan_steps + 1] = ph.step
     end
     task:start({ name = label, kind = cases and cases.kind or op, profile = profile and profile.key or nil,
-        units = units, steps = plan_steps })
+        profile_id = profile and svc.ids:id(profile) or nil, units = units, steps = plan_steps })
     -- A test run's pre-build plan: the service's (its notes and refusal were
     -- the reply's, before acceptance), else checked here.
     if testing and not ctx.test_pre then
@@ -1091,15 +1094,17 @@ function M.reset(svc, ctx)
         svc:with_model(ctx, function() finish(run.cancel_code, stopped()) end)
     end
 
-    -- The planned units as semantic keys (an observer resolves them, §19.16);
-    -- `--all` has no profile (`scope = "all"`).
+    -- The planned units by key and by id (API.md §4.2, §19.16); `--all`
+    -- has no profile (`scope = "all"`).
+    local tasks_mod = require("loomworks.daemon.tasks")
     local units = {}
     for _, u in ipairs(plan.units or {}) do
         local pk = u._project and u._project.key or u._init_project_key
-        if pk then units[#units + 1] = { project = pk, configuration = u:config_key() } end
+        if pk then units[#units + 1] = tasks_mod.meta_unit(svc.ids, pk, u:config_key(), u) end
     end
     local pkey = plan.profile and plan.profile.key or nil
     task:start({ name = pkey or "--all", kind = "reset", profile = pkey,
+        profile_id = plan.profile and svc.ids:id(plan.profile) or nil,
         scope = plan.scope == "all" and "all" or nil, units = units })
     if ctx.listing then
         for _, line in ipairs(reset_plan.listing(plan)) do task:line("out", line, "plain") end

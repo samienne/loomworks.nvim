@@ -2460,7 +2460,12 @@ operations as **interface calls**, owning their tasks (§19.15 "The editor as
 owner"):
 
 - builds — of a profile (`Build/1.build { profile }`), of configuration units
-  (`units`), serial (`jobs = 1`);
+  (`units`), serial (`jobs = 1`). *(Step 5o C2d.)* The status page names the
+  profile and the units by its view rows' ids (`{ id }`, a unit row's
+  `unit_id`), never by key; a row without an id offers no operation. Its
+  cancel and task output of a row are the tasks whose meta names the row's
+  ids ([API.md](../protocol/API.md) §4.2) — cancel only for a task the editor
+  owns;
 - *(step 5t)* the build of a non-device launch target (`Launch/1.build`; the
   editor's *Build default target*), as one owned task — its dependencies, its
   pre-build deploy and its own build never run in the editor; its progress
@@ -2527,14 +2532,17 @@ configuration editor (C2b2-1) and the launch, deploy and path editors
 toolchain rescan from C2c-1, and its deletions and nuke — the project
 row's removal and the project browser's among them — from C2c-2: a
 confirmed `Maintenance/1` call is a task the editor owns, reported when
-it ends.)*
+it ends; and the Profiles section's builds, configures, cleans, cancels,
+task output, options and device choice name their rows by id from step 5o
+C2d.)*
 
 A confirmation the editor shows before an operation
 (a clean's) is asked before the call (§19.15 "Confirmation"); so is the
 artifact-conflict question of a build (§5.9) for the units whose artifacts
-are known then (configured ones), its Yes sent as `force` — a conflict found
-only after the routed build's own configure ends the task as the CLI's
-routed build does (the refusal naming `--force`). Each call
+are known then (configured ones; in `daemon` mode as the view's unit rows
+report them, `artifact_block`, never from the editor's model), its Yes sent
+as `force` — a conflict found only after the routed build's own configure
+ends the task as the CLI's routed build does (the refusal naming `--force`). Each call
 carries the editor process's whole environment **at call time**, under the
 rules of §19.15 "Environment" — what an in-process task of the editor
 inherits.
@@ -3842,7 +3850,7 @@ roadmap.
 | — | `loomworks.Common/1` | shared types only: reference, id, outcome, environment, launch spec, debug spec, task meta |
 | `/workspace` | `loomworks.Workspace/1` | header, publish, publish_one, revert_to_baseline, revert_one, set_intent, set_description, trust_accept, delete_user_prefs (changed, header_changed); create deferred |
 | `/profiles` | `loomworks.Profiles/1` | list, set_active, create, tool_choices, add_tool, remove_tool, set_device, clear_device, query, compiler_cache |
-| `/projects` | `loomworks.Projects/1` | candidates, add, declaration, configuration_save, configuration_remove, options_save, launch_save, launch_remove, deploy_save, variable_save, variable_remove, type_config_set, expand_preview |
+| `/projects` | `loomworks.Projects/1` | candidates, add, declaration, configuration_save, configuration_remove, options_save, launch_save, launch_remove, deploy_save, variable_save, variable_remove, type_config_set, expand_preview, unit_options |
 | `/projects` | `loomworks.ConfigSets/1` | candidates, add, update, remove, generate_defaults |
 | `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
 | `/tests` | `loomworks.Tests/1` | discover T, run T, run_cases T, prepare_debug T, collect, result (results) |

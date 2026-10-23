@@ -1,7 +1,8 @@
 -- loomworks.Projects/1 in the daemon (API.md §19, spec daemon.md §19.14 "As
 -- interfaces"; step 5o part B3): candidates, add, declaration,
 -- configuration_save / _remove, options_save, launch_save / _remove,
--- deploy_save, variable_save / _remove, type_config_set and expand_preview,
+-- deploy_save, variable_save / _remove, type_config_set, expand_preview and
+-- unit_options (step 5o C2d),
 -- called over transport 11 against an in-process server with the build
 -- service attached and a real `shell` workspace. References resolve to the
 -- live objects at the boundary (an id, or a key with the project); the write
@@ -264,6 +265,45 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         r = call("expand_preview", { project = APP, profile = { key = "dev" }, templates = templates })
         assert.equals("ok", r.outcome, vim.inspect(r))
         assert.same({ "app/x", "${no_such_var}" }, r.values)
+    end)
+
+    it("unit_options reads a configured unit's build options by id; refused unconfigured, without options or stale (5o C2d)",
+        function()
+        local ws = loaded()
+        local unit = assert(ws._profiles[1]:projects()[1]._config_unit, "the profile's unit")
+        local id = id_of(unit)
+        local label = unit._project.key .. "/" .. unit:config_key()
+        -- Not configured: refused.
+        local saved_state = unit.state_value
+        unit.state_value = nil
+        local r = call("unit_options", { unit = { id = id } })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("configuration unit " .. label .. " is not configured", r.message)
+        -- Configured, but the module (shell) has no get_options: refused.
+        unit.state_value = "configured"
+        r = call("unit_options", { unit = { id = id } })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("configuration unit " .. label .. " has no build options", r.message)
+        -- A module with options: the tree, as ConfigUnit:options() gives it.
+        local impl = unit._project._module.impl
+        local tree = { { label = "Cache", children = {
+            { key = "OPT", value = "ON", value_type = "bool", helpstring = "an option" },
+            { key = "MODE", value = "a", value_type = "string", choices = { "a", "b" } } } } }
+        local seen_dir
+        impl.get_options = function(bd) seen_dir = bd; return tree end
+        local ok, err = pcall(function()
+            r = call("unit_options", { unit = { id = id } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.same(tree, r.options)
+            assert.equals(unit:build_dir(), seen_dir)
+        end)
+        impl.get_options = nil
+        unit.state_value = saved_state
+        assert(ok, err)
+        -- A stale id: refused.
+        r = call("unit_options", { unit = { id = "999.999" } })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("no configuration unit with id 999.999 (a stale reference)", r.message)
     end)
 
     it("a stale id or an unknown key is refused and changes nothing", function()

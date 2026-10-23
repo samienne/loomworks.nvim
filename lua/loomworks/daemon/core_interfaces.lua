@@ -21,7 +21,7 @@
 ---   /projects    loomworks.Projects/1     candidates, add, declaration, configuration_save,
 ---                                         configuration_remove, options_save, launch_save, launch_remove,
 ---                                         deploy_save, variable_save, variable_remove, type_config_set,
----                                         expand_preview
+---                                         expand_preview, unit_options
 ---   /projects    loomworks.ConfigSets/1   candidates, add, update, remove, generate_defaults
 ---   /maintenance loomworks.Maintenance/1 execute_deletion T, nuke T (loomworks.daemon.maintenance)
 ---   /devices     loomworks.Devices/1      list, scan T, install T, launch T, stop (changed;
@@ -1023,7 +1023,7 @@ end
 --- workspace operation lock O (Project:rename_configuration is guarded, spec
 --- §19.3), as does `add`'s profile upgrade (Workspace:upgrade_profiles_for_tool);
 --- a launch rename writes only the working copy and takes no O. The reads
---- (`candidates`, `declaration`, `expand_preview`) run in a model segment of
+--- (`candidates`, `declaration`, `expand_preview`, `unit_options`) run in a model segment of
 --- the caller's environment and change nothing.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
@@ -1174,6 +1174,28 @@ function M.projects_impl(service)
                 if not profile then return mc.refused(err) end
             end
             return mc.expand_preview(project, profile, args.templates)
+        end)
+    end
+
+    -- The build options of a configured configuration unit (API.md §19; step
+    -- 5o C2d): the module's `get_options` on its build directory, the
+    -- in-process options float's read. Read-only, no lock.
+    function methods.unit_options(ctx, args)
+        return read(ctx, function(ws)
+            local id = args.unit and args.unit.id
+            local unit = service.ids:find(id, ws._config_units)
+            if not unit then
+                return mc.refused("no configuration unit with id " .. tostring(id) .. " (a stale reference)")
+            end
+            local label = (unit._project and unit._project.key or "?") .. "/" .. tostring(unit:config_key())
+            if not unit:_was_configured() then
+                return mc.refused("configuration unit " .. label .. " is not configured")
+            end
+            local options = unit:options()
+            if not options or #options == 0 then
+                return mc.refused("configuration unit " .. label .. " has no build options")
+            end
+            return { outcome = "ok", options = options }
         end)
     end
     return { methods = methods }

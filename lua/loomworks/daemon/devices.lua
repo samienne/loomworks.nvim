@@ -488,7 +488,7 @@ local function run_device_op(service, ctx, op)
     local task, profile = ctx.task, ctx.profile
     local lt, serial = device_target(ctx)
     task:start({ name = lt and (lt:display_name() .. " on " .. serial) or profile.key, kind = op,
-        profile = profile.key })
+        profile = profile.key, profile_id = service.ids:id(profile) })
     if not lt then
         run.finish(1, serial)
         return run
@@ -819,6 +819,7 @@ local function run_device_log(service, ctx, l, command, log_options)
     -- filter starts; none for a letter that is not a level.)
     task:start({ name = lt:display_name() .. " log on " .. serial, kind = "device_log",
         profile = l.profile and l.profile.key or nil,
+        profile_id = l.profile and service.ids:id(l.profile) or nil,
         level = log_options and records.LEVELS[log_options.level] or nil })
 
     -- The records, one signal of at most LOG_BATCH_BYTES every LOG_FLUSH_MS

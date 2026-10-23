@@ -443,8 +443,11 @@ function M.run(svc, ctx)
     end
 
     local meta_units = {}
-    for _, u in ipairs(units) do meta_units[#meta_units + 1] = { project = u.project, configuration = u.configuration } end
-    task:start({ name = profile.key, kind = "discover", profile = profile.key, units = meta_units })
+    for _, u in ipairs(units) do
+        meta_units[#meta_units + 1] = tasks_mod.meta_unit(svc.ids, u.project, u.configuration, u.unit)
+    end
+    task:start({ name = profile.key, kind = "discover", profile = profile.key, profile_id = svc.ids:id(profile),
+        units = meta_units })
     step()
     return run
 end

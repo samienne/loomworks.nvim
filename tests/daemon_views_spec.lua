@@ -408,6 +408,35 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         assert.same(p.last_result, profile(s.view(), "dev").last_result)
     end)
 
+    it("reports a unit's artifact-conflict block on its row, from the daemon's gate without force (5o C2d)", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.updates()
+        local ws = assert(s.d.server.service.ws)
+        local p0 = assert(profile(s.view(), "dev"))
+        assert.is_string(p0.units[1].unit_id)
+        for _, u in ipairs(p0.units) do assert.is_nil(u.artifact_block) end
+        -- The §5.9 gate (Workspace:artifact_conflict_block) blocks the first
+        -- unit: asked without force, its answer on that row only.
+        local blocked = ws._profiles[1]:projects()[1]._config_unit
+        local asked = {}
+        ws.artifact_conflict_block = function(_, unit, force)
+            asked[#asked + 1] = force
+            if unit == blocked then return { unit = {}, profile = "rel", path = "/w/bin/app" } end
+        end
+        local ok, err = pcall(function()
+            -- (A `get` checks the view again: the next view shows it.)
+            local p = assert(profile(s.view(), "dev"))
+            assert.same({ profile = "rel", path = "/w/bin/app" }, p.units[1].artifact_block)
+            for i = 2, #p.units do assert.is_nil(p.units[i].artifact_block) end
+            assert.is_true(#asked > 0)
+            for _, f in ipairs(asked) do assert.is_false(f) end
+        end)
+        ws.artifact_conflict_block = nil
+        assert(ok, err)
+    end)
+
     --- Rewrite the working copy as another process would (signed, as an
     --- in-process editor writes it), changing it with `fn`.
     local function edit_user(fn)

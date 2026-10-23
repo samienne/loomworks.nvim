@@ -207,6 +207,7 @@ end
 --- @field compat_error? string
 --- @field overwritten boolean
 --- @field launcher_changed boolean
+--- @field artifact_block? { profile: string, path?: string } daemon only: a build now would overwrite that built profile's artifact (spec §5.9)
 --- @field tools? string[] the labels of the unit's tools
 --- @field build_dir? string
 --- @field targets? table<string, loomworks.ViewTarget> target name -> target
@@ -511,7 +512,15 @@ local function profile_row(ws, profile, active, opts)
         u.compat_error = pp._tool_compat_error
         u.overwritten = unit and unit.is_overwritten and unit:is_overwritten() and true or false
         u.launcher_changed = unit and unit.launcher_changed and unit:launcher_changed(profile) and true or false
-        if unit and opts.id then u.unit_id = opts.id(unit) end
+        if unit and opts.id then
+            u.unit_id = opts.id(unit)
+            -- Whether a build of the unit now would overwrite another
+            -- profile's built artifact (spec §5.9 gate, without `force`;
+            -- API.md §14.4): the editor asks before a build from this, never
+            -- from its own model (daemon.md §19.16 "Model writes").
+            local block = ws.artifact_conflict_block and ws:artifact_conflict_block(unit, false) or nil
+            if block then u.artifact_block = { profile = block.profile, path = block.path } end
+        end
         local cfg = pp._configuration
         if cfg and not cfg._removed and profile.tools_for then
             local tools = profile:tools_for(cfg)

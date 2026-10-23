@@ -915,6 +915,9 @@ after the value. Fold/unfold with `<Tab>`.
 
 The float is read-only. Close with `q` or `<Esc>`.
 
+*(Step 5o C2d.)* In `daemon` mode the float reads `Projects/1.unit_options`
+(core daemon.md §19.16), never the editor's model.
+
 ### 1.14 Project Browser
 
 The project browser is a float opened from the "Add project" sentinel line.

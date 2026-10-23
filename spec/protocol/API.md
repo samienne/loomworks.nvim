@@ -152,17 +152,19 @@ carries the header's `state` and `error` (§2).
 ### 4.2 Task meta and end
 
 A task-streamed method's `start` frame carries `meta = { name, kind,
-profile, units, origin }` (`TaskMeta`), besides the `object`, `iface`, `v`
+profile, profile_id, units, origin }` (`TaskMeta`), besides the `object`, `iface`, `v`
 and `method` PROTOCOL.md §14.2 adds:
 
 - `kind` — the operation: `build`, `configure`, `clean`, `reset`, `test`,
   `discover`, `run`, `debug`, `delete`, `nuke` (each method below names its
   own);
-- `profile` — the profile's key (absent for a task scoped to units, §8.3, or
-  to every build directory, §8.5, which carries `scope = "all"`);
-- `units` — one `{ project, configuration }` per project of the profile (or
-  of the task's scope): the project key and its configuration unit's key.
-  These are semantic keys, which a client resolves to its own records;
+- `profile` — the profile's key, and `profile_id` its id (both absent for a
+  task scoped to units, §8.3, or to every build directory, §8.5, which
+  carries `scope = "all"`);
+- `units` — one `{ project, configuration, id }` per project of the profile
+  (or of the task's scope): the project key, its configuration unit's key and
+  the unit's id (§1.1; absent for a unit the server has no id for). A client
+  matches a task to its records by the ids; the keys are for display.
 - `origin` — the owner's `hello.client`, `cli` or `editor`, set by the
   server, never taken from the request.
 
@@ -1346,6 +1348,10 @@ optional because the in-process builder leaves it out:
       output artifact (spec §5.9);
     - `launcher_changed` (boolean) — its compiler launcher changed since it
       was configured;
+    - `artifact_block` (object, optional) — `{ profile, path? }`: a build of
+      the unit now would overwrite the output artifact of the built unit of
+      that profile (spec §5.9 gate, without `force`); the client asks before
+      a build and sends its Yes as `force` (§8.6);
     - `tools` (array of strings, optional) — the labels of the tools that
       build the configuration under the profile;
     - `build_dir` (string, optional) — the unit's build directory as cached;
@@ -1553,11 +1559,11 @@ The runner binds `lw_version`, `env` and `root` before the handshake.
 ## 19. `loomworks.Projects/1`
 
 *(Step 5o.)* A workspace's projects and what they declare, on `/projects`.
-`candidates`, `declaration` and `expand_preview` are queries (as §11's);
-the others are commands (§6). A configuration is named by a reference (its
-id, or its key with the project); a launch configuration as §1.2 says; a
-variable, deploy destination or `type_config` field by its project and its
-name.
+`candidates`, `declaration`, `expand_preview` and `unit_options` are
+queries (as §11's); the others are commands (§6). A configuration is named
+by a reference (its id, or its key with the project); a launch
+configuration as §1.2 says; a variable, deploy destination or
+`type_config` field by its project and its name.
 
 - `candidates { path, type? }` → `{ outcome = "ok", key, path, types,
   mappings, configurations, tools?, upgrade_preview? }` — what adding that
@@ -1633,7 +1639,13 @@ name.
   values }` — each template expanded as a launch of that project would
   expand it (spec §1.3.1, §8.7), under `profile` or the active profile, in
   the client's environment; an unresolved reference stays as written. No
-  `profile` and no active profile is refused.
+  `profile` and no active profile is refused;
+- `unit_options { unit }` → `ok` with `options` — the build options of a
+  configured configuration unit (`unit` `{ id }`, its id from a view), as the
+  module's `get_options` reads them from its build directory (spec §8):
+  an array of `OptionGroup` / `Option` nodes (`{ label, children }` /
+  `{ key, value, value_type?, choices?, helpstring? }`). Read-only, no lock;
+  `refused` when the unit is not configured or its module has no options.
 
 A project is removed with `Maintenance/1.execute_deletion` (§22).
 
