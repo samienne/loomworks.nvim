@@ -74,7 +74,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - A failed, stopped or refused clean no longer leaves the config shown as
   "cleaning" for the rest of the session (it also blocked removing or
   renaming that config); the same holds for a deletion that errors before it
-  finishes (#PR).
+  finishes (#330).
 
 - A profile created from an SDK in the status page's tool picker lost its
   SDK on the next load: it was saved without toolchains, came back as the
