@@ -22,6 +22,8 @@ local function make_unit()
     local project = core._projects["App"]
     local unit = core:ensure_config_unit(project, h.get_or_create_config(project, "Debug"), nil)
     unit.state_value = "built"
+    -- The real run-once mark clearer that ConfigUnit:clean calls.
+    unit._workspace._deleting_mark_clearer = require("loomworks.workspace").Workspace._deleting_mark_clearer
     return unit
 end
 
