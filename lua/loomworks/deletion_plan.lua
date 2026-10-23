@@ -3,8 +3,7 @@
 -- directories it must lock, the token a confirmation carries, the listing a
 -- client shows, and the execution once the locks are held. Shared by the
 -- command layer (loomworks.model_commands `execute_deletion`) and the
--- workspace daemon (step 5o part B5); the in-process view (workspace_view)
--- uses its re-checks for the dialogs it still drives.
+-- workspace daemon (step 5o part B5).
 --
 -- A target is exactly one of (objects resolved at the caller's input
 -- boundary; never keys):
@@ -67,26 +66,6 @@ M.NOTHING = "nothing to delete"
 ---   (outside the workspace root): never removed, listed as such
 --- @field state_to_clear boolean cached state is cleared even with no dir
 --- @field token string the plan token (`M.token`)
-
---- The normalized directories among `paths` that lie within the workspace
---- root (`_validate_build_dir`, quiet: the deletion validates again and
---- reports a refused directory once) — the ones a deletion may remove and so
---- the ones whose build locks it takes.
---- @param ws loomworks.Workspace
---- @param paths (string|nil)[]
---- @return string[]
-function M.validated_dirs(ws, paths)
-    local norm = ws._core._deps.normalize
-    local safe_prefix = norm(ws.root)
-    local dirs = {}
-    for _, p in pairs(paths) do
-        if p then
-            local n = norm(p)
-            if ws:_validate_build_dir(n, safe_prefix, { quiet = true }) then dirs[#dirs + 1] = n end
-        end
-    end
-    return dirs
-end
 
 --- Under a deletion's locks: apply external changes to the workspace files
 --- (`FileTracker:sync`) so the re-checks see what other processes wrote

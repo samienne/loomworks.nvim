@@ -14,7 +14,28 @@
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
 local wv = require("loomworks.workspace_view")
+local commands = require("loomworks.model_commands")
+local dp = require("loomworks.deletion_plan")
 local uv = vim.uv or vim.loop
+
+--- Run the confirmed deletion of `target` (model_commands.execute_deletion)
+--- to its end; the final outcome (the request's when it was not accepted).
+local function delete(ws, target)
+  local final
+  local r = commands.execute_deletion(ws, target, { yes = true, done = function(o) final = o end })
+  if r.outcome ~= "accepted" then return r end
+  assert.is_true(vim.wait(5000, function() return final ~= nil end, 20), "never finished")
+  return final
+end
+
+--- Run the orphan cleanup of an explicit list (deletion_plan.orphan_cleanup_unlocked)
+--- to its end; its result.
+local function cleanup_list(ws, orphans, strays)
+  local done, res = false, nil
+  dp.orphan_cleanup_unlocked(ws, orphans, strays):next(function(ok) done, res = true, ok end)
+  assert.is_true(vim.wait(5000, function() return done end, 20), "never finished")
+  return res
+end
 
 local function quiet(fn)
   local rw, rs, rex = io.write, io.stderr, os.exit
@@ -118,47 +139,34 @@ describe("find_stray_build_dirs: directory identity, not spelling", function()
     end)
 
     it("refuses to delete a 'stray' dir that contains a live build dir", function()
-      local done, ok_res, err_res = false, nil, nil
-      wv.execute_delete_stray_dir(ws, root .. "/.nvim/build/App", function(ok, err)
-        done, ok_res, err_res = true, ok, err
-      end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
-      assert.is_false(ok_res)
-      assert.is_truthy(err_res)
+      local r = delete(ws, { stray_dir = root .. "/.nvim/build/App" })
+      assert.equals("refused", r.outcome)
+      assert.is_truthy(r.message)
       assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/marker.txt"))
     end)
 
     it("orphan cleanup skips a listed dir that contains a live build dir", function()
-      local done = false
-      wv.execute_orphan_cleanup(ws, {}, { root .. "/.nvim/build/App" }, function() done = true end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
+      cleanup_list(ws, {}, { root .. "/.nvim/build/App" })
       assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/marker.txt"))
     end)
 
     it("orphan cleanup keeps an orphaned entry's dir that is a live build dir", function()
-      local done = false
       local orphan = { project_key = "Gone", config_key = "Debug", build_dir = root .. "/.nvim/build/App/Debug" }
-      wv.execute_orphan_cleanup(ws, { orphan }, {}, function() done = true end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
+      cleanup_list(ws, { orphan }, {})
       assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/marker.txt"))
     end)
 
     it("still deletes a genuinely stray dir", function()
-      local done = false
-      wv.execute_orphan_cleanup(ws, {}, wv.find_stray_build_dirs(ws), function() done = true end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
+      local r = delete(ws, { orphans = true })
+      assert.equals("ok", r.outcome, r.message)
       assert.is_true(vim.wait(5000, function() return uv.fs_stat(root .. "/.nvim/build/Old") == nil end, 20))
       assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/marker.txt"))
     end)
 
     it("refuses to delete a dir lying inside a live build dir under .nvim/build", function()
       vim.fn.mkdir(root .. "/.nvim/build/App/Debug/sub", "p")
-      local done, ok_res = false, nil
-      wv.execute_delete_stray_dir(ws, root .. "/.nvim/build/App/Debug/sub", function(ok)
-        done, ok_res = true, ok
-      end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
-      assert.is_false(ok_res)
+      local r = delete(ws, { stray_dir = root .. "/.nvim/build/App/Debug/sub" })
+      assert.equals("refused", r.outcome)
       assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/sub"))
     end)
   end)
@@ -186,20 +194,15 @@ describe("find_stray_build_dirs: directory identity, not spelling", function()
     end)
 
     it("orphan cleanup deletes the stray dir", function()
-      local done = false
-      wv.execute_orphan_cleanup(ws, {}, wv.find_stray_build_dirs(ws), function() done = true end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
+      local r = delete(ws, { orphans = true })
+      assert.equals("ok", r.outcome, r.message)
       assert.is_true(vim.wait(5000, function() return uv.fs_stat(root .. "/.nvim/build/Old") == nil end, 20))
       assert.is_not_nil(uv.fs_stat(root .. "/marker.txt"))
     end)
 
-    it("execute_delete_stray_dir deletes the stray dir", function()
-      local done, ok_res, err_res = false, nil, nil
-      wv.execute_delete_stray_dir(ws, root .. "/.nvim/build/Old", function(ok, err)
-        done, ok_res, err_res = true, ok, err
-      end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
-      assert.is_true(ok_res, tostring(err_res))
+    it("stray directory deletion deletes the stray dir", function()
+      local r = delete(ws, { stray_dir = root .. "/.nvim/build/Old" })
+      assert.equals("ok", r.outcome, r.message)
       assert.is_nil(uv.fs_stat(root .. "/.nvim/build/Old"))
     end)
   end)
@@ -237,12 +240,8 @@ describe("find_stray_build_dirs: directory identity, not spelling", function()
     end)
 
     it("refuses to delete the link's parent", function()
-      local done, ok_res = false, nil
-      wv.execute_delete_stray_dir(ws, root .. "/.nvim/build/App", function(ok)
-        done, ok_res = true, ok
-      end)
-      assert.is_true(vim.wait(5000, function() return done end, 20))
-      assert.is_false(ok_res)
+      local r = delete(ws, { stray_dir = root .. "/.nvim/build/App" })
+      assert.equals("refused", r.outcome)
       assert.is_not_nil(uv.fs_stat(root .. "/.nvim/build/App/Debug/marker.txt"))
     end)
   end)
