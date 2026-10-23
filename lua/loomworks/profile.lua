@@ -1884,24 +1884,38 @@ function Profile:_clean_in_process()
     for _, unit in ipairs(units) do
         unit:mark_deleting(true, "cleaning")
     end
-    self._workspace:create_operation(self, "clean", units, target_states)
-    -- The built state is recorded per module clean task once it succeeds
-    -- (overseer.record_module_clean); a wipe resets the unit itself.
+    -- The runtime mark is cleared on every exit (success, failed task,
+    -- cancel, refusal, throw) — exactly once. Only the in-memory mark: cache
+    -- state is left as is.
+    -- Clearing on cancel is safe: the clean task holds the exclusive build-dir lock.
+    local ws = self._workspace
+    local clear_mark = ws:_deleting_mark_clearer(units)
+    local ok, f = pcall(function()
+        ws:create_operation(self, "clean", units, target_states)
+        -- The built state is recorded per module clean task once it succeeds
+        -- (overseer.record_module_clean); a wipe resets the unit itself.
 
-    local running = self._workspace:find_running_tasks_for_items(items)
-    local task_ids = {}
-    for task_id in pairs(running) do
-        task_ids[#task_ids + 1] = task_id
-    end
-
-    return self._workspace:stop_tasks_then(task_ids):next(function()
-        return require("loomworks.overseer").run_profile_clean(self)
-    end):next(function()
-        for _, unit in ipairs(units) do
-            unit:mark_deleting(false)
+        local running = ws:find_running_tasks_for_items(items)
+        local task_ids = {}
+        for task_id in pairs(running) do
+            task_ids[#task_ids + 1] = task_id
         end
-        return true
+
+        return ws:stop_tasks_then(task_ids):next(function()
+            return require("loomworks.overseer").run_profile_clean(self)
+        end):next(function()
+            clear_mark()
+            return true
+        end, function(err)
+            clear_mark()
+            error(err, 0)
+        end)
     end)
+    if not ok then
+        clear_mark()
+        error(f, 0)
+    end
+    return f
 end
 
 --- Rebuild: clean then build. Returns a Future.

@@ -900,6 +900,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 ### Fixed
 - Rebuilding a configuration from the status page (`R`) built even when its
   clean failed; it now stops and reports the failed clean (#328).
+- A failed, stopped or refused clean no longer leaves the config shown as
+  "cleaning" for the rest of the session (it also blocked removing or
+  renaming that config); the same holds for a deletion that errors before it
+  finishes (#330).
 - The launch editor never offered `${target_dir}` in the path and deploy
   editors it opens (arguments, working directory, deploy steps). It now does
   for a target-backed launch; a command-type launch still does not, since
