@@ -1188,6 +1188,11 @@ function M.projects_impl(service)
                 return mc.refused("no configuration unit with id " .. tostring(id) .. " (a stale reference)")
             end
             local label = (unit._project and unit._project.key or "?") .. "/" .. tostring(unit:config_key())
+            -- A unit being deleted or cleaned: its build dir may be mid
+            -- rm-rf, so it is not read.
+            if unit:is_deleting() then
+                return mc.refused("configuration unit " .. label .. " is being deleted")
+            end
             if not unit:_was_configured() then
                 return mc.refused("configuration unit " .. label .. " is not configured")
             end

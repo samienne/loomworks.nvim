@@ -267,7 +267,7 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         assert.same({ "app/x", "${no_such_var}" }, r.values)
     end)
 
-    it("unit_options reads a configured unit's build options by id; refused unconfigured, without options or stale (5o C2d)",
+    it("unit_options reads a configured unit's build options by id; refused unconfigured, being deleted, without options or stale (5o C2d)",
         function()
         local ws = loaded()
         local unit = assert(ws._profiles[1]:projects()[1]._config_unit, "the profile's unit")
@@ -292,6 +292,14 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         local seen_dir
         impl.get_options = function(bd) seen_dir = bd; return tree end
         local ok, err = pcall(function()
+            -- Being deleted (its build dir may be mid rm-rf): refused, the
+            -- build dir not read.
+            unit:mark_deleting(true)
+            r = call("unit_options", { unit = { id = id } })
+            unit:mark_deleting(false)
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            assert.equals("configuration unit " .. label .. " is being deleted", r.message)
+            assert.is_nil(seen_dir)
             r = call("unit_options", { unit = { id = id } })
             assert.equals("ok", r.outcome, vim.inspect(r))
             assert.same(tree, r.options)

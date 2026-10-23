@@ -1691,7 +1691,8 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   toolchain detection for `candidates` is not stored in the model).
   *(Step 5o C2d.)* `unit_options { unit = { id } }` reads a configured
   unit's `ConfigUnit:options()` (the module's `get_options`) in the same
-  kind of segment, refused for an unconfigured unit, a module with no
+  kind of segment, refused for an unconfigured unit, one being deleted
+  (`is_deleting`, its build dir may be mid rm-rf), a module with no
   options or a stale id. The daemon's task meta names the profile and the
   units by id as well as by key (`profile_id`, `units[].id`;
   `daemon/tasks.meta_unit`), and its `view.Workspace/1` unit rows carry

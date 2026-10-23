@@ -1645,7 +1645,8 @@ configuration as §1.2 says; a variable, deploy destination or
   module's `get_options` reads them from its build directory (spec §8):
   an array of `OptionGroup` / `Option` nodes (`{ label, children }` /
   `{ key, value, value_type?, choices?, helpstring? }`). Read-only, no lock;
-  `refused` when the unit is not configured or its module has no options.
+  `refused` when the unit is not configured, is being deleted or cleaned
+  (its build directory may be mid-removal) or its module has no options.
 
 A project is removed with `Maintenance/1.execute_deletion` (§22).
 
