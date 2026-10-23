@@ -69,6 +69,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 
+- Rebuilding a configuration from the status page (`R`) built even when its
+  clean failed; it now stops and reports the failed clean (#328).
+
 - A profile created from an SDK in the status page's tool picker lost its
   SDK on the next load: it was saved without toolchains, came back as the
   configuration set's toolless profile, and its key clashed with an existing
