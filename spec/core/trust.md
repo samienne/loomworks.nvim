@@ -345,6 +345,8 @@ comes only from the staging manifest.
   alike (§19.15).
 - **Editor.** The status page shows the refusal with the same actions (trust,
   discard, reset); a trust command shows the summary in a confirmation prompt.
+  In `daemon` mode, with the workspace not loaded, the actions are refused
+  and name `lw trust` / `lw trust --discard` / `lw nuke` (daemon.md §19.16).
 
 Example messages:
 

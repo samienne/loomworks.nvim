@@ -26,7 +26,11 @@ local function make_ws()
   f:write(vim.json.encode({ projects = { App = { typescript = vim.empty_dict() } } })); f:close()
   capture(function() cli.cmd_configuration("add", root, "App", "Debug", "variant:default") end)
   capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Dev", "App=Debug" }) end)
-  return root, assert(cli._load_workspace(root, false))
+  local ws = assert(cli._load_workspace(root, false))
+  -- (Loaded as the editor's setup does, in the in-process mode: the page's
+  -- calls given no workspace go to it.)
+  require("loomworks.daemon.observer").attach(ws, { configured = "in-process" })
+  return root, ws
 end
 
 local function find_set(ws, name)

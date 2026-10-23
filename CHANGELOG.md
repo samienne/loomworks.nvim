@@ -547,6 +547,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- Experimental daemon: in daemon mode, when the workspace failed to load (for
+  example a working copy or build cache refused by trust), the status page's
+  trust (`T`), discard (`U`) and reset (`<C-n>`) no longer run in Neovim: they
+  are refused with a notification naming the command to run instead
+  (`lw trust`, `lw trust --discard`, `lw nuke`); press `L` afterwards to load.
+  (#PR)
 - The status page's `D` on a project now also deletes the project's build
   state: after a confirmation listing its build directories, they are
   deleted, then the project is removed from the configuration and its
