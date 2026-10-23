@@ -89,7 +89,8 @@ describe("daemon launch-target build (§19.15 Build of a launch target)", functi
             done = function(_, code, err, fields) rec.done = { code = code, err = err, fields = fields } end,
         }
         local profile = { key = "dbg", projects = function() return {} end }
-        local svc = { ws = ws, host = {}, with_model = function(_, _, fn) return fn() end }
+        local svc = { ws = ws, host = {}, ids = require("loomworks.daemon.snapshot").registry(1),
+            with_model = function(_, _, fn) return fn() end }
         rec.run = runner.run(svc, { op = opts.op or "target_build", task = task, ws = ws, profile = profile,
             env = {}, args = args or {} })
         return rec

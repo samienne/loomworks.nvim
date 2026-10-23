@@ -431,9 +431,10 @@ local function accept(service, ctx, kind)
         -- (A `done` frame needs the task's `start` before it.)
         local meta_units = {}
         for _, u in ipairs(covered) do
-            meta_units[#meta_units + 1] = { project = u.project, configuration = u.configuration }
+            meta_units[#meta_units + 1] = tasks_mod.meta_unit(service.ids, u.project, u.configuration, u.unit)
         end
-        task:start({ name = profile.key, kind = kind, profile = profile.key, units = meta_units })
+        task:start({ name = profile.key, kind = kind, profile = profile.key, profile_id = service.ids:id(profile),
+            units = meta_units })
         task:done(1, "internal error: " .. tostring(phase))
         return
     end

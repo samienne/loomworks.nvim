@@ -408,6 +408,35 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         assert.same(p.last_result, profile(s.view(), "dev").last_result)
     end)
 
+    it("reports a unit's artifact-conflict block on its row, from the daemon's gate without force (5o C2d)", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.updates()
+        local ws = assert(s.d.server.service.ws)
+        local p0 = assert(profile(s.view(), "dev"))
+        assert.is_string(p0.units[1].unit_id)
+        for _, u in ipairs(p0.units) do assert.is_nil(u.artifact_block) end
+        -- The §5.9 gate (Workspace:artifact_conflict_block) blocks the first
+        -- unit: asked without force, its answer on that row only.
+        local blocked = ws._profiles[1]:projects()[1]._config_unit
+        local asked = {}
+        ws.artifact_conflict_block = function(_, unit, force)
+            asked[#asked + 1] = force
+            if unit == blocked then return { unit = {}, profile = "rel", path = "/w/bin/app" } end
+        end
+        local ok, err = pcall(function()
+            -- (A `get` checks the view again: the next view shows it.)
+            local p = assert(profile(s.view(), "dev"))
+            assert.same({ profile = "rel", path = "/w/bin/app" }, p.units[1].artifact_block)
+            for i = 2, #p.units do assert.is_nil(p.units[i].artifact_block) end
+            assert.is_true(#asked > 0)
+            for _, f in ipairs(asked) do assert.is_false(f) end
+        end)
+        ws.artifact_conflict_block = nil
+        assert(ok, err)
+    end)
+
     --- Rewrite the working copy as another process would (signed, as an
     --- in-process editor writes it), changing it with `fn`.
     local function edit_user(fn)
@@ -423,6 +452,70 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         f:write(signed)
         f:close()
     end
+
+    it("reports a real artifact conflict between two built profiles on the unit rows; it follows the built state, not in-process (5o C2d)",
+        function()
+        s = session()
+        s.load()
+        s.drain(200)
+        -- A second profile `rel` over the same project's Release: a distinct
+        -- unit (its own build dir) whose artifact is the same path as dev's.
+        edit_user(function(user)
+            user.projects.app.shell.configurations.Release = vim.empty_dict()
+            user.configuration_sets = user.configuration_sets or {}
+            user.configuration_sets.rel = { app = "Release" }
+            user.profiles.rel = { configuration_set = "rel" }
+        end)
+        assert(profile(s.view(), "rel"), "the rel profile")
+        s.drain(200)
+        s.updates()
+        local ws = assert(s.d.server.service.ws)
+        local shell = ws._core._deps.modules.get("shell")
+        local shared = s.root .. "/out/app.bin"
+        shell.resolve_artifacts = function() return { shared } end
+        local function build(key)
+            local r = s.call("/build", "loomworks.Build", "build", { profile = { key = key }, force = true }, s.env)
+            assert.equals("accepted", r.outcome, vim.inspect(r))
+            local f = s.wait(function(m) return m.kind == "task" and m.task_id == r.task_id and m.phase == "done" end,
+                120000)
+            assert.equals(0, f.exit_code)
+        end
+        local function block(v, key) return assert(profile(v, key)).units[1].artifact_block end
+        local ok, err = pcall(function()
+            build("dev")
+            local v = s.view()
+            assert.equals("built", profile(v, "dev").units[1].state)
+            -- rel not built: no built artifact for either build to overwrite.
+            assert.is_nil(block(v, "dev"))
+            assert.is_nil(block(v, "rel"))
+            -- rel builds over dev's artifact (forced): dev is overwritten, so
+            -- a dev build now would overwrite rel's built artifact.
+            build("rel")
+            v = s.view()
+            assert.same({ profile = "rel", path = shared }, block(v, "dev"))
+            assert.is_nil(block(v, "rel"))
+            -- The in-process status source's view has no artifact_block.
+            local inproc = ws:view_workspace({ bind = require("loomworks.status_source").bind })
+            for _, p in ipairs(inproc.profiles) do
+                for _, u in ipairs(p.units) do assert.is_nil(u.artifact_block) end
+            end
+            -- dev builds again (forced): rel is overwritten now; an update
+            -- carries dev's block cleared and rel's.
+            s.updates()
+            build("dev")
+            s.wait(function(m)
+                if m.kind == "signal" and m.iface == "loomworks.view.Workspace" and m.name == "update" then
+                    local p = profile(m.args, "dev")
+                    return p ~= nil and p.units[1].artifact_block == nil
+                end
+            end, 30000)
+            v = s.view()
+            assert.is_nil(block(v, "dev"))
+            assert.same({ profile = "dev", path = shared }, block(v, "rel"))
+        end)
+        shell.resolve_artifacts = nil
+        assert(ok, err)
+    end)
 
     it("applies another process's working-copy write before a get, and the update follows (freshness)", function()
         s = session()

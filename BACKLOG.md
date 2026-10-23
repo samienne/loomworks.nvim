@@ -250,6 +250,12 @@ re-render before the view's `update` keeps them."
 - `view.Header/1` (step 5j): every views check while a client is subscribed
   recomputes `ws:diagnostics()` for the header's `diagnostics` field. Cache
   the level by model generation so an unchanged workspace costs nothing.
+- `Projects/1.unit_options` (step 5o C2d-0) on a meson unit blocks the
+  daemon loop: meson's `get_options` (`modules/meson.lua`) runs `meson
+  introspect --buildoptions` through the synchronous `vim.fn.system`
+  (`run_introspect`), so other clients wait while it runs. Make meson
+  `get_options` async before C2d-2 wires the `o` options float in daemon
+  mode.
 
 ## Lock record follow-ups (PR #180, atomic lock create/update)
 

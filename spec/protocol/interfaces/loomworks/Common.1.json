@@ -166,7 +166,22 @@
         "name": { "type": "string" },
         "kind": { "type": "string" },
         "profile": { "type": "string" },
-        "units": { "type": "array" },
+        "profile_id": {
+          "description": "The profile's id (API.md §4.2, §1.1; step 5o C2d): present with profile.",
+          "$ref": "#/$defs/Id"
+        },
+        "units": {
+          "description": "One entry per project of the profile or of the task's scope (API.md §4.2): the project key, its configuration unit's key and the unit's id (absent for a unit the server has no id for). A client matches a task to its records by the ids; the keys are for display.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "project": { "type": "string" },
+              "configuration": { "type": "string" },
+              "id": { "$ref": "#/$defs/Id" }
+            }
+          }
+        },
         "origin": { "enum": ["cli", "editor"] },
         "object": { "type": "string" },
         "iface": { "type": "string" },

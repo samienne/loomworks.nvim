@@ -161,6 +161,16 @@ describe("lw reset in the daemon's build service (§19.15 Reset)", function()
         assert.equals("dev", meta.profile)
         assert.is_nil(meta.scope)
         assert.equals(2, #meta.units)
+        -- By id too (API.md §4.2; step 5o C2d): the profile's and each
+        -- planned unit's, as the session issued them.
+        local ids = srv.service.ids
+        assert.equals(ids:id(srv.service.ws._profiles[1]), meta.profile_id)
+        for _, mu in ipairs(meta.units) do
+            local unit = ids:find(mu.id, srv.service.ws._config_units)
+            assert.truthy(unit, vim.inspect(mu))
+            assert.equals(mu.project, unit._project.key)
+            assert.equals(mu.configuration, unit:config_key())
+        end
         local lines = r.lines()
         local a = lines:find("out:Will remove 2 build directories and reset profile 'dev' to unconfigured:", 1, true)
         local b = lines:find("out:RESET OK: profile 'dev'", 1, true)
@@ -467,6 +477,9 @@ describe("lw reset in the daemon's build service (§19.15 Reset)", function()
         assert.equals("all", meta.scope)
         assert.equals("--all", meta.name)
         assert.is_nil(meta.profile)
+        assert.is_nil(meta.profile_id)
+        -- (Every planned unit by id as well as by key; step 5o C2d.)
+        for _, mu in ipairs(meta.units) do assert.is_string(mu.id, vim.inspect(mu)) end
         assert.truthy(r.lines():find("out:Will remove 3 build directories and reset the whole workspace to unconfigured:",
             1, true), r.lines())
         assert.truthy(r.lines():find("out:RESET OK: the whole workspace", 1, true), r.lines())

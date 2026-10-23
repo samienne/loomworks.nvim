@@ -106,6 +106,7 @@ local function mount_views(srv, o)
             configuration_remove = refused, options_save = refused, launch_save = refused,
             launch_remove = refused, deploy_save = refused, variable_save = refused,
             variable_remove = refused, type_config_set = refused, expand_preview = refused,
+            unit_options = refused,
         } }))
         -- The toolchain rescan and the SDKs (step 5o C2c-1): called, never
         -- subscribed to.

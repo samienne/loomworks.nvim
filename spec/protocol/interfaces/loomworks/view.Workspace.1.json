@@ -172,6 +172,15 @@
         "compat_error": { "description": "Why the profile's tool cannot build this project.", "type": "string" },
         "overwritten": { "description": "Another unit has since overwritten its output artifact (spec 5.9).", "type": "boolean" },
         "launcher_changed": { "description": "Its compiler launcher changed since it was configured.", "type": "boolean" },
+        "artifact_block": {
+          "description": "A build of the unit now would overwrite the output artifact of the built unit of that profile (spec 5.9 gate, without force; API.md §14.4); the client asks before a build and sends its Yes as force (API.md §8.6). Absent when nothing blocks, and always in-process.",
+          "type": "object",
+          "required": ["profile"],
+          "properties": {
+            "profile": { "type": "string" },
+            "path": { "type": "string" }
+          }
+        },
         "tools": { "description": "The labels of the tools that build the configuration under the profile.", "type": "array", "items": { "type": "string" } },
         "build_dir": { "description": "The unit's build directory as cached.", "type": "string" },
         "targets": {
