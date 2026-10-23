@@ -1738,6 +1738,7 @@ function Profile:clean(on_done)
     -- The runtime mark is cleared on every exit (success, failed task,
     -- cancel, refusal, throw) — exactly once. Only the in-memory mark: the
     -- cache state written by mark_cached_configs_cleaned is left as is.
+    -- Clearing on cancel is safe: the clean task holds the exclusive build-dir lock.
     local ws = self._workspace
     local clear_mark = ws:_deleting_mark_clearer(units)
     local ok, f = pcall(function()

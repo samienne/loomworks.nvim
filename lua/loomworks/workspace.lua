@@ -4289,6 +4289,10 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         end
         return out
     end
+    -- The in-flight rm-rf, once started. It cannot be stopped, and cancelling
+    -- the returned Future does not reach it (a joined Future is not recorded
+    -- as upstream), so it keeps running after a cancel.
+    local removal
     local f = self:stop_tasks_then(task_ids):next(function()
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
@@ -4362,7 +4366,8 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             return failed
         end
 
-        return ws:_delete_build_dirs_async(dirs)
+        removal = ws:_delete_build_dirs_async(dirs)
+        return removal
     end):next(function(results)
         local errors = {}
         for _, r in ipairs(results) do
@@ -4396,7 +4401,14 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         -- Any other exit (stopping the tasks failed, a step threw, the
         -- Future was cancelled): clear the runtime mark only. Cache entries
         -- already marked `unknown` stay so (crash safety, spec §4.6).
-        clear_mark()
+        -- The mark is the only guard on these dirs (no build-dir lock), so
+        -- while a cancelled deletion's rm-rf still runs it stays set and is
+        -- cleared only once that removal settles.
+        if removal and removal:is_pending() then
+            removal:next(clear_mark, clear_mark)
+        else
+            clear_mark()
+        end
         error(err, 0)
     end)
 

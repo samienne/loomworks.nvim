@@ -91,6 +91,9 @@ describe("clean/deletion runtime mark", function()
             assert.is_nil(unit:deleting_reason())
         end)
 
+        -- Clearing on cancel is safe for a clean: the overseer clean task
+        -- holds the exclusive build-dir lock, so the mark is not the only
+        -- guard on the dir (unlike _run_deletion's rm-rf, tested below).
         it("clears the mark when the clean is cancelled", function()
             local unit = the_unit(make_core())
             local f = unit:clean()
@@ -172,6 +175,40 @@ describe("clean/deletion runtime mark", function()
             ws:execute_deletion({ items = { { unit = unit, project_key = "App",
                 config_key = "dev", disposition = "clean" } } }):catch(function() rejected = true end)
             assert.is_true(rejected)
+            assert.is_false(unit:is_deleting())
+        end)
+
+        it("keeps the mark while a cancelled deletion's rm-rf still runs", function()
+            local core = make_core()
+            local unit = the_unit(core)
+            local ws = core._workspace
+            local rm_done
+            ws._core._deps.io.rm_rf_async = function(_, cb) rm_done = cb end
+            local f = ws:execute_deletion({ items = { { unit = unit, project_key = "App",
+                config_key = "dev", disposition = "clean",
+                build_dir = "/root/.nvim/build/App-dev" } } })
+            f:catch(function() end)
+            assert.is_function(rm_done, "the removal started")
+            f:cancel()
+            assert.is_true(unit:is_deleting(),
+                "the mark is the only guard while the rm-rf may still run")
+            rm_done(true, nil)
+            assert.is_false(unit:is_deleting(), "cleared once the removal finishes")
+        end)
+
+        it("clears the mark when a deletion is cancelled before its removal starts", function()
+            local core = make_core()
+            local unit = the_unit(core)
+            local ws = core._workspace
+            local started = false
+            ws._core._deps.io.rm_rf_async = function() started = true end
+            ws.stop_tasks_then = function() return future_mod.create(function() end) end
+            local f = ws:execute_deletion({ items = { { unit = unit, project_key = "App",
+                config_key = "dev", disposition = "clean",
+                build_dir = "/root/.nvim/build/App-dev" } } })
+            f:catch(function() end)
+            f:cancel()
+            assert.is_false(started)
             assert.is_false(unit:is_deleting())
         end)
 
