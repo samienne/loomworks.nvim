@@ -898,6 +898,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- Rebuilding a configuration from the status page (`R`) built even when its
+  clean failed; it now stops and reports the failed clean (#328).
 - The launch editor never offered `${target_dir}` in the path and deploy
   editors it opens (arguments, working directory, deploy steps). It now does
   for a target-backed launch; a command-type launch still does not, since

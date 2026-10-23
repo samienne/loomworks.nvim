@@ -157,9 +157,15 @@ function M.rebuild_configuration(unit)
         local ctx = wv.compute_clean_confirmation_context(ws,
             "Rebuild: " .. pkey .. " / " .. ckey, items, { rebuild = true })
         M._show_confirmation(ctx, function()
-            unit:clean(function()
-                require("loomworks.overseer").run_configuration_action(unit, "build")
-            end)
+            -- Chain on the clean Future: the legacy on_done callback fires on
+            -- failure too, which would build over a tree that wasn't cleaned.
+            unit:clean()
+                :next(function()
+                    return require("loomworks.overseer").run_configuration_action(unit, "build")
+                end, function(err)
+                    vim.notify("loomworks: rebuild of " .. pkey .. " / " .. ckey
+                        .. " stopped: clean failed (" .. tostring(err) .. ")", vim.log.levels.ERROR)
+                end)
         end)
     end
 end
