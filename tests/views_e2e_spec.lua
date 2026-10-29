@@ -174,8 +174,8 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
         assert.equals("dev", prow.key)
         assert.is_string(prow.id)
         assert.equals("app", body.view.projects[1].key)
-        -- The transitional actions reach the editor's model objects.
-        assert.equals("dev", body.ref(prow).key)
+        -- No row reaches the editor's model (step 5o C2d-2).
+        assert.is_nil(body.ref)
         assert.is_nil(prow.description)
 
         -- An editor write (the working copy, in-process until step 5o): the

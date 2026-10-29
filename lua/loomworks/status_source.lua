@@ -3,8 +3,8 @@
 --- Diagnostics, Suggestions, Profiles, Orphaned Build Dirs,
 --- Configuration Sets, Projects and SDKs — renders only from one
 --- `loomworks.view.Workspace/1` table this module gives, with the overlays
---- the view does not carry: build progress (API.md §14.4 "Progress is not in
---- the view") and, for the sections' actions, the row's model object.
+--- the view does not carry: build progress (API.md §14.4 "Progress is not
+--- in the view").
 ---
 --- One source per runtime mode (as loomworks/test_source.lua and
 --- loomworks/lsp_source.lua):
@@ -13,13 +13,11 @@
 ---     not held, `why` says why and each section is one `unavailable — <why>`
 ---     line. Progress comes from the tasks observed through `Tasks/1` (the
 ---     observer's remote and editor-owned tasks: their `start` meta names the
----     profile and units, `progress` frames the percent, `start` the elapsed
----     time). The sections' actions go through
----     loomworks/ui/model_calls.lua, which names a row's entity by the row's
----     id (step 5o C2a: Workspace/1, Profiles/1, ConfigSets/1).
----     *(Transition, until step 5o parts C2b and C2c.)* The actions not routed
----     yet still write the editor's in-process model (§19.16 "Transition"):
----     `ref` gives a row the model object its keys name.
+---     profile and units by id, matched to the rows' ids — never by key;
+---     `progress` frames the percent, `start` the elapsed time). The
+---     sections' actions go through loomworks/ui/model_calls.lua, which names
+---     a row's entity by the row's id (step 5o C2), and match tasks to rows by
+---     the same ids (C2d-2): no row reaches the editor's model.
 ---   * `in-process` mode (transition, until step 6b): the view built from the
 ---     editor's own model (Workspace:view_workspace), each row bound to the
 ---     object it describes; progress from the objects' task tracking.
@@ -60,7 +58,6 @@ end
 --- @field view loomworks.ViewWorkspace|nil nil in `daemon` mode while the view is not held
 --- @field why string|nil why the view is not held (`daemon` mode)
 --- @field loaded boolean whether the workspace is loaded where the view comes from
---- @field ref fun(row: table): table|nil the model object of a row, for the actions
 --- @field profile_progress fun(row: loomworks.ViewProfile): { pct: integer|nil, elapsed: number|nil }|nil
 --- @field unit_progress fun(u: table): { progress: table|nil, elapsed: number|nil }|nil
 
@@ -83,7 +80,6 @@ local function in_process(ws)
     local refs = bound
     return {
         mode = "in-process", view = view, loaded = true,
-        ref = M.object_of,
         -- A busy profile's percent and elapsed time and a running unit's
         -- step progress: the rows' domain objects (their operations, units
         -- and observed tasks).
@@ -105,93 +101,41 @@ end
 -- Daemon
 -- ---------------------------------------------------------------------------
 
---- *(Transition, until step 5o part C2d-2.)* The in-process model objects
---- the daemon view's profile rows (and their unit rows) name, for the
---- profile's and unit's actions not routed through the daemon by id yet
---- (cancels, task output, options, the device choice), which still read the
---- editor's model (§19.16 "Transition"); every model write and deletion
---- (step 5o C2c-2) and every build, configure, clean and rebuild (C2d-1)
---- sends the row's id instead. The daemon's ids
---- name nothing here ("Two sources, one shape"): a row names its object by
---- the keys it shows (a profile's key, a unit row's project key). A row
---- whose object the editor's model does not have gets none: its operations
---- are absent until the model catches up (its file change arrives).
---- @param ws loomworks.Workspace
---- @param view loomworks.ViewWorkspace
---- @return table<table, table>
-local function model_refs(ws, view)
-    local refs = setmetatable({}, { __mode = "k" })
-    local by = {}
-    for _, p in pairs(ws:get_profiles() or {}) do by[p.key] = p end
-    for _, row in ipairs(view.profiles or {}) do
-        local p = by[row.key]
-        if p then
-            refs[row] = p
-            local pps = {}
-            for _, pp in ipairs(p:projects()) do pps[pp:project_key()] = pp end
-            for _, u in ipairs(row.units or {}) do refs[u] = u.project and pps[u.project] or nil end
-        end
-    end
-    return refs
-end
-
---- Whether a task observed through `Tasks/1` runs the unit `u` (a view's
---- unit row) of profile row `row`. A task of the row's profile runs it when
---- it runs its project (a profile maps one configuration per project); any
---- other task only when it runs that project's same configuration unit.
---- *(Transition, until step 5o parts C2b and C2c.)* The view's unit row names its
---- configuration, while a task's `start` meta names the configuration-unit
---- key; the row's unit key comes from the editor's model (`ref`, its
---- project-in-profile), and a row the model lacks matches no such task.
+--- Whether a task observed through `Tasks/1` runs the unit row `u` of
+--- profile row `row`, by the ids its `start` meta names (API.md §4.2; step 5o
+--- C2d-2 — never by key): a task of the row's profile (`profile_id`) runs
+--- each of its units (a profile maps one configuration per project); any
+--- other task only when it names the unit row's `unit_id`.
 --- @param task loomworks.RemoteTask
 --- @param row loomworks.ViewProfile
 --- @param u table the view's unit row
---- @param ref fun(row: table): table|nil
 --- @return boolean
-local function runs_unit(task, row, u, ref)
-    if task.profile_name == row.key then
-        for _, tu in ipairs(task.units or {}) do
-            if tu.project == u.project then return true end
-        end
-        return false
-    end
-    local pp = ref(u)
-    local unit = pp and pp._config_unit
-    if not unit then return false end
-    for _, tu in ipairs(task.units or {}) do
-        if tu.project == u.project
-            and (tu.unit == unit or (tu.unit == nil and tu.configuration == unit:config_key())) then
-            return true
-        end
-    end
-    return false
+local function runs_unit(task, row, u)
+    if row.id ~= nil and task.profile_id == row.id then return true end
+    return u.unit_id ~= nil and task:names_ids(nil, { u.unit_id })
 end
 
 --- The running task observed through `Tasks/1` of a profile row (its
---- `start` meta names the profile), else one without a profile (scoped to
---- units, or `scope = "all"`, whose `start` meta lists its units too) that
---- runs one of the row's running units — as the editor's model counts a
---- remote task as its units' profiles' operation (daemon/remote_task.lua).
+--- `start` meta names the row's profile id), else one without a profile
+--- (scoped to units, or `scope = "all"`, whose `start` meta lists its units
+--- too) that runs one of the row's running units.
 --- `u`: only a task running that unit row.
 --- @param tasks loomworks.RemoteTask[]
 --- @param row loomworks.ViewProfile
---- @param ref fun(row: table): table|nil
 --- @param u? table
 --- @return loomworks.RemoteTask|nil
-local function task_of(tasks, row, ref, u)
+local function task_of(tasks, row, u)
     for _, t in ipairs(tasks) do
-        if not t.finished and t.profile_name == row.key and (u == nil or runs_unit(t, row, u, ref)) then
-            return t
-        end
+        if not t.finished and row.id ~= nil and t.profile_id == row.id then return t end
     end
     for _, t in ipairs(tasks) do
-        if not t.finished and t.profile_name == nil then
+        if not t.finished and t.profile_id == nil then
             if u then
-                if runs_unit(t, row, u, ref) then return t end
+                if runs_unit(t, row, u) then return t end
             else
                 for _, x in ipairs(row.units or {}) do
                     if x.state == "configuring" or x.state == "building" or x.state == "deleting" then
-                        if runs_unit(t, row, x, ref) then return t end
+                        if runs_unit(t, row, x) then return t end
                     end
                 end
             end
@@ -200,10 +144,9 @@ local function task_of(tasks, row, ref, u)
     return nil
 end
 
---- @param ws loomworks.Workspace
 --- @param obs loomworks.daemon.Observer|nil
 --- @return loomworks.StatusBody
-local function daemon(ws, obs)
+local function daemon(obs)
     local view, why
     if obs then
         view, why = obs:workspace_view()
@@ -214,12 +157,6 @@ local function daemon(ws, obs)
     -- `published = false` and empty arrays, which mean nothing then.
     local header = obs and require("loomworks.views").daemon_state(obs, "header")
     local loaded = type(header) == "table" and header.state == "loaded"
-    local refs
-    local function ref(row)
-        if not view then return nil end
-        refs = refs or model_refs(ws, view)
-        return refs[row]
-    end
     -- unit row -> its profile row (a unit's task is its profile's).
     local owner
     local function profile_of(u)
@@ -234,9 +171,9 @@ local function daemon(ws, obs)
     local tasks = obs and obs:tasks() or {}
     local function clock() return obs and obs:_clock() or 0 end
     return {
-        mode = "daemon", view = view, why = why, loaded = loaded, ref = ref,
+        mode = "daemon", view = view, why = why, loaded = loaded,
         profile_progress = function(row)
-            local t = task_of(tasks, row, ref)
+            local t = task_of(tasks, row)
             if not t then return nil end
             return { pct = t.pct, elapsed = t:elapsed(clock()) }
         end,
@@ -244,7 +181,7 @@ local function daemon(ws, obs)
         -- a running unit shows its task's elapsed time.
         unit_progress = function(u)
             local row = profile_of(u)
-            local t = row and task_of(tasks, row, ref, u)
+            local t = row and task_of(tasks, row, u)
             if not t then return nil end
             return { elapsed = t:elapsed(clock()) }
         end,
@@ -260,7 +197,7 @@ end
 --- @return loomworks.StatusBody
 function M.read(ws)
     local is_daemon, obs = daemon_of(ws)
-    if is_daemon then return daemon(ws, obs) end
+    if is_daemon then return daemon(obs) end
     return in_process(ws)
 end
 

@@ -71,7 +71,7 @@ end
 
 --- Render the SDKs section.
 --- @param tree loomworks.Tree
---- @param ctx table { view, ref, ws } the workspace view's `sdks`
+--- @param ctx table { view, mode, ws } the workspace view's `sdks`
 return function(tree, ctx)
     local ws = ctx.ws
     local sdks = ctx.view.sdks

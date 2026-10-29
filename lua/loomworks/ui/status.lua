@@ -11,9 +11,8 @@ local actions = require("loomworks.ui.actions")
 local M = {}
 
 --- The editor's in-process workspace model (the page's one read of it: the
---- header's root, the workspace the actions' calls go to, and the model
---- `ref` resolves a row to for the operations not called through
---- ui/model_calls — builds, cleans, cancels — until step 5o C2d).
+--- header's root and the workspace the actions' calls go to; no row is
+--- resolved to its objects in `daemon` mode, step 5o C2d-2).
 --- @return loomworks.Workspace|nil
 local function model()
     return require("loomworks").get_workspace()
@@ -118,13 +117,12 @@ local function render_fn(tree)
         -- The body's mode: a routed action is offered on a row with an id in
         -- `daemon` mode (helpers.actionable).
         mode = body.mode,
-        ref = body.ref,
         profile_progress = body.profile_progress,
         unit_progress = body.unit_progress,
         -- For the sections' actions only: the workspace their calls go to
-        -- (every status-page model write is a ui/model_calls call, in both
-        -- modes), and the in-process model the builds, cleans and cancels
-        -- act on (in `daemon` mode until step 5o C2d).
+        -- (every status-page model write and operation is a ui/model_calls
+        -- call, in both modes; a row's cancel and task output are the tasks
+        -- naming its ids, step 5o C2d-2).
         ws = ws,
         all_profiles = lw.get_profiles(),
         active_profile = lw.get_active_profile(),

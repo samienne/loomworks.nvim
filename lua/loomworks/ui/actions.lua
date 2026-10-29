@@ -344,6 +344,118 @@ function M.nuke()
         done = "workspace cache reset" })
 end
 
+--- Whether the page's workspace `ws` is in `daemon` mode (its rows' tasks
+--- are then the ones observed through `Tasks/1`, matched by id).
+local function daemon_mode(ws)
+    return (require("loomworks.daemon.editor_ops").daemon_of(ws))
+end
+
+--- The unit ids of a profile row's unit rows (those that carry one).
+--- @param row table
+--- @return string[]
+local function unit_ids_of(row)
+    local ids = {}
+    for _, u in ipairs(row.units or {}) do ids[#ids + 1] = u.unit_id end
+    return ids
+end
+
+--- The cancel of a profile row, or nil when there is nothing to cancel
+--- (spec §19.16 "Editor operations"; step 5o C2d-2). In `daemon` mode,
+--- while the row runs: the running tasks whose `start` meta names the row's
+--- profile id or one of its units' ids (editor_ops.cancel_on_ids) — the
+--- editor's own cancelled, another client's left to it (`started by … —
+--- cancel it there`). In-process: the bound profile's local tasks.
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace
+--- @return fun()|nil
+function M.cancel_profile(row, ws)
+    if not row.running then return nil end
+    if daemon_mode(ws) then
+        local eo = require("loomworks.daemon.editor_ops")
+        local ids = unit_ids_of(row)
+        if #eo.tasks_on_ids(ws, row.id, ids) == 0 then return nil end
+        return function()
+            local n = #eo.cancel_on_ids(ws, row.id, ids)
+            if n > 0 then
+                vim.notify(string.format("loomworks: cancelled %d task(s) for profile '%s'", n, tostring(row.key)))
+            end
+        end
+    end
+    local profile = require("loomworks.status_source").object_of(row)
+    if not profile then return nil end
+    return function()
+        local n = require("loomworks").cancel_tasks_for_profile(profile)
+        vim.notify(string.format("loomworks: cancelled %d task(s) for profile '%s'", n, tostring(row.key)))
+    end
+end
+
+--- The cancel of a profile's unit row `u` (of profile row `row`), or nil
+--- when no task runs it (step 5o C2d-2). In `daemon` mode: the running tasks
+--- naming the unit's id or the row's profile id — the whole task that runs
+--- it, even the profile's build (editor_ops.cancel_on_ids; another client's
+--- is left to it). In-process: the unit's live overseer task (chained tasks
+--- behind it abort via the Future's cancel token).
+--- @param row table the profile's view row
+--- @param u table the unit's view row
+--- @param ws? loomworks.Workspace
+--- @return fun()|nil
+function M.cancel_unit(row, u, ws)
+    if daemon_mode(ws) then
+        if u.unit_id == nil then return nil end
+        local eo = require("loomworks.daemon.editor_ops")
+        if #eo.tasks_on_ids(ws, row.id, { u.unit_id }) == 0 then return nil end
+        return function()
+            local names = {}
+            for _, t in ipairs(eo.cancel_on_ids(ws, row.id, { u.unit_id })) do names[#names + 1] = t.name end
+            if #names > 0 then vim.notify("loomworks: cancelled task " .. table.concat(names, ", ")) end
+        end
+    end
+    local pp = require("loomworks.status_source").object_of(u)
+    local unit = pp and pp._config_unit
+    if not (unit and unit._task_id) then return nil end
+    return function()
+        if require("loomworks").cancel_task(unit._task_id) then
+            vim.notify("loomworks: cancelled task " .. tostring(unit._task_id))
+        end
+    end
+end
+
+--- The task output of a profile's unit row `u` (of profile row `row`):
+--- `<CR>` / `t` (step 5o C2d-2). In `daemon` mode the latest task observed
+--- through `Tasks/1` whose `start` meta names the unit's id or the row's
+--- profile id — the running one, else the last that ended
+--- (editor_ops.tasks_on_ids) — its kept output (ui/remote_output). In-process
+--- the bound unit's last overseer task (M.open_task).
+--- @param row table the profile's view row
+--- @param u table the unit's view row
+--- @param ws? loomworks.Workspace
+--- @return fun()
+function M.open_unit_task(row, u, ws)
+    return function()
+        if daemon_mode(ws) then
+            local tasks = u.unit_id ~= nil
+                and require("loomworks.daemon.editor_ops").tasks_on_ids(ws, row.id, { u.unit_id }, true) or {}
+            local pick
+            for _, t in ipairs(tasks) do
+                if not t.finished then pick = t end
+            end
+            pick = pick or tasks[#tasks]
+            if not pick then
+                vim.notify("loomworks: no task output available", vim.log.levels.INFO)
+                return
+            end
+            return require("loomworks.ui.remote_output").show(pick)
+        end
+        local pp = require("loomworks.status_source").object_of(u)
+        local unit = pp and pp._config_unit
+        if not unit then
+            vim.notify("loomworks: no task output available", vim.log.levels.INFO)
+            return
+        end
+        M.open_task(unit)()
+    end
+end
+
 --- Open the overseer task output for a ConfigUnit.
 --- Closes the status page first (terminal buffers can't layer in floats),
 --- reopens it with cursor restored when the task output is dismissed.
@@ -458,16 +570,41 @@ end
 -- Options float
 -- ---------------------------------------------------------------------------
 
---- @param unit loomworks.ConfigUnit
-function M.show_options(unit)
+--- The options float of a profile's unit row `u` (`o`; step 5o C2d-2): its
+--- build options as `Projects/1.unit_options` answers them through
+--- ui/model_calls.lua — in `daemon` mode by the row's `unit_id`, never the
+--- editor's model; in-process from the bound unit, synchronously.
+--- @param u table the unit's view row
+--- @param ws? loomworks.Workspace
+--- @return fun()
+function M.show_options(u, ws)
     return function()
+        local model = require("loomworks.ui.model_calls")
+        model.call(ws, "Projects/1.unit_options", { unit = u }, function(r)
+            if r.outcome ~= "ok" then
+                if not r.notified then
+                    vim.notify("loomworks: " .. tostring(r.message or "no build options available"),
+                        vim.log.levels.INFO)
+                end
+                return
+            end
+            M._options_float(r.options, u.project)
+        end)
+    end
+end
+
+--- Open the options float on `option_tree` (`OptionGroup` / `Option` nodes)
+--- titled with the project key.
+--- @param option_tree table[]
+--- @param project string|nil
+function M._options_float(option_tree, project)
+    if not option_tree or #option_tree == 0 then
+        vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
+        return
+    end
+    do
         local Tree = require("loomworks.ui.tree")
         local View = require("loomworks.ui.view")
-        local option_tree = unit:options()
-        if not option_tree or #option_tree == 0 then
-            vim.notify("loomworks: no build options available (project may need configure)", vim.log.levels.INFO)
-            return
-        end
 
         local function render_options(tree)
             tree._level = 1
@@ -538,7 +675,7 @@ function M.show_options(unit)
                 height = 0.8,
                 zindex = 60,
                 backdrop = 60,
-                title = " " .. (unit._project and unit._project.key or unit._init_project_key or "?") .. " — Options ",
+                title = " " .. tostring(project or "?") .. " — Options ",
                 title_pos = "center",
             },
             keymaps = {

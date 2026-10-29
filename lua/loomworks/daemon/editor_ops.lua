@@ -1146,6 +1146,58 @@ function M.owned_on_ids(ws, profile_id, unit_ids)
     return out
 end
 
+--- The tasks observed through `Tasks/1` — the editor's own and other
+--- clients' — whose `start` meta names the profile `profile_id` or one of the
+--- units `unit_ids` (RemoteTask:names_ids; view row ids, step 5o C2d-2 —
+--- never by key): the running ones in start order and, with `ended`, then
+--- the observer's last ended ones (Observer:ended_tasks, oldest first).
+--- None without an observer (the `in-process` mode).
+--- @param ws loomworks.Workspace|nil
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @param ended? boolean
+--- @return loomworks.RemoteTask[]
+function M.tasks_on_ids(ws, profile_id, unit_ids, ended)
+    local obs = require("loomworks.daemon.observer").of(ws)
+    local out = {}
+    if not obs then return out end
+    for _, t in ipairs(obs:tasks()) do
+        if not t.finished and t:names_ids(profile_id, unit_ids) then out[#out + 1] = t end
+    end
+    if ended then
+        for _, t in ipairs(obs:ended_tasks()) do
+            if t:names_ids(profile_id, unit_ids) then out[#out + 1] = t end
+        end
+    end
+    return out
+end
+
+--- The status page's cancel of a profile or unit row (step 5o C2d-2; spec
+--- §19.16 "Editor operations"): each running task naming the row's ids
+--- (M.tasks_on_ids) that the editor owns is cancelled (`Tasks/1.cancel`,
+--- Observer:cancel_owned) — the whole task, even when it runs more than the
+--- row (a unit's cancel stops its profile's build, as the in-process chain
+--- aborts); another client's task is never cancelled: its read-only line
+--- (`started by … — cancel it there`) is notified. Returns the tasks asked
+--- to stop.
+--- @param ws loomworks.Workspace|nil
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @return loomworks.RemoteTask[]
+function M.cancel_on_ids(ws, profile_id, unit_ids)
+    local obs = require("loomworks.daemon.observer").of(ws)
+    local stopped = {}
+    for _, t in ipairs(M.tasks_on_ids(ws, profile_id, unit_ids)) do
+        if t.owned then
+            obs:cancel_owned(t)
+            stopped[#stopped + 1] = t
+        else
+            vim.notify(require("loomworks.daemon.task_runner").read_only_message(t), vim.log.levels.WARN)
+        end
+    end
+    return stopped
+end
+
 --- Run a status-page operation on its rows by id (step 5o C2d; spec §19.16
 --- "Editor operations"): `method` a `Build/1` call naming the profile row's
 --- id (`scope.profile_id`; `scope.unit_ids` its unit rows' ids, recorded on
@@ -1248,25 +1300,6 @@ function M.cancel(task)
     if not (obs and task and task.owned) then return false end
     obs:cancel_owned(task)
     return true
-end
-
---- Cancel every running task the editor owns that counts as `profile`'s
---- operation. Returns how many were asked to stop.
---- @param profile loomworks.Profile
---- @return integer
-function M.cancel_for_profile(profile)
-    local obs = require("loomworks.daemon.observer").of(profile and M.scope_workspace({ profile = profile }))
-    if not obs then return 0 end
-    local n = 0
-    for _, task in ipairs(obs:owned_tasks()) do
-        local hit = false
-        for _, p in ipairs(task.profiles or {}) do if p == profile then hit = true end end
-        if hit then
-            obs:cancel_owned(task)
-            n = n + 1
-        end
-    end
-    return n
 end
 
 --- The debug adapters section's records (§19.16 "Editor operations"): in

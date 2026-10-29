@@ -71,59 +71,6 @@ local function lock_detail(lock)
     return table.concat(parts, " · ")
 end
 
---- Open a remote task's kept output in a read-only scratch buffer that
---- follows the stream while the task runs (spec/ui.md §1.9).
---- @param task loomworks.RemoteTask
-local function show_remote_output(task)
-    local buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[buf].bufhidden = "wipe"
-    pcall(vim.api.nvim_buf_set_name, buf, "loomworks://daemon-task/" .. task.id .. "/" .. task.name)
-    local pending = ""
-    local function append_lines(lines)
-        if #lines == 0 or not vim.api.nvim_buf_is_valid(buf) then return end
-        vim.bo[buf].modifiable = true
-        local n = vim.api.nvim_buf_line_count(buf)
-        local first_empty = n == 1 and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
-        vim.api.nvim_buf_set_lines(buf, first_empty and 0 or n, -1, false, lines)
-        vim.bo[buf].modifiable = false
-    end
-    -- Complete lines go in; a trailing partial line waits for the rest.
-    local function put(text)
-        text = (pending .. (text or "")):gsub("\r\n", "\n")
-        local lines = vim.split(text, "\n", { plain = true })
-        pending = table.remove(lines)
-        append_lines(lines)
-    end
-    local function flush()
-        if pending ~= "" then append_lines({ pending }) end
-        pending = ""
-    end
-    put(task:output())
-    if task.finished then
-        flush()
-    else
-        local unfollow
-        unfollow = task:follow(function(_, text)
-            vim.schedule(function()
-                if not vim.api.nvim_buf_is_valid(buf) then
-                    if unfollow then unfollow() end
-                    return
-                end
-                if text == nil then
-                    flush()
-                    append_lines({ "[" .. task:outcome() .. "]" })
-                    if unfollow then unfollow() end
-                else
-                    put(text)
-                end
-            end)
-        end)
-    end
-    vim.bo[buf].modifiable = false
-    vim.cmd("botright split")
-    vim.api.nvim_win_set_buf(0, buf)
-end
-
 --- Rows of a remote task (one per unit; one for the profile when it has
 --- none), in a local task row's format with `{pct}%` in place of `[N/M]`
 --- and the dimmed origin marker as the last token (spec/ui.md §1.9).
@@ -235,7 +182,7 @@ local function render_remote(tree, task, now)
                     prompt = "Task " .. task.name .. ":",
                     format_item = function(s) return s end,
                 }, function(choice)
-                    if choice == "Show output" then show_remote_output(task) end
+                    if choice == "Show output" then require("loomworks.ui.remote_output").show(task) end
                     if choice == "Cancel task" then require("loomworks.daemon.editor_ops").cancel(task) end
                     if choice == "Open overseer" then runner.open(task) end
                 end)

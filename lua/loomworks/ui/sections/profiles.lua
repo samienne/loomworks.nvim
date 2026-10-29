@@ -7,9 +7,11 @@
 --- the deletions go through it too, naming the profile or unit by its row
 --- (step 5o C2c-2), and so do its builds, configures, cleans and rebuilds,
 --- in `daemon` mode by the profile row's id or the unit row's `unit_id`
---- (step 5o C2d-1); the cancels, task output, options and device choice
---- still reach the domain objects through `ctx.ref(row)` until step 5o
---- C2d-2.
+--- (step 5o C2d-1), its options read and device choice (C2d-2). A row's
+--- cancel and task output are the tasks whose `start` meta names the row's
+--- ids (C2d-2; ui/actions). No row reaches the editor's model in `daemon`
+--- mode; in-process an action finds a row's object through
+--- loomworks.status_source.object_of.
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
@@ -124,11 +126,15 @@ local function add_tool_action(ws, row)
 end
 
 --- "Pick device": scan, then choose one of the online devices (or clear).
---- Every device read and choice goes through loomworks.device_source — in
---- `daemon` mode a `Devices/1.scan` task, then `Profiles/1.set_device` /
---- `clear_device` (step 5n C2); a refused or failed scan was notified.
-local function pick_device_action(ws, profile)
-    if not profile then return nil end
+--- Every device read goes through loomworks.device_source — in `daemon`
+--- mode a `Devices/1.scan` task (step 5n C2); a refused or failed scan was
+--- notified. The choice is `Profiles/1.set_device` / `clear_device` through
+--- ui/model_calls.lua naming the profile row (step 5o C2d-2): in `daemon`
+--- mode by its id and the device record's id, the current choice the row's
+--- `device` (by its id); in-process the bound profile's.
+--- @param ws loomworks.Workspace|nil
+--- @param row table the profile's view row
+local function pick_device_action(ws, row)
     return function()
         local devices = require("loomworks.device_source")
         vim.notify("loomworks: scanning for devices...", vim.log.levels.INFO)
@@ -144,61 +150,73 @@ local function pick_device_action(ws, profile)
                 vim.notify("loomworks: no devices found", vim.log.levels.INFO)
                 return
             end
-            local current = devices.chosen_in(ws, profile, list)
+            -- The current choice: the row's device (daemon mode, by id), or
+            -- the bound profile's serial (in-process).
+            local chosen, is_current
+            if require("loomworks.daemon.editor_ops").daemon_of(ws) then
+                local dev = row.device or {}
+                chosen = dev.key ~= nil
+                is_current = function(d) return dev.id ~= nil and d.id == dev.id end
+            else
+                local profile = require("loomworks.status_source").object_of(row)
+                if not profile then return end
+                local serial = devices.chosen_in(ws, profile, list)
+                chosen = serial ~= nil
+                is_current = function(d) return d.key == serial end
+            end
             local items = vim.list_extend({}, online)
-            if current then
+            if chosen then
                 items[#items + 1] = { clear = true }
             end
             vim.ui.select(items, {
                 prompt = "Select device for profile:",
                 format_item = function(d)
                     if d.clear then return "(clear selection)" end
-                    local mark = (current == d.key) and " (current)" or ""
+                    local mark = is_current(d) and " (current)" or ""
                     return d.label .. " (" .. d.key .. ")" .. mark
                 end,
             }, function(choice)
                 if not choice then return end
-                if choice.clear then
-                    devices.clear(ws, profile)
-                else
-                    devices.select(ws, profile, choice)
-                end
+                local method = choice.clear and "Profiles/1.clear_device" or "Profiles/1.set_device"
+                model.call(ws, method, { profile = row, device = not choice.clear and choice or nil }, function(r)
+                    if r.outcome == "ok" or r.notified then return end
+                    local _, err = model.result(r)
+                    vim.notify("loomworks: could not " .. (choice.clear and "clear" or "save")
+                        .. " the device of profile '" .. tostring(row.key) .. "': " .. tostring(err),
+                        vim.log.levels.ERROR)
+                end)
             end)
         end)
     end
 end
 
---- The actions of a profile's project row (its configuration unit): `u` the
---- view's unit row, `pp` its project-in-profile (`ctx.ref`, for the task
---- output, cancel and options until step 5o C2d-2). Its deletion, builds,
---- configure, clean and rebuild name the row (in `daemon` mode by its
---- `unit_id`; none while the profile has no unit there).
-local function unit_actions(ctx, u, pp)
-    local lw, ws = ctx.lw, ctx.ws
-    local unit = pp and pp._config_unit
+--- The actions of a profile's project row (its configuration unit): `u`
+--- the view's unit row of profile row `row`. Its deletion, builds,
+--- configure, clean, rebuild and options name the row (in `daemon` mode by
+--- its `unit_id`; none while the profile has no unit there); its task output
+--- and cancel are the tasks naming its ids (step 5o C2d-2).
+local function unit_actions(ctx, row, u)
+    local ws = ctx.ws
     local acting
-    if ctx.mode == "daemon" then acting = u.unit_id ~= nil else acting = unit ~= nil end
+    if ctx.mode == "daemon" then
+        acting = u.unit_id ~= nil
+    else
+        local pp = require("loomworks.status_source").object_of(u)
+        acting = pp ~= nil and pp._config_unit ~= nil
+    end
+    local open = actions.open_unit_task(row, u, ws)
     return {
-        on_enter = actions.open_task(unit),
-        on_task = actions.open_task(unit),
+        on_enter = open,
+        on_task = open,
         on_build = acting and actions.build_configuration(u, ws) or nil,
         on_build_serial = acting and actions.build_serial_configuration(u, ws) or nil,
         on_rebuild = acting and actions.rebuild_configuration(u, ws) or nil,
         on_clean = acting and actions.clean_configuration(u, ws) or nil,
         on_configure = acting and actions.configure_configuration(u, ws) or nil,
-        -- Per-config cancel only appears when this unit's
-        -- task is live. Single-task cancel suffices —
-        -- chained tasks behind it abort via the Future's
-        -- cancel token (start_one_task wires
-        -- `token:on_cancel` to call `task:stop()`).
-        on_cancel = (unit and unit._task_id) and function()
-            if lw.cancel_task(unit._task_id) then
-                vim.notify("loomworks: cancelled task " ..
-                    tostring(unit._task_id))
-            end
-        end or nil,
+        -- Offered only while a task runs the unit.
+        on_cancel = actions.cancel_unit(row, u, ws),
         on_delete = acting and actions.delete_config(u, ws) or nil,
-        on_options = actions.show_options(unit),
+        on_options = acting and actions.show_options(u, ws) or nil,
     }
 end
 
@@ -210,10 +228,10 @@ end
 
 --- The actions of a profile row: its model writes (always), its deletion
 --- and operations by the row (on an actionable row: in `daemon` mode one with
---- an id; step 5o C2d-1), its cancel on its domain object `profile` (only
---- when the editor's model has it, `ctx.ref`; until step 5o C2d-2).
-local function profile_actions(ctx, profile, row)
-    local lw, ws = ctx.lw, ctx.ws
+--- an id; step 5o C2d-1), its cancel of the tasks naming its ids (only while
+--- one runs; C2d-2).
+local function profile_actions(ctx, row)
+    local ws = ctx.ws
     local actionable = helpers.actionable(ctx, row)
     local acts = helpers.describe_action({
         on_enter = actions.activate(row, ws),
@@ -229,21 +247,8 @@ local function profile_actions(ctx, profile, row)
             on_configure = actions.configure(row, ws),
         })
     end
-    if not profile then return acts end
-    return with(acts, {
-        -- Cancel only appears in the picker when there's actually
-        -- something to cancel. Tasks chained behind a cancelled
-        -- one auto-abort via the Future token in start_one_task.
-        on_cancel = row.running and function()
-            -- Its local tasks, and the tasks the editor started in the
-            -- workspace daemon (step 5k: `Tasks/1.cancel`).
-            local n = lw.cancel_tasks_for_profile(profile)
-                + require("loomworks.daemon.editor_ops").cancel_for_profile(profile)
-            vim.notify(string.format(
-                "loomworks: cancelled %d task(s) for profile '%s'",
-                n, profile.key))
-        end or nil,
-    })
+    acts.on_cancel = actions.cancel_profile(row, ws)
+    return acts
 end
 
 -- ---------------------------------------------------------------------------
@@ -319,7 +324,7 @@ local function render_unit(tree, ctx, row, u)
         spinning = is_spinning,
         hl = "LoomworksProject",
         enter_label = "Open task output",
-    }, unit_actions(ctx, u, ctx.ref(u))), function()
+    }, unit_actions(ctx, row, u)), function()
         -- Surface the compat-error reason at the top of
         -- the expansion so the user sees *why* the row is
         -- blocked without scrolling to the diagnostics
@@ -354,7 +359,6 @@ end
 --- @param ctx table the page context
 --- @param row table the profile's view row
 local function render_profile_details(tree, ctx, row)
-    local profile = ctx.ref(row)
     local ws = ctx.ws
     tree:description(row.description)
     if row.orphaned_set then
@@ -462,7 +466,7 @@ local function render_profile_details(tree, ctx, row)
             hl = device_hl,
             direct = true,
             enter_label = "Pick device",
-            on_enter = pick_device_action(ws, profile),
+            on_enter = helpers.actionable(ctx, row) and pick_device_action(ws, row) or nil,
         })
     end
 
@@ -513,7 +517,7 @@ end
 
 --- Render the profiles section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, view, ref, ws, all_profiles, active_profile, config_sets, tool_entries }
+--- @param ctx table { lw, view, mode, ws, all_profiles, active_profile, config_sets, tool_entries }
 return function(tree, ctx)
     local view = ctx.view
 
@@ -609,7 +613,7 @@ return function(tree, ctx)
             hl = hl,
             enter_label = "Activate",
             publish_label = helpers.intent_action_label(row.intent),
-        }, row.description), profile_actions(ctx, ctx.ref(row), row)), function()
+        }, row.description), profile_actions(ctx, row)), function()
             render_profile_details(t, ctx, row)
         end)
     end)
