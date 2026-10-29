@@ -2518,6 +2518,9 @@ end
 --- @field runner loomworks.daemon.RunnerStrategy|nil the task-runner task of a restart, which its task continues
 --- @field cancelling boolean|nil the editor asked to cancel it
 --- @field units loomworks.ConfigUnit[]|nil the call's units, before its `start` names them
+--- @field unit_ids string[]|nil a call by view row ids (step 5o C2d): the ids of its units, before its `start`
+---   names them
+--- @field profile_id string|nil a call by view row ids: its profile's id, before its `start` names it
 --- @field on_start fun(meta: table)|nil its `start` arrived (its meta)
 --- @field on_line fun(text: string)|nil a `line` of its task
 --- @field task loomworks.RemoteTask|nil once its `start` arrived
@@ -2544,12 +2547,13 @@ end
 --- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"discover"|"run_cases"|"prepare_test_debug"|"launch_build"|"device_scan"|"device_install"|"device_launch"|"device_log"
 --- @param args table the call's arguments (§19.15)
 --- `h.units`: the call's configuration units (a clean pre-empts the task by
---- them before its `start` arrives).
+--- them before its `start` arrives); `h.unit_ids` / `h.profile_id` the same
+--- for a call naming its rows by id (step 5o C2d).
 --- `h.runner`: the task-runner task an overseer restart continues (step 5k
 --- C1b): the task's `start` binds to it instead of a new one.
 --- `h.on_start(meta)` / `h.on_line(text)`: its `start` meta and each of its
 --- `line`s, as they arrive (a device log's level and notes, step 5n C3).
---- @param h { units?: loomworks.ConfigUnit[], runner?: loomworks.daemon.RunnerStrategy, on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil, done: table|nil), on_start?: fun(meta: table), on_line?: fun(text: string) }
+--- @param h { units?: loomworks.ConfigUnit[], unit_ids?: string[], profile_id?: string, runner?: loomworks.daemon.RunnerStrategy, on_reply: fun(r: table), on_done: fun(task: loomworks.RemoteTask|nil, reason: string|nil, done: table|nil), on_start?: fun(meta: table), on_line?: fun(text: string) }
 function Observer:start_owned(method, args, h)
     local conn = self.conn
     self:_icall(method, args, function(result, err)
@@ -2558,7 +2562,8 @@ function Observer:start_owned(method, args, h)
         local id = not err and type(result) == "table" and result.outcome == "accepted" and result.task_id or nil
         local registered = false
         if id ~= nil and self.conn == conn then
-            self._owned[id] = { method = method, args = args, units = h.units, runner = h.runner,
+            self._owned[id] = { method = method, args = args, units = h.units, unit_ids = h.unit_ids,
+                profile_id = h.profile_id, runner = h.runner,
                 on_done = h.on_done, on_start = h.on_start, on_line = h.on_line, waiters = {} }
             registered = true
         end
@@ -3223,12 +3228,13 @@ function Observer:cancel_owned(task, on_ended)
 end
 
 --- The calls the editor owns that have not ended — accepted, their task
---- started (`task`) or not yet (`units`, the call's) — in no set order.
---- @return { id: any, task: loomworks.RemoteTask|nil, units: loomworks.ConfigUnit[]|nil }[]
+--- started (`task`) or not yet (`units`, the call's; `unit_ids` /
+--- `profile_id` for a call by row ids) — in no set order.
+--- @return { id: any, task: loomworks.RemoteTask|nil, units: loomworks.ConfigUnit[]|nil, unit_ids: string[]|nil, profile_id: string|nil }[]
 function Observer:owned_calls()
     local out = {}
     for id, o in pairs(self._owned) do
-        out[#out + 1] = { id = id, task = o.task, units = o.units }
+        out[#out + 1] = { id = id, task = o.task, units = o.units, unit_ids = o.unit_ids, profile_id = o.profile_id }
     end
     return out
 end
