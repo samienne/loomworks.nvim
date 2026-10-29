@@ -215,10 +215,12 @@ end
 --- The reply of an owned call, under the availability rule (see the
 --- header): accepted → its `on_done` follows; declined → fails with the
 --- reason as one notification; degraded → refused with the observer's note
---- of the method; refused → fails with its message — except a refusal on
---- stdout (`stream = "out"`, API.md §4.1: nothing to clean), the command's
---- ordinary line: notified as INFO and resolved, so a rebuild goes on to its
---- build; anything else fails (all notified here: `k.reject(message, true)`).
+--- of the method; refused → fails with its message — except a clean's
+--- refusal on stdout (`stream = "out"`, API.md §4.1: nothing to clean), the
+--- command's ordinary line: notified as INFO and resolved, so a rebuild goes
+--- on to its build (only the clean's: another method's refusal on stdout is
+--- still a failure); anything else fails (all notified here:
+--- `k.reject(message, true)`).
 --- @param method string
 --- @param obs loomworks.daemon.Observer
 --- @param k loomworks.daemon.OpContinuation
@@ -233,7 +235,7 @@ local function on_reply(method, obs, k)
             return k.reject(msg, true)
         elseif r.outcome == "degraded" then
             return M.refuse(method, obs, k)
-        elseif r.outcome == "refused" and r.stream == "out" then
+        elseif r.outcome == "refused" and r.stream == "out" and method == "clean" then
             vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.INFO)
             return k.resolve(true)
         elseif r.outcome == "refused" then
@@ -1009,7 +1011,8 @@ end
 --- pre-empts them, its in-process operations on them cancelled
 --- (`cancel_conflicting_operations`) and its local tasks on them stopped; another
 --- client's task is never cancelled — the clean meets its build-directory
---- locks. Nothing to clean resolves at once, as in-process.
+--- locks. Whether there is anything to clean is the daemon's answer (step 5o
+--- C2d-2), never decided here: its refusal on stdout resolves (on_reply).
 --- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
 --- @param k loomworks.daemon.OpContinuation
 --- @return boolean routed
@@ -1022,14 +1025,7 @@ function M.clean(scope, k)
         M.refuse("clean", mode_obs, k)
         return true
     end
-    local overseer = require("loomworks.overseer")
     local units = scope_units(scope)
-    local steps
-    if scope.units then steps = overseer.plan_units_clean(units) else steps = overseer.plan_profile_clean(scope.profile) end
-    if not steps then
-        k.resolve(true)
-        return true
-    end
 
     local ws = obs.ws
     local mine = {}

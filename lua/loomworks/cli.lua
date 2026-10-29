@@ -9208,7 +9208,9 @@ function M._delegate(op, root, args, ensured, opts)
   end
   if reply.outcome == "refused" then
     conn:close()
-    -- (A reset with nothing to reset: the in-process stdout line, exit 0.)
+    -- (A refusal on stdout, API.md §4.1 — a reset with nothing to reset,
+    -- exit 0, or a clean with nothing to clean, exit 1: the in-process
+    -- stdout line with the reply's exit code.)
     if reply.stream == "out" then
       if ctrl_c_enabled then M._restore_console_ctrl_c() end
       out(tostring(reply.message))
