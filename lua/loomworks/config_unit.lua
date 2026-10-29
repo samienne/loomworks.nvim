@@ -1243,6 +1243,21 @@ function ConfigUnit:options()
     return impl.get_options(bd, self._project.type_config)
 end
 
+--- Get build options without blocking (spec §8 `get_options_async`): the
+--- module's async companion when it has one, else its `get_options`.
+--- `callback(tree|nil)` runs exactly once, after this returns.
+--- @param callback fun(tree: (loomworks.OptionGroup | loomworks.Option)[]|nil)
+--- @param opts? { system?: fun(cmd: string[], opts: table, on_exit: fun(res: table)): any } passed to the companion
+function ConfigUnit:options_async(callback, opts)
+    local bd = self:build_dir()
+    local impl = self._project and self._project._module and self._project._module.impl or nil
+    if bd and impl and impl.get_options_async then
+        return impl.get_options_async(bd, self._project.type_config, callback, opts)
+    end
+    local tree = self:options()
+    vim.schedule(function() callback(tree) end)
+end
+
 -- ---------------------------------------------------------------------------
 -- Task tracking (called by overseer subscriptions and Core)
 -- ---------------------------------------------------------------------------

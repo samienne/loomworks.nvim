@@ -7,7 +7,7 @@
 --- * tasks(): `meson setup <dir> [--reconfigure]` + `meson compile -C <dir>`
 --- * clean_tasks(): `meson compile -C <dir> --clean`
 --- * parse_targets: `meson introspect <dir> --targets` (post-configure)
---- * get_options: `meson introspect <dir> --buildoptions` (post-configure)
+--- * get_options / get_options_async: `meson introspect <dir> --buildoptions` (post-configure)
 --- * lsp_configs: emits a clangd entry using the build dir
 ---   (meson generates compile_commands.json automatically)
 --- * Tools: keyed by compiler. Each detected C/C++ compiler produces
@@ -291,7 +291,13 @@ end
 --- via `vim.system`, tried against each interpreter in order. Yields the same
 --- `{ meson_path }` shape as `find_meson`, or nil.
 --- @param callback fun(meson: string[]|nil)
-local function find_meson_async(callback)
+--- @param system? fun(cmd: string[], opts: table, on_exit: fun(res: table)): any
+---   the spawner for the probe (`vim.system` signature). Given, each
+---   interpreter goes to it by name: it resolves the name in its own
+---   environment (the workspace daemon's: the client's PATH). Without it the
+---   interpreter is resolved here and run with `vim.system`. A spawn that
+---   throws counts as that interpreter failing.
+local function find_meson_async(callback, system)
     local p = require("loomworks.exe").editor_exepath("meson")
     if p ~= "" then
         callback({ p })
@@ -306,12 +312,15 @@ local function find_meson_async(callback)
             callback(nil)
             return
         end
-        local pp = require("loomworks.exe").editor_exepath(pys[idx])
-        if pp == "" then
-            try_next()
-            return
+        local pp = pys[idx]
+        if not system then
+            pp = require("loomworks.exe").editor_exepath(pp)
+            if pp == "" then
+                try_next()
+                return
+            end
         end
-        vim.system({ pp, "-c", PY_FIND_MESON }, { text = true }, function(res)
+        local ok = pcall(system or vim.system, { pp, "-c", PY_FIND_MESON }, { text = true }, function(res)
             local out = (res.code == 0 and res.stdout) and vim.trim(res.stdout) or ""
             if out ~= "" and uv.fs_stat(out) then
                 -- Hop back onto the main loop before handing control to the
@@ -324,6 +333,7 @@ local function find_meson_async(callback)
                 vim.schedule(try_next)
             end
         end)
+        if not ok then vim.schedule(try_next) end
     end
 
     try_next()
@@ -1373,17 +1383,11 @@ function M.runtime_path(ctx)
     return nil
 end
 
---- Extract build options via `meson introspect --buildoptions`.
---- Groups by `section` (core, base, compiler, directory, user, test).
---- @param build_dir string
---- @param config table|nil unused
+--- The options tree of a `meson introspect --buildoptions` reply, grouped by
+--- `section` (core, base, compiler, directory, user, test).
+--- @param raw any the decoded reply
 --- @return table|nil options tree
-function M.get_options(build_dir, config)
-    if not build_dir then return nil end
-    local meson_prefix = find_meson()
-    if not meson_prefix then return nil end
-
-    local raw = run_introspect(meson_prefix, build_dir, "--buildoptions")
+local function options_tree(raw)
     if type(raw) ~= "table" then return nil end
 
     local SECTION_ORDER = { "user", "core", "base", "compiler", "directory", "test" }
@@ -1441,6 +1445,49 @@ function M.get_options(build_dir, config)
         }
     end
     return result
+end
+
+--- Extract build options via `meson introspect --buildoptions`.
+--- Groups by `section` (core, base, compiler, directory, user, test).
+--- Blocks while meson runs: the in-process options float's read. The
+--- workspace daemon reads through `get_options_async` (spec §8).
+--- @param build_dir string
+--- @param config table|nil unused
+--- @return table|nil options tree
+function M.get_options(build_dir, config)
+    if not build_dir then return nil end
+    local meson_prefix = find_meson()
+    if not meson_prefix then return nil end
+    return options_tree(run_introspect(meson_prefix, build_dir, "--buildoptions"))
+end
+
+--- Async companion of `get_options` (spec §8): `callback(tree|nil)` exactly
+--- once, later and on the main loop. Every program (the meson lookup's Python
+--- probe, `meson introspect`) is spawned through `opts.system` when set — the
+--- workspace daemon's spawner, in the client's environment — else
+--- `vim.system`.
+--- @param build_dir string|nil
+--- @param config table|nil unused
+--- @param callback fun(tree: table|nil)
+--- @param opts? { system?: fun(cmd: string[], opts: table, on_exit: fun(res: table)): any }
+function M.get_options_async(build_dir, config, callback, opts)
+    local system = opts and opts.system
+    local function done(tree) vim.schedule(function() callback(tree) end) end
+    if not build_dir then return done(nil) end
+    find_meson_async(function(meson_prefix)
+        if not meson_prefix then return done(nil) end
+        local cmd = vim.list_extend({}, meson_prefix)
+        vim.list_extend(cmd, { "introspect", build_dir, "--buildoptions" })
+        -- A spawn that throws, or a reply that is no options tree (a null
+        -- element, a non-string value), reads as no options: the callback
+        -- always runs.
+        local spawned = pcall(system or vim.system, cmd, { text = true }, function(res)
+            if res.code ~= 0 then return done(nil) end
+            local ok, tree = pcall(function() return options_tree(vim.json.decode(res.stdout or "")) end)
+            done(ok and tree or nil)
+        end)
+        if not spawned then done(nil) end
+    end, system)
 end
 
 -- ---------------------------------------------------------------------------

@@ -182,6 +182,13 @@ to enumerate project-owned targets and their source files.
 
 Uses `meson introspect --buildoptions` to surface user-facing options.
 
+Also provides the async companion `get_options_async` (core §8): the same
+tree, from `meson introspect --buildoptions` (and the meson lookup's Python
+probe) spawned through `opts.system` when given, else `vim.system`. Given a
+spawner, each Python interpreter goes to it by name, so it is resolved in
+the spawner's environment. A spawn that throws, or a reply that is no options
+tree, calls back nil.
+
 ### 7c. Variable expansion in options
 
 `-D` option values are expanded before they reach the `meson setup`
