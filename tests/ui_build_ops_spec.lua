@@ -167,6 +167,137 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
         end)
     end)
 
+    -- A rebuild or clean never decides "nothing to clean" from the rows: the
+    -- daemon does (its dir gone, a module with no clean), answering a
+    -- `refused` on stdout — reported as INFO, and a rebuild goes on to build.
+    describe("the page's clean and rebuild (daemon mode)", function()
+        local actions = require("loomworks.ui.actions")
+        local obs, ws, saved, notes
+        local NOTHING = { outcome = "refused", stream = "out", exit_code = 1,
+            message = "nothing to clean for app/Debug — no configured build directories." }
+        before_each(function()
+            obs = fake_obs()
+            ws = { root = "/w", _daemon_observer = obs }
+            saved = { vim.notify, actions._show_confirmation }
+            notes = {}
+            vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+            actions._show_confirmation = function(_, on_confirm) on_confirm() end
+        end)
+        after_each(function() vim.notify, actions._show_confirmation = saved[1], saved[2] end)
+        local function levels()
+            local out = {}
+            for _, n in ipairs(notes) do out[#out + 1] = n.level end
+            return out
+        end
+        -- A row that says built, its directory since deleted.
+        local GONE = { project = "app", configuration = "Debug", unit_id = "u:1", state = "built",
+            build_dir = "/w/b/gone" }
+
+        it("unit R: nothing to clean is INFO and the rebuild builds", function()
+            actions.rebuild_configuration(GONE, ws)()
+            assert.equals(1, #obs.owned)
+            assert.equals("clean", obs.owned[1].method)
+            obs.owned[1].h.on_reply(NOTHING)
+            assert.same({ vim.log.levels.INFO }, levels())
+            assert.truthy(notes[1].msg:find("nothing to clean", 1, true), notes[1].msg)
+            assert.equals(2, #obs.owned)
+            assert.equals("build", obs.owned[2].method)
+            assert.same({ interactive = false, units = { { id = "u:1" } } }, obs.owned[2].args)
+        end)
+
+        it("unit C: nothing to clean is INFO, never an error", function()
+            actions.clean_configuration(GONE, ws)()
+            assert.equals("clean", obs.owned[1].method)
+            obs.owned[1].h.on_reply(NOTHING)
+            assert.same({ vim.log.levels.INFO }, levels())
+        end)
+
+        it("a row with no build directory still sends its clean: the daemon decides", function()
+            local bare = { project = "lib", configuration = "Debug", unit_id = "u:2", state = "unconfigured" }
+            actions.rebuild_configuration(bare, ws)()
+            assert.equals("clean", obs.owned[1].method)
+            actions.clean_configuration(bare, ws)()
+            assert.equals("clean", obs.owned[2].method)
+        end)
+
+        it("profile R: nothing to clean, then the build", function()
+            local prow = { id = "p:1", key = "dev", units = { GONE } }
+            actions.rebuild(prow, ws)()
+            assert.equals("clean", obs.owned[1].method)
+            obs.owned[1].h.on_reply(NOTHING)
+            assert.equals(2, #obs.owned)
+            assert.equals("build", obs.owned[2].method)
+            assert.same({ interactive = false, profile = { id = "p:1" } }, obs.owned[2].args)
+            for _, l in ipairs(levels()) do assert.is_true(l < vim.log.levels.WARN, vim.inspect(notes)) end
+        end)
+
+        it("profile R: a clean that really fails builds nothing", function()
+            local prow = { id = "p:1", key = "dev", units = { GONE } }
+            actions.rebuild(prow, ws)()
+            obs.owned[1].h.on_reply({ outcome = "accepted", task_id = 7 })
+            obs.owned[1].h.on_done({ exit_code = 2 })
+            assert.equals(1, #obs.owned)
+            -- A refusal not on stdout is a failure too.
+            actions.rebuild(prow, ws)()
+            obs.owned[2].h.on_reply({ outcome = "refused", exit_code = 1, message = "a lock is held" })
+            assert.equals(2, #obs.owned)
+        end)
+    end)
+
+    -- Step 5o C2d-1: a daemon-mode row without an id offers no build,
+    -- configure, clean or rebuild (nor delete); one with an id does.
+    describe("the Profiles section's actions (daemon mode)", function()
+        local function render(view)
+            local nodes = {}
+            -- Every other tree method is a no-op.
+            local tree = setmetatable({}, { __index = function() return function() end end })
+            function tree:node(label, opts, children)
+                nodes[#nodes + 1] = { label = label, opts = opts }
+                if children then children() end
+            end
+            function tree:group(_, _, children) children() end
+            package.loaded["loomworks.ui.sections.profiles"] = nil
+            require("loomworks.ui.sections.profiles")(tree, { mode = "daemon", view = view, ws = {}, lw = {},
+                ref = function() return nil end, unit_progress = function() return nil end,
+                profile_progress = function() return {} end })
+            return nodes
+        end
+        local OPS = { "on_build", "on_build_serial", "on_rebuild", "on_clean", "on_configure", "on_delete" }
+
+        it("gates the operations on the row's id", function()
+            local view = { projects = { {} }, profiles = {
+                { id = "p:1", key = "dev", status = "built", intent = "local", units = {
+                    { project = "app", configuration = "Debug", unit_id = "u:1", state = "built" },
+                    { project = "lib", configuration = "Debug", state = "unconfigured" } } },
+                { key = "ghost", status = "unconfigured", intent = "local", units = {} },
+            } }
+            local by = {}
+            for _, n in ipairs(render(view)) do
+                local text = type(n.label) == "table" and n.label[1][1] or n.label
+                by[#by + 1] = { text = text, opts = n.opts }
+            end
+            local function find(pat)
+                for _, n in ipairs(by) do if tostring(n.text):find(pat, 1, true) then return n.opts end end
+                error("no node " .. pat .. ": " .. vim.inspect(vim.tbl_map(function(n) return n.text end, by)))
+            end
+            local dev, ghost = find("dev"), find("ghost")
+            for _, k in ipairs(OPS) do
+                assert.is_function(dev[k], "dev " .. k)
+                assert.is_nil(ghost[k], "ghost " .. k)
+            end
+            local app, lib
+            for _, n in ipairs(by) do
+                if n.opts.fold_key == "profile_proj:dev:app" then app = n.opts end
+                if n.opts.fold_key == "profile_proj:dev:lib" then lib = n.opts end
+            end
+            assert.is_table(app); assert.is_table(lib)
+            for _, k in ipairs(OPS) do
+                assert.is_function(app[k], "app " .. k)
+                assert.is_nil(lib[k], "lib " .. k)
+            end
+        end)
+    end)
+
     describe("in-process mode", function()
         local ss = require("loomworks.status_source")
         local fut = require("loomworks.future")

@@ -215,8 +215,10 @@ end
 --- The reply of an owned call, under the availability rule (see the
 --- header): accepted → its `on_done` follows; declined → fails with the
 --- reason as one notification; degraded → refused with the observer's note
---- of the method; refused → fails with its message; anything else fails
---- (all notified here: `k.reject(message, true)`).
+--- of the method; refused → fails with its message — except a refusal on
+--- stdout (`stream = "out"`, API.md §4.1: nothing to clean), the command's
+--- ordinary line: notified as INFO and resolved, so a rebuild goes on to its
+--- build; anything else fails (all notified here: `k.reject(message, true)`).
 --- @param method string
 --- @param obs loomworks.daemon.Observer
 --- @param k loomworks.daemon.OpContinuation
@@ -231,6 +233,9 @@ local function on_reply(method, obs, k)
             return k.reject(msg, true)
         elseif r.outcome == "degraded" then
             return M.refuse(method, obs, k)
+        elseif r.outcome == "refused" and r.stream == "out" then
+            vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.INFO)
+            return k.resolve(true)
         elseif r.outcome == "refused" then
             vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.ERROR)
             return k.reject(r.message, true)

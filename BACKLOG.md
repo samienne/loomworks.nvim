@@ -275,6 +275,13 @@ re-render before the view's `update` keeps them."
   `ui/model_calls.lua`) over-cancels: it matches a task by profile key,
   project key or build-dir path, catching tasks that only share a project
   or a path spelling. Match by the TaskMeta ids instead (C2d-2).
+- A clean by row ids (`editor_ops.run_ids` → `call_names_ids`) misses an
+  owned call by objects whose `start` has not arrived yet (a `:Loomworks`
+  build, a launch build): `editor_ops.run` records `units` but no
+  `unit_ids` / `profile_id`, and its objects carry no daemon row ids
+  (mapping them would be a key lookup). The clean then meets that build's
+  locks instead of cancelling it first. Fix in C2d-2 when those entry
+  points name rows by id too (noted in PR #333 review).
 
 ## Lock record follow-ups (PR #180, atomic lock create/update)
 

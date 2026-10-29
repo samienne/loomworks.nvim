@@ -355,7 +355,7 @@ describe("lw clean through the workspace daemon (real processes)", function()
             assert.is_true(vim.wait(30000, function() return build_lock.read(bd) == nil end, 20), bd)
         end
         local again = lw(root, { "--no-input", "clean", "dev" })
-        assert.truthy(again.code == 0 or again.stderr:find("nothing to clean", 1, true), again.stderr)
+        assert.truthy(again.code == 0 or again.stdout:find("nothing to clean", 1, true), again.stderr)
         assert.is_nil(uv.fs_lstat(libdir))
     end)
 

@@ -77,8 +77,11 @@ function M.configure(row, ws)
     end
 end
 
---- The unit rows a clean of `rows` cleans: a configured build directory
---- (the row lists one, and a state other than `unconfigured`).
+--- The unit rows a clean of `rows` is shown to clean in its confirmation: a
+--- configured build directory (the row lists one, and a state other than
+--- `unconfigured`). Display only: whether there is anything to clean is
+--- decided where the clean runs (the daemon refuses on stdout, the
+--- in-process clean resolves at once), never here.
 --- @param rows table[] view unit rows
 --- @return table[]
 local function cleanable(rows)
@@ -143,9 +146,9 @@ end
 
 --- Rebuild a profile (`R`): confirmed, its clean (`Build/1.clean`), then —
 --- only once the clean ended successfully — its build (spec §19.16 "Editor
---- operations"). With nothing to clean (no unit row lists a configured
---- build directory) the build follows at once, as the in-process clean
---- resolves.
+--- operations"). Nothing to clean is the clean's own answer, never decided
+--- from the rows (in `daemon` mode the daemon's refusal on stdout, INFO and
+--- ok; in-process resolved at once): the build follows.
 --- @param row table the profile's row
 --- @param ws? loomworks.Workspace
 function M.rebuild(row, ws)
@@ -164,7 +167,6 @@ function M.rebuild(row, ws)
                     fidget.fail(handle, err or "the build failed")
                 end)
             end
-            if #cleanable(row.units) == 0 then return build() end
             fidget.report(handle, "cleaning...")
             model.call(ws, "Build/1.clean", { profile = row }, function(r)
                 local ok, err = model.result(r)
@@ -176,8 +178,8 @@ function M.rebuild(row, ws)
 end
 
 --- Clean a profile (`C`): confirmed, `Build/1.clean { profile }`. Nothing to
---- clean (no unit row lists a configured build directory): no call, as the
---- in-process clean resolves at once.
+--- clean is the clean's own answer (in `daemon` mode the daemon's stdout
+--- line, notified as INFO), never decided from the rows.
 --- @param row table the profile's row
 --- @param ws? loomworks.Workspace
 function M.clean(row, ws)
@@ -185,9 +187,6 @@ function M.clean(row, ws)
         local key = tostring(row.key)
         local ctx = M.clean_confirmation(ws, "Clean profile: " .. key, row.id, row.units or {})
         M._show_confirmation(ctx, function()
-            if #cleanable(row.units) == 0 then
-                return vim.notify("loomworks: nothing to clean for profile '" .. key .. "'", vim.log.levels.INFO)
-            end
             profile_op(ws, "Build/1.clean", { profile = row }, "Cleaning " .. key, "cleaning...", "cleaned")
         end)
     end
@@ -253,7 +252,6 @@ function M.rebuild_configuration(u, ws)
         local ctx = M.clean_confirmation(ws, "Rebuild: " .. unit_label(u), nil, { u }, true)
         M._show_confirmation(ctx, function()
             local function build() unit_op(ws, "Build/1.build", { units = { u } }) end
-            if #cleanable({ u }) == 0 then return build() end
             unit_op(ws, "Build/1.clean", { units = { u } }, function(r)
                 local ok, err = require("loomworks.ui.model_calls").result(r)
                 if ok then return build() end
@@ -265,16 +263,13 @@ function M.rebuild_configuration(u, ws)
 end
 
 --- Clean a unit (`C`): confirmed, `Build/1.clean { units }`; nothing to
---- clean: no call.
+--- clean is the clean's own answer (as M.clean).
 --- @param u table the unit's row
 --- @param ws? loomworks.Workspace
 function M.clean_configuration(u, ws)
     return function()
         local ctx = M.clean_confirmation(ws, "Clean: " .. unit_label(u), nil, { u })
         M._show_confirmation(ctx, function()
-            if #cleanable({ u }) == 0 then
-                return vim.notify("loomworks: nothing to clean for " .. unit_label(u), vim.log.levels.INFO)
-            end
             unit_op(ws, "Build/1.clean", { units = { u } })
         end)
     end

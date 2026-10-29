@@ -555,7 +555,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   operation. The question whether to overwrite another profile's built
   artifact and the clean confirmation come from the status page's own rows;
   a clean first stops only the editor's own tasks on it. A rebuild builds only
-  after its clean succeeded. (#333)
+  after its clean succeeded. Whether there is anything to clean is decided by
+  the clean itself, not by the status page: a configuration whose build
+  directory was deleted, or whose project has no clean command, reports
+  "nothing to clean" as information, and its rebuild goes on to build. (#333)
+- `lw clean` with nothing to clean prints its "nothing to clean" line as an
+  ordinary output line on stdout instead of an `lw:` error on stderr; the
+  exit code stays 1. (#333)
 - Experimental daemon: in daemon mode, when the workspace failed to load (for
   example a working copy or build cache refused by trust), the status page's
   trust (`T`), discard (`U`) and reset (`<C-n>`) no longer run in Neovim: they
