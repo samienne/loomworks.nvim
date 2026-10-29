@@ -4,7 +4,9 @@
 --- configuration row) passed the build as ConfigUnit:clean's legacy
 --- `on_done` callback, which fires on success AND failure — so a failed
 --- clean still started the build. The profile-level rebuild chains the
---- clean Future and is covered here too.
+--- clean Future and is covered here too. From step 5o C2d the actions name
+--- the unit row (ui/model_calls.lua `Build/1.clean` then `Build/1.build`);
+--- in the `in-process` mode the row's bound project-in-profile's unit.
 
 local h = require("tests.helpers")
 local Project = require("loomworks.project")
@@ -27,6 +29,13 @@ local function make_unit()
     return unit
 end
 
+--- The in-process view's unit row of `unit`, bound to its project-in-profile.
+local function row_of(unit)
+    local u = { project = "App", configuration = "Debug", state = "built", build_dir = "/w/build/App/Debug" }
+    require("loomworks.status_source").bind(u, { _config_unit = unit })
+    return u
+end
+
 --- Make the unit's clean fail for a real reason: the tool/configuration
 --- compatibility gate rejects run_configuration_clean (spec §3).
 local function make_clean_fail(unit)
@@ -41,8 +50,6 @@ end
 describe("rebuild after a failed clean", function()
     local overseer_mod = require("loomworks.overseer")
     local actions = require("loomworks.ui.actions")
-    local wv = require("loomworks.workspace_view")
-    local loomworks = require("loomworks")
 
     local saved, notified
 
@@ -50,25 +57,16 @@ describe("rebuild after a failed clean", function()
         saved = {
             run_action = overseer_mod.run_configuration_action,
             confirm = actions._show_confirmation,
-            collect = wv.collect_clean_items_for_unit,
-            context = wv.compute_clean_confirmation_context,
-            get_ws = loomworks.get_workspace,
             notify = vim.notify,
         }
         notified = {}
         vim.notify = function(msg, level) notified[#notified + 1] = { msg = msg, level = level } end
         actions._show_confirmation = function(_, on_confirm) on_confirm() end
-        wv.collect_clean_items_for_unit = function() return {} end
-        wv.compute_clean_confirmation_context = function() return { lines = {} } end
-        loomworks.get_workspace = function() return nil end
     end)
 
     after_each(function()
         overseer_mod.run_configuration_action = saved.run_action
         actions._show_confirmation = saved.confirm
-        wv.collect_clean_items_for_unit = saved.collect
-        wv.compute_clean_confirmation_context = saved.context
-        loomworks.get_workspace = saved.get_ws
         vim.notify = saved.notify
     end)
 
@@ -82,7 +80,7 @@ describe("rebuild after a failed clean", function()
             return require("loomworks.future").resolved(true)
         end
 
-        actions.rebuild_configuration(unit)()
+        actions.rebuild_configuration(row_of(unit), unit._workspace)()
         vim.wait(200, function() return false end)
 
         assert.equals(0, build_calls, "build must not run after a failed clean")
@@ -110,7 +108,7 @@ describe("rebuild after a failed clean", function()
             return require("loomworks.future").resolved(true)
         end
 
-        actions.rebuild_configuration(unit)()
+        actions.rebuild_configuration(row_of(unit), unit._workspace)()
         vim.wait(200, function() return build_calls > 0 end)
         overseer_mod.run_configuration_clean = orig_clean
 
@@ -131,5 +129,24 @@ describe("rebuild after a failed clean", function()
 
         assert.is_false(built)
         assert.is_true(rejected)
+    end)
+
+    it("the profile row's rebuild does not build when its clean fails (step 5o C2d)", function()
+        local future_mod = require("loomworks.future")
+        local built, cleaned = false, false
+        local profile = setmetatable({
+            key = "dev",
+            clean = function() cleaned = true; return future_mod.rejected("clean failed") end,
+            build = function() built = true; return future_mod.resolved(true) end,
+        }, {})
+        local row = { key = "dev", units = { { project = "App", configuration = "Debug", state = "built",
+            build_dir = "/w/build/App/Debug" } } }
+        require("loomworks.status_source").bind(row, profile)
+        actions.rebuild(row, h.make_mock_core())()
+        vim.wait(200, function() return cleaned end)
+        vim.wait(50, function() return false end)
+
+        assert.is_true(cleaned)
+        assert.is_false(built)
     end)
 end)

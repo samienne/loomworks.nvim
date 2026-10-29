@@ -105,12 +105,13 @@ end
 -- Daemon
 -- ---------------------------------------------------------------------------
 
---- *(Transition, until step 5o part C2d.)* The in-process model objects the
---- daemon view's profile rows (and their unit rows) name, for the profile's
---- and unit's operations not routed through the daemon by id yet (builds,
---- cleans, cancels, options, which name the profile by key), which still
---- read the editor's model (§19.16 "Transition"); every model write and
---- deletion sends the row's id instead (step 5o C2c-2). The daemon's ids
+--- *(Transition, until step 5o part C2d-2.)* The in-process model objects
+--- the daemon view's profile rows (and their unit rows) name, for the
+--- profile's and unit's actions not routed through the daemon by id yet
+--- (cancels, task output, options, the device choice), which still read the
+--- editor's model (§19.16 "Transition"); every model write and deletion
+--- (step 5o C2c-2) and every build, configure, clean and rebuild (C2d-1)
+--- sends the row's id instead. The daemon's ids
 --- name nothing here ("Two sources, one shape"): a row names its object by
 --- the keys it shows (a profile's key, a unit row's project key). A row
 --- whose object the editor's model does not have gets none: its operations

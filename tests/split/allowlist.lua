@@ -166,7 +166,9 @@ return {
         -- actions.lua 9 -> 5, orphaned.lua 1 -> 0, tree.lua 4 -> 3: step 5o
         -- C2c-2 (the deletions and the nuke name their rows; their
         -- confirmations come from Maintenance/1).
-        ["lua/loomworks/ui/actions.lua"] = 5,
+        -- actions.lua 5 -> 1: step 5o C2d-1 (the builds, configures, cleans
+        -- and rebuilds name their rows; their confirmations come from them).
+        ["lua/loomworks/ui/actions.lua"] = 1,
         ["lua/loomworks/ui/project_browser.lua"] = 3,
         -- config_sets.lua 4 -> 3, diagnostics.lua 1 -> 0, orphaned.lua 2 -> 1,
         -- profiles.lua 2 -> 0, projects.lua 6 -> 5, sdks.lua 1 -> 0: step 5n
@@ -208,7 +210,12 @@ return {
         ["lua/loomworks/profile.lua"] = 3,
         ["lua/loomworks/session_tracker.lua"] = 5,
         ["lua/loomworks/target.lua"] = 3,
-        ["lua/loomworks/ui/actions.lua"] = 12,
+        -- ui/actions.lua 12 -> 0 (deleted), ui/model_calls.lua 0 -> 6: step 5o
+        -- C2d-1 moves the status page's in-process builds, configures and
+        -- cleans (the `in-process` mode's bodies of Build/1.build / configure
+        -- / clean) to ui/model_calls.lua; in `daemon` mode they are only calls
+        -- by row id.
+        ["lua/loomworks/ui/model_calls.lua"] = 6,
     },
     -- observer.lua: conn:call(M.ROOT.object, M.ROOT.iface, ...) for describe
     -- and subscribe, the subscribe args `iface = want.iface` (want is one of

@@ -940,26 +940,6 @@ end)
 -- =========================================================================
 
 describe("confirmation contexts", function()
-    it("clean confirmation includes running tasks and items", function()
-        local ws = make_ws({
-            projects = { App = { cmake = {} } },
-        })
-
-        local items = {
-            { project_key = "App", config_key = "Debug", build_dir = "/root/.nvim/build/App/Debug" },
-        }
-        local ctx = wv.compute_clean_confirmation_context(ws, "Clean profile: Debug", items)
-        assert.is_not_nil(ctx.lines)
-        assert.is_not_nil(ctx.highlights)
-
-        -- Title present
-        local found_title = false
-        for _, line in ipairs(ctx.lines) do
-            if line:find("Clean profile: Debug") then found_title = true; break end
-        end
-        assert.is_true(found_title)
-    end)
-
     it("delete confirmation splits items by disposition", function()
         local ws = make_ws({
             projects = { App = { cmake = {} } },
@@ -998,72 +978,6 @@ describe("confirmation contexts", function()
             if line:find("No configurations to clean") then found = true; break end
         end
         assert.is_true(found)
-    end)
-end)
-
--- =========================================================================
--- Collect helpers
--- =========================================================================
-
-describe("collect helpers", function()
-    it("collect_clean_items gathers profile project data", function()
-        local ws = make_ws(
-            {
-                projects = { Frontend = { harmony = {} } },
-                configuration_sets = { Debug = { Frontend = "debug" } },
-            },
-            {
-                profiles = {
-                    Debug = { configuration_set = "Debug" },
-                },
-            },
-            {
-                configurations = {
-                    ["Frontend/debug"] = {
-                        project_key = "Frontend", config_key = "debug",
-                        type = "harmony", variant = "debug", state = "built",
-                        build_dir = "/root/.nvim/build/Frontend/debug",
-                    },
-                },
-            }
-        )
-
-        local debug_cs = h.find_config_set_in(ws:get_config_sets(),"Debug")
-        local profiles = debug_cs:find_profile(nil)
-        assert.is_not_nil(profiles)
-
-        local items = wv.collect_clean_items(profiles)
-        assert.equals(1, #items)
-        assert.equals("Frontend", items[1].project_key)
-        assert.equals("debug", items[1].config_key)
-        assert.equals("/root/.nvim/build/Frontend/debug", items[1].build_dir)
-    end)
-
-    pending("collect_clean_items_for_unit returns single item", function()
-        local ws = make_ws(
-            { projects = { App = { cmake = {} } } },
-            nil,
-            {
-                profiles = {
-                    ["App/Debug"] = {
-                        configurations = { "App/Debug" },
-                        mappings = { App = "Debug" },
-                    },
-                },
-                configurations = {
-                    ["App/Debug"] = {
-                        project_key = "App", config_key = "Debug",
-                        type = "cmake", variant = "Debug", state = "configured",
-                    },
-                },
-            }
-        )
-        local unit = h.find_config_unit(ws._config_units, "App", "Debug")
-        local items = wv.collect_clean_items_for_unit(unit)
-        assert.equals(1, #items)
-        assert.equals(unit, items[1].unit)
-        assert.equals("App", items[1].unit._project.key)
-        assert.equals("Debug", items[1].unit:config_key())
     end)
 end)
 
