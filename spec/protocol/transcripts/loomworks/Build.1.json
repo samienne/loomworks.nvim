@@ -185,7 +185,7 @@
         { "send": { "kind": "call", "req_id": 6, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "units": [ { "id": "1.1" } ] }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 7, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "clean", "args": { "units": [ { "project": "app", "configuration": "Debug" } ] }, "env": { "$var": "env" } } },
-        { "expect": { "kind": "ok", "req_id": 7, "result": { "outcome": "refused", "message": "nothing to clean for app/Debug — no configured build directories.", "exit_code": 1 } } }
+        { "expect": { "kind": "ok", "req_id": 7, "result": { "outcome": "refused", "message": "nothing to clean for app/Debug — no configured build directories.", "exit_code": 1, "stream": "out" } } }
       ]
     }
   ]

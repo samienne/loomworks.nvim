@@ -6,17 +6,8 @@
 
 local M = {}
 
---- Get display-friendly project_key and config_key from a ConfigUnit.
---- @param unit loomworks.ConfigUnit
---- @return string project_key, string config_key
-local function unit_display_keys(unit)
-    local pkey = unit._project and unit._project.key or unit._init_project_key or "?"
-    local ckey = unit:config_key() or unit.id
-    return pkey, ckey
-end
-
 -- ---------------------------------------------------------------------------
--- Profile action factories (take Profile objects)
+-- Profile action factories (take the profile's view row)
 -- ---------------------------------------------------------------------------
 
 --- Activate an existing profile.
@@ -33,80 +24,170 @@ function M.activate(row, ws)
     end
 end
 
---- Build an existing profile.
---- @param profile loomworks.Profile
-function M.build(profile)
+--- The page's operation `method` (a `Build/1` call through
+--- ui/model_calls.lua) on the profile row, followed by a progress handle:
+--- `title` while it runs, `done` once it ended successfully, its error
+--- otherwise.
+--- @param ws loomworks.Workspace|nil
+--- @param method string
+--- @param params table
+--- @param title string
+--- @param doing string
+--- @param done string
+local function profile_op(ws, method, params, title, doing, done)
+    local model = require("loomworks.ui.model_calls")
+    local fidget = require("loomworks.fidget")
+    local handle = fidget.start_op_action(title)
+    fidget.report(handle, doing)
+    model.call(ws, method, params, function(r)
+        local ok, err = model.result(r)
+        if ok then return fidget.finish(handle, done) end
+        fidget.fail(handle, err or (title .. " failed"))
+    end)
+end
+
+--- Build a profile (`b`): `Build/1.build { profile }` — step 5o C2d: named
+--- by its row (in `daemon` mode its id).
+--- @param row table the profile's `view.Workspace/1` row
+--- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
+function M.build(row, ws)
     return function()
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_op_action("Building " .. profile.key)
-        fidget.report(handle, "building...")
-        profile:build()
-            :next(function() fidget.finish(handle, "built") end)
-            :catch(function(err) fidget.fail(handle, err) end)
+        profile_op(ws, "Build/1.build", { profile = row }, "Building " .. tostring(row.key),
+            "building...", "built")
     end
 end
 
---- @param profile loomworks.Profile
-function M.build_serial(profile)
+--- Serial build of a profile (`<C-b>`): `jobs = 1`.
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.build_serial(row, ws)
     return function()
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_op_action("Building (serial) " .. profile.key)
-        fidget.report(handle, "building (-j1)...")
-        profile:build({ parallel_jobs = 1 })
-            :next(function() fidget.finish(handle, "built") end)
-            :catch(function(err) fidget.fail(handle, err) end)
+        profile_op(ws, "Build/1.build", { profile = row, jobs = 1 }, "Building (serial) " .. tostring(row.key),
+            "building (-j1)...", "built")
     end
 end
 
---- Configure an existing profile.
---- @param profile loomworks.Profile
-function M.configure(profile)
+--- Configure a profile (`c`).
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.configure(row, ws)
     return function()
-        local fidget = require("loomworks.fidget")
-        local handle = fidget.start_op_action("Configuring " .. profile.key)
-        fidget.report(handle, "configuring...")
-        profile:configure()
-            :next(function() fidget.finish(handle, "configured") end)
-            :catch(function(err) fidget.fail(handle, err) end)
+        profile_op(ws, "Build/1.configure", { profile = row }, "Configuring " .. tostring(row.key),
+            "configuring...", "configured")
     end
 end
 
---- @param profile loomworks.Profile
-function M.rebuild(profile)
+--- The unit rows a clean of `rows` is shown to clean in its confirmation: a
+--- configured build directory (the row lists one, and a state other than
+--- `unconfigured`). Display only: whether there is anything to clean is
+--- decided where the clean runs (the daemon refuses on stdout, the
+--- in-process clean resolves at once), never here.
+--- @param rows table[] view unit rows
+--- @return table[]
+local function cleanable(rows)
+    local out = {}
+    for _, u in ipairs(rows or {}) do
+        if u.build_dir and u.state ~= "unconfigured" then out[#out + 1] = u end
+    end
+    return out
+end
+
+--- The confirmation of a clean or rebuild (step 5o C2d, spec/ui.md §1.10),
+--- built from the view rows, never the editor's model: the running tasks
+--- the clean stops first — in `daemon` mode the editor's own calls on the
+--- profile or its units (another client's are never stopped: the clean
+--- meets their locks), in-process the rows' running builds and configures —
+--- and the units it cleans (`cleanable`).
+--- @param ws loomworks.Workspace|nil
+--- @param title string
+--- @param profile_id string|nil the profile row's id (a profile's clean)
+--- @param rows table[] the unit rows in scope
+--- @param rebuild boolean|nil
+--- @return { lines: string[], highlights: table[] }
+function M.clean_confirmation(ws, title, profile_id, rows, rebuild)
+    local lines, highlights = {}, {}
+    local function add(text, hl)
+        lines[#lines + 1] = text
+        if hl then highlights[#highlights + 1] = { line = #lines, hl_group = hl } end
+    end
+    add("  " .. title, "DiagnosticWarn")
+    add("")
+    local running = {}
+    local eo = require("loomworks.daemon.editor_ops")
+    if eo.daemon_of(ws) then
+        local ids = {}
+        for _, u in ipairs(rows) do if u.unit_id ~= nil then ids[#ids + 1] = u.unit_id end end
+        for _, call in ipairs(eo.owned_on_ids(ws, profile_id, ids)) do
+            running[#running + 1] = call.task and call.task.name or ("task " .. tostring(call.id))
+        end
+    else
+        for _, u in ipairs(rows) do
+            if u.state == "building" or u.state == "configuring" then
+                running[#running + 1] = tostring(u.project or "?") .. ": "
+                    .. (u.state == "building" and "build" or "configure") .. " " .. tostring(u.configuration or "?")
+            end
+        end
+    end
+    if #running > 0 then
+        table.sort(running)
+        add("  Will stop running tasks:", "DiagnosticWarn")
+        for _, name in ipairs(running) do add("    " .. name, "DiagnosticWarn") end
+        add("")
+    end
+    add(rebuild and "  Will clean build artifacts then rebuild:"
+        or "  Will clean build artifacts and reset to configured:", "DiagnosticWarn")
+    for _, u in ipairs(cleanable(rows)) do
+        add("    " .. tostring(u.project or "?") .. " / " .. tostring(u.configuration or "?"), "DiagnosticWarn")
+    end
+    add("")
+    add("  Press y to confirm, q to cancel", "Comment")
+    return { lines = lines, highlights = highlights }
+end
+
+--- Rebuild a profile (`R`): confirmed, its clean (`Build/1.clean`), then —
+--- only once the clean ended successfully — its build (spec §19.16 "Editor
+--- operations"). Nothing to clean is the clean's own answer, never decided
+--- from the rows (in `daemon` mode the daemon's refusal on stdout, INFO and
+--- ok; in-process resolved at once): the build follows.
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.rebuild(row, ws)
     return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items(profile)
-        local ctx = wv.compute_clean_confirmation_context(ws, "Rebuild profile: " .. profile.key, items, { rebuild = true })
+        local key = tostring(row.key)
+        local ctx = M.clean_confirmation(ws, "Rebuild profile: " .. key, row.id, row.units or {}, true)
         M._show_confirmation(ctx, function()
+            local model = require("loomworks.ui.model_calls")
             local fidget = require("loomworks.fidget")
-            local handle = fidget.start_op_action("Rebuilding " .. profile.key)
-            fidget.report(handle, "cleaning...")
-            profile:clean()
-                :next(function()
-                    fidget.report(handle, "building...")
-                    return profile:build()
+            local handle = fidget.start_op_action("Rebuilding " .. key)
+            local function build()
+                fidget.report(handle, "building...")
+                model.call(ws, "Build/1.build", { profile = row }, function(r)
+                    local ok, err = model.result(r)
+                    if ok then return fidget.finish(handle, "rebuilt") end
+                    fidget.fail(handle, err or "the build failed")
                 end)
-                :next(function() fidget.finish(handle, "rebuilt") end)
-                :catch(function(err) fidget.fail(handle, err) end)
+            end
+            fidget.report(handle, "cleaning...")
+            model.call(ws, "Build/1.clean", { profile = row }, function(r)
+                local ok, err = model.result(r)
+                if ok then return build() end
+                fidget.fail(handle, err or "the clean failed")
+            end)
         end)
     end
 end
 
---- @param profile loomworks.Profile
-function M.clean(profile)
+--- Clean a profile (`C`): confirmed, `Build/1.clean { profile }`. Nothing to
+--- clean is the clean's own answer (in `daemon` mode the daemon's stdout
+--- line, notified as INFO), never decided from the rows.
+--- @param row table the profile's row
+--- @param ws? loomworks.Workspace
+function M.clean(row, ws)
     return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items(profile)
-        local ctx = wv.compute_clean_confirmation_context(ws, "Clean profile: " .. profile.key, items)
+        local key = tostring(row.key)
+        local ctx = M.clean_confirmation(ws, "Clean profile: " .. key, row.id, row.units or {})
         M._show_confirmation(ctx, function()
-            local fidget = require("loomworks.fidget")
-            local handle = fidget.start_op_action("Cleaning " .. profile.key)
-            fidget.report(handle, "cleaning...")
-            profile:clean()
-                :next(function() fidget.finish(handle, "cleaned") end)
-                :catch(function(err) fidget.fail(handle, err) end)
+            profile_op(ws, "Build/1.clean", { profile = row }, "Cleaning " .. key, "cleaning...", "cleaned")
         end)
     end
 end
@@ -123,63 +204,74 @@ function M.delete_profile(row, ws)
 end
 
 -- ---------------------------------------------------------------------------
--- Configuration action factories (take ConfigUnit objects)
+-- Configuration action factories (take a profile's unit row)
 -- ---------------------------------------------------------------------------
 
---- @param unit loomworks.ConfigUnit
-function M.build_configuration(unit)
-    return function()
-        require("loomworks.overseer").run_configuration_action(unit, "build")
-    end
+--- A unit row's operation `method` (`Build/1` through ui/model_calls.lua,
+--- the row as `units`; step 5o C2d — in `daemon` mode by its `unit_id`). Its
+--- failure was reported where it ran (the task, or the call's notification).
+--- @param ws loomworks.Workspace|nil
+--- @param method string
+--- @param params table
+--- @param cb? fun(r: table)
+local function unit_op(ws, method, params, cb)
+    require("loomworks.ui.model_calls").call(ws, method, params, cb or function() end)
 end
 
---- @param unit loomworks.ConfigUnit
-function M.build_serial_configuration(unit)
-    return function()
-        require("loomworks.overseer").run_configuration_action(unit, "build", nil, { parallel_jobs = 1 })
-    end
+--- The name a unit row is shown by in a confirmation.
+local function unit_label(u)
+    return tostring(u.project or "?") .. " / " .. tostring(u.configuration or "?")
 end
 
---- @param unit loomworks.ConfigUnit
-function M.configure_configuration(unit)
-    return function()
-        require("loomworks.overseer").run_configuration_action(unit, "configure")
-    end
+--- Build a profile's unit (`b` on its row).
+--- @param u table the unit's row (one of a profile row's `units`)
+--- @param ws? loomworks.Workspace
+function M.build_configuration(u, ws)
+    return function() unit_op(ws, "Build/1.build", { units = { u } }) end
 end
 
---- @param unit loomworks.ConfigUnit
-function M.rebuild_configuration(unit)
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.build_serial_configuration(u, ws)
+    return function() unit_op(ws, "Build/1.build", { units = { u }, jobs = 1 }) end
+end
+
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.configure_configuration(u, ws)
+    return function() unit_op(ws, "Build/1.configure", { units = { u } }) end
+end
+
+--- Rebuild a unit (`R`): confirmed, its clean, then — only once the clean
+--- ended successfully — its build; a failed clean is reported and nothing
+--- is built.
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.rebuild_configuration(u, ws)
     return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items_for_unit(unit)
-        local pkey, ckey = unit_display_keys(unit)
-        local ctx = wv.compute_clean_confirmation_context(ws,
-            "Rebuild: " .. pkey .. " / " .. ckey, items, { rebuild = true })
+        local ctx = M.clean_confirmation(ws, "Rebuild: " .. unit_label(u), nil, { u }, true)
         M._show_confirmation(ctx, function()
-            -- Chain on the clean Future: the legacy on_done callback fires on
-            -- failure too, which would build over a tree that wasn't cleaned.
-            unit:clean()
-                :next(function()
-                    return require("loomworks.overseer").run_configuration_action(unit, "build")
-                end, function(err)
-                    vim.notify("loomworks: rebuild of " .. pkey .. " / " .. ckey
-                        .. " stopped: clean failed (" .. tostring(err) .. ")", vim.log.levels.ERROR)
-                end)
+            local function build() unit_op(ws, "Build/1.build", { units = { u } }) end
+            unit_op(ws, "Build/1.clean", { units = { u } }, function(r)
+                local ok, err = require("loomworks.ui.model_calls").result(r)
+                if ok then return build() end
+                vim.notify("loomworks: rebuild of " .. unit_label(u) .. " stopped: clean failed ("
+                    .. tostring(err) .. ")", vim.log.levels.ERROR)
+            end)
         end)
     end
 end
 
---- @param unit loomworks.ConfigUnit
-function M.clean_configuration(unit)
+--- Clean a unit (`C`): confirmed, `Build/1.clean { units }`; nothing to
+--- clean is the clean's own answer (as M.clean).
+--- @param u table the unit's row
+--- @param ws? loomworks.Workspace
+function M.clean_configuration(u, ws)
     return function()
-        local wv = require("loomworks.workspace_view")
-        local ws = require("loomworks").get_workspace()
-        local items = wv.collect_clean_items_for_unit(unit)
-        local pkey, ckey = unit_display_keys(unit)
-        local ctx = wv.compute_clean_confirmation_context(ws,
-            "Clean: " .. pkey .. " / " .. ckey, items)
-        M._show_confirmation(ctx, function() unit:clean() end)
+        local ctx = M.clean_confirmation(ws, "Clean: " .. unit_label(u), nil, { u })
+        M._show_confirmation(ctx, function()
+            unit_op(ws, "Build/1.clean", { units = { u } })
+        end)
     end
 end
 

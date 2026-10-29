@@ -13,7 +13,9 @@
 --- nothing is written to the cache or the working copy, and nothing blocks an
 --- editor operation (the cross-process build-directory locks do).
 ---
---- Its `start` meta carries semantic keys (§19.15). They are resolved ONCE,
+--- Its `start` meta carries semantic keys (§19.15) and, from step 5o C2d, the
+--- ids `profile_id` and `units[].id` (API.md §4.2), kept as they came: a
+--- status-page row is matched to its tasks by those. The keys are resolved ONCE,
 --- here at the wire boundary, to the editor's own domain objects: the profile
 --- among the workspace's profiles, each unit through that profile's
 --- project-in-profile to its ConfigUnit. A key that does not resolve is kept
@@ -30,6 +32,8 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field unit loomworks.ConfigUnit|nil the resolved configuration unit
 --- @field project string the project key the daemon sent (display)
 --- @field configuration string|nil the configuration-unit key the daemon sent (display)
+--- @field id string|nil the unit's id the daemon sent (API.md §4.2 `units[].id`; step 5o C2d): what a
+---   view's unit row (`unit_id`) is matched by
 
 --- @class loomworks.RemoteTaskStep
 --- @field id any opaque, stable within the task
@@ -56,6 +60,8 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 ---   profile; for a workspace-wide task, every profile with one of its resolved units)
 --- @field scope string|nil "all" for a workspace-wide task (no profile)
 --- @field profile_name string|nil the profile key the daemon sent (display)
+--- @field profile_id string|nil the profile's id the daemon sent (`meta.profile_id`, API.md §4.2; step 5o
+---   C2d): what a view's profile row (`id`) is matched by
 --- @field units loomworks.RemoteTaskUnit[]
 --- @field action string "build", "configure", "clean" or "reset" — what its units report
 --- while it runs (a test or a run builds: "build")
@@ -79,7 +85,7 @@ RemoteTask.__index = RemoteTask
 --- Resolve a task's `start` meta against the workspace (the boundary).
 --- @param ws loomworks.Workspace
 --- @param id integer
---- @param meta table|nil { name, kind, profile, scope, units = { { project, configuration } }, origin }
+--- @param meta table|nil { name, kind, profile, profile_id, scope, units = { { project, configuration, id } }, origin }
 --- @param clock number
 --- @return loomworks.RemoteTask
 function M.new(ws, id, meta, clock)
@@ -93,6 +99,7 @@ function M.new(ws, id, meta, clock)
         _chunks = {}, _bytes = 0, _truncated = false, _listeners = {},
     }, RemoteTask)
     self.profile_name = type(meta.profile) == "string" and meta.profile or nil
+    self.profile_id = type(meta.profile_id) == "string" and meta.profile_id or nil
     self.steps = M.steps_of(meta.steps)
     local profile
     if self.profile_name and ws then
@@ -124,7 +131,8 @@ function M.new(ws, id, meta, clock)
                     if pk == u.project and cu:config_key() == cfg then unit = cu; break end
                 end
             end
-            self.units[#self.units + 1] = { unit = unit, project = u.project, configuration = cfg }
+            self.units[#self.units + 1] = { unit = unit, project = u.project, configuration = cfg,
+                id = type(u.id) == "string" and u.id or nil }
         end
     end
     if (self.scope == "all" or by_units) and ws then
@@ -214,6 +222,32 @@ function RemoteTask:config_units()
         if u.unit then out[#out + 1] = u.unit end
     end
     return out
+end
+
+--- The unit ids its meta names (API.md §4.2 `units[].id`; a unit the daemon
+--- has no id for is absent).
+--- @return string[]
+function RemoteTask:unit_ids()
+    local out = {}
+    for _, u in ipairs(self.units) do
+        if u.id then out[#out + 1] = u.id end
+    end
+    return out
+end
+
+--- Whether its meta names the profile `profile_id` or one of the units
+--- `unit_ids` (view row ids; step 5o C2d — never by key).
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @return boolean
+function RemoteTask:names_ids(profile_id, unit_ids)
+    if profile_id ~= nil and self.profile_id == profile_id then return true end
+    local want = {}
+    for _, id in ipairs(unit_ids or {}) do want[id] = true end
+    for _, u in ipairs(self.units) do
+        if u.id and want[u.id] then return true end
+    end
+    return false
 end
 
 --- Put the task's running state on the editor's objects: its resolved units

@@ -56,6 +56,13 @@
 --- `Profiles/1.set_device` / `clear_device` (M.set_device). All under the
 --- same availability rule: refused when not carried, never in-process.
 ---
+--- Step 5o C2d-1: the status page's Profiles section sends its builds,
+--- configures and cleans by its view rows' ids (M.run_ids, through
+--- ui/model_calls.lua's routed `Build/1` methods) — the profile row's `id`,
+--- a unit row's `unit_id` — never by key; the owned call records the unit
+--- ids, a build's artifact-conflict question comes from the rows'
+--- `artifact_block`, a clean pre-empts the editor's own calls by those ids.
+---
 --- Step 5n part C3 (API.md §9.5): a device run's log is a
 --- `Launch/1.device_log { task }` task the editor owns (M.device_log), its
 --- records the `/launch` `log` signal of a subscription naming that task.
@@ -183,6 +190,15 @@ local function ask_conflict(ws, units, cb)
         block = ws and ws.artifact_conflict_block and ws:artifact_conflict_block(unit, false) or nil
         if block then break end
     end
+    M.ask_artifact_block(block, cb)
+end
+
+--- The artifact-conflict question (§5.9) of one block `{ profile, path? }`
+--- — a view unit row's `artifact_block` (step 5o C2d) or the editor's
+--- model's — as `cb(force|nil, err)`: no block answers `false` at once.
+--- @param block { profile?: string, path?: string }|nil
+--- @param cb fun(force: boolean|nil, err: string|nil)
+function M.ask_artifact_block(block, cb)
     if not block then return cb(false) end
     vim.ui.select({ "Yes", "No" }, {
         prompt = string.format(
@@ -199,8 +215,10 @@ end
 --- The reply of an owned call, under the availability rule (see the
 --- header): accepted → its `on_done` follows; declined → fails with the
 --- reason as one notification; degraded → refused with the observer's note
---- of the method; refused → fails with its message; anything else fails
---- (all notified here: `k.reject(message, true)`).
+--- of the method; refused → fails with its message — except a refusal on
+--- stdout (`stream = "out"`, API.md §4.1: nothing to clean), the command's
+--- ordinary line: notified as INFO and resolved, so a rebuild goes on to its
+--- build; anything else fails (all notified here: `k.reject(message, true)`).
 --- @param method string
 --- @param obs loomworks.daemon.Observer
 --- @param k loomworks.daemon.OpContinuation
@@ -215,6 +233,9 @@ local function on_reply(method, obs, k)
             return k.reject(msg, true)
         elseif r.outcome == "degraded" then
             return M.refuse(method, obs, k)
+        elseif r.outcome == "refused" and r.stream == "out" then
+            vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.INFO)
+            return k.resolve(true)
         elseif r.outcome == "refused" then
             vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.ERROR)
             return k.reject(r.message, true)
@@ -1051,18 +1072,19 @@ end
 --- Cancel the running calls the editor owns that `match` selects and call
 --- `done()` once each has ended (step 5o C2c-2: before a confirmed deletion
 --- or nuke, so the daemon does not refuse it on the editor's own build's
---- lock — as M.clean pre-empts the units' tasks). `match(task)` gets the
---- call's RemoteTask, or nil while its `start` has not arrived. No observer
+--- lock — as M.clean pre-empts the units' tasks). `match(task, call)` gets
+--- the call's RemoteTask, or nil while its `start` has not arrived, and the
+--- call (an Observer:owned_calls entry: the ids it was sent with). No observer
 --- (or nothing selected): `done()` at once. Another client's task is never
 --- cancelled; the daemon refuses on its lock, naming it.
 --- @param ws loomworks.Workspace|nil
---- @param match fun(task: loomworks.RemoteTask|nil): boolean
+--- @param match fun(task: loomworks.RemoteTask|nil, call: table): boolean
 --- @param done fun()
 function M.cancel_owned_matching(ws, match, done)
     local obs = require("loomworks.daemon.observer").of(ws)
     local ids = {}
     for _, call in ipairs(obs and obs:owned_calls() or {}) do
-        if match(call.task) then ids[#ids + 1] = call.id end
+        if match(call.task, call) then ids[#ids + 1] = call.id end
     end
     local left = #ids
     if left == 0 then return done() end
@@ -1072,6 +1094,118 @@ function M.cancel_owned_matching(ws, match, done)
             if left == 0 then done() end
         end)
     end
+end
+
+--- The arguments of a call naming its scope by view row ids (step 5o C2d):
+--- the profile `{ id }`, else the units `{ { id } }`.
+--- @param scope { profile_id?: string, unit_ids: string[] }
+--- @param opts { jobs?: integer, force?: boolean }
+--- @return table
+function M.ids_args(scope, opts)
+    local a = { interactive = false }
+    if scope.profile_id ~= nil then
+        a.profile = { id = scope.profile_id }
+    else
+        a.units = {}
+        for i, id in ipairs(scope.unit_ids or {}) do a.units[i] = { id = id } end
+    end
+    if opts.jobs then a.jobs = tonumber(opts.jobs) end
+    if opts.force then a.force = true end
+    return a
+end
+
+--- Whether the owned call `call` (an Observer:owned_calls entry) runs the
+--- profile `profile_id` or one of the units `unit_ids`: by its task's meta
+--- ids once its `start` arrived (RemoteTask:names_ids), else by the ids it
+--- was sent with (a call by row ids). A call by objects whose task has not
+--- started names no id: it matches nothing here.
+--- @param call { task: loomworks.RemoteTask|nil, unit_ids: string[]|nil, profile_id: string|nil }
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @return boolean
+function M.call_names_ids(call, profile_id, unit_ids)
+    if call.task then return call.task:names_ids(profile_id, unit_ids) end
+    if profile_id ~= nil and call.profile_id == profile_id then return true end
+    local want = {}
+    for _, id in ipairs(unit_ids or {}) do want[id] = true end
+    for _, id in ipairs(call.unit_ids or {}) do
+        if want[id] then return true end
+    end
+    return false
+end
+
+--- The running calls the editor owns that run the profile `profile_id` or
+--- one of the units `unit_ids` (M.call_names_ids): what a clean of those
+--- rows stops first.
+--- @param ws loomworks.Workspace|nil
+--- @param profile_id string|nil
+--- @param unit_ids string[]|nil
+--- @return { id: any, task: loomworks.RemoteTask|nil }[]
+function M.owned_on_ids(ws, profile_id, unit_ids)
+    local obs = require("loomworks.daemon.observer").of(ws)
+    local out = {}
+    for _, call in ipairs(obs and obs:owned_calls() or {}) do
+        if M.call_names_ids(call, profile_id, unit_ids) then out[#out + 1] = call end
+    end
+    return out
+end
+
+--- Run a status-page operation on its rows by id (step 5o C2d; spec §19.16
+--- "Editor operations"): `method` a `Build/1` call naming the profile row's
+--- id (`scope.profile_id`; `scope.unit_ids` its unit rows' ids, recorded on
+--- the owned call) or the unit rows' ids (`scope.unit_ids`), as one task the
+--- editor owns — under the availability rule of M.run (refused when not
+--- carried now, never run in-process; the outcomes notified as M.run's).
+--- Only in `daemon` mode (ui/model_calls' routed `Build/1` methods).
+---   * a build asks the artifact-conflict question first from the rows'
+---     `opts.artifact_block` (never the editor's model), its Yes sent as
+---     `force`;
+---   * a clean first cancels the editor's own calls running the profile or
+---     any of the units (M.owned_on_ids) and waits for each to end, as M.clean
+---     does by objects; another client's task is never cancelled — the clean
+---     meets its build-directory locks.
+--- The editor waits on no in-process deletion: in `daemon` mode it runs
+--- none (step 5o C2c-2).
+--- @param ws loomworks.Workspace|nil
+--- @param method "build"|"configure"|"clean"
+--- @param scope { profile_id?: string, unit_ids: string[] }
+--- @param opts? { jobs?: integer, force?: boolean, artifact_block?: { profile?: string, path?: string } }
+--- @param k loomworks.daemon.OpContinuation
+function M.run_ids(ws, method, scope, opts, k)
+    local _, mode_obs = M.daemon_of(ws)
+    local obs = M.carrier(method, ws)
+    if not obs then return M.refuse(method, mode_obs, k) end
+    opts = opts or {}
+    local verb = VERB[method] or method
+
+    local function send(force)
+        -- Still carried? (A question asked, or a cancel waited for, may have
+        -- outlived the connection: nothing ran yet — refused.)
+        if not obs:can_call(method) then return M.refuse(method, obs, k) end
+        obs:start_owned(method, M.ids_args(scope, { jobs = opts.jobs, force = opts.force or force }), {
+            unit_ids = scope.unit_ids, profile_id = scope.profile_id,
+            on_reply = on_reply(method, obs, k),
+            on_done = function(task, reason)
+                local err = failure(verb, task, reason)
+                if err then return k.reject(err) end
+                k.resolve(true)
+            end,
+        })
+    end
+
+    if method == "clean" then
+        return M.cancel_owned_matching(ws, function(_, call)
+            return M.call_names_ids(call, scope.profile_id, scope.unit_ids)
+        end, function() send(false) end)
+    end
+    if method ~= "build" or opts.force then return send(false) end
+    M.ask_artifact_block(opts.artifact_block, function(force, err)
+        if err then
+            vim.notify("loomworks: " .. err, vim.log.levels.WARN)
+            return k.reject(err, true)
+        end
+        send(force)
+    end)
 end
 
 --- Send an owned task's call again (its task-runner restart, §19.16 "Tasks in
@@ -1084,7 +1218,7 @@ end
 --- launch's preparation (M.NO_RESTART) is never sent again: its restart
 --- fails with the reason at once (step 5k C2).
 --- @param obs loomworks.daemon.Observer
---- @param call { method: string, args: table, units: loomworks.ConfigUnit[]|nil }
+--- @param call { method: string, args: table, units: loomworks.ConfigUnit[]|nil, unit_ids: string[]|nil, profile_id: string|nil }
 --- @param h { runner: loomworks.daemon.RunnerStrategy, accepted: fun(id: any), failed: fun(why: string) }
 function M.rerun(obs, call, h)
     if M.NO_RESTART[call.method] then
@@ -1095,7 +1229,7 @@ function M.rerun(obs, call, h)
             return h.failed("the workspace daemon cannot run it now")
         end
         obs:start_owned(call.method, call.args, {
-            units = call.units,
+            units = call.units, unit_ids = call.unit_ids, profile_id = call.profile_id,
             runner = h.runner,
             on_reply = function(r)
                 if r.outcome == "accepted" then return h.accepted(r.task_id) end

@@ -318,6 +318,8 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         assert.is_true(r.wait_reply())
         assert.equals("refused", r.reply.outcome, vim.inspect(r.reply))
         assert.equals("nothing to clean for app/Debug — no configured build directories.", r.reply.message)
+        -- On stdout (API.md §4.1): an ordinary line, not an error.
+        assert.equals("out", r.reply.stream)
         r.conn:close()
     end)
 

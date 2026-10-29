@@ -257,6 +257,32 @@ re-render before the view's `update` keeps them."
   `get_options` async before C2d-2 wires the `o` options float in daemon
   mode.
 
+## Clean and deletion leftovers (low; noted during step 5o C2c-2 / C2d)
+
+- A `clean_wipe` step's nested `_run_deletion` clears the outer clean's
+  deleting (`cleaning`) mark early, while the clean still holds the
+  build-directory lock: the unit shows its old state for the rest of the
+  clean. Keep the outer mark until the outer clean ends.
+- A throw between `mark_deleting(true)` and the removal Future in
+  `_run_deletion` leaves the mark set (the unit stays `deleting` until a
+  reload). Clear it on that error path (deletion-safety review applies).
+- A failed clean is notified twice (the routed call's refusal and the
+  caller's own report).
+- The stray-directory deletion test lost its assertion that the failure's
+  error text (`boom`) reaches the log; restore it.
+- #326's pre-cancel before a confirmed deletion
+  (`editor_ops.cancel_owned_matching` with `deletion_tasks` in
+  `ui/model_calls.lua`) over-cancels: it matches a task by profile key,
+  project key or build-dir path, catching tasks that only share a project
+  or a path spelling. Match by the TaskMeta ids instead (C2d-2).
+- A clean by row ids (`editor_ops.run_ids` → `call_names_ids`) misses an
+  owned call by objects whose `start` has not arrived yet (a `:Loomworks`
+  build, a launch build): `editor_ops.run` records `units` but no
+  `unit_ids` / `profile_id`, and its objects carry no daemon row ids
+  (mapping them would be a key lookup). The clean then meets that build's
+  locks instead of cancelling it first. Fix in C2d-2 when those entry
+  points name rows by id too (noted in PR #333 review).
+
 ## Lock record follow-ups (PR #180, atomic lock create/update)
 
 - Crash-leftover temps are never cleaned up: a process killed between

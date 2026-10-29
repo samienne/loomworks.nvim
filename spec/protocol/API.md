@@ -477,9 +477,11 @@ as a profile's is, never skipping the unit.
 profile's build directories; the configuration is kept). `verbose` as for
 `build` (§8.2): each clean command and each core-performed wipe
 (`    remove <dir>`). It is also `refused`, with the
-`nothing to clean for profile '<p>' …` line and its exit code, when the
-profile has no configured build directory to clean — decided after
-resolution and before any lock. Its task's `meta.kind` is `clean`. An
+`nothing to clean for profile '<p>' …` line, its exit code (1) and
+`stream = "out"` (§4.1: an ordinary standard-output line, not an error — the
+editor reports it as information and a rebuild goes on to its build), when
+the profile has no configured build directory on disk to clean or no module
+clean for it — decided after resolution and before any lock. Its task's `meta.kind` is `clean`. An
 accepted clean does, and prints, what the CLI's clean does: the
 build-directory locks of spec §16.6 taken **exclusive** up front in
 canonical order (a dead holder's lock reclaimed and its state recovered as

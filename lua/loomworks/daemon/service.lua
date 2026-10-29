@@ -62,8 +62,8 @@
 --- launch; a device target ends it nonzero before the build.
 ---
 --- **Request** `{ kind = "clean", args = { profile?, verbose? }, … }` (§19.15 "Clean")
---- — the same outcomes; also "refused" with the in-process `nothing to clean
---- …` line when the profile has no configured build directory to clean,
+--- — the same outcomes; also "refused" on stdout (`stream = "out"`) with the
+--- in-process `nothing to clean …` line when there is nothing to clean,
 --- decided after resolution and before any lock (as in-process).
 ---
 --- **`Build/1.configure`** (§19.15 "Editor scopes and configure"; an
@@ -893,13 +893,16 @@ function Service:_accept(ctx)
         return ctx.reply({ outcome = "declined", reason = "profile '" .. profile.key .. "' builds for "
             .. platform .. "; device runs stay in this process" })
     end
-    -- Nothing to clean: refused with the in-process line, before any lock.
+    -- Nothing to clean (no configured build directory on disk, or no module
+    -- clean): refused with the in-process line, before any lock — on stdout
+    -- (API.md §4.1), an ordinary result: the editor's rebuild goes on to
+    -- its build.
     local clean_steps
     if ctx.op == "clean" then
         clean_steps = build_run.plan_clean(profile, units)
         if not clean_steps then
             return ctx.reply({ outcome = "refused", message = build_run.nothing_to_clean_message(profile,
-                units and build_run.units_label(units) or nil), exit_code = 1,
+                units and build_run.units_label(units) or nil), exit_code = 1, stream = "out",
                     notes = ctx.notes, note_roles = ctx.note_roles })
         end
     end

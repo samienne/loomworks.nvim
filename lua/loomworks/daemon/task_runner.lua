@@ -49,7 +49,7 @@ M.NOTE = "task runner: overseer cannot host daemon tasks — they are shown on t
 --- @class loomworks.daemon.RunnerBinding
 --- @field obs loomworks.daemon.Observer
 --- @field owned boolean the editor's own task (stop/restart by calls)
---- @field call { method: string, args: table, units: loomworks.ConfigUnit[]|nil }|nil an owned task's call (restart)
+--- @field call { method: string, args: table, units: loomworks.ConfigUnit[]|nil, unit_ids: string[]|nil, profile_id: string|nil }|nil an owned task's call (restart)
 --- @field remote loomworks.RemoteTask|nil the daemon task the first start attaches to
 
 --- @class loomworks.daemon.RunnerStrategy
@@ -358,7 +358,8 @@ function M.add(obs, remote, runner)
     local o = obs._owned and obs._owned[remote.id]
     local binding = {
         obs = obs, owned = remote.owned == true, remote = remote,
-        call = o and { method = o.method, args = o.args, units = o.units } or nil,
+        call = o and { method = o.method, args = o.args, units = o.units, unit_ids = o.unit_ids,
+            profile_id = o.profile_id } or nil,
     }
     local ok, task = pcall(ov.new_task, {
         name = M.task_name(remote),

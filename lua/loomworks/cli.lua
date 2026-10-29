@@ -1377,7 +1377,12 @@ function M.cmd_clean(ws, args)
   local profile
   profile, ws = resolve_build_target(ws, profile_name, "lw clean <profile>")
   local steps = build_run.plan_clean(profile)
-  if not steps then die(build_run.nothing_to_clean_message(profile)) end
+  -- Nothing to clean: an ordinary stdout line (as the daemon's refusal on
+  -- stdout, API.md §8.4), its exit code 1 kept.
+  if not steps then
+    out(build_run.nothing_to_clean_message(profile), "plain")
+    return 1
+  end
   -- A core-performed wipe is a deletion, which takes the workspace operation
   -- lock; lock order (spec §19.3) puts it before the build-directory locks
   -- (the deletion's own acquisition then re-enters both).

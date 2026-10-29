@@ -830,6 +830,9 @@ describe("ui.model_calls", function()
             -- The domain objects' own writes (C0 review).
             ":activate%(", ":set_intent%(", ":update_mapping%(", ":add_tool%(", ":remove_tool%(",
             ":map_variant%(", "%.set_lsp_option%(",
+            -- The Profiles section's operations (5o C2d-1): Build/1 by row.
+            ":build%(", ":configure%(", ":clean%(", ":rebuild%(", "run_configuration_action%(",
+            "run_profile_action%(", "editor_ops\"%)%.run%(",
         })
         -- Recorded exceptions (file → the exact line), each with its reason:
         -- the LSP section's options go through `lw.set_lsp_option`, which in

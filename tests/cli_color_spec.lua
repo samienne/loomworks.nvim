@@ -312,15 +312,26 @@ describe("more roles", function()
 
   it("die paints its message as a failure on stderr", function()
     cc.mode = "always"
+    local ws = { root = "/r", _profiles = { { key = "p" } } }
+    local r = capture(function() cli.cmd_clean(ws, { "clean", "zzz" }) end)
+    assert.is_true(r.exit_code ~= nil and r.exit_code ~= 0, vim.inspect(r))
+    assert.truthy(r.stderr:find(ESC .. "31mlw: ", 1, true), r.stderr)
+    cc.mode = "never"
+    r = capture(function() cli.cmd_clean(ws, { "clean", "zzz" }) end)
+    assert.is_nil(r.stderr:find(ESC, 1, true))
+  end)
+
+  it("nothing to clean is a plain stdout line, exit 1 (as the daemon's refusal on stdout)", function()
+    cc.mode = "always"
     overseer.plan_profile_clean = function() return {} end
     local ws = { root = "/r", _profiles = { { key = "p" } } }
-    local r = capture(function() cli.cmd_clean(ws, { "clean", "p" }) end)
-    assert.equals(1, r.exit_code)
-    assert.equals(ESC .. "31mlw: nothing to clean for profile 'p' — no configured build directories." .. ESC .. "0m\n",
-      r.stderr)
-    cc.mode = "never"
-    r = capture(function() cli.cmd_clean(ws, { "clean", "p" }) end)
-    assert.is_nil(r.stderr:find(ESC, 1, true))
+    local got
+    local r = capture(function() got = cli.cmd_clean(ws, { "clean", "p" }) end)
+    assert.equals("nothing to clean for profile 'p' — no configured build directories.\n", r.stdout)
+    assert.equals("", r.stderr)
+    -- Returned, not exited: the dispatcher's finish(1).
+    assert.is_nil(r.exit_code)
+    assert.equals(1, got)
   end)
 
   it("clean: lead, step header and the CLEAN OK outcome", function()

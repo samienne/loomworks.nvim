@@ -5,8 +5,11 @@
 --- actions below are kept apart. The model writes go through
 --- loomworks/ui/model_calls.lua naming the profile by its row (step 5o C2a);
 --- the deletions go through it too, naming the profile or unit by its row
---- (step 5o C2c-2); the builds, cleans and cancels still reach the domain
---- objects through `ctx.ref(row)` until step 5o C2d.
+--- (step 5o C2c-2), and so do its builds, configures, cleans and rebuilds,
+--- in `daemon` mode by the profile row's id or the unit row's `unit_id`
+--- (step 5o C2d-1); the cancels, task output, options and device choice
+--- still reach the domain objects through `ctx.ref(row)` until step 5o
+--- C2d-2.
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
@@ -166,22 +169,23 @@ local function pick_device_action(ws, profile)
 end
 
 --- The actions of a profile's project row (its configuration unit): `u` the
---- view's unit row, `pp` its project-in-profile (`ctx.ref`, until step 5o
---- C2d). Its deletion names the row (in `daemon` mode by its `unit_id`; none
---- while the profile has no unit there).
+--- view's unit row, `pp` its project-in-profile (`ctx.ref`, for the task
+--- output, cancel and options until step 5o C2d-2). Its deletion, builds,
+--- configure, clean and rebuild name the row (in `daemon` mode by its
+--- `unit_id`; none while the profile has no unit there).
 local function unit_actions(ctx, u, pp)
-    local lw = ctx.lw
+    local lw, ws = ctx.lw, ctx.ws
     local unit = pp and pp._config_unit
-    local deletable
-    if ctx.mode == "daemon" then deletable = u.unit_id ~= nil else deletable = unit ~= nil end
+    local acting
+    if ctx.mode == "daemon" then acting = u.unit_id ~= nil else acting = unit ~= nil end
     return {
         on_enter = actions.open_task(unit),
         on_task = actions.open_task(unit),
-        on_build = actions.build_configuration(unit),
-        on_build_serial = actions.build_serial_configuration(unit),
-        on_rebuild = actions.rebuild_configuration(unit),
-        on_clean = actions.clean_configuration(unit),
-        on_configure = actions.configure_configuration(unit),
+        on_build = acting and actions.build_configuration(u, ws) or nil,
+        on_build_serial = acting and actions.build_serial_configuration(u, ws) or nil,
+        on_rebuild = acting and actions.rebuild_configuration(u, ws) or nil,
+        on_clean = acting and actions.clean_configuration(u, ws) or nil,
+        on_configure = acting and actions.configure_configuration(u, ws) or nil,
         -- Per-config cancel only appears when this unit's
         -- task is live. Single-task cancel suffices —
         -- chained tasks behind it abort via the Future's
@@ -193,7 +197,7 @@ local function unit_actions(ctx, u, pp)
                     tostring(unit._task_id))
             end
         end or nil,
-        on_delete = deletable and actions.delete_config(u, ctx.ws) or nil,
+        on_delete = acting and actions.delete_config(u, ws) or nil,
         on_options = actions.show_options(unit),
     }
 end
@@ -204,24 +208,29 @@ local function with(opts, acts)
     return opts
 end
 
---- The actions of a profile row: its model writes and its deletion by the
---- row (always; the deletion on an actionable row), the operations on its
---- domain object `profile` (only when the editor's model has it, `ctx.ref`;
---- until step 5o C2d).
+--- The actions of a profile row: its model writes (always), its deletion
+--- and operations by the row (on an actionable row: in `daemon` mode one with
+--- an id; step 5o C2d-1), its cancel on its domain object `profile` (only
+--- when the editor's model has it, `ctx.ref`; until step 5o C2d-2).
 local function profile_actions(ctx, profile, row)
     local lw, ws = ctx.lw, ctx.ws
+    local actionable = helpers.actionable(ctx, row)
     local acts = helpers.describe_action({
         on_enter = actions.activate(row, ws),
         on_publish = function() helpers.cycle_intent(row, ws) end,
-        on_delete = helpers.actionable(ctx, row) and actions.delete_profile(row, ws) or nil,
+        on_delete = actionable and actions.delete_profile(row, ws) or nil,
     }, helpers.row_item("profile", row))
+    if actionable then
+        with(acts, {
+            on_build = actions.build(row, ws),
+            on_build_serial = actions.build_serial(row, ws),
+            on_rebuild = actions.rebuild(row, ws),
+            on_clean = actions.clean(row, ws),
+            on_configure = actions.configure(row, ws),
+        })
+    end
     if not profile then return acts end
     return with(acts, {
-        on_build = actions.build(profile),
-        on_build_serial = actions.build_serial(profile),
-        on_rebuild = actions.rebuild(profile),
-        on_clean = actions.clean(profile),
-        on_configure = actions.configure(profile),
         -- Cancel only appears in the picker when there's actually
         -- something to cancel. Tasks chained behind a cancelled
         -- one auto-abort via the Future token in start_one_task.

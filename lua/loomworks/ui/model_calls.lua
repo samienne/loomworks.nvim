@@ -24,10 +24,12 @@
 --- `remove`) and `L`'s `Toolchains/1.rescan`, and **C2c-2**
 --- `Maintenance/1.execute_deletion` (every deletion of the page, the
 --- project row's `D` and the project browser's `d` included) and
---- `Maintenance/1.nuke` (`ROUTED` below) — every method here: in `daemon`
---- mode those are only ever calls — refused (the outcome says why) when the
---- daemon cannot carry them, never run in-process (spec §19.16
---- "Availability").
+--- `Maintenance/1.nuke` (`ROUTED` below), and **C2d** the Profiles
+--- section's operations `Build/1.build`, `configure` and `clean` of a
+--- profile row or of unit rows (a rebuild is the page's clean, then its
+--- build) — every method here: in `daemon` mode those are only ever calls —
+--- refused (the outcome says why) when the daemon cannot carry them, never
+--- run in-process (spec §19.16 "Availability").
 ---
 --- A deletion or nuke is confirmed (ui/actions.confirm_deletion, both
 --- modes): called without `plan` it answers `confirm { lines, plan }` (or
@@ -53,6 +55,11 @@
 ---   * `in-process` mode: the domain object the in-process view bound to
 ---     the row (loomworks.status_source.object_of); a domain object itself is
 ---     taken as it is.
+--- A `Build/1` operation names a profile row (`profile`) or unit rows
+--- (`units`, one of a profile row's `units[]` each — in `daemon` mode sent by
+--- its `unit_id`); in `daemon` mode it is a task the editor owns, followed to
+--- its end (`cb` then; loomworks.daemon.editor_ops.run_ids), a build asking
+--- the artifact-conflict question first from the unit rows' `artifact_block`.
 --- A deletion's `target` is one such row (a profile's, a profile's unit row —
 --- sent by its `unit_id` — an orphaned entry's, a project's), a stray
 --- directory's path exactly as the view lists it, or `orphans = true`.
@@ -65,7 +72,8 @@
 --- the method's result fields (a created object — in `daemon` mode its
 --- `{ id, key }` — `changed`, …), `{ outcome = "confirm", lines, plan }`
 --- (the call asks a confirmation: show `lines`, call again with `plan`), or
---- `{ outcome = "refused", message? }` (no message: already reported). It
+--- `{ outcome = "refused", message?, notified? }` (no message, or
+--- `notified`: already reported). It
 --- may run before `call` returns (in-process) or later (a daemon call, on
 --- the main loop); callers must not rely on either.
 
@@ -326,6 +334,89 @@ CALLS["Toolchains/1.rescan"] = function(_, _, cb)
 end
 
 -- ---------------------------------------------------------------------------
+-- Build/1 (step 5o C2d)
+-- ---------------------------------------------------------------------------
+
+--- An operation's scope in-process: `{ profile }` (the profile row's
+--- object) or `{ units }` (each unit row's configuration unit, its
+--- project-in-profile's), or nil + the refusal of a row the in-process view
+--- did not bind (or a unit row with no unit yet).
+--- @param p { profile?: table, units?: table[] }
+--- @return table|nil scope, table|nil refusal
+local function op_scope(p)
+    local function no(what)
+        return nil, { outcome = "refused", message = "no " .. what .. " (not a row of the workspace view)" }
+    end
+    if p.profile ~= nil then
+        local profile = object(p.profile)
+        if not profile then return no("profile") end
+        return { profile = profile }
+    end
+    local units = {}
+    for _, row in ipairs(p.units or {}) do
+        local o = object(row)
+        if o and not o.mark_deleting then o = o._config_unit end -- a unit row's project-in-profile
+        if not o then return no("configuration unit") end
+        units[#units + 1] = o
+    end
+    if #units == 0 then return nil, { outcome = "refused", message = "an operation names a profile or units" } end
+    return { units = units }
+end
+
+--- An operation's Future as its outcome through `cb`: ok once it resolved,
+--- refused with its error.
+--- @param f loomworks.Future
+--- @param cb fun(r: table)
+local function settle(f, cb)
+    f:next(function() cb({ outcome = "ok" }) end,
+        function(err) cb({ outcome = "refused", message = tostring(err) }) end)
+end
+
+--- `fn(unit)` (a Future) on each unit in turn, its outcome through `cb`: the
+--- first rejection stops it.
+--- @param units loomworks.ConfigUnit[]
+--- @param fn fun(unit: loomworks.ConfigUnit): loomworks.Future
+--- @param cb fun(r: table)
+local function each_unit(units, fn, cb)
+    local function step(i)
+        if i > #units then return cb({ outcome = "ok" }) end
+        fn(units[i]):next(function() step(i + 1) end,
+            function(err) cb({ outcome = "refused", message = tostring(err) }) end)
+    end
+    step(1)
+end
+
+--- `{ profile | units, jobs?, force? }`: the in-process build (it asks its
+--- own artifact-conflict question; `force` is the daemon call's).
+CALLS["Build/1.build"] = function(_, p, cb)
+    local scope, err = op_scope(p)
+    if not scope then return cb(err) end
+    local opts = p.jobs and { parallel_jobs = p.jobs } or nil
+    if scope.profile then return settle(scope.profile:build(opts), cb) end
+    local overseer = require("loomworks.overseer")
+    each_unit(scope.units, function(unit)
+        return overseer.run_configuration_action(unit, "build", nil, opts)
+    end, cb)
+end
+--- `{ profile | units }`.
+CALLS["Build/1.configure"] = function(_, p, cb)
+    local scope, err = op_scope(p)
+    if not scope then return cb(err) end
+    if scope.profile then return settle(scope.profile:configure(), cb) end
+    local overseer = require("loomworks.overseer")
+    each_unit(scope.units, function(unit)
+        return overseer.run_configuration_action(unit, "configure")
+    end, cb)
+end
+--- `{ profile | units }`: the module clean (the configuration kept).
+CALLS["Build/1.clean"] = function(_, p, cb)
+    local scope, err = op_scope(p)
+    if not scope then return cb(err) end
+    if scope.profile then return settle(scope.profile:clean(), cb) end
+    each_unit(scope.units, function(unit) return unit:clean() end, cb)
+end
+
+-- ---------------------------------------------------------------------------
 -- Maintenance/1
 -- ---------------------------------------------------------------------------
 
@@ -425,6 +516,7 @@ local VERB = {
     ["Sdks/1.detect"] = "SDK detection", ["Sdks/1.add"] = "SDK", ["Sdks/1.remove"] = "SDK",
     ["Toolchains/1.rescan"] = "toolchain detection",
     ["Maintenance/1.execute_deletion"] = "deletion", ["Maintenance/1.nuke"] = "nuke",
+    ["Build/1.build"] = "build", ["Build/1.configure"] = "configure", ["Build/1.clean"] = "clean",
 }
 
 --- In `daemon` mode with no workspace loaded in the editor, why a recovery
@@ -815,6 +907,64 @@ ROUTED["Maintenance/1.nuke"] = function(ws, p, cb)
         follow(ws, method, { plan = p.plan, yes = true }, cb)
     end)
 end
+
+-- (step 5o C2d) The Profiles section's operations: by the profile row's id
+-- or the unit rows' `unit_id`s, never by key; a task the editor owns,
+-- followed to its end.
+
+--- An operation's scope as row ids (editor_ops.run_ids) and the unit rows it
+--- covers (a profile's every unit row), or nil + the refusal of a row
+--- without an id.
+--- @param method string
+--- @param p { profile?: table, units?: table[] }
+--- @return table|nil scope, table rows_or_refusal
+local function id_scope(method, p)
+    if p.profile ~= nil then
+        local row = type(p.profile) == "table" and (p.profile._row or p.profile) or {}
+        if row.id == nil then return nil, refusal(method, "no profile id (not a row of the workspace view)") end
+        local ids = {}
+        for _, u in ipairs(row.units or {}) do
+            if u.unit_id ~= nil then ids[#ids + 1] = u.unit_id end
+        end
+        return { profile_id = row.id, unit_ids = ids }, row.units or {}
+    end
+    local ids, rows = {}, {}
+    for _, u in ipairs(p.units or {}) do
+        if type(u) ~= "table" or u.unit_id == nil then
+            return nil, refusal(method, "no configuration unit id (not a row of the workspace view)")
+        end
+        ids[#ids + 1], rows[#rows + 1] = u.unit_id, u
+    end
+    if #ids == 0 then return nil, refusal(method, "an operation names a profile or units") end
+    return { unit_ids = ids }, rows
+end
+
+--- A routed `Build/1` operation (`op` its editor_ops method): `cb` once its
+--- task ended — `ok` for exit 0 — or at once when nothing ran (refused,
+--- declined, not carried; `notified` when editor_ops reported it).
+--- @param method string
+--- @param op "build"|"configure"|"clean"
+local function by_ids(method, op)
+    ROUTED[method] = function(ws, p, cb)
+        local scope, rows = id_scope(method, p)
+        if not scope then return cb(rows) end
+        local block
+        for _, u in ipairs(rows) do
+            if u.artifact_block then block = u.artifact_block; break end
+        end
+        require("loomworks.daemon.editor_ops").run_ids(ws, op, scope,
+            { jobs = op == "build" and p.jobs or nil, force = op == "build" and p.force or nil,
+                artifact_block = op == "build" and block or nil }, {
+                resolve = function() cb({ outcome = "ok" }) end,
+                reject = function(err, notified)
+                    cb({ outcome = "refused", message = tostring(err), notified = notified or nil })
+                end,
+            })
+    end
+end
+by_ids("Build/1.build", "build")
+by_ids("Build/1.configure", "configure")
+by_ids("Build/1.clean", "clean")
 
 --- The methods the status page calls, sorted (tests).
 --- @return string[]

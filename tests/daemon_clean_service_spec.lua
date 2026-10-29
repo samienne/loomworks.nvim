@@ -193,6 +193,8 @@ describe("lw clean in the daemon's build service (§19.15 Clean)", function()
         assert.equals("refused", r.reply.outcome)
         assert.equals("nothing to clean for profile 'dev' — no configured build directories.", r.reply.message)
         assert.equals(1, r.reply.exit_code)
+        -- On stdout (API.md §4.1): an ordinary line, not an error.
+        assert.equals("out", r.reply.stream)
         assert.is_false(exists(root .. "/out"))
         r.conn:close()
         -- An unknown profile: the in-process resolution refusal.

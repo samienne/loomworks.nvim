@@ -771,6 +771,62 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         assert(ok_, err_)
     end)
 
+    -- Step 5o C2d-1: the Profiles section's operations name their rows by id
+    -- (Build/1 { profile = { id } } / { units = { { id } } }), a task the
+    -- editor owns, answered at its end; the task's meta carries the ids the
+    -- page matches it by; a stale id is refused, nothing runs in-process.
+    it("Build/1: configure, build and clean a profile and its unit by their rows' ids (5o C2d-1)", function()
+        local ov = require("loomworks.overseer")
+        local saved = { ov.run_profile_action, ov.run_configuration_action, ov.run_configuration_clean }
+        local function never(name) return function() error("in-process " .. name .. " in daemon mode") end end
+        ov.run_profile_action = never("run_profile_action")
+        ov.run_configuration_action = never("run_configuration_action")
+        ov.run_configuration_clean = never("run_configuration_clean")
+        -- Every task the observer sees (its `start` meta, read once).
+        local rt = require("loomworks.daemon.remote_task")
+        local rt_new, seen = rt.new, {}
+        rt.new = function(...)
+            local t = rt_new(...)
+            seen[#seen + 1] = t
+            return t
+        end
+        local ok_, err_ = pcall(function()
+            serve()
+            local prow = row("profiles", "dev")
+            assert.is_not_nil(prow and prow.id, vim.inspect(prow))
+            local r = call("Build/1.configure", { profile = prow })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            local u
+            until_view(function()
+                local p = row("profiles", "dev")
+                u = p and p.units[1]
+                return u ~= nil and u.unit_id ~= nil and u.state ~= "unconfigured"
+            end)
+            r = call("Build/1.build", { units = { u } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            r = call("Build/1.clean", { units = { u } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            r = call("Build/1.build", { profile = row("profiles", "dev"), jobs = 1 })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            -- The tasks the editor owned name the rows' ids.
+            local by_profile, by_unit = false, false
+            for _, t in ipairs(seen) do
+                if t.profile_id == prow.id and t:names_ids(nil, { u.unit_id }) then by_profile = true end
+                if t.profile_id == nil and t:names_ids(nil, { u.unit_id }) then by_unit = true end
+            end
+            assert.is_true(by_profile, "a profile task's meta names the profile row's and unit row's ids")
+            assert.is_true(by_unit, "a unit task's meta names the unit row's id")
+            r = call("Build/1.build", { units = { { unit_id = "999:999", project = "app" } } })
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            r = call("Build/1.configure", { profile = { key = "dev" } })
+            assert.equals("refused", r.outcome)
+            assert.truthy(r.message:find("no profile id", 1, true), r.message)
+        end)
+        ov.run_profile_action, ov.run_configuration_action, ov.run_configuration_clean = saved[1], saved[2], saved[3]
+        rt.new = rt_new
+        assert(ok_, err_)
+    end)
+
     -- Step 5o C2c-2: the project row's `D` means the same in the deprecated
     -- `in-process` mode (no observer): its build state, then its declaration.
     it("in-process mode: the project row's D confirms, then deletes its build state and its declaration", function()
