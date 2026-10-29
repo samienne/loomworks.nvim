@@ -574,7 +574,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   deletion the editor stops only its own tasks on exactly what is deleted,
   no longer every task that merely shares a project name or a path. Only a
   clean's "nothing to clean" counts as success; another operation refused
-  the same way is reported as an error. (#PR)
+  the same way is reported as an error. (#335)
 - Experimental daemon: in daemon mode, when the workspace failed to load (for
   example a working copy or build cache refused by trust), the status page's
   trust (`T`), discard (`U`) and reset (`<C-n>`) no longer run in Neovim: they
