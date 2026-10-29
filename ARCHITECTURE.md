@@ -1689,6 +1689,15 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   workspace view's variables also use; step 5o C2b2-1) /
   `expand_preview` in a model segment of the caller's environment (a
   toolchain detection for `candidates` is not stored in the model).
+  *(Step 5o C2d.)* `unit_options { unit = { id } }` reads a configured
+  unit's `ConfigUnit:options()` (the module's `get_options`) in the same
+  kind of segment, refused for an unconfigured unit, one being deleted
+  (`is_deleting`, its build dir may be mid rm-rf), a module with no
+  options or a stale id. The daemon's task meta names the profile and the
+  units by id as well as by key (`profile_id`, `units[].id`;
+  `daemon/tasks.meta_unit`), and its `view.Workspace/1` unit rows carry
+  `artifact_block` (`view_state`, from `Workspace:artifact_conflict_block`
+  without `force`; only with ids, never in-process).
 - *(Step 5o part B5.)* `daemon/maintenance.lua` serves `/maintenance`
   `loomworks.Maintenance/1.execute_deletion` (API.md §22), task-streamed
   (`meta.kind = "delete"`), mounted by `core_interfaces.mount`. Its target
@@ -1903,7 +1912,8 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `Tasks/1` tasks (`RemoteTask.profile_name` / `units` / `pct` /
   `start_time`; a task of no profile counts for a unit row only when it runs
   that row's configuration unit, whose key comes from the editor's model
-  through `ref` until 5o C2d); the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
+  through `ref` until 5o C2d — from step 5o C2d a task matches a row by the
+  ids its meta carries, `profile_id` and `units[].id`, API.md §4.2); the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
   pass the row itself to `ui/model_calls.lua`, which sends its id (5o
   C2a), as do the Projects section's configuration and launch removals,
   variable edits (the editor reading `Projects/1.declaration`) and
@@ -1917,7 +1927,11 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   and the nuke (5o C2c-2) — the project's
   routed rows offered by `helpers.actionable`; `ref` (transitional, until
   5o C2d) resolves a row to the editor's model object by the keys
-  the row shows, for the actions not routed yet (builds, cleans, cancels).
+  the row shows, for the actions not routed yet (builds, cleans, cancels);
+  from step 5o C2d those actions name their rows by id, the build's
+  artifact-conflict question comes from the unit row's `artifact_block`,
+  the options float reads `Projects/1.unit_options`, and a row's cancel,
+  task output and progress are the tasks whose meta names the row's ids.
   Every state-file write of the editor's model
   (`Workspace:_record_written`, `_save_config`, `publish_one`) emits
   `state_file_written { workspace, kind }`; init.lua hands it to that

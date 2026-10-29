@@ -176,6 +176,21 @@ function M.origin_of(conn)
     return nil
 end
 
+--- One `units[]` entry of a task's start meta (API.md §4.2; step 5o C2d):
+--- the project key, the configuration unit's key and the unit's session id
+--- (absent without a live unit — a profile's project with no unit yet).
+--- A client matches a task to its records by the id; the keys are for
+--- display.
+--- @param ids loomworks.daemon.IdRegistry the service's id registry
+--- @param project string|nil
+--- @param configuration string|nil
+--- @param unit? loomworks.ConfigUnit
+--- @return { project?: string, configuration?: string, id?: string }
+function M.meta_unit(ids, project, configuration, unit)
+    return { project = project, configuration = configuration,
+        id = unit and not unit._removed and ids:id(unit) or nil }
+end
+
 --- Send `msg` to the owner, flow-controlled (see the header).
 function Task:_to_owner(msg)
     local o = self.owner

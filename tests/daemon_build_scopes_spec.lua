@@ -154,6 +154,13 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         assert.equals("configure", meta.method)
         assert.equals("dev", meta.profile)
         assert.equals(2, #meta.units)
+        -- The profile and its units by id too (API.md §4.2; step 5o C2d).
+        local ids, prof = srv.service.ids, srv.service.ws._profiles[1]
+        assert.equals(ids:id(prof), meta.profile_id)
+        for i, pp in ipairs(prof:projects()) do
+            assert.same({ project = pp:project_key(), configuration = pp:config_key(),
+                id = ids:id(pp._config_unit) }, meta.units[i])
+        end
         assert.is_true(r.ordered({ "out:configuring profile: dev", "out:==> [configure] app",
             "out:==> [configure] lib", "out:CONFIGURE OK: dev" }), r.lines())
         assert.is_nil(r.lines():find("[build]", 1, true), r.lines())
@@ -200,8 +207,17 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         local meta = r.start().meta
         assert.equals("build", meta.kind)
         assert.is_nil(meta.profile)
+        assert.is_nil(meta.profile_id)
         assert.equals("app/Debug", meta.name)
-        assert.same({ { project = "app", configuration = "Debug" } }, meta.units)
+        assert.equals(1, #meta.units)
+        assert.equals("app", meta.units[1].project)
+        assert.equals("Debug", meta.units[1].configuration)
+        -- (Its id: the unit's, as a view's unit_id names it; step 5o C2d.)
+        local app_unit
+        for _, u in pairs(srv.service.ws._config_units) do
+            if u._project and u._project.key == "app" and u:config_key() == "Debug" then app_unit = u end
+        end
+        assert.equals(srv.service.ids:id(app_unit), meta.units[1].id)
         assert.is_true(r.ordered({ "out:building app/Debug", "out:==> [configure] app", "out:==> [build] app",
             "out:BUILD OK: app/Debug" }), r.lines())
         assert.is_nil(r.lines():find("lib", 1, true), r.lines())

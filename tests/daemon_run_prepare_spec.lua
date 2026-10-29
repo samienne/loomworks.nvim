@@ -73,7 +73,8 @@ describe("daemon run preparation (§19.15 Run)", function()
             done = function(_, code, err, fields) done = { code = code, err = err, fields = fields } end,
         }
         local profile = { key = "dbg", projects = function() return {} end }
-        runner.run({ ws = ws }, { op = "run", task = task, ws = ws, profile = profile, env = {},
+        local svc = { ws = ws, ids = require("loomworks.daemon.snapshot").registry(1) }
+        runner.run(svc, { op = "run", task = task, ws = ws, profile = profile, env = {},
             args = vim.tbl_extend("force", { no_build = true }, args) })
         return done
     end
@@ -190,7 +191,8 @@ describe("daemon run preparation (§19.15 Run)", function()
             done = function(_, code, err, fields) done = { code = code, err = err, fields = fields } end,
         }
         local profile = { key = "dbg", projects = function() return {} end }
-        local svc = { ws = ws, host = {}, with_model = function(_, _, fn) return fn() end }
+        local svc = { ws = ws, host = {}, ids = require("loomworks.daemon.snapshot").registry(1),
+            with_model = function(_, _, fn) return fn() end }
         runner.run(svc, { op = op, task = task, ws = ws, profile = profile, env = {}, args = args })
         return done, lines, profile
     end
