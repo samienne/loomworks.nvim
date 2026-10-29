@@ -570,7 +570,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   tasks the daemon reports for exactly that profile or configuration. A
   configuration's cancel stops the editor's own task that runs it, even the
   whole profile build; a task started elsewhere (`lw`, another editor) is not
-  cancelled — the status page says to cancel it there. Before a confirmed
+  cancelled; the status page says to cancel it there. Before a confirmed
   deletion the editor stops only its own tasks on exactly what is deleted,
   no longer every task that merely shares a project name or a path. Only a
   clean's "nothing to clean" counts as success; another operation refused
