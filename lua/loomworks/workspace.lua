@@ -4684,6 +4684,22 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     return future_mod.when_all(futures):next(function() return true end)
 end
 
+--- Return a function that clears the runtime deleting/cleaning mark of
+--- `units` the first time it is called and does nothing afterwards, so every
+--- exit path of a clean/deletion (success, failure, cancel, refusal, throw)
+--- can call it and the mark is still cleared exactly once. Touches only the
+--- in-memory mark, never cache state.
+--- @param units loomworks.ConfigUnit[]
+--- @return fun()
+function Workspace:_deleting_mark_clearer(units)
+    local done = false
+    return function()
+        if done then return end
+        done = true
+        for _, unit in ipairs(units) do unit:mark_deleting(false) end
+    end
+end
+
 --- Common async deletion workflow: cancel conflicting operations, mark items
 --- as deleting, stop running tasks, delete build dirs via async subprocess,
 --- then apply cache mutations.
@@ -4736,6 +4752,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     for _, unit in ipairs(units) do
         unit:mark_deleting(true, reason)
     end
+    local clear_mark = self:_deleting_mark_clearer(units)
     self._core._deps.events.emit("deletion_started", items)
 
     local running = self:find_running_tasks_for_items(items)
@@ -4769,6 +4786,11 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         end
         return out
     end
+    -- The in-flight rm-rf, once started. Only `opts.stop` (asked between
+    -- entries) can stop it; cancelling the returned Future does not reach it
+    -- (a joined Future is not recorded as upstream), so it keeps running
+    -- after a cancel.
+    local removal
     local f = self:stop_tasks_then(task_ids):next(function()
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
@@ -4874,7 +4896,8 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
             return failed
         end
 
-        return ws:_delete_build_dirs_async(dirs, nil, { stop = opts and opts.stop or nil })
+        removal = ws:_delete_build_dirs_async(dirs, nil, { stop = opts and opts.stop or nil })
+        return removal
     end):next(function(results)
         local errors = {}
         for _, r in ipairs(results) do
@@ -4889,7 +4912,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                     ws._core._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
                 end
             end
-            for _, unit in ipairs(units) do unit:mark_deleting(false) end
+            clear_mark()
             ws:_save_cache()
             ws:_sync_build_dir_refs()
             ws:_resolve_active_profile()
@@ -4905,9 +4928,22 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         ws:_sync_build_dir_refs()
         ws:_resolve_active_profile()
         ws._core._deps.events.emit("active_set_changed", ws._active_set)
-        for _, unit in ipairs(units) do unit:mark_deleting(false) end
+        clear_mark()
         ws._core._deps.events.emit("deletion_completed", items)
         return ws:_remove_owned_lsp_dbs(deleted_ok(results)):next(function() return true end)
+    end):next(nil, function(err)
+        -- Any other exit (stopping the tasks failed, a step threw, the
+        -- Future was cancelled): clear the runtime mark only. Cache entries
+        -- already marked `unknown` stay so (crash safety, spec §4.6).
+        -- The mark is the only guard on these dirs (no build-dir lock), so
+        -- while a cancelled deletion's rm-rf still runs it stays set and is
+        -- cleared only once that removal settles.
+        if removal and removal:is_pending() then
+            removal:next(clear_mark, clear_mark)
+        else
+            clear_mark()
+        end
+        error(err, 0)
     end)
 
     if on_done then

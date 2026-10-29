@@ -1193,25 +1193,40 @@ function ConfigUnit:_clean_in_process()
     ws:cancel_conflicting_operations({ self })
 
     self:mark_deleting(true, "cleaning")
-    local refs = self:referencing_profiles()
-    local profile = refs[1] or nil
-    ws:create_operation(profile, "clean", { self }, { [self] = "configured" })
-    -- The built state is recorded per module clean task once it succeeds
-    -- (overseer.record_module_clean); a wipe resets the unit itself.
-
-    local running = ws:find_running_tasks_for_items(items)
-    local task_ids = {}
-    for task_id in pairs(running) do
-        task_ids[#task_ids + 1] = task_id
-    end
-
+    -- The runtime mark is cleared on every exit (success, failed task,
+    -- cancel, refusal, throw) — exactly once. Only the in-memory mark: cache
+    -- state is left as is.
+    -- Clearing on cancel is safe: the clean task holds the exclusive build-dir lock.
+    local clear_mark = ws:_deleting_mark_clearer({ self })
     local unit = self
-    return ws:stop_tasks_then(task_ids):next(function()
-        return require("loomworks.overseer").run_configuration_clean(unit)
-    end):next(function()
-        unit:mark_deleting(false)
-        return true
+    local ok, f = pcall(function()
+        local refs = unit:referencing_profiles()
+        local profile = refs[1] or nil
+        ws:create_operation(profile, "clean", { unit }, { [unit] = "configured" })
+        -- The built state is recorded per module clean task once it succeeds
+        -- (overseer.record_module_clean); a wipe resets the unit itself.
+
+        local running = ws:find_running_tasks_for_items(items)
+        local task_ids = {}
+        for task_id in pairs(running) do
+            task_ids[#task_ids + 1] = task_id
+        end
+
+        return ws:stop_tasks_then(task_ids):next(function()
+            return require("loomworks.overseer").run_configuration_clean(unit)
+        end):next(function()
+            clear_mark()
+            return true
+        end, function(err)
+            clear_mark()
+            error(err, 0)
+        end)
     end)
+    if not ok then
+        clear_mark()
+        error(f, 0)
+    end
+    return f
 end
 
 --- Get build options by delegating to the module.
