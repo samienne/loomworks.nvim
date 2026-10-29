@@ -95,12 +95,29 @@ describe("Profiles section by row id (step 5o C2d-2)", function()
             model.call(ws, "Maintenance/1.execute_deletion", { target = { unit = { unit_id = "u:1" } } },
                 function(r) got = r end)
             assert.equals("Maintenance/1.execute_deletion", obs.requests[1].method)
-            obs.requests[1].cb({ outcome = "ok", result = { outcome = "confirm", lines = { "Delete" }, plan = "T" } })
+            obs.requests[1].cb({ outcome = "ok", result = { outcome = "confirm", lines = { "Delete" }, plan = "T",
+                unit_ids = { "u:1" } } })
             local text = table.concat(got.lines, "\n")
             assert.truthy(text:find("Will stop running tasks:", 1, true), text)
             assert.truthy(text:find("  build app", 1, true), text)
             assert.truthy(text:find("  task 1", 1, true), text)
             assert.falsy(text:find("task 3", 1, true), text)
+            -- The confirm's ids reach the caller (sent back with `yes`).
+            assert.same({ "u:1" }, got.unit_ids)
+        end)
+
+        it("a project's: the calls on the units the confirm names by id, also one no profile maps (5o C2d-2)", function()
+            -- u:7 is a unit of the project no profile maps: no view row names it.
+            obs.owned[1] = { method = "build", args = {}, id = 1, h = { unit_ids = { "u:7" } } }
+            obs.owned[2] = { method = "build", args = {}, id = 2, h = { unit_ids = { "u:9" } } }
+            local got
+            model.call(ws, "Maintenance/1.execute_deletion", { target = { project = { id = "p:4", key = "app" } } },
+                function(r) got = r end)
+            obs.requests[1].cb({ outcome = "ok", result = { outcome = "confirm", lines = { "Delete" }, plan = "T",
+                unit_ids = { "u:1", "u:7" } } })
+            local text = table.concat(got.lines, "\n")
+            assert.truthy(text:find("Will stop running tasks:\n  task 1", 1, true), text)
+            assert.falsy(text:find("task 2", 1, true), text)
         end)
     end)
 

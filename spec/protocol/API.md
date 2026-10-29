@@ -1735,8 +1735,11 @@ to delete changed since they were listed`, exit 1), considered before the
 empty check, so a listed plan whose directories vanished is never
 `nothing to delete`; with nothing to delete `refused` (`nothing to delete`, exit 0, `stream =
 "out"`); without `yes` `confirm` (`lines` the listing a client shows,
-`plan` a token of the planned removal and lock set) with nothing locked or
-changed; with `yes` and an unchanged `plan` it is `accepted`; with `yes` and no `plan` it is
+`plan` a token of the planned removal and lock set, `unit_ids` the ids of
+the configuration units whose build state the plan removes — for `{ project }`
+every unit of the project, also one no profile maps; for `{ profile }` its
+units not kept; empty for an orphaned or stray build directory and for
+`orphans`) with nothing locked or changed; with `yes` and an unchanged `plan` it is `accepted`; with `yes` and no `plan` it is
 `accepted` and the task prints the listing first. An accepted deletion
 takes the workspace operation lock, then the build-directory lock of every
 directory of the plan (exclusive, canonical order; a held one ends the task
@@ -1758,6 +1761,12 @@ naming nothing is `refused` (`no configuration unit '<project>/<configuration>'`
 `no build directory '<key>'`), as an unknown profile or project key is. A
 successful deletion's task prints `DELETE OK: <label>` last. The task's
 writes' `changed` precede `done`.
+
+A client that owns tasks stops the ones a confirmed deletion would meet on a
+lock before it sends `yes`: those whose meta (§4.2) names one of the
+confirmation's `unit_ids`, or for `{ profile }` the profile's id. It matches
+by these ids only, never by key or path; the deletion itself is decided by
+`target` and `plan` alone.
 
 *(Optional, part B6.)* `nuke { plan?, yes? }` — task-streamed, `meta.kind =
 "nuke"` — the editor's nuke and `lw nuke`: the workspace's build state

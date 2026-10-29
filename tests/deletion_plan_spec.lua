@@ -138,6 +138,51 @@ describe("deletion_plan.plan: a stray directory", function()
     end)
 end)
 
+-- Step 5o C2d-2: the units whose build state a plan removes (the confirm's
+-- `unit_ids`, API.md §22) — a matcher for the client's own tasks only.
+describe("deletion_plan.units", function()
+    after_each(function() L.cleanup(); op_lock.release_all() end)
+
+    it("a project plan lists every unit of the project, also one no profile maps", function()
+        local root = L.make_ws()
+        local ws = load(root)
+        local app = find_app(ws)
+        local mapped = ws._profiles[1]:projects()[1]._config_unit
+        local unmapped = ws:ensure_config_unit(app, app:ensure_configuration("Release"), mapped._tool)
+        assert.are_not.equal(mapped, unmapped)
+        local units = dp.units(dp.plan(ws, { project = app }))
+        assert.equals(2, #units)
+        assert.is_true(vim.tbl_contains(units, mapped))
+        assert.is_true(vim.tbl_contains(units, unmapped))
+        local c = commands.deletion_request(ws, { project = app })
+        assert.equals("confirm", c.outcome)
+        assert.equals(2, #c.units)
+    end)
+
+    it("a profile plan leaves out a unit it keeps (shared with another profile)", function()
+        local root = L.make_ws()
+        L.capture(function()
+            cli.cmd_cset("create", root, { "configuration-set", "create", "Dev2", "App=Debug" })
+            cli.cmd_profile_create(root, { "profile", "create", "Dev2" })
+        end)
+        local ws = load(root)
+        assert.equals(2, #ws._profiles)
+        local p = dp.plan(ws, { profile = ws._profiles[1] })
+        assert.equals(1, #p.kept)
+        assert.same({}, dp.units(p))
+    end)
+
+    it("a unit plan lists the unit; orphan and stray plans none", function()
+        local root = L.make_ws()
+        local ws = load(root)
+        local unit = ws._profiles[1]:projects()[1]._config_unit
+        assert.same({ unit }, dp.units(dp.plan(ws, { unit = unit })))
+        local dir = ws._core._deps.normalize(mkstray(root, "App/Stray"))
+        assert.same({}, dp.units(dp.plan(ws, { stray_dir = dir })))
+        assert.same({}, dp.units(dp.plan(ws, { orphans = true })))
+    end)
+end)
+
 describe("model_commands.execute_deletion", function()
     local io_mod = require("loomworks.io")
     local real_rm

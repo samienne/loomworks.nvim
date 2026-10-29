@@ -736,7 +736,10 @@ function M.confirm_deletion(ws, o)
                 n = "close",
                 y = function(self)
                     self:close()
-                    model.call(ws, method, { target = o.target, plan = r.plan, yes = true }, function(d)
+                    -- `unit_ids`: the confirm's, for the editor's own tasks
+                    -- stopped first (daemon mode; never sent on the wire).
+                    local params = { target = o.target, plan = r.plan, unit_ids = r.unit_ids, yes = true }
+                    model.call(ws, method, params, function(d)
                         if d.outcome ~= "ok" then return failed(d, "the deletion failed") end
                         for _, note in ipairs(d.notes or {}) do
                             vim.notify("loomworks: " .. note, vim.log.levels.WARN)

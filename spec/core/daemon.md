@@ -2518,7 +2518,10 @@ project's variable, deploy destination or `type_config` field, the
 project's id and the entry's name. A dialog reads what it edits with
 `Projects/1.declaration` when it opens; a confirmation (a deletion, a nuke,
 trust, the removal of the working copy) shows the `confirm` lines and sends
-back their `plan`. A refused call (a stale id after a reload, a changed
+back their `plan`. A confirmed deletion first cancels the editor's own tasks
+whose meta names the confirmation's `unit_ids` (or, for a profile, the
+profile row's id) — never matched by key or path ([API.md](../protocol/API.md)
+§22); a confirmed nuke cancels every task the editor owns. A refused call (a stale id after a reload, a changed
 plan, a held lock) is an error notification and changes nothing; the page
 shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is

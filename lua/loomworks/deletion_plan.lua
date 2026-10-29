@@ -447,6 +447,25 @@ function M.is_empty(plan)
     return #plan.removal_dirs == 0 and #plan.outside_dirs == 0 and not plan.state_to_clear
 end
 
+--- The configuration units whose build state `plan` removes: the live unit
+--- of each targeted item, in item order, once each (a kept item is in
+--- `plan.kept`, never here; none for an orphaned or stray directory or
+--- `orphans`). A matcher for a client's own tasks only (the confirm's
+--- `unit_ids`, API.md §22): what is deleted is decided by the plan alone.
+--- @param plan loomworks.DeletionTargetPlan
+--- @return loomworks.ConfigUnit[]
+function M.units(plan)
+    local out, seen = {}, {}
+    for _, item in ipairs(plan.items or {}) do
+        local u = item.unit
+        if u and not u._removed and not seen[u] then
+            seen[u] = true
+            out[#out + 1] = u
+        end
+    end
+    return out
+end
+
 --- Is `plan` still what a fresh plan of its target says? Called with the
 --- operation lock and every build-directory lock of `plan.lock_dirs` held,
 --- after `M.resync`, before anything is removed. Returns the fresh plan (the

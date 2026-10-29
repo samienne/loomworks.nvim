@@ -1523,7 +1523,8 @@ end
 --- fresh token differs from is refused (`deletion_plan.CHANGED`, exit 1),
 --- before the empty check, so a listed plan whose directories vanished is
 --- never "nothing to delete"; nothing to delete is refused (exit 0, `stream
---- = "out"`); without `yes` it is `confirm` (`lines`, `plan`); otherwise
+--- = "out"`); without `yes` it is `confirm` (`lines`, `plan`, `units`: the
+--- units whose build state the plan removes, `deletion_plan.units`); otherwise
 --- `accepted`, carrying the plan `deletion_run` executes and whether the
 --- listing is still to be shown (`listing`: no `plan` was sent).
 --- @param ws loomworks.Workspace
@@ -1542,7 +1543,7 @@ function M.deletion_request(ws, target, plan, yes)
         return r
     end
     if not yes then
-        return { outcome = "confirm", lines = dp.listing(ws, p), plan = p.token }
+        return { outcome = "confirm", lines = dp.listing(ws, p), plan = p.token, units = dp.units(p) }
     end
     return { outcome = "accepted", deletion = p, listing = plan == nil and dp.listing(ws, p) or nil }
 end

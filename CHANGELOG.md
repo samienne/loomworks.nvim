@@ -577,7 +577,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   there. Before a confirmed deletion the editor stops only its own tasks on
   exactly what is deleted, no longer every task that merely shares a project
   name or a path, and the confirmation lists every task it stops, including
-  one that has not started yet. A clean (`C`) now always goes to the daemon.
+  one that has not started yet. A project deletion stops the editor's own
+  tasks on every configuration of the project, also one no profile uses. A clean (`C`) now always goes to the daemon.
   It first stops the editor's own work on those configurations, even when
   the daemon then reports nothing to clean: for example, a clean pressed
   during a first configure stops that configure. Only a clean's "nothing to

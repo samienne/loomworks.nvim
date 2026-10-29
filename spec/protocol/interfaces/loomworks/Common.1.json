@@ -92,6 +92,7 @@
         "lines": { "type": "array", "items": { "type": "string" } },
         "plan": { "description": "An opaque token of the plan shown; sent back with the confirmation, which a changed plan refuses.", "type": "string" },
         "profile_key": { "type": "string" },
+        "unit_ids": { "description": "Maintenance/1.execute_deletion: the ids of the configuration units whose build state the plan removes (API.md §22), for the client's stop of its own tasks first.", "type": "array", "items": { "$ref": "#/$defs/Id" } },
         "notes": { "$ref": "#/$defs/Notes" },
         "note_roles": { "$ref": "#/$defs/NoteRoles" }
       }

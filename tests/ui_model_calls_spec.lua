@@ -475,28 +475,41 @@ describe("ui.model_calls", function()
             local on_unit = task({ units = { { project = "app", configuration = "Dbg", id = "2:1" } } })
             local by_key = task({ profile = "dev", units = { { project = "app", configuration = "Dbg" } } })
             local other = task({ profile = "rel", profile_id = "1:2", units = { { project = "lib", id = "2:9" } } })
-            -- A project's units: the view's profile unit rows of that project.
-            WS._daemon_observer = { workspace_view = function()
-                return { profiles = { PROW, { id = "1:2", units = { { project = "lib", unit_id = "2:9" } } } } }
-            end }
-            run("Maintenance/1.execute_deletion", { target = { profile = PROW }, plan = "T", yes = true })
+            -- By the ids the confirmation listed (`unit_ids`, API.md §22) and,
+            -- for a profile, its row id; never a view walk by key.
+            run("Maintenance/1.execute_deletion", { target = { profile = PROW }, plan = "T", yes = true,
+                unit_ids = { "2:1" } })
             assert.same({ true, true, false, false, false }, { cancelled_by(of_profile), cancelled_by(on_unit),
                 cancelled_by(by_key), cancelled_by(other), cancelled_by(nil) })
             -- A call not started yet: by the ids it was sent with.
             assert.is_true(cancelled_by(nil, { unit_ids = { "2:1" } }))
             assert.is_true(cancelled_by(nil, { profile_id = "1:1" }))
             assert.is_false(cancelled_by(nil, { unit_ids = { "2:9" } }))
-            run("Maintenance/1.execute_deletion", { target = { unit = PROW.units[1] }, plan = "T", yes = true })
+            -- A profile's unit it keeps is not in the confirm's ids: not stopped.
+            run("Maintenance/1.execute_deletion", { target = { profile = PROW }, plan = "T", yes = true,
+                unit_ids = {} })
+            assert.same({ true, false }, { cancelled_by(of_profile), cancelled_by(on_unit) })
+            run("Maintenance/1.execute_deletion", { target = { unit = PROW.units[1] }, plan = "T", yes = true,
+                unit_ids = { "2:1" } })
             assert.same({ false, true, false }, { cancelled_by(of_profile), cancelled_by(on_unit), cancelled_by(other) })
-            run("Maintenance/1.execute_deletion", { target = { project = { id = "4:1", key = "app" } }, plan = "T", yes = true })
-            assert.same({ true, false, false, false }, { cancelled_by(on_unit), cancelled_by(other),
-                cancelled_by(of_profile), cancelled_by(by_key) })
-            run("Maintenance/1.execute_deletion", { target = { orphans = true }, plan = "T", yes = true })
+            -- A project's every unit, also one no profile maps (2:7: no view row names it).
+            local unmapped = task({ units = { { project = "app", configuration = "Rel", id = "2:7" } } })
+            run("Maintenance/1.execute_deletion", { target = { project = { id = "4:1", key = "app" } }, plan = "T",
+                yes = true, unit_ids = { "2:1", "2:7" } })
+            assert.same({ true, true, false, false, false }, { cancelled_by(on_unit), cancelled_by(unmapped),
+                cancelled_by(other), cancelled_by(of_profile), cancelled_by(by_key) })
+            assert.is_true(cancelled_by(nil, { unit_ids = { "2:7" } }))
+            -- No ids from a confirmation: nothing matched (no key fallback).
+            run("Maintenance/1.execute_deletion", { target = { project = { id = "4:1", key = "app" } }, plan = "T",
+                yes = true })
+            assert.same({ false, false, false }, { cancelled_by(on_unit), cancelled_by(unmapped), cancelled_by(by_key) })
+            run("Maintenance/1.execute_deletion", { target = { orphans = true }, plan = "T", yes = true, unit_ids = {} })
             assert.same({ false, false }, { cancelled_by(on_unit), cancelled_by(of_profile) })
             run("Maintenance/1.nuke", { plan = "N", yes = true })
             assert.same({ true, true }, { cancelled_by(other), cancelled_by(nil) })
-            assert.equals(5, #owned)
-            WS._daemon_observer = nil
+            assert.equals(7, #owned)
+            -- The ids stay editor-side: the wire carries target, plan, yes only.
+            for _, o in ipairs(owned) do assert.is_nil(o.args.unit_ids) end
         end)
     end)
 
@@ -699,7 +712,9 @@ describe("ui.model_calls", function()
         local sent, shown, notes, finish = {}, nil, {}, nil
         model.call = function(ws, method, params, cb)
             sent[#sent + 1] = { ws, method, params }
-            if not params.yes then return cb({ outcome = "confirm", lines = { "Delete project 'app':" }, plan = "P1" }) end
+            if not params.yes then
+                return cb({ outcome = "confirm", lines = { "Delete project 'app':" }, plan = "P1", unit_ids = { "2:1", "2:7" } })
+            end
             finish = cb
         end
         package.loaded["loomworks.ui.dialog"] = { show = function(o) shown = o end }
@@ -711,7 +726,8 @@ describe("ui.model_calls", function()
             assert.truthy(table.concat(shown.lines, " "):find("Delete project 'app':", 1, true))
             shown.keys.y({ close = function() end })
             assert.same({ { WS, "Maintenance/1.execute_deletion", { target = { project = PROW } } },
-                { WS, "Maintenance/1.execute_deletion", { target = { project = PROW }, plan = "P1", yes = true } } }, sent)
+                { WS, "Maintenance/1.execute_deletion", { target = { project = PROW }, plan = "P1", yes = true,
+                    unit_ids = { "2:1", "2:7" } } } }, sent)
             assert.same({}, notes)
             finish({ outcome = "ok" })
             assert.same({ { "loomworks: project 'app' removed", vim.log.levels.INFO } }, notes)

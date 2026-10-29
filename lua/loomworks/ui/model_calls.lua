@@ -893,39 +893,27 @@ local function wire_target(method, t)
     return { [kind] = { id = id } }
 end
 
---- The editor's own running tasks a confirmed deletion of `t` (its rows)
---- would meet on a build-directory lock, by the ids their `start` meta names
---- (API.md §4.2; step 5o C2d-2 — never by key or path): a profile's (its id,
---- or one of its unit rows' `unit_id`s), a unit row's (its `unit_id`), or a
---- project's (the `unit_id` of each profile's unit row of that project in the
---- workspace view); none for orphaned and stray directories (no live build
---- uses them; the daemon refuses one that does). A call whose task has not
---- started yet is matched by the ids it was sent with (a call by row ids).
---- A task on a build directory only shared with the target's (another
---- unit's) is not matched: the daemon refuses the deletion on its lock,
---- naming it.
---- @param ws loomworks.Workspace|nil
+--- The editor's own running tasks a confirmed deletion of `t` would meet on
+--- a build-directory lock, by the ids their `start` meta names (API.md §4.2,
+--- §22; step 5o C2d-2 — never by key or path): one of the `unit_ids` the
+--- daemon's confirmation listed (the units whose build state the plan
+--- removes: a project's every unit, also one no profile maps; a profile's
+--- not kept; none for orphaned and stray directories), or for a profile its
+--- row id. A call whose task has not started yet is matched by the ids it
+--- was sent with (a call by row ids). Without ids from a confirmation only a
+--- profile's id matches. The ids only pick the tasks stopped first; what is
+--- deleted is decided by the target and plan. A task on a build directory
+--- only shared with the target's (another unit's) is not matched: the
+--- daemon refuses the deletion on its lock, naming it.
 --- @param t table
+--- @param unit_ids string[]|nil the confirmation's `unit_ids`
 --- @return fun(task: loomworks.RemoteTask|nil, call: table|nil): boolean
-local function deletion_tasks(ws, t)
+local function deletion_tasks(t, unit_ids)
     local kind = target_kind(t)
     local row = kind and type(t[kind]) == "table" and (t[kind]._row or t[kind]) or {}
-    local profile_id, ids = nil, {}
-    if kind == "profile" then
-        profile_id = row.id
-        for _, u in ipairs(row.units or {}) do ids[#ids + 1] = u.unit_id end
-    elseif kind == "unit" then
-        ids[1] = row.unit_id
-    elseif kind == "project" and row.key ~= nil then
-        -- The view's own relation: a profile's unit row names its project.
-        local obs = require("loomworks.daemon.observer").of(ws)
-        local view = obs and obs:workspace_view()
-        for _, prow in ipairs(view and view.profiles or {}) do
-            for _, u in ipairs(prow.units or {}) do
-                if u.project == row.key then ids[#ids + 1] = u.unit_id end
-            end
-        end
-    end
+    local profile_id = kind == "profile" and row.id or nil
+    local ids = {}
+    for _, id in ipairs(type(unit_ids) == "table" and unit_ids or {}) do ids[#ids + 1] = id end
     local want = {}
     for _, id in ipairs(ids) do want[id] = true end
     return function(task, call)
@@ -953,7 +941,7 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
             -- call editor_ops.cancel_owned_matching stops, a not-yet-started
             -- one by the ids it was sent with too.
             local obs = r.outcome == "confirm" and require("loomworks.daemon.observer").of(ws) or nil
-            local match, stopped = deletion_tasks(ws, p.target), {}
+            local match, stopped = deletion_tasks(p.target, r.unit_ids), {}
             for _, call in ipairs(obs and obs:owned_calls() or {}) do
                 if match(call.task, call) then
                     stopped[#stopped + 1] = "  " .. (call.task and tostring(call.task.name) or ("task " .. tostring(call.id)))
@@ -968,7 +956,8 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
         end)
     end
     if p.plan == nil then return cb(refusal(method, "a deletion is confirmed with the plan it listed")) end
-    require("loomworks.daemon.editor_ops").cancel_owned_matching(ws, deletion_tasks(ws, p.target), function()
+    -- `p.unit_ids` (the confirmation's, editor-side) is not sent.
+    require("loomworks.daemon.editor_ops").cancel_owned_matching(ws, deletion_tasks(p.target, p.unit_ids), function()
         follow(ws, method, { target = target, plan = p.plan, yes = true }, cb)
     end)
 end

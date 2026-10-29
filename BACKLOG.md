@@ -264,12 +264,16 @@ re-render before the view's `update` keeps them."
   caller's own report).
 - The stray-directory deletion test lost its assertion that the failure's
   error text (`boom`) reaches the log; restore it.
-- A project deletion's pre-cancel (`deletion_tasks` in
-  `ui/model_calls.lua`, by TaskMeta ids since C2d-2) gathers the project's
-  unit ids from the view's profile unit rows whose `project` is the project
-  row's key (the view's own relation): a unit in no profile is not
-  matched, and the daemon refuses on its lock. A project id on the unit rows
-  (or the units' ids on the project row) would make it a pure id match.
+- The deploy editor still joins view rows by key at runtime (the same
+  pattern the deletion pre-cancel had before C2d-2 matched by the confirm's
+  `unit_ids`): `get_targets` (`ui/deploy_editor.lua:288`) keeps the profile
+  unit rows whose `project` equals the project row's `key`, so a unit in no
+  profile contributes no targets; `active_unit` (`:172`) matches the active
+  profile's unit rows by `project` key and configuration name (arguably an
+  input boundary: the key comes from the user's deploy descriptor). Fix
+  with ids: project rows (view §14.4 `projects[]`) carrying the project's
+  targets, or a `Projects/1` read returning them by project id. Left out of
+  PR #335 by choice.
 - A clean by row ids (`editor_ops.run_ids` → `call_names_ids`) misses an
   owned call by objects whose `start` has not arrived yet (a `:Loomworks`
   build, a launch build): `editor_ops.run` records `units` but no

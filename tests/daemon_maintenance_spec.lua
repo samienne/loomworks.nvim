@@ -333,6 +333,34 @@ describe("Maintenance/1.execute_deletion in the workspace daemon (API.md §22)",
         assert.equals("built", s.unit().state_value)
     end)
 
+    -- Step 5o C2d-2: the confirm's `unit_ids` (API.md §22), the ids a client
+    -- stops its own tasks by before `yes`.
+    it("a project deletion's confirm lists every unit of the project by id, also one no profile maps", function()
+        s = session()
+        s.build()
+        local unit = s.unit()
+        local app = unit._project
+        local unmapped = s.ws():ensure_config_unit(app, app:ensure_configuration("Release"), unit._tool)
+        assert.are_not.equal(unit, unmapped)
+        local c = s.delete({ target = { project = { id = s.id(app) } } })
+        assert.equals("confirm", c.outcome, vim.inspect(c))
+        assert.equals(2, #c.unit_ids, vim.inspect(c.unit_ids))
+        assert.is_true(vim.tbl_contains(c.unit_ids, s.id(unit)))
+        assert.is_true(vim.tbl_contains(c.unit_ids, s.id(unmapped)))
+        for _, id in ipairs(c.unit_ids) do
+            local found = s.service().ids:find(id, s.ws()._config_units)
+            assert.is_true(found == unit or found == unmapped, id)
+        end
+        local by_unit = s.delete({ target = { unit = { id = s.id(unit) } } })
+        assert.same({ s.id(unit) }, by_unit.unit_ids)
+        local orphans = s.delete({ target = { orphans = true } })
+        if orphans.outcome == "confirm" then assert.same({}, orphans.unit_ids or {}) end
+        -- A stale project id is refused, with no ids.
+        local stale = s.delete({ target = { project = { id = "999:1" } } })
+        assert.equals("refused", stale.outcome, vim.inspect(stale))
+        assert.is_nil(stale.unit_ids)
+    end)
+
     it("a confirmed profile deletion removes its build directories", function()
         s = session()
         s.build()
