@@ -391,9 +391,10 @@ end
 
 --- The cancel of a profile's unit row `u` (of profile row `row`), or nil
 --- when no task runs it (step 5o C2d-2). In `daemon` mode: the running tasks
---- naming the unit's id or the row's profile id — the whole task that runs
---- it, even the profile's build (editor_ops.cancel_on_ids; another client's
---- is left to it). In-process: the unit's live overseer task (chained tasks
+--- whose `start` meta lists the unit's id — the whole task that runs it, even
+--- the profile's build (editor_ops.cancel_on_ids; another client's is left to
+--- it). A task that names only the row's profile id (a device log, install
+--- or launch, a test discovery) does not run the unit. In-process: the unit's live overseer task (chained tasks
 --- behind it abort via the Future's cancel token).
 --- @param row table the profile's view row
 --- @param u table the unit's view row
@@ -403,10 +404,10 @@ function M.cancel_unit(row, u, ws)
     if daemon_mode(ws) then
         if u.unit_id == nil then return nil end
         local eo = require("loomworks.daemon.editor_ops")
-        if #eo.tasks_on_ids(ws, row.id, { u.unit_id }) == 0 then return nil end
+        if #eo.tasks_on_ids(ws, nil, { u.unit_id }) == 0 then return nil end
         return function()
             local names = {}
-            for _, t in ipairs(eo.cancel_on_ids(ws, row.id, { u.unit_id })) do names[#names + 1] = t.name end
+            for _, t in ipairs(eo.cancel_on_ids(ws, nil, { u.unit_id })) do names[#names + 1] = t.name end
             if #names > 0 then vim.notify("loomworks: cancelled task " .. table.concat(names, ", ")) end
         end
     end
@@ -422,8 +423,8 @@ end
 
 --- The task output of a profile's unit row `u` (of profile row `row`):
 --- `<CR>` / `t` (step 5o C2d-2). In `daemon` mode the latest task observed
---- through `Tasks/1` whose `start` meta names the unit's id or the row's
---- profile id — the running one, else the last that ended
+--- through `Tasks/1` whose `start` meta lists the unit's id (never one that
+--- names only the row's profile id) — the running one, else the last that ended
 --- (editor_ops.tasks_on_ids) — its kept output (ui/remote_output). In-process
 --- the bound unit's last overseer task (M.open_task).
 --- @param row table the profile's view row
@@ -434,7 +435,7 @@ function M.open_unit_task(row, u, ws)
     return function()
         if daemon_mode(ws) then
             local tasks = u.unit_id ~= nil
-                and require("loomworks.daemon.editor_ops").tasks_on_ids(ws, row.id, { u.unit_id }, true) or {}
+                and require("loomworks.daemon.editor_ops").tasks_on_ids(ws, nil, { u.unit_id }, true) or {}
             local pick
             for _, t in ipairs(tasks) do
                 if not t.finished then pick = t end

@@ -949,11 +949,15 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
     if not p.yes then
         return send(ws, method, { target = target }, function(r)
             -- The editor's own running tasks the confirmed deletion cancels
-            -- first (spec/ui.md §1.10), after the daemon's listing.
+            -- first (spec/ui.md §1.10), after the daemon's listing: every
+            -- call editor_ops.cancel_owned_matching stops, a not-yet-started
+            -- one by the ids it was sent with too.
             local obs = r.outcome == "confirm" and require("loomworks.daemon.observer").of(ws) or nil
             local match, stopped = deletion_tasks(ws, p.target), {}
             for _, call in ipairs(obs and obs:owned_calls() or {}) do
-                if call.task and match(call.task) then stopped[#stopped + 1] = "  " .. tostring(call.task.name) end
+                if match(call.task, call) then
+                    stopped[#stopped + 1] = "  " .. (call.task and tostring(call.task.name) or ("task " .. tostring(call.id)))
+                end
             end
             if #stopped > 0 then
                 table.sort(stopped)

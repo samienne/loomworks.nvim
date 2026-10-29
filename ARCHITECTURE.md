@@ -980,7 +980,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   with `ended` the observer's last ended ones (`Observer:ended_tasks`, the
   last `ENDED_KEEP` kept by `_forget`, none cleared by teardown);
   `cancel_on_ids` cancels the owned ones (the whole task, even a profile's
-  build for a unit row) and notifies another client's read-only line. Observer side: `M.BUILD` (`call_only`, feature
+  build for a unit row) and notifies another client's read-only line. A
+  profile row passes its `id`; a unit row passes only its `unit_id` (no
+  profile id), so a task of its profile that lists no unit (a device log,
+  install / launch, test discovery) is never its. Observer side: `M.BUILD` (`call_only`, feature
   `operations`), `M.TASKS.methods = { cancel, list }`, the literal `CALLS`
   table behind `_icall` (with `vim.fn.environ()` at call time), `_owned`
   (registered in the reply's own callback, before the `start` frame),
@@ -1947,9 +1950,11 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   daemon's `published = false`); progress is overlaid from the observer's
   `Tasks/1` tasks (`pct` / `start_time`), matched to the rows by the ids
   their meta carries (`RemoteTask.profile_id` / `unit_ids()`, API.md §4.2;
-  5o C2d-2 — never by key): a task of the row's profile counts for the row
-  and each of its units, a task of no profile for a unit row only when it
-  names that row's `unit_id`; the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
+  5o C2d-2 — never by key): a task of the row's profile counts for the
+  profile row, a task for a unit row only when its meta lists that row's
+  `unit_id` (a device log, device install / launch or test discovery names
+  only the profile's id and runs no unit; a profile's build, configure and
+  clean list their units); the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
   pass the row itself to `ui/model_calls.lua`, which sends its id (5o
   C2a), as do the Projects section's configuration and launch removals,
   variable edits (the editor reading `Projects/1.declaration`) and

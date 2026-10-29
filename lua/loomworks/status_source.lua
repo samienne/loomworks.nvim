@@ -101,17 +101,15 @@ end
 -- Daemon
 -- ---------------------------------------------------------------------------
 
---- Whether a task observed through `Tasks/1` runs the unit row `u` of
---- profile row `row`, by the ids its `start` meta names (API.md §4.2; step 5o
---- C2d-2 — never by key): a task of the row's profile (`profile_id`) runs
---- each of its units (a profile maps one configuration per project); any
---- other task only when it names the unit row's `unit_id`.
+--- Whether a task observed through `Tasks/1` runs the unit row `u`, by the
+--- ids its `start` meta names (API.md §4.2; step 5o C2d-2 — never by key):
+--- only when it lists the unit row's `unit_id`. A task naming only the
+--- profile's id (a device log, install or launch, a test discovery) runs no
+--- unit; a profile's build, configure and clean list their units.
 --- @param task loomworks.RemoteTask
---- @param row loomworks.ViewProfile
 --- @param u table the view's unit row
 --- @return boolean
-local function runs_unit(task, row, u)
-    if row.id ~= nil and task.profile_id == row.id then return true end
+local function runs_unit(task, u)
     return u.unit_id ~= nil and task:names_ids(nil, { u.unit_id })
 end
 
@@ -119,24 +117,26 @@ end
 --- `start` meta names the row's profile id), else one without a profile
 --- (scoped to units, or `scope = "all"`, whose `start` meta lists its units
 --- too) that runs one of the row's running units.
---- `u`: only a task running that unit row.
+--- `u`: only a task running that unit row (runs_unit).
 --- @param tasks loomworks.RemoteTask[]
 --- @param row loomworks.ViewProfile
 --- @param u? table
 --- @return loomworks.RemoteTask|nil
 local function task_of(tasks, row, u)
+    if u then
+        for _, t in ipairs(tasks) do
+            if not t.finished and runs_unit(t, u) then return t end
+        end
+        return nil
+    end
     for _, t in ipairs(tasks) do
         if not t.finished and row.id ~= nil and t.profile_id == row.id then return t end
     end
     for _, t in ipairs(tasks) do
         if not t.finished and t.profile_id == nil then
-            if u then
-                if runs_unit(t, row, u) then return t end
-            else
-                for _, x in ipairs(row.units or {}) do
-                    if x.state == "configuring" or x.state == "building" or x.state == "deleting" then
-                        if runs_unit(t, row, x) then return t end
-                    end
+            for _, x in ipairs(row.units or {}) do
+                if x.state == "configuring" or x.state == "building" or x.state == "deleting" then
+                    if runs_unit(t, x) then return t end
                 end
             end
         end

@@ -84,6 +84,26 @@ describe("Profiles section by row id (step 5o C2d-2)", function()
         end)
     end)
 
+    describe("the deletion confirmation", function()
+        it("lists every owned call the confirmed deletion stops, a not-yet-started one by its ids too", function()
+            -- Not started: matched by the ids it was sent with.
+            obs.owned[1] = { method = "build", args = {}, id = 1, h = { unit_ids = { "u:1" } } }
+            obs.owned[2] = { method = "build", args = {}, id = 2, h = {}, task = task(2,
+                { name = "build app", units = { { project = "app", id = "u:1" } } }, true) }
+            obs.owned[3] = { method = "build", args = {}, id = 3, h = { unit_ids = { "u:9" } } }
+            local got
+            model.call(ws, "Maintenance/1.execute_deletion", { target = { unit = { unit_id = "u:1" } } },
+                function(r) got = r end)
+            assert.equals("Maintenance/1.execute_deletion", obs.requests[1].method)
+            obs.requests[1].cb({ outcome = "ok", result = { outcome = "confirm", lines = { "Delete" }, plan = "T" } })
+            local text = table.concat(got.lines, "\n")
+            assert.truthy(text:find("Will stop running tasks:", 1, true), text)
+            assert.truthy(text:find("  build app", 1, true), text)
+            assert.truthy(text:find("  task 1", 1, true), text)
+            assert.falsy(text:find("task 3", 1, true), text)
+        end)
+    end)
+
     -- The section's rendering with a fake tree: the nodes and items with
     -- their opts.
     local function render(view, mode)
@@ -163,6 +183,20 @@ describe("Profiles section by row id (step 5o C2d-2)", function()
             obs.running = { task(8, { name = "build app", units = { { project = "app", id = "u:1" } } }, true) }
             assert.is_nil(render({ profiles = { prow() } }).unit("dev", "lib").on_cancel)
         end)
+
+        it("a unit row never cancels a task of its profile that does not list the unit (a device log)", function()
+            -- A device log / install / discovery carries the profile's id only.
+            local log = task(7, { name = "device log", profile_id = "p:1" }, true)
+            obs.running = { log }
+            assert.is_nil(render({ profiles = { prow() } }).unit("dev", "app").on_cancel)
+            local build = task(8, { name = "build app", profile_id = "p:1",
+                units = { { project = "app", id = "u:1" } } }, true)
+            obs.running = { log, build }
+            local app = render({ profiles = { prow() } }).unit("dev", "app")
+            assert.is_function(app.on_cancel)
+            app.on_cancel()
+            assert.same({ 8 }, obs.cancelled)
+        end)
     end)
 
     describe("task output", function()
@@ -183,8 +217,14 @@ describe("Profiles section by row id (step 5o C2d-2)", function()
             local open = render({ profiles = { prow() } }).unit("dev", "app").on_enter
             open()
             assert.equals(later, shown)
-            local running = task(7, { name = "build dev", profile_id = "p:1" })
-            obs.running = { running }
+            -- A task of the profile that does not list the unit (a device
+            -- log): not this unit's output.
+            obs.running = { task(4, { name = "device log", profile_id = "p:1" }, true) }
+            open()
+            assert.equals(later, shown)
+            local running = task(7, { name = "build dev", profile_id = "p:1",
+                units = { { project = "app", id = "u:1" } } })
+            obs.running = { task(4, { name = "device log", profile_id = "p:1" }, true), running }
             open()
             assert.equals(running, shown)
             shown = nil
@@ -303,7 +343,16 @@ describe("Profiles section by row id (step 5o C2d-2)", function()
             assert.equals(40, body.profile_progress(row).pct)
             assert.is_not_nil(body.unit_progress(row.units[1]))
             assert.is_nil(body.unit_progress(row.units[2]))
-            local p = task(8, { name = "build dev", profile_id = "p:1" })
+            -- A task of the profile that lists no unit (a device log): the
+            -- profile row's, not a unit row's.
+            local log = task(6, { name = "device log", profile_id = "p:1" })
+            obs.running = { log }
+            body = ss.read(ws)
+            assert.is_not_nil(body.profile_progress(row))
+            assert.is_nil(body.unit_progress(row.units[1]))
+            assert.is_nil(body.unit_progress(row.units[2]))
+            local p = task(8, { name = "build dev", profile_id = "p:1",
+                units = { { project = "app", id = "u:1" }, { project = "lib", id = "u:2" } } })
             p.pct = 70
             obs.running = { t, p }
             body = ss.read(ws)
