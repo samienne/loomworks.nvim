@@ -372,6 +372,76 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         assert(ok, err)
     end)
 
+    describe("unit_options with a pending read", function()
+        local ws, unit, impl, saved_state, pending, id
+        before_each(function()
+            ws = loaded()
+            unit = assert(ws._profiles[1]:projects()[1]._config_unit, "the profile's unit")
+            id = id_of(unit)
+            saved_state = unit.state_value
+            unit.state_value = "configured"
+            impl = unit._project._module.impl
+            pending = nil
+            impl.get_options_async = function(_, _, cb) pending = cb end
+        end)
+        after_each(function()
+            impl.get_options_async = nil
+            unit.state_value = saved_state
+        end)
+
+        local function start()
+            local box = {}
+            conn:call("/projects", "loomworks.Projects", 1, "unit_options", { unit = { id = id } },
+                function(res, e) box.r = res or e end, envscope.capture())
+            assert.is_true(vim.wait(5000, function() return pending ~= nil end, 10), "get_options_async never called")
+            return box
+        end
+
+        it("the later reply keeps the notes the segment gathered", function()
+            local svc = srv.service
+            local orig_live = svc.live
+            svc.live = function(self, c, ...)
+                local a, b, d = orig_live(self, c, ...)
+                c.notes, c.note_roles = { "a note from the segment" }, { "warn" }
+                return a, b, d
+            end
+            local ok, err = pcall(function()
+                local box = start()
+                svc.live = orig_live
+                pending({ { label = "G", children = { { key = "k", value = "v", value_type = "string" } } } })
+                assert.is_true(vim.wait(10000, function() return box.r ~= nil end, 10))
+                assert.equals("ok", box.r.outcome, vim.inspect(box.r))
+                assert.same({ "a note from the segment" }, box.r.notes)
+                assert.same({ "warn" }, box.r.note_roles)
+            end)
+            svc.live = orig_live
+            assert(ok, err)
+        end)
+
+        it("a client gone while the read is pending: the read's end sends nothing and raises nothing", function()
+            start()
+            local server_conns = {}
+            for c in pairs(srv.conns) do server_conns[#server_conns + 1] = c end
+            conn:close()
+            conn = nil
+            assert.is_true(vim.wait(10000, function()
+                for _, c in ipairs(server_conns) do if not c.closed then return false end end
+                return true
+            end, 10), "the server never saw the client go")
+            local sent = 0
+            local orig_send = srv._send
+            srv._send = function(self, c, msg, cb)
+                for _, sc in ipairs(server_conns) do if sc == c then sent = sent + 1 end end
+                return orig_send(self, c, msg, cb)
+            end
+            local ok, err = pcall(pending, { { label = "G", children = {} } })
+            vim.wait(200)
+            srv._send = orig_send
+            assert(ok, err)
+            assert.equals(0, sent)
+        end)
+    end)
+
     it("a stale id or an unknown key is refused and changes nothing", function()
         loaded()
         local before = read(root .. "/.nvim/loomworks.user.json")

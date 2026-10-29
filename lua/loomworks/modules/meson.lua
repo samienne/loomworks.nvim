@@ -292,9 +292,12 @@ end
 --- `{ meson_path }` shape as `find_meson`, or nil.
 --- @param callback fun(meson: string[]|nil)
 --- @param system? fun(cmd: string[], opts: table, on_exit: fun(res: table)): any
----   the spawner for the probe (`vim.system` signature; default `vim.system`)
+---   the spawner for the probe (`vim.system` signature). Given, each
+---   interpreter goes to it by name: it resolves the name in its own
+---   environment (the workspace daemon's: the client's PATH). Without it the
+---   interpreter is resolved here and run with `vim.system`. A spawn that
+---   throws counts as that interpreter failing.
 local function find_meson_async(callback, system)
-    system = system or vim.system
     local p = require("loomworks.exe").editor_exepath("meson")
     if p ~= "" then
         callback({ p })
@@ -309,12 +312,15 @@ local function find_meson_async(callback, system)
             callback(nil)
             return
         end
-        local pp = require("loomworks.exe").editor_exepath(pys[idx])
-        if pp == "" then
-            try_next()
-            return
+        local pp = pys[idx]
+        if not system then
+            pp = require("loomworks.exe").editor_exepath(pp)
+            if pp == "" then
+                try_next()
+                return
+            end
         end
-        system({ pp, "-c", PY_FIND_MESON }, { text = true }, function(res)
+        local ok = pcall(system or vim.system, { pp, "-c", PY_FIND_MESON }, { text = true }, function(res)
             local out = (res.code == 0 and res.stdout) and vim.trim(res.stdout) or ""
             if out ~= "" and uv.fs_stat(out) then
                 -- Hop back onto the main loop before handing control to the
@@ -327,6 +333,7 @@ local function find_meson_async(callback, system)
                 vim.schedule(try_next)
             end
         end)
+        if not ok then vim.schedule(try_next) end
     end
 
     try_next()
@@ -1464,18 +1471,22 @@ end
 --- @param callback fun(tree: table|nil)
 --- @param opts? { system?: fun(cmd: string[], opts: table, on_exit: fun(res: table)): any }
 function M.get_options_async(build_dir, config, callback, opts)
-    local system = opts and opts.system or vim.system
+    local system = opts and opts.system
     local function done(tree) vim.schedule(function() callback(tree) end) end
     if not build_dir then return done(nil) end
     find_meson_async(function(meson_prefix)
         if not meson_prefix then return done(nil) end
         local cmd = vim.list_extend({}, meson_prefix)
         vim.list_extend(cmd, { "introspect", build_dir, "--buildoptions" })
-        system(cmd, { text = true }, function(res)
+        -- A spawn that throws, or a reply that is no options tree (a null
+        -- element, a non-string value), reads as no options: the callback
+        -- always runs.
+        local spawned = pcall(system or vim.system, cmd, { text = true }, function(res)
             if res.code ~= 0 then return done(nil) end
-            local ok, raw = pcall(vim.json.decode, res.stdout or "")
-            done(ok and options_tree(raw) or nil)
+            local ok, tree = pcall(function() return options_tree(vim.json.decode(res.stdout or "")) end)
+            done(ok and tree or nil)
         end)
+        if not spawned then done(nil) end
     end, system)
 end
 

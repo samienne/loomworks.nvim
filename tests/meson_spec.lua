@@ -608,6 +608,66 @@ describe("meson module", function()
             assert.is_nil(got)
         end)
 
+        --- Run get_options_async to its callback: the tree (or nil).
+        local function run(system)
+            local got, called = "unset", false
+            local ok, err = pcall(meson.get_options_async, "/build", nil,
+                function(tree) got, called = tree, true end, system and { system = system })
+            assert(ok, err)
+            assert.is_true(vim.wait(5000, function() return called end, 10), "never called back")
+            return got
+        end
+
+        it("a spawner that throws on introspect calls back nil", function()
+            assert.is_nil(run(function() error("EACCES") end))
+        end)
+
+        it("a reply whose options do not decode to a tree calls back nil (a null element, a non-string value)",
+            function()
+            for _, stdout in ipairs({ "[null]", '[{"name":"a","type":"array","value":[1,{}]}]', "not json" }) do
+                local function system(_, _, on_exit)
+                    vim.schedule(function() on_exit({ code = 0, signal = 0, stdout = stdout, stderr = "" }) end)
+                    return {}
+                end
+                assert.is_nil(run(system), stdout)
+            end
+        end)
+
+        it("without meson on PATH, each Python probe goes to the spawner by name (it resolves it in its own environment); a throwing probe moves on",
+            function()
+            local looked = {}
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.exepath = function(n) looked[#looked + 1] = n; return "" end
+            local probes = {}
+            local function system(cmd, _, on_exit)
+                probes[#probes + 1] = cmd[1]
+                if cmd[1] == "python3" then error("spawn failed") end
+                vim.schedule(function() on_exit({ code = 127, signal = 0, stdout = "", stderr = "" }) end)
+                return {}
+            end
+            assert.is_nil(run(system))
+            assert.same({ "python", "python3", "py" }, probes)
+            assert.same({ "meson" }, looked)
+        end)
+
+        it("a Python probe's meson is introspected; a throwing introspect spawn calls back nil", function()
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.exepath = function() return "" end
+            local found = vim.fn.tempname()
+            vim.fn.writefile({}, found)
+            local cmds = {}
+            local function system(cmd, _, on_exit)
+                cmds[#cmds + 1] = cmd
+                if cmd[1] == found then error("bad cwd") end
+                vim.schedule(function() on_exit({ code = 0, signal = 0, stdout = found .. "\n", stderr = "" }) end)
+                return {}
+            end
+            assert.is_nil(run(system))
+            os.remove(found)
+            assert.equals(2, #cmds)
+            assert.same({ found, "introspect", "/build", "--buildoptions" }, cmds[2])
+        end)
+
         it("calls back nil, later, without a build dir", function()
             local got, called = "unset", false
             meson.get_options_async(nil, nil, function(tree) got, called = tree, true end)

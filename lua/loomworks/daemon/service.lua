@@ -516,7 +516,8 @@ end
 --- it in a model segment against the live workspace, in the client's
 --- environment. `answer(ws, ctx)` returns the reply's fields (`outcome`
 --- defaults to "ok"); an answer that sets `ctx.deferred` replies later itself
---- with `ctx.reply` (a read that ends off the model queue).
+--- with `ctx.reply` (a read that ends off the model queue), which adds the
+--- segment's notes.
 --- @param conn table
 --- @param msg table
 --- @param answer fun(ws: table, ctx: table): table
@@ -556,7 +557,16 @@ function Service:_on_model_request(conn, msg, answer, bad, deliver)
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
         local fields = answer(ws, ctx)
-        if ctx.deferred then return end
+        if ctx.deferred then
+            -- The later reply carries the notes the segment gathered (live()).
+            local reply = ctx.reply
+            function ctx.reply(f)
+                f.notes = f.notes or ctx.notes
+                f.note_roles = f.note_roles or ctx.note_roles
+                return reply(f)
+            end
+            return
+        end
         fields.outcome = fields.outcome or "ok"
         fields.notes = ctx.notes
         fields.note_roles = ctx.note_roles
