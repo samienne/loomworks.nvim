@@ -562,6 +562,19 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - `lw clean` with nothing to clean prints its "nothing to clean" line as an
   ordinary output line on stdout instead of an `lw:` error on stderr; the
   exit code stays 1. (#333)
+- In daemon mode the rest of the status page's Profiles actions name their
+  rows by id too: the build options float (`o`) reads them from the
+  workspace daemon, the device choice is sent by the profile's and the
+  device's ids, and a profile's or configuration's cancel, task output
+  (`<CR>` / `t`, now also for a task that already ended) and progress are the
+  tasks the daemon reports for exactly that profile or configuration. A
+  configuration's cancel stops the editor's own task that runs it, even the
+  whole profile build; a task started elsewhere (`lw`, another editor) is not
+  cancelled — the status page says to cancel it there. Before a confirmed
+  deletion the editor stops only its own tasks on exactly what is deleted,
+  no longer every task that merely shares a project name or a path. Only a
+  clean's "nothing to clean" counts as success; another operation refused
+  the same way is reported as an error. (#PR)
 - Experimental daemon: in daemon mode, when the workspace failed to load (for
   example a working copy or build cache refused by trust), the status page's
   trust (`T`), discard (`U`) and reset (`<C-n>`) no longer run in Neovim: they
