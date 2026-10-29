@@ -551,6 +551,71 @@ describe("meson module", function()
             assert.is_false(spawned)
         end)
     end)
+
+    describe("get_options_async (spec §8)", function()
+        local OPTIONS = vim.json.encode({
+            { name = "with_x", section = "user", type = "boolean", value = true, description = "x" },
+            { name = "buildtype", section = "core", type = "combo", value = "debug",
+              choices = { "plain", "debug", "release" } },
+        })
+        local orig_exepath, orig_fn_system, orig_system
+        before_each(function()
+            orig_exepath, orig_fn_system, orig_system = vim.fn.exepath, vim.fn.system, vim.system
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.exepath = function(n) return n == "meson" and "/fake/meson" or "" end
+            -- The async read never spawns synchronously.
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.system = function() error("get_options_async spawned through vim.fn.system") end
+        end)
+        after_each(function()
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.fn.exepath, vim.fn.system, vim.system = orig_exepath, orig_fn_system, orig_system
+        end)
+
+        it("runs meson introspect through opts.system and calls back later with the tree", function()
+            assert.is_function(meson.get_options_async)
+            local seen
+            local function system(cmd, so, on_exit)
+                seen = cmd
+                vim.schedule(function() on_exit({ code = 0, signal = 0, stdout = OPTIONS, stderr = "" }) end)
+                return {}
+            end
+            local got, called = nil, false
+            meson.get_options_async("/build", nil, function(tree) got, called = tree, true end, { system = system })
+            assert.is_false(called, "the callback runs later, not before get_options_async returns")
+            assert.is_true(vim.wait(5000, function() return called end, 10))
+            assert.same({ "/fake/meson", "introspect", "/build", "--buildoptions" }, seen)
+            assert.equals("User options", got[1].label)
+            assert.equals("with_x", got[1].children[1].key)
+            assert.equals("true", got[1].children[1].value)
+            assert.equals("bool", got[1].children[1].value_type)
+            assert.equals("Core options", got[2].label)
+            assert.same({ "plain", "debug", "release" }, got[2].children[1].choices)
+        end)
+
+        it("spawns through vim.system without opts.system; a failed introspect calls back nil", function()
+            local spawned
+            ---@diagnostic disable-next-line: duplicate-set-field
+            vim.system = function(cmd, _, on_exit)
+                spawned = cmd
+                vim.schedule(function() on_exit({ code = 1, signal = 0, stdout = "", stderr = "not a build dir" }) end)
+                return {}
+            end
+            local got, called = "unset", false
+            meson.get_options_async("/build", nil, function(tree) got, called = tree, true end)
+            assert.is_true(vim.wait(5000, function() return called end, 10))
+            assert.equals("--buildoptions", spawned[4])
+            assert.is_nil(got)
+        end)
+
+        it("calls back nil, later, without a build dir", function()
+            local got, called = "unset", false
+            meson.get_options_async(nil, nil, function(tree) got, called = tree, true end)
+            assert.is_false(called)
+            assert.is_true(vim.wait(5000, function() return called end, 10))
+            assert.is_nil(got)
+        end)
+    end)
 end)
 
 describe("meson clang-cl (per MSVC install)", function()

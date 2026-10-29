@@ -1649,6 +1649,10 @@ configuration as §1.2 says; a variable, deploy destination or
   `{ key, value, value_type?, choices?, helpstring? }`). Read-only, no lock;
   `refused` when the unit is not configured, is being deleted or cleaned
   (its build directory may be mid-removal) or its module has no options.
+  The read runs off the model queue: the unit is checked and its build
+  directory taken in a model segment, then the module's async read runs and
+  the reply follows. A unit deleted or cleaned meanwhile can make the read
+  fail (`refused`, no build options).
 
 A project is removed with `Maintenance/1.execute_deletion` (§22).
 

@@ -515,7 +515,8 @@ end
 --- A read-only model request (`snapshot`, `query`): validate it, then answer
 --- it in a model segment against the live workspace, in the client's
 --- environment. `answer(ws, ctx)` returns the reply's fields (`outcome`
---- defaults to "ok").
+--- defaults to "ok"); an answer that sets `ctx.deferred` replies later itself
+--- with `ctx.reply` (a read that ends off the model queue).
 --- @param conn table
 --- @param msg table
 --- @param answer fun(ws: table, ctx: table): table
@@ -555,6 +556,7 @@ function Service:_on_model_request(conn, msg, answer, bad, deliver)
                 notes = ctx.notes, note_roles = ctx.note_roles })
         end
         local fields = answer(ws, ctx)
+        if ctx.deferred then return end
         fields.outcome = fields.outcome or "ok"
         fields.notes = ctx.notes
         fields.note_roles = ctx.note_roles

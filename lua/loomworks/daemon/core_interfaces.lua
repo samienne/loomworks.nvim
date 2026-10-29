@@ -1178,30 +1178,53 @@ function M.projects_impl(service)
     end
 
     -- The build options of a configured configuration unit (API.md §19; step
-    -- 5o C2d): the module's `get_options` on its build directory, the
-    -- in-process options float's read. Read-only, no lock.
+    -- 5o C2d): the unit is checked and its build directory taken in a model
+    -- segment; the module's read (ConfigUnit:options_async, spec §8
+    -- `get_options_async`) then runs off the model queue, so a slow meson
+    -- does not hold the other requests, and the reply follows when it ends.
+    -- Its programs spawn in the client's environment. Read-only, no lock.
     function methods.unit_options(ctx, args)
-        return read(ctx, function(ws)
+        local envscope = require("loomworks.daemon.envscope")
+        local exe = require("loomworks.exe")
+        service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws, mctx)
+            local function refused(message) return { outcome = "refused", message = message, exit_code = 1 } end
             local id = args.unit and args.unit.id
             local unit = service.ids:find(id, ws._config_units)
             if not unit then
-                return mc.refused("no configuration unit with id " .. tostring(id) .. " (a stale reference)")
+                return refused("no configuration unit with id " .. tostring(id) .. " (a stale reference)")
             end
             local label = (unit._project and unit._project.key or "?") .. "/" .. tostring(unit:config_key())
             -- A unit being deleted or cleaned: its build dir may be mid
             -- rm-rf, so it is not read.
             if unit:is_deleting() then
-                return mc.refused("configuration unit " .. label .. " is being deleted")
+                return refused("configuration unit " .. label .. " is being deleted")
             end
             if not unit:_was_configured() then
-                return mc.refused("configuration unit " .. label .. " is not configured")
+                return refused("configuration unit " .. label .. " is not configured")
             end
-            local options = unit:options()
-            if not options or #options == 0 then
-                return mc.refused("configuration unit " .. label .. " has no build options")
+            local env = mctx.env
+            --- A program of the read: `vim.system`'s signature, in the
+            --- client's environment (plus the call's own variables).
+            local function system(cmd, so, on_exit)
+                so = vim.tbl_extend("force", {}, so or {})
+                if env then
+                    so.env = envscope.with_overlay(env, so.env)
+                    so.clear_env = true
+                end
+                so.env = exe.with_no_cwd_env(so.env)
+                return exe.system(cmd, so, on_exit)
             end
-            return { outcome = "ok", options = options }
-        end)
+            mctx.deferred = true
+            unit:options_async(function(options)
+                if mctx.conn.closed then return end
+                if not options or #options == 0 then
+                    return mctx.reply(refused("configuration unit " .. label .. " has no build options"))
+                end
+                mctx.reply({ outcome = "ok", options = options })
+            end, { system = system })
+            return {}
+        end, nil, function(fields) ctx.reply(fields) end)
+        return require("loomworks.daemon.interfaces").ASYNC
     end
     return { methods = methods }
 end

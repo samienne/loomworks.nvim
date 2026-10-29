@@ -314,6 +314,64 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         assert.equals("no configuration unit with id 999.999 (a stale reference)", r.message)
     end)
 
+    it("unit_options reads through the module's get_options_async off the model queue: other requests answer meanwhile; its spawns run in the client's environment (spec §8)",
+        function()
+        local ws = loaded()
+        local unit = assert(ws._profiles[1]:projects()[1]._config_unit, "the profile's unit")
+        local id = id_of(unit)
+        local label = unit._project.key .. "/" .. unit:config_key()
+        local saved_state = unit.state_value
+        unit.state_value = "configured"
+        local impl = unit._project._module.impl
+        local tree = { { label = "User options", children = { { key = "x", value = "1", value_type = "string" } } } }
+        local pending
+        impl.get_options = function() error("the daemon read the options synchronously") end
+        impl.get_options_async = function(bd, config, cb, opts)
+            pending = { bd = bd, config = config, cb = cb, opts = opts }
+        end
+        vim.env.LW_OPTS_PROBE = "client"
+        local ok, err = pcall(function()
+            local r1
+            conn:call("/projects", "loomworks.Projects", 1, "unit_options", { unit = { id = id } },
+                function(res, e) r1 = res or e end, envscope.capture())
+            vim.env.LW_OPTS_PROBE = nil
+            assert.is_true(vim.wait(5000, function() return pending ~= nil end, 10), "get_options_async never called: " .. vim.inspect(r1))
+            assert.equals(unit:build_dir(), pending.bd)
+            -- The read is pending: another model request answers meanwhile.
+            local d = call("declaration", { project = APP })
+            assert.equals("ok", d.outcome, vim.inspect(d))
+            assert.is_nil(r1, "unit_options answered before its read finished")
+            -- opts.system spawns in the client's environment.
+            assert.is_function(pending.opts and pending.opts.system)
+            local cmd = vim.fn.has("win32") == 1 and { "cmd.exe", "/d", "/c", "echo %LW_OPTS_PROBE%" }
+                or { "sh", "-c", "echo $LW_OPTS_PROBE" }
+            local res
+            pending.opts.system(cmd, { text = true }, function(o) res = o end)
+            assert.is_true(vim.wait(30000, function() return res ~= nil end, 10))
+            assert.equals(0, res.code, vim.inspect(res))
+            assert.equals("client", vim.trim(res.stdout))
+            -- The read finishes: the reply carries its tree.
+            pending.cb(tree)
+            assert.is_true(vim.wait(60000, function() return r1 ~= nil end, 10), "unit_options never answered")
+            assert.equals("ok", r1.outcome, vim.inspect(r1))
+            assert.same(tree, r1.options)
+            -- A read that finds nothing: refused.
+            pending = nil
+            local r2
+            conn:call("/projects", "loomworks.Projects", 1, "unit_options", { unit = { id = id } },
+                function(res2, e) r2 = res2 or e end, envscope.capture())
+            assert.is_true(vim.wait(60000, function() return pending ~= nil end, 10))
+            pending.cb(nil)
+            assert.is_true(vim.wait(60000, function() return r2 ~= nil end, 10))
+            assert.equals("refused", r2.outcome, vim.inspect(r2))
+            assert.equals("configuration unit " .. label .. " has no build options", r2.message)
+        end)
+        vim.env.LW_OPTS_PROBE = nil
+        impl.get_options, impl.get_options_async = nil, nil
+        unit.state_value = saved_state
+        assert(ok, err)
+    end)
+
     it("a stale id or an unknown key is refused and changes nothing", function()
         loaded()
         local before = read(root .. "/.nvim/loomworks.user.json")

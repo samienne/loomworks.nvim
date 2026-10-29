@@ -391,6 +391,17 @@ has no options. Called on demand, not cached.
 Modules may support module-specific grouping or filtering of options via
 their `type_config`. See per-module specs for details.
 
+An async companion `get_options_async(build_dir, config, callback, opts?)`
+may be provided by a module whose read spawns a program. It calls
+`callback(tree)` exactly once, later and on the main loop, with what
+`get_options` would return (nil when not configured or no options).
+`opts.system`, when set, is a spawner with the `vim.system` signature (as
+`TestUnit._system`, §8.9); the module runs every program through it, so the
+workspace daemon runs it in the client's environment. Without it the module
+spawns directly. A caller that must not block (the workspace daemon's
+`Projects/1.unit_options`, API.md §19) uses the companion when present, else
+`get_options`. Additive and optional: no `api_versions.module` bump.
+
 **`resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data) → string`** *(optional)*
 
 Return the absolute path of the build directory for a given project
