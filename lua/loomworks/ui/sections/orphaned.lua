@@ -28,7 +28,7 @@ end
 --- Render the orphaned build dirs section.
 --- Flat list of paths — orphaned cache entries and stray dirs merged together.
 --- @param tree loomworks.Tree
---- @param ctx table { view, mode, ref, ws } the workspace view's `orphaned`
+--- @param ctx table { view, mode, ws } the workspace view's `orphaned`
 return function(tree, ctx)
     local orphans = ctx.view.orphaned.configurations
     local stray_dirs = ctx.view.orphaned.stray_dirs

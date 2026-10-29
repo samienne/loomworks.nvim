@@ -362,7 +362,7 @@ may import from its own layer or any layer below it, never above.
 | `ui/dialog.lua` | Snacks.win-based dialog helper for floating dialogs (help, confirm, options) | Domain logic |
 | `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering. **Descriptions** (ui §1.16): the render-only `description` opt appends the fitted summary (`_append_summary`, uses `tree.width`, set by the View from the window before each render); `Tree:description(desc, from_module)` renders the expanded leaves (8-line cap); `line_hover` maps a line to its `K` content (the render-only `hover` opt and description leaves) | Know about loomworks domain; do I/O |
 | `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. The deletions' and the nuke's one confirmation flow (`confirm_deletion`, step 5o C2c-2: the `confirm` listing, `y` sends its plan, the outcome at the end). Profile creation multi-step picker (`create_profile`). Model writes go through `ui/model_calls.lua` | Render tree nodes; own state |
-| `ui/model_calls.lua` | **The status page's one route to model writes** (step 5o C0, spec §19.19): `call(ws, method, params, cb)` with `method` a catalogue method named with its interface (`"Profiles/1.set_active"`, `"Maintenance/1.execute_deletion"`, …; §19.20); `cb(r)` gets the outcome (API.md §4.1: `ok` with the result fields, `confirm { lines, plan }`, or `refused`; `result(r)` → `ok, err`, a `warn` note reported as the error). *(5o C2a)* An entity param of `Workspace/1`, `Profiles/1` and `ConfigSets/1` is the **row** the action was taken on (a `view.Workspace/1` row, a `ConfigSets/1.candidates` entry, or a `helpers.row_item` description handle, `_row`); *(5o C2b, first half)* likewise `Projects/1.candidates` / `add` (the project browser's add), `declaration` (the variable editor's read), `configuration_remove`, `launch_remove`, `variable_save` / `variable_remove` and `type_config_set`, *(C2b2-1)* `configuration_save` (the configuration editor, which reads all it shows from `declaration`: a row without an id is refused, `fields` sent without the name, an empty `options` / `variables` as an object), and *(C2b2-2)* `launch_save` (a `launch` row without an id refused; an empty `env` / `deploy` absent on the wire), `deploy_save` (the whole declared deploy; an empty one absent) and `expand_preview` (the path previews; in-process `workspace_view.expand_preview`), whose `project` / `configuration` / `launch` is the project's row or one of its `configurations[]` / `launches[]` rows and a variable or field is named within it: in `daemon` mode those methods are only calls to the workspace daemon (`ROUTED`: the row's `{ id }`, a candidate's `{ candidate }`, a dialog's Project → Configuration mappings as project key → configuration name; refused — never run in-process — when the daemon cannot carry them or a row has no id), through the observer's plain `request`; in the `in-process` mode the in-process bodies (`CALLS`, the `workspace_view` adapters over `model_commands`) act on the object the in-process view bound to the row (`status_source.object_of`). `ws` nil: the loaded workspace (`observer.loaded_workspace()`, the last attached until torn down), its mode its runtime selection — never whether an observer is attached, so in `daemon` mode with the observer gone a routed method is refused. No workspace loaded at all (its load failed, or a trust or schema refusal unloaded it): the mode is the setup selection (`loomworks.runtime_mode()`), and in `daemon` mode every method is refused at once, nothing sent and nothing run — `Maintenance/1.nuke`, `Workspace/1.trust_accept` and `Workspace/1.delete_user_prefs` naming `lw nuke` / `lw trust` / `lw trust --discard` (`NO_WORKSPACE`; spec §19.16 "Model writes"); the refused-state hint of `ui/status.lua` then shows those commands instead of the keys. *(C2c-1)* `Sdks/1.detect` (the SDK picker's read: each installation's path and version, the provider's `path_prompt`), `add` (a typed path made absolute by the SDK section first) and `remove` (`sdk` the SDK's row, sent by its id), and `Toolchains/1.rescan` (`L`, a `warn` note notified) are likewise routed. *(C2c-2)* `Maintenance/1.execute_deletion` (`target` a profile row, a profile's unit row — sent by its `unit_id` — an orphaned entry's row, a project row (the project row's `D` and the project browser's `d`), a stray directory's path exactly as listed, or `orphans = true`) and `Maintenance/1.nuke` (no root ever sent) — so every method is routed (a guard asserts it); *(C2d-1)* `Build/1.build` / `configure` / `clean` (`profile` a profile row or `units` unit rows, `jobs`, `force`): in `daemon` mode `editor_ops.run_ids` by the rows' ids (a profile row's `id`, a unit row's `unit_id`), a task the editor owns answered at its end (`refused` with `notified` when editor_ops reported it); in-process the bound objects' `build` / `configure` / `clean` and `overseer.run_configuration_action` (a unit row's project-in-profile's unit). `ui/actions.lua` builds the clean / rebuild confirmation from the rows (`clean_confirmation`: the units listing a configured build directory; the running tasks it stops — in `daemon` mode the editor's own calls on those ids, in-process the rows' running builds and configures; the listed units are display only), always sends the clean — nothing to clean is the clean's own answer (the daemon's `refused` on stdout, INFO and `ok`; in-process resolved at once), never decided from the rows — and chains a rebuild's build on its clean's `ok`: one confirm + plan flow in both modes (`ui/actions.confirm_deletion`: called without `plan` → `confirm { lines, plan }`, `y` → the same call with that `plan` and `yes`; `yes` without a plan is refused before any call); in `daemon` mode the confirmed call is a task the editor owns (`Observer:start_owned`), followed to its `done` (`cb` once: `ok` for exit 0, else the task's end as a refusal; never at `accepted`), the editor's own owned tasks on the target (every one for a nuke) cancelled first (`editor_ops.cancel_owned_matching`) and listed in the confirmation; in-process `workspace_view.execute_deletion` / `nuke` over `model_commands.execute_deletion` / `nuke`. Guarded by `tests/ui_model_calls_spec.lua` (only this ui/ file reaches a model write — the view-model's adapters, the command layer, the workspace's and the domain objects' write methods such as `:activate(`, `:set_intent(`, `:update_mapping(`, `:add_tool(` / `:remove_tool(`, `:map_variant(`, `:remove_project(`; recorded exception: the LSP section's `lw.set_lsp_option`, which in `daemon` mode is already only `LspConfig/1.set_option`, `editor_ops.set_lsp_option`) | Be bypassed by another ui/ file; resolve objects by key; run a routed method in-process in `daemon` mode |
+| `ui/model_calls.lua` | **The status page's one route to model writes** (step 5o C0, spec §19.19): `call(ws, method, params, cb)` with `method` a catalogue method named with its interface (`"Profiles/1.set_active"`, `"Maintenance/1.execute_deletion"`, …; §19.20); `cb(r)` gets the outcome (API.md §4.1: `ok` with the result fields, `confirm { lines, plan }` — a deletion's also `unit_ids` —, or `refused`; `result(r)` → `ok, err`, a `warn` note reported as the error). *(5o C2a)* An entity param of `Workspace/1`, `Profiles/1` and `ConfigSets/1` is the **row** the action was taken on (a `view.Workspace/1` row, a `ConfigSets/1.candidates` entry, or a `helpers.row_item` description handle, `_row`); *(5o C2b, first half)* likewise `Projects/1.candidates` / `add` (the project browser's add), `declaration` (the variable editor's read), `configuration_remove`, `launch_remove`, `variable_save` / `variable_remove` and `type_config_set`, *(C2b2-1)* `configuration_save` (the configuration editor, which reads all it shows from `declaration`: a row without an id is refused, `fields` sent without the name, an empty `options` / `variables` as an object), and *(C2b2-2)* `launch_save` (a `launch` row without an id refused; an empty `env` / `deploy` absent on the wire), `deploy_save` (the whole declared deploy; an empty one absent) and `expand_preview` (the path previews; in-process `workspace_view.expand_preview`), whose `project` / `configuration` / `launch` is the project's row or one of its `configurations[]` / `launches[]` rows and a variable or field is named within it: in `daemon` mode those methods are only calls to the workspace daemon (`ROUTED`: the row's `{ id }`, a candidate's `{ candidate }`, a dialog's Project → Configuration mappings as project key → configuration name; refused — never run in-process — when the daemon cannot carry them or a row has no id), through the observer's plain `request`; in the `in-process` mode the in-process bodies (`CALLS`, the `workspace_view` adapters over `model_commands`) act on the object the in-process view bound to the row (`status_source.object_of`). `ws` nil: the loaded workspace (`observer.loaded_workspace()`, the last attached until torn down), its mode its runtime selection — never whether an observer is attached, so in `daemon` mode with the observer gone a routed method is refused. No workspace loaded at all (its load failed, or a trust or schema refusal unloaded it): the mode is the setup selection (`loomworks.runtime_mode()`), and in `daemon` mode every method is refused at once, nothing sent and nothing run — `Maintenance/1.nuke`, `Workspace/1.trust_accept` and `Workspace/1.delete_user_prefs` naming `lw nuke` / `lw trust` / `lw trust --discard` (`NO_WORKSPACE`; spec §19.16 "Model writes"); the refused-state hint of `ui/status.lua` then shows those commands instead of the keys. *(C2c-1)* `Sdks/1.detect` (the SDK picker's read: each installation's path and version, the provider's `path_prompt`), `add` (a typed path made absolute by the SDK section first) and `remove` (`sdk` the SDK's row, sent by its id), and `Toolchains/1.rescan` (`L`, a `warn` note notified) are likewise routed. *(C2c-2)* `Maintenance/1.execute_deletion` (`target` a profile row, a profile's unit row — sent by its `unit_id` — an orphaned entry's row, a project row (the project row's `D` and the project browser's `d`), a stray directory's path exactly as listed, or `orphans = true`) and `Maintenance/1.nuke` (no root ever sent) — so every method is routed (a guard asserts it); *(C2d-1)* `Build/1.build` / `configure` / `clean` (`profile` a profile row or `units` unit rows, `jobs`, `force`): in `daemon` mode `editor_ops.run_ids` by the rows' ids (a profile row's `id`, a unit row's `unit_id`), a task the editor owns answered at its end (`refused` with `notified` when editor_ops reported it); in-process the bound objects' `build` / `configure` / `clean` and `overseer.run_configuration_action` (a unit row's project-in-profile's unit); *(C2d-2)* `Projects/1.unit_options` (`unit` a profile's unit row, sent by its `unit_id`; in-process the bound unit's synchronous `options()`) and `Profiles/1.set_device` / `clear_device` (`profile` a profile row, `device` a scanned `Devices/1` record, both sent by id; in-process `device_source.select` / `clear` on the bound profile). `ui/actions.lua` builds the clean / rebuild confirmation from the rows (`clean_confirmation`: the units listing a configured build directory; the running tasks it stops — in `daemon` mode the editor's own calls on those ids, in-process the rows' running builds and configures; the listed units are display only), always sends the clean — nothing to clean is the clean's own answer (the daemon's `refused` on stdout, INFO and `ok`; in-process resolved at once), never decided from the rows — and chains a rebuild's build on its clean's `ok`: one confirm + plan flow in both modes (`ui/actions.confirm_deletion`: called without `plan` → `confirm { lines, plan }`, `y` → the same call with that `plan` and `yes`; `yes` without a plan is refused before any call); in `daemon` mode the confirmed call is a task the editor owns (`Observer:start_owned`), followed to its `done` (`cb` once: `ok` for exit 0, else the task's end as a refusal; never at `accepted`), the editor's own owned tasks on the target (every one for a nuke) cancelled first (`editor_ops.cancel_owned_matching`; matched by the meta's ids — the `unit_ids` the daemon's `confirm` listed (the units whose build state the plan removes: a project's every unit, also one no profile maps; a profile's not kept; none for orphans and stray directories; `actions.confirm_deletion` passes them back with `yes`, editor-side only, never sent) and, for a profile, its row id — or, before a call's `start`, by the ids it was sent with; never by key or path; C2d-2) and listed in the confirmation; in-process `workspace_view.execute_deletion` / `nuke` over `model_commands.execute_deletion` / `nuke`. Guarded by `tests/ui_model_calls_spec.lua` (only this ui/ file reaches a model write — the view-model's adapters, the command layer, the workspace's and the domain objects' write methods such as `:activate(`, `:set_intent(`, `:update_mapping(`, `:add_tool(` / `:remove_tool(`, `:map_variant(`, `:remove_project(`; recorded exception: the LSP section's `lw.set_lsp_option`, which in `daemon` mode is already only `LspConfig/1.set_option`, `editor_ops.set_lsp_option`) | Be bypassed by another ui/ file; resolve objects by key; run a routed method in-process in `daemon` mode |
 | `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove through `ui/model_calls.lua` (`Projects/1.candidates` for the key and path, then `Projects/1.add`, unmapped; `Maintenance/1.execute_deletion { project }` naming the workspace view's project row of the entry's directory, 5o C2c-2). The "already added" marks come from the workspace view's project rows in `daemon` mode (5o C2b), else the editor's model | Own persistent state |
 | `ui/config_set_editor.lua` | Edit dialog for config set mappings (create and edit). Editable name row with inline validation, project→variant picker rows. Used for both new and existing sets | Own persistent state |
 | `ui/description_editor.lua` | Git-commit-style description editor float (spec/ui.md §1.16): an `acwrite` scratch buffer with filetype `loomworks_description`, pre-filled with the text plus `#` help lines. BufWriteCmd → `description.strip_comments` → `Workspace/1.set_description` through `ui/model_calls.lua`; an empty result clears. Refusals are shown inline. `open(item, { on_saved })`, `item` a domain object or (5o C2a) a `helpers.row_item(kind, row, label)` handle naming the item by its view row; `editable(item)` refuses generated configurations (a handle's `_readonly`). Opened by the status page `e` action, the `<CR>` picker's "Edit description" and the `Description ▸` rows of the config-set/configuration editor dialogs | Own persistent state |
@@ -949,8 +949,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   refusal on stdout (`stream = "out"`, nothing to clean) → INFO notify +
   resolve, so a rebuild goes on to its build; accepted →
   the owned task's `done` resolves (exit 0) or rejects; a disconnect or an
-  internal error rejects and is never re-run. `clean` returns at once when
-  `overseer.plan_*_clean` has nothing, cancels the editor's owned tasks on
+  internal error rejects and is never re-run (only the clean takes a
+  refusal on stdout as its answer: another method's is a failure). `clean`
+  never asks `overseer.plan_*_clean` (nothing to clean is the daemon's
+  refusal on stdout; 5o C2d-2), cancels the editor's owned tasks on
   the same units (`Observer:cancel_owned`, waiting for their end) and stops
   its local ones, then calls. *(5o C2d-1)* The status page's Profiles
   section names its rows instead: `run_ids(ws, method, scope, opts, k)`
@@ -964,14 +966,24 @@ re-cut onto master step by step; this section is expanded as each step lands.
   with; `owned_on_ids` lists them for the confirmation) through
   `cancel_owned_matching`, whose `match(task, call)` gets the call too.
   Unlike `clean`, `run_ids` neither runs `cancel_conflicting_operations`
-  nor stops local tasks, nor asks `overseer.plan_*_clean` (the daemon
+  nor stops local tasks (neither asks `overseer.plan_*_clean`: the daemon
   decides nothing to clean): in `daemon` mode every build, configure and
   clean is an owned daemon task, and the only editor-side remainder is a
   `device = true` run's post-build part, which is not an Operation on the
   units. A call by objects (`run`: a `:Loomworks` build, a launch build)
   records no row ids, so before its `start` arrives `call_names_ids`
-  cannot match it (BACKLOG, C2d-2).
-  `cancel(task)` / `cancel_for_profile` back the status page's Cancel. Observer side: `M.BUILD` (`call_only`, feature
+  cannot match it (BACKLOG).
+  `cancel(task)` backs the Tasks section's Cancel. *(5o C2d-2)* The
+  Profiles rows' cancel and task output match tasks by id:
+  `tasks_on_ids(ws, profile_id, unit_ids, ended?)` lists the tasks observed
+  through `Tasks/1` (owned or not) whose meta names those ids — running, then
+  with `ended` the observer's last ended ones (`Observer:ended_tasks`, the
+  last `ENDED_KEEP` kept by `_forget`, none cleared by teardown);
+  `cancel_on_ids` cancels the owned ones (the whole task, even a profile's
+  build for a unit row) and notifies another client's read-only line. A
+  profile row passes its `id`; a unit row passes only its `unit_id` (no
+  profile id), so a task of its profile that lists no unit (a device log,
+  install / launch, test discovery) is never its. Observer side: `M.BUILD` (`call_only`, feature
   `operations`), `M.TASKS.methods = { cancel, list }`, the literal `CALLS`
   table behind `_icall` (with `vim.fn.environ()` at call time), `_owned`
   (registered in the reply's own callback, before the `start` frame),
@@ -1898,8 +1910,9 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   also runs `Workspace:find_stray_build_dirs`). In-process the status page
   passes `opts.bind`, which records each row's domain object outside the
   state, so the sections (`ui/sections/*.lua`) render only from the rows and
-  keep their actions apart, reaching the objects by `ctx.ref(row)` and the
-  workspace by `ctx.ws`. The view carries no progress (API.md §14.4): a busy
+  keep their actions apart: they name rows to `ui/model_calls.lua`, which
+  in-process finds the objects through `status_source.object_of(row)`, and
+  reach the workspace by `ctx.ws`. The view carries no progress (API.md §14.4): a busy
   profile's percent and elapsed time and a running unit's step progress
   reach the sections through `ctx.profile_progress(row)` /
   `ctx.unit_progress(u)`, which status.lua answers in-process from the rows'
@@ -1917,7 +1930,7 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `Operation.task_outcome`, the one wording shared with
   `RemoteTask:outcome`). *(5n part C1)* The status page reads its body
   only through `status_source.lua` (`read(ws)` → `{ mode, view, why,
-  loaded, ref, profile_progress, unit_progress }`, `modified(ws)` for the
+  loaded, profile_progress, unit_progress }`, `modified(ws)` for the
   buffer's 'modified' — from 5o C2a in `daemon` mode the daemon's view's
   `modified` while the view is held and knows the editor's own writes, as
   publish and revert (`:w`, `:e!`) run in the daemon and their view
@@ -1935,11 +1948,13 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   each body section is one `unavailable — <why>` line; `loaded` comes from
   the daemon's header view (no "not on disk" banner from an unloaded
   daemon's `published = false`); progress is overlaid from the observer's
-  `Tasks/1` tasks (`RemoteTask.profile_name` / `units` / `pct` /
-  `start_time`; a task of no profile counts for a unit row only when it runs
-  that row's configuration unit, whose key comes from the editor's model
-  through `ref` until 5o C2d — from step 5o C2d a task matches a row by the
-  ids its meta carries, `profile_id` and `units[].id`, API.md §4.2); the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
+  `Tasks/1` tasks (`pct` / `start_time`), matched to the rows by the ids
+  their meta carries (`RemoteTask.profile_id` / `unit_ids()`, API.md §4.2;
+  5o C2d-2 — never by key): a task of the row's profile counts for the
+  profile row, a task for a unit row only when its meta lists that row's
+  `unit_id` (a device log, device install / launch or test discovery names
+  only the profile's id and runs no unit; a profile's build, configure and
+  clean list their units); the `Workspace/1`, `Profiles/1` and `ConfigSets/1` actions
   pass the row itself to `ui/model_calls.lua`, which sends its id (5o
   C2a), as do the Projects section's configuration and launch removals,
   variable edits (the editor reading `Projects/1.declaration`) and
@@ -1955,14 +1970,17 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   Profiles section's builds, configures, cleans and rebuilds of a profile
   row (by its `id`) or a unit row (by its `unit_id`; a row without one
   offers none), the build's artifact-conflict question from the unit
-  rows' `artifact_block`, the clean confirmation from the rows; `ref`
-  (transitional, until 5o C2d-2) resolves a row to the editor's model
-  object by the keys the row shows, for the actions not routed yet
-  (cancels, task output, options, the device choice); from C2d-2 the
-  options float reads `Projects/1.unit_options`, and a row's cancel, task
-  output and progress are the tasks whose meta names the row's ids
-  (`RemoteTask.profile_id` / `unit_ids()`, read from the meta since
-  C2d-1).
+  rows' `artifact_block`, the clean confirmation from the rows; and from
+  5o C2d-2 the options float (`Projects/1.unit_options` by the unit row's
+  `unit_id`; in-process the bound unit's `options()`, synchronously) and
+  the device choice (`Profiles/1.set_device` / `clear_device` by the
+  profile row's id and the scanned record's id, the current choice the
+  row's `device.id`), while a row's cancel, task output and progress are the
+  tasks whose meta names the row's ids (`editor_ops.tasks_on_ids` /
+  `cancel_on_ids`; the task output `ui/remote_output.lua`, shared with the
+  Tasks section). No row reaches the editor's model in `daemon` mode (the
+  transitional `ref` is gone); `helpers.actionable` asks
+  `status_source.object_of` in-process.
   Every state-file write of the editor's model
   (`Workspace:_record_written`, `_save_config`, `publish_one`) emits
   `state_file_written { workspace, kind }`; init.lua hands it to that

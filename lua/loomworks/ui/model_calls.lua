@@ -24,10 +24,12 @@
 --- `remove`) and `L`'s `Toolchains/1.rescan`, and **C2c-2**
 --- `Maintenance/1.execute_deletion` (every deletion of the page, the
 --- project row's `D` and the project browser's `d` included) and
---- `Maintenance/1.nuke` (`ROUTED` below), and **C2d** the Profiles
+--- `Maintenance/1.nuke` (`ROUTED` below), **C2d-1** the Profiles
 --- section's operations `Build/1.build`, `configure` and `clean` of a
 --- profile row or of unit rows (a rebuild is the page's clean, then its
---- build) — every method here: in `daemon` mode those are only ever calls —
+--- build), and **C2d-2** its options float's `Projects/1.unit_options` and
+--- device choice (`Profiles/1.set_device` / `clear_device`) — every method
+--- here: in `daemon` mode those are only ever calls —
 --- refused (the outcome says why) when the daemon cannot carry them, never
 --- run in-process (spec §19.16 "Availability").
 ---
@@ -60,6 +62,9 @@
 --- its `unit_id`); in `daemon` mode it is a task the editor owns, followed to
 --- its end (`cb` then; loomworks.daemon.editor_ops.run_ids), a build asking
 --- the artifact-conflict question first from the unit rows' `artifact_block`.
+--- `Projects/1.unit_options` names a profile's unit row (`unit`, sent by its
+--- `unit_id`); `Profiles/1.set_device` a profile row and a scanned device
+--- record (`device`, a loomworks.device_source record, sent by its id).
 --- A deletion's `target` is one such row (a profile's, a profile's unit row —
 --- sent by its `unit_id` — an orphaned entry's, a project's), a stray
 --- directory's path exactly as the view lists it, or `orphans = true`.
@@ -172,6 +177,27 @@ CALLS["Profiles/1.tool_choices"] = function(ws, p, cb)
     cb({ outcome = "ok", tools = tools })
 end
 CALLS["Profiles/1.add_tool"] = function(_, p, cb) cb(outcome(wv().add_profile_tool(object(p.profile), p.tool))) end
+--- The device choice's write ended (loomworks.device_source, which reported
+--- a failure) as an outcome.
+local function chosen(cb)
+    return function(ok, err)
+        if ok then return cb({ outcome = "ok" }) end
+        cb({ outcome = "refused", message = err, notified = true })
+    end
+end
+--- `{ profile, device }` (`device` a loomworks.device_source record of its
+--- scan; step 5o C2d-2): the profile's device choice.
+CALLS["Profiles/1.set_device"] = function(ws, p, cb)
+    local profile = object(p.profile)
+    if not profile then return cb({ outcome = "refused", message = "no profile (not a row of the workspace view)" }) end
+    require("loomworks.device_source").select(ws, profile, p.device, chosen(cb))
+end
+--- `{ profile }`: the profile's device choice cleared.
+CALLS["Profiles/1.clear_device"] = function(ws, p, cb)
+    local profile = object(p.profile)
+    if not profile then return cb({ outcome = "refused", message = "no profile (not a row of the workspace view)" }) end
+    require("loomworks.device_source").clear(ws, profile, chosen(cb))
+end
 CALLS["Profiles/1.remove_tool"] = function(_, p, cb)
     cb(outcome(wv().remove_profile_tool(object(p.profile), p.tool)))
 end
@@ -319,6 +345,21 @@ end)
 
 --- `{ provider? }` → `providers` (`{ id, label, path_prompt?, found }`,
 --- `found` the installations `{ path, version? }`).
+--- `{ unit }` (a profile's unit row; step 5o C2d-2) → `options`: its
+--- configuration unit's build options, read synchronously from its build
+--- directory (the module's `get_options`); refused when there are none (not
+--- configured, or a module without options).
+CALLS["Projects/1.unit_options"] = function(_, p, cb)
+    local o = object(p.unit)
+    if o and not o.mark_deleting then o = o._config_unit end -- a unit row's project-in-profile
+    if not o then return cb({ outcome = "refused", message = "no configuration unit (not a row of the workspace view)" }) end
+    local options = o:options()
+    if not options or #options == 0 then
+        return cb({ outcome = "refused", message = "no build options available (project may need configure)" })
+    end
+    cb({ outcome = "ok", options = options })
+end
+
 CALLS["Sdks/1.detect"] = function(_, p, cb) cb(wv().sdk_detect(p.provider)) end
 --- `{ provider, path }` (`path` absolute) → `sdk`.
 CALLS["Sdks/1.add"] = function(ws, p, cb) cb(created("sdk", wv().add_sdk(ws, p.provider, p.path))) end
@@ -504,6 +545,8 @@ local VERB = {
     ["Profiles/1.set_active"] = "profile activation", ["Profiles/1.create"] = "profile creation",
     ["Profiles/1.tool_choices"] = "toolchain choices", ["Profiles/1.add_tool"] = "toolchain",
     ["Profiles/1.remove_tool"] = "toolchain", ["ConfigSets/1.candidates"] = "configuration sets",
+    ["Profiles/1.set_device"] = "device choice", ["Profiles/1.clear_device"] = "device choice",
+    ["Projects/1.unit_options"] = "build options",
     ["ConfigSets/1.add"] = "configuration set", ["ConfigSets/1.update"] = "configuration set",
     ["ConfigSets/1.remove"] = "configuration set",
     ["Projects/1.candidates"] = "project", ["Projects/1.add"] = "project",
@@ -647,6 +690,15 @@ end
 by_ref("Profiles/1.set_active", { { "profile", "profile" } })
 by_ref("Profiles/1.add_tool", { { "profile", "profile" } }, { "tool" })
 by_ref("Profiles/1.remove_tool", { { "profile", "profile" } }, { "tool" })
+by_ref("Profiles/1.clear_device", { { "profile", "profile" } })
+--- `device`: a `Devices/1` record (loomworks.device_source's scan), sent by
+--- its id (step 5o C2d-2).
+ROUTED["Profiles/1.set_device"] = function(ws, p, cb)
+    local method = "Profiles/1.set_device"
+    local args, err = refs(method, p, { { "profile", "profile" }, { "device", "device" } })
+    if not args then return cb(err) end
+    send(ws, method, args, cb)
+end
 --- `tool`: a tool_choices entry (the wire's own) as `create` takes it.
 ROUTED["Profiles/1.create"] = function(ws, p, cb)
     local set = set_ref(p.config_set)
@@ -756,6 +808,13 @@ by_ref("Projects/1.type_config_set", { { "project", "project" } }, { "field", "v
 by_ref("Sdks/1.detect", {}, { "provider" })
 by_ref("Sdks/1.add", {}, { "provider", "path" })
 by_ref("Sdks/1.remove", { { "sdk", "SDK" } })
+--- `unit`: a profile's unit row, sent by its `unit_id` (step 5o C2d-2).
+ROUTED["Projects/1.unit_options"] = function(ws, p, cb)
+    local method = "Projects/1.unit_options"
+    local id = type(p.unit) == "table" and p.unit.unit_id or nil
+    if id == nil then return cb(refusal(method, "no configuration unit id (not a row of the workspace view)")) end
+    send(ws, method, { unit = { id = id } }, cb)
+end
 ROUTED["Toolchains/1.rescan"] = function(ws, _, cb) send(ws, "Toolchains/1.rescan", {}, cb) end
 
 -- (step 5o C2c-2) The deletions and the nuke: a confirmation (a plain call
@@ -834,34 +893,35 @@ local function wire_target(method, t)
     return { [kind] = { id = id } }
 end
 
---- The editor's own running tasks a confirmed deletion of `t` (its rows)
---- would meet on a build-directory lock: a profile's (by the profile the
---- task's `start` names) and any task on one of the target's build
---- directories (a profile's or a unit row's), or a project's (a task naming
---- a unit of it); none for orphaned and stray directories (no live build
---- uses them; the daemon refuses one that does).
+--- The editor's own running tasks a confirmed deletion of `t` would meet on
+--- a build-directory lock, by the ids their `start` meta names (API.md §4.2,
+--- §22; step 5o C2d-2 — never by key or path): one of the `unit_ids` the
+--- daemon's confirmation listed (the units whose build state the plan
+--- removes: a project's every unit, also one no profile maps; a profile's
+--- not kept; none for orphaned and stray directories), or for a profile its
+--- row id. A call whose task has not started yet is matched by the ids it
+--- was sent with (a call by row ids). Without ids from a confirmation only a
+--- profile's id matches. The ids only pick the tasks stopped first; what is
+--- deleted is decided by the target and plan. A task on a build directory
+--- only shared with the target's (another unit's) is not matched: the
+--- daemon refuses the deletion on its lock, naming it.
 --- @param t table
---- @return fun(task: loomworks.RemoteTask|nil): boolean
-local function deletion_tasks(t)
+--- @param unit_ids string[]|nil the confirmation's `unit_ids`
+--- @return fun(task: loomworks.RemoteTask|nil, call: table|nil): boolean
+local function deletion_tasks(t, unit_ids)
     local kind = target_kind(t)
     local row = kind and type(t[kind]) == "table" and (t[kind]._row or t[kind]) or {}
-    local norm = function(d) return vim.fs.normalize(d):lower() end
-    local dirs, project, profile = {}, nil, nil
-    if kind == "profile" then
-        profile = row.key
-        for _, u in ipairs(row.units or {}) do if u.build_dir then dirs[norm(u.build_dir)] = true end end
-    elseif kind == "unit" then
-        if row.build_dir then dirs[norm(row.build_dir)] = true end
-    elseif kind == "project" then
-        project = row.key
-    end
-    return function(task)
-        if not task then return false end
-        if profile ~= nil and task.profile_name == profile then return true end
-        for _, tu in ipairs(task.units or {}) do
-            if project ~= nil and tu.project == project then return true end
-            local d = tu.unit and tu.unit.build_dir_value
-            if d and dirs[norm(d)] then return true end
+    local profile_id = kind == "profile" and row.id or nil
+    local ids = {}
+    for _, id in ipairs(type(unit_ids) == "table" and unit_ids or {}) do ids[#ids + 1] = id end
+    local want = {}
+    for _, id in ipairs(ids) do want[id] = true end
+    return function(task, call)
+        if task then return task:names_ids(profile_id, ids) end
+        if not call then return false end
+        if profile_id ~= nil and call.profile_id == profile_id then return true end
+        for _, id in ipairs(call.unit_ids or {}) do
+            if want[id] then return true end
         end
         return false
     end
@@ -877,11 +937,15 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
     if not p.yes then
         return send(ws, method, { target = target }, function(r)
             -- The editor's own running tasks the confirmed deletion cancels
-            -- first (spec/ui.md §1.10), after the daemon's listing.
+            -- first (spec/ui.md §1.10), after the daemon's listing: every
+            -- call editor_ops.cancel_owned_matching stops, a not-yet-started
+            -- one by the ids it was sent with too.
             local obs = r.outcome == "confirm" and require("loomworks.daemon.observer").of(ws) or nil
-            local match, stopped = deletion_tasks(p.target), {}
+            local match, stopped = deletion_tasks(p.target, r.unit_ids), {}
             for _, call in ipairs(obs and obs:owned_calls() or {}) do
-                if call.task and match(call.task) then stopped[#stopped + 1] = "  " .. tostring(call.task.name) end
+                if match(call.task, call) then
+                    stopped[#stopped + 1] = "  " .. (call.task and tostring(call.task.name) or ("task " .. tostring(call.id)))
+                end
             end
             if #stopped > 0 then
                 table.sort(stopped)
@@ -892,7 +956,8 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
         end)
     end
     if p.plan == nil then return cb(refusal(method, "a deletion is confirmed with the plan it listed")) end
-    require("loomworks.daemon.editor_ops").cancel_owned_matching(ws, deletion_tasks(p.target), function()
+    -- `p.unit_ids` (the confirmation's, editor-side) is not sent.
+    require("loomworks.daemon.editor_ops").cancel_owned_matching(ws, deletion_tasks(p.target, p.unit_ids), function()
         follow(ws, method, { target = target, plan = p.plan, yes = true }, cb)
     end)
 end

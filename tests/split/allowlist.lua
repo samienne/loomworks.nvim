@@ -280,7 +280,10 @@ return {
     -- 66 -> 68: step 5o C2c-2 adds two CALLS naming their methods literally,
     -- conn:call(M.MAINTENANCE.object, M.MAINTENANCE.iface, ...) for
     -- execute_deletion and nuke — the versioned table Maintenance/1.
-        ["lua/loomworks/daemon/observer.lua"] = 68,
+    -- 68 -> 69: step 5o C2d-2 adds Projects/1.unit_options,
+    -- conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...) — the versioned
+    -- table Projects/1.
+        ["lua/loomworks/daemon/observer.lua"] = 69,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

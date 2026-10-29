@@ -258,7 +258,7 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
             function tree:group(_, _, children) children() end
             package.loaded["loomworks.ui.sections.profiles"] = nil
             require("loomworks.ui.sections.profiles")(tree, { mode = "daemon", view = view, ws = {}, lw = {},
-                ref = function() return nil end, unit_progress = function() return nil end,
+                unit_progress = function() return nil end,
                 profile_progress = function() return {} end })
             return nodes
         end

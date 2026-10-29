@@ -9,8 +9,10 @@
 --- resolution and before any lock, and answered with `reset`'s outcomes
 --- (§8.5, §8.6): `refused` (a stale target, a stray dir outside the
 --- workspace or not in the current stray set, a changed plan, nothing to
---- delete), `confirm { lines, plan }` without `yes`, else `accepted` with
---- the task.
+--- delete), `confirm { lines, plan, unit_ids }` without `yes` (`unit_ids`
+--- the ids of the units whose build state the plan removes, by the same
+--- issuer as the view's — a matcher for the client's own tasks only), else
+--- `accepted` with the task.
 ---
 --- Deletion safety (project CLAUDE.md): this module removes nothing itself
 --- and adds no deletion path. The accepted task runs `deletion_run`, which
@@ -206,7 +208,9 @@ function M.accept(svc, ctx)
     local r = require("loomworks.model_commands").deletion_request(ws, target, a.plan, a.yes == true)
     if r.outcome == "refused" then return refuse(r.message, r.exit_code, r.stream) end
     if r.outcome == "confirm" then
-        return ctx.reply({ outcome = "confirm", lines = r.lines, plan = r.plan,
+        local unit_ids = {}
+        for _, u in ipairs(r.units or {}) do unit_ids[#unit_ids + 1] = svc.ids:id(u) end
+        return ctx.reply({ outcome = "confirm", lines = r.lines, plan = r.plan, unit_ids = unit_ids,
             notes = ctx.notes, note_roles = ctx.note_roles })
     end
     local task = svc.tasks:create(ctx.conn)

@@ -843,7 +843,9 @@ Shown for all delete operations (`D` key). Floating window centered in editor.
 
 **Content**:
 1. Title (e.g., "Delete profile: Debug:ninja-gcc-12")
-2. Running tasks that will be stopped (if any)
+2. Running tasks that will be stopped (if any) — the editor's own tasks on
+   the units whose build state the deletion removes (in `daemon` mode those
+   the `confirm` names by id, core daemon.md §19.16 "Model writes")
 3. Items that will be removed (`disposition = clean`)
 4. Items that will be reset (`disposition = reset`)
 5. Items that will be kept (`disposition = keep`, referenced by another

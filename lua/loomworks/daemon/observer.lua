@@ -113,6 +113,7 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field generation any session generation of the observed daemon
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
+--- @field _ended loomworks.RemoteTask[]|nil the last ended tasks, oldest first (Observer:ended_tasks)
 --- @field _owned table<any, loomworks.daemon.OwnedCall> the editor's own tasks by daemon task id, from the call's `accepted` until they end (step 5k)
 --- @field _log_subs table<any, loomworks.daemon.LogSub>|nil the `/launch` `log` subscriptions of this connection by device_log task id (step 5n C3)
 --- @field _degraded table<string, boolean>|nil Build/1, Launch/1 and DebugConfig/1 methods this connection's daemon lacks (or a parameter of): their operations are refused
@@ -292,11 +293,13 @@ M.CONFIG_SETS = {
 -- the project browser's add (with its `candidates` read), the declaration
 -- read of the variable editor, and the removals and edits of
 -- configurations, launch configurations, variables and `type_config`
--- fields; plain calls.
+-- fields, and the options float's `unit_options` read (step 5o C2d-2);
+-- plain calls.
 M.PROJECTS = {
     object = "/projects", iface = "loomworks.Projects", v = 1, feature = "projects",
     methods = { "candidates", "add", "declaration", "configuration_save", "configuration_remove", "launch_save",
-        "launch_remove", "deploy_save", "variable_save", "variable_remove", "type_config_set", "expand_preview" },
+        "launch_remove", "deploy_save", "variable_save", "variable_remove", "type_config_set", "expand_preview",
+        "unit_options" },
     signals = {}, call_only = true,
 }
 -- The status page's toolchain rescan (`L`) and SDK section (step 5o C2c-1,
@@ -326,6 +329,9 @@ M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS, M.VIEW_TEST
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
 M.DESCRIBE_MS = 3000
+
+--- How many ended tasks the observer keeps (Observer:ended_tasks).
+M.ENDED_KEEP = 16
 
 --- The versions of `want.iface` the daemon offers on `want.object`, from
 --- `welcome.objects` (§19.20; describe().objects without digests).
@@ -2098,9 +2104,18 @@ function Observer:_on_task(msg)
 end
 
 function Observer:_forget(id)
+    local task = self._tasks[id]
     self._tasks[id] = nil
     for i, v in ipairs(self._order) do
         if v == id then table.remove(self._order, i); break end
+    end
+    -- An ended task stays readable for a while (its output: a status-page
+    -- row's task output, step 5o C2d-2); a task cleared by teardown does not.
+    if task and task.finished and not task.cleared then
+        local ended = self._ended or {}
+        self._ended = ended
+        ended[#ended + 1] = task
+        while #ended > M.ENDED_KEEP do table.remove(ended, 1) end
     end
 end
 
@@ -2376,6 +2391,10 @@ local CALLS = {
     end,
     ["Projects/1.type_config_set"] = function(conn, args, cb, env)
         conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "type_config_set", args, cb, env)
+    end,
+    -- (step 5o C2d-2)
+    ["Projects/1.unit_options"] = function(conn, args, cb, env)
+        conn:call(M.PROJECTS.object, M.PROJECTS.iface, M.PROJECTS.v, "unit_options", args, cb, env)
     end,
     -- (step 5o C2c-1)
     ["Toolchains/1.rescan"] = function(conn, args, cb, env)
@@ -3272,6 +3291,14 @@ function Observer:tasks()
     local out = {}
     for _, id in ipairs(self._order) do out[#out + 1] = self._tasks[id] end
     return out
+end
+
+--- The last tasks that ended (at most M.ENDED_KEEP, oldest first; a task
+--- cleared by teardown is not among them): what a status-page row's task
+--- output opens once its task ended (step 5o C2d-2).
+--- @return loomworks.RemoteTask[]
+function Observer:ended_tasks()
+    return vim.list_extend({}, self._ended or {})
 end
 
 --- The observer's part of the Runtime line: its state or current note.

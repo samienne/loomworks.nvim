@@ -126,19 +126,29 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
-    it("the profile rows' operations not routed yet reach the editor's model objects by the keys they show (until 5o C2d)", function()
-        fake_obs()
+    it("no row reaches the editor's model: a unit row's options read names it by its unit_id (5o C2d-2)", function()
+        fake_obs({ [observer.VIEW_WORKSPACE.feature] = "subscribed", [observer.TASKS.feature] = "subscribed",
+            [observer.PROJECTS.feature] = "available" })
         header()
         views.set(obs, "workspace", daemon_view())
         local body = status_source.read(ws)
+        assert.is_nil(body.ref)
         local prow = body.view.profiles[1]
-        assert.equals(ws:get_active_profile() or ws:get_profiles()[1], body.ref(prow))
-        assert.equals("dev", body.ref(prow).key)
-        assert.equals("app", body.ref(prow.units[1]):project_key())
-        -- Every other row's action is routed by its id (5o C2c-2): none bound.
-        assert.is_nil(body.ref(body.view.config_sets[1]))
-        assert.is_nil(body.ref(body.view.projects[1]))
-        assert.is_nil(body.ref(body.view.projects[1].configurations[1]))
+        local u = prow.units[1]
+        assert.is_string(u.unit_id)
+        -- A daemon row is never bound to an object of the editor's model.
+        for _, row in ipairs({ prow, u, body.view.config_sets[1], body.view.projects[1],
+            body.view.projects[1].configurations[1] }) do
+            assert.is_nil(status_source.object_of(row))
+        end
+        require("loomworks.ui.actions").show_options(u, ws)()
+        local sent
+        for _, c in ipairs(calls) do
+            if c.method == "unit_options" then sent = c end
+        end
+        assert.is_not_nil(sent, vim.inspect(calls))
+        assert.same({ "/projects", "loomworks.Projects" }, { sent.object, sent.iface })
+        assert.same({ unit = { id = u.unit_id } }, sent.args)
         assert.equals(0, built)
     end)
 
@@ -158,7 +168,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local body = status_source.read(ws)
         local fresh = body.view.projects[#body.view.projects]
         assert.equals("fresh", fresh.key)
-        assert.is_nil(body.ref(fresh))
+        assert.is_nil(status_source.object_of(fresh))
         local tree = Tree.new(require("loomworks.ui.status")._render_fn)
         setmetatable(tree._folds, { __index = function() return true end })
         local lines = tree:render()
@@ -209,7 +219,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         end))
         local body = status_source.read(ws)
         local fresh = body.view.projects[#body.view.projects]
-        assert.is_nil(body.ref(fresh))
+        assert.is_nil(status_source.object_of(fresh))
         local tree = Tree.new(require("loomworks.ui.status")._render_fn)
         setmetatable(tree._folds, { __index = function() return true end })
         local lines = tree:render()
@@ -505,15 +515,18 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
     it("overlays a busy profile's percent and a running unit's elapsed time from Tasks/1", function()
         fake_obs()
         header()
-        views.set(obs, "workspace", daemon_view(function(v)
+        local v = daemon_view(function(v)
             local row = v.profiles[1]
             row.busy, row.running, row.status = true, true, "building"
             row.units[1].state = "building"
-        end))
-        -- A task another client started, as Tasks/1 `start` names it, with
-        -- its last `progress` percent; the editor's model has no operation.
-        local t = remote_task.new(nil, 7, { kind = "build", name = "dev", profile = "dev",
-            units = { { project = "app", configuration = "Debug" } } }, obs:_clock() - 65)
+        end)
+        views.set(obs, "workspace", v)
+        -- A task another client started, as Tasks/1 `start` names it (by the
+        -- rows' ids, step 5o C2d-2), with its last `progress` percent; the
+        -- editor's model has no operation.
+        local t = remote_task.new(nil, 7, { kind = "build", name = "dev", profile = "dev", profile_id = v.profiles[1].id,
+            units = { { project = "app", configuration = "Debug", id = v.profiles[1].units[1].unit_id } } },
+            obs:_clock() - 65)
         t.pct = 42
         obs._tasks[7], obs._order = t, { 7 }
         local dev = ws:get_profiles()[1]
@@ -648,19 +661,24 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals("refused", out and out.outcome)
     end)
 
-    it("a unit's elapsed time comes only from a task running that unit's configuration", function()
+    it("a unit's elapsed time comes only from a task naming that unit's id", function()
         fake_obs()
         header()
-        views.set(obs, "workspace", daemon_view(function(v)
+        local v = daemon_view(function(v)
             local row = v.profiles[1]
             row.busy, row.running, row.status = true, true, "building"
             row.units[1].state = "building"
-        end))
+        end)
+        views.set(obs, "workspace", v)
         local key = ws:get_profiles()[1]:projects()[1]:config_key()
         assert.is_not_nil(key)
-        -- A units-scoped task (no profile) of another configuration of app.
+        local id = v.profiles[1].units[1].unit_id
+        assert.is_string(id)
+        -- A units-scoped task (no profile) of another unit of app; and one
+        -- naming this unit's key but no id (never matched by key).
         local t = remote_task.new(nil, 8, { kind = "build", name = "app/Release",
-            units = { { project = "app", configuration = "Release" } } }, obs:_clock() - 65)
+            units = { { project = "app", configuration = "Release", id = "id:other" },
+                { project = "app", configuration = key } } }, obs:_clock() - 65)
         t.pct = 42
         obs._tasks[8], obs._order = t, { 8 }
         local body = status_source.read(ws)
@@ -669,7 +687,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_nil(body.profile_progress(row))
         -- One of the row's unit's configuration: its elapsed time.
         local t2 = remote_task.new(nil, 9, { kind = "build", name = "app/" .. key,
-            units = { { project = "app", configuration = key } } }, obs:_clock() - 65)
+            units = { { project = "app", configuration = key, id = id } } }, obs:_clock() - 65)
         obs._tasks[9], obs._order = t2, { 8, 9 }
         body = status_source.read(ws)
         row = body.view.profiles[1]
@@ -700,7 +718,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert(require("loomworks.workspace_view").activate_profile(ws:get_profiles()[1]))
         local body = status_source.read(ws)
         assert.equals("in-process", body.mode)
-        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
         local page = Tree.new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
         setmetatable(page._folds, { __index = function() return true end })
         local enter

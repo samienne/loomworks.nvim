@@ -264,18 +264,24 @@ re-render before the view's `update` keeps them."
   caller's own report).
 - The stray-directory deletion test lost its assertion that the failure's
   error text (`boom`) reaches the log; restore it.
-- #326's pre-cancel before a confirmed deletion
-  (`editor_ops.cancel_owned_matching` with `deletion_tasks` in
-  `ui/model_calls.lua`) over-cancels: it matches a task by profile key,
-  project key or build-dir path, catching tasks that only share a project
-  or a path spelling. Match by the TaskMeta ids instead (C2d-2).
+- The deploy editor still joins view rows by key at runtime (the same
+  pattern the deletion pre-cancel had before C2d-2 matched by the confirm's
+  `unit_ids`): `get_targets` (`ui/deploy_editor.lua:288`) keeps the profile
+  unit rows whose `project` equals the project row's `key`, so a unit in no
+  profile contributes no targets; `active_unit` (`:172`) matches the active
+  profile's unit rows by `project` key and configuration name (arguably an
+  input boundary: the key comes from the user's deploy descriptor). Fix
+  with ids: project rows (view §14.4 `projects[]`) carrying the project's
+  targets, or a `Projects/1` read returning them by project id. Left out of
+  PR #335 by choice.
 - A clean by row ids (`editor_ops.run_ids` → `call_names_ids`) misses an
   owned call by objects whose `start` has not arrived yet (a `:Loomworks`
   build, a launch build): `editor_ops.run` records `units` but no
   `unit_ids` / `profile_id`, and its objects carry no daemon row ids
   (mapping them would be a key lookup). The clean then meets that build's
-  locks instead of cancelling it first. Fix in C2d-2 when those entry
-  points name rows by id too (noted in PR #333 review).
+  locks instead of cancelling it first. Fix when those entry points name
+  rows by id too (C1 / 6b; noted in PR #333 review, not part of C2d-2,
+  which covers the status page only).
 
 ## Lock record follow-ups (PR #180, atomic lock create/update)
 

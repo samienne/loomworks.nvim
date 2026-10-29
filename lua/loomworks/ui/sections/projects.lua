@@ -1234,7 +1234,7 @@ end
 
 --- Render the projects section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, view, ref, ws }
+--- @param ctx table { lw, view, mode, ws }
 return function(tree, ctx)
     local projects = ctx.view.projects
     if #projects == 0 then

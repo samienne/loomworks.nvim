@@ -359,7 +359,7 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         local ended
         obs:cancel_owned(obs._tasks["t6"], function(ok, why) ended = { ok, why } end)
         assert.same({ false, "started by lw — cancel it there" }, ended)
-        assert.equals(1, editor_ops.cancel_for_profile(profile))
+        assert.is_true(editor_ops.cancel(task))
         local c = sent[#sent]
         assert.same({ "/tasks", "loomworks.Tasks", "cancel" }, { c.object, c.iface, c.method })
         assert.same({ task_id = "t5" }, c.args)
@@ -494,16 +494,23 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         assert.equals("clean", sent[3].method)
     end)
 
-    it("a clean with nothing to clean resolves at once, as in-process", function()
+    it("a clean never decides nothing-to-clean itself: the daemon's refusal on stdout resolves it (5o C2d-2)", function()
         obs = fake_observer()
         local ov = require("loomworks.overseer")
         local orig = ov.plan_units_clean
-        ov.plan_units_clean = function() return nil end
-        local st = watch(unit:clean())
+        ov.plan_units_clean = function() error("the editor planned the clean") end
+        local ok, err = pcall(function() return watch(unit:clean()) end)
         ov.plan_units_clean = orig
+        assert(ok, err)
+        local st = err
+        assert.is_true(vim.wait(2000, function() return #sent > 0 end, 10))
+        assert.equals("clean", sent[1].method)
+        sent[1].cb({ outcome = "refused", stream = "out", exit_code = 1,
+            message = "nothing to clean for App/Debug — no configured build directories." }, nil)
         assert.is_true(vim.wait(2000, function() return st.ok ~= nil end, 10))
-        assert.same({}, sent)
+        assert.is_nil(st.err)
     end)
+
 
     it("the action's own progress entry is shown only in in-process mode", function()
         local fidget = require("loomworks.fidget")

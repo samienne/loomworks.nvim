@@ -465,14 +465,14 @@ end
 --- `row`: in `daemon` mode the row has an id (model_calls sends it, a row
 --- without one is refused) — never whether the editor's model has the
 --- object yet (a project the daemon just added); in the `in-process` mode
---- the in-process view bound an object to it.
---- @param ctx { mode?: "daemon"|"in-process", ref: fun(row: table): table|nil } the section context
+--- the in-process view bound an object to it (status_source.object_of).
+--- @param ctx { mode?: "daemon"|"in-process" } the section context
 --- @param row table|nil a view row
 --- @return boolean
 function M.actionable(ctx, row)
     if row == nil then return false end
     if ctx.mode == "daemon" then return row.id ~= nil end
-    return ctx.ref(row) ~= nil
+    return require("loomworks.status_source").object_of(row) ~= nil
 end
 
 --- The action half of `with_description`: `e` / "Edit description".

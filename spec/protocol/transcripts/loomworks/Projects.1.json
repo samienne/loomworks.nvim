@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Projects",
   "version": 1,
-  "description": "Object /projects (API.md §19; step 5o part B3): the declaration read with ids (and the module the configuration editor shows), a launch rename that keeps its id, a configuration rename under the same id, the environment reads, and the refusals of references and arguments.",
+  "description": "Object /projects (API.md §19; step 5o part B3): the declaration read with ids (and the module the configuration editor shows), a launch rename that keeps its id, a configuration rename under the same id, the environment reads, and the refusals of references and arguments (a stale unit id of unit_options among them).",
   "cases": [
     {
       "name": "declaration names each launch configuration by id; launch_save renames one, its id kept; another project's launch id is refused",
@@ -914,6 +914,35 @@
             "req_id": 5,
             "error": {
               "code": "invalid_args"
+            }
+          }
+        },
+        {
+          "send": {
+            "kind": "call",
+            "req_id": 6,
+            "object": "/projects",
+            "iface": "loomworks.Projects",
+            "v": 1,
+            "method": "unit_options",
+            "args": {
+              "unit": {
+                "id": "999.999"
+              }
+            },
+            "env": {
+              "$var": "env"
+            }
+          }
+        },
+        {
+          "expect": {
+            "kind": "ok",
+            "req_id": 6,
+            "result": {
+              "outcome": "refused",
+              "exit_code": 1,
+              "message": "no configuration unit with id 999.999 (a stale reference)"
             }
           }
         }

@@ -845,6 +845,9 @@ end
 function M.execute_deletion(ws, target, plan, yes, cb)
     local r = commands.execute_deletion(ws, target, { plan = plan, yes = yes, done = cb })
     if r.outcome == "confirm" then
+        -- No model objects in a call result; in-process the deletion stops
+        -- the editor's own tasks itself (Workspace:_run_deletion).
+        r.units = nil
         -- The editor's own running tasks the deletion stops first
         -- (Workspace:_run_deletion; spec/ui.md §1.10), after the listing.
         local running = ws:find_running_tasks_for_items(deletion_plan.plan(ws, target).items)

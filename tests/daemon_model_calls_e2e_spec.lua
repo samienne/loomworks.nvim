@@ -381,7 +381,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         -- declaration), and its save: a rename keeping the id.
         local body = status_source.read(ws)
         assert.equals("daemon", body.mode)
-        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
         local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
         setmetatable(page._folds, { __index = function() return true end })
         local enter
@@ -448,7 +448,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     local function page_action(pat, after)
         local body = status_source.read(ws)
         assert.equals("daemon", body.mode)
-        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
         local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
         setmetatable(page._folds, { __index = function() return true end })
         local seen = after == nil
@@ -572,7 +572,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
 
         -- A step's removal (D): the rest unchanged.
         local body = status_source.read(ws)
-        local ctx = { lw = require("loomworks"), view = body.view, ref = body.ref, ws = ws, mode = body.mode }
+        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
         local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
         setmetatable(page._folds, { __index = function() return true end })
         local delete

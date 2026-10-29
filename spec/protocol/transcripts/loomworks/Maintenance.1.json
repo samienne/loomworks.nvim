@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Maintenance",
   "version": 1,
-  "description": "Object /maintenance (API.md §22): execute_deletion as a task-streamed method with reset's confirmation (plan token), its refusals (a changed plan, nothing to delete, a stray directory outside the workspace, a stale id); nuke (part B6): its confirmation with a plan token, a changed plan refused, the nuke task.",
+  "description": "Object /maintenance (API.md §22): execute_deletion as a task-streamed method with reset's confirmation (plan token, the ids of the units it removes), its refusals (a changed plan, nothing to delete, a stray directory outside the workspace, a stale id); nuke (part B6): its confirmation with a plan token, a changed plan refused, the nuke task.",
   "cases": [
     {
       "name": "a profile's deletion asks for confirmation with a plan token, runs once confirmed as a delete task, then the profile is gone",
@@ -89,6 +89,10 @@
               "plan": {
                 "$bind": "plan",
                 "$type": "string"
+              },
+              "unit_ids": {
+                "$type": "array",
+                "$len": 1
               }
             }
           }
