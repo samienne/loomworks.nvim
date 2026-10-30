@@ -514,7 +514,9 @@ function M.open(opts)
             for di, lang in ipairs(debug_langs) do
                 local captured_di = di
                 local rec = by_lang[lang]
-                local adapter = rec and (rec.adapter or rec.default) or "?"
+                -- No record (a language no workspace module declares): the adapter
+                -- is resolved when the debug starts; never guess a default here.
+                local adapter = rec and (rec.adapter or rec.default) or "(resolved at launch)"
                 local prefix = di == 1 and " (primary) " or " (attach)  "
                 t:item("  " .. lang .. prefix .. "→ " .. adapter, {
                     hl = "LoomworksActionable",

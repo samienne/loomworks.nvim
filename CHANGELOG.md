@@ -574,7 +574,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   per language of the workspace's modules, as the in-process section shows,
   instead of one per known language. The launch editor's "Add debug
   language" still offers every known language: it reads
-  `DebugConfig/1.known_languages`. (#343)
+  `DebugConfig/1.known_languages`. A launch's debug language that no module
+  declares shows "(resolved at launch)" as its adapter in the launch editor.
+  (#343)
 - The status page's configuration-set edit dialog and the create dialog's
   custom set list the projects and configurations the status page shows,
   CMake presets included, instead of reading the editor's own copy of the

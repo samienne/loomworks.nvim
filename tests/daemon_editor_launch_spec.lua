@@ -1234,6 +1234,29 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.same({ "c", "typescript" }, offered)
     end)
 
+    it("the launch editor shows a debug language with no adapter record as resolved at launch", function()
+        local View = require("loomworks.ui.view")
+        local tree
+        local orig_new = View.new
+        View.new = function(vopts)
+            tree = vopts.widget
+            return { open = function() end, close = function() end, refresh = function() end }
+        end
+        local ok, err = pcall(require("loomworks.ui.launch_editor").open, {
+            title = "Edit", name = "run", command = "", args = {}, working_dir = "", env = {},
+            projects = {}, profiles = {}, debug = { "c++", "typescript" },
+            -- The records cover only the workspace modules' languages: no typescript.
+            debug_adapters = function() return { REC } end,
+            on_accept = function() end, on_cancel = function() end,
+        })
+        View.new = orig_new
+        assert(ok, err)
+        local text = table.concat(tree:render(), "\n")
+        assert.truthy(text:find("c++ (primary) → cppdbg", 1, true), text)
+        assert.truthy(text:find("typescript (attach)  → (resolved at launch)", 1, true), text)
+        assert.is_nil(text:find("→ ?", 1, true), text)
+    end)
+
     it("a daemon without DebugConfig/1.set_adapter: the write fails, noted; nothing in-process", function()
         connect()
         local orig = vim.notify
