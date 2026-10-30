@@ -440,13 +440,16 @@ updated atomically:
    `path` on the Project domain object.
 2. **Profile mappings**: each profile's resolved mappings dict is
    keyed by project_key string; entries are rekeyed.
-3. **ConfigUnit ids**: each ConfigUnit registered under the project
-   has its `id` rekeyed from `old_key/config_key` to
-   `new_key/config_key`. `_init_project_key` follows.
+3. **ConfigUnits and build directories**: ConfigUnit ids are not
+   changed (a unit's id identifies its build directory, which is not
+   renamed). Each cached build directory referenced by the project's
+   ConfigUnits takes `new_key` as its project key, so the units keep
+   their build state across the next reload. `_init_project_key`
+   follows.
 4. **ConfigurationSet mappings**: stored as `project_object → config_object`,
    so the Project identity is preserved and no map rebuild is required.
 5. **user.json**: re-saved with the new key. **cache.json**: re-saved
-   so the rekeyed ConfigUnit ids land on disk.
+   so the build directories' new project key lands on disk.
 
 Build directories on disk are not renamed. Cache entries' `build_dir`
 fields preserve their absolute paths after rename — the existing build
@@ -461,7 +464,7 @@ Rename is rejected when:
   collision).
 
 On save failure, the rename rolls back: project.key, project.path,
-profile mappings, and ConfigUnit ids are restored.
+profile mappings, and the build directories' project keys are restored.
 
 ### 4.10 Configuration Set Rename Propagation
 
