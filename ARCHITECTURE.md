@@ -1445,7 +1445,11 @@ plus `_tools_by_type` as wire tool rows (`tool_rows` / `tools_from_rows`,
 the one `{ key, label, tool_data }` shape of the snapshot and the `tools`
 query), `_shared_ignored` and the semantic-key → id `index` (config units as
 `{ project, configuration, id }` rows) from the service's session-local
-`registry()` (weak-keyed object → id, §19.12);
+`registry()` (weak-keyed object → id, §19.12); `ids_by_key(ws, reg)` /
+`carry_ids(ws, reg, by_key)` (`Registry:adopt`) hand the ids across the
+reload `Service:live` makes for a request's environment — each reloaded
+entity takes the id of the one it replaces, matched by kind and key (API.md
+§1.2), so an entity the reload no longer has leaves its id stale;
 `header(ws, err)` is the welcome's model fields (`Service:header`, from the
 host's optional `error_state()`; `Server:_authed` adds them to
 `welcome.header`, never replacing the session fields). `QUERIES` is the host-probing registry (`tools`:

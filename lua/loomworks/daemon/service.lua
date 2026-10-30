@@ -11,7 +11,10 @@
 --- `Workspace:_on_file_changed`, including a trust refusal, §17.4), completes
 --- or refuses a commit journal (§19.4) by reloading, and reloads when the
 --- requesting client's environment differs from the one the workspace was
---- loaded in (`envscope.signature`); a reload keeps the device registry and
+--- loaded in (`envscope.signature`) — that reload keeps the model's ids,
+--- each reloaded entity taking over the id of the one it replaces by kind
+--- and key (`snapshot.ids_by_key` / `carry_ids`; API.md §1.2), so the
+--- request's own ids, from the previous load, still resolve; a reload keeps the device registry and
 --- neither cancels nor waits for device installs, launches and stops
 --- (`_adopt`, `keeps_on_reload`, §19.16 "Devices"). The workspace's file tracker never polls
 --- in the daemon: changes are applied only here, inside a client's
@@ -445,10 +448,14 @@ function Service:live(ctx, as_is)
         if ctx.conn then ctx.conn.load_notes_of = ws end -- (raised into its notes)
         return ws
     end
+    -- An environment reload keeps the model's ids (API.md §1.2, §19.12): the
+    -- ids of the model it drops, by kind and key, for the reloaded one.
+    local carried
     if self.ws and self.env_sig ~= sig then
         if self:_workspace_runs() then
             return nil, nil, "another build runs in the workspace daemon with a different environment"
         end
+        carried = snapshot.ids_by_key(self.ws, self.ids)
         self:_unload()
     end
     -- A commit journal (§19.4): a full load completes or refuses it.
@@ -478,6 +485,7 @@ function Service:live(ctx, as_is)
     local ws, err = self.host.load(root, self:handlers())
     if not ws then return nil, err or "failed to load workspace" end
     self:_adopt(ws, sig)
+    if carried then snapshot.carry_ids(ws, self.ids, carried) end
     if ctx.conn then ctx.conn.load_notes_of = ws end -- (raised into its notes)
     return ws
 end
