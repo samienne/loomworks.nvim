@@ -277,7 +277,7 @@ re-render before the view's `update` keeps them."
   key comes from the user's deploy descriptor), but the view's unit rows
   carry no project id to join by. Fix if unit rows gain one (view §14.4
   `profiles[].units[]`). The target picker joins by the project row's own
-  `targets` since #PR.
+  `targets` since #344.
 - A clean by row ids (`editor_ops.run_ids` → `call_names_ids`) misses an
   owned call by objects whose `start` has not arrived yet (a `:Loomworks`
   build, a launch build): `editor_ops.run` records `units` but no
