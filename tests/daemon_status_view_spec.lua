@@ -319,6 +319,63 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert(ok, err)
     end)
 
+    it("the deploy editor's target picker offers the project row's targets: a unit in no profile contributes (WP-B T4)", function()
+        fake_obs({ [observer.VIEW_WORKSPACE.feature] = "subscribed", [observer.TASKS.feature] = "subscribed",
+            [observer.PROJECTS.feature] = "available" })
+        header()
+        local SRC = { project = "fresh", target = "tool" }
+        views.set(obs, "workspace", daemon_view(function(v)
+            local p = vim.deepcopy(v.projects[1])
+            p.key, p.id = "fresh", "id:fresh"
+            p.deploy = { { destination = "out/", sources = { vim.deepcopy(SRC) } } }
+            -- Its only unit is in no profile: the targets reach the editor
+            -- on the project row (view.Workspace/1 projects[].targets) alone.
+            p.targets = { tool = { type = "EXECUTABLE" }, lib = { type = "STATIC_LIBRARY" } }
+            v.projects[#v.projects + 1] = p
+            for _, prow in ipairs(v.profiles) do
+                for _, u in ipairs(prow.units or {}) do assert.not_equals("fresh", u.project) end
+            end
+        end))
+        local tree = Tree.new(require("loomworks.ui.status")._render_fn)
+        setmetatable(tree._folds, { __index = function() return true end })
+        local meta
+        for i, l in ipairs(tree:render()) do
+            if l:find("<- fresh : tool", 1, true) then meta = tree.line_meta[i] end
+        end
+        assert.is_table(meta)
+        local model = require("loomworks.ui.model_calls")
+        local View = require("loomworks.ui.view")
+        local orig_call, orig_new, orig_select, orig_input = model.call, View.new, vim.ui.select, vim.ui.input
+        model.call = function(_, m, _, cb)
+            if m == "Projects/1.declaration" then
+                return cb({ outcome = "ok", deploy = { ["out/"] = vim.deepcopy(SRC) }, variables = {} })
+            end
+        end
+        local etree
+        View.new = function(vopts)
+            etree = vopts.widget
+            return { open = function() end, close = function() end, refresh = function() end }
+        end
+        local offered
+        vim.ui.select = function(items) offered = items end
+        -- No targets known: the picker falls back to typing a name.
+        vim.ui.input = function() offered = "typed" end
+        local ok, err = pcall(function()
+            meta.on_enter()
+            assert.is_table(etree)
+            local lines = etree:render()
+            local row
+            for i, l in ipairs(lines) do
+                if l:find("^%s*Target ") and etree.line_meta[i] then row = i end
+            end
+            assert(row, table.concat(lines, "\n"))
+            etree.line_meta[row].on_enter()
+        end)
+        model.call, View.new, vim.ui.select, vim.ui.input = orig_call, orig_new, orig_select, orig_input
+        assert(ok, err)
+        assert.same({ "lib  (STATIC_LIBRARY)", "tool  (EXECUTABLE)" }, offered)
+    end)
+
     it("the launch editor re-renders when the daemon's debug adapter records arrive (5o C2b2-2)", function()
         fake_obs()
         header()

@@ -206,9 +206,9 @@ end
 ---   destination: string — destination path template
 ---   source: table|nil — { project: string, target?: string, path?: string, configuration?: string, pre_build?: boolean }
 ---   projects: table[] — the workspace view's project rows (`key`,
----     `configurations[].key`, `variables`)
----   profiles: table[]|nil — the workspace view's profile rows (their
----     `units[]`: the targets offered, the active one's the source preview)
+---     `configurations[].key`, `variables`, `targets`: the targets offered)
+---   profiles: table[]|nil — the workspace view's profile rows (the active
+---     one's `units[]`: the source preview)
 ---   variables: table<string, { type: string }>|nil — the variables of the
 ---     project owning the step (destination segments)
 ---   preview: fun(template: string, cb: fun(value: string|nil))|nil — a
@@ -279,24 +279,15 @@ function M.open(opts)
         return names
     end
 
-    --- The targets the profiles' units of `project` (a view row) know.
+    --- The build targets of `project` (a view row): its own `targets`,
+    --- the union over every unit of it, in a profile or not.
     local function get_targets(project)
-        local seen = {}
         local result = {}
-        for _, prow in ipairs(opts.profiles or {}) do
-            for _, unit in ipairs(prow.units or {}) do
-                if unit.project == project.key and unit.targets then
-                    for id, target in pairs(unit.targets) do
-                        if not seen[id] then
-                            seen[id] = true
-                            result[#result + 1] = {
-                                id = id,
-                                display = id .. "  (" .. (target.type or "?") .. ")",
-                            }
-                        end
-                    end
-                end
-            end
+        for id, target in pairs(project.targets or {}) do
+            result[#result + 1] = {
+                id = id,
+                display = id .. "  (" .. (target.type or "?") .. ")",
+            }
         end
         table.sort(result, function(a, b) return a.id < b.id end)
         return result
