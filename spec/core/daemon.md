@@ -1625,7 +1625,7 @@ whose `update`s precede their replies.
 besides the structural diagnostics — a declared project directory not
 found, an entry skipped, every warning or error the load raises — is kept as
 **persistent workspace diagnostics** of the loaded model, with `source =
-"load"` and severity `warn` or `error`, until the next load replaces them.
+"load"` and severity `warn` or `error`, until the next load replaces them (a re-assembly after an edit to `loomworks.json` is a load).
 They are in `view.Workspace/1`'s `diagnostics` (the status page's
 Diagnostics section) and count toward `view.Header/1`'s `diagnostics`
 level ([API.md](../protocol/API.md) §14.1, §14.4); the editor shows them
@@ -1808,7 +1808,7 @@ the reply's `notes` with the role the in-process loader prints it with
 (`fail` for an error, `warn` for a warning), a test plan's pre-build note
 with `plain`, in `note_roles`; the client paints each as its in-process
 printer does on standard error. The load's warnings are the loaded
-workspace's, not the loading request's: every request that uses the
+workspace's, not the loading request's: every CLI request that uses the
 workspace carries them (§19.13 "Load warnings"; step 6b-α).
 The client paints by role exactly as its in-process printer does, and decides
 colour per stream after the `quiet` redirection (`--print` sends `out` to
