@@ -215,6 +215,37 @@ describe("failed commit keeps config unit and profile identity", function()
     running._action = nil
   end)
 
+  it("rename_project with an unsigned cache: the BuildDirs keep the old project key", function()
+    -- The reload ignores an unsigned cache (the in-memory build state stays),
+    -- so it cannot put back the project key the rename retagged; the
+    -- snapshot has to, or the next cache save persists the new key under the
+    -- old project and the next remerge replaces its units.
+    local bds = {}
+    local BuildDir = require("loomworks.build_dir")
+    for u in pairs(units) do
+      local bd = u._build_dir
+      if not bd then
+        bd = BuildDir.new(u.id, u.build_dir_value)
+        ws._build_dirs[#ws._build_dirs + 1] = bd
+        u._build_dir = bd
+      end
+      bd:update({ state = "built", project_key = "App", variant = u._variant,
+        config_key = u._config_key, mod_type = "shell" })
+      bds[#bds + 1] = bd
+    end
+    assert.is_true(#bds > 0, "fixture has no build dirs")
+    assert.is_true(ws:_save_cache())
+    local cache_path = root .. "/.nvim/loomworks.cache.json"
+    local _, content = require("loomworks.trust").split(io_mod.read_file(cache_path))
+    local f = assert(io.open(cache_path, "wb")); f:write(content); f:close()
+    ws:_adopt_disk("cache", content)
+    if ws._tracker then ws._tracker:mark_written(cache_path, content) end
+    fail_commit()
+    assert.is_false((ws:rename_project(find(ws._projects, "key", "App"), "App2")))
+    identity_kept()
+    for _, bd in ipairs(bds) do assert.equals("App", bd.project_key) end
+  end)
+
   it("rename_configuration_set: the active profile stays the same object", function()
     fail_commit()
     assert.is_false((ws:rename_configuration_set(find(ws._config_sets, "name", "Dev"), "Dev2")))

@@ -1166,6 +1166,78 @@ describe("project rename", function()
         assert.equals("Service", cache.build_dirs[id_before].project_key)
     end)
 
+    --- App (user.json only) with a built Debug entry, plus extra cache entries.
+    local function make_built_ws(extra_cache)
+        local configurations = {
+            ["App/Debug:ninja-gcc-12"] = {
+                project_key = "App", config_key = "Debug:ninja-gcc-12",
+                type = "cmake", variant = "Debug", state = "built",
+                last_configured = "2026-01-01T00:00:00Z",
+                last_built = "2026-01-01T00:00:01Z",
+            },
+        }
+        for k, v in pairs(extra_cache or {}) do configurations[k] = v end
+        return make_ws(
+            { projects = {} },
+            {
+                projects = { App = { cmake = {} } },
+                configuration_sets = { debug = { App = "Debug" } },
+                active_profile = "debug:ninja-gcc-12",
+                profiles = {
+                    ["debug:ninja-gcc-12"] = {
+                        configuration_set = "debug",
+                        tools = { cmake = { key = "ninja-gcc-12", data = { id = "ninja-gcc-12" } } },
+                    },
+                },
+            },
+            { configurations = configurations },
+            {
+                detected_tools = make_detected_tools({
+                    { tool_key = "ninja-gcc-12", tool_data = { id = "ninja-gcc-12" } },
+                }),
+            }
+        )
+    end
+
+    it("restores the BuildDir's project key when saving user.json fails", function()
+        local ws = make_built_ws()
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local bd
+        for _, u in pairs(ws._config_units) do
+            if u._project == app then bd = u._build_dir end
+        end
+        assert.is_not_nil(bd)
+        ws._save_user = function() return false, "disk full" end
+        local ok = ws:rename_project(app, "Service")
+        assert.is_falsy(ok)
+        assert.equals("App", app.key)
+        assert.equals("App", bd.project_key)
+    end)
+
+    it("leaves a removed project's orphaned BuildDirs of the old name alone", function()
+        -- The orphan is not referenced by any of App's units (no profile maps
+        -- Release), so it is not App's to carry to the new name.
+        local ws = make_built_ws({
+            ["App/Release:ninja-gcc-12"] = {
+                project_key = "App", config_key = "Release:ninja-gcc-12",
+                type = "cmake", variant = "Release", state = "built",
+            },
+        })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local orphans = ws:get_orphaned_configs()
+        assert.equals(1, #orphans)
+        local orphan = orphans[1].build_dir_obj
+        assert.equals("App", orphan.project_key)
+        local live
+        for _, u in pairs(ws._config_units) do
+            if u._project == app then live = u._build_dir end
+        end
+        assert.is_not_nil(live)
+        assert.is_true(ws:rename_project(app, "Service"))
+        assert.equals("Service", live.project_key)
+        assert.equals("App", orphan.project_key)
+    end)
+
     it("rejects a rename to an in-use key", function()
         local ws = make_ws({ projects = { App = { cmake = {} }, Other = { cmake = {} } } })
         local app = h.find_project_in(ws:get_projects(), "App")
