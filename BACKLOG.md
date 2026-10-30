@@ -15,6 +15,29 @@ resolution together, so both accept the same forms the same way.
 
 ---
 
+## Project rename onto the name of a removed project with cached build state
+
+`Workspace:rename_project` retags the BuildDirs its units reference with the
+new key. When an orphaned BuildDir of a removed project already carries that
+key (its cache entry survived the removal) and the same `config_key`, the cache
+holds two entries for one `(project_key, config_key)` identity, and
+`Workspace:find_cache_entry_for` (`pairs` over `cache.build_dirs`) picks either
+on the next remerge or load: the renamed project can adopt the dead project's
+build directory, its own becoming an orphan. No in-place mark is invisible: an
+orphan's `project_key` / `config_key` are what the status page and the orphan
+sort show and match it by. Proposed fix (spec change, §4.9 "Rename is rejected
+when"):
+
+> - The new key is the `project_key` of a cached build directory that no
+>   ConfigUnit references (an orphaned entry of a removed project), and that
+>   entry's configuration key equals one of the renamed project's. The error
+>   names the orphaned build directory; deleting it (or renaming to another
+>   key) lets the rename proceed.
+
+Seen while reviewing #341.
+
+---
+
 ## qmlls on an unconfigured build directory
 
 qmlls still gets `-b <unconfigured build dir>` when the active unit is not
