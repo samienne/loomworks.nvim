@@ -983,6 +983,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- A workspace's load warnings (a project directory not found, a skipped
+  entry) now reach every `lw` command through a warm workspace daemon, not
+  only the one that loaded it, and the editor lists them in the status page's
+  Diagnostics section as `[load]`. Warnings that `lw` printed in Neovim's
+  own uncoloured form are now coloured as warnings. (#347)
 - The deploy step editor's target picker now offers every build target of the
   source project, also those of a configuration that is in no profile; before,
   in daemon mode, such a configuration's targets were missing (#344).
