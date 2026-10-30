@@ -166,6 +166,29 @@ describe("an operation's { id } reference in the daemon (step 5o part 0)", funct
         u.conn:close()
     end)
 
+    -- The ids an environment reload takes from the model it drops wait for a
+    -- load that succeeds: a failed load in between does not lose them.
+    it("ids survive an environment reload whose load fails, into the next load", function()
+        local id = profile_id("2")
+        local svc = srv.service
+        local host = svc.host
+        local load = host.load
+        host.load = function() host.load = load; error("load failed (test)") end
+        local f = call(srv, "build", { profile = { id = id } }, other_env())
+        assert.is_true(f.wait_reply())
+        assert.are_not.equal("accepted", f.reply and f.reply.outcome, vim.inspect(f.reply or f.err))
+        f.conn:close()
+        host.load = load
+        assert.is_nil(svc.ws) -- (the old model was dropped, none loaded)
+        local r = call(srv, "build", { profile = { id = id } }, other_env())
+        assert.is_true(r.wait_reply())
+        assert.is_nil(r.err, vim.inspect(r.err))
+        assert.equals("accepted", r.reply and r.reply.outcome, vim.inspect(r.reply))
+        assert.equals("2", r.reply.profile_key)
+        assert.is_true(r.wait_done())
+        r.conn:close()
+    end)
+
     it("an entity the environment reload no longer has leaves its id stale", function()
         profile_id("2")
         local svc = srv.service
