@@ -107,10 +107,12 @@ describe("ui.model_calls", function()
             r[#r + 1] = run(WS, "Profiles/1.add_tool", { profile = PROW, tool = "gcc" })
             r[#r + 1] = run(WS, "Profiles/1.set_active", { profile = PROW })
             -- The dialog's mappings: project row -> configuration choice
-            -- (its `_row` bound); the write gets the objects (WP-B).
+            -- (`{ name }`, resolved in the bound project by name, as the
+            -- daemon resolves it); the write gets the objects (WP-B).
             local PRJROW = { key = "app" }
             ss.bind(PRJROW, PR)
-            local dm = { [PRJROW] = { name = "c", _row = CROW } }
+            PR.get_configuration = function(_, n) if n == "c" then return CFG end end
+            local dm = { [PRJROW] = { name = "c" } }
             local pm = { [PR] = CFG }
             r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Dev", mappings = dm })
             r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Auto", mappings = { app = "Debug" } })

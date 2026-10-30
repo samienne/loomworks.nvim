@@ -50,30 +50,49 @@ local function taken(view, name, except)
     return false
 end
 
---- A configuration as the set dialog offers it: its name, and its row
---- (`_row`: what a model call sends — its id in `daemon` mode, the bound
---- object in-process). A mapping to a configuration the view does not list
---- (a removed or source-less one) has no row: the call refuses it by name.
+--- A configuration as the set dialog offers it: its name. A model call
+--- sends a mapping as project key -> configuration name and the write
+--- resolves the name in the project in both modes (API.md §20: any of the
+--- project's configurations but a removed one), so a mapping to a
+--- configuration the view does not list (a source-missing one) keeps its
+--- name and saves as it does in the daemon.
 --- @param name string
---- @param row? table the configuration's row (`projects[].configurations[]`)
---- @return { name: string, _row?: table }
-local function config_choice(name, row)
-    return { name = name, _row = row }
+--- @return loomworks.ConfigSetChoice
+local function config_choice(name)
+    return { name = name }
 end
 
 --- The set dialog's projects and the configurations each offers, from the
---- workspace view's project rows (6b-alpha: no editor-model read).
---- @param view table the workspace view
---- @return table[] projects, table<table, table[]> available_configs
+--- workspace view's project rows (6b-alpha: no editor-model read): a row's
+--- `configurations[]` and its cmake presets (`presets[]`, canonical
+--- `preset:<name>` configurations the view lists apart), by name.
+--- @param view table|nil the workspace view
+--- @return table[]|nil projects, table<table, loomworks.ConfigSetChoice[]>|nil available_configs
 local function dialog_projects(view)
+    if not view then return nil end
     local projects, available = {}, {}
     for _, p in ipairs(view.projects or {}) do
         projects[#projects + 1] = p
-        local configs = {}
-        for _, c in ipairs(p.configurations or {}) do configs[#configs + 1] = config_choice(c.key, c) end
+        local configs, seen = {}, {}
+        local function offer(name)
+            if name ~= nil and not seen[name] then
+                seen[name] = true
+                configs[#configs + 1] = config_choice(name)
+            end
+        end
+        for _, c in ipairs(p.configurations or {}) do offer(c.key) end
+        for _, pr in ipairs(p.presets or {}) do offer(pr.name) end
+        table.sort(configs, function(a, b) return a.name < b.name end)
         available[p] = configs
     end
     return projects, available
+end
+
+--- The notice of a set dialog opened while no workspace view is held (in
+--- `daemon` mode the editor holds no model to fall back on).
+local function no_view()
+    vim.notify("loomworks: the workspace view is not available yet; try again when the status page shows it",
+        vim.log.levels.WARN)
 end
 
 --- Open the config set editor for an existing set: its projects and
@@ -87,6 +106,7 @@ local function edit_config_set(ctx, row)
     local ws = ctx.ws
 
     local projects, available_configs = dialog_projects(ctx.view)
+    if not projects then return no_view() end
     local mappings = {}
     for _, p in ipairs(projects) do
         local name = (row.mappings or {})[p.key]
@@ -215,6 +235,7 @@ end
 local function create_custom_config_set(ctx)
     local ws = ctx.ws
     local projects, available_configs = dialog_projects(ctx.view)
+    if not projects then return no_view() end
 
     require("loomworks.ui.config_set_editor").open({
         title = "New configuration set",
@@ -240,6 +261,7 @@ end
 --- no candidate token, so the daemon cannot serve this read yet.
 --- @param ctx table the page context
 local function create_config_set(ctx)
+    if not ctx.view then return no_view() end
     local ws = ctx.ws
     if not ws then return end
 

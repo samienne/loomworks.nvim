@@ -408,6 +408,29 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
             vim.inspect(r))
     end)
 
+    it("a mapping to a cmake preset configuration is accepted; a removed one is refused by name", function()
+        -- (The editor's in-process model call resolves a dialog mapping the
+        -- same way: tests/ui_status_reads_spec.lua.)
+        vim.fn.mkdir(root .. "/lib", "p")
+        io.open(root .. "/lib/CMakeLists.txt", "w"):close()
+        local f = assert(io.open(root .. "/lib/CMakePresets.json", "w"))
+        f:write(vim.json.encode({ version = 3, configurePresets = { { name = "dev", generator = "Ninja",
+            binaryDir = "${sourceDir}/build/dev", cacheVariables = { CMAKE_BUILD_TYPE = "Debug" } } } }))
+        f:close()
+        local cfg = vim.json.decode(read(root .. "/loomworks.json"))
+        cfg.projects.lib = { path = "lib", cmake = vim.empty_dict() }
+        f = assert(io.open(root .. "/loomworks.json", "w")); f:write(vim.json.encode(cfg)); f:close()
+        local ws = loaded()
+        local r = sets("add", { name = "P", mappings = { lib = "preset:dev" } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        local lib = find(ws._projects, "key", "lib")
+        assert.equals("preset:dev", find(ws._config_sets, "name", "P"):configuration(lib).name)
+        lib:get_configuration("preset:dev")._removed = true
+        r = sets("add", { name = "Q", mappings = { lib = "preset:dev" } })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("no configuration 'preset:dev' in project 'lib'", r.message)
+    end)
+
     it("a stale id, an unknown key and an unknown mapping are refused and change nothing", function()
         loaded()
         local before = read(root .. "/.nvim/loomworks.user.json")

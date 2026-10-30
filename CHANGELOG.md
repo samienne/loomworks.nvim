@@ -560,11 +560,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
-- The status page's configuration-set edit and create dialogs list the
-  projects and configurations the status page shows, in daemon mode never
-  reading the editor's own copy of the workspace. Saving a set that still
-  maps a project to a removed configuration is refused, naming it, until that
-  mapping is changed, in both modes (#339).
+- The status page's configuration-set edit dialog and the create dialog's
+  custom set list the projects and configurations the status page shows,
+  CMake presets included, instead of reading the editor's own copy of the
+  workspace. The create dialog's suggested sets still come from the editor's
+  copy for now. A set mapping a project to a configuration that is gone or
+  does not exist is refused when saved, naming it, the same way in both
+  modes; a mapping to a preset or to a configuration whose source is missing
+  saves in both (#339).
 - In daemon mode the status page's builds, serial builds, configures, cleans
   and rebuilds of a profile or of one of its configurations name it to the
   workspace daemon by the id the status page shows, never by its name: a

@@ -70,8 +70,8 @@
 --- directory's path exactly as the view lists it, or `orphans = true`.
 --- A `tool` of `Profiles/1.create` is a `Profiles/1.tool_choices` entry; a
 --- `mappings` of `ConfigSets/1.add` / `update` is the dialog's project row →
---- configuration choice table (`{ name, _row? }`, `_row` the configuration's
---- row of the view; sent as project key → configuration name, the wire's
+--- configuration choice table (`{ name }`, resolved by name in the project
+--- in both modes; sent as project key → configuration name, the wire's
 --- form) or a generated template's project key → configuration name.
 ---
 --- `cb(r)` gets the outcome (API.md §4.1): `{ outcome = "ok", ... }` with
@@ -231,21 +231,25 @@ end
 local function template(mappings)
     return type(next(mappings or {})) == "string"
 end
---- The dialog's mappings (project row → configuration choice `{ name,
---- _row? }`) as the objects the in-process view bound to them, or nil + the
---- refusal of the first it did not bind: a project, or a configuration the
---- view does not list (named as the daemon names it, API.md §20).
+--- The dialog's mappings (project row → configuration choice `{ name }`)
+--- as objects, or nil + the refusal of the first that does not resolve. The
+--- project is the object the in-process view bound to its row; the
+--- configuration is resolved by name in it exactly as the daemon resolves a
+--- mapping (core_interfaces `mappings_of`, API.md §20): any of the project's
+--- configurations (a preset's, a source-missing one) but a removed one, and
+--- refused with the daemon's message.
 --- @param mappings table
 --- @return table|nil objects, table|nil refusal
 local function mapping_objects(mappings)
     local out = {}
-    for project, cfg in pairs(mappings or {}) do
+    for project, choice in pairs(mappings or {}) do
         local po = object(project)
         if not po then return nil, { outcome = "refused", message = "no project (not a row of the workspace view)" } end
-        local co = object(cfg)
-        if not co then
-            return nil, { outcome = "refused", message = "no configuration '" .. tostring(cfg.name)
-                .. "' in project '" .. tostring(project.key) .. "'" }
+        local name = type(choice) == "table" and choice.name or nil
+        local co = name ~= nil and po:get_configuration(name) or nil
+        if not co or co._removed then
+            return nil, { outcome = "refused", message = "no configuration '" .. tostring(name)
+                .. "' in project '" .. tostring(po.key) .. "'" }
         end
         out[po] = co
     end
