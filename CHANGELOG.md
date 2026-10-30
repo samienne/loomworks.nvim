@@ -42,7 +42,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   and in `ConfigSets/1.add` / `update` is now a list of `{ project,
   configuration }` references (in the view also `missing`, which replaces the
   set's separate `missing` object) instead of a project key to configuration
-  name object. (#PRNUM)
+  name object. (#345)
 
 ### Upgrade notes
 - The editor now uses the workspace daemon by default: builds, configures,
@@ -586,7 +586,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   configuration set, its SDKs' kit toolchains among them, and is hidden for a
   profile whose set is missing. In `daemon` mode the configuration-set
   templates come from the workspace daemon, and the status page names
-  mappings by id. (#PRNUM)
+  mappings by id. (#345)
 - The status page's configuration-set edit dialog and the create dialog's
   custom set list the projects and configurations the status page shows,
   CMake presets included, instead of reading the editor's own copy of the
