@@ -938,14 +938,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - A toolchain rescan (or an SDK add or remove) no longer misses its toolchain
   change when an earlier, slower detection finishes during its wait: only the
   newest detection is taken in, and the editor's view is told about the
-  change (#PR).
+  change (#337).
 - The workspace daemon no longer stalls other clients while a saved `launch`
   test entry deploys before its test runs, or while the project browser's add
   detects a module's toolchains: both now run without blocking, and a cancel
-  stops a test run's deploy between copies (#PR).
+  stops a test run's deploy between copies (#337).
 - The status page and the daemon's workspace view no longer walk
   `.nvim/build` on every refresh to find stray build directories; the scan
-  reruns only when a build directory or the scanned tree changed (#PR).
+  reruns only when a build directory or the scanned tree changed (#337).
 - Rebuilding a configuration from the status page (`R`) built even when its
   clean failed; it now stops and reports the failed clean (#328).
 - A failed, stopped or refused clean no longer leaves the config shown as
