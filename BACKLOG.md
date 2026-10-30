@@ -5,6 +5,26 @@ they don't get lost.
 
 ---
 
+## Daemon targets: the stamp misses builds outside loomworks
+
+`ConfigUnit:targets_stamp()` (`config_unit.lua`) is build dir +
+`last_configured` + `last_built`, so a raw `cmake --build` or a cmake rerun
+outside loomworks (which can add or remove targets) is not noticed by
+`Launch/1.targets` / `Profiles/1.set_default_target` until the next
+loomworks configure or build. Possible fix: stamp on the file-api reply's
+mtime (the module's own freshness signal), like the clangd
+compile-commands freshness check does.
+
+## Daemon run/debug parse targets on the model queue
+
+`daemon/runner.lua` still calls `rp.select(..., { refresh = true })` for
+run/debug, which parses build targets synchronously on the model queue —
+a large build tree holds every other request meanwhile. Route them through
+the off-queue parse (`build_run.parse_unit_targets_async`, as
+`with_fresh_targets` in `daemon/core_interfaces.lua` does).
+
+---
+
 ## Daemon: candidates' toolchain detection uses the daemon's environment
 
 `Projects/1.candidates` toolchain detection uses the daemon's environment

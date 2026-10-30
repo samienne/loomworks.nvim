@@ -298,6 +298,17 @@
             }
           }
         },
+        "targets": {
+          "description": "The build targets its configured units parsed, by name (step 6b-alpha): the union over every configuration unit of the project in the cache, in a profile or not; absent when no unit of it has parsed targets.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "type": "string" }
+            }
+          }
+        },
         "type_config": {
           "type": "object",
           "required": ["fields"],

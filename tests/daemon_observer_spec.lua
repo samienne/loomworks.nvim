@@ -57,6 +57,8 @@ local function mount_views(srv, o)
             prepare_debug = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
             build = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
             device_log = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
+            -- The launchable-targets read (step 6b-α): unused here.
+            targets = function() return { outcome = "refused", message = "stub", exit_code = 1 } end,
         } }))
         assert(reg:mount("/debug", "core", "loomworks.DebugConfig", 1, { methods = {
             adapters = function() return { languages = {} } end,
@@ -94,6 +96,8 @@ local function mount_views(srv, o)
             -- Selection and authoring (step 5o B2): unused here.
             set_active = refused, create = refused, tool_choices = refused,
             add_tool = refused, remove_tool = refused,
+            -- The default launch target (step 6b-α): unused here.
+            set_default_target = refused,
         } }))
         -- The configuration sets (step 5o C2a): called, never subscribed to.
         assert(reg:mount("/projects", "core", "loomworks.ConfigSets", 1, { methods = {

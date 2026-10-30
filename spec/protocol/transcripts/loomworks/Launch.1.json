@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Launch",
   "version": 1,
-  "description": "Object /launch (API.md §9): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts; build (step 5t), a launch target's build as one task with its steps; device_log (step 5n part B3), the log of a program Devices/1.launch launched, its records as the log signal.",
+  "description": "Object /launch (API.md §9): prepare_run and prepare_debug as task-streamed methods whose task results are the launch spec the client runs and the debug spec its debugger starts; build (step 5t), a launch target's build as one task with its steps; device_log (step 5n part B3), the log of a program Devices/1.launch launched, its records as the log signal. Step 6b-alpha (API.md §9.6): targets, the profile's launchable targets.",
   "cases": [
     {
       "name": "prepare_run of a launch configuration ends with its launch spec",
@@ -233,6 +233,32 @@
         { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "device_log", "args": { "task": "t-none" } } },
         { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "targets lists the profile's launch configurations, each with its project's id; the list is complete, no default stored (step 6b-alpha)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "index": { "profiles": { "dev": { "$bind": "dev_id" } }, "projects": { "app": { "$bind": "app_id" } } } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "targets", "args": { "profile": { "id": { "$var": "dev_id" } } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok", "targets": { "$contains": [ { "kind": "launch", "project": { "id": { "$var": "app_id" }, "key": "app" }, "name": "hello", "label": "hello" } ] }, "incomplete": [], "override": false } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "targets", "args": { "profile": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "targets", "args": { "profile": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "targets", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "targets lists a module's device target, marked as the stored default (step 6b-alpha)",
+      "fixture": "devices",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "targets", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "targets": { "$contains": [ { "kind": "device", "project": { "key": "app" }, "name": "app", "label": "app app", "default": true } ] }, "override": true } } }
       ]
     }
   ]

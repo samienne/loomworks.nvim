@@ -65,6 +65,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon: `Launch/1.targets` lists a profile's launchable
+  targets (launch configurations, executable build targets and device
+  targets, each with its project's id, the default marked), which projects
+  still need a configure for the list to be complete, and whether a default
+  is stored. `Profiles/1.set_default_target` stores one of them as the
+  profile's default target in `loomworks.user.json`, or clears the stored
+  choice when no target is given. The workspace view's project rows carry
+  their parsed build targets (`targets`). (#340)
 - Experimental daemon: `Maintenance/1.nuke` is the editor's nuke as a task:
   it lists what it removes and confirms with a plan token, refuses while a
   build-directory or workspace lock is held (naming the holder) or while any

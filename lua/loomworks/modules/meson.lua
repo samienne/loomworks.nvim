@@ -1349,11 +1349,15 @@ function M.cache_compat_scan(ctx)
     }
 end
 
---- Async companion for parse_targets — yields to the event loop.
+--- Async companion for parse_targets — yields to the event loop. Always
+--- calls back: nil when the parse throws (e.g. a mis-shaped introspect reply).
 --- @param ctx table
 --- @param callback fun(targets: table|nil)
 function M.parse_targets_async(ctx, callback)
-    vim.schedule(function() callback(M.parse_targets(ctx)) end)
+    vim.schedule(function()
+        local ok, targets = pcall(M.parse_targets, ctx)
+        callback(ok and targets or nil)
+    end)
 end
 
 --- Map meson option type to loomworks option value_type.

@@ -2,7 +2,7 @@
   "interface": "loomworks.Launch",
   "version": 1,
   "status": "draft",
-  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. Step 5n part B3 (API.md §9.5) adds device_log, the log stream of a program Devices/1.launch launched, its records sent as the log signal. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler.",
+  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. Step 5n part B3 (API.md §9.5) adds device_log, the log stream of a program Devices/1.launch launched, its records sent as the log signal. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler. Step 6b-alpha (API.md §9.6) adds targets, a read of the profile's launchable targets.",
   "methods": {
     "prepare_run": {
       "description": "Build (unless no_build), deploy and resolve the launch of the profile's target or launch configuration; the task result carries the launch spec, or device for a program that runs on a device in the client.",
@@ -306,6 +306,36 @@
       ],
       "needs_env": true,
       "mutates": true
+    },
+    "targets": {
+      "description": "The profile's launchable targets, as headless introspection lists them (spec §16.18): a query, read-only, that builds nothing and runs in the client's environment as Toolchains/1.list does. targets is one record per target, per project in the profile's order (its launch configurations, then its build targets, then its device targets); incomplete lists the keys of the profile's projects whose build targets are unknown because they are not configured (empty when the list is complete); override is true when the profile stores a default-target choice in the working copy. An unknown profile or a stale id is the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/TargetsResult"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
     }
   },
   "signals": {
@@ -386,6 +416,88 @@
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "TargetsResult": {
+      "type": "object",
+      "required": [
+        "outcome",
+        "targets",
+        "incomplete",
+        "override"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LaunchTarget"
+          }
+        },
+        "incomplete": {
+          "description": "The keys of the profile's projects whose build targets are unknown because they are not configured.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "override": {
+          "description": "The profile stores a default-target choice in the working copy.",
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    },
+    "LaunchTarget": {
+      "description": "A launchable target of a profile (API.md §9.6); kind, project and name are what Profiles/1.set_default_target takes.",
+      "type": "object",
+      "required": [
+        "kind",
+        "project",
+        "name",
+        "label",
+        "default"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "launch: a command launch configuration; target: an executable build target of a configured unit; device: a module's device target.",
+          "enum": [
+            "launch",
+            "target",
+            "device"
+          ]
+        },
+        "project": {
+          "description": "The project's { id, key }.",
+          "$ref": "loomworks.Common/1#/$defs/Entity"
+        },
+        "name": {
+          "description": "What a reference names: the launch configuration's name, the build target's id, the device target's id.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Its display name.",
+          "type": "string"
+        },
+        "description": {
+          "description": "A launch configuration's description.",
+          "type": "string"
+        },
+        "default": {
+          "description": "The profile's default target (spec §8.6).",
+          "type": "boolean"
         }
       }
     }

@@ -14,20 +14,25 @@ local M = {}
 local function build_run() return require("loomworks.build_run") end
 
 --- @class loomworks.RunCandidate
---- @field kind "launch"|"target"
+--- @field kind "launch"|"target"|"device" ("device" only in M.target_listing)
 --- @field project loomworks.Project
---- @field name string the display name the operand is matched against
+--- @field name string the display name the operand is matched against (kind "device": the device target's id)
 --- @field target_id? string the module target id (kind "target")
 --- @field launch? loomworks.LaunchConfiguration the launch configuration (kind "launch")
+--- @field device_target? string the device target's id (kind "device")
+--- @field label? string the device target's display name (kind "device")
+--- @field default? boolean the profile's default target (M.target_listing only)
 
 --- Enumerate the launchable targets of a profile: command / target-backed
 --- launch configurations and executable build targets across the profile's
 --- projects, launch configurations first, each group sorted. Parses targets
---- on demand (build first).
+--- on demand (build first), unless `opts.parse == false`: then only the
+--- targets the units already know.
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
+--- @param opts? { parse?: boolean }
 --- @return loomworks.RunCandidate[]
-function M.launchable_targets(ws, profile)
+function M.launchable_targets(ws, profile, opts)
     local list = {}
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
@@ -38,7 +43,7 @@ function M.launchable_targets(ws, profile)
                     list[#list + 1] = { kind = "launch", project = project, name = launch.name, launch = launch }
                 end
             end
-            build_run().ensure_unit_targets(ws, unit)
+            if not (opts and opts.parse == false) then build_run().ensure_unit_targets(ws, unit) end
             if type(unit.targets) == "table" then
                 local ids = {}
                 for id in pairs(unit.targets) do ids[#ids + 1] = id end
@@ -54,6 +59,109 @@ function M.launchable_targets(ws, profile)
         end
     end
     return list
+end
+
+--- The device targets a profile's project offers (its module's
+--- `device_targets` for the configuration the profile maps it to), as
+--- candidates of kind "device" (`name` the device target's id).
+--- @param ws loomworks.Workspace
+--- @param pp loomworks.ProfileProject
+--- @return loomworks.RunCandidate[]
+local function device_candidates(ws, pp)
+    local unit = pp._config_unit
+    local project = pp._project
+    local mod = project and project._module and project._module.impl
+    local config_name = pp._configuration and pp._configuration.name
+    if not (mod and mod.has_devices and mod.device_targets and config_name) then return {} end
+    local ok, tgts = pcall(mod.device_targets, {
+        name = project.key,
+        path = project.path or project.key,
+        workspace_root = ws.root or "",
+        tool_data = unit and unit._tool_data or {},
+        configurations = project._configurations,
+    }, config_name)
+    local out = {}
+    for _, dt in ipairs(ok and type(tgts) == "table" and tgts or {}) do
+        out[#out + 1] = { kind = "device", project = project, name = dt.id, label = dt.label or dt.id,
+            device_target = dt.id }
+    end
+    return out
+end
+
+--- Does candidate `c` match a profile's stored default-target descriptor?
+--- By (project, target id) for a build target, (project, name) for a launch
+--- configuration, (project, device target id) for a device target.
+--- @param desc table|nil the profile's `_default_target_descriptor`
+--- @param c loomworks.RunCandidate
+--- @return boolean
+function M.is_stored_default(desc, c)
+    if not desc or desc.project ~= c.project.key then return false end
+    if desc.target then return c.kind == "target" and c.target_id == desc.target end
+    if desc.launch then return c.kind == "launch" and c.name == desc.launch end
+    if desc.device_target then return c.kind == "device" and c.device_target == desc.device_target end
+    return false
+end
+
+--- @class loomworks.TargetListing
+--- @field targets loomworks.RunCandidate[] per project in the profile's order: its launch
+---   configurations, its executable build targets, its device targets; each with `default`
+--- @field incomplete string[] keys of the projects whose build targets are unknown (not configured)
+--- @field override boolean the profile stores a default-target choice
+
+--- A profile's launchable targets as the target listing shows them (spec
+--- §16.18, API.md §9.6): every launch configuration, executable build target
+--- and device target, the profile's default target marked — the stored
+--- choice, else (none stored) the sole launch configuration or build target
+--- (§16.17) — and the projects whose build targets are unknown because they
+--- are not configured. Parses targets a unit does not know yet, never
+--- builds; with `opts.parse == false` (a long-lived daemon, which parses off
+--- its model queue first: M.stale_target_units) only the known targets.
+--- @param ws loomworks.Workspace
+--- @param profile loomworks.Profile
+--- @param opts? { parse?: boolean }
+--- @return loomworks.TargetListing
+function M.target_listing(ws, profile, opts)
+    local runnable = M.launchable_targets(ws, profile, opts)
+    local targets, incomplete = {}, {}
+    for _, pp in ipairs(profile:projects()) do
+        local unit = pp._config_unit
+        local project = unit and unit._project or pp._project
+        if project then
+            for _, c in ipairs(runnable) do
+                if c.project == project then targets[#targets + 1] = c end
+            end
+            for _, c in ipairs(device_candidates(ws, pp)) do targets[#targets + 1] = c end
+            local mod = project._module and project._module.impl
+            if unit and mod and mod.parse_targets then
+                local st = unit:local_state()
+                if st ~= "configured" and st ~= "built" then incomplete[#incomplete + 1] = project.key end
+            end
+        end
+    end
+    table.sort(incomplete)
+    local desc = profile._default_target_descriptor
+    local sole = desc == nil and #runnable == 1 and runnable[1] or nil
+    for _, c in ipairs(targets) do
+        c.default = (desc ~= nil and M.is_stored_default(desc, c)) or c == sole
+    end
+    return { targets = targets, incomplete = incomplete, override = desc ~= nil }
+end
+
+--- The configuration units of a profile whose build targets are due a parse
+--- (ConfigUnit:targets_stale: unknown, or set before the unit's last
+--- configure or build), each once.
+--- @param profile loomworks.Profile
+--- @return loomworks.ConfigUnit[]
+function M.stale_target_units(profile)
+    local out, seen = {}, {}
+    for _, pp in ipairs(profile:projects()) do
+        local unit = pp._config_unit
+        if unit and not seen[unit] and unit:targets_stale() then
+            seen[unit] = true
+            out[#out + 1] = unit
+        end
+    end
+    return out
 end
 
 --- A candidate for messages: `project:name (kind)`.

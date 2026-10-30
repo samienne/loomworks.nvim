@@ -200,8 +200,13 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.equals("interfaces", obs.mode)
         assert.not_equals(old_pid, obs.daemon.pid)
         assert.not_equals("0.0.1+test.old", obs.daemon.lw_version)
-        -- Followed through the no-launch relay of the drop.
-        assert.same({ "ordinary", "no-launch" }, t.forms)
+        -- Followed through the no-launch relay of the drop — plus, on a
+        -- loaded machine, its one answer relay when that relay met the
+        -- replacement daemon not yet responding (status 10 / 11, §19.16
+        -- "Exit before `welcome`"). Never an ordinary (launching) one.
+        assert.equals("ordinary", t.forms[1])
+        assert.is_true(#t.forms == 2 or #t.forms == 3, vim.inspect(t.forms))
+        for i = 2, #t.forms do assert.equals("no-launch", t.forms[i], vim.inspect(t.forms)) end
         assert.equals(seen.task, seen.last)
         local unit = ws:get_profiles()[1]:projects()[1]._config_unit
         assert.is_true(vim.wait(30000, function() return unit:state() == "built" end, 20), unit:state())
