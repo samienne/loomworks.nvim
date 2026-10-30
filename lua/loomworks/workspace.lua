@@ -8408,7 +8408,9 @@ function Workspace:remove_project(project)
 end
 
 --- Rename a project. Changes the project's identity (key), profile mappings
---- keyed by the project key string, and ConfigUnit ids. ConfigurationSet.mappings
+--- keyed by the project key string, and the project key recorded on its
+--- BuildDirs (so the next remerge re-finds their cache entries). ConfigUnits
+--- keep their ids (the build-dir key) and identity. ConfigurationSet.mappings
 --- is keyed by Project object reference so it doesn't need rebuilding.
 --- The rename never moves the project's files — loomworks is read-only toward
 --- project sources and never renames folders — so a path that resolved to the
@@ -8455,9 +8457,16 @@ function Workspace:rename_project(project, new_key)
         if unit._init_project_key == old_key then
             unit._init_project_key = new_key
         end
-        if unit._project == project then
-            local config_key = unit:config_key() or unit.id:match(".+/(.+)$") or ""
-            unit.id = new_key .. "/" .. config_key
+    end
+
+    -- A unit keeps its id (the persisted build-dir key — the folder does not
+    -- move); the next remerge re-finds its cache entry by (project_key,
+    -- config_key), so the project's BuildDirs carry the new key.
+    local retagged = {}
+    for _, bd in pairs(self._build_dirs) do
+        if bd.project_key == old_key then
+            bd.project_key = new_key
+            retagged[#retagged + 1] = bd
         end
     end
 
@@ -8476,11 +8485,8 @@ function Workspace:rename_project(project, new_key)
             if unit._init_project_key == new_key then
                 unit._init_project_key = old_key
             end
-            if unit._project == project then
-                local config_key = unit:config_key() or unit.id:match(".+/(.+)$") or ""
-                unit.id = old_key .. "/" .. config_key
-            end
         end
+        for _, bd in ipairs(retagged) do bd.project_key = old_key end
         return false, err
     end
     self:_save_cache()
