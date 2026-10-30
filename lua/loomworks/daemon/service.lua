@@ -142,6 +142,8 @@ M.LOAD_WAIT_MS = 45000
 ---   within its wait (`tools_late`): the model and its toolchain rows before the write
 --- @field _attach_load boolean|nil an editor's attach queued a load (`on_editor_attached`) not yet run
 ---   (removed again when the service stops)
+--- @field _carried table|nil the ids an environment reload took from the model it dropped
+---   (`snapshot.ids_by_key`), kept until a load succeeds and they carry over (`_carry_ids`, API.md §1.2)
 local Service = {}
 Service.__index = Service
 
@@ -397,6 +399,16 @@ function Service:_adopt(ws, sig)
     self.ws, self.env_sig = ws, sig
 end
 
+--- Hand the ids an environment reload took from the model it dropped
+--- (`self._carried`, API.md §1.2) to `ws`, the model the next successful
+--- load produced, and forget them.
+--- @param ws table
+function Service:_carry_ids(ws)
+    local carried = self._carried
+    self._carried = nil
+    if carried then snapshot.carry_ids(ws, self.ids, carried) end
+end
+
 --- Drop the live workspace (teardown through the host).
 function Service:_unload()
     if self.ws then
@@ -415,6 +427,7 @@ end
 function Service:_adopt_reload(ctx)
     self.host.settle(M.LOAD_WAIT_MS)
     self.ws, self.env_sig = nil, nil
+    self._carried = nil -- (this load re-ids, API.md §1.2: nothing carries over)
     self:_stop_stale_runs("the workspace was reloaded")
     local now = self.host.current()
     if now then self:_adopt(now, envscope.signature(ctx.env)) end
@@ -445,17 +458,19 @@ function Service:live(ctx, as_is)
         local ws, err = self.host.load(root, self:handlers(), { wait_tools = false })
         if not ws then return nil, err or "failed to load workspace" end
         self:_adopt(ws, sig)
+        self:_carry_ids(ws)
         if ctx.conn then ctx.conn.load_notes_of = ws end -- (raised into its notes)
         return ws
     end
     -- An environment reload keeps the model's ids (API.md §1.2, §19.12): the
-    -- ids of the model it drops, by kind and key, for the reloaded one.
-    local carried
+    -- ids of the model it drops, by kind and key, for the reloaded one. They
+    -- wait on the service until a load succeeds (`_carry_ids`), so a load
+    -- that fails or throws in between does not lose them.
     if self.ws and self.env_sig ~= sig then
         if self:_workspace_runs() then
             return nil, nil, "another build runs in the workspace daemon with a different environment"
         end
-        carried = snapshot.ids_by_key(self.ws, self.ids)
+        self._carried = snapshot.ids_by_key(self.ws, self.ids)
         self:_unload()
     end
     -- A commit journal (§19.4): a full load completes or refuses it.
@@ -485,7 +500,7 @@ function Service:live(ctx, as_is)
     local ws, err = self.host.load(root, self:handlers())
     if not ws then return nil, err or "failed to load workspace" end
     self:_adopt(ws, sig)
-    if carried then snapshot.carry_ids(ws, self.ids, carried) end
+    self:_carry_ids(ws)
     if ctx.conn then ctx.conn.load_notes_of = ws end -- (raised into its notes)
     return ws
 end
