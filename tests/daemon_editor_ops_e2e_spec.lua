@@ -57,27 +57,22 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         return obs:workspace_view().profiles[1]
     end
 
-    --- The profile row once the daemon's workspace is loaded in this
-    --- editor's environment. A call whose environment differs from the one
-    --- the workspace was loaded in makes the daemon reload it (§19.15
-    --- "Environment"), which re-mints the view's ids, so a call by those ids
-    --- would be a stale reference (BACKLOG): a configure by the profile's key
-    --- first, then the view as it followed. Its tasks are forgotten here.
-    local function aligned_row()
-        local row = profile_row()
-        local done
-        obs:start_owned("configure", { interactive = false, profile = { key = row.key } }, {
-            on_reply = function(r) if r.outcome ~= "accepted" then done = true end end,
-            on_done = function() done = true end,
-        })
-        assert.is_true(vim.wait(120000, function() return done end, 20), obs:runtime_line())
-        vim.wait(3000, function()
+    --- The unit row of a profile row, once the view reports it `built`
+    --- (from the daemon's committed cache; the view follows).
+    local function built_unit(row_id)
+        local state
+        local ok = vim.wait(30000, function()
             local v = obs:workspace_view()
-            local p = v and v.profiles and v.profiles[1]
-            return p ~= nil and p.id ~= row.id
+            for _, p in ipairs(v and v.profiles or {}) do
+                if p.id == row_id then
+                    local u = (p.units or {})[1]
+                    state = u and u.state
+                    return state == "built"
+                end
+            end
+            return false
         end, 20)
-        seen.started, seen.stopped = {}, {}
-        return profile_row()
+        assert.is_true(ok, tostring(state))
     end
 
     --- The unit row ids of a profile row.
@@ -124,7 +119,7 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         H.track_root(root)
         assert.is_true(vim.wait(10000, function() return obs:can_call("build") end, 20), obs:runtime_line())
-        local row = aligned_row()
+        local row = profile_row()
         local uids = unit_ids(row)
         assert.equals(1, #uids, vim.inspect(row))
 
@@ -138,6 +133,7 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         assert.equals(row.id, task.profile_id)
         assert.equals(0, task.exit_code)
         assert.truthy(task:output():find("step build", 1, true), task:output())
+        built_unit(row.id)
         assert.is_false(obs:owns_tasks())
 
         -- A unit build: `units` by id, no profile.
@@ -150,10 +146,9 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         -- A slow build, then the editor unloads: its connection closes and
         -- the daemon cancels the task it owns (§19.15 "Task ownership").
         vim.env.LW_TEST_SLEEP, vim.env.LW_TEST_SLEEP_STEP = "20000", "build"
-        row = aligned_row()
-        local st3 = op("build", { profile_id = row.id, unit_ids = unit_ids(row) })
-        assert.is_true(vim.wait(60000, function() return obs:owns_tasks() and #seen.started >= 1 end, 20))
-        local id = seen.started[1].id
+        local st3 = op("build", { profile_id = row.id, unit_ids = uids })
+        assert.is_true(vim.wait(60000, function() return obs:owns_tasks() and #seen.started >= 3 end, 20))
+        local id = seen.started[3].id
         obs:stop()
         assert.is_true(vim.wait(5000, function() return st3.err ~= nil end, 20))
         -- Seen from another client: the task is gone well before its sleep ends.
@@ -166,6 +161,58 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
             return s ~= nil
         end, 100))
         cli:close()
+    end)
+
+    -- The public API (§19.16 "Public API"): `lw.pick_profile()` activates a
+    -- profile row by `Profiles/1.set_active`, and `lw.build_profile()` is
+    -- the facade's `Build/1.build` of the active profile row, a task the
+    -- editor owns; the row's unit is then `built`.
+    it("lw.pick_profile then lw.build_profile builds the active profile row as a call the editor owns", function()
+        obs = observer.attach(root, { getenv = daemon_mode, resolve = function() return "lw" end,
+            relay = real_relays(), keepalive_ms = 500 })
+        assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
+        H.track_root(root)
+        assert.is_true(vim.wait(10000, function() return obs:can_call("build") end, 20), obs:runtime_line())
+        local row = profile_row()
+        assert.is_true(require("loomworks.daemon.facade").active())
+        local notes = {}
+        local orig_notify, orig_select = vim.notify, vim.ui.select
+        vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
+        local ok, err = pcall(function()
+            -- Activated through `lw.pick_profile()` (Profiles/1.set_active)
+            -- when the workspace has none active; the view follows.
+            if not row.active then
+                vim.ui.select = function(items, _, on_choice)
+                    for _, it in ipairs(items) do
+                        if it.row.id == row.id then return on_choice(it) end
+                    end
+                    on_choice(nil)
+                end
+                require("loomworks").pick_profile()
+                assert.is_true(vim.wait(30000, function()
+                    local p = obs:workspace_view().profiles[1]
+                    return p.active == true
+                end, 20), vim.inspect(notes))
+                row = obs:workspace_view().profiles[1]
+            end
+            require("loomworks").build_profile()
+            assert.is_true(vim.wait(120000, function()
+                local t = seen.started[1]
+                return t ~= nil and t.exit_code ~= nil
+            end, 20), obs:runtime_line())
+        end)
+        vim.notify, vim.ui.select = orig_notify, orig_select
+        assert(ok, err)
+        local task = seen.started[1]
+        assert.equals("build", task.kind)
+        assert.is_true(task.owned)
+        assert.is_nil(task:origin_label())
+        assert.equals(row.id, task.profile_id)
+        assert.equals(0, task.exit_code)
+        built_unit(row.id)
+        for _, n in ipairs(notes) do
+            assert.is_true((n.level or 0) < vim.log.levels.WARN, vim.inspect(notes))
+        end
     end)
 
     -- Step 5k C2: a launch of a non-device target is prepared by the daemon
@@ -183,7 +230,18 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         local orig = ov.launch_run_task
         local launched = {}
         ov.launch_run_task = function(spec) launched[#launched + 1] = spec; return nil end
-        local row = aligned_row()
+        -- Refused while the daemon has not loaded the workspace (§19.16
+        -- "Editor operations", step 5l): a read the editor carries loads it.
+        local views = require("loomworks.views")
+        -- (The daemon may report the workspace loaded already: then there is
+        -- no unloaded window to check here.)
+        local header = views.daemon_state(obs, "header")
+        if header and header.state == "unloaded" then
+            local unloaded = require("loomworks.daemon.launch_ref").new({ key = "dev" },
+                { kind = "launch", name = "run", project = { key = "app" } })
+            assert.truthy(require("loomworks.session_tracker").launch_refusal(unloaded))
+        end
+        local row = profile_row()
         -- The launch target: the profile row's `Launch/1.targets` record.
         local refs
         require("loomworks.daemon.facade").targets(row, function(r) refs = r end)
@@ -205,6 +263,7 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         assert.is_true(task.owned)
         assert.equals(0, task.exit_code)
         assert.equals(row.id, task.profile_id)
+        built_unit(row.id)
         assert.is_false(obs:owns_tasks())
     end)
 
@@ -226,8 +285,7 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
             H.track_root(root)
             assert.is_true(vim.wait(10000, function() return obs:can_call("build") end, 20), obs:runtime_line())
             vim.env.LW_TEST_SLEEP, vim.env.LW_TEST_SLEEP_STEP = "20000", "build"
-            local row = aligned_row()
-            for k in pairs(created) do created[k] = nil end
+            local row = profile_row()
 
             local st = op("build", { profile_id = row.id, unit_ids = unit_ids(row) })
             assert.is_true(vim.wait(60000, function() return #created >= 1 end, 20))

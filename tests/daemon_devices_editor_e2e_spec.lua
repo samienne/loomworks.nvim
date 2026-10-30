@@ -333,11 +333,9 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
     end)
 
     it("an install that fails ends the chain with its error; nothing is launched", function()
-        -- (Set before the daemon loads the workspace: a call in another
-        -- environment reloads it and re-mints the view's ids, BACKLOG.)
-        vim.env.LW_TEST_DEVICE_FAIL = "install"
         serve()
         choose_ser1()
+        vim.env.LW_TEST_DEVICE_FAIL = "install"
         notes = {}
         session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return #errors() > 0 end, 20), vim.inspect(notes))
@@ -345,22 +343,23 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.same({ "scan", "build", "install" }, kinds())
         assert.is_false(session_tracker.is_running())
         assert.is_nil(read(log):find("launch SER1", 1, true), read(log))
-        -- Nothing left preparing: a new launch starts at once (no question)
-        -- and reaches its install again.
+        -- Nothing left preparing: a new launch starts at once (no question),
+        -- reaches its install again and runs.
+        vim.env.LW_TEST_DEVICE_FAIL = nil
         assert.is_false(start_asked())
         assert.is_true(vim.wait(180000, function()
             local n = 0
             for _, k in ipairs(kinds()) do if k == "install" then n = n + 1 end end
             return n == 2
         end, 20), vim.inspect(kinds()))
+        assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
+            vim.inspect(errors()))
     end)
 
     it("a launch that fails ends the chain with its error; no run is tracked", function()
-        -- (Set before the daemon loads the workspace: a call in another
-        -- environment reloads it and re-mints the view's ids, BACKLOG.)
-        vim.env.LW_TEST_DEVICE_FAIL = "launch"
         serve()
         choose_ser1()
+        vim.env.LW_TEST_DEVICE_FAIL = "launch"
         notes = {}
         session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return #errors() > 0 end, 20), vim.inspect(notes))
@@ -371,11 +370,9 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
     end)
 
     it("a disconnect during the install ends the chain; nothing runs in-process", function()
-        -- (Set before the daemon loads the workspace: a call in another
-        -- environment reloads it and re-mints the view's ids, BACKLOG.)
-        vim.env.LW_TEST_DEVICE_SLEEP = "5000"
         serve()
         choose_ser1()
+        vim.env.LW_TEST_DEVICE_SLEEP = "5000"
         notes = {}
         local target = default_target()
         session_tracker.start(target, "launch")
@@ -406,11 +403,9 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
     end)
 
     it("a stop during a device run's build cancels the build; nothing installed", function()
-        -- (Set before the daemon loads the workspace: a call in another
-        -- environment reloads it and re-mints the view's ids, BACKLOG.)
-        vim.env.LW_TEST_SLEEP = "20000"
         serve()
         choose_ser1()
+        vim.env.LW_TEST_SLEEP = "20000"
         notes = {}
         session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(60000, function() return task_of("build") ~= nil end, 20), vim.inspect(notes))
@@ -424,10 +419,8 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
     end)
 
     it("a stop during a device run's scan cancels the scan; no device is chosen", function()
-        -- (Set before the daemon loads the workspace: a call in another
-        -- environment reloads it and re-mints the view's ids, BACKLOG.)
-        vim.env.LW_TEST_SCAN_SLEEP = "hang"
         serve()
+        vim.env.LW_TEST_SCAN_SLEEP = "hang"
         notes = {}
         session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return task_of("scan") ~= nil end, 20), vim.inspect(notes))
