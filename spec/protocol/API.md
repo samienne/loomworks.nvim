@@ -59,6 +59,13 @@ issued is still the one named. An id issued before the server loaded the
 workspace again (a trust change, the removal of the working copy, a newer
 schema) or before a restart is stale; a command answers it `refused`, `no
 <kind> with id <id> (a stale reference)`, and changes nothing.
+A reload the server makes for a request's environment (spec §19.15
+"Environment") is not such a load: each entity of the reloaded model keeps
+the id of the entity it replaces, matched by kind and key as a refresh
+matches it (a profile, configuration set or project by its key; a
+configuration, launch configuration or configuration unit by its project's
+key and its own). The request that caused the reload, and every client,
+keep their ids. An entity the reload no longer has leaves its id stale.
 
 An **item reference** (`ItemRef`) names a profile, configuration set,
 project, configuration or launch configuration without saying which: ids
