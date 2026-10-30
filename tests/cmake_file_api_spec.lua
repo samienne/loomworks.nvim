@@ -405,4 +405,39 @@ describe("cmake parse_targets", function()
         assert.is_true(vim.wait(5000, function() return called end, 5))
         assert.is_nil(result)
     end)
+    -- A decodable but mis-shaped reply throws inside a scheduled step: the
+    -- callback must still run (with nil), or a caller waiting on it hangs.
+    it("parse_targets_async calls back nil when the codemodel is mis-shaped", function()
+        write_file_api(tmp_dir, { { name = "app", type = "EXECUTABLE" } })
+        local reply_dir = tmp_dir .. "/.cmake/api/v1/reply"
+        local fd = assert(io.open(reply_dir .. "/codemodel-v2-abc123.json", "w"))
+        fd:write(vim.json.encode({ kind = "codemodel", configurations = 5 }))
+        fd:close()
+        local called, result = 0, "sentinel"
+        cmake.parse_targets_async({ build_dir = tmp_dir }, function(t)
+            result = t
+            called = called + 1
+        end)
+        assert.is_true(vim.wait(2000, function() return called > 0 end, 5), "never called back")
+        vim.wait(50)
+        assert.equals(1, called)
+        assert.is_nil(result)
+    end)
+
+    it("parse_targets_async calls back nil when a target detail is mis-shaped", function()
+        write_file_api(tmp_dir, { { name = "app", type = "EXECUTABLE" } })
+        local reply_dir = tmp_dir .. "/.cmake/api/v1/reply"
+        local fd = assert(io.open(reply_dir .. "/target-app-abc123.json", "w"))
+        fd:write(vim.json.encode({ name = "app", type = "EXECUTABLE", dependencies = 7 }))
+        fd:close()
+        local called, result = 0, "sentinel"
+        cmake.parse_targets_async({ build_dir = tmp_dir }, function(t)
+            result = t
+            called = called + 1
+        end)
+        assert.is_true(vim.wait(2000, function() return called > 0 end, 5), "never called back")
+        vim.wait(50)
+        assert.equals(1, called)
+        assert.is_nil(result)
+    end)
 end)

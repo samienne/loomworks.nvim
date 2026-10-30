@@ -777,3 +777,22 @@ describe("meson clang-cl (per MSVC install)", function()
         assert.equals("C:/LLVM/bin/clangd.exe", entries[1].binary)
     end)
 end)
+
+describe("meson parse_targets_async", function()
+    it("calls back nil when parse_targets throws (mis-shaped introspect data)", function()
+        local orig = meson.parse_targets
+        meson.parse_targets = function() error("mis-shaped") end
+        local called, result = 0, "sentinel"
+        local ok, err = pcall(function()
+            meson.parse_targets_async({ build_dir = "x" }, function(t)
+                result = t
+                called = called + 1
+            end)
+            assert.is_true(vim.wait(2000, function() return called > 0 end, 5), "never called back")
+        end)
+        meson.parse_targets = orig
+        assert(ok, err)
+        assert.equals(1, called)
+        assert.is_nil(result)
+    end)
+end)

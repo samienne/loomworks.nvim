@@ -792,7 +792,10 @@ local function with_fresh_targets(service, ctx, args, run, fn)
         return run(service, ctx, function(ws)
             for _, p in ipairs(parsed or {}) do
                 local u = p.unit
-                if p.targets and not u._removed and u._workspace == ws and u:targets_stamp() == p.stamp then
+                -- Current already (a concurrent request applied
+                -- its own parse): not re-replaced, no extra view update.
+                if p.targets and not u._removed and u._workspace == ws and u:targets_stamp() == p.stamp
+                    and u:targets_stale() then
                     u:set_targets(p.targets)
                 end
             end

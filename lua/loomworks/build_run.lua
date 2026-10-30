@@ -398,24 +398,38 @@ function M._targets_ctx(ws, unit)
     }
 end
 
+--- How long parse_unit_targets_async waits on a module's
+--- `parse_targets_async` before giving up (nil): a module whose callback
+--- never runs (it threw on a later turn) must not hold its caller.
+M.TARGETS_PARSE_TIMEOUT_MS = 30000
+
 --- Parse a unit's build targets without blocking the caller: the module's
 --- `parse_targets_async` (spec §8), else its `parse_targets` on a later
 --- event-loop turn. `cb(targets|nil)` always runs, once, on a later turn
---- (nil: nothing parsed — not parseable, no data, or the module failed).
+--- (nil: nothing parsed — not parseable, no data, the module failed, or its
+--- `parse_targets_async` did not call back within TARGETS_PARSE_TIMEOUT_MS).
 --- Nothing is set on the unit: the caller applies the result.
 --- @param ws loomworks.Workspace
 --- @param unit loomworks.ConfigUnit
 --- @param cb fun(targets: table|nil)
 function M.parse_unit_targets_async(ws, unit, cb)
-    local called = false
+    local called, timer = false, nil
     local function once(t)
         if called then return end
         called = true
+        if timer then
+            pcall(timer.stop, timer)
+            pcall(timer.close, timer)
+            timer = nil
+        end
         cb(t)
     end
     local okc, mod, ctx = pcall(M._targets_ctx, ws, unit)
     if not (okc and mod) then return vim.schedule(function() once(nil) end) end
     if mod.parse_targets_async then
+        -- The watchdog: spec §8 does not require a module's callback on an
+        -- error, and one thrown on a later turn is out of this pcall's reach.
+        timer = vim.defer_fn(function() timer = nil; once(nil) end, M.TARGETS_PARSE_TIMEOUT_MS)
         local ok = pcall(mod.parse_targets_async, ctx, function(t)
             vim.schedule(function() once(type(t) == "table" and t or nil) end)
         end)

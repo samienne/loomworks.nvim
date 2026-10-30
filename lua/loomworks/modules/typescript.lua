@@ -520,12 +520,14 @@ function M.parse_targets(ctx)
     return next(targets) and targets or nil
 end
 
---- Async version of parse_targets.
+--- Async version of parse_targets. Always calls back: nil when the parse
+--- throws (e.g. a mis-shaped package.json).
 --- @param ctx { build_dir?: string, project_path?: string, config_name?: string }
 --- @param callback fun(targets: table|nil)
 function M.parse_targets_async(ctx, callback)
     vim.schedule(function()
-        callback(M.parse_targets(ctx))
+        local ok, targets = pcall(M.parse_targets, ctx)
+        callback(ok and targets or nil)
     end)
 end
 

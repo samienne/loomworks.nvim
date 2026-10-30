@@ -285,6 +285,125 @@ describe("Launch/1.targets, Profiles/1.set_default_target, view projects[].targe
         assert(ok, err)
     end)
 
+    --- Make app's unit parse its targets through `parse_targets_async`: the
+    --- shell module given a `parse_targets` (never expected to run) and a
+    --- `parse_targets_async` that hands its callback to `async(ctx, cb)`.
+    --- `restore()` undoes it.
+    local function parsing_async(unit, async)
+        local impl = unit._project._module.impl
+        local orig, orig_async = impl.parse_targets, impl.parse_targets_async
+        local p = { sync_calls = 0, calls = 0 }
+        impl.parse_targets = function()
+            p.sync_calls = p.sync_calls + 1
+            return nil
+        end
+        impl.parse_targets_async = function(ctx, cb)
+            p.calls = p.calls + 1
+            return async(ctx, cb)
+        end
+        unit.state_value = "configured"
+        unit.build_dir_value = unit.build_dir_value or (root .. "/out/Debug")
+        function p.restore() impl.parse_targets, impl.parse_targets_async = orig, orig_async end
+        return p
+    end
+
+    --- Start a call; returns a getter of its (result, error) once answered.
+    local function call_async(object, iface, method, args)
+        local st = {}
+        conn:call(object, iface, 1, method, args or {}, function(res, err)
+            st.r, st.e, st.done = res, err, true
+        end, envscope.capture())
+        return st
+    end
+    local function target_names(r)
+        local names = {}
+        for _, t in ipairs(r.targets or {}) do names[#names + 1] = t.kind .. ":" .. t.name end
+        return names
+    end
+
+    it("targets parses through a module's parse_targets_async off the model queue", function()
+        local _, dev, unit = loaded()
+        local p = parsing_async(unit, function(_, cb)
+            vim.schedule(function() cb({ server = { type = "executable" } }) end)
+        end)
+        local ok, err = pcall(function()
+            unit.targets = nil
+            local r = launch("targets", { profile = { id = id_of(dev) } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.equals(1, p.calls)
+            assert.equals(0, p.sync_calls, "the synchronous parse ran")
+            assert.same({ "launch:run", "target:server" }, target_names(r))
+            assert.is_not_nil(unit.targets and unit.targets.server)
+        end)
+        p.restore()
+        assert(ok, err)
+    end)
+
+    it("a parse_targets_async that throws inside a scheduled step still gets the request answered", function()
+        local _, dev, unit = loaded()
+        local build_run = require("loomworks.build_run")
+        local orig_timeout = build_run.TARGETS_PARSE_TIMEOUT_MS
+        build_run.TARGETS_PARSE_TIMEOUT_MS = 300
+        local p = parsing_async(unit, function()
+            vim.schedule(function() error("mis-shaped reply") end)
+        end)
+        local ok, err = pcall(function()
+            unit.targets = nil
+            local st = call_async("/launch", "loomworks.Launch", "targets", { profile = { id = id_of(dev) } })
+            assert.is_true(vim.wait(10000, function() return st.done end, 10), "targets never answered")
+            assert.is_nil(st.e, vim.inspect(st.e))
+            assert.equals("ok", st.r.outcome, vim.inspect(st.r))
+            assert.same({ "launch:run" }, target_names(st.r))
+            assert.is_nil(unit.targets)
+            st = call_async("/profiles", "loomworks.Profiles", "set_default_target", { profile = { id = id_of(dev) },
+                target = { kind = "launch", project = { key = "app" }, name = "run" } })
+            assert.is_true(vim.wait(10000, function() return st.done end, 10), "set_default_target never answered")
+            assert.is_nil(st.e, vim.inspect(st.e))
+        end)
+        p.restore()
+        build_run.TARGETS_PARSE_TIMEOUT_MS = orig_timeout
+        assert(ok, err)
+    end)
+
+    it("a parse whose unit's build tree changes meanwhile is discarded; the request still answers", function()
+        local _, dev, unit = loaded()
+        local pending
+        local p = parsing_async(unit, function(_, cb) pending = cb end)
+        local ok, err = pcall(function()
+            unit.targets = nil
+            local st = call_async("/launch", "loomworks.Launch", "targets", { profile = { id = id_of(dev) } })
+            assert.is_true(vim.wait(10000, function() return pending ~= nil end, 10), "no parse started")
+            unit.last_built = "2099-01-01T00:00:00Z"
+            pending({ server = { type = "executable" } })
+            assert.is_true(vim.wait(10000, function() return st.done end, 10), "targets never answered")
+            assert.is_nil(st.e, vim.inspect(st.e))
+            assert.equals("ok", st.r.outcome, vim.inspect(st.r))
+            assert.same({ "launch:run" }, target_names(st.r))
+            assert.is_nil(unit.targets, "a result for an older build tree was applied")
+        end)
+        p.restore()
+        assert(ok, err)
+    end)
+
+    it("a parse whose unit is removed meanwhile is skipped; the request still answers", function()
+        local _, dev, unit = loaded()
+        local pending
+        local p = parsing_async(unit, function(_, cb) pending = cb end)
+        local ok, err = pcall(function()
+            unit.targets = nil
+            local st = call_async("/launch", "loomworks.Launch", "targets", { profile = { id = id_of(dev) } })
+            assert.is_true(vim.wait(10000, function() return pending ~= nil end, 10), "no parse started")
+            unit._removed = true
+            pending({ server = { type = "executable" } })
+            assert.is_true(vim.wait(10000, function() return st.done end, 10), "targets never answered")
+            assert.is_nil(st.e, vim.inspect(st.e))
+            assert.is_nil(unit.targets, "a removed unit was given targets")
+        end)
+        unit._removed = nil
+        p.restore()
+        assert(ok, err)
+    end)
+
     it("device targets: listed with their label, settable as the default, marked default", function()
         local ws, dev, unit = loaded()
         local app = find(ws._projects, "key", "app")

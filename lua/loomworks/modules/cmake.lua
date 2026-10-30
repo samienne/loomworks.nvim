@@ -2470,17 +2470,20 @@ local PT_REFS_PER_STEP = 8
 --- the next tick, then reads/decodes the per-target detail JSONs in bounded,
 --- time-boxed batches across `vim.schedule` turns (each target detail is a disk
 --- read + JSON decode), so a project with many targets never parses in one
---- synchronous burst. Output is identical to `parse_targets`.
+--- synchronous burst. Output is identical to `parse_targets`. Always calls
+--- back, once: nil when a step throws (a decodable but mis-shaped reply,
+--- e.g. `configurations` or `dependencies` not a list).
 --- @param ctx { build_dir: string, project_path?: string, config_name?: string }
 --- @param callback fun(targets: table<string, loomworks.CachedTarget>|nil)
 function M.parse_targets_async(ctx, callback)
     vim.schedule(function()
-        local plan = parse_targets_plan(ctx)
-        if not plan then callback(nil); return end
+        local ok, plan = pcall(parse_targets_plan, ctx)
+        if not (ok and plan) then callback(nil); return end
 
         local targets = {}
         local i = 0
-        local function step()
+        -- One time-boxed batch of target refs; true once all are read.
+        local function slice()
             local start = uv.hrtime()
             local n = 0
             while i < #plan.refs do
@@ -2494,7 +2497,13 @@ function M.parse_targets_async(ctx, callback)
                     break
                 end
             end
-            if i >= #plan.refs then
+            return i >= #plan.refs
+        end
+        local function step()
+            local sok, done = pcall(slice)
+            if not sok then
+                callback(nil)
+            elseif done then
                 callback(next(targets) and targets or nil)
             else
                 vim.schedule(step)
