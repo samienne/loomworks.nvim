@@ -83,8 +83,29 @@ function M.workspace_languages(workspace)
     return langs
 end
 
---- The workspace's debug-adapter mapping, one record per language of
---- workspace_languages (`DebugConfig/1.adapters`): the adapter in effect
+--- The languages of the workspace's modules (`Module.languages`), each once,
+--- sorted: those the debug adapters section and `DebugConfig/1.adapters` list.
+--- @param workspace loomworks.Workspace|{ _modules?: { languages?: string[] }[] }
+--- @return string[]
+function M.module_languages(workspace)
+    local seen, langs = {}, {}
+    for _, mod in ipairs(workspace._modules or {}) do
+        for _, lang in ipairs(type(mod.languages) == "table" and mod.languages or {}) do
+            if type(lang) == "string" and lang ~= "" and not seen[lang] then
+                seen[lang] = true
+                langs[#langs + 1] = lang
+            end
+        end
+    end
+    table.sort(langs)
+    return langs
+end
+
+--- The workspace's debug-adapter mapping (`DebugConfig/1.adapters`, API.md
+--- §12): one record per language of the workspace's modules
+--- (`Module.languages`), sorted; none when no module declares a language. A
+--- language with only a default adapter and no module gets no record
+--- (workspace_languages has those). Each record: the adapter in effect
 --- (`adapter`, absent with neither an override nor a default), the
 --- integration's `default`, the adapters `known` for the language (from the
 --- integrations' declarations, never from a debugger), and whether the
@@ -95,7 +116,7 @@ function M.adapter_records(workspace)
     local settings = workspace._debug_settings
     local overrides = settings and settings.adapters or {}
     local records = {}
-    for _, lang in ipairs(M.workspace_languages(workspace)) do
+    for _, lang in ipairs(M.module_languages(workspace)) do
         local known = {}
         for i, a in ipairs(M.known_adapters(lang)) do known[i] = a end
         records[#records + 1] = {

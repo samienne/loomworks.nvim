@@ -109,6 +109,11 @@ local function open_launch_editor(ctx, prow, lrow, decl)
             if not ws then return nil end
             return (require("loomworks.daemon.editor_ops").debug_adapters(ws))
         end,
+        -- Every known language, for "Add debug language".
+        debug_languages = function(cb)
+            if not ws then return cb(nil, "no workspace") end
+            require("loomworks.daemon.editor_ops").debug_languages(ws, cb)
+        end,
         -- The daemon's records arrive after the dialog opens: it re-renders.
         on_debug_adapters = function(arrived)
             if not ws then return end

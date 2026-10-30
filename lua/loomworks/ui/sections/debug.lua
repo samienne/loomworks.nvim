@@ -1,7 +1,9 @@
 --- loomworks/ui/sections/debug.lua — Debug adapter section renderer.
 ---
---- Shows current debug adapter selection per language of the workspace's
---- modules. Allows picking from known adapters via Enter action.
+--- Shows the current debug adapter selection per language: the languages
+--- are the mapping's own records (one per language of the workspace's
+--- modules, API.md §12 `DebugConfig/1.adapters`), never read from the
+--- editor's model. Allows picking from known adapters via Enter action.
 ---
 --- The mapping comes from loomworks.daemon.editor_ops: in `daemon` mode
 --- `DebugConfig/1` (step 5k C2, spec §19.16 "Editor operations"), the
@@ -19,28 +21,18 @@ return function(tree, ctx)
     local ws = lw.get_workspace()
     if not ws then return end
 
-    local modules = ws._modules
-    if not modules or #modules == 0 then return end
-
-    local seen = {}
-    local languages = {}
-    for _, mod in ipairs(modules) do
-        for _, lang in ipairs(mod.languages) do
-            if not seen[lang] then
-                seen[lang] = true
-                languages[#languages + 1] = lang
-            end
-        end
-    end
-    if #languages == 0 then return end
-    table.sort(languages)
-
     local ops = require("loomworks.daemon.editor_ops")
     local records, why = ops.debug_adapters(ws)
-    local by_lang = {}
+    -- No language known: no section.
+    if records and #records == 0 then return end
+    local languages, by_lang = {}, {}
     for _, r in ipairs(records or {}) do
-        if type(r) == "table" and r.language then by_lang[r.language] = r end
+        if type(r) == "table" and type(r.language) == "string" and not by_lang[r.language] then
+            by_lang[r.language] = r
+            languages[#languages + 1] = r.language
+        end
     end
+    table.sort(languages)
 
     tree:blank()
     tree:leaf("Debug Adapters", "Title")

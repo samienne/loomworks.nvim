@@ -230,7 +230,7 @@ M.LAUNCH = {
 -- calls, no task; re-read on `Workspace/1` `changed` (it has no signal).
 M.DEBUG = {
     object = "/debug", iface = "loomworks.DebugConfig", v = 1, feature = "debug adapters",
-    methods = { "adapters", "set_adapter" }, signals = {}, call_only = true,
+    methods = { "adapters", "set_adapter", "known_languages" }, signals = {}, call_only = true,
 }
 -- What the language servers are configured with (step 5l, §19.16 "LSP
 -- configuration", §19.20 `LspConfig/1`): subscribed to for its thin
@@ -2170,7 +2170,7 @@ M.DECLINED_CODES = { same_build_required = true, stopping = true, retiring = tru
 local METHOD_IFACE = {
     build = M.BUILD, configure = M.BUILD, clean = M.BUILD,
     prepare_run = M.LAUNCH, prepare_debug = M.LAUNCH, launch_build = M.LAUNCH, device_log = M.LAUNCH,
-    adapters = M.DEBUG, set_adapter = M.DEBUG,
+    adapters = M.DEBUG, set_adapter = M.DEBUG, known_languages = M.DEBUG,
     get = M.LSP, set_option = M.LSP,
     cancel = M.TASKS, list = M.TASKS,
     discover = M.TESTS, run_cases = M.TESTS, prepare_test_debug = M.TESTS, collect = M.TESTS, result = M.TESTS,
@@ -2256,6 +2256,9 @@ local CALLS = {
     end,
     set_adapter = function(conn, args, cb, env)
         conn:call(M.DEBUG.object, M.DEBUG.iface, M.DEBUG.v, "set_adapter", args, cb, env)
+    end,
+    known_languages = function(conn, args, cb, env)
+        conn:call(M.DEBUG.object, M.DEBUG.iface, M.DEBUG.v, "known_languages", args, cb, env)
     end,
     get = function(conn, args, cb, env)
         conn:call(M.LSP.object, M.LSP.iface, M.LSP.v, "get", args, cb, env)
@@ -2434,7 +2437,7 @@ local CALLS = {
 --- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"device_log"|"Profiles/1.set_device"|"Profiles/1.clear_device"|"Profiles/1.set_default_target"|"Launch/1.targets"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"known_languages"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"device_log"|"Profiles/1.set_device"|"Profiles/1.clear_device"|"Profiles/1.set_default_target"|"Launch/1.targets"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -2749,7 +2752,7 @@ M.VALUE_CHECKED = { set_option = true }
 ---   { outcome = "invalid", reason }   `invalid_args` of a VALUE_CHECKED method
 ---   { outcome = "degraded", reason }  the daemon lacks the method (noted)
 ---   { outcome = "failed", reason }    any other error
---- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"|"device_list"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"|"Profiles/1.set_default_target"|"Launch/1.targets"
+--- @param method "adapters"|"set_adapter"|"known_languages"|"get"|"set_option"|"collect"|"result"|"device_list"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"|"Profiles/1.set_default_target"|"Launch/1.targets"
 --- @param args table
 --- @param cb fun(r: table)
 function Observer:request(method, args, cb)

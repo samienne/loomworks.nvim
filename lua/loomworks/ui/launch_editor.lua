@@ -37,6 +37,9 @@ local M = {}
 ---   debug_adapters: (fun(): table[]|nil)|nil — the debug adapter records
 ---     (`DebugConfig/1.adapters`: `{ language, adapter?, default? }`), nil
 ---     while unknown; read at each render
+---   debug_languages: (fun(cb: fun(languages: string[]|nil, why: string|nil)))|nil
+---     — every language a debug launch may name (`DebugConfig/1.known_languages`),
+---     read when "Add debug language" is chosen; nil languages: unknown, why
 ---   on_debug_adapters: (fun(arrived: fun()))|nil — calls `arrived` once the
 ---     records are read (`debug_adapters` then has them): the open dialog
 ---     re-renders, so its adapters do not stay "?"
@@ -499,8 +502,8 @@ function M.open(opts)
         })
 
         t:blank()
-        -- The adapter records (one per language the workspace knows), read
-        -- at each render: they may arrive while the dialog is open.
+        -- The adapter records (one per language of the workspace's modules),
+        -- read at each render: they may arrive while the dialog is open.
         local records = opts.debug_adapters and opts.debug_adapters() or nil
         local by_lang = {}
         for _, r in ipairs(records or {}) do
@@ -511,7 +514,9 @@ function M.open(opts)
             for di, lang in ipairs(debug_langs) do
                 local captured_di = di
                 local rec = by_lang[lang]
-                local adapter = rec and (rec.adapter or rec.default) or "?"
+                -- No record (a language no workspace module declares): the adapter
+                -- is resolved when the debug starts; never guess a default here.
+                local adapter = rec and (rec.adapter or rec.default) or "(resolved at launch)"
                 local prefix = di == 1 and " (primary) " or " (attach)  "
                 t:item("  " .. lang .. prefix .. "→ " .. adapter, {
                     hl = "LoomworksActionable",
@@ -540,36 +545,37 @@ function M.open(opts)
             hl = "LoomworksActionable",
             direct = true,
             on_enter = function()
-                local available = {}
-                local seen = {}
-                for _, r in ipairs(records or {}) do
-                    if type(r) == "table" and type(r.language) == "string" and not seen[r.language] then
-                        seen[r.language] = true
-                        available[#available + 1] = r.language
-                    end
-                end
-                if not records then
+                -- Every known language (`DebugConfig/1.known_languages`), not
+                -- only the adapter records' (the workspace modules').
+                if not opts.debug_languages then
                     vim.notify("loomworks: the debug languages are not known yet", vim.log.levels.INFO)
                     return
                 end
-                local filtered = {}
-                local added = {}
-                for _, l in ipairs(debug_langs) do added[l] = true end
-                for _, l in ipairs(available) do
-                    if not added[l] then
-                        filtered[#filtered + 1] = l
+                opts.debug_languages(function(available, why)
+                    if not available then
+                        vim.notify("loomworks: the debug languages are not known: " .. tostring(why or "not read yet"),
+                            vim.log.levels.INFO)
+                        return
                     end
-                end
-                if #filtered == 0 then
-                    vim.notify("loomworks: no more languages to add", vim.log.levels.INFO)
-                    return
-                end
-                vim.ui.select(filtered, {
-                    prompt = "Add debug language:",
-                }, function(choice)
-                    if not choice then return end
-                    debug_langs[#debug_langs + 1] = choice
-                    if view then view:refresh() end
+                    local filtered = {}
+                    local added = {}
+                    for _, l in ipairs(debug_langs) do added[l] = true end
+                    for _, l in ipairs(available) do
+                        if not added[l] then
+                            filtered[#filtered + 1] = l
+                        end
+                    end
+                    if #filtered == 0 then
+                        vim.notify("loomworks: no more languages to add", vim.log.levels.INFO)
+                        return
+                    end
+                    vim.ui.select(filtered, {
+                        prompt = "Add debug language:",
+                    }, function(choice)
+                        if not choice then return end
+                        debug_langs[#debug_langs + 1] = choice
+                        if view then view:refresh() end
+                    end)
                 end)
             end,
         })

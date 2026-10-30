@@ -1058,10 +1058,12 @@ The workspace's debug-adapter mapping (spec §8.9.6 "Adapter configuration"),
 on `/debug`:
 
 - `adapters {}` → `{ languages: [{ language, adapter, default, known,
-  overridden }] }` — one record per known language (`known_languages`): the
-  adapter in effect, the integration's default, the adapters known for the
-  language (`known`, from the integrations' declarations, never from the
-  client's debugger), and whether the working copy overrides the default;
+  overridden }] }` — one record per language of the workspace's modules
+  (`Module.languages`, spec §8.9.6), sorted; none when no module declares a
+  language: the adapter in effect, the integration's default, the adapters
+  known for the language (`known`, from the integrations' declarations,
+  never from the client's debugger), and whether the working copy overrides
+  the default;
 - `set_adapter { language, adapter? }` — sets the language's adapter in the
   working copy (`user.json` `debug.adapters`, never `loomworks.json`), or,
   with no `adapter`, removes the override so the default applies, with a

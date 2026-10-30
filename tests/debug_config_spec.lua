@@ -66,7 +66,8 @@ describe("debug_config records (DebugConfig/1)", function()
   end)
 
   it("reports the adapter in effect, the default, the known adapters and the override", function()
-    local ws = { _modules = { { languages = { "c" } } }, _debug_settings = { adapters = { ["c++"] = "cppdbg" } } }
+    local ws = { _modules = { { languages = { "c", "c++" } }, { languages = { "typescript" } } },
+      _debug_settings = { adapters = { ["c++"] = "cppdbg" } } }
     local by = {}
     for _, r in ipairs(debug_config.adapter_records(ws)) do by[r.language] = r end
     assert.same({ language = "c++", adapter = "cppdbg", default = "codelldb", known = { "codelldb", "cppdbg" },
@@ -75,6 +76,16 @@ describe("debug_config records (DebugConfig/1)", function()
       known = { "pwa-node", "pwa-chrome" }, overridden = false }, by.typescript)
     -- A language with neither an override nor a default: no adapter.
     assert.same({ language = "c", known = {}, overridden = false }, by.c)
+  end)
+
+  it("has one record per language of the workspace's modules only, sorted (API.md §12)", function()
+    local ws = { _modules = { { languages = { "c++", "c" } }, { languages = { "c++" } }, {} } }
+    local langs = {}
+    for _, r in ipairs(debug_config.adapter_records(ws)) do langs[#langs + 1] = r.language end
+    -- typescript has a default adapter, but no module declares it: no record.
+    assert.same({ "c", "c++" }, langs)
+    assert.same({}, debug_config.adapter_records({ _modules = { {} } }))
+    assert.same({}, debug_config.adapter_records({}))
   end)
 end)
 

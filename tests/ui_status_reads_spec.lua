@@ -125,6 +125,43 @@ describe("status page reads in daemon mode (WP-B)", function()
                 obs.requests)
         end)
     end)
+
+    describe("Debug Adapters section", function()
+        local function render(records)
+            obs.debug_adapters = function() return records end
+            local tree, nodes = fake_tree()
+            package.loaded["loomworks.ui.sections.debug"] = nil
+            require("loomworks.ui.sections.debug")(tree, { lw = { get_workspace = function() return ws end } })
+            local labels = {}
+            for _, n in ipairs(nodes) do labels[#labels + 1] = n.label end
+            return labels
+        end
+
+        it("lists the languages of the daemon's DebugConfig/1.adapters records, never the model's modules", function()
+            local labels = render({
+                { language = "typescript", adapter = "pwa-node", default = "pwa-node", known = { "pwa-node" } },
+                { language = "c++", adapter = "cppdbg", default = "codelldb", known = { "codelldb", "cppdbg" },
+                    overridden = true },
+                { language = "rust", known = {} },
+            })
+            assert.equals("Debug Adapters", labels[1])
+            assert.equals("c++  →  cppdbg", labels[2])
+            assert.equals("typescript  →  pwa-node  (default)", labels[3])
+            -- A language with neither an adapter nor a default is not shown.
+            for _, l in ipairs(labels) do assert.is_nil(l:find("rust", 1, true), l) end
+        end)
+
+        it("no records: no section", function()
+            assert.same({}, render({}))
+        end)
+
+        it("unavailable: the reason, from the daemon's state", function()
+            obs.carried = false
+            local labels = render(nil)
+            assert.equals("Debug Adapters", labels[1])
+            assert.truthy(labels[2]:find("^unavailable"), labels[2])
+        end)
+    end)
 end)
 
 describe("ConfigSets/1 dialog mappings in-process (WP-B)", function()
