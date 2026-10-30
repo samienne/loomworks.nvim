@@ -299,6 +299,36 @@ local function add_note(c, text, role)
     c.note_roles[#c.note_roles + 1] = role
 end
 
+--- A warm workspace's load warnings into the notes of request `c` (§19.13
+--- "Load warnings"): the request that loaded it got them as they were raised
+--- (`handlers().notify`); each later one that uses it carries them too, with
+--- their roles, so every CLI command prints them as an in-process run (which
+--- loads each time) does. Once per connection and workspace — a command's
+--- later requests on its connection (a read's snapshot, then its query) do
+--- not repeat them, as the in-process command loads once — and a note the
+--- request already has (re-raised by this request's sync) is not repeated.
+--- An editor's request is left out: the editor shows them in the views
+--- (Workspace/1 `diagnostics`), and reads a `warn` note of a reply as that
+--- command's failure (ui/model_calls.result).
+--- @param c table the request context
+--- @param ws table the live workspace
+local function add_load_notes(c, ws)
+    local conn = c.conn
+    if conn and conn.observer then return end
+    if conn then
+        if conn.load_notes_of == ws then return end
+        conn.load_notes_of = ws
+    end
+    if type(ws.load_notes) ~= "function" then return end
+    local texts, roles = ws:load_notes()
+    if #texts == 0 then return end
+    local have = {}
+    for _, n in ipairs(c.notes or {}) do have[n] = true end
+    for i, t in ipairs(texts) do
+        if not have[t] then add_note(c, t, roles[i]) end
+    end
+end
+
 --- The handlers the host's loader installs on the workspace core: they report
 --- into the request whose segment is running (a notification is printed on
 --- that client's stderr, a refused save ends its build), else the runtime log.
@@ -308,6 +338,12 @@ function Service:handlers()
         notify = function(msg, level)
             if level and level < vim.log.levels.WARN then return end
             local c = self.current
+            if c and c.conn and c.conn.observer and require("loomworks.notify").in_load() then
+                -- A load's warning on an editor's request (§19.13 "Load
+                -- warnings"): the editor shows it in the views, and would
+                -- read a `warn` note of the reply as the command's failure.
+                c = nil
+            end
             if c and c.task then
                 -- (The in-process loader's roles: an error fails, a warning warns.)
                 c.task:line("err", tostring(msg) .. "\n", (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
@@ -399,10 +435,14 @@ function Service:live(ctx, as_is)
         self:_stop_stale_runs("the workspace was unloaded (refused or reloaded .nvim files)")
     end
     if as_is then
-        if self.ws then return self.ws end
+        if self.ws then
+            add_load_notes(ctx, self.ws)
+            return self.ws
+        end
         local ws, err = self.host.load(root, self:handlers(), { wait_tools = false })
         if not ws then return nil, err or "failed to load workspace" end
         self:_adopt(ws, sig)
+        if ctx.conn then ctx.conn.load_notes_of = ws end -- (raised into its notes)
         return ws
     end
     if self.ws and self.env_sig ~= sig then
@@ -432,11 +472,13 @@ function Service:live(ctx, as_is)
         if self.ws._tool_state ~= "scanned" then
             vim.wait(M.LOAD_WAIT_MS, function() return self.ws._tool_state == "scanned" end, 25)
         end
+        add_load_notes(ctx, self.ws)
         return self.ws
     end
     local ws, err = self.host.load(root, self:handlers())
     if not ws then return nil, err or "failed to load workspace" end
     self:_adopt(ws, sig)
+    if ctx.conn then ctx.conn.load_notes_of = ws end -- (raised into its notes)
     return ws
 end
 

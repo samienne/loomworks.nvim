@@ -10,141 +10,150 @@
   6|  [?] help  [L] load  [<C-n>] reset
    hl 0--1 Comment
   7|
-  8|  Diagnostics  1 warning(s)
+  8|  Diagnostics  4 warning(s)
    hl 2-15 Title; 15-27 Comment
   9|
  10|  ⚠ [Project/Tool] loomworks.json sets projects.Tool.shell.env ({CC=gcc}) — ignored: program settings are used only from your local config (lw help trust)
    hl 0--1 DiagnosticWarn
    w  direct=true on_enter()
- 11|
- 12|  1 suggestion — run `lw health`
+ 11|  ⚠ [load] project 'Tool': configure_cmd is required
+   hl 0--1 DiagnosticWarn
+   w  direct=false
+ 12|  ⚠ [load] project 'Tool': build_cmd is required
+   hl 0--1 DiagnosticWarn
+   w  direct=false
+ 13|  ⚠ [load] project 'Tool': project path does not exist: /root/Tool
+   hl 0--1 DiagnosticWarn
+   w  direct=false
+ 14|
+ 15|  1 suggestion — run `lw health`
    hl 0--1 LoomworksStale
- 13|
- 14|  Profiles
-   hl 0--1 Title
- 15|  [Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete
-   hl 0--1 Comment
  16|
- 17|  ── Local ──
+ 17|  Profiles
+   hl 0--1 Title
+ 18|  [Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete
+   hl 0--1 Comment
+ 19|
+ 20|  ── Local ──
    hl 0--1 NonText
- 18|  ○ ▼ only (unconfigured)
+ 21|  ○ ▼ only (unconfigured)
    hl 2-6 Comment; 6-29 LoomworksProfile
    w  enter_label=Activate fold_key=profile:only on_build() on_build_serial() on_clean() on_configure() on_delete() on_describe() on_enter() on_publish() on_rebuild() publish_label=Share (→ local + shared)
- 19|        Set: only
+ 22|        Set: only
    hl 0--1 Comment
- 20|        Cache: auto (none found)
+ 23|        Cache: auto (none found)
    hl 8-32 Comment
    w  direct=true
- 21|        Target: (no target set)
+ 24|        Target: (no target set)
    hl 0--1 Comment
    w  direct=true on_build() on_enter()
- 22|        Projects:
+ 25|        Projects:
    hl 0--1 LoomworksSection
- 23|          ○ ▼ Tool [shell] → variant:default (unconfigured)
+ 26|          ○ ▼ Tool [shell] → variant:default (unconfigured)
    hl 10-14 Comment; 14-18 LoomworksProject; 18-22 LoomworksProject; 22-30 Comment; 30-35 Comment; 35-50 LoomworksVariant; 50-65 Comment
    w  enter_label=Open task output fold_key=profile_proj:only:Tool on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
- 24|                Build dir: /root/.nvim/build/Tool/variant:default
+ 27|                Build dir: /root/.nvim/build/Tool/variant:default
    hl 0--1 Comment
- 25|
- 26|  ▸ Create new profile
+ 28|
+ 29|  ▸ Create new profile
    hl 0--1 LoomworksAdd
    w  direct=true on_enter()
- 27|
- 28|  Configuration Sets
+ 30|
+ 31|  Configuration Sets
    hl 0--1 Title
- 29|
- 30|  ── Shared ──
+ 32|
+ 33|  ── Shared ──
    hl 0--1 NonText
- 31|  ▼ only
+ 34|  ▼ only
    hl 0--1 LoomworksActive
    w  enter_label=Edit mappings fold_key=set:only on_create() on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
- 32|      Projects:
+ 35|      Projects:
    hl 0--1 LoomworksSection
- 33|        Tool → variant:default
+ 36|        Tool → variant:default
    hl 8-12 LoomworksProject; 12-17 Comment; 17-32 LoomworksVariant
- 34|
- 35|  ▸ Create configuration set
+ 37|
+ 38|  ▸ Create configuration set
    hl 0--1 LoomworksAdd
    w  direct=true on_enter()
- 36|
- 37|  Projects
+ 39|
+ 40|  Projects
    hl 0--1 Title
- 38|
- 39|  ── Shared ──
+ 41|
+ 42|  ── Shared ──
    hl 0--1 NonText
- 40|  ▼ Tool [shell]
+ 43|  ▼ Tool [shell]
    hl 2-6 Comment; 6-6 Comment; 6-10 Comment; 10-18 Comment
    w  fold_key=project:Tool on_delete() on_describe() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
- 41|      Path: Tool
+ 44|      Path: Tool
    hl 0--1 Comment
- 42|      Configurations:
+ 45|      Configurations:
    hl 0--1 LoomworksSection
- 43|        ── Local ──
+ 46|        ── Local ──
    hl 0--1 NonText
- 44|        ▼ variant:default
+ 47|        ▼ variant:default
    hl 8-12 Comment; 12-27 Comment
    w  enter_label=Edit configuration fold_key=config:Tool:variant:default on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
- 45|        ▸ Add configuration
+ 48|        ▸ Add configuration
    hl 0--1 LoomworksAdd
    w  direct=true on_enter()
- 46|      Launch:
+ 49|      Launch:
    hl 0--1 LoomworksSection
- 47|        ▸ Add launch config
+ 50|        ▸ Add launch config
    hl 0--1 LoomworksAdd
    w  direct=true on_enter()
- 48|      Deploy:
+ 51|      Deploy:
    hl 0--1 LoomworksSection
- 49|        ▸ Add deploy step
+ 52|        ▸ Add deploy step
    hl 0--1 LoomworksAdd
    w  direct=true on_enter()
- 50|      Variables:
+ 53|      Variables:
    hl 0--1 LoomworksSection
- 51|        ▸ Add variable
+ 54|        ▸ Add variable
    hl 0--1 LoomworksAdd
    w  direct=true on_enter()
- 52|      Build dir: ${workspace_root}/out
+ 55|      Build dir: ${workspace_root}/out
    hl 6-17 LoomworksSection; 17-38 LoomworksActionable
    w  direct=true enter_label=Edit build dir on_delete() on_enter()
- 53|      Configure cmd: (unset)
+ 56|      Configure cmd: (unset)
    hl 6-21 LoomworksSection; 21-28 Comment
    w  direct=true enter_label=Edit configure cmd on_enter()
- 54|      Build cmd: (unset)
+ 57|      Build cmd: (unset)
    hl 6-17 LoomworksSection; 17-24 Comment
    w  direct=true enter_label=Edit build cmd on_enter()
- 55|      Clean cmd: (unset)
+ 58|      Clean cmd: (unset)
    hl 6-17 LoomworksSection; 17-24 Comment
    w  direct=true enter_label=Edit clean cmd on_enter()
- 56|      Compile commands: (unset)
+ 59|      Compile commands: (unset)
    hl 6-24 LoomworksSection; 24-31 Comment
    w  direct=true enter_label=Edit compile commands on_enter()
- 57|      Build environment:
+ 60|      Build environment:
    hl 0--1 LoomworksSection
- 58|        ▸ Add variable
+ 61|        ▸ Add variable
    hl 0--1 LoomworksAdd
    w  direct=true on_enter()
- 59|      clangd binary: (unset)
+ 62|      clangd binary: (unset)
    hl 6-21 LoomworksSection; 21-28 Comment
    w  direct=true enter_label=Edit clangd binary on_enter()
- 60|
- 61|  ▸ Add project
+ 63|
+ 64|  ▸ Add project
    hl 0--1 LoomworksAdd
    w  enter_label=Add project on_enter()
- 62|
- 63|
- 64|  Debug Adapters
-   hl 0--1 Title
  65|
- 66|  c++  →  codelldb  (default)
+ 66|
+ 67|  Debug Adapters
+   hl 0--1 Title
+ 68|
+ 69|  c++  →  codelldb  (default)
    hl 0--1 DiagnosticWarn
    w  on_enter()
- 67|  nvim-dap not installed
+ 70|  nvim-dap not installed
    hl 0--1 DiagnosticWarn
- 68|
- 69|
- 70|  SDKs
-   hl 0--1 Title
  71|
- 72|  ▸ Add SDK
+ 72|
+ 73|  SDKs
+   hl 0--1 Title
+ 74|
+ 75|  ▸ Add SDK
    hl 0--1 LoomworksActionable
    w  direct=true on_enter()
- 73|
+ 76|

@@ -10,6 +10,7 @@
 --- environment is untouched (a child still inherits it). Names match
 --- case-insensitively on every host; an entry ending in `_` or `*` is a prefix.
 
+local notify = require("loomworks.notify").notify
 local M = {}
 
 --- Exact names (upper-case).
@@ -51,7 +52,7 @@ M._warned = {}
 local function warn_once(key, msg)
     if M._warned[key] then return end
     M._warned[key] = true
-    vim.schedule(function() vim.notify(msg, vim.log.levels.WARN) end)
+    vim.schedule(function() notify(msg, vim.log.levels.WARN) end)
 end
 
 --- The process's own value for `name` (case-insensitive on Windows).

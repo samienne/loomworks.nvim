@@ -2,6 +2,7 @@
 --- Pure-data _sync_* logic. Entry point: M.refresh(). Also exposes
 --- sync_build_dir_refs() for use by mutation methods.
 
+local notify_once = require("loomworks.notify").once
 local M = {}
 
 local BuildDir = require("loomworks.build_dir")
@@ -248,14 +249,6 @@ local function sync_projects(ctx, workspace, active_set)
     return arr
 end
 
---- Once-per-session dedup for stale config_set mapping warnings.
---- Keyed by `<set_name>|<project_key>|<variant>` so a remerge or
---- file refresh doesn't repeat the notification. Cleared on
---- workspace re-init by re-requiring the module — fresh load
---- gets a fresh report.
---- @type table<string, boolean>
-local _reported_stale_mappings = {}
-
 --- Sync the config sets registry with current config data.
 --- Runs after sync_projects so Project objects are available.
 --- Pre-resolves project_key -> Project before calling _update.
@@ -285,20 +278,20 @@ local function sync_config_sets(ctx, workspace, config)
                 if not cfg then
                     -- Stale mapping: the configuration_set names a variant
                     -- the project no longer has. Create a `_source_missing`
-                    -- stub so references don't break, and warn once — left
-                    -- silent it produces malformed build dirs / phantom
-                    -- configurations on the status page.
-                    local key = name .. "|" .. project_key .. "|" .. tostring(variant)
-                    if not _reported_stale_mappings[key] then
-                        _reported_stale_mappings[key] = true
-                        vim.notify(
-                            "loomworks: configuration_set '" .. name
-                                .. "' references unknown configuration '"
-                                .. tostring(variant) .. "' for project '"
-                                .. project_key
-                                .. "' — fix the mapping in loomworks.json or user.json",
-                            vim.log.levels.WARN)
-                    end
+                    -- stub so references don't break, and warn once per
+                    -- load (a remerge does not repeat it; the next load,
+                    -- whose diagnostics carry it, does) — left silent it
+                    -- produces malformed build dirs / phantom configurations
+                    -- on the status page. The set's structural diagnostic
+                    -- (ConfigurationSet:is_valid) already lists it in the
+                    -- views, so the load note is left out there.
+                    notify_once("stale-mapping|" .. name .. "|" .. project_key .. "|" .. tostring(variant),
+                        "loomworks: configuration_set '" .. name
+                            .. "' references unknown configuration '"
+                            .. tostring(variant) .. "' for project '"
+                            .. project_key
+                            .. "' — fix the mapping in loomworks.json or user.json",
+                        vim.log.levels.WARN, { in_diagnostics = true })
                     cfg = project:ensure_configuration(variant)
                 end
                 if cfg then

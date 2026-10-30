@@ -15,6 +15,7 @@
 --- verbatim and treated as missing; a `tests` value that is not an array is an
 --- invalid declaration, kept verbatim, that still stops the inheritance walk.
 
+local notify = require("loomworks.notify").notify
 local M = {}
 
 --- @class loomworks.SavedTestEntry
@@ -37,8 +38,8 @@ M._warned = {}
 local function report_once(key, msg)
     if M._warned[key] then return end
     M._warned[key] = true
-    if vim.schedule and vim.notify then
-        vim.schedule(function() vim.notify(msg, vim.log.levels.WARN) end)
+    if vim.schedule then
+        vim.schedule(function() notify(msg, vim.log.levels.WARN) end)
     end
 end
 

@@ -325,24 +325,25 @@ session generation (`daemon/snapshot.lua` `registry`, `daemon/tasks.lua`),
 and an earlier session's id is refused as stale
 (`tests/daemon_snapshot_spec.lua`, `tests/daemon_resolve_ids_spec.lua`).
 
-## Warm-daemon load warnings
+## Load warnings raised after the load (step 6b-alpha part F, PR #347)
 
-Decided 2026-10-29 (D7; spec/core/daemon.md section 19.13 "Load warnings",
-section 16.7): the load's warnings are persistent workspace diagnostics
-(`source = "load"`), shown in the views and carried in every request's reply
-notes. Implementation is step 6b-alpha part F. The original finding:
-
-In-process, the warnings a workspace load raises (`core._deps.notify`) print
-on every command. Through the daemon they reach only the request that loads
-the workspace: a warm daemon reuses its loaded workspace
-(`Service:live()`, `daemon/service.lua`), so a second `lw status` or
-`lw build` prints none. The gap predates #279, whose reply `note_roles` made
-the warnings that do arrive colored like in-process (CHANGELOG reworded in
-#280). Needs a spec decision first: either replay the load's warnings (with
-their roles) on each request, or keep them as persistent workspace
-diagnostics that every request reports. The parity tests do not cover it:
-the read-only `parity()` restarts the daemon for each case and `three_way`
-stops it, so every daemon case loads a cold workspace.
+The load diagnostics (spec/core/daemon.md section 19.13 "Load warnings") are
+what core `_deps.notify` receives between `Core:_begin_load_notes` and
+`_end_load_notes` (a setup, or a loomworks.json re-assembly in
+`Workspace:_on_file_changed`). Two kinds of warning arrive after the capture
+ends, so they are neither in the views nor carried by a warm daemon's later
+CLI requests (only the request running when they fire gets them):
+- **Background tool scan.** `_scan_tools_async` finishes after the load; what
+  tool detection reports is not a load diagnostic.
+- **Scheduled once-per-process warnings.** `warn_once` / `report_once` in
+  `config_env.lua` (reserved names, configuration `PATH`), `env_policy.lua`
+  (denylisted variables), `modules/cmake.lua` (preset / launcher conflict) and
+  `test_targets.lua` (invalid saved test entries) notify through
+  `vim.schedule`, and their `_warned` guards last the process, so a daemon
+  reload does not raise them again either. Most fire during resolution for a
+  build or run, not the load; the ones that describe the workspace files
+  (`test_targets.lua`) would need to raise synchronously during the load and
+  dedupe per load (`loomworks.notify.once`).
 
 ## Workspace view follow-ups (step 5n part B1, PR #285)
 
@@ -363,24 +364,6 @@ id or label as the name, which `kind` selects one, whether one counts toward
 whether `lw targets` lists it. Today `lw run <profile> app` says there is no
 such target, and a default device target fails in `resolve_spec`
 ("cannot resolve launch").
-
-## Direct `vim.notify` calls bypass `core._deps.notify`
-
-Decided 2026-10-29 (D7): the call sites move to `core._deps.notify`, painted
-by role in both hosts (spec section 16.7 note, section 19.13 "Load
-warnings"); step 6b-alpha part F. The original finding:
-
-`config.lua:199` ("project 'x' directory not found") and about 45 other files
-call `vim.notify` directly instead of `core._deps.notify`. In-process, `lw`
-runs under `nvim -l`, which prints these on stderr in nvim's own unpainted
-form. In the daemon they go to the daemon's log and never reach the client.
-Two options:
-- Inside `Service:with_model`, route `vim.notify` to the current request for
-  the duration of a segment (`handlers().notify`), with role `plain` since
-  in-process does not paint them.
-- Preferred: move the call sites to `core._deps.notify`, so both hosts paint
-  them `warn`. This changes in-process `--color` output, so it needs a spec
-  note first (spec §16.7 *Highlighting*).
 
 ## Daemon task output replay
 

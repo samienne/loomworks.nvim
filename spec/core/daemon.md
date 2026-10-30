@@ -1621,19 +1621,20 @@ in-process writes reach the views at the next check. The editor in `daemon`
 mode writes only through command methods (step 5o, §19.16 "Model writes"),
 whose `update`s precede their replies.
 
-**Load warnings.** *(Step 6b-α, plan.)* What a workspace load reports
+**Load warnings.** *(Step 6b-α.)* What a workspace load reports
 besides the structural diagnostics — a declared project directory not
 found, an entry skipped, every warning or error the load raises — is kept as
 **persistent workspace diagnostics** of the loaded model, with `source =
-"load"` and severity `warn` or `error`, until the next load replaces them.
+"load"` and severity `warn` or `error`, until the next load replaces them (a re-assembly after an edit to `loomworks.json` is a load).
 They are in `view.Workspace/1`'s `diagnostics` (the status page's
 Diagnostics section) and count toward `view.Header/1`'s `diagnostics`
 level ([API.md](../protocol/API.md) §14.1, §14.4); the editor shows them
-there and holds no load of its own to notify them from. Every request that
-uses the loaded workspace — the one that loaded it and each later one on a
-warm daemon — carries them in its reply's `notes` with their roles (§19.15
-"Roles and verbose"), so each CLI command prints them as an in-process run,
-which loads the workspace each time, does. A load raises them only through
+there and holds no load of its own to notify them from. Every CLI request
+that uses the loaded workspace — the one that loaded it and each later one on
+a warm daemon — carries them in its reply's `notes` with their roles (§19.15
+"Roles and verbose"), once each, so each CLI command prints them as an
+in-process run, which loads the workspace each time, does. An editor's later
+requests do not carry them: the editor shows them in the views. A load raises them only through
 the host's notification seam (core's `_deps.notify`), never through
 `vim.notify` directly, so both hosts color them by role (§16.7
 *Highlighting*).
@@ -1807,7 +1808,7 @@ the reply's `notes` with the role the in-process loader prints it with
 (`fail` for an error, `warn` for a warning), a test plan's pre-build note
 with `plain`, in `note_roles`; the client paints each as its in-process
 printer does on standard error. The load's warnings are the loaded
-workspace's, not the loading request's: every request that uses the
+workspace's, not the loading request's: every CLI request that uses the
 workspace carries them (§19.13 "Load warnings"; step 6b-α).
 The client paints by role exactly as its in-process printer does, and decides
 colour per stream after the `quiet` redirection (`--print` sends `out` to
@@ -2220,8 +2221,8 @@ below): the subscription to `/tasks` and `/workspace` is implemented, step
 5g.3 (`daemon/observer.lua` `_subscribe`); no editor fallbacks
 ("Availability"), step 5s, *done*; the views
 and operations steps 5j–5o (§19.19), *done*; the editor without a model of
-its own in `daemon` mode ("End state", "Public API", "Load warnings"), step
-6b-α, plan; the connection through the `--stdio`
+its own in `daemon` mode ("End state", "Public API"), step 6b-α, plan; its
+"Load warnings", step 6b-α part F, *done*; the connection through the `--stdio`
 relay, step 5i PR G: its spec (PR G0) *done*; the relay transport and
 lifecycle ("Through the relay" except "Skipping an incompatible daemon",
 `--retiring`) PR G1, *done* (`daemon/client.lua` `relay`, `daemon/observer.lua`

@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local uv = vim.uv or vim.loop
@@ -185,7 +186,7 @@ function M.read_json(path)
 
     local ok, decoded = pcall(vim.json.decode, bak_content)
     if ok and type(decoded) == "table" then
-        vim.notify("loomworks: loaded from backup: " .. bak, vim.log.levels.WARN)
+        notify("loomworks: loaded from backup: " .. bak, vim.log.levels.WARN)
         return decoded, nil
     end
 

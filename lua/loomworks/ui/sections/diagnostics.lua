@@ -3,8 +3,10 @@
 --- Lists the structural diagnostics of the workspace view
 --- (`loomworks.view.Workspace/1` `diagnostics`, from
 --- `Workspace:diagnostics()`: incomplete profiles, source-missing configurations, stale
---- configuration_set mappings, unresolved inherits) into a single
---- list at the top of the status page.
+--- configuration_set mappings, unresolved inherits — then the warnings of
+--- the workspace's last load, `[load]`, from `Workspace:load_diagnostics()`,
+--- core daemon.md §19.13 "Load warnings") into a single list at the top of
+--- the status page.
 ---
 --- Each entry's source object also has its own inline indicator
 --- elsewhere on the page (`[incomplete]`, `⚠ missing source`, ...);

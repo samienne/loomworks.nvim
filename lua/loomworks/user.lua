@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local io_mod = require("loomworks.io")
@@ -92,7 +93,7 @@ function M.load(root)
     end
 
     if not data._meta then
-        vim.notify("loomworks: user.json has unexpected version, using defaults", vim.log.levels.WARN)
+        notify("loomworks: user.json has unexpected version, using defaults", vim.log.levels.WARN)
         return M.default()
     end
 
@@ -106,7 +107,7 @@ function M.load(root)
     end
 
     if data._meta.version ~= CURRENT_VERSION then
-        vim.notify("loomworks: user.json has unexpected version, using defaults", vim.log.levels.WARN)
+        notify("loomworks: user.json has unexpected version, using defaults", vim.log.levels.WARN)
         return M.default()
     end
 
