@@ -69,8 +69,9 @@
 --- sent by its `unit_id` — an orphaned entry's, a project's), a stray
 --- directory's path exactly as the view lists it, or `orphans = true`.
 --- A `tool` of `Profiles/1.create` is a `Profiles/1.tool_choices` entry; a
---- `mappings` of `ConfigSets/1.add` / `update` is the dialog's Project →
---- Configuration table (sent as project key → configuration name, the wire's
+--- `mappings` of `ConfigSets/1.add` / `update` is the dialog's project row →
+--- configuration choice table (`{ name, _row? }`, `_row` the configuration's
+--- row of the view; sent as project key → configuration name, the wire's
 --- form) or a generated template's project key → configuration name.
 ---
 --- `cb(r)` gets the outcome (API.md §4.1): `{ outcome = "ok", ... }` with
@@ -226,9 +227,29 @@ CALLS["ConfigSets/1.candidates"] = function(ws, _, cb)
     cb({ outcome = "ok", sets = sets })
 end
 --- Whether `mappings` is a generated template's (project key →
---- configuration name), not the dialog's objects.
+--- configuration name), not the dialog's rows.
 local function template(mappings)
     return type(next(mappings or {})) == "string"
+end
+--- The dialog's mappings (project row → configuration choice `{ name,
+--- _row? }`) as the objects the in-process view bound to them, or nil + the
+--- refusal of the first it did not bind: a project, or a configuration the
+--- view does not list (named as the daemon names it, API.md §20).
+--- @param mappings table
+--- @return table|nil objects, table|nil refusal
+local function mapping_objects(mappings)
+    local out = {}
+    for project, cfg in pairs(mappings or {}) do
+        local po = object(project)
+        if not po then return nil, { outcome = "refused", message = "no project (not a row of the workspace view)" } end
+        local co = object(cfg)
+        if not co then
+            return nil, { outcome = "refused", message = "no configuration '" .. tostring(cfg.name)
+                .. "' in project '" .. tostring(project.key) .. "'" }
+        end
+        out[po] = co
+    end
+    return out
 end
 --- `{ name, mappings }` → `config_set`.
 CALLS["ConfigSets/1.add"] = function(ws, p, cb)
@@ -238,10 +259,14 @@ CALLS["ConfigSets/1.add"] = function(ws, p, cb)
         return cb(created("config_set",
             wv().execute_create_config_set_from_candidate(ws, wv().candidate_token(p.name, p.mappings))))
     end
-    cb(created("config_set", wv().execute_create_config_set(ws, p.name, p.mappings)))
+    local m, err = mapping_objects(p.mappings)
+    if not m then return cb(err) end
+    cb(created("config_set", wv().execute_create_config_set(ws, p.name, m)))
 end
 CALLS["ConfigSets/1.update"] = function(_, p, cb)
-    cb(outcome(wv().execute_edit_config_set(object(p.config_set), p.name, p.mappings)))
+    local m, err = mapping_objects(p.mappings)
+    if not m then return cb(err) end
+    cb(outcome(wv().execute_edit_config_set(object(p.config_set), p.name, m)))
 end
 CALLS["ConfigSets/1.remove"] = function(ws, p, cb)
     cb(outcome(wv().execute_delete_config_set(ws, object(p.config_set))))
@@ -636,7 +661,7 @@ local function refs(method, p, fields)
     return out
 end
 
---- A Project → Configuration mapping (the dialog's) or a template's
+--- A project row → configuration choice mapping (the dialog's) or a template's
 --- project key → configuration name as the wire's (project key →
 --- configuration name; an unmapped project absent).
 local function wire_mappings(mappings)
