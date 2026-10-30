@@ -68,15 +68,6 @@ wins, so a deletion (or reset) of a unit started while a clean of it still
 runs keeps showing "cleaning" until the clean ends. Show the most recent
 reason (a reason stack) instead. Display only. Found in review of #338.
 
-## `rename_project` rewrites config-unit ids in the wrong form
-
-`Workspace:rename_project` sets `unit.id = <new key>/<config key>`, but units
-are identified by their build directory (data_model's `expected_units` keys,
-e.g. `build/App/Debug`, unchanged by the rename since the path is pinned), so
-after a successful rename the next remerge drops and recreates every unit of
-the project (a running one kept as a ghost under the bogus id). Leave the id
-alone (or recompute it from the build dir). Seen while testing #338.
-
 ## Project rename onto the name of a removed project with cached build state
 
 `Workspace:rename_project` retags the BuildDirs its units reference with the
