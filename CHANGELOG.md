@@ -593,7 +593,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   daemon reports. Until the daemon has loaded the workspace the status line
   and the status page show it as not loaded. Tasks another client runs are
   listed by name and no longer mark the editor's own copy of a profile or
-  configuration as building. (#PRNUM)
+  configuration as building. (#346)
 - The status page's configuration-set edit dialog and the create dialog's
   custom set list the projects and configurations the status page shows,
   CMake presets included, instead of reading the editor's own copy of the
