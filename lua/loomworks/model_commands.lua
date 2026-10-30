@@ -965,23 +965,17 @@ end
 -- ---------------------------------------------------------------------------
 
 --- The keyed toolchains detected for module type `mod_type`: the workspace's
---- detection when it has one for that type, else a detection now (in the
---- caller's environment; the model is not changed).
+--- detection when it has one for that type, else `detected[mod_type]` (a
+--- detection the caller ran beforehand, `detect_keyed_tools_async`; the model
+--- is not changed). Never a detection now: a module's detection spawns
+--- probes, and the daemon's event loop must not block on them.
 --- @param ws loomworks.Workspace
---- @param mod table the module
 --- @param mod_type string
+--- @param detected table<string, table[]>|nil
 --- @return { tool_key: string, tool_label: string|nil, tool_data: table|nil }[]
-local function keyed_tools(ws, mod, mod_type)
+local function keyed_tools(ws, mod_type, detected)
     local list = ws._tools_by_type and ws._tools_by_type[mod_type]
-    if not list and mod.detect_tools then
-        list = {}
-        local dok, raw = pcall(mod.detect_tools)
-        for _, t in ipairs(dok and raw or {}) do
-            list[#list + 1] = { tool_data = t.tool_data,
-                tool_key = mod.tool_key and mod.tool_key(t.tool_data) or nil,
-                tool_label = mod.tool_label and mod.tool_label(t.tool_data) or nil }
-        end
-    end
+    if not list and detected then list = detected[mod_type] end
     local out = {}
     for _, t in ipairs(list or {}) do
         if t.tool_key then out[#out + 1] = t end
@@ -1037,6 +1031,75 @@ local function project_dir(root, path)
 end
 M.project_dir = project_dir
 
+--- The module type `candidates { path, type? }` describes: `mod_type`, else
+--- the first type that detects the directory; nil when the path is refused
+--- (`project_candidates` then answers the refusal).
+--- @param ws loomworks.Workspace
+--- @param path string
+--- @param mod_type string|nil
+--- @return string|nil
+function M.candidate_type(ws, path, mod_type)
+    if mod_type then return mod_type end
+    local rel = M.project_dir(ws.root, path)
+    if not rel then return nil end
+    local root = ws.root:gsub("\\", "/")
+    local types = require("loomworks.modules").detect_all_types(rel == "" and root or (root .. "/" .. rel))
+    return types[1] and types[1].type or nil
+end
+
+--- Whether a Projects/1 read or write about a `mod_type` project needs that
+--- keyed module's toolchains detected first: the module has keyed
+--- toolchains, the workspace has no detection for the type, and the profiles
+--- use none of them (or not the one named `key`).
+--- @param ws loomworks.Workspace
+--- @param mod_type string|nil
+--- @param key string|nil the toolchain an `add { tool }` names
+--- @return boolean
+function M.keyed_tools_needed(ws, mod_type, key)
+    local mod = mod_type and require("loomworks.modules").get(mod_type) or nil
+    if not (mod and mod.has_keyed_tools and mod.detect_tools_async) then return false end
+    if ws._tools_by_type and ws._tools_by_type[mod_type] then return false end
+    local inherited = require("loomworks.workspace_view").compute_add_project_context(ws, mod_type).inherited_tool
+    if inherited and (key == nil or inherited.tool_key == key) then return false end
+    return true
+end
+
+--- Detect module type `mod_type`'s toolchains without blocking (the module's
+--- `detect_tools_async`; the model is not changed), then `cb(list)` on a
+--- scheduled tick: `{ tool_data, tool_key, tool_label }[]`, as the
+--- workspace's detection holds them. A module that throws (as the detection
+--- starts, or in `tool_key`/`tool_label` on its result) gets `cb(nil, err)`
+--- instead: `cb` is called once whenever the module calls back. (A module
+--- that never calls back never ends it.)
+--- @param mod_type string
+--- @param cb fun(list: table[]|nil, err: string|nil)
+function M.detect_keyed_tools_async(mod_type, cb)
+    local mod = require("loomworks.modules").get(mod_type)
+    if not (mod and mod.detect_tools_async) then return vim.schedule(function() cb({}) end) end
+    local done = false
+    local function finish(list, err)
+        if done then return end
+        done = true
+        cb(list, err)
+    end
+    local started, serr = pcall(mod.detect_tools_async, function(raw)
+        vim.schedule(function()
+            local ok, list = pcall(function()
+                local out = {}
+                for _, t in ipairs(type(raw) == "table" and raw or {}) do
+                    out[#out + 1] = { tool_data = t.tool_data,
+                        tool_key = mod.tool_key and mod.tool_key(t.tool_data) or nil,
+                        tool_label = mod.tool_label and mod.tool_label(t.tool_data) or nil }
+                end
+                return out
+            end)
+            if ok then return finish(list) end
+            finish(nil, tostring(list))
+        end)
+    end)
+    if not started then vim.schedule(function() finish(nil, tostring(serr)) end) end
+end
+
 --- `candidates { path, type? }` — what adding the directory as a project
 --- would declare (the project browser's add context): the derived key and
 --- path, the module types that detect it, the configurations the module
@@ -1044,12 +1107,15 @@ M.project_dir = project_dir
 --- configuration set, the keyed toolchains (only the one the profiles
 --- already use, `inherited`, when there is one), and the profiles each
 --- toolchain would upgrade. Detection runs in the caller's environment;
---- nothing is written.
+--- nothing is written. A keyed module's toolchains the workspace has not
+--- detected come from `detected` (`keyed_tools_needed` /
+--- `detect_keyed_tools_async`, run by the caller beforehand).
 --- @param ws loomworks.Workspace
 --- @param path string
 --- @param mod_type string|nil
+--- @param detected table<string, table[]>|nil module type -> detected toolchains
 --- @return loomworks.CommandOutcome
-function M.project_candidates(ws, path, mod_type)
+function M.project_candidates(ws, path, mod_type, detected)
     local modules = require("loomworks.modules")
     local wv = require("loomworks.workspace_view")
     local rel, r = M.project_dir(ws.root, path)
@@ -1088,7 +1154,7 @@ function M.project_candidates(ws, path, mod_type)
             out.tools[1] = { key = ctx.inherited_tool.tool_key, label = ctx.inherited_tool.tool_label,
                 inherited = true }
         else
-            for _, t in ipairs(keyed_tools(ws, mod, mod_type)) do
+            for _, t in ipairs(keyed_tools(ws, mod_type, detected)) do
                 out.tools[#out.tools + 1] = { key = t.tool_key, label = t.tool_label }
                 if #ctx.no_tool_profiles > 0 then
                     local entry = { tool_key = t.tool_key, tool_data = t.tool_data, tool_label = t.tool_label,
@@ -1105,18 +1171,20 @@ function M.project_candidates(ws, path, mod_type)
 end
 
 --- The toolchain entry `add { tool = { key } }` names for a project of
---- `mod_type`: the one the profiles already use, or a detected one (in the
---- caller's environment), or nil + the refusal.
+--- `mod_type`: the one the profiles already use, or a detected one (the
+--- workspace's detection, else `detected` as for `project_candidates`), or
+--- nil + the refusal.
 --- @param ws loomworks.Workspace
 --- @param mod_type string
 --- @param key string
+--- @param detected table<string, table[]>|nil module type -> detected toolchains
 --- @return table|nil tool_entry { tool_key, tool_data, tool_label, tool_mod_type }, loomworks.CommandOutcome|nil
-function M.project_tool_entry(ws, mod_type, key)
+function M.project_tool_entry(ws, mod_type, key, detected)
     local mod = require("loomworks.modules").get(mod_type)
     if mod and mod.has_keyed_tools then
         local inherited = require("loomworks.workspace_view").compute_add_project_context(ws, mod_type).inherited_tool
         if inherited and inherited.tool_key == key then return inherited end
-        for _, t in ipairs(keyed_tools(ws, mod, mod_type)) do
+        for _, t in ipairs(keyed_tools(ws, mod_type, detected)) do
             if t.tool_key == key then
                 return { tool_key = t.tool_key, tool_data = t.tool_data, tool_label = t.tool_label,
                     tool_mod_type = mod_type }

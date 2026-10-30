@@ -281,10 +281,14 @@ end
 --- (expanded), in the entry's working directory. A `launch` entry's deploy
 --- steps are NOT run here: `prepare` runs them when the step executes (the
 --- runner calls it first; `false, err` fails the step, never drops it).
+--- `prepare_async(opts, cb)` is the same deploy without blocking the event
+--- loop (LaunchTarget:deploy_async: `opts.cancelled` / `opts.resume`), for a
+--- runner on a shared loop (the daemon's Tests/1 runs); `cb(ok, err)`.
 --- @param test_id string
 --- @param opts? { gtest_filter?: string, output_path?: string } `output_path`: the results file (a
 ---   per-run path, spec §19.15 "Tests"); default a fixed one in the build directory
---- @return table|nil { cmd, env, cwd, output_path, prepare?: fun(): boolean, string|nil, test_id: string }
+--- @return table|nil { cmd, env, cwd, output_path, prepare?: fun(): boolean, string|nil,
+---   prepare_async?: fun(opts: table|nil, cb: fun(ok: boolean, err: string|nil)), test_id: string }
 function SavedTargetsTestUnit:test_command(test_id, opts)
     opts = opts or {}
     local e = self:_entry(test_id)
@@ -296,13 +300,19 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     -- A launch entry's deploy steps run when the step executes, not while
     -- the command is built: the runner calls `prepare` first, and a failed
     -- deploy fails that step (spec §16.16, §8.8.4).
-    local prepare
+    local prepare, prepare_async
     if top.launch_target then
         local lt = top.launch_target
         prepare = function()
             local ok, err = lt:deploy_sync()
             if not ok then return false, "deploy failed: " .. tostring(err) end
             return true
+        end
+        prepare_async = function(popts, cb)
+            lt:deploy_async(popts, function(ok, err)
+                if not ok then return cb(false, "deploy failed: " .. tostring(err)) end
+                return cb(true)
+            end)
         end
     end
     local spec = self:_program(top)
@@ -329,7 +339,7 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     for _, a in ipairs(spec.args or {}) do cmd[#cmd + 1] = a end
     for _, a in ipairs(top.args or {}) do cmd[#cmd + 1] = a end
     return { cmd = cmd, env = next(env) and env or nil, cwd = spec.cwd, output_path = output_path,
-        prepare = prepare, test_id = top_e.id }
+        prepare = prepare, prepare_async = prepare_async, test_id = top_e.id }
 end
 
 --- nil — run-all iterates the top-level entries (spec §8.9.4).

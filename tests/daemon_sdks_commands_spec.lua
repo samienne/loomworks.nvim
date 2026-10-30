@@ -271,6 +271,33 @@ describe("loomworks.Sdks/1 and Toolchains/1.rescan (step 5o part B4)", function(
         assert.equals(seq, srv.seq, "the same toolchains: no changed")
     end)
 
+    it("a superseded late detection finishing during a newer rescan's wait does not swallow its changed", function()
+        local ws = loaded()
+        local before = vim.deepcopy(ws._tools_by_type)
+        local finish_a, finish_b
+        ws._core._deps.detect_tools_async = function(_, _, cb) finish_a = cb end
+        service.LOAD_WAIT_MS = 200
+        assert.same({ "warn" }, toolchains("rescan").note_roles)
+        assert.is_function(finish_a)
+        -- Scan B: the stale scan A completes (unchanged toolchains) during
+        -- B's wait. It must not mark the toolchains scanned for B.
+        ws._core._deps.detect_tools_async = function(_, _, cb)
+            finish_b = cb
+            vim.defer_fn(function() finish_a(vim.deepcopy(before)) end, 20)
+        end
+        service.LOAD_WAIT_MS = 600
+        local r = toolchains("rescan")
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.same({ "warn" }, r.note_roles, "the superseded scan's completion ended the newer scan's wait")
+        assert.equals("scanning", ws._tool_state)
+        local seq = srv.seq
+        finish_b({ shell = { { tool_key = "late", tool_label = "late", tool_data = { id = "late" } } } })
+        assert.is_true(vim.wait(5000, function() return srv.seq > seq end, 10),
+            "the newest scan's toolchain change sent no changed")
+        assert.equals("scanned", ws._tool_state)
+        assert.is_nil(srv.service._late_tools)
+    end)
+
     it("a late detection that finishes after its workspace was torn down sends nothing", function()
         local ws = loaded()
         local finish

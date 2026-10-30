@@ -5,19 +5,19 @@ they don't get lost.
 
 ---
 
-## Toolchain scans have no generation counter
+## Daemon: candidates' toolchain detection uses the daemon's environment
 
-`Workspace:_scan_tools_async` (`lua/loomworks/workspace.lua:5349`) starts a
-detection without a generation: every completion sets `_tool_state =
-"scanned"` and emits `tools_detected`, whichever scan it belongs to. If a
-late scan A (one that outran a daemon write's wait, `Service:tools_late`) is
-still running when a write starts scan B, A's completion marks `scanned`
-during B's wait (`await_tools`, `lua/loomworks/daemon/core_interfaces.lua`),
-so B replies early, and B's result then lands with no `_late_tools`
-registered: a toolchain change from B sends no Workspace/1 `changed`. A
-pre-existing race, made more reachable by the daemon's `Toolchains/1.rescan`
-and `Sdks/1.add` / `remove` (#313). Fix: a scan generation counter; only the
-newest scan's completion marks `scanned` (and settles `_late_tools`).
+`Projects/1.candidates` toolchain detection uses the daemon's environment
+after its first async step (contradicts API.md §19 / Projects.1.json
+"client's environment"): `envscope.with` covers only the synchronous start
+(`with_keyed_tools`, `lua/loomworks/daemon/core_interfaces.lua`), while the
+later probes read the process environment (`cpp_compilers.lua` reads
+`os.getenv("PATH")`, `cmake_kits.lua` calls `vim.fn.executable`). Same
+limitation as load/rescan detection (`_tools_settled`); process-wide caches
+(`cmake_kits._cached`, `msvc._installs`, the PATH index) also return another
+client's result. Fix: pass the client env explicitly to the probes.
+
+## Daemon: `_late_tools` keeps a torn-down workspace alive
 
 Related (memory only): `Service._late_tools`
 (`lua/loomworks/daemon/service.lua:1051`) keeps a torn-down workspace alive
@@ -146,29 +146,6 @@ rule from spec/core/daemon.md section 19.15 (the client asks first and the
 request carries the answer). A standalone `lw configure` command was
 considered and not added: configuring stays a step of `lw build`
 (`--reconfigure` forces it).
-
-## Daemon Tests/1: a saved launch entry's deploy is synchronous
-
-In the daemon's editor test runs (`Tests/1.run_cases` / `prepare_debug`,
-step 5m B2, `daemon/test_runs.lua`), a saved test entry of kind `launch`
-deploys through its command's `prepare` hook (`saved_targets.lua`,
-`LaunchTarget:deploy_sync`), called synchronously before the step's program
-is spawned. While it copies, the daemon's event loop is blocked: other
-clients wait and a cancel takes effect only after the copies. Make it async
-like the `lw test` / launch deploy (`deploy_async`, the runner's
-`test_host.deploy`: each copy on the event loop, stopping between copies on a
-cancel), then remove this entry.
-
-## Daemon Projects/1: `candidates` detects toolchains synchronously
-
-`Projects/1.candidates` (and `add { tool }` for a toolchain the profiles do
-not use yet), step 5o B3, list a keyed module's toolchains through
-`keyed_tools` in `model_commands.lua`, which calls the module's
-`detect_tools` synchronously when the workspace has no scanned list. The
-scan probes compilers (process spawns), and while it runs the daemon's event
-loop is blocked: other clients wait. Make it async (a task, or the workspace's
-scan run off the loop) or serve it from the cached scan, then remove this
-entry.
 
 ## Editor tests view: apply a run's `done` cases to the held view
 
@@ -342,11 +319,6 @@ stops it, so every daemon case loads a cold workspace.
 
 ## Workspace view follow-ups (step 5n part B1, PR #285)
 
-- **View check cost.** Every `views.check` with a `view.Workspace/1`
-  subscriber rebuilds the view, which runs `find_stray_build_dirs` (a disk
-  scan) and `fs_stat` calls at each `header_check`, `on_run_done` and `get`.
-  Cache the stray scan (invalidate on build-dir changes) or bound how often
-  it runs.
 - **Cancelled by another client shows "failed".** The in-process mirror's
   `remove_remote_task` (`profile.lua`) records `cancelled` only when
   `task.cancelling` is set, i.e. when this client asked for the cancel. A

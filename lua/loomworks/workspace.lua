@@ -601,6 +601,9 @@ end
 --- @field _operations loomworks.Operation[] active operations
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> detected tools per module type
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
+--- @field _stray_cache { sig: string, dirs: string[], stamps: (string|false)[], stray: string[] }|nil the
+---   view's last stray build dir scan (`_view_stray_build_dirs`)
+--- @field _tool_scan_gen integer the newest toolchain scan started (`_scan_tools_async`); only its completion is taken in
 --- @field _tool_waiters function[]
 --- @field _lsp_ready boolean active profile's owned LSP databases are generated/settled (§9.7)
 --- @field _lsp_db_revs table<string, integer>|nil normalized build dir -> times its owned LSP database was (re)written (`db_rev`, lsp_config.lua)
@@ -687,6 +690,7 @@ function Workspace.new(core, data)
     self._status_cursor_row = nil
     self._event_handlers = {}
     self._tool_state = "not_scanned"
+    self._tool_scan_gen = 0
     self._tool_waiters = {}
     self._lsp_ready = false
     self._delete_waiters = {}
@@ -2985,7 +2989,7 @@ function Workspace:view_workspace(opts)
     local uv = vim.uv or vim.loop
     return require("loomworks.view_state").workspace(self, {
         published = uv.fs_stat(self.root .. "/loomworks.json") ~= nil,
-        stray_dirs = self:find_stray_build_dirs(),
+        stray_dirs = self:_view_stray_build_dirs(),
         id = opts.id, bind = opts.bind,
     })
 end
@@ -3062,14 +3066,21 @@ end
 --- (an 8.3 short temp path on a Windows runner); compared by spelling alone,
 --- a live build dir's parent looks stray and orphan cleanup would delete it.
 --- Reported paths keep the scanned (normalized) spelling under `self.root`.
+--- Always a fresh scan (deletion safety reads it); the view reads it through
+--- `_view_stray_build_dirs`.
+--- @param opts? { known?: string[], on_list?: fun(dir: string) } `known`:
+---   precomputed `_live_build_dir_forms()`; `on_list(dir)`: called for every
+---   directory whose children the scan lists (the build root first), just
+---   before it lists them
 --- @return string[] absolute paths of stray directories
-function Workspace:find_stray_build_dirs()
+function Workspace:find_stray_build_dirs(opts)
     local uv = vim.uv or vim.loop
     local build_root = self.root .. "/.nvim/build"
     local normalize = self._core._deps.normalize
+    local on_list = opts and opts.on_list
 
     -- Every form of every build dir referenced by a ConfigUnit object
-    local known_dirs = self:_live_build_dir_forms()
+    local known_dirs = opts and opts.known or self:_live_build_dir_forms()
     local function forms(dir) return self:_path_forms(dir) end
 
     -- Build a set for exact match and a list for prefix checks
@@ -3111,6 +3122,7 @@ function Workspace:find_stray_build_dirs()
             return
         end
         -- Some cache entry lives deeper — recurse into children
+        if on_list then on_list(dir) end
         local handle = uv.fs_scandir(dir)
         if not handle then return end
         while true do
@@ -3123,6 +3135,7 @@ function Workspace:find_stray_build_dirs()
     end
 
     local norm_root = normalize(build_root)
+    if on_list then on_list(build_root) end
     local stat = uv.fs_stat(build_root)
     if stat and stat.type == "directory" then
         -- Scan each top-level child (not the build root itself)
@@ -3140,6 +3153,48 @@ function Workspace:find_stray_build_dirs()
 
     table.sort(stray)
     return stray
+end
+
+--- A directory's modification stamp (its children added or removed change
+--- it), or false when it does not exist.
+--- @param dir string
+--- @return string|false
+local function dir_stamp(dir)
+    local st = (vim.uv or vim.loop).fs_stat(dir)
+    if not st then return false end
+    return st.type .. ":" .. st.mtime.sec .. "." .. st.mtime.nsec
+end
+
+--- The stray build directories for the workspace view (`view_workspace`):
+--- `find_stray_build_dirs`, its result reused while nothing it depends on
+--- changed — the same live build dir forms, and the same modification stamp
+--- of every directory the scan listed (a directory added or removed there
+--- changes its parent's stamp). The view is rebuilt at every check (the
+--- daemon's `views.check`, the status page), so the disk walk runs only
+--- when its answer can differ. Deletion safety never reads this cache.
+--- @return string[]
+function Workspace:_view_stray_build_dirs()
+    local known = self:_live_build_dir_forms()
+    local sorted = vim.list_slice(known)
+    table.sort(sorted)
+    local sig = table.concat(sorted, "\0")
+    local c = self._stray_cache
+    if c and c.sig == sig then
+        local same = true
+        for i, dir in ipairs(c.dirs) do
+            if dir_stamp(dir) ~= c.stamps[i] then same = false; break end
+        end
+        if same then return vim.list_slice(c.stray) end
+    end
+    -- Each directory is stamped just before the scan lists it: a child
+    -- created after the listing changes the stamp, so it is not missed.
+    local visited, stamps = {}, {}
+    local stray = self:find_stray_build_dirs({ known = known, on_list = function(dir)
+        visited[#visited + 1] = dir
+        stamps[#stamps + 1] = dir_stamp(dir)
+    end })
+    self._stray_cache = { sig = sig, dirs = visited, stamps = stamps, stray = stray }
+    return vim.list_slice(stray)
 end
 
 --- Get orphaned BuildDirs: build directories with state not referenced by
@@ -5394,6 +5449,13 @@ end
 --- never reusing a machine-level cached result (a rescan, spec §16.43; a
 --- detector without that cache ignores it)
 function Workspace:_scan_tools_async(opts)
+    -- A newer scan supersedes any scan still running: only the newest one's
+    -- completion is taken in, marks the toolchains `scanned` and emits
+    -- `tools_detected`. A superseded scan's late result is dropped, so it
+    -- cannot end a wait for the newer scan (the daemon's `await_tools`) and
+    -- swallow the newer scan's change signal.
+    local gen = (self._tool_scan_gen or 0) + 1
+    self._tool_scan_gen = gen
     self._tool_state = "scanning"
     -- A fresh scan cycle: the active profile's owned LSP databases must be
     -- re-evaluated, so the deferred-LSP gate (§9.7) holds again until the
@@ -5411,6 +5473,7 @@ function Workspace:_scan_tools_async(opts)
                 -- this detection past BACKGROUND_MAX_DURATION, §19.11) drops
                 -- the late result.
                 if self._torn_down or not self._core._workspace then return end
+                if gen ~= self._tool_scan_gen then return end
                 self._tools_by_type = tools_by_type
                 -- Enrich with SDK-derived tools
                 self:_enrich_tools_from_sdks(tools_by_type)
@@ -5431,8 +5494,8 @@ function Workspace:_scan_tools_async(opts)
         end,
         -- A detector that works per module type (the CLI's tool cache,
         -- §16.43) starts no further type once this workspace is torn down;
-        -- merge.detect_tools_async ignores it.
-        { cancelled = function() return self._torn_down == true end,
+        -- merge.detect_tools_async ignores it. A superseded scan stops too.
+        { cancelled = function() return self._torn_down == true or gen ~= self._tool_scan_gen end,
             force = opts and opts.force or nil }
     )
 end
