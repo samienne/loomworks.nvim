@@ -239,7 +239,9 @@ describe("editor auto-load from a submodule cwd (§13)", function()
         local calls = {}
         package.loaded["loomworks"] = {
             _auto_load_mode = function() return "auto" end,
-            get_workspace = function() return loaded_root and { root = loaded_root } or nil end,
+            -- (auto_load asks the loaded root, not a model: a `daemon`-mode
+            -- editor holds none, step 6b-α.)
+            loaded_root = function() return loaded_root end,
             setup = function(opts) calls[#calls + 1] = opts end,
         }
         return calls

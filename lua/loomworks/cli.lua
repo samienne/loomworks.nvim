@@ -9883,8 +9883,11 @@ function M.cmd_status(root, opts)
       local clock = uv.hrtime() / 1e9
       for _, entry in ipairs(reply.tasks) do
         pcall(function()
-          local task = rt.adopt(ws, entry, clock)
-          if task then task:attach_units() end
+          local task = rt.adopt(entry, clock)
+          if task then
+            task:resolve(ws)
+            task:attach_units()
+          end
         end)
       end
     end
