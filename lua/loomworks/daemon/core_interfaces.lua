@@ -1060,19 +1060,29 @@ function M.projects_impl(service)
     --- segment, its probes go on while the daemon serves other requests, as
     --- the workspace's own detection does, §19.11) and `go` gets them as
     --- `{ [mod_type] = list }`; with none needed, `go(nil)`. `go` runs the
-    --- request's own segment, which replies.
+    --- request's own segment, which replies. Only the detection's start runs
+    --- in the client's environment: its later probes (after the first async
+    --- step) see the daemon's, as load/rescan detection does (BACKLOG). A
+    --- detection that throws is answered here, refused.
     local function with_keyed_tools(ctx, needs, go)
         service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws, mctx)
             local mod_type = needs(ws)
-            -- The reply is `go`'s segment's (a throw above is still
-            -- answered by the model queue).
-            mctx.deferred, mctx.replied = true, true
+            -- Deferred, not yet replied: a throw until `go` takes the
+            -- request over is still answered by the model queue.
+            mctx.deferred = true
             if not mod_type then
+                mctx.replied = true
                 go(nil)
                 return {}
             end
-            mc.detect_keyed_tools_async(mod_type, function(list)
+            mc.detect_keyed_tools_async(mod_type, function(list, err)
                 if ctx.conn.closed then return end
+                if not list then
+                    return mctx.reply({ outcome = "refused", exit_code = 1,
+                        message = "detecting the " .. mod_type .. " toolchains failed: " .. tostring(err) })
+                end
+                -- The reply is now `go`'s segment's.
+                mctx.replied = true
                 go({ [mod_type] = list })
             end)
             return {}

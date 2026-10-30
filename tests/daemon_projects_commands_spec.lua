@@ -280,6 +280,44 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         assert(ok, err)
     end)
 
+    it("candidates is answered (refused) when the keyed toolchain detection throws, at its start or in its result", function()
+        local ws = loaded()
+        vim.fn.mkdir(root .. "/libs/net", "p")
+        local shell = require("loomworks.modules").get("shell")
+        local saved = {}
+        for _, k in ipairs({ "has_keyed_tools", "detect_tools", "detect_tools_async", "tool_key", "tool_label" }) do
+            saved[k] = shell[k] or false
+        end
+        local ok, err = pcall(function()
+            shell.has_keyed_tools = true
+            shell.detect_tools = function() return {} end
+            local function ask()
+                ws._tools_by_type.shell = nil
+                local r
+                conn:call("/projects", "loomworks.Projects", 1, "candidates", { path = "libs/net", type = "shell" },
+                    function(res, e) r = res or e end, envscope.capture())
+                assert.is_true(vim.wait(10000, function() return r ~= nil end, 10), "candidates never answered")
+                return r
+            end
+            -- The detection throws as it starts.
+            shell.detect_tools_async = function() error("probe exploded") end
+            shell.tool_key = function(td) return td and td.id or nil end
+            local r = ask()
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            assert.matches("probe exploded", r.message)
+            -- The module's tool_key throws on the detected result.
+            shell.detect_tools_async = function(cb) cb({ { tool_data = { id = "k1" } } }) end
+            shell.tool_key = function() error("bad key") end
+            r = ask()
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            assert.matches("bad key", r.message)
+            -- The daemon still serves.
+            assert.equals("ok", call("declaration", { project = APP }).outcome)
+        end)
+        for k, v in pairs(saved) do shell[k] = v ~= false and v or nil end
+        assert(ok, err)
+    end)
+
     it("candidates refuses a link inside the root that resolves outside it", function()
         loaded()
         local outside = H.tmp() .. "/outside"

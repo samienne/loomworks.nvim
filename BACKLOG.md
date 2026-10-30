@@ -5,6 +5,18 @@ they don't get lost.
 
 ---
 
+## Daemon: candidates' toolchain detection uses the daemon's environment
+
+`Projects/1.candidates` toolchain detection uses the daemon's environment
+after its first async step (contradicts API.md §19 / Projects.1.json
+"client's environment"): `envscope.with` covers only the synchronous start
+(`with_keyed_tools`, `lua/loomworks/daemon/core_interfaces.lua`), while the
+later probes read the process environment (`cpp_compilers.lua` reads
+`os.getenv("PATH")`, `cmake_kits.lua` calls `vim.fn.executable`). Same
+limitation as load/rescan detection (`_tools_settled`); process-wide caches
+(`cmake_kits._cached`, `msvc._installs`, the PATH index) also return another
+client's result. Fix: pass the client env explicitly to the probes.
+
 ## Daemon: `_late_tools` keeps a torn-down workspace alive
 
 Related (memory only): `Service._late_tools`

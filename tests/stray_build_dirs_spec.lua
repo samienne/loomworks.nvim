@@ -289,4 +289,38 @@ describe("the workspace view's stray scan is cached", function()
     uv.fs_scandir = orig
     assert(ok, err)
   end)
+
+  it("a directory created while the view's scan lists its parent is seen by the next view", function()
+    local root = vim.fn.tempname():gsub("\\", "/")
+    vim.fn.mkdir(root, "p")
+    local ws, profile = make_ws(root)
+    root = ws.root
+    live_build_dir(ws, profile, root .. "/.nvim/build/App/Debug", root .. "/.nvim/build/App/Debug")
+    local orig = uv.fs_scandir
+    local raced = false
+    -- App/Release appears right after the scan listed App (so it missed it).
+    uv.fs_scandir = function(p, ...)
+      local h = orig(p, ...)
+      if not raced and type(p) == "string" and p:gsub("\\", "/"):lower():match("/%.nvim/build/app$") then
+        raced = true
+        vim.wait(30, function() return false end)
+        vim.fn.mkdir(root .. "/.nvim/build/App/Release", "p")
+      end
+      return h
+    end
+    local ok, err = pcall(function()
+      local function strays()
+        local out = {}
+        for _, d in ipairs(ws:view_workspace().orphaned.stray_dirs) do
+          out[#out + 1] = d:lower():match("/%.nvim/build/(.*)$")
+        end
+        return out
+      end
+      assert.same({}, strays())
+      assert.is_true(raced)
+      assert.same({ "app/release" }, strays())
+    end)
+    uv.fs_scandir = orig
+    assert(ok, err)
+  end)
 end)

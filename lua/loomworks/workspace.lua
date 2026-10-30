@@ -3068,15 +3068,16 @@ end
 --- Reported paths keep the scanned (normalized) spelling under `self.root`.
 --- Always a fresh scan (deletion safety reads it); the view reads it through
 --- `_view_stray_build_dirs`.
---- @param opts? { known?: string[], visited?: string[] } `known`: precomputed
----   `_live_build_dir_forms()`; `visited`: collects every directory whose
----   children the scan listed (the build root first)
+--- @param opts? { known?: string[], on_list?: fun(dir: string) } `known`:
+---   precomputed `_live_build_dir_forms()`; `on_list(dir)`: called for every
+---   directory whose children the scan lists (the build root first), just
+---   before it lists them
 --- @return string[] absolute paths of stray directories
 function Workspace:find_stray_build_dirs(opts)
     local uv = vim.uv or vim.loop
     local build_root = self.root .. "/.nvim/build"
     local normalize = self._core._deps.normalize
-    local visited = opts and opts.visited
+    local on_list = opts and opts.on_list
 
     -- Every form of every build dir referenced by a ConfigUnit object
     local known_dirs = opts and opts.known or self:_live_build_dir_forms()
@@ -3121,7 +3122,7 @@ function Workspace:find_stray_build_dirs(opts)
             return
         end
         -- Some cache entry lives deeper — recurse into children
-        if visited then visited[#visited + 1] = dir end
+        if on_list then on_list(dir) end
         local handle = uv.fs_scandir(dir)
         if not handle then return end
         while true do
@@ -3134,7 +3135,7 @@ function Workspace:find_stray_build_dirs(opts)
     end
 
     local norm_root = normalize(build_root)
-    if visited then visited[#visited + 1] = build_root end
+    if on_list then on_list(build_root) end
     local stat = uv.fs_stat(build_root)
     if stat and stat.type == "directory" then
         -- Scan each top-level child (not the build root itself)
@@ -3185,10 +3186,13 @@ function Workspace:_view_stray_build_dirs()
         end
         if same then return vim.list_slice(c.stray) end
     end
-    local visited = {}
-    local stray = self:find_stray_build_dirs({ known = known, visited = visited })
-    local stamps = {}
-    for i, dir in ipairs(visited) do stamps[i] = dir_stamp(dir) end
+    -- Each directory is stamped just before the scan lists it: a child
+    -- created after the listing changes the stamp, so it is not missed.
+    local visited, stamps = {}, {}
+    local stray = self:find_stray_build_dirs({ known = known, on_list = function(dir)
+        visited[#visited + 1] = dir
+        stamps[#stamps + 1] = dir_stamp(dir)
+    end })
     self._stray_cache = { sig = sig, dirs = visited, stamps = stamps, stray = stray }
     return vim.list_slice(stray)
 end

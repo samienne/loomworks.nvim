@@ -1067,23 +1067,37 @@ end
 --- Detect module type `mod_type`'s toolchains without blocking (the module's
 --- `detect_tools_async`; the model is not changed), then `cb(list)` on a
 --- scheduled tick: `{ tool_data, tool_key, tool_label }[]`, as the
---- workspace's detection holds them.
+--- workspace's detection holds them. A module that throws (as the detection
+--- starts, or in `tool_key`/`tool_label` on its result) gets `cb(nil, err)`
+--- instead: `cb` is called once whenever the module calls back. (A module
+--- that never calls back never ends it.)
 --- @param mod_type string
---- @param cb fun(list: table[])
+--- @param cb fun(list: table[]|nil, err: string|nil)
 function M.detect_keyed_tools_async(mod_type, cb)
     local mod = require("loomworks.modules").get(mod_type)
     if not (mod and mod.detect_tools_async) then return vim.schedule(function() cb({}) end) end
-    mod.detect_tools_async(function(raw)
+    local done = false
+    local function finish(list, err)
+        if done then return end
+        done = true
+        cb(list, err)
+    end
+    local started, serr = pcall(mod.detect_tools_async, function(raw)
         vim.schedule(function()
-            local list = {}
-            for _, t in ipairs(type(raw) == "table" and raw or {}) do
-                list[#list + 1] = { tool_data = t.tool_data,
-                    tool_key = mod.tool_key and mod.tool_key(t.tool_data) or nil,
-                    tool_label = mod.tool_label and mod.tool_label(t.tool_data) or nil }
-            end
-            cb(list)
+            local ok, list = pcall(function()
+                local out = {}
+                for _, t in ipairs(type(raw) == "table" and raw or {}) do
+                    out[#out + 1] = { tool_data = t.tool_data,
+                        tool_key = mod.tool_key and mod.tool_key(t.tool_data) or nil,
+                        tool_label = mod.tool_label and mod.tool_label(t.tool_data) or nil }
+                end
+                return out
+            end)
+            if ok then return finish(list) end
+            finish(nil, tostring(list))
         end)
     end)
+    if not started then vim.schedule(function() finish(nil, tostring(serr)) end) end
 end
 
 --- `candidates { path, type? }` — what adding the directory as a project

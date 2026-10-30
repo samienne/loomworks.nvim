@@ -542,6 +542,9 @@ function M.phase(service, ctx, store, sel, kind)
     --- @param k fun(ok: boolean, err: string|nil)
     local function prepare_step(api, s, k)
         local run = api.run
+        -- A run cancelled before its preparation starts does not start it
+        -- (as test_host.deploy); today's callers check just before, too.
+        if run.cancelled then return api.finish(run.cancel_code, api.stopped()) end
         if type(s.prepare_async) == "function" then
             run.deploying = true
             local called = false
