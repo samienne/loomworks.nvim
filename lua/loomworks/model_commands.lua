@@ -616,7 +616,9 @@ end
 
 --- `Profiles/1.tool_choices { config_set }` — the toolchains a profile of
 --- the set can use (Workspace:tool_entries_for: the detected keyed host
---- tools of its projects' module types, then the relevant resolved SDKs);
+--- tools of its projects' module types, then the relevant resolved SDKs;
+--- then Workspace:kit_tool_entries_for: those SDKs' kit toolchains for
+--- those module types, each with `sdk_key`);
 --- `set` a ConfigurationSet, or `{ candidate = token }` for an automatic
 --- set not added yet (its projects as the token's set maps them).
 --- @param ws loomworks.Workspace
@@ -641,7 +643,10 @@ function M.profile_tool_choices(ws, set)
             if type(p) == "table" then projects[#projects + 1] = p end
         end
     end
-    return ok({ tools = ws:tool_entries_for(name, module_types(projects)) })
+    local types = module_types(projects)
+    local tools = ws:tool_entries_for(name, types)
+    for _, e in ipairs(ws:kit_tool_entries_for(name, types)) do tools[#tools + 1] = e end
+    return ok({ tools = tools })
 end
 
 --- The toolchain state of a profile that a toolchain change alters.

@@ -2415,6 +2415,53 @@ function Workspace:tool_entries_for(set_name, mod_types)
     return entries
 end
 
+--- The kit toolchains of the resolved SDKs for the module types
+--- `mod_types` (API.md §11 `tool_choices`: after the SDKs' own entries),
+--- each a module's toolchain entry carrying `sdk_key`, the key of the SDK
+--- that provides it; sorted by SDK, then module type, then key. Each entry
+--- carries the existing profile of that set and toolchain, if any.
+--- @param set_name string
+--- @param mod_types table<string, true>
+--- @return loomworks.ToolEntry[]
+function Workspace:kit_tool_entries_for(set_name, mod_types)
+    local merge_mod = self._core._deps.merge
+    local profiles_by_key = {}
+    for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
+    local entries = {}
+    for _, sdk in ipairs(self._sdks) do
+        if sdk:is_resolved() then
+            local kits = {}
+            for mod_type, tools in pairs(self._tools_by_type or {}) do
+                if mod_types[mod_type] then
+                    for _, tool in ipairs(tools) do
+                        if tool.tool_key and tool.sdk == sdk then
+                            kits[#kits + 1] = { mod_type = mod_type, tool = tool }
+                        end
+                    end
+                end
+            end
+            table.sort(kits, function(a, b)
+                if a.mod_type ~= b.mod_type then return a.mod_type < b.mod_type end
+                return a.tool.tool_key < b.tool.tool_key
+            end)
+            for _, k in ipairs(kits) do
+                local pkey = merge_mod.profile_key(set_name, { [k.mod_type] = { key = k.tool.tool_key } })
+                entries[#entries + 1] = {
+                    profile_key = pkey,
+                    tool_key = k.tool.tool_key,
+                    tool_data = k.tool.tool_data,
+                    tool_label = k.tool.tool_label,
+                    tool_mod_type = k.mod_type,
+                    sdk_key = sdk.key,
+                    cached = true,
+                    profile = profiles_by_key[pkey],
+                }
+            end
+        end
+    end
+    return entries
+end
+
 --- Get detected tools organized by module type.
 --- @return table<string, loomworks.DetectedTool[]>
 function Workspace:get_tools_by_type()

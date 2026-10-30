@@ -193,6 +193,8 @@
 --- @field tool_data table
 --- @field tool_label? string
 --- @field tool_mod_type? string
+--- @field sdk_key? string a kit toolchain's: the key of the SDK that provides it
+---        (Workspace:kit_tool_entries_for)
 --- @field sdk? loomworks.SDK an SDK's entry: the SDK (tool_key its key)
 --- @field sdk_tools? table<string, loomworks.ToolRef> an SDK's entry: its kit
 ---        toolchains by module type, a profile made of it stores as tool keys

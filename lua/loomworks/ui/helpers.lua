@@ -475,6 +475,38 @@ function M.actionable(ctx, row)
     return require("loomworks.status_source").object_of(row) ~= nil
 end
 
+--- Whether two view entries name the same entity: in `daemon` mode the
+--- same id; in the `in-process` mode (no ids) the same bound object
+--- (status_source.object_of). Never compared by key.
+--- @param a table|nil a view row or reference (e.g. a mapping's `project`)
+--- @param b table|nil
+--- @return boolean
+function M.same_entity(a, b)
+    if a == nil or b == nil then return false end
+    if a.id ~= nil or b.id ~= nil then return a.id ~= nil and a.id == b.id end
+    local ss = require("loomworks.status_source")
+    local oa = ss.object_of(a)
+    return oa ~= nil and oa == ss.object_of(b)
+end
+
+--- A profile row's configuration set as an entity reference: in `daemon`
+--- mode `{ id = row.config_set_id }`, in-process a handle bound to the
+--- profile's set object; nil when the set is orphaned (`orphaned_set`) or
+--- the row names none.
+--- @param row table the profile's view row
+--- @return table|nil
+function M.profile_set(row)
+    if row == nil or row.orphaned_set then return nil end
+    if row.config_set_id ~= nil then return { id = row.config_set_id } end
+    local ss = require("loomworks.status_source")
+    local profile = ss.object_of(row)
+    local cs = profile and profile._config_set_ref or nil
+    if not cs then return nil end
+    local handle = {}
+    ss.bind(handle, cs)
+    return handle
+end
+
 --- The action half of `with_description`: `e` / "Edit description".
 --- @param opts table node/item opts
 --- @param item table|nil the described domain object (nil: no action)

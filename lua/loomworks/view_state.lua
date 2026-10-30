@@ -251,6 +251,7 @@ end
 --- @field running boolean
 --- @field busy boolean
 --- @field config_set? string
+--- @field config_set_id? string the set's id (daemon only; absent when `orphaned_set`)
 --- @field status? string
 --- @field compat_error? string
 --- @field artifact_conflict boolean
@@ -279,8 +280,15 @@ end
 --- @field removed_upstream boolean
 --- @field active boolean
 --- @field modified boolean
---- @field mappings table<string, string> project key -> configuration name
---- @field missing table<string, boolean> project keys whose configuration is gone
+--- @field mappings loomworks.ViewMapping[] one per mapped project, by project key
+
+--- A configuration set's mapping (`config_sets[].mappings[]`). In-process
+--- its `project` / `configuration` are bound to their objects
+--- (status_source.bind); the daemon sends their ids.
+--- @class loomworks.ViewMapping
+--- @field project { id?: string, key: string }
+--- @field configuration { id?: string, key: string } `key` its name
+--- @field missing boolean the configuration was removed or has no source
 
 --- @class loomworks.ViewOption
 --- @field key string
@@ -354,7 +362,7 @@ end
 --- @field refresh_reasons? string[]
 --- @field tests? table saved test targets (Project:saved_tests_view)
 --- @field configurations loomworks.ViewConfiguration[] sorted by name
---- @field presets? { name: string, generator?: string, toolchain_locked?: boolean }[]
+--- @field presets? { id?: string, name: string, generator?: string, toolchain_locked?: boolean }[] `id` the preset configuration's (daemon only)
 --- @field launches loomworks.ViewLaunch[] sorted by name
 --- @field deploy { destination: string, sources: table[] }[] sorted by destination
 --- @field variables table<string, { type: string, default?: any }> variable name -> declaration
@@ -436,6 +444,7 @@ local function profile_row(ws, profile, active, opts)
         row.config_set = profile._configuration_set_name
     elseif profile._config_set_ref then
         row.config_set = profile._config_set_ref.name
+        if opts.id then row.config_set_id = opts.id(profile._config_set_ref) end
     end
     row.status = profile:status()
     local pps = profile:projects()
@@ -545,15 +554,25 @@ local function config_set_row(ws, cs, active, opts)
         removed_upstream = cs._removed_upstream and true or false,
         active = active ~= nil and active._config_set_ref == cs,
         modified = ws:is_config_set_modified(cs) and true or false,
-        -- JSON objects even when empty (an empty Lua table encodes as an array).
-        mappings = vim.empty_dict(), missing = vim.empty_dict() }
+        mappings = {} }
     if opts.id then row.id = opts.id(cs) end
     for project, config in pairs(cs.mappings or {}) do
-        -- project key -> configuration name; `missing` the projects whose
-        -- configuration was removed or has no source.
-        row.mappings[project.key] = config.name
-        if config._removed or config._source_missing then row.missing[project.key] = true end
+        -- One entry per mapped project; `missing` when its configuration
+        -- was removed or has no source. The daemon names both by id;
+        -- in-process they are bound to their objects.
+        local entry = { project = { key = project.key }, configuration = { key = config.name },
+            missing = (config._removed or config._source_missing) and true or false }
+        if opts.id then
+            entry.project.id = opts.id(project)
+            entry.configuration.id = opts.id(config)
+        end
+        if opts.bind then
+            opts.bind(entry.project, project)
+            opts.bind(entry.configuration, config)
+        end
+        row.mappings[#row.mappings + 1] = entry
     end
+    table.sort(row.mappings, function(a, b) return a.project.key < b.project.key end)
     if opts.bind then opts.bind(row, cs) end
     return row
 end
@@ -659,8 +678,11 @@ local function project_row(ws, proj, opts)
     if proj.preset_configurations and next(proj.preset_configurations) then
         row.presets = {}
         for name, p in pairs(proj.preset_configurations) do
-            row.presets[#row.presets + 1] = { name = name, generator = p.generator,
-                toolchain_locked = p.toolchain_locked or nil }
+            local cfg = proj:get_configuration(name)
+            local pr = { name = name, generator = p.generator, toolchain_locked = p.toolchain_locked or nil }
+            if opts.id and cfg then pr.id = opts.id(cfg) end
+            if opts.bind and cfg then opts.bind(pr, cfg) end
+            row.presets[#row.presets + 1] = pr
         end
         table.sort(row.presets, function(a, b) return a.name < b.name end)
     end

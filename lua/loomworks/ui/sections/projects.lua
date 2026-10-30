@@ -314,21 +314,25 @@ local function delete_variable(prow, var_name)
 end
 
 --- The configuration-set mappings and the inheriting configurations a
---- rename of `config_name` to `new_name` also updates: from the view's
---- configuration sets (project key → configuration name) and the
---- declaration's configurations' `inherits`.
+--- rename of the configuration `crow` (named `config_name`) to `new_name`
+--- also updates: the view's configuration sets whose mapping names that
+--- configuration (helpers.same_entity: by id in `daemon` mode, the bound
+--- object in-process) and the declaration's configurations' `inherits`.
 --- @param view table|nil the workspace view
---- @param prow table the project's view row
+--- @param crow table the configuration's view row
 --- @param decl table the project's declaration (Projects/1.declaration)
 --- @param config_name string
 --- @param new_name string
 --- @return string[]|nil
-local function config_rename_effects(view, prow, decl, config_name, new_name)
+local function config_rename_effects(view, crow, decl, config_name, new_name)
     if new_name == config_name or new_name == "" then return nil end
     local effects = {}
     for _, cs in ipairs(view and view.config_sets or {}) do
-        if (cs.mappings or {})[prow.key] == config_name then
-            effects[#effects + 1] = "Config set '" .. cs.name .. "' mapping → " .. new_name
+        for _, entry in ipairs(cs.mappings or {}) do
+            if helpers.same_entity(entry.configuration, crow) then
+                effects[#effects + 1] = "Config set '" .. cs.name .. "' mapping → " .. new_name
+                break
+            end
         end
     end
     for _, c in ipairs(decl.configurations or {}) do
@@ -416,7 +420,7 @@ local function open_configuration_editor(prow, crow, decl, view)
         config_compiler_overrides = fields.overrides or {},
         active_compiler_family = decl.compiler_family,
         rename_effects = config_name and function(new_name)
-            return config_rename_effects(view, prow, decl, config_name, new_name)
+            return config_rename_effects(view, crow, decl, config_name, new_name)
         end or nil,
         validate = function(result)
             if result.name ~= (config_name or "") then

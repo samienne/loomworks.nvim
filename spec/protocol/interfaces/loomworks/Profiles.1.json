@@ -526,6 +526,10 @@
                   },
                   "label": {
                     "type": "string"
+                  },
+                  "sdk_key": {
+                    "description": "A kit toolchain: the key of the SDK that provides it (API.md §11).",
+                    "type": "string"
                   }
                 }
               },

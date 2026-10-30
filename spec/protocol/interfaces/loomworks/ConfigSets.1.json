@@ -5,7 +5,7 @@
   "description": "Object /projects (API.md §20, step 5o part B2): the configuration sets (spec §1.4). candidates is a query; the others are commands, each in a model segment of the caller's environment, its write the in-process editor's (loomworks.model_commands); Workspace/1 changed precedes the reply. A refused or failed write changes neither the file nor the model: the refused result.",
   "methods": {
     "candidates": {
-      "description": "The declared configuration sets (config_set their id) and the automatic ones the projects allow (auto), each automatic one with candidate, an opaque token Profiles/1.create and tool_choices accept in place of a reference. Changes nothing.",
+      "description": "The declared configuration sets (config_set their id) and the automatic ones the projects allow (auto), each automatic one with candidate, an opaque token add, Profiles/1.create and tool_choices accept in place of a reference, and its mappings. Changes nothing.",
       "params": {
         "type": "object",
         "required": [],
@@ -29,26 +29,38 @@
       "mutates": false
     },
     "add": {
-      "description": "Declare a configuration set. A project or configuration of mappings that does not exist, or a name already taken, is refused.",
+      "description": "Declare a configuration set: by name and mappings, or the automatic set a candidate token stands for. A project or configuration of mappings that does not resolve, a project mapped twice, a name already taken, or a candidate that changed since it was listed is refused.",
       "params": {
-        "type": "object",
-        "required": [
-          "name",
-          "mappings"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "mappings": {
-            "description": "Project key → configuration name; a project absent is unmapped.",
+        "oneOf": [
+          {
             "type": "object",
-            "additionalProperties": {
-              "type": "string"
+            "required": [
+              "name",
+              "mappings"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "mappings": {
+                "$ref": "#/$defs/Mappings"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "candidate"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "candidate": {
+                "type": "string"
+              }
             }
           }
-        }
+        ]
       },
       "result": {
         "oneOf": [
@@ -83,11 +95,7 @@
             "type": "string"
           },
           "mappings": {
-            "description": "Project key → configuration name; a project absent is unmapped.",
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
+            "$ref": "#/$defs/Mappings"
           }
         }
       },
@@ -238,8 +246,48 @@
               },
               "candidate": {
                 "type": "string"
+              },
+              "mappings": {
+                "description": "An automatic set's: one { project, configuration } per mapped project, each { id, key } (key the configuration's name), ordered by project key.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "project",
+                    "configuration"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "project": {
+                      "$ref": "loomworks.Common/1#/$defs/Entity"
+                    },
+                    "configuration": {
+                      "$ref": "loomworks.Common/1#/$defs/Entity"
+                    }
+                  }
+                }
               }
             }
+          }
+        }
+      }
+    },
+    "Mappings": {
+      "description": "One { project, configuration } per mapped project, each a reference (API.md §1.2), the configuration one of that project's; a project absent is unmapped, one listed twice refused.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "project",
+          "configuration"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "project": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "configuration": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
           }
         }
       }

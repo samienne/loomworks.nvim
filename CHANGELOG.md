@@ -38,6 +38,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   or keep `runtime = { mode = "in-process" }` until that mode is removed.
   `lw.compile_command_for_file()` and `:LoomworksCompileCommand` are not
   available in `daemon` mode. (#336)
+- A configuration set's `mappings` in the workspace view (`view.Workspace/1`)
+  and in `ConfigSets/1.add` / `update` is now a list of `{ project,
+  configuration }` references (in the view also `missing`, which replaces the
+  set's separate `missing` object) instead of a project key to configuration
+  name object. (#PRNUM)
 
 ### Upgrade notes
 - The editor now uses the workspace daemon by default: builds, configures,
@@ -577,6 +582,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `DebugConfig/1.known_languages`. A launch's debug language that no module
   declares shows "(resolved at launch)" as its adapter in the launch editor.
   (#343)
+- The profile row's "+ Add tool" offers the toolchains of the profile's
+  configuration set, its SDKs' kit toolchains among them, and is hidden for a
+  profile whose set is missing. In `daemon` mode the configuration-set
+  templates come from the workspace daemon, and the status page names
+  mappings by id. (#PRNUM)
 - The status page's configuration-set edit dialog and the create dialog's
   custom set list the projects and configurations the status page shows,
   CMake presets included, instead of reading the editor's own copy of the

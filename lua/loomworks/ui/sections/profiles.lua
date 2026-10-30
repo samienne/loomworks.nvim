@@ -66,60 +66,59 @@ local function tool_actions(ws, row, entry)
     }
 end
 
---- "+ Add tool": pick one of the workspace's tools the profile lacks (its
---- toolchain as the view lists it). *(Transition, until step 5o C2c.)* The
---- tools offered are the editor's model's detected ones.
+--- "+ Add tool": pick one of the toolchains `Profiles/1.tool_choices` offers
+--- the profile's configuration set (its modules' host toolchains and its
+--- SDKs' kit toolchains) that the profile lacks (its toolchain as the view
+--- lists it; a toolchain key is a value, API.md §1.2). The set is named by
+--- the row's `config_set_id` (in-process: the bound profile's set,
+--- helpers.profile_set); none for a profile whose set is orphaned.
 --- @param ws loomworks.Workspace|nil
 --- @param row table the profile's view row
 local function add_tool_action(ws, row)
-    if not ws then return nil end
+    if row.orphaned_set then return nil end
     return function()
-        local items = {}
-        local seen_keys = {}
-        local have = {}
-        for _, entry in ipairs(row.toolchain or {}) do have[#have + 1] = entry.key end
-        for _, mod in pairs(ws._modules or {}) do
-            for _, tool in pairs(mod._tools or {}) do
-                if tool.key and not tool._removed
-                        and not seen_keys[tool.key]
-                        and not contains(have, tool.key) then
-                    seen_keys[tool.key] = true
-                    items[#items + 1] = {
-                        key = tool.key,
-                        label = tool.label or tool.key,
-                        languages = tool.languages or {},
-                        module_id = mod.id,
-                    }
-                end
-            end
-        end
-
-        if #items == 0 then
-            vim.notify(
-                "loomworks: no tools available to add. Detect "
-                .. "host tools or add an SDK.",
-                vim.log.levels.INFO)
+        local set = helpers.profile_set(row)
+        if not set then
+            vim.notify("loomworks: the profile's configuration set is not known", vim.log.levels.ERROR)
             return
         end
-
-        table.sort(items, function(a, b) return a.label < b.label end)
-
-        vim.ui.select(items, {
-            prompt = "Add tool:",
-            format_item = function(item)
-                local langs = ""
-                if #item.languages > 0 then
-                    langs = "  [" .. table.concat(item.languages, ", ") .. "]"
+        model.call(ws, "Profiles/1.tool_choices", { config_set = set }, function(r)
+            if r.outcome ~= "ok" then
+                local _, err = model.result(r)
+                vim.notify("loomworks: " .. tostring(err or "the toolchains were not listed"), vim.log.levels.ERROR)
+                return
+            end
+            local have = {}
+            for _, entry in ipairs(row.toolchain or {}) do have[#have + 1] = entry.key end
+            local items, seen = {}, {}
+            for _, t in ipairs(r.tools or {}) do
+                if not t.sdk and t.key ~= nil and not seen[t.key] and not contains(have, t.key) then
+                    seen[t.key] = true
+                    items[#items + 1] = t
                 end
-                return item.label .. langs
-            end,
-        }, function(choice)
-            if not choice then return end
-            model.call(ws, "Profiles/1.add_tool", { profile = row, tool = choice.key }, function(r)
-                local ok, err = model.result(r)
-                if not ok then
-                    vim.notify("loomworks: " .. tostring(err or "the tool was not added"), vim.log.levels.ERROR)
-                end
+            end
+
+            if #items == 0 then
+                vim.notify(
+                    "loomworks: no tools available to add. Detect "
+                    .. "host tools or add an SDK.",
+                    vim.log.levels.INFO)
+                return
+            end
+
+            table.sort(items, function(a, b) return (a.label or a.key) < (b.label or b.key) end)
+
+            vim.ui.select(items, {
+                prompt = "Add tool:",
+                format_item = function(item) return item.label or item.key end,
+            }, function(choice)
+                if not choice then return end
+                model.call(ws, "Profiles/1.add_tool", { profile = row, tool = choice.key }, function(res)
+                    local ok, err = model.result(res)
+                    if not ok then
+                        vim.notify("loomworks: " .. tostring(err or "the tool was not added"), vim.log.levels.ERROR)
+                    end
+                end)
             end)
         end)
     end
@@ -421,11 +420,14 @@ local function render_profile_details(tree, ctx, row)
                 }, tool_actions(ws, row, entry)))
             end
 
-            tree:item("+ Add tool", {
-                hl = "LoomworksAdd",
-                direct = true,
-                on_enter = add_tool_action(ws, row),
-            })
+            -- Hidden for a profile whose set is orphaned: no set to ask.
+            if not row.orphaned_set then
+                tree:item("+ Add tool", {
+                    hl = "LoomworksAdd",
+                    direct = true,
+                    on_enter = add_tool_action(ws, row),
+                })
+            end
         end)
     end
 
