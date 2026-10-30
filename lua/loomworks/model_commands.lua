@@ -386,6 +386,93 @@ function M.profile_set_active(profile)
     return ok()
 end
 
+--- @class loomworks.LaunchTargetRecord
+--- @field kind "launch"|"target"|"device"
+--- @field project loomworks.Project
+--- @field name string what a reference names: the launch configuration's name,
+---   the build target's id, the device target's id
+--- @field label string its display name
+--- @field description? string a launch configuration's description
+--- @field default boolean the profile's default target
+
+--- A launch-target candidate (run_prep.target_listing) as its record.
+--- @param c loomworks.RunCandidate
+--- @return loomworks.LaunchTargetRecord
+local function target_record(c)
+    if c.kind == "launch" then
+        return { kind = "launch", project = c.project, name = c.name, label = c.name,
+            description = c.launch and c.launch.description or nil, default = c.default == true }
+    elseif c.kind == "target" then
+        return { kind = "target", project = c.project, name = c.target_id, label = c.name,
+            default = c.default == true }
+    end
+    return { kind = "device", project = c.project, name = c.device_target, label = c.label or c.device_target,
+        default = c.default == true }
+end
+
+--- A profile's launchable targets (API.md §9.6 `Launch/1.targets`): `ok`
+--- with `targets` (LaunchTargetRecord[], per project in the profile's order),
+--- `incomplete` (the keys of its unconfigured projects whose build targets
+--- are unknown) and `override` (a stored default-target choice). Read-only;
+--- `opts.refresh` re-reads the units' targets first.
+--- @param ws loomworks.Workspace
+--- @param profile loomworks.Profile
+--- @param opts? { refresh?: boolean }
+--- @return loomworks.CommandOutcome
+function M.launch_targets(ws, profile, opts)
+    local r = stale(profile, "profile")
+    if r then return r end
+    local listing = require("loomworks.run_prep").target_listing(ws, profile, opts)
+    local targets = {}
+    for _, c in ipairs(listing.targets) do targets[#targets + 1] = target_record(c) end
+    return ok({ targets = targets, incomplete = listing.incomplete, override = listing.override })
+end
+
+--- Set or clear a profile's default launch target (API.md §11
+--- `Profiles/1.set_default_target`): `target` `{ kind, project, name }`
+--- (`project` the resolved Project) one of the profile's launchable targets
+--- (M.launch_targets) is stored as its default in the working copy; nil
+--- removes the stored choice. A target not among them is refused; a failed
+--- write changes neither the file nor the model.
+--- @param ws loomworks.Workspace
+--- @param profile loomworks.Profile
+--- @param target { kind: string, project: loomworks.Project, name: string }|nil
+--- @param opts? { refresh?: boolean }
+--- @return loomworks.CommandOutcome
+function M.profile_set_default_target(ws, profile, target, opts)
+    local r = stale(profile, "profile")
+    if r then return r end
+    if target == nil then
+        local saved, err = profile:clear_default_target()
+        if not saved then return refused(err or "user.json was not written") end
+        return ok()
+    end
+    local listing = require("loomworks.run_prep").target_listing(ws, profile, opts)
+    local found
+    for _, c in ipairs(listing.targets) do
+        local rec = target_record(c)
+        if rec.kind == target.kind and rec.project == target.project and rec.name == target.name then
+            found = rec
+            break
+        end
+    end
+    if not found then
+        return refused("no launch target '" .. target.project.key .. ":" .. tostring(target.name) .. " ("
+            .. tostring(target.kind) .. ")' in profile '" .. profile.key .. "'")
+    end
+    local descriptor = { project = found.project.key }
+    if found.kind == "target" then
+        descriptor.target = found.name
+    elseif found.kind == "launch" then
+        descriptor.launch = found.name
+    else
+        descriptor.device_target, descriptor.device_target_label = found.name, found.label
+    end
+    local saved, err = profile:set_default_target_descriptor(descriptor)
+    if not saved then return refused(err or "user.json was not written") end
+    return ok()
+end
+
 --- The token of an automatic configuration set: its name and mappings, so
 --- a token outlives no change of the set it stands for.
 --- @param name string

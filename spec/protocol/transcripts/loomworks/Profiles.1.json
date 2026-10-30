@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Profiles",
   "version": 1,
-  "description": "Object /profiles (API.md §11): compiler_cache, with references by key and by id; set_device and clear_device (step 5n part B2); set_active, create, tool_choices, add_tool and remove_tool (step 5o part B2).",
+  "description": "Object /profiles (API.md §11): compiler_cache, with references by key and by id; set_device and clear_device (step 5n part B2); set_active, create, tool_choices, add_tool and remove_tool (step 5o part B2). Step 6b-alpha: set_default_target.",
   "cases": [
     {
       "name": "compiler_cache answers for a mapped project, by key and by id",
@@ -72,7 +72,7 @@
     {
       "name": "create returns the existing profile by id; set_active by id; add_tool of a toolchain that does not resolve and remove_tool of one the profile lacks are refused, the id kept (step 5o part B2)",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "tool_choices", "args": { "config_set": { "key": "dev" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "tools": [] } } },
@@ -91,7 +91,7 @@
     {
       "name": "set_active, create and tool_choices refuse a stale id, an unknown set or token and a toolchain not offered, a module's or an SDK's; a tool naming both is invalid (step 5o part B2)",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_active", "args": { "profile": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
@@ -107,6 +107,38 @@
         { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "refused", "message": "no SDK toolchain 'nope' for this configuration set (see Profiles/1.tool_choices)", "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 7, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "create", "args": { "config_set": { "key": "dev" }, "tool": { "sdk": "nope", "module": "cmake" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 7, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "set_default_target stores a launch configuration as the default; without target it clears the stored choice (step 6b-alpha)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "index": { "profiles": { "dev": { "$bind": "dev_id" } }, "projects": { "app": { "$bind": "app_id" } } } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_default_target", "args": { "profile": { "id": { "$var": "dev_id" } }, "target": { "kind": "launch", "project": { "id": { "$var": "app_id" } }, "name": "hello" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "targets", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok", "targets": { "$contains": [ { "kind": "launch", "name": "hello", "default": true } ] }, "override": true } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_default_target", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "targets", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 5, "result": { "outcome": "ok", "override": false } } }
+      ]
+    },
+    {
+      "name": "set_default_target refuses a target not among the profile's launchable targets, an unknown profile and a stale id; a missing profile is invalid (step 6b-alpha)",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_default_target", "args": { "profile": { "key": "dev" }, "target": { "kind": "target", "project": { "key": "app" }, "name": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": "no launch target 'app:nope (target)' in profile 'dev'", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_default_target", "args": { "profile": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_default_target", "args": { "profile": { "key": "dev" }, "target": { "kind": "launch", "project": { "id": "no-such-id" }, "name": "hello" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/profiles", "iface": "loomworks.Profiles", "v": 1, "method": "set_default_target", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } }
       ]
     }
   ]

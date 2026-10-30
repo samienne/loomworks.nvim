@@ -358,6 +358,7 @@ end
 --- @field launches loomworks.ViewLaunch[] sorted by name
 --- @field deploy { destination: string, sources: table[] }[] sorted by destination
 --- @field variables table<string, { type: string, default?: any }> variable name -> declaration
+--- @field targets? table<string, { type: string }> the build targets its units parsed, by name
 --- @field type_config { fields: loomworks.ViewTypeConfigField[] }
 
 --- @class loomworks.ViewSdk
@@ -686,6 +687,16 @@ local function project_row(ws, proj, opts)
                 sources = vim.deepcopy(deploy_mod.normalize_sources(srcs)) }
         end
         table.sort(row.deploy, function(a, b) return a.destination < b.destination end)
+    end
+    -- The build targets its configured units parsed, by name (step 6b-α):
+    -- the union over every unit of the project, in a profile or not.
+    for _, u in pairs(ws._config_units or {}) do
+        if u._project == proj and not u._removed and type(u.targets) == "table" then
+            for name, t in pairs(u.targets) do
+                row.targets = row.targets or {}
+                if not row.targets[name] then row.targets[name] = { type = t.type } end
+            end
+        end
     end
     -- Variable name -> { type, default }.
     row.variables = vim.empty_dict()

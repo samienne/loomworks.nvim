@@ -10,14 +10,14 @@
 ---   /tests       loomworks.Tests/1        run T, discover T, run_cases T, prepare_debug T, collect,
 ---                                         result (results; loomworks.daemon.test_discover,
 ---                                         loomworks.daemon.test_runs)
----   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T, build T,
+---   /launch      loomworks.Launch/1       prepare_run T, prepare_debug T, build T, targets,
 ---                                         device_log T (log; loomworks.daemon.devices)
 ---   /debug       loomworks.DebugConfig/1  adapters, set_adapter, known_languages
 ---   /lsp         loomworks.LspConfig/1    get, set_option (changed)
 ---   /toolchains  loomworks.Toolchains/1   list, rescan
 ---   /toolchains  loomworks.Sdks/1         detect, add, remove
 ---   /profiles    loomworks.Profiles/1     compiler_cache, set_device, clear_device, set_active, create,
----                                         tool_choices, add_tool, remove_tool
+---                                         tool_choices, add_tool, remove_tool, set_default_target
 ---   /projects    loomworks.Projects/1     candidates, add, declaration, configuration_save,
 ---                                         configuration_remove, options_save, launch_save, launch_remove,
 ---                                         deploy_save, variable_save, variable_remove, type_config_set,
@@ -510,11 +510,17 @@ function M.tests_impl(service)
     return { methods = methods }
 end
 
+--- `Launch/1.targets` (API.md §9.6), defined below with the reference
+--- resolvers it uses.
+local launch_targets
+
 --- The `loomworks.Launch/1` handlers.
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.launch_impl(service)
     return { methods = {
+        -- The profile's launchable targets (step 6b-α): a read.
+        targets = function(ctx, args) return launch_targets(service, ctx, args) end,
         prepare_run = operation(service, "run", M.LAUNCH, "prepare_run"),
         prepare_debug = operation(service, "debug", M.LAUNCH, "prepare_debug"),
         -- The build of a launch target (§19.15 "Build of a launch target").
@@ -761,6 +767,10 @@ local function profile_of(service, ws, ref)
     return nil, "no profile '" .. tostring(ref.key) .. "'"
 end
 
+--- The project a call names (defined with the Projects/1 handlers below;
+--- Profiles/1.set_default_target resolves its target's project with it).
+local project_of
+
 --- The configuration set a call names (`{ id }` or `{ key }`, its name),
 --- or nil + the refusal.
 --- @param service loomworks.daemon.BuildService
@@ -873,6 +883,22 @@ function M.profiles_impl(service)
         return on_profile(ctx, args, function(profile) return mc.profile_set_active(profile) end)
     end
 
+    -- Step 6b-α (API.md §11): the profile's default launch target, `target`
+    -- `{ kind, project, name }` (`project` a reference, resolved here) one of
+    -- Launch/1.targets' records; no `target` removes the stored choice.
+    function methods.set_default_target(ctx, args)
+        return on_profile(ctx, args, function(profile, ws)
+            local t = args.target
+            if t == nil or t == vim.NIL then
+                return mc.profile_set_default_target(ws, profile, nil)
+            end
+            local project, perr = project_of(service, ws, t.project)
+            if not project then return mc.refused(perr) end
+            return mc.profile_set_default_target(ws, profile, { kind = t.kind, project = project, name = t.name },
+                { refresh = true })
+        end)
+    end
+
     function methods.tool_choices(ctx, args)
         return read_segment(service, ctx, function(ws)
             local set, err = set_or_candidate(service, ws, args.config_set)
@@ -932,7 +958,7 @@ end
 --- @param ws table
 --- @param ref table
 --- @return table|nil project, string|nil err
-local function project_of(service, ws, ref)
+project_of = function(service, ws, ref)
     if ref.id ~= nil then
         local p = service.ids:find(ref.id, ws._projects)
         if not p then return nil, "no project with id " .. tostring(ref.id) .. " (a stale reference)" end
@@ -942,6 +968,28 @@ local function project_of(service, ws, ref)
         if not p._removed and p.key == ref.key then return p end
     end
     return nil, "no project '" .. tostring(ref.key) .. "'"
+end
+
+--- `Launch/1.targets { profile }` (API.md §9.6): the profile's launchable
+--- targets, in a model segment of the caller's environment, each record's
+--- project as `{ id, key }`; the units' targets re-read first (a build since
+--- they were parsed). Nothing is written.
+--- @param service loomworks.daemon.BuildService
+--- @param ctx table the call
+--- @param args table
+--- @return any interfaces.ASYNC
+launch_targets = function(service, ctx, args)
+    local mc = require("loomworks.model_commands")
+    return read_segment(service, ctx, function(ws)
+        local profile, err = profile_of(service, ws, args.profile)
+        if not profile then return mc.refused(err) end
+        local r = mc.launch_targets(ws, profile, { refresh = true })
+        if r.outcome ~= "ok" then return r end
+        for _, t in ipairs(r.targets) do
+            t.project = { id = service.ids:id(t.project), key = t.project.key }
+        end
+        return r
+    end)
 end
 
 --- Every live project's objects of one kind (`field`: `_configurations` or

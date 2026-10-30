@@ -283,7 +283,11 @@ return {
     -- 68 -> 69: step 5o C2d-2 adds Projects/1.unit_options,
     -- conn:call(M.PROJECTS.object, M.PROJECTS.iface, ...) — the versioned
     -- table Projects/1.
-        ["lua/loomworks/daemon/observer.lua"] = 69,
+    -- 69 -> 71: step 6b-alpha (WP-C) adds Launch/1.targets,
+    -- conn:call(M.LAUNCH.object, M.LAUNCH.iface, ...), and
+    -- Profiles/1.set_default_target, conn:call(M.PROFILES.object,
+    -- M.PROFILES.iface, ...) — the versioned tables Launch/1 and Profiles/1.
+        ["lua/loomworks/daemon/observer.lua"] = 71,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

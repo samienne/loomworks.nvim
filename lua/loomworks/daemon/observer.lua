@@ -222,7 +222,8 @@ M.BUILD = {
 -- — the feature itself is still called, never subscribed to.
 M.LAUNCH = {
     object = "/launch", iface = "loomworks.Launch", v = 1, feature = "launch",
-    methods = { "prepare_run", "prepare_debug", "build", "device_log" }, signals = { "log" }, call_only = true,
+    methods = { "prepare_run", "prepare_debug", "build", "device_log", "targets" }, signals = { "log" },
+    call_only = true,
     tasks = true,
 }
 -- The debug adapters section (step 5k C2, §19.20 `DebugConfig/1`): plain
@@ -280,7 +281,8 @@ M.DEVICES = {
 -- with the `tool_choices` read); plain calls, never subscribed to.
 M.PROFILES = {
     object = "/profiles", iface = "loomworks.Profiles", v = 1, feature = "profiles",
-    methods = { "set_device", "clear_device", "set_active", "create", "tool_choices", "add_tool", "remove_tool" },
+    methods = { "set_device", "clear_device", "set_active", "create", "tool_choices", "add_tool", "remove_tool",
+        "set_default_target" },
     signals = {}, call_only = true,
 }
 -- The configuration sets' commands (step 5o C2a, API.md §20) and their
@@ -2175,6 +2177,8 @@ local METHOD_IFACE = {
     device_list = M.DEVICES, device_scan = M.DEVICES, device_install = M.DEVICES, device_launch = M.DEVICES,
     device_stop = M.DEVICES,
     ["Profiles/1.set_device"] = M.PROFILES, ["Profiles/1.clear_device"] = M.PROFILES,
+    -- The profile's launchable targets (step 6b-α, API.md §9.6).
+    ["Launch/1.targets"] = M.LAUNCH,
 }
 -- The status page's model writes (step 5o C2a, C2b, C2c): every method of the
 -- interface tables above, by its qualified name.
@@ -2326,6 +2330,13 @@ local CALLS = {
     ["Workspace/1.delete_user_prefs"] = function(conn, args, cb, env)
         conn:call(M.WORKSPACE.object, M.WORKSPACE.iface, M.WORKSPACE.v, "delete_user_prefs", args, cb, env)
     end,
+    -- Step 6b-α: the launchable-targets read and the default-target write.
+    ["Launch/1.targets"] = function(conn, args, cb, env)
+        conn:call(M.LAUNCH.object, M.LAUNCH.iface, M.LAUNCH.v, "targets", args, cb, env)
+    end,
+    ["Profiles/1.set_default_target"] = function(conn, args, cb, env)
+        conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "set_default_target", args, cb, env)
+    end,
     ["Profiles/1.set_active"] = function(conn, args, cb, env)
         conn:call(M.PROFILES.object, M.PROFILES.iface, M.PROFILES.v, "set_active", args, cb, env)
     end,
@@ -2423,7 +2434,7 @@ local CALLS = {
 --- time (§19.16 "Editor operations"; their schemas' `needs_env`).
 --- `cb(result, err)` runs in the connection's callback (libuv): it only
 --- schedules.
---- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"device_log"|"Profiles/1.set_device"|"Profiles/1.clear_device"
+--- @param name "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"adapters"|"set_adapter"|"get"|"set_option"|"cancel"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"list"|"launch_build"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"device_log"|"Profiles/1.set_device"|"Profiles/1.clear_device"|"Profiles/1.set_default_target"|"Launch/1.targets"
 --- @param args table
 --- @param cb fun(result: any, err: table|nil)
 function Observer:_icall(name, args, cb)
@@ -2738,7 +2749,7 @@ M.VALUE_CHECKED = { set_option = true }
 ---   { outcome = "invalid", reason }   `invalid_args` of a VALUE_CHECKED method
 ---   { outcome = "degraded", reason }  the daemon lacks the method (noted)
 ---   { outcome = "failed", reason }    any other error
---- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"|"device_list"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"
+--- @param method "adapters"|"set_adapter"|"get"|"set_option"|"collect"|"result"|"device_list"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"|"Profiles/1.set_default_target"|"Launch/1.targets"
 --- @param args table
 --- @param cb fun(r: table)
 function Observer:request(method, args, cb)

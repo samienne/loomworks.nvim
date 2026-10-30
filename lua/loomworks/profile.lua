@@ -916,32 +916,49 @@ function Profile:has_default_target_override()
     return self._default_target_descriptor ~= nil
 end
 
+--- Write the default-target descriptor to the working copy: `descriptor`
+--- (nil clears it). A write that fails restores the previous descriptor
+--- unless the save already took in a newer working copy from disk.
+--- @param descriptor table|nil
+--- @return boolean ok, string|nil err the working copy's write
+function Profile:_write_default_target(descriptor)
+    local ws = self._workspace
+    local before = self._default_target_descriptor
+    self._default_target_descriptor = descriptor
+    local base = ws._disk_baseline and ws._disk_baseline.user
+    local ok, err = ws:_save_user()
+    if not ok and (ws._disk_baseline and ws._disk_baseline.user) == base then
+        self._default_target_descriptor = before
+    end
+    return ok == true, err
+end
+
 --- Set the default target for this profile.
 --- @param project loomworks.Project
 --- @param target_id? string opaque target identifier (module targets)
 --- @param launch_name? string launch config name (command launches)
 --- @param working_dir? string optional persistent working-dir override
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:set_default_target(project, target_id, launch_name, working_dir)
     local descriptor = { project = project.key }
     if target_id then descriptor.target = target_id end
     if launch_name then descriptor.launch = launch_name end
     if working_dir and working_dir ~= "" then descriptor.working_dir = working_dir end
-    self._default_target_descriptor = descriptor
-    self._workspace:_save_user()
+    return self:_write_default_target(descriptor)
 end
 
 --- Clear the default target for this profile.
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:clear_default_target()
-    self._default_target_descriptor = nil
-    self._workspace:_save_user()
+    return self:_write_default_target(nil)
 end
 
 --- Set the default target descriptor directly.
 --- Used for non-standard descriptors like device targets.
 --- @param descriptor table
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:set_default_target_descriptor(descriptor)
-    self._default_target_descriptor = descriptor
-    self._workspace:_save_user()
+    return self:_write_default_target(descriptor)
 end
 
 -- ---------------------------------------------------------------------------
