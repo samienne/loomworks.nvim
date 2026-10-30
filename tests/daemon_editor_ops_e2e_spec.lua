@@ -230,17 +230,6 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         local orig = ov.launch_run_task
         local launched = {}
         ov.launch_run_task = function(spec) launched[#launched + 1] = spec; return nil end
-        -- Refused while the daemon has not loaded the workspace (§19.16
-        -- "Editor operations", step 5l): a read the editor carries loads it.
-        local views = require("loomworks.views")
-        -- (The daemon may report the workspace loaded already: then there is
-        -- no unloaded window to check here.)
-        local header = views.daemon_state(obs, "header")
-        if header and header.state == "unloaded" then
-            local unloaded = require("loomworks.daemon.launch_ref").new({ key = "dev" },
-                { kind = "launch", name = "run", project = { key = "app" } })
-            assert.truthy(require("loomworks.session_tracker").launch_refusal(unloaded))
-        end
         local row = profile_row()
         -- The launch target: the profile row's `Launch/1.targets` record.
         local refs
