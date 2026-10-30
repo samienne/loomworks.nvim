@@ -72,7 +72,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   is stored. `Profiles/1.set_default_target` stores one of them as the
   profile's default target in `loomworks.user.json`, or clears the stored
   choice when no target is given. The workspace view's project rows carry
-  their parsed build targets (`targets`). (#PR)
+  their parsed build targets (`targets`). (#340)
 - Experimental daemon: `Maintenance/1.nuke` is the editor's nuke as a task:
   it lists what it removes and confirms with a plan token, refuses while a
   build-directory or workspace lock is held (naming the holder) or while any
