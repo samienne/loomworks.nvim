@@ -250,17 +250,20 @@ end
 --- §19.13 "Load warnings"): until `_end_load_notes`, every notification of
 --- level WARN or above (or none: the hosts print it as a warning) through
 --- `_deps.notify` is recorded, then passed on to the host's notifier. A
---- capture still open (a load that never completed) is ended first.
+--- capture still open (a load that never completed) is ended first. What
+--- `loomworks.notify.once` reported for an earlier load is reported again.
 --- @return loomworks.LoadNote[] list the capture fills
 function Core:_begin_load_notes()
     self:_end_load_notes()
+    require("loomworks.notify").new_load()
     local list, inner = {}, self._deps.notify
-    local function capture(msg, level)
+    local function capture(msg, level, opts)
         if not level or level >= vim.log.levels.WARN then
             list[#list + 1] = { severity = (level or 0) >= vim.log.levels.ERROR and "error" or "warn",
-                text = tostring(msg) }
+                text = tostring(msg),
+                in_diagnostics = type(opts) == "table" and opts.in_diagnostics or nil }
         end
-        return inner(msg, level)
+        return inner(msg, level, opts)
     end
     self._deps.notify = capture
     self._load_capture = { list = list, inner = inner, fn = capture }

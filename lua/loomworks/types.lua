@@ -39,6 +39,7 @@
 --- @class loomworks.LoadNote
 --- @field severity loomworks.DiagnosticSeverity
 --- @field text string
+--- @field in_diagnostics boolean|nil a structural diagnostic already shows it: left out of `Workspace:load_diagnostics()` (still a reply note)
 
 --- A structural diagnostic surfaced by `Workspace:diagnostics()`.
 --- Aggregated from per-domain-object `:diagnostic()` methods (Profile,

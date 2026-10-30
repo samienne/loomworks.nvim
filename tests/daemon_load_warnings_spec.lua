@@ -29,10 +29,27 @@ local function missing_dir_project(root)
     f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
 end
 
+--- Rewrite loomworks.json through `fn(cfg)`.
+local function edit_config(root, fn)
+    local f = assert(io.open(root .. "/loomworks.json", "rb"))
+    local cfg = vim.json.decode(f:read("*a")); f:close()
+    fn(cfg)
+    f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
+end
+
+--- How many of the view's diagnostics mention `needle`.
+local function view_count(ws, needle)
+    local n = 0
+    for _, d in ipairs(view_state.workspace(ws).diagnostics) do
+        if d.message:find(needle, 1, true) then n = n + 1 end
+    end
+    return n
+end
+
 --- A `snapshot` request (any request that uses the loaded workspace) over a
 --- fresh CLI connection; its reply.
-local function snapshot(srv)
-    local conn = assert(client.session(srv.address, {}))
+local function snapshot(srv, hello)
+    local conn = assert(client.session(srv.address, hello or {}))
     local reply
     conn:request({ kind = "snapshot", scope = "all", env = envscope.capture() },
         function(r, e) reply = r or { error = e } end)
@@ -103,6 +120,114 @@ describe("load warnings reach daemon clients (§19.13 Load warnings)", function(
         assert.is_nil(found.message:find("^loomworks: "))
         assert.is_not_nil(view_state.header(ws).diagnostics)
     end)
+
+    it("an edit that fixes the warning clears it: the views and a warm daemon's later request", function()
+        assert.is_not_nil((find_note(snapshot(srv), "directory not found")))
+        edit_config(root, function(cfg) cfg.projects.gone = nil end)
+        svc.ws._tracker:sync()
+        local r = snapshot(srv)
+        assert.equals("ok", r.outcome)
+        assert.is_nil((find_note(r, "directory not found")), vim.inspect(r.notes))
+        assert.equals(0, view_count(svc.ws, "directory not found"))
+    end)
+
+    it("an edit that introduces a warning carries it: the views and a warm daemon's later request", function()
+        edit_config(root, function(cfg) cfg.projects.gone = nil end)
+        local first = snapshot(srv)
+        assert.is_nil((find_note(first, "directory not found")), vim.inspect(first.notes))
+        missing_dir_project(root)
+        svc.ws._tracker:sync()
+        local r = snapshot(srv)
+        local n, role = find_note(r, "directory not found")
+        assert.is_not_nil(n, vim.inspect(r.notes))
+        assert.equals("warn", role)
+        assert.equals(1, view_count(svc.ws, "directory not found"))
+    end)
+
+    it("a daemon reload keeps the load warnings (once-per-process guards reset per load)", function()
+        edit_config(root, function(cfg) cfg.configuration_sets.bad = { app = "Nope" } end)
+        local first = snapshot(srv)
+        assert.is_not_nil((find_note(first, "references unknown configuration")), vim.inspect(first.notes))
+        svc:_unload()
+        local r = snapshot(srv)
+        assert.equals("ok", r.outcome)
+        assert.is_not_nil((find_note(r, "references unknown configuration")), vim.inspect(r.notes))
+        assert.is_not_nil((find_note(r, "directory not found")), vim.inspect(r.notes))
+    end)
+
+    it("a stale mapping is listed once in the views (the structural diagnostic), still a CLI note", function()
+        edit_config(root, function(cfg) cfg.configuration_sets.bad = { app = "Nope" } end)
+        local r = snapshot(srv)
+        assert.is_not_nil((find_note(r, "references unknown configuration")), vim.inspect(r.notes))
+        assert.equals(1, view_count(svc.ws, "Nope"), vim.inspect(view_state.workspace(svc.ws).diagnostics))
+    end)
+
+    it("an editor's request that loads the workspace carries no load warning; a later CLI request does", function()
+        -- (A cold load for a request that may write — an editor's command.)
+        local ctx = { env = envscope.capture(), notes = {}, note_roles = {},
+            conn = { observer = true } }
+        svc.current = ctx
+        local ws = svc:live(ctx)
+        svc.current = nil
+        assert.is_not_nil(ws)
+        assert.equals(0, #ctx.notes, vim.inspect(ctx.notes))
+        assert.equals(1, view_count(svc.ws, "directory not found"))
+        -- An editor's read-only request on a cold daemon.
+        svc:_unload()
+        local r = snapshot(srv, { client = "editor", role = "observer" })
+        assert.equals("ok", r.outcome)
+        assert.is_nil((find_note(r, "directory not found")), vim.inspect(r.notes))
+        local cli_r = snapshot(srv)
+        assert.is_not_nil((find_note(cli_r, "directory not found")), vim.inspect(cli_r.notes))
+    end)
+
+    it("an editor's request whose sync re-assembles the workspace carries no load warning", function()
+        assert.equals("ok", snapshot(srv).outcome)
+        edit_config(root, function(cfg) cfg.projects.gone2 = vim.deepcopy(cfg.projects.gone); cfg.projects.gone2.path = "gone2" end)
+        local ctx = { env = envscope.capture(), notes = {}, note_roles = {},
+            conn = { observer = true } }
+        svc.current = ctx
+        local ws = svc:live(ctx)
+        svc.current = nil
+        assert.is_not_nil(ws)
+        assert.equals(0, #ctx.notes, vim.inspect(ctx.notes))
+        assert.equals(2, view_count(svc.ws, "directory not found"))
+    end)
+end)
+
+describe("once-per-load plugin rejections (§19.13 Load warnings)", function()
+    local dir, saved
+    before_each(function()
+        dir = H.tmp()
+        vim.fn.mkdir(dir .. "/lua/loomworks/modules", "p")
+        vim.fn.mkdir(dir .. "/lua/loomworks/sdks", "p")
+        local f = assert(io.open(dir .. "/lua/loomworks/modules/lwbadmod.lua", "wb"))
+        f:write("return { id = 'lwbadmod', api_version = 999 }"); f:close()
+        f = assert(io.open(dir .. "/lua/loomworks/sdks/lwbadsdk.lua", "wb"))
+        f:write("return { id = 'lwbadsdk', api_version = 999 }"); f:close()
+        vim.opt.rtp:append(dir)
+        saved = require("loomworks")._core()._deps.notify
+    end)
+    after_each(function()
+        require("loomworks")._core()._deps.notify = saved
+        vim.opt.rtp:remove(dir)
+    end)
+
+    for _, case in ipairs({ { "modules", "lwbadmod" }, { "sdks", "lwbadsdk" } }) do
+        it(case[1] .. ": a rejection is reported once per load, again on the next load", function()
+            local seen = {}
+            require("loomworks")._core()._deps.notify = function(msg) seen[#seen + 1] = msg end
+            local reg = require("loomworks." .. case[1])
+            require("loomworks.notify").new_load()
+            assert.is_nil(reg.get(case[2]))
+            assert.is_nil(reg.get(case[2]))
+            assert.equals(1, #seen, vim.inspect(seen))
+            require("loomworks.notify").new_load()
+            assert.is_nil(reg.get(case[2]))
+            assert.equals(2, #seen, vim.inspect(seen))
+            assert.equals(seen[1], seen[2])
+        end)
+    end
 end)
 
 describe("the notification seam (§16.7 Highlighting)", function()

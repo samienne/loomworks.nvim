@@ -450,8 +450,8 @@ end
 --- Adapter-agnostic: availability and the adapter-specific transform are the
 --- host's (loomworks/debug.lua). Host-neutral: no output of its own, but a
 --- launch configuration's env goes through `env_policy.filter`, which
---- schedules a `vim.notify` warning (once per variable) when it refuses a
---- denylisted variable.
+--- schedules a warning through the host's notifier (`loomworks.notify`;
+--- once per variable) when it refuses a denylisted variable.
 ---
 --- nil when there is nothing to debug (neither a launch configuration nor an
 --- executable target with an artifact); with a reason and its severity when

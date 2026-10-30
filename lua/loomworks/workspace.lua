@@ -2665,13 +2665,16 @@ end
 --- (core daemon.md §19.13 "Load warnings"): `source = "load"`, the message
 --- without the notification's `loomworks: ` prefix, in the order raised.
 --- Kept apart from the structural `diagnostics()` (which `lw status` lists
---- and `--check` gates on): the CLI prints them as the load's notes.
+--- and `--check` gates on): the CLI prints them as the load's notes. A note a
+--- structural diagnostic already shows (`in_diagnostics`) is left out.
 --- @return loomworks.Diagnostic[]
 function Workspace:load_diagnostics()
     local out = {}
     for _, n in ipairs(self._load_notes or {}) do
-        out[#out + 1] = { severity = n.severity, source = "load",
-            message = (n.text:gsub("^loomworks: ", "")) }
+        if not n.in_diagnostics then
+            out[#out + 1] = { severity = n.severity, source = "load",
+                message = (n.text:gsub("^loomworks: ", "")) }
+        end
     end
     return out
 end
@@ -9414,65 +9417,87 @@ function Workspace:_on_file_changed(path, content)
     end
 
     if path == paths.config then
-        -- loomworks.json changed: full reassemble
-        local data, err = M.assemble(
-            self.root,
-            content,
-            self._tracker:content(paths.user),
-            self._tracker:content(paths.cache),
-            { trust = deps.trust, modules = deps.modules }
-        )
-        if data and (data.user_trust == "unsigned" or data.user_trust == "invalid"
-                or data.cache_trust == "invalid") then
-            return refuse()
-        end
-        if data and data.cache_trust == "unsigned" then
-            -- Keep the in-memory build state (remerge serializes it).
-            data.cache = nil
-        end
-        if data then
-            local ok, val_err = self._core:_validate_projects(data.config, data.root)
-            if ok then
-                -- Capture old baseline for removed-upstream detection.
-                local old_baseline = self._shared_baseline
-                -- Auto-update synced items: if user.json had items that matched
-                -- the old baseline, update them to match the new shared config
-                -- so they stay synced instead of showing spurious '+'.
-                if self._shared_baseline and data.user then
-                    self:_auto_sync_user_projects(data.config, data.user)
-                end
-                -- Update workspace data fields in place
-                self.root = data.root
-                self.name = data.name
-                self._shared_ignored = data.shared_ignored or {}
-                self:_scan_tools_async()
-                self:remerge(data.config, data.cache, data.user)
-                -- In-memory state was rebuilt from the files: re-take the
-                -- cache's per-entry snapshot (spec §2.7).
-                self._cache_snapshot = save_guard.snapshot_cache(self:_serialize_cache())
-                -- After remerge, _shared_baseline is the new baseline.
-                -- Detect items present in old baseline but not in new (and
-                -- effective local+shared in working copy) — flag as
-                -- removed-upstream.
-                self:_mark_removed_upstream(old_baseline)
-                -- Persist user.json after every baseline change so sticky
-                -- intent survives Neovim restarts.
-                -- _serialize_user records any intent that differs from the
-                -- new baseline's default, including overrides that became
-                -- necessary because upstream removed an item.
-                -- Inside a tracker sync, once all its changes are applied.
-                if self._file_batch then
-                    self._file_batch.save_user = true
-                else
-                    self:_save_user()
-                end
-                self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
-            else
-                self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
+        -- loomworks.json changed: full reassemble. It is a load (core
+        -- daemon.md §19.13 "Load warnings"): what it raises replaces this
+        -- workspace's load diagnostics — a fixed warning goes, a new one is
+        -- carried. (Not inside a load already capturing; a refusal's setup
+        -- below starts its own.)
+        local core = self._core
+        local notes = not core._load_capture and core:_begin_load_notes() or nil
+        local function end_notes()
+            if notes and core._load_capture and core._load_capture.list == notes then
+                core:_end_load_notes()
+                self._load_notes = notes
             end
-        else
-            self._core._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
         end
+        local function reassemble()
+            local data, err = M.assemble(
+                self.root,
+                content,
+                self._tracker:content(paths.user),
+                self._tracker:content(paths.cache),
+                { trust = deps.trust, modules = deps.modules }
+            )
+            if data and (data.user_trust == "unsigned" or data.user_trust == "invalid"
+                    or data.cache_trust == "invalid") then
+                return refuse()
+            end
+            if data and data.cache_trust == "unsigned" then
+                -- Keep the in-memory build state (remerge serializes it).
+                data.cache = nil
+            end
+            if data then
+                local ok, val_err = self._core:_validate_projects(data.config, data.root)
+                if ok then
+                    -- Capture old baseline for removed-upstream detection.
+                    local old_baseline = self._shared_baseline
+                    -- Auto-update synced items: if user.json had items that matched
+                    -- the old baseline, update them to match the new shared config
+                    -- so they stay synced instead of showing spurious '+'.
+                    if self._shared_baseline and data.user then
+                        self:_auto_sync_user_projects(data.config, data.user)
+                    end
+                    -- Update workspace data fields in place
+                    self.root = data.root
+                    self.name = data.name
+                    self._shared_ignored = data.shared_ignored or {}
+                    self:_scan_tools_async()
+                    self:remerge(data.config, data.cache, data.user)
+                    -- In-memory state was rebuilt from the files: re-take the
+                    -- cache's per-entry snapshot (spec §2.7).
+                    self._cache_snapshot = save_guard.snapshot_cache(self:_serialize_cache())
+                    -- After remerge, _shared_baseline is the new baseline.
+                    -- Detect items present in old baseline but not in new (and
+                    -- effective local+shared in working copy) — flag as
+                    -- removed-upstream.
+                    self:_mark_removed_upstream(old_baseline)
+                    -- Persist user.json after every baseline change so sticky
+                    -- intent survives Neovim restarts.
+                    -- _serialize_user records any intent that differs from the
+                    -- new baseline's default, including overrides that became
+                    -- necessary because upstream removed an item.
+                    -- Inside a tracker sync, once all its changes are applied.
+                    if self._file_batch then
+                        self._file_batch.save_user = true
+                    else
+                        self:_save_user()
+                    end
+                    self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
+                else
+                    self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
+                end
+            else
+                self._core._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
+            end
+        end
+        local ok, e = xpcall(reassemble, function(x)
+            if type(x) == "string" and not x:find("stack traceback:", 1, true) then
+                return debug.traceback(x, 2)
+            end
+            return x
+        end)
+        end_notes()
+        if not ok then error(e, 0) end
 
     elseif path == paths.user then
         -- user.json changed: normalize user projects and pass through remerge

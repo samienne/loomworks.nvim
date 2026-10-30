@@ -338,6 +338,12 @@ function Service:handlers()
         notify = function(msg, level)
             if level and level < vim.log.levels.WARN then return end
             local c = self.current
+            if c and c.conn and c.conn.observer and require("loomworks.notify").in_load() then
+                -- A load's warning on an editor's request (§19.13 "Load
+                -- warnings"): the editor shows it in the views, and would
+                -- read a `warn` note of the reply as the command's failure.
+                c = nil
+            end
             if c and c.task then
                 -- (The in-process loader's roles: an error fails, a warning warns.)
                 c.task:line("err", tostring(msg) .. "\n", (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")

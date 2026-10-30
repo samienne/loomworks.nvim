@@ -325,6 +325,26 @@ session generation (`daemon/snapshot.lua` `registry`, `daemon/tasks.lua`),
 and an earlier session's id is refused as stale
 (`tests/daemon_snapshot_spec.lua`, `tests/daemon_resolve_ids_spec.lua`).
 
+## Load warnings raised after the load (step 6b-alpha part F, PR #347)
+
+The load diagnostics (spec/core/daemon.md section 19.13 "Load warnings") are
+what core `_deps.notify` receives between `Core:_begin_load_notes` and
+`_end_load_notes` (a setup, or a loomworks.json re-assembly in
+`Workspace:_on_file_changed`). Two kinds of warning arrive after the capture
+ends, so they are neither in the views nor carried by a warm daemon's later
+CLI requests (only the request running when they fire gets them):
+- **Background tool scan.** `_scan_tools_async` finishes after the load; what
+  tool detection reports is not a load diagnostic.
+- **Scheduled once-per-process warnings.** `warn_once` / `report_once` in
+  `config_env.lua` (reserved names, configuration `PATH`), `env_policy.lua`
+  (denylisted variables), `modules/cmake.lua` (preset / launcher conflict) and
+  `test_targets.lua` (invalid saved test entries) notify through
+  `vim.schedule`, and their `_warned` guards last the process, so a daemon
+  reload does not raise them again either. Most fire during resolution for a
+  build or run, not the load; the ones that describe the workspace files
+  (`test_targets.lua`) would need to raise synchronously during the load and
+  dedupe per load (`loomworks.notify.once`).
+
 ## Workspace view follow-ups (step 5n part B1, PR #285)
 
 - **Cancelled by another client shows "failed".** The in-process mirror's

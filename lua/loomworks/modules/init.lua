@@ -1,4 +1,4 @@
-local notify = require("loomworks.notify").notify
+local notify_once = require("loomworks.notify").once
 local M = {}
 
 --- @type table<string, table>
@@ -26,17 +26,27 @@ local rejected = {}
 --- @type table<string, string>
 local load_failed = {}
 
---- Notify the user once that a module file failed the load check.
---- Routed through the host's notifier (loomworks.notify) so it shows on the first load
---- the mismatch happens; subsequent gets stay silent.
+--- The notification of a module `reject` refused, re-raised once per load.
+--- @type table<string, string>
+local rejection_notes = {}
+
+--- Report a rejected module: once per workspace load (loomworks.notify
+--- `once`), so each load's diagnostics carry it (core daemon.md §19.13 "Load
+--- warnings") while the gets within one load stay silent.
+--- @param id string
+local function report_rejected(id)
+    local msg = rejection_notes[id]
+    if msg then notify_once("module-rejected|" .. id, msg, vim.log.levels.ERROR) end
+end
+
+--- Refuse a module file that failed the load check, and report it.
 --- @param id string
 --- @param reason string
 local function reject(id, reason)
     if rejected[id] then return end
     rejected[id] = reason
-    notify(
-        "loomworks: module " .. loader.display_id(id) .. " will not load: " .. reason,
-        vim.log.levels.ERROR)
+    rejection_notes[id] = "loomworks: module " .. loader.display_id(id) .. " will not load: " .. reason
+    report_rejected(id)
 end
 
 --- Get the module handler for a project type, or nil.
@@ -52,7 +62,10 @@ end
 function M.get(id)
     if type(id) ~= "string" then return nil end
     if registry[id] then return registry[id] end
-    if rejected[id] then return nil end
+    if rejected[id] then
+        report_rejected(id)
+        return nil
+    end
     local mod, err, status = loader.load("modules", id)
     if status == "invalid" then
         reject(id, err)
