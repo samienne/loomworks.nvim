@@ -50,27 +50,81 @@ local function taken(view, name, except)
     return false
 end
 
---- Open the config set editor for an existing set. *(Transition, until step
---- 5o C2b.)* The dialog edits the editor's model's projects and
---- configurations; the update names the set by its row.
+--- A configuration as the set dialog offers it: its name. A model call
+--- sends a mapping as project key -> configuration name and the write
+--- resolves the name in the project in both modes (API.md §20: any of the
+--- project's configurations but a removed one), so a mapping to a
+--- configuration the view does not list (a source-missing one) keeps its
+--- name and saves as it does in the daemon.
+--- @param name string
+--- @return loomworks.ConfigSetChoice
+local function config_choice(name)
+    return { name = name }
+end
+
+--- The set dialog's projects and the configurations each offers, from the
+--- workspace view's project rows (6b-alpha: no editor-model read): a row's
+--- `configurations[]` and its cmake presets (`presets[]`, canonical
+--- `preset:<name>` configurations the view lists apart), by name.
+--- @param view table|nil the workspace view
+--- @return table[]|nil projects, table<table, loomworks.ConfigSetChoice[]>|nil available_configs
+local function dialog_projects(view)
+    if not view then return nil end
+    local projects, available = {}, {}
+    for _, p in ipairs(view.projects or {}) do
+        projects[#projects + 1] = p
+        local configs, seen = {}, {}
+        local function offer(name)
+            if name ~= nil and not seen[name] then
+                seen[name] = true
+                configs[#configs + 1] = config_choice(name)
+            end
+        end
+        for _, c in ipairs(p.configurations or {}) do offer(c.key) end
+        for _, pr in ipairs(p.presets or {}) do offer(pr.name) end
+        table.sort(configs, function(a, b) return a.name < b.name end)
+        available[p] = configs
+    end
+    return projects, available
+end
+
+--- The notice of a set dialog opened while no workspace view is held (in
+--- `daemon` mode the editor holds no model to fall back on).
+local function no_view()
+    vim.notify("loomworks: the workspace view is not available yet; try again when the status page shows it",
+        vim.log.levels.WARN)
+end
+
+--- Open the config set editor for an existing set: its projects and
+--- configurations are the view's rows, its mappings the set row's (project
+--- key -> configuration name, the view's own form, joined to the rows of
+--- the same view); the update names the set by its row.
 --- @param ctx table the page context
 --- @param row table the set's view row
 local function edit_config_set(ctx, row)
     local set_name = row.name
     local ws = ctx.ws
-    if not ws then return end
 
-    local workspace_view = require("loomworks.workspace_view")
-    local ectx = workspace_view.compute_edit_config_set_context(ws, set_name)
-    if not ectx then return end
+    local projects, available_configs = dialog_projects(ctx.view)
+    if not projects then return no_view() end
+    local mappings = {}
+    for _, p in ipairs(projects) do
+        local name = (row.mappings or {})[p.key]
+        if name ~= nil then
+            for _, c in ipairs(available_configs[p]) do
+                if c.name == name then mappings[p] = c; break end
+            end
+            mappings[p] = mappings[p] or config_choice(name)
+        end
+    end
 
     require("loomworks.ui.config_set_editor").open({
         title = "Edit configuration set",
         item = helpers.row_item("configuration set", row),
         name = set_name,
-        projects = ectx.projects,
-        mappings = ectx.mappings,
-        available_configs = ectx.available_configs,
+        projects = projects,
+        mappings = mappings,
+        available_configs = available_configs,
         validate = function(result)
             if result.name ~= set_name and taken(ctx.view, result.name, row) then
                 return false, "configuration set '" .. result.name .. "' already exists"
@@ -163,7 +217,7 @@ end
 --- Add a configuration set (`name`, `mappings`) and report it.
 --- @param ws loomworks.Workspace|nil
 --- @param name string
---- @param mappings table the dialog's Project → Configuration, or a template's project key → configuration name
+--- @param mappings table the dialog's project row → configuration choice, or a template's project key → configuration name
 local function add_config_set(ws, name, mappings)
     local model = require("loomworks.ui.model_calls")
     model.call(ws, "ConfigSets/1.add", { name = name, mappings = mappings }, function(r)
@@ -175,19 +229,20 @@ local function add_config_set(ws, name, mappings)
     end)
 end
 
---- Create a config set via the manual editor dialog.
+--- Create a config set via the manual editor dialog (the view's projects
+--- and their configurations, nothing mapped).
 --- @param ctx table the page context
 local function create_custom_config_set(ctx)
     local ws = ctx.ws
-    local workspace_view = require("loomworks.workspace_view")
-    local cctx = workspace_view.compute_create_config_set_context(ws)
+    local projects, available_configs = dialog_projects(ctx.view)
+    if not projects then return no_view() end
 
     require("loomworks.ui.config_set_editor").open({
         title = "New configuration set",
         name = "",
-        projects = cctx.projects,
-        mappings = cctx.mappings,
-        available_configs = cctx.available_configs,
+        projects = projects,
+        mappings = {},
+        available_configs = available_configs,
         validate = function(result)
             if taken(ctx.view, result.name) then
                 return false, "configuration set '" .. result.name .. "' already exists"
@@ -199,11 +254,14 @@ local function create_custom_config_set(ctx)
     })
 end
 
---- Create a new config set: offer templates then custom option. *(Transition,
---- until step 5o C2b.)* The templates are the sets the editor's model's
---- projects suggest (project key → configuration name, as generated).
+--- Create a new config set: offer templates then custom option. *(Transition.)*
+--- The templates are the sets the editor's model's projects suggest (project
+--- key → configuration name, as generated): `ConfigSets/1.candidates` names
+--- the automatic sets but carries no mappings, and `ConfigSets/1.add` takes
+--- no candidate token, so the daemon cannot serve this read yet.
 --- @param ctx table the page context
 local function create_config_set(ctx)
+    if not ctx.view then return no_view() end
     local ws = ctx.ws
     if not ws then return end
 

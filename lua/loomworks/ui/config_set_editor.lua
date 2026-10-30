@@ -4,24 +4,31 @@
 --- configuration set (no tool picker, no upgrade preview).
 ---
 --- Used for both "create new config set" and "edit existing config set".
---- Works with Project and Configuration domain objects — no string keys.
+--- Works with the workspace view's project rows and configuration choices
+--- (`{ name }`), keyed by the row tables themselves.
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
 
 local M = {}
 
+--- A configuration the set dialog offers or maps: its name (resolved in the
+--- project by the model call, ui/model_calls.lua).
+--- @class loomworks.ConfigSetChoice
+--- @field name string
+
 --- Open the config set editor dialog.
 --- @param opts table
 ---   name: string — current config set name (editable)
----   projects: loomworks.Project[] — sorted project list
----   mappings: table<loomworks.Project, loomworks.Configuration|nil> — current mappings
----   available_configs: table<loomworks.Project, loomworks.Configuration[]> — available configs per project
+---   projects: loomworks.ViewProject[] — the view's project rows, in order
+---   mappings: table<loomworks.ViewProject, loomworks.ConfigSetChoice|nil> — current mappings
+---   available_configs: table<loomworks.ViewProject, loomworks.ConfigSetChoice[]> — offered per project
 ---   validate?: fun(result): boolean, string|nil — return false + error message to block accept
----   on_accept: fun(result: { name: string, mappings: table<loomworks.Project, loomworks.Configuration|nil> })
+---   on_accept: fun(result: { name: string, mappings: table<loomworks.ViewProject, loomworks.ConfigSetChoice|nil> })
 ---   on_cancel: fun()
----   item?: loomworks.ConfigurationSet — the existing set (edit mode): adds a
----     `Description ▸` row that opens the description editor (ui §1.16)
+---   item?: table — the existing set's description handle (edit mode,
+---     helpers.row_item): adds a `Description ▸` row that opens the
+---     description editor (ui §1.16)
 function M.open(opts)
     local projects = opts.projects
     local mappings = {}
