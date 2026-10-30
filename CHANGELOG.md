@@ -69,6 +69,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 
+- Renaming a project no longer throws away its configured and built build
+  directories' state on the next reload: the project's configurations keep
+  their build state and are not reconfigured from scratch (#342).
 - Rebuilding a configuration from the status page (`R`) built even when its
   clean failed; it now stops and reports the failed clean (#328).
 - A failed, stopped or refused clean no longer leaves the config shown as
