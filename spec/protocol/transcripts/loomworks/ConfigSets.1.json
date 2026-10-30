@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.ConfigSets",
   "version": 1,
-  "description": "Object /projects, interface loomworks.ConfigSets (API.md §20; step 5o part B2): candidates with ids, add returning the set's id, an update that renames it under the same id, remove, generate_defaults, and the refusals of references and mappings.",
+  "description": "Object /projects, interface loomworks.ConfigSets (API.md §20; step 5o part B2): candidates with ids, add returning the set's id, an update that renames it under the same id, remove, generate_defaults, and the refusals of references, mappings and a stale candidate token.",
   "cases": [
     {
       "name": "candidates names the declared set by id; add → update (rename, id kept) → remove",
@@ -11,9 +11,9 @@
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "candidates", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "sets": { "$contains": [ { "config_set": { "$type": "string" }, "name": "dev", "auto": false } ] } } } },
-        { "send": { "kind": "call", "req_id": 2, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "rel", "mappings": { "app": "Debug" } }, "env": { "$var": "env" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "rel", "mappings": [ { "project": { "key": "app" }, "configuration": { "key": "Debug" } } ] }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok", "config_set": { "id": { "$bind": "rel_id" }, "key": "rel" } } } },
-        { "send": { "kind": "call", "req_id": 3, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "update", "args": { "config_set": { "id": { "$var": "rel_id" } }, "name": "rel2", "mappings": { "app": "Debug" } }, "env": { "$var": "env" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "update", "args": { "config_set": { "id": { "$var": "rel_id" } }, "name": "rel2", "mappings": [ { "project": { "key": "app" }, "configuration": { "key": "Debug" } } ] }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
         { "send": { "kind": "call", "req_id": 4, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "candidates", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok", "sets": { "$contains": [ { "config_set": { "$var": "rel_id" }, "name": "rel2", "auto": false } ] } } } },
@@ -30,14 +30,18 @@
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "remove", "args": { "config_set": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
-        { "send": { "kind": "call", "req_id": 2, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "update", "args": { "config_set": { "key": "nope" }, "mappings": {} }, "env": { "$var": "env" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "update", "args": { "config_set": { "key": "nope" }, "mappings": [] }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": "no configuration set 'nope'", "exit_code": 1 } } },
-        { "send": { "kind": "call", "req_id": 3, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "x", "mappings": { "ghost": "Debug" } }, "env": { "$var": "env" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "x", "mappings": [ { "project": { "key": "ghost" }, "configuration": { "key": "Debug" } } ] }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": "no project 'ghost'", "exit_code": 1 } } },
-        { "send": { "kind": "call", "req_id": 4, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "x", "mappings": { "app": "Nope" } }, "env": { "$var": "env" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "x", "mappings": [ { "project": { "key": "app" }, "configuration": { "key": "Nope" } } ] }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "refused", "message": "no configuration 'Nope' in project 'app'", "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 5, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "x" }, "env": { "$var": "env" } } },
-        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } }
+        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "name": "x", "mappings": [ { "project": { "key": "app" }, "configuration": { "key": "Debug" } }, { "project": { "key": "app" }, "configuration": { "key": "Debug" } } ] }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "refused", "message": "project 'app' is mapped twice", "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 7, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "add", "args": { "candidate": "auto:nope" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 7, "result": { "outcome": "refused", "message": "the automatic configuration set changed since it was listed — choose it again", "exit_code": 1 } } }
       ]
     }
   ]

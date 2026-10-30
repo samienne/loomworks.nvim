@@ -367,9 +367,21 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         local p = assert(profile(v, "dev"))
         assert.is_string(p.id)
         assert.is_string(v.config_sets[1].id)
+        -- The profile names its set by id; each mapping names its project
+        -- and configuration by the ids their rows carry.
+        local set
+        for _, cs in ipairs(v.config_sets) do if cs.name == p.config_set then set = cs end end
+        assert.equals(set.id, p.config_set_id)
+        local ids = {}
         for _, proj in ipairs(v.projects) do
             assert.is_string(proj.id)
-            for _, c in ipairs(proj.configurations or {}) do assert.is_string(c.id) end
+            ids[proj.id] = {}
+            for _, c in ipairs(proj.configurations or {}) do assert.is_string(c.id); ids[proj.id][c.id] = true end
+        end
+        assert.is_true(#set.mappings > 0)
+        for _, m in ipairs(set.mappings) do
+            assert.is_false(m.missing)
+            assert.is_true(ids[m.project.id][m.configuration.id], vim.inspect(m))
         end
         -- The same objects, the same ids; nothing changed: no update.
         local again = s.view()

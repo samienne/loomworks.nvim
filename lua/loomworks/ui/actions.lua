@@ -545,8 +545,12 @@ function M._create_profile_step2(ws, set, activate)
         -- collaborators on a host without the SDK installed). The build path
         -- refuses to start an incomplete profile, so this entry is the
         -- explicit opt-in: Profiles/1.create gets no tool.
+        -- An SDK's kit toolchains (`sdk_key`) are offered as the SDK's own
+        -- entry here; "+ Add tool" offers them one by one.
         local picker_items = {}
-        for _, e in ipairs(r.tools or {}) do picker_items[#picker_items + 1] = e end
+        for _, e in ipairs(r.tools or {}) do
+            if e.sdk_key == nil then picker_items[#picker_items + 1] = e end
+        end
         picker_items[#picker_items + 1] = { _none = true, label = "(no tool — incomplete profile)" }
 
         vim.ui.select(picker_items, {

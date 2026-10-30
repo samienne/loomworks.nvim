@@ -205,12 +205,29 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         assert.equals("refused", r.outcome)
         assert.truthy(r.message:find("^toolchain: "), r.message)
 
-        -- ConfigSets/1.add (a template's mappings), update and remove by row.
-        r = call("ConfigSets/1.add", { name = "two", mappings = { app = "Debug" } })
+        -- "+ Add tool": the toolchains of the profile row's set, by its
+        -- config_set_id.
+        local dev = row("profiles", "dev")
+        assert.is_string(dev.config_set_id)
+        t = call("Profiles/1.tool_choices", { config_set = require("loomworks.ui.helpers").profile_set(dev) })
+        assert.equals("ok", t.outcome, vim.inspect(t))
+
+        -- ConfigSets/1.add (the dialog's mappings: project row →
+        -- configuration row, sent by their ids), update and remove by row.
+        local function debug_of(key)
+            for _, c in ipairs(row("projects", key).configurations or {}) do
+                if c.key == "Debug" then return c end
+            end
+        end
+        local app, lib = row("projects", "app"), row("projects", "lib")
+        r = call("ConfigSets/1.add", { name = "two", mappings = { [app] = assert(debug_of("app")) } })
         assert.equals("ok", r.outcome, vim.inspect(r))
         until_view(function() return row("config_sets", "two") ~= nil end)
-        r = call("ConfigSets/1.update", { config_set = row("config_sets", "two"), name = "three",
-            mappings = { app = "Debug", lib = "Debug" } })
+        local two = row("config_sets", "two")
+        assert.same({ { project = { id = app.id, key = "app" }, configuration = { id = debug_of("app").id,
+            key = "Debug" }, missing = false } }, two.mappings)
+        r = call("ConfigSets/1.update", { config_set = two, name = "three",
+            mappings = { [app] = debug_of("app"), [lib] = assert(debug_of("lib")) } })
         assert.equals("ok", r.outcome, vim.inspect(r))
         until_view(function() return row("config_sets", "three") ~= nil and row("config_sets", "two") == nil end)
         r = call("ConfigSets/1.remove", { config_set = row("config_sets", "three") })

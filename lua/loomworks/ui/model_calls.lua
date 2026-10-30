@@ -70,9 +70,12 @@
 --- directory's path exactly as the view lists it, or `orphans = true`.
 --- A `tool` of `Profiles/1.create` is a `Profiles/1.tool_choices` entry; a
 --- `mappings` of `ConfigSets/1.add` / `update` is the dialog's project row →
---- configuration choice table (`{ name }`, resolved by name in the project
---- in both modes; sent as project key → configuration name, the wire's
---- form) or a generated template's project key → configuration name.
+--- configuration choice table (a choice `{ name, id? }`, ui/config_set_editor),
+--- each named as an entity param is (`daemon` mode: sent as the wire's
+--- `[{ project = { id }, configuration = { id } }]`, an entry without an id
+--- refused; in-process: the bound objects) — never by key or name; a
+--- `candidate` of `ConfigSets/1.add` is a `ConfigSets/1.candidates` entry
+--- (an automatic set, sent as its token).
 ---
 --- `cb(r)` gets the outcome (API.md §4.1): `{ outcome = "ok", ... }` with
 --- the method's result fields (a created object — in `daemon` mode its
@@ -161,8 +164,9 @@ CALLS["Profiles/1.set_active"] = function(_, p, cb) cb(outcome(wv().activate_pro
 CALLS["Profiles/1.create"] = function(ws, p, cb)
     cb(wv().create_profile(ws, set_object(p.config_set), p.tool and p.tool._entry or nil, p.activate == true))
 end
---- `{ config_set }` → `tools` (`{ label, _entry }`); waits for a running
---- tool scan, as the picker did (`ws._tool_waiters`).
+--- `{ config_set }` → `tools` (`{ label, module?, key?, sdk?, sdk_key?,
+--- _entry }`, the wire's fields as the daemon sends them, API.md §11); waits
+--- for a running tool scan, as the picker did (`ws._tool_waiters`).
 CALLS["Profiles/1.tool_choices"] = function(ws, p, cb)
     if ws and ws._tool_state == "scanning" then
         vim.notify("loomworks: waiting for tool detection...", vim.log.levels.INFO)
@@ -173,7 +177,9 @@ CALLS["Profiles/1.tool_choices"] = function(ws, p, cb)
     if r.outcome ~= "ok" then return cb(r) end
     local tools = {}
     for i, e in ipairs(r.tools) do
-        tools[i] = { label = e.tool_label or e.tool_key or "(default)", _entry = e }
+        tools[i] = { label = e.tool_label or e.tool_key or "(default)", _entry = e,
+            sdk = e.sdk and true or nil, key = e.sdk and e.sdk.key or e.tool_key,
+            module = not e.sdk and e.tool_mod_type or nil, sdk_key = e.sdk_key }
     end
     cb({ outcome = "ok", tools = tools })
 end
@@ -207,37 +213,41 @@ end
 -- ConfigSets/1
 -- ---------------------------------------------------------------------------
 
---- `{}` → `sets`: rows `{ name, auto, description?, candidate?, desc? }`,
---- a declared set's row bound to its object, an automatic one's `desc` its
---- mappings.
+--- `{}` → `sets`: rows `{ name, auto, description?, candidate?, mappings? }`,
+--- a declared set's row bound to its object, an automatic one's `mappings`
+--- (as the daemon's, API.md §20: `[{ project = { key }, configuration = {
+--- key } }]` ordered by project key) bound to their objects. The generated
+--- set names them by key (file data): resolved once, here.
 CALLS["ConfigSets/1.candidates"] = function(ws, _, cb)
+    local ss = require("loomworks.status_source")
     local r = wv().config_set_candidates(ws)
     local sets = {}
     for i, s in ipairs(r.sets) do
         local row = { name = s.name, auto = s.auto, description = s.description, candidate = s.candidate }
-        if s.mappings then
-            local keys, parts = vim.tbl_keys(s.mappings), {}
-            table.sort(keys)
-            for _, k in ipairs(keys) do parts[#parts + 1] = k .. "→" .. s.mappings[k] end
-            row.desc = table.concat(parts, ", ")
+        if s.auto and s.mappings then
+            row.mappings = {}
+            for _, po in pairs(ws and ws._projects or {}) do
+                local name = not po._removed and s.mappings[po.key] or nil
+                local co = name ~= nil and po:get_configuration(name) or nil
+                if co then
+                    local m = { project = { key = po.key }, configuration = { key = co.name } }
+                    ss.bind(m.project, po)
+                    ss.bind(m.configuration, co)
+                    row.mappings[#row.mappings + 1] = m
+                end
+            end
+            table.sort(row.mappings, function(a, b) return a.project.key < b.project.key end)
         end
-        require("loomworks.status_source").bind(row, s.config_set)
+        ss.bind(row, s.config_set)
         sets[i] = row
     end
     cb({ outcome = "ok", sets = sets })
 end
---- Whether `mappings` is a generated template's (project key →
---- configuration name), not the dialog's rows.
-local function template(mappings)
-    return type(next(mappings or {})) == "string"
-end
---- The dialog's mappings (project row → configuration choice `{ name }`)
---- as objects, or nil + the refusal of the first that does not resolve. The
---- project is the object the in-process view bound to its row; the
---- configuration is resolved by name in it exactly as the daemon resolves a
---- mapping (core_interfaces `mappings_of`, API.md §20): any of the project's
---- configurations (a preset's, a source-missing one) but a removed one, and
---- refused with the daemon's message.
+--- The dialog's mappings (project row → configuration choice) as objects,
+--- or nil + the refusal of the first that does not resolve: each the object
+--- the in-process view bound to its row or choice (never looked up by key
+--- or name), the configuration one of that project's but a removed one, as
+--- the daemon resolves a mapping (core_interfaces `mappings_of`, API.md §20).
 --- @param mappings table
 --- @return table|nil objects, table|nil refusal
 local function mapping_objects(mappings)
@@ -245,23 +255,26 @@ local function mapping_objects(mappings)
     for project, choice in pairs(mappings or {}) do
         local po = object(project)
         if not po then return nil, { outcome = "refused", message = "no project (not a row of the workspace view)" } end
-        local name = type(choice) == "table" and choice.name or nil
-        local co = name ~= nil and po:get_configuration(name) or nil
+        local co = object(choice)
         if not co or co._removed then
-            return nil, { outcome = "refused", message = "no configuration '" .. tostring(name)
-                .. "' in project '" .. tostring(po.key) .. "'" }
+            return nil, { outcome = "refused", message = "no configuration '"
+                .. tostring(type(choice) == "table" and choice.name or nil) .. "' in project '" .. tostring(po.key) .. "'" }
+        end
+        if co._project ~= po then
+            return nil, { outcome = "refused", message = "configuration '" .. tostring(co.name)
+                .. "' is not of project '" .. tostring(po.key) .. "'" }
         end
         out[po] = co
     end
     return out
 end
---- `{ name, mappings }` → `config_set`.
+--- `{ name, mappings }` or `{ candidate }` (a candidates entry) → `config_set`.
 CALLS["ConfigSets/1.add"] = function(ws, p, cb)
-    if template(p.mappings) then
-        -- The template the generated sets offered: exactly that set, or
+    if p.candidate ~= nil then
+        -- The automatic set the entry stands for: exactly that set, or
         -- refused when it changed since it was listed.
-        return cb(created("config_set",
-            wv().execute_create_config_set_from_candidate(ws, wv().candidate_token(p.name, p.mappings))))
+        local token = type(p.candidate) == "table" and p.candidate.candidate or p.candidate
+        return cb(created("config_set", wv().execute_create_config_set_from_candidate(ws, token)))
     end
     local m, err = mapping_objects(p.mappings)
     if not m then return cb(err) end
@@ -665,17 +678,30 @@ local function refs(method, p, fields)
     return out
 end
 
---- A project row → configuration choice mapping (the dialog's) or a template's
---- project key → configuration name as the wire's (project key →
---- configuration name; an unmapped project absent).
-local function wire_mappings(mappings)
-    local out = {}
+--- A project row → configuration choice mapping (the dialog's) as the
+--- wire's `[{ project = { id }, configuration = { id } }]` (an unmapped
+--- project absent), or nil + the refusal of the first row or choice that
+--- has no id (never looked up by key).
+--- @param method string
+--- @param mappings table
+--- @return table|nil, table|nil refusal
+local function wire_mappings(method, mappings)
+    local rows = {}
     for project, cfg in pairs(mappings or {}) do
-        if type(project) == "string" then
-            out[project] = cfg
-        elseif cfg then
-            out[project.key] = cfg.name
+        if cfg then rows[#rows + 1] = project end
+    end
+    -- In the rows' order (by project key, as the view lists them), so a
+    -- call's args are stable.
+    table.sort(rows, function(a, b) return tostring(a.key) < tostring(b.key) end)
+    local out = {}
+    for _, project in ipairs(rows) do
+        local cfg = mappings[project]
+        local pref, cref = id_ref(project), id_ref(cfg)
+        if not pref then return nil, refusal(method, "no project id (not a row of the workspace view)") end
+        if not cref then
+            return nil, refusal(method, "no configuration id for '" .. tostring(cfg.name) .. "'")
         end
+        out[#out + 1] = { project = pref, configuration = cref }
     end
     return out
 end
@@ -744,24 +770,35 @@ ROUTED["Profiles/1.tool_choices"] = function(ws, p, cb)
     send(ws, "Profiles/1.tool_choices", { config_set = set }, cb)
 end
 
---- `sets` as rows: a declared set's `id` its own.
+--- `sets` as rows: a declared set's `id` its own; an automatic one's
+--- `mappings` as the daemon sent them (each `{ id, key }`).
 ROUTED["ConfigSets/1.candidates"] = function(ws, _, cb)
     send(ws, "ConfigSets/1.candidates", {}, cb, function(res)
         local sets = {}
         for i, s in ipairs(res.sets or {}) do
             sets[i] = { id = s.config_set, name = s.name, auto = s.auto, description = s.description,
-                candidate = s.candidate }
+                candidate = s.candidate, mappings = s.mappings }
         end
         return { outcome = "ok", sets = sets }
     end)
 end
+--- `{ name, mappings }`, or `{ candidate }` a candidates entry (sent as its
+--- token).
 ROUTED["ConfigSets/1.add"] = function(ws, p, cb)
-    send(ws, "ConfigSets/1.add", { name = p.name, mappings = wire_mappings(p.mappings) }, cb)
+    if p.candidate ~= nil then
+        local token = type(p.candidate) == "table" and p.candidate.candidate or p.candidate
+        return send(ws, "ConfigSets/1.add", { candidate = token }, cb)
+    end
+    local mappings, err = wire_mappings("ConfigSets/1.add", p.mappings)
+    if not mappings then return cb(err) end
+    send(ws, "ConfigSets/1.add", { name = p.name, mappings = mappings }, cb)
 end
 ROUTED["ConfigSets/1.update"] = function(ws, p, cb)
     local args, err = refs("ConfigSets/1.update", p, { { "config_set", "configuration set" } })
     if not args then return cb(err) end
-    args.name, args.mappings = p.name, wire_mappings(p.mappings)
+    local mappings, merr = wire_mappings("ConfigSets/1.update", p.mappings)
+    if not mappings then return cb(merr) end
+    args.name, args.mappings = p.name, mappings
     send(ws, "ConfigSets/1.update", args, cb)
 end
 by_ref("ConfigSets/1.remove", { { "config_set", "configuration set" } })
@@ -769,10 +806,12 @@ by_ref("ConfigSets/1.remove", { { "config_set", "configuration set" } })
 ROUTED["Projects/1.candidates"] = function(ws, p, cb)
     send(ws, "Projects/1.candidates", { path = p.path, type = p.type }, cb)
 end
---- `mappings` as the wire's (absent when empty: an empty table is no JSON
---- object); `tool` a picked tool entry, sent by its key.
+--- `mappings` as the wire's — set name → configuration name (API.md §19;
+--- absent when empty: an empty table is no JSON object); `tool` a picked
+--- tool entry, sent by its key.
 ROUTED["Projects/1.add"] = function(ws, p, cb)
-    local mappings = wire_mappings(p.mappings)
+    local mappings = {}
+    for set, cfg in pairs(p.mappings or {}) do mappings[set] = cfg end
     local tool = p.tool and { key = p.tool.tool_key or p.tool.key } or nil
     send(ws, "Projects/1.add", { key = p.key, type = p.type, path = p.path,
         mappings = next(mappings) and mappings or nil, tool = tool }, cb)

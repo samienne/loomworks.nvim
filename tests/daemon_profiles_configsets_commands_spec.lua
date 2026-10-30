@@ -78,7 +78,7 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
 
     it("ConfigSets add → Profiles create (local) → set_active, all by id", function()
         local ws = loaded()
-        local r, e = sets("add", { name = "rel", mappings = { app = "Debug" } })
+        local r, e = sets("add", { name = "rel", mappings = { { project = { key = "app" }, configuration = { key = "Debug" } } } })
         assert.is_nil(e, vim.inspect(e))
         assert.equals("ok", r.outcome, vim.inspect(r))
         local cs = find(ws._config_sets, "name", "rel")
@@ -157,6 +157,11 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.is_true(auto.auto)
         assert.is_nil(auto.config_set)
         assert.is_string(auto.candidate)
+        assert.is_nil(dev.mappings)
+        -- What the automatic set would map, each by { id, key }.
+        local app = find(ws._projects, "key", "app")
+        assert.same({ { project = { id = id_of(app), key = "app" },
+            configuration = { id = id_of(app:get_configuration("Debug")), key = "Debug" } } }, auto.mappings)
 
         r = profiles("tool_choices", { config_set = { candidate = auto.candidate } })
         assert.equals("ok", r.outcome, vim.inspect(r))
@@ -168,6 +173,55 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         r = profiles("create", { config_set = { candidate = auto.candidate } })
         assert.equals("refused", r.outcome, vim.inspect(r))
         assert.matches("changed since it was listed", r.message, 1, true)
+    end)
+
+    it("add { candidate } adds the automatic set; a stale token is refused and changes nothing", function()
+        local ws = loaded()
+        ws.generate_default_config_sets = function() return { Auto = { app = "Debug" } } end
+        local auto
+        for _, s in ipairs(sets("candidates").sets) do if s.name == "Auto" then auto = s end end
+        local r = sets("add", { candidate = auto.candidate })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        local cs = find(ws._config_sets, "name", "Auto")
+        assert.same({ id = id_of(cs), key = "Auto" }, r.config_set)
+        assert.equals("Debug", working_copy(root).configuration_sets.Auto.app)
+
+        local before = read(root .. "/.nvim/loomworks.user.json")
+        for _, token in ipairs({ auto.candidate, "auto:nope" }) do
+            r = sets("add", { candidate = token })
+            assert.equals("refused", r.outcome, vim.inspect(r))
+            assert.equals("the automatic configuration set changed since it was listed — choose it again", r.message)
+        end
+        assert.equals(before, read(root .. "/.nvim/loomworks.user.json"))
+    end)
+
+    it("a mapping by id resolves; another project's configuration and a project mapped twice are refused",
+        function()
+        local ws = loaded()
+        local app = find(ws._projects, "key", "app")
+        local debug = app:get_configuration("Debug")
+        local r = sets("add", { name = "byid", mappings = { { project = { id = id_of(app) },
+            configuration = { id = id_of(debug) } } } })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.equals(debug, find(ws._config_sets, "name", "byid"):configuration(app))
+
+        local before = read(root .. "/.nvim/loomworks.user.json")
+        -- A configuration of another project, by id.
+        local other = { key = "other", _removed = false }
+        local foreign = { _project = other, name = "Foreign" }
+        other._configurations = { foreign }
+        table.insert(ws._projects, other)
+        local fid = id_of(foreign)
+        r = sets("add", { name = "x", mappings = { { project = { id = id_of(app) }, configuration = { id = fid } } } })
+        table.remove(ws._projects)
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("configuration 'Foreign' is not of project 'app'", r.message)
+        r = sets("add", { name = "x", mappings = {
+            { project = { key = "app" }, configuration = { key = "Debug" } },
+            { project = { id = id_of(app) }, configuration = { key = "Debug" } } } })
+        assert.equals("refused", r.outcome, vim.inspect(r))
+        assert.equals("project 'app' is mapped twice", r.message)
+        assert.equals(before, read(root .. "/.nvim/loomworks.user.json"))
     end)
 
     it("create whose profile save fails after a candidate set was added returns the set, with a warn", function()
@@ -258,11 +312,13 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.is_not_nil(sdk)
         local r = profiles("tool_choices", { config_set = { key = "dev" } })
         assert.equals("ok", r.outcome, vim.inspect(r))
-        assert.same({ { sdk = true, key = "fake_tc-1", label = sdk:display_name() } }, r.tools)
+        -- The SDK's entry, then its kit toolchains for the set's modules.
+        assert.same({ { sdk = true, key = "fake_tc-1", label = sdk:display_name() },
+            { module = "shell", key = "fake-kit", label = "fake-kit", sdk_key = "fake_tc-1" } }, r.tools)
 
         -- A set with no profile yet: the SDK's choice is its kit toolchains
         -- (spec §1.6: tool keys carry the SDK), so the key names the kit.
-        assert.equals("ok", sets("add", { name = "rel", mappings = { app = "Debug" } }).outcome)
+        assert.equals("ok", sets("add", { name = "rel", mappings = { { project = { key = "app" }, configuration = { key = "Debug" } } } }).outcome)
         r = profiles("create", { config_set = { key = "rel" }, tool = { sdk = "fake_tc-1" } })
         assert.equals("ok", r.outcome, vim.inspect(r))
         local profile = srv.service.ids:find(r.profile.id, ws._profiles)
@@ -281,6 +337,16 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.equals("ok", again.outcome, vim.inspect(again))
         assert.same(r.profile, again.profile)
         assert.equals(count, #ws._profiles)
+
+        -- A kit toolchain is a module's toolchain: create takes it as
+        -- { module, key } (the same profile), add_tool by its key.
+        local kit = profiles("create", { config_set = { key = "rel" }, tool = { module = "shell", key = "fake-kit" } })
+        assert.equals("ok", kit.outcome, vim.inspect(kit))
+        assert.equals("rel:fake-kit", kit.profile.key)
+        local dev = find(ws._profiles, "key", "dev")
+        r = profiles("add_tool", { profile = { id = id_of(dev) }, tool = "fake-kit" })
+        assert.equals("ok", r.outcome, vim.inspect(r))
+        assert.is_true(vim.tbl_contains(dev._tool_keys or {}, "fake-kit"), vim.inspect(dev._tool_keys))
     end)
 
     it("a profile created from an SDK keeps its SDK toolchain across a reload, distinct from the toolless one", function()
@@ -376,7 +442,7 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         local ws = loaded()
         local cs = find(ws._config_sets, "name", "dev")
         local id = id_of(cs)
-        local r = sets("update", { config_set = { id = id }, name = "main", mappings = { app = "Debug" } })
+        local r = sets("update", { config_set = { id = id }, name = "main", mappings = { { project = { key = "app" }, configuration = { key = "Debug" } } } })
         assert.equals("ok", r.outcome, vim.inspect(r))
         assert.equals("main", cs.name)
         assert.equals(id, id_of(cs))
@@ -385,7 +451,7 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
 
         local before = read(root .. "/.nvim/loomworks.user.json")
         local h = L.hold(op_lock.path(root), "import")
-        r = sets("update", { config_set = { id = id }, name = "other", mappings = { app = "Debug" } })
+        r = sets("update", { config_set = { id = id }, name = "other", mappings = { { project = { key = "app" }, configuration = { key = "Debug" } } } })
         assert.equals("refused", r.outcome, vim.inspect(r))
         assert.matches("pid " .. h.pid, r.message, 1, true)
         assert.equals("main", cs.name)
@@ -421,12 +487,12 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         cfg.projects.lib = { path = "lib", cmake = vim.empty_dict() }
         f = assert(io.open(root .. "/loomworks.json", "w")); f:write(vim.json.encode(cfg)); f:close()
         local ws = loaded()
-        local r = sets("add", { name = "P", mappings = { lib = "preset:dev" } })
+        local r = sets("add", { name = "P", mappings = { { project = { key = "lib" }, configuration = { key = "preset:dev" } } } })
         assert.equals("ok", r.outcome, vim.inspect(r))
         local lib = find(ws._projects, "key", "lib")
         assert.equals("preset:dev", find(ws._config_sets, "name", "P"):configuration(lib).name)
         lib:get_configuration("preset:dev")._removed = true
-        r = sets("add", { name = "Q", mappings = { lib = "preset:dev" } })
+        r = sets("add", { name = "Q", mappings = { { project = { key = "lib" }, configuration = { key = "preset:dev" } } } })
         assert.equals("refused", r.outcome, vim.inspect(r))
         assert.equals("no configuration 'preset:dev' in project 'lib'", r.message)
     end)
@@ -443,9 +509,9 @@ describe("loomworks.Profiles/1 and ConfigSets/1 commands (step 5o part B2)", fun
         assert.equals("no configuration set with id 999.999 (a stale reference)", r.message)
         r = sets("remove", { config_set = { key = "nope" } })
         assert.equals("no configuration set 'nope'", r.message)
-        r = sets("add", { name = "x", mappings = { ghost = "Debug" } })
+        r = sets("add", { name = "x", mappings = { { project = { key = "ghost" }, configuration = { key = "Debug" } } } })
         assert.equals("no project 'ghost'", r.message)
-        r = sets("add", { name = "x", mappings = { app = "Nope" } })
+        r = sets("add", { name = "x", mappings = { { project = { key = "app" }, configuration = { key = "Nope" } } } })
         assert.equals("no configuration 'Nope' in project 'app'", r.message)
         local _, e = profiles("add_tool", { profile = { key = "dev" } })
         assert.equals("invalid_args", e and e.code, vim.inspect(e))

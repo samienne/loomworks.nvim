@@ -52,12 +52,13 @@
               "published": true,
               "profiles": [ {
                 "id": { "$bind": "dev_id", "$type": "string" }, "key": "dev", "label": "dev", "config_set": "dev",
+                "config_set_id": { "$type": "string" },
                 "active": false, "busy": false, "running": false, "last_result": { "$absent": true },
                 "pct": { "$absent": true }, "elapsed": { "$absent": true },
                 "units": [ { "project": "app", "type": "shell", "configuration": "Debug",
                   "progress": { "$absent": true }, "elapsed": { "$absent": true } } ]
               } ],
-              "config_sets": [ { "id": { "$type": "string" }, "name": "dev", "mappings": { "app": "Debug" } } ],
+              "config_sets": [ { "id": { "$type": "string" }, "name": "dev", "mappings": [ { "project": { "id": { "$type": "string" }, "key": "app" }, "configuration": { "id": { "$type": "string" }, "key": "Debug" }, "missing": false } ] } ],
               "projects": [ {
                 "id": { "$bind": "app_id", "$type": "string" }, "key": "app", "type": "shell", "path": "app",
                 "configurations": { "$contains": [ { "id": { "$type": "string" }, "key": "Debug", "label": "Debug", "object": { "$absent": true } } ] },

@@ -106,16 +106,17 @@ describe("ui.model_calls", function()
             r[#r + 1] = run(WS, "Workspace/1.set_description", { item = { _kind = "launch", _row = LROW }, text = "t" })
             r[#r + 1] = run(WS, "Profiles/1.add_tool", { profile = PROW, tool = "gcc" })
             r[#r + 1] = run(WS, "Profiles/1.set_active", { profile = PROW })
-            -- The dialog's mappings: project row -> configuration choice
-            -- (`{ name }`, resolved in the bound project by name, as the
-            -- daemon resolves it); the write gets the objects (WP-B).
-            local PRJROW = { key = "app" }
+            -- The dialog's mappings: project row -> configuration choice,
+            -- each bound to its object (never resolved by name); the write
+            -- gets the objects (WP-B).
+            local PRJROW, CHOICE = { key = "app" }, { name = "c" }
             ss.bind(PRJROW, PR)
-            PR.get_configuration = function(_, n) if n == "c" then return CFG end end
-            local dm = { [PRJROW] = { name = "c" } }
+            CFG._project = PR
+            ss.bind(CHOICE, CFG)
+            local dm = { [PRJROW] = CHOICE }
             local pm = { [PR] = CFG }
             r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Dev", mappings = dm })
-            r[#r + 1] = run(WS, "ConfigSets/1.add", { name = "Auto", mappings = { app = "Debug" } })
+            r[#r + 1] = run(WS, "ConfigSets/1.add", { candidate = { name = "Auto", auto = true, candidate = "auto:t" } })
             r[#r + 1] = run(WS, "ConfigSets/1.update", { config_set = CSROW, name = "D2", mappings = dm })
             r[#r + 1] = run(WS, "Projects/1.add", { key = "app", type = "cmake", path = "app", mappings = m, tool = m })
             r[#r + 1] = run(nil, "Projects/1.configuration_save",
@@ -133,8 +134,7 @@ describe("ui.model_calls", function()
                 { "add_profile_tool", P, "gcc" },
                 { "activate_profile", P },
                 { "execute_create_config_set", WS, "Dev", pm },
-                { "candidate_token", "Auto", { app = "Debug" } },
-                { "execute_create_config_set_from_candidate", WS, true },
+                { "execute_create_config_set_from_candidate", WS, "auto:t" },
                 { "execute_edit_config_set", CS, "D2", pm },
                 { "execute_add_project", WS, "app", "cmake", "app", { mappings = m, tool_entry = m } },
                 { "execute_save_configuration", P, CFG, "Debug", m },

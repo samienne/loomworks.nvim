@@ -292,7 +292,8 @@ describe("view_state.workspace (loomworks.view.Workspace/1)", function()
         assert.equals(1, #p.tools)
         assert.equals("cmake", p.tools[1].module)
         assert.equals("ninja-gcc-12", p.tools[1].key)
-        assert.equals("Debug", v.config_sets[1].mappings.App)
+        assert.same({ { project = { key = "App" }, configuration = { key = "Debug" }, missing = false } },
+            v.config_sets[1].mappings)
         local cfg = v.projects[1].configurations[1]
         assert.equals("Debug", cfg.key)
         assert.equals("Debug", cfg.label)

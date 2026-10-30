@@ -5,16 +5,13 @@ local actions = require("loomworks.ui.actions")
 
 --- Render configuration set details when expanded.
 --- @param tree loomworks.Tree
---- @param row table the set's view row (`mappings`: project -> configuration)
+--- @param row table the set's view row (`mappings`: one entry per mapped project, by project key)
 local function render_set_details(tree, row)
     tree:group("Projects:", "LoomworksSection", function()
-        local projects = {}
-        for project in pairs(row.mappings) do projects[#projects + 1] = project end
-        table.sort(projects)
-        for _, project in ipairs(projects) do
-            local variant = row.mappings[project]
+        for _, entry in ipairs(row.mappings or {}) do
+            local project, variant = entry.project.key, entry.configuration.key
             -- A mapping to a removed or source-less configuration.
-            if row.missing[project] then
+            if entry.missing then
                 tree:leaf({
                     { project, "LoomworksProject" },
                     { " → " .. variant .. " ⚠ missing", "WarningMsg" },
@@ -50,22 +47,27 @@ local function taken(view, name, except)
     return false
 end
 
---- A configuration as the set dialog offers it: its name. A model call
---- sends a mapping as project key -> configuration name and the write
---- resolves the name in the project in both modes (API.md §20: any of the
---- project's configurations but a removed one), so a mapping to a
---- configuration the view does not list (a source-missing one) keeps its
---- name and saves as it does in the daemon.
+--- A configuration as the set dialog offers or maps it: a view entry that
+--- names it — a project row's `configurations[]` / `presets[]` row, or a set
+--- row's mapping `configuration` (`{ id?, key }`, kept for a configuration
+--- the view lists no row of, a source-missing one) — shown by `name`. A
+--- model call sends it by its id (daemon) or bound object (in-process),
+--- never by name (ui/model_calls.lua).
+--- @param ref table the view entry
 --- @param name string
 --- @return loomworks.ConfigSetChoice
-local function config_choice(name)
-    return { name = name }
+local function config_choice(ref, name)
+    local ss = require("loomworks.status_source")
+    local choice = { name = name, id = ref.id }
+    local obj = ss.object_of(ref)
+    if obj then ss.bind(choice, obj) end
+    return choice
 end
 
 --- The set dialog's projects and the configurations each offers, from the
 --- workspace view's project rows (6b-alpha: no editor-model read): a row's
 --- `configurations[]` and its cmake presets (`presets[]`, canonical
---- `preset:<name>` configurations the view lists apart), by name.
+--- `preset:<name>` configurations the view lists apart).
 --- @param view table|nil the workspace view
 --- @return table[]|nil projects, table<table, loomworks.ConfigSetChoice[]>|nil available_configs
 local function dialog_projects(view)
@@ -74,14 +76,14 @@ local function dialog_projects(view)
     for _, p in ipairs(view.projects or {}) do
         projects[#projects + 1] = p
         local configs, seen = {}, {}
-        local function offer(name)
+        local function offer(ref, name)
             if name ~= nil and not seen[name] then
                 seen[name] = true
-                configs[#configs + 1] = config_choice(name)
+                configs[#configs + 1] = config_choice(ref, name)
             end
         end
-        for _, c in ipairs(p.configurations or {}) do offer(c.key) end
-        for _, pr in ipairs(p.presets or {}) do offer(pr.name) end
+        for _, c in ipairs(p.configurations or {}) do offer(c, c.key) end
+        for _, pr in ipairs(p.presets or {}) do offer(pr, pr.name) end
         table.sort(configs, function(a, b) return a.name < b.name end)
         available[p] = configs
     end
@@ -96,9 +98,10 @@ local function no_view()
 end
 
 --- Open the config set editor for an existing set: its projects and
---- configurations are the view's rows, its mappings the set row's (project
---- key -> configuration name, the view's own form, joined to the rows of
---- the same view); the update names the set by its row.
+--- configurations are the view's rows, its mappings the set row's entries,
+--- joined to the rows of the same view by entity (helpers.same_entity: the
+--- id in `daemon` mode, the bound object in-process); the update names the
+--- set by its row.
 --- @param ctx table the page context
 --- @param row table the set's view row
 local function edit_config_set(ctx, row)
@@ -108,13 +111,17 @@ local function edit_config_set(ctx, row)
     local projects, available_configs = dialog_projects(ctx.view)
     if not projects then return no_view() end
     local mappings = {}
-    for _, p in ipairs(projects) do
-        local name = (row.mappings or {})[p.key]
-        if name ~= nil then
-            for _, c in ipairs(available_configs[p]) do
-                if c.name == name then mappings[p] = c; break end
+    for _, entry in ipairs(row.mappings or {}) do
+        for _, p in ipairs(projects) do
+            if helpers.same_entity(entry.project, p) then
+                for _, c in ipairs(available_configs[p]) do
+                    if helpers.same_entity(entry.configuration, c) then mappings[p] = c; break end
+                end
+                -- A configuration the view lists no row of (source-missing):
+                -- kept by the entry's own reference.
+                mappings[p] = mappings[p] or config_choice(entry.configuration, entry.configuration.key)
+                break
             end
-            mappings[p] = mappings[p] or config_choice(name)
         end
     end
 
@@ -157,7 +164,7 @@ end
 local function delete_lines(view, row)
     local affected = {}
     for _, p in ipairs(view.profiles or {}) do
-        if p.config_set == row.name then affected[#affected + 1] = p.key end
+        if helpers.same_entity(helpers.profile_set(p), row) then affected[#affected + 1] = p.key end
     end
     table.sort(affected)
     local lines = { "  Delete configuration set: " .. row.name }
@@ -214,13 +221,15 @@ local function delete_config_set(ctx, row)
     })
 end
 
---- Add a configuration set (`name`, `mappings`) and report it.
+--- Add a configuration set and report it: `params` the dialog's `{ name,
+--- mappings }` (project row → configuration choice) or `{ candidate }` (a
+--- `ConfigSets/1.candidates` entry, an automatic set).
 --- @param ws loomworks.Workspace|nil
 --- @param name string
---- @param mappings table the dialog's project row → configuration choice, or a template's project key → configuration name
-local function add_config_set(ws, name, mappings)
+--- @param params table
+local function add_config_set(ws, name, params)
     local model = require("loomworks.ui.model_calls")
-    model.call(ws, "ConfigSets/1.add", { name = name, mappings = mappings }, function(r)
+    model.call(ws, "ConfigSets/1.add", params, function(r)
         if r.config_set then
             vim.notify("loomworks: configuration set '" .. name .. "' created", vim.log.levels.INFO)
         else
@@ -249,61 +258,50 @@ local function create_custom_config_set(ctx)
             end
             return true
         end,
-        on_accept = function(result) add_config_set(ws, result.name, result.mappings) end,
+        on_accept = function(result)
+            add_config_set(ws, result.name, { name = result.name, mappings = result.mappings })
+        end,
         on_cancel = function() end,
     })
 end
 
---- Create a new config set: offer templates then custom option. *(Transition.)*
---- The templates are the sets the editor's model's projects suggest (project
---- key → configuration name, as generated): `ConfigSets/1.candidates` names
---- the automatic sets but carries no mappings, and `ConfigSets/1.add` takes
---- no candidate token, so the daemon cannot serve this read yet.
+--- Create a new config set: offer the automatic sets
+--- `ConfigSets/1.candidates` lists (each with its mappings), then the custom
+--- option. A template's pick is `ConfigSets/1.add { candidate }`
+--- (spec/ui.md §1.7).
 --- @param ctx table the page context
 local function create_config_set(ctx)
     if not ctx.view then return no_view() end
     local ws = ctx.ws
-    if not ws then return end
-
-    local auto_sets = ws:generate_default_config_sets()
-    local choices = {}
-    local template_data = {}
-
-    if auto_sets then
-        for name, mappings in pairs(auto_sets) do
-            if not taken(ctx.view, name) then
+    local model = require("loomworks.ui.model_calls")
+    model.call(ws, "ConfigSets/1.candidates", {}, function(r)
+        if r.outcome ~= "ok" then return report(r, "failed to list the configuration sets") end
+        local choices = {}
+        for _, set in ipairs(r.sets or {}) do
+            if set.auto then
                 local parts = {}
-                local keys = {}
-                for k in pairs(mappings) do keys[#keys + 1] = k end
-                table.sort(keys)
-                for _, k in ipairs(keys) do
-                    parts[#parts + 1] = k .. " → " .. mappings[k]
+                for _, m in ipairs(set.mappings or {}) do
+                    parts[#parts + 1] = m.project.key .. " → " .. m.configuration.key
                 end
-                local desc = table.concat(parts, ", ")
-                choices[#choices + 1] = name .. " (" .. desc .. ")"
-                template_data[choices[#choices]] = { name = name, mappings = mappings }
+                choices[#choices + 1] = { label = set.name .. " (" .. table.concat(parts, ", ") .. ")", set = set }
             end
         end
-        table.sort(choices)
-    end
-
-    local custom_label = "Custom..."
-    choices[#choices + 1] = custom_label
-
-    if #choices == 1 then
-        -- Only the custom option remains — go straight to the editor.
-        create_custom_config_set(ctx)
-        return
-    end
-
-    vim.ui.select(choices, { prompt = "Create configuration set:" }, function(choice)
-        if not choice then return end
-        if choice == custom_label then
-            create_custom_config_set(ctx)
-        else
-            local data = template_data[choice]
-            if data then add_config_set(ws, data.name, data.mappings) end
+        if #choices == 0 then
+            -- Only the custom option remains — go straight to the editor.
+            return create_custom_config_set(ctx)
         end
+        table.sort(choices, function(a, b) return a.label < b.label end)
+        local custom = { label = "Custom..." }
+        choices[#choices + 1] = custom
+        vim.ui.select(choices, { prompt = "Create configuration set:",
+            format_item = function(c) return c.label end }, function(choice)
+            if not choice then return end
+            if choice == custom then
+                create_custom_config_set(ctx)
+            else
+                add_config_set(ws, choice.set.name, { candidate = choice.set })
+            end
+        end)
     end)
 end
 

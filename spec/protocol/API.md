@@ -1030,10 +1030,12 @@ Each reaches subscribers as `Workspace/1` `changed` and in
   `toolchains are still being detected` (exit code 1, a state refusal the
   client may retry), never waiting for the detection;
 - **`Profiles/1.tool_choices { config_set }`** → `{ outcome = "ok", tools:
-  [{ module, key?, label } | { sdk = true, key, label }] }` — the toolchains
-  a profile of that set can use, detected in the client's environment: the
-  keyed toolchains of its projects' module types, then the resolved SDKs
-  relevant to them; `config_set` as for `create`,
+  [{ module, key?, label, sdk_key? } | { sdk = true, key, label }] }` — the
+  toolchains a profile of that set can use, detected in the client's
+  environment: the keyed host toolchains of its projects' module types, then
+  the resolved SDKs relevant to them, then those SDKs' kit toolchains for
+  those module types (`sdk_key` the key of the SDK that provides it);
+  `config_set` as for `create`,
   and refused as `create` is while a toolchain detection is running;
 - **`Profiles/1.add_tool { profile, tool }`** / **`remove_tool { profile,
   tool }`** — adds or removes a toolchain, `tool` its key (§1.2). The
@@ -1045,7 +1047,8 @@ Each reaches subscribers as `Workspace/1` `changed` and in
 
 An SDK's entry in `tool_choices` is `{ sdk = true, key, label }`;
 `create`'s `tool` may be `{ sdk = <key> }`. A module's toolchain is
-`{ module, key? }`. A `tool` not among `tool_choices`' is `refused` with
+`{ module, key? }`, a kit toolchain (`sdk_key`) among them; `add_tool`
+takes a module's toolchain by its `key`. A `tool` not among `tool_choices`' is `refused` with
 `no <module> toolchain '<key>' for this configuration set (see
 Profiles/1.tool_choices)`, an SDK's with `no SDK toolchain '<key>' for this
 configuration set (see Profiles/1.tool_choices)`.
@@ -1318,7 +1321,9 @@ optional because the in-process builder leaves it out:
 - `profiles` (array) — one record per profile, ordered by key:
   - `id` (string, optional), `key` (string), `label` (string, §1.1),
     `description` (string, optional), `config_set` (string, optional; the
-    configuration set's name, the missing set's name when `orphaned_set`);
+    configuration set's name, the missing set's name when `orphaned_set`),
+    `config_set_id` (string, optional; that set's id, absent when
+    `orphaned_set`);
   - `active` (boolean), `modified` (boolean), `orphaned_set` (boolean; its
     configuration set no longer exists);
   - `intent` (string, optional) and `removed_upstream` (boolean, optional)
@@ -1406,10 +1411,11 @@ optional because the in-process builder leaves it out:
   this string).
 - `config_sets` (array) — one record per configuration set, ordered by
   name: `{ id?, name, description?, active, modified, intent?,
-  removed_upstream?, mappings, missing }`; `active` whether it is the active
-  profile's set; `mappings` an object, project key → configuration name;
-  `missing` an object, project key → `true`, for each mapped configuration
-  that was removed or has no source.
+  removed_upstream?, mappings }`; `active` whether it is the active
+  profile's set; `mappings` an array, ordered by project key, one
+  `{ project, configuration, missing }` per mapped project: `project` `{ id?,
+  key }` the project, `configuration` `{ id?, key }` the configuration (`key`
+  its name), `missing` whether it was removed or has no source.
 - `projects` (array) — the project's declaration as the status page shows
   it (spec/ui.md §1.8), ordered by key with orphaned projects last:
   - `id` (string, optional), `key` (string), `type` (string), `path`
@@ -1434,8 +1440,8 @@ optional because the in-process builder leaves it out:
   - `configurations` (array, optional; absent when the project declares
     none) — ordered by name (below);
   - `presets` (array, optional) — the module's preset configurations
-    (`CMakePresets.json`), ordered by name, each `{ name, generator?,
-    toolchain_locked? }`;
+    (`CMakePresets.json`), ordered by name, each `{ id?, name, generator?,
+    toolchain_locked? }`, `id` the configuration's;
   - `launches` (array) — the launch configurations, ordered by name: `{ id?,
     key, label, description?, target?, command?, args? }`, `id` the launch
     configuration's (§1.1), `key` and `label` the launch's name, `target` /
@@ -1703,13 +1709,21 @@ A project is removed with `Maintenance/1.execute_deletion` (§22).
 `candidates` is a query; the others are commands (§6).
 
 - `candidates {}` → `{ outcome = "ok", sets: [{ config_set?, name, auto,
-  description?, candidate? }] }` — the declared sets (`config_set` their id)
-  and the automatic ones the projects allow (`auto`), each automatic one
-  with `candidate`, an opaque token `Profiles/1.create` and `tool_choices`
-  accept in place of a reference;
-- `add { name, mappings }` → `ok` with `config_set { id, key }`;
-  `mappings` project key → configuration name;
-- `update { config_set, name?, mappings }` — replaces the mappings; a
+  description?, candidate?, mappings? }] }` — the declared sets
+  (`config_set` their id) and the automatic ones the projects allow
+  (`auto`), each automatic one with `candidate`, an opaque token `add`,
+  `Profiles/1.create` and `tool_choices` accept in place of a reference,
+  and `mappings`, what it would map, as the view's (§14.4) without
+  `missing`;
+- `add { name, mappings }` or `add { candidate }` → `ok` with `config_set {
+  id, key }`; `mappings` an array of `{ project, configuration }`, each a
+  reference (§1.2), `configuration` one of that project's configurations, a
+  project absent unmapped and a project listed twice refused; `candidate` a
+  token `candidates` gave, which adds that automatic set as listed (refused
+  with `the automatic configuration set changed since it was listed —
+  choose it again` when it changed or was added since);
+- `update { config_set, name?, mappings }` — replaces the mappings
+  (`mappings` as for `add`); a
   `name` other than its key renames it, propagated to profiles and the
   cache (spec §4.10) under the workspace operation lock;
 - `remove { config_set }` — removes the declaration; its profiles stay,

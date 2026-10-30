@@ -920,10 +920,11 @@ function M.profiles_impl(service)
     end
 
     --- The wire form of a toolchain entry: a module's `{ module, key?,
-    --- label }`, an SDK's `{ sdk = true, key, label }` (API.md §11).
+    --- label, sdk_key? }` (`sdk_key` a kit toolchain's SDK), an SDK's
+    --- `{ sdk = true, key, label }` (API.md §11).
     local function tool_wire(e)
         if e.sdk then return { sdk = true, key = e.sdk.key, label = e.tool_label or e.sdk.key } end
-        return { module = e.tool_mod_type, key = e.tool_key, label = e.tool_label or e.tool_key }
+        return { module = e.tool_mod_type, key = e.tool_key, label = e.tool_label or e.tool_key, sdk_key = e.sdk_key }
     end
 
     --- The entry among `choices` (tool_choices') that the wire `tool` names
@@ -1395,30 +1396,54 @@ end
 --- The `loomworks.ConfigSets/1` handlers (API.md §20; step 5o part B2), on
 --- `/projects` beside Projects/1. `candidates` is a read; the others are
 --- commands run as Workspace/1's (`command`): the references (a set by id or
---- name; a mapping's project by key and configuration by name in it)
---- resolve to the live objects once, here, and the write is the shared
---- loomworks.model_commands function the in-process editor calls. A rename
---- propagates under the workspace operation lock O
---- (Workspace:rename_configuration_set is guarded, spec §19.3).
+--- name; a mapping's project and configuration each by id or key, the
+--- configuration's key its name in the project) resolve to the live objects
+--- once, here, and the write is the shared loomworks.model_commands
+--- function the in-process editor calls. A rename propagates under the
+--- workspace operation lock O (Workspace:rename_configuration_set is
+--- guarded, spec §19.3).
 --- @param service loomworks.daemon.BuildService
 --- @return loomworks.daemon.InterfaceImpl
 function M.config_sets_impl(service)
     local mc = require("loomworks.model_commands")
     local methods = {}
 
-    --- `mappings` (project key → configuration name) as objects, or nil +
-    --- the refusal. A project absent is unmapped.
+    --- `mappings` (an array of `{ project, configuration }` references) as
+    --- objects, or nil + the refusal. A project absent is unmapped; one
+    --- listed twice is refused.
     local function mappings_of(ws, raw)
         local out = {}
-        for key, name in pairs(plain(raw) or {}) do
-            local project, perr = project_of(service, ws, { key = key })
-            if not project then return nil, mc.refused(perr) end
-            local cfg = project:get_configuration(name)
-            if not cfg or cfg._removed then
-                return nil, mc.refused("no configuration '" .. tostring(name) .. "' in project '" .. key .. "'")
+        for _, m in ipairs(plain(raw) or {}) do
+            if type(m) ~= "table" or type(m.project) ~= "table" or type(m.configuration) ~= "table" then
+                return nil, mc.refused("a mapping is { project, configuration }")
             end
+            local project, perr = project_of(service, ws, m.project)
+            if not project then return nil, mc.refused(perr) end
+            if out[project] ~= nil then
+                return nil, mc.refused("project '" .. project.key .. "' is mapped twice")
+            end
+            local cfg, cerr = configuration_of(service, project, m.configuration)
+            if not cfg then return nil, mc.refused(cerr) end
             out[project] = cfg
         end
+        return out
+    end
+
+    --- An automatic set's mappings (project key → configuration name, as
+    --- generated) as the wire's `[{ project = { id, key }, configuration =
+    --- { id, key } }]`, ordered by project key: the generated names
+    --- resolved once, here.
+    local function candidate_mappings(ws, raw)
+        local out = {}
+        for _, p in pairs(ws._projects or {}) do
+            local name = not p._removed and raw[p.key] or nil
+            local cfg = name ~= nil and p:get_configuration(name) or nil
+            if cfg then
+                out[#out + 1] = { project = { id = service.ids:id(p), key = p.key },
+                    configuration = { id = service.ids:id(cfg), key = cfg.name } }
+            end
+        end
+        table.sort(out, function(a, b) return a.project.key < b.project.key end)
         return out
     end
 
@@ -1428,7 +1453,8 @@ function M.config_sets_impl(service)
             local sets = {}
             for _, s in ipairs(r.sets) do
                 sets[#sets + 1] = { config_set = s.config_set and service.ids:id(s.config_set) or nil,
-                    name = s.name, auto = s.auto, description = s.description, candidate = s.candidate }
+                    name = s.name, auto = s.auto, description = s.description, candidate = s.candidate,
+                    mappings = s.auto and s.mappings and candidate_mappings(ws, s.mappings) or nil }
             end
             return { outcome = "ok", sets = sets }
         end)
@@ -1436,9 +1462,14 @@ function M.config_sets_impl(service)
 
     function methods.add(ctx, args)
         return command(service, ctx, function(ws)
-            local mappings, refusal = mappings_of(ws, args.mappings)
-            if not mappings then return refusal end
-            local r = mc.config_set_add(ws, args.name, mappings)
+            local r
+            if args.candidate ~= nil then
+                r = mc.config_set_add_candidate(ws, plain(args.candidate))
+            else
+                local mappings, refusal = mappings_of(ws, args.mappings)
+                if not mappings then return refusal end
+                r = mc.config_set_add(ws, args.name, mappings)
+            end
             if r.outcome == "ok" then r.config_set = { id = service.ids:id(r.config_set), key = r.config_set.name } end
             return r
         end)

@@ -75,6 +75,7 @@
         "label": { "description": "The profile's display text (API.md §1.1). Clients show it, never derive it.", "type": "string" },
         "description": { "description": "The profile's description (spec/ui.md 1.16).", "type": "string" },
         "config_set": { "description": "The name of the profile's configuration set (the missing set's name when orphaned_set).", "type": "string" },
+        "config_set_id": { "description": "The opaque id of the profile's configuration set: sent by the daemon when the set exists (not orphaned_set), absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "active": { "type": "boolean" },
         "modified": { "description": "Whether the profile differs from the published baseline.", "type": "boolean" },
         "intent": { "$ref": "#/$defs/Intent" },
@@ -220,7 +221,7 @@
     },
     "ConfigSet": {
       "type": "object",
-      "required": ["name", "active", "modified", "mappings", "missing"],
+      "required": ["name", "active", "modified", "mappings"],
       "properties": {
         "id": { "description": "The configuration set's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "name": { "type": "string" },
@@ -229,10 +230,13 @@
         "modified": { "type": "boolean" },
         "intent": { "$ref": "#/$defs/Intent" },
         "removed_upstream": { "description": "It has effective intent local+shared and was removed from the published file since the baseline (spec 2.4); absent means false.", "type": "boolean" },
-        "mappings": { "description": "Project key to configuration name.", "type": "object", "additionalProperties": { "type": "string" } },
-        "missing": { "description": "Project key to true, for each mapped configuration that was removed or has no source.", "type": "object", "additionalProperties": { "const": true } }
+        "mappings": { "description": "One per mapped project, ordered by project key.", "type": "array", "items": { "type": "object", "required": ["project", "configuration", "missing"], "additionalProperties": false, "properties": {
+            "project": { "$ref": "#/$defs/EntityRef" },
+            "configuration": { "description": "key: the configuration's name.", "$ref": "#/$defs/EntityRef" },
+            "missing": { "description": "The configuration was removed or has no source.", "type": "boolean" } } } }
       }
     },
+    "EntityRef": { "type": "object", "required": ["key"], "properties": { "id": { "$ref": "loomworks.Common/1#/$defs/Id" }, "key": { "type": "string" } } },
     "Project": {
       "type": "object",
       "required": ["key", "type", "path", "modified", "orphaned", "running", "needs_refresh", "launches", "deploy", "variables", "type_config"],
@@ -263,6 +267,7 @@
             "type": "object",
             "required": ["name"],
             "properties": {
+              "id": { "description": "The preset configuration's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
               "name": { "type": "string" },
               "generator": { "type": "string" },
               "toolchain_locked": { "type": "boolean" }
