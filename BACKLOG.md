@@ -49,24 +49,33 @@ it. Compare by directory identity (`_build_dir_identity`, spec §4.6) instead.
 Deletion safety: needs a failing test first (set `TMPDIR` to a short path).
 Found by `tests/view_deletion_locks_spec.lua` on Windows CI (#292).
 
-## A failed commit under `op_lock.guard` keeps the in-memory change
+## Nested `op_lock.guard`: an inner undo keeps its staged writes
 
-When `_txn_finish` fails inside `op_lock.guard` (op_lock.lua: lock lost
-before committing, commit journal not written, a failed apply), the guarded
-method's in-memory change stays although nothing (or not everything) was
-written, and the working copy's `_disk_baseline.user` keeps the aborted
-staged text, so the next save is refused as stale and reloads (API.md §11:
-a refused write changes neither user.json nor the model). Fixed for the
-profile toolchain change only (`change_toolchain` in model_commands.lua,
-PR #310: the profile's tools/key and the baseline put back). Still open for
-the other guarded methods: `Workspace:publish`, `publish_one`,
-`commit_import`, `rename_project`, `rename_configuration_set`,
-`remove_profile`, `upgrade_profiles_for_tool`,
-`downgrade_profiles_from_tool` (end of workspace.lua) and
-`Project:rename_configuration` (end of project.lua). Likely better solved
-once in the guard (a per-method undo, or reload from disk on a failed
-commit) than per method; the cache baseline may drift the same way. Test
-by stubbing `ws._txn_finish` to abort and return false.
+A guarded method called from inside another guarded method shares the outer
+transaction (`txn.begin` nests by refcount, txn.lua). When the inner method
+raises or refuses and the outer one catches that and goes on to commit, the
+inner `undo` has put its in-memory change back but the inner method's
+staged file writes are still in the transaction and are committed with the
+outer ones (and the reload is left to the outermost guard, which does not
+run it on success). Fix: per-guard save points in the transaction (drop the
+inner entries' staged bytes on an inner failure), or refuse to continue an
+outer guard after an inner failure. Found in review of #338.
+
+## A deletion during a clean shows "cleaning"
+
+Deleting marks nest (`ConfigUnit:mark_deleting`): the first mark's reason
+wins, so a deletion (or reset) of a unit started while a clean of it still
+runs keeps showing "cleaning" until the clean ends. Show the most recent
+reason (a reason stack) instead. Display only. Found in review of #338.
+
+## `rename_project` rewrites config-unit ids in the wrong form
+
+`Workspace:rename_project` sets `unit.id = <new key>/<config key>`, but units
+are identified by their build directory (data_model's `expected_units` keys,
+e.g. `build/App/Debug`, unchanged by the rename since the path is pinned), so
+after a successful rename the next remerge drops and recreates every unit of
+the project (a running one kept as a ghost under the bogus id). Leave the id
+alone (or recompute it from the build dir). Seen while testing #338.
 
 ## master: in-process deletions take no locks
 
@@ -230,17 +239,6 @@ re-render before the view's `update` keeps them."
 
 ## Clean and deletion leftovers (low; noted during step 5o C2c-2 / C2d)
 
-- A `clean_wipe` step's nested `_run_deletion` clears the outer clean's
-  deleting (`cleaning`) mark early, while the clean still holds the
-  build-directory lock: the unit shows its old state for the rest of the
-  clean. Keep the outer mark until the outer clean ends.
-- A throw between `mark_deleting(true)` and the removal Future in
-  `_run_deletion` leaves the mark set (the unit stays `deleting` until a
-  reload). Clear it on that error path (deletion-safety review applies).
-- A failed clean is notified twice (the routed call's refusal and the
-  caller's own report).
-- The stray-directory deletion test lost its assertion that the failure's
-  error text (`boom`) reaches the log; restore it.
 - The deploy editor still joins view rows by key at runtime (the same
   pattern the deletion pre-cancel had before C2d-2 matched by the confirm's
   `unit_ids`): `get_targets` (`ui/deploy_editor.lua:288`) keeps the profile

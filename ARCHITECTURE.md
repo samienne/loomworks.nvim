@@ -589,7 +589,24 @@ files (waiting up to ~2 s for a writer that still holds O; a refusal is
 (`txn.abandon`) before releasing O. `txn.finish` fences on
 `op_lock.still_held(root)` (the O lockfile still carries this process's
 record); `op_lock.guard` aborts the transaction when the method returns
-`false`; `_execute_deletion_unlocked` stops (no tree removed) when its commit
+`false`. When the commit fails, or the method raises, the guard drops the
+method's in-memory change (API.md §11): an optional per-method `undo`
+(`opts.snapshot`, e.g. a profile's toolchain or a project's configuration
+names) restores in place, then `Workspace:_txn_rollback` puts back the
+sticky intents, removed-upstream flags and identity fields `_txn_snapshot`
+took (project keys, set names, profile keys/set names/tool keys/mappings,
+config-unit ids with their variant, config key and build directory, the
+`_build_dirs` array) and reloads the model from the files on disk (as an
+external change, objects matched by their on-disk keys, so each comes back as
+the same object). A load the files would refuse goes through `Core:setup`, as
+`_on_file_changed`'s refuse path does — in the daemon too, where the swap's
+teardown cancels the workspace's running tasks; that setup's
+`_recover_journal` skips a journal while this process holds O
+(`op_lock.held`). A failed apply past the commit point is rolled forward by
+`txn.finish` itself (`recover_locked`, still under O): when that completes,
+the operation is committed; only a journal that cannot be completed fails
+the operation and stays for the next O holder. A nested guard leaves the
+reload to the outermost one. `_execute_deletion_unlocked` stops (no tree removed) when its commit
 fails, and `_run_deletion` asserts that no transaction is open when it writes
 the `unknown` marks.
 

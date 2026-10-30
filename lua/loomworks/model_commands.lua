@@ -608,28 +608,23 @@ function Toolchain.change(profile, change)
     return save_profile_tools(profile, snapshot)
 end
 
-require("loomworks.op_lock").guard(Toolchain, "change", "rename", function(profile) return profile._workspace end)
+-- A failed commit puts the profile's toolchain back in place (it keeps its
+-- identity), then the guard reloads the model from disk (API.md §11).
+require("loomworks.op_lock").guard(Toolchain, "change", "rename", function(profile) return profile._workspace end, {
+    snapshot = function(profile)
+        local snapshot = profile_tools_snapshot(profile)
+        return function() restore_profile_tools(profile, snapshot) end
+    end,
+})
 
 --- Run a toolchain change of `profile` under the operation lock. The guard's
 --- `false` is a held lock (nothing ran) or a commit that failed after the
---- change was saved (staged) and re-derived: the profile is put back as it
---- was, so no later save writes the change (API.md §11).
+--- change was saved (staged) and re-derived: the guard put the profile back
+--- as it was and reloaded the model from disk, so no later save writes the
+--- change (API.md §11).
 local function change_toolchain(profile, change)
-    local ws = profile._workspace
-    local snapshot = profile_tools_snapshot(profile)
-    local base = ws._disk_baseline and ws._disk_baseline.user
     local r, msg = Toolchain.change(profile, change)
-    if r == false then
-        -- The aborted save recorded its staged text as the working copy's
-        -- baseline: while the disk still holds the old text, the old
-        -- baseline stands (else the next save is refused as stale).
-        if base and ws._disk_baseline.user ~= base
-                and ws:_read_disk(require("loomworks.user").filepath(ws.root)) == base.text then
-            ws._disk_baseline.user = base
-        end
-        if restore_profile_tools(profile, snapshot) then ws:remerge() end
-        return refused(msg or "the workspace operation lock is held")
-    end
+    if r == false then return refused(msg or "the workspace operation lock is held") end
     return r
 end
 

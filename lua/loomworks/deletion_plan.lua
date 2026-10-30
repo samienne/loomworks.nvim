@@ -594,6 +594,12 @@ function M.execute(ws, plan, opts)
                 ws._core._deps.events.emit("deletion_completed", {})
                 return true
             end
+            -- The removal's own error reaches the log (as `_run_deletion`
+            -- reports one); a stopped removal is the caller's to report.
+            if r and not r.stopped then
+                ws._core._deps.notify("loomworks: failed to delete " .. tostring(r.dir or dir) .. ": "
+                    .. tostring(r.err or "unknown"), vim.log.levels.ERROR)
+            end
             return false
         end)
     elseif plan.kind == "orphans" then
