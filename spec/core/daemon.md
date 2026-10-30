@@ -2666,13 +2666,41 @@ held (not yet connected, disconnected, not offered) it returns `nil`:
   `LspConfig/1` state;
 - `lw.get_workspace()` — always `nil`.
 
-The pickers and build functions act by calls: `lw.pick_profile()` lists the
-`profiles` records and sends `Profiles/1.set_active`; `lw.build_profile()`
-is `Build/1.build` of the active profile's id and `lw.build_target()`
-`Launch/1.build` of its default target, owned tasks as in "Editor
-operations"; `lw.pick_target()` lists `Launch/1.targets` (one call when it
-opens) and sends the choice, or the removal of the stored choice, with
-`Profiles/1.set_default_target` ([API.md](../protocol/API.md) §9.6, §11).
+The pickers, build and launch functions act by calls, always on the active
+profile row; a Profile argument is ignored:
+
+- `lw.pick_profile()` lists the `profiles` records and sends
+  `Profiles/1.set_active`. It offers no "None", because no call deactivates
+  a profile.
+- `lw.build_profile()` is `Build/1.build` of the active profile's id, an
+  owned task as in "Editor operations". A failed reply that was not already
+  notified is one warning: its message, else `build failed`.
+- `lw.build_target()`, `lw.launch_target()` and `lw.debug_target()` act on
+  the active profile's default target, which is the `Launch/1.targets`
+  record marked `default`. They are its `Launch/1.build`, and the
+  preparation of its run or debug (`Launch/1.prepare_run`,
+  `Launch/1.prepare_debug`), as in "Editor operations". When the profile has
+  no default target, the target picker opens first. Its choice is stored
+  (below) and the action goes on with it. When the stored default no longer
+  resolves (the row's `default_target_valid` is false), the editor first
+  warns `target '<default_target>' no longer available` and then opens the
+  picker.
+- `lw.pick_target_action()` offers "Build" and "Switch target" on a valid
+  default target (as the row reports it). Without one it opens the target
+  picker.
+- `lw.pick_target()` lists `Launch/1.targets`, in one call when it opens,
+  with "None (clear target)" first. It sends the choice, or the removal of
+  the stored choice, with `Profiles/1.set_default_target`
+  ([API.md](../protocol/API.md) §9.6, §11).
+
+**A default target is addressed by its profile alone.** A call on the
+profile's default target sends `profile` but no `target`, `project` or
+`kind`. The daemon then resolves the profile's own stored default target
+(§16.17 "Launch target selection"), including its descriptor's
+`working_dir` override. A target rebuilt from its project, name and kind
+would lose that override. Any other target is addressed by its project's
+id, its name and its kind. A device target is reached only as the default,
+so it is always addressed by its profile.
 The deploy editor's source targets are `view.Workspace/1`'s
 `projects[].targets`, joined by project id, so a project in no profile
 offers its targets too. A refused or uncarried call is an error

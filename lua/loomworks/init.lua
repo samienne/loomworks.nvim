@@ -672,9 +672,13 @@ end
 --- use) for an absolute file, under the active profile (spec §14). Delegates
 --- to the active workspace's generic resolver; when no workspace is loaded the
 --- result reads as "no active profile" (there is no profile without one).
+--- In `daemon` mode it is refused (`status = "refused"`, spec §19.16
+--- "Public API"): no compilation database or model is read.
 --- @param file string absolute source or header path
 --- @return loomworks.CompileCommandResult
 function M.compile_command_for_file(file)
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return { status = "refused", message = facade.COMPILE_COMMAND_REFUSAL } end
     local ws = core:get_workspace()
     if not ws then return { status = "no_profile" } end
     return ws:compile_command_for_file(file)
@@ -732,19 +736,24 @@ end
 --- Create a new workspace (loomworks.json) at the given root.
 --- @param root string workspace root directory
 --- @param name? string workspace name
+--- In `daemon` mode refused, nothing written (spec §19.16 "Model writes":
+--- `lw init` creates it).
 --- @return boolean ok, string|nil err
 function M.create_workspace(root, name)
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return false, facade.CREATE_REFUSAL end
     return require("loomworks.workspace").create_workspace_config(root, name)
 end
 
 --- Open the project browser for adding projects.
 function M.open_project_browser()
-    local ws = core:get_workspace()
-    if not ws then
+    -- (`daemon` mode: the root the editor observes the daemon of, step 6b-α.)
+    local root = M.loaded_root()
+    if not root then
         vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
         return
     end
-    require("loomworks.ui.project_browser").open(ws.root)
+    require("loomworks.ui.project_browser").open(root)
 end
 
 --- Open the workspace status page.
@@ -758,8 +767,12 @@ function M.toggle()
 end
 
 --- Build the active profile's default target.
---- Shows a picker if no default is set or the target is stale.
+--- Shows a picker if no default is set or the target is stale. In `daemon`
+--- mode `Launch/1.build` of the default target of `Launch/1.targets`
+--- (loomworks.daemon.facade, spec §19.16 "Public API").
 function M.build_target()
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return facade.build_target() end
     local profile = M.get_active_profile()
     if not profile then
         vim.notify("loomworks: no active profile", vim.log.levels.WARN)
@@ -805,8 +818,11 @@ function M.build_target()
     end)
 end
 
---- Build the full active profile (all targets).
+--- Build the full active profile (all targets). In `daemon` mode
+--- `Build/1.build` of the active profile row (loomworks.daemon.facade).
 function M.build_profile()
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return facade.build_profile() end
     local profile = M.get_active_profile()
     if not profile then
         vim.notify("loomworks: no active profile", vim.log.levels.WARN)
@@ -822,8 +838,12 @@ end
 
 --- Show a picker for selecting the active profile.
 --- Lists all profiles with status, marks the active one.
---- Includes "None" to deactivate when a profile is active.
+--- Includes "None" to deactivate when a profile is active. In `daemon` mode
+--- the `profiles` rows, the choice sent as `Profiles/1.set_active` (no
+--- "None": loomworks.daemon.facade).
 function M.pick_profile()
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return facade.pick_profile() end
     local all = M.get_profiles()
     if not all or not next(all) then
         vim.notify("loomworks: no profiles available", vim.log.levels.WARN)
@@ -878,8 +898,11 @@ end
 --- "Build" route uses Profile:assert_buildable through the existing
 --- `M.build_target` flow, which surfaces the validity reasons via
 --- vim.notify if the target is invalid. Consistent with `<leader>wb`.
+--- In `daemon` mode on the active profile's row (loomworks.daemon.facade).
 --- @param profile? loomworks.Profile defaults to active profile
 function M.pick_target_action(profile)
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return facade.pick_target_action() end
     profile = profile or M.get_active_profile()
     if not profile then
         vim.notify("loomworks: no active profile", vim.log.levels.WARN)
@@ -906,8 +929,12 @@ end
 --- starting a build. Used by the status-page action picker's
 --- "Switch target" branch and by callers that want the picker
 --- without the build-on-resolve behaviour of `M.build_target`.
+--- In `daemon` mode the active profile's `Launch/1.targets`, the choice
+--- stored with `Profiles/1.set_default_target` (loomworks.daemon.facade).
 --- @param profile? loomworks.Profile defaults to active profile
 function M.pick_target(profile)
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return facade.pick_target_only() end
     profile = profile or M.get_active_profile()
     if not profile then
         vim.notify("loomworks: no active profile", vim.log.levels.WARN)
@@ -1042,9 +1069,13 @@ function M._pick_target(profile, on_select)
     end)
 end
 
---- Resolve the default target and start a run via session_tracker.
+--- Resolve the default target and start a run via session_tracker. In
+--- `daemon` mode the default target of `Launch/1.targets`, as a LaunchRef
+--- (loomworks.daemon.facade).
 --- @param mode "launch"|"debug"
 local function resolve_and_start(mode)
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then return facade.launch(mode) end
     local profile = M.get_active_profile()
     if not profile then
         vim.notify("loomworks: no active profile", vim.log.levels.WARN)
@@ -1052,16 +1083,6 @@ local function resolve_and_start(mode)
     end
 
     local tracker = require("loomworks.session_tracker")
-
-    -- `daemon` mode with the workspace unloaded (spec §19.16 "Editor
-    -- operations"): a run or debug launch is not offered — no target
-    -- picker — and is refused with that status.
-    local why = tracker.launch_refusal({ _profile = profile })
-    if why then
-        vim.notify("loomworks: cannot " .. (mode == "debug" and "debug" or "run") .. ": " .. why,
-            vim.log.levels.WARN)
-        return
-    end
 
     local launch_target = profile:default_target()
 

@@ -144,16 +144,14 @@ return {
     },
     reach_ins = {
         ["lua/loomtest/runner.lua"] = 1,
-        -- 0 -> 1: step 5k C1a review fix — an operation is carried only by
-        -- the observer of its own scope's workspace (editor_ops.scope_workspace),
-        -- never the editor's current one after a workspace swap.
-        ["lua/loomworks/daemon/editor_ops.lua"] = 1,
+        -- daemon/editor_ops.lua 1 -> 0: step 6b-α A1b (operations by ids, no
+        -- scope workspace).
         -- device_log.lua 1 -> 0: step 5n C2 — the dropped-lines warning
         -- goes to the view itself, not the workspace's logger.
         -- 59 -> 57, auto_load.lua / reload.lua / plugin/loomworks.lua 1 -> 0:
         -- step 6b-α A1a (`daemon` mode loads no model: the observer by root,
-        -- `lw.loaded_root`, `lw.shutdown`).
-        ["lua/loomworks/init.lua"] = 57,
+        -- `lw.loaded_root`, `lw.shutdown`); 57 -> 55: A1b (the facade).
+        ["lua/loomworks/init.lua"] = 55,
         -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
         -- routes the test adapters' reads through test_source.lua; its one
         -- site is the in-process source's model read (the daemon source
@@ -199,6 +197,13 @@ return {
     operation_sites = {
         ["lua/loomtest/runner.lua"] = 1,
         ["lua/loomworks/config_unit.lua"] = 3,
+        -- 0 -> 1 each: step 6b-α A1b — the daemon-mode facade's run / debug
+        -- is the session tracker's start of a LaunchRef (its preparation a
+        -- Launch/1 call), and LaunchRef:launch_resolved starts the program
+        -- the daemon prepared, as session_tracker's for a prepared launch.
+        -- Nothing is built or run in-process for either.
+        ["lua/loomworks/daemon/facade.lua"] = 1,
+        ["lua/loomworks/daemon/launch_ref.lua"] = 1,
         ["lua/loomworks/init.lua"] = 4,
         -- 5 -> 4: step 5k C2 — LaunchTarget:debug resolves one spec for
         -- run and debug (§8.9.6): one nvim-dap start, not one per kind.

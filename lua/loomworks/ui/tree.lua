@@ -233,7 +233,9 @@ function Tree:on_key(action, line)
     elseif action == "load" then
         local lw = require("loomworks")
         local ws = lw.get_workspace()
-        if ws then
+        -- (In `daemon` mode the editor holds no model, step 6b-α: a loaded
+        -- workspace is the root it observes the daemon of.)
+        if ws or (require("loomworks.daemon.facade").active() and lw.loaded_root()) then
             -- In `daemon` mode the daemon's rescan (it waits for detection,
             -- up to 45 s: announced at once); a refusal, or a detection that
             -- outran the wait (a warn note), is notified.
@@ -285,6 +287,13 @@ end
 
 function Tree:_create_workspace()
     local lw = require("loomworks")
+    -- `daemon` mode (spec §19.16 "Model writes", step 6b-α): refused,
+    -- loaded or not, nothing written; the notification names `lw init`.
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then
+        vim.notify("loomworks: " .. facade.CREATE_REFUSAL, vim.log.levels.ERROR)
+        return
+    end
     if lw.get_workspace() then
         vim.notify("loomworks: workspace already exists", vim.log.levels.INFO)
         return

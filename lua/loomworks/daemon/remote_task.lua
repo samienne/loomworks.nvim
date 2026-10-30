@@ -9,14 +9,8 @@
 --- (API.md §4.2), kept as they came: a status-page row is matched to its
 --- tasks by those, never by key. Runtime only — nothing is written to the
 --- cache or the working copy.
----
---- A process that DOES hold a model of the workspace — `lw status` (spec
---- §16.18, §19.6) — resolves the task's keys to its own domain objects with
---- `RemoteTask:resolve(ws)` (once, at the wire boundary) and then
---- `attach_units`, so its Profiles rows show the daemon's task running.
---- TODO(A1b): in the editor `profile`, `profiles`, `units[].unit`,
---- `config_units`, `attach_units` / `detach_units` stay empty (it never
---- resolves); their editor readers go with A1b.
+--- (`lw status`, a host with its own model, puts an adopted task's running
+--- state on its profiles and units itself: cli.mark_daemon_tasks, §16.18.)
 
 local M = {}
 
@@ -25,7 +19,6 @@ local M = {}
 M.OUTPUT_CAP_BYTES = 1024 * 1024
 
 --- @class loomworks.RemoteTaskUnit
---- @field unit loomworks.ConfigUnit|nil the resolved configuration unit (`RemoteTask:resolve`; never in the editor)
 --- @field project string the project key the daemon sent (display)
 --- @field configuration string|nil the configuration-unit key the daemon sent (display)
 --- @field id string|nil the unit's id the daemon sent (API.md §4.2 `units[].id`; step 5o C2d): what a
@@ -51,9 +44,6 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 ---   owner"): no origin marker, cancelled from the editor
 --- @field cancelling boolean|nil the editor asked to cancel it (an owned task; its task-runner task ends CANCELED)
 --- @field _runner loomworks.daemon.RunnerStrategy|nil its task in the editor's task runner (step 5k C1b)
---- @field profile loomworks.Profile|nil the resolved profile
---- @field profiles loomworks.Profile[] the profiles that count it as their active operation (the resolved
----   profile; for a workspace-wide task, every profile with one of its resolved units)
 --- @field scope string|nil "all" for a workspace-wide task (no profile)
 --- @field profile_name string|nil the profile key the daemon sent (display)
 --- @field profile_id string|nil the profile's id the daemon sent (`meta.profile_id`, API.md §4.2; step 5o
@@ -90,7 +80,7 @@ function M.new(id, meta, clock)
         id = id, name = type(meta.name) == "string" and meta.name or ("task " .. tostring(id)),
         kind = kind, origin = type(meta.origin) == "string" and meta.origin or nil,
         action = (kind == "configure" or kind == "clean" or kind == "reset") and kind or "build",
-        units = {}, profiles = {}, start_time = clock, finished = false,
+        units = {}, start_time = clock, finished = false,
         _chunks = {}, _bytes = 0, _truncated = false, _listeners = {},
     }, RemoteTask)
     self.profile_name = type(meta.profile) == "string" and meta.profile or nil
@@ -160,74 +150,11 @@ function RemoteTask:origin_label()
     return nil
 end
 
---- Resolve the task's semantic keys against a model of the workspace (the
---- wire boundary; spec §19.16, §16.18): the profile among `ws`'s profiles,
---- each unit through that profile's project-in-profile to its ConfigUnit. A
---- task without a profile (`lw reset --all`, or a `Build/1` of units) resolves
---- its units among the workspace's configuration units, and every profile
---- with one of them counts it. A key that does not resolve stays a name for
---- display. Only a process that holds a model calls it (`lw status`); a
---- `daemon`-mode editor holds none (step 6b-α).
---- @param ws loomworks.Workspace
-function RemoteTask:resolve(ws)
-    local profile
-    if self.profile_name then
-        for _, p in ipairs(ws:get_profiles() or {}) do
-            if p.key == self.profile_name and not p._removed then profile = p; break end
-        end
-    end
-    self.profile = profile
-    self.profiles = {}
-    if profile then self.profiles[1] = profile end
-    local by_units = not self.profile_name and #self.units > 0
-    for _, u in ipairs(self.units) do
-        local cfg, unit = u.configuration, nil
-        if profile then
-            for _, pp in ipairs(profile:projects()) do
-                if pp:project_key() == u.project and cfg ~= nil and pp:config_key() == cfg then
-                    unit = pp._config_unit
-                    break
-                end
-            end
-        elseif (self.scope == "all" or by_units) and cfg ~= nil then
-            for _, cu in pairs(ws._config_units or {}) do
-                local pk = cu._project and cu._project.key or cu._init_project_key
-                if pk == u.project and cu:config_key() == cfg then unit = cu; break end
-            end
-        end
-        u.unit = unit
-    end
-    if self.scope == "all" or by_units then
-        local mine = {}
-        for _, unit in ipairs(self:config_units()) do mine[unit] = true end
-        for _, p in ipairs(ws:get_profiles() or {}) do
-            if not p._removed then
-                for _, pp in ipairs(p:projects()) do
-                    if pp._config_unit and mine[pp._config_unit] then
-                        self.profiles[#self.profiles + 1] = p
-                        break
-                    end
-                end
-            end
-        end
-    end
-end
-
 --- Seconds since it started.
 --- @param clock number now, clock seconds
 --- @return number
 function RemoteTask:elapsed(clock)
     return math.max(0, clock - (self.start_time or clock))
-end
-
---- The resolved configuration units of this task.
---- @return loomworks.ConfigUnit[]
-function RemoteTask:config_units()
-    local out = {}
-    for _, u in ipairs(self.units) do
-        if u.unit then out[#out + 1] = u.unit end
-    end
-    return out
 end
 
 --- The unit ids its meta names (API.md §4.2 `units[].id`; a unit the daemon
@@ -254,23 +181,6 @@ function RemoteTask:names_ids(profile_id, unit_ids)
         if u.id and want[u.id] then return true end
     end
     return false
-end
-
---- Put the task's running state on the editor's objects: its resolved units
---- run it, its resolved profile has it as an active operation.
-function RemoteTask:attach_units()
-    for _, p in ipairs(self.profiles) do
-        if p.add_remote_task then p:add_remote_task(self) end
-    end
-    for _, unit in ipairs(self:config_units()) do unit:begin_remote_task(self) end
-end
-
---- Clear the running state this task put on the editor's objects.
-function RemoteTask:detach_units()
-    for _, unit in ipairs(self:config_units()) do unit:end_remote_task(self) end
-    for _, p in ipairs(self.profiles) do
-        if p.remove_remote_task then p:remove_remote_task(self) end
-    end
 end
 
 --- A `Tasks/1.step` delta (§19.15 "Steps of a task"): step `index` (1-based)
@@ -369,7 +279,6 @@ function RemoteTask:finish(exit_code, err, reason, clock)
     self.finished = true
     self.exit_code, self.error, self.end_reason = exit_code, err, reason
     if clock then self.duration = self:elapsed(clock) end
-    self:detach_units()
     -- Over a copy: a listener (the task runner's) unsubscribes on the end.
     for _, fn in ipairs({ unpack(self._listeners) }) do pcall(fn, self, nil) end
 end

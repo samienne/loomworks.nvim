@@ -6,10 +6,14 @@
 --- Single and multi-adapter debug use the same code path.
 ---
 --- In `daemon` runtime mode (step 5k C2, spec §19.16 "Editor operations")
---- the build and deploy of a non-device target's launch are the workspace
---- daemon's preparation (`Launch/1.prepare_run` / `prepare_debug` through
+--- a target is a loomworks.daemon.LaunchRef (a `Launch/1.targets` record:
+--- the editor holds no model, step 6b-α) and the build and deploy of a
+--- non-device target's launch are the workspace daemon's preparation
+--- (`Launch/1.prepare_run` / `prepare_debug` through
 --- loomworks.daemon.editor_ops); the program is still started here, from
---- the returned spec. A preparation the daemon cannot carry or declines is
+--- the returned spec. A preparation that finds the target foreign
+--- (`device = true`) is refused: the editor does not execute foreign
+--- targets (spec §18.11). A preparation the daemon cannot carry or declines is
 --- refused, never run in-process (step 5s, "Availability"). A device
 --- target's launch (step 5n C2, §19.16 "Devices") is the daemon's too:
 --- `Launch/1.build`, then `Devices/1.install` and `Devices/1.launch`, each
@@ -23,7 +27,7 @@ local Future = require("loomworks.future")
 local M = {}
 
 --- @class loomworks.TrackedRun
---- @field target loomworks.LaunchTarget
+--- @field target loomworks.LaunchTarget|loomworks.daemon.LaunchRef
 --- @field mode "launch"|"debug"
 --- @field multi_adapter boolean
 --- @field fidget_handle table|nil
@@ -42,7 +46,7 @@ local _active_run = nil
 --- but a stop cancels it and a second launch asks before replacing it, as
 --- for a running session.
 --- @class loomworks.PreparingRun
---- @field target loomworks.LaunchTarget
+--- @field target loomworks.LaunchTarget|loomworks.daemon.LaunchRef
 --- @field mode "launch"|"debug"
 --- @field preparation loomworks.daemon.Preparation|nil the routed call (editor_ops.prepare), once sent; a device run's current step (step 5n C2)
 --- @field fidget_handle table|nil a device run's progress entry (failed on a stop)
@@ -241,8 +245,7 @@ local function open_daemon_device_log(run)
             banner = string.format("device-log session: %s  (streamed by the workspace daemon)",
                 target:display_name()),
             open = function(sink)
-                local ops = require("loomworks.daemon.editor_ops")
-                return ops.device_log(ops.scope_workspace({ profile = target._profile }), run.device_task,
+                return require("loomworks.daemon.editor_ops").device_log(nil, run.device_task,
                     run.device_conn, sink)
             end,
             on_end = function()
@@ -269,8 +272,7 @@ local function stop_run()
         -- launch task started (`Devices/1.stop { task }`); a refusal or
         -- failure is notified, never retried in the editor. A launch the
         -- daemon forgot meanwhile (its connection closed) is already stopped.
-        local ops = require("loomworks.daemon.editor_ops")
-        ops.device_stop(ops.scope_workspace({ profile = _active_run.target._profile }), _active_run.device_task,
+        require("loomworks.daemon.editor_ops").device_stop(nil, _active_run.device_task,
             _active_run.device_conn)
     elseif _active_run.mode == "launch" then
         -- Device launch: `<target>:stop()` only knows how to kill a
@@ -409,22 +411,19 @@ local function start_dap(handle, target, adapters, data)
     register_debug_listeners(handle, multi)
 end
 
---- Execute the build → deploy → launch/debug chain in-process.
+--- Execute the build → deploy → launch/debug chain in-process (the
+--- deprecated `in-process` mode only).
 --- Handles both single and multi-adapter debug uniformly.
---- `from_deploy`: the workspace daemon already built it (a preparation that
---- ended with `device = true`, §19.15 "Run", "Build scope of a launch"): the
---- chain continues from the post-build deploy, never building again.
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
---- @param from_deploy? boolean
-local function start_run_in_process(target, mode, from_deploy)
+local function start_run_in_process(target, mode)
     local fidget = require("loomworks.fidget")
     local multi = mode == "debug" and target:is_multi_adapter()
     local label = mode == "debug" and "Debugging " or "Launching "
     local handle = fidget.start_action(label .. target:display_name())
 
     local chain
-    if not from_deploy and target:is_buildable() then
+    if target:is_buildable() then
         fidget.report(handle, "building...")
         chain = target:build()
     else
@@ -440,11 +439,11 @@ local function start_run_in_process(target, mode, from_deploy)
             -- Device target path: install + launch on device, then return
             if target:requires_device() then
                 local device_source = require("loomworks.device_source")
-                local serial = device_source.chosen_in(nil, target._profile)
+                local serial = target._profile:device_serial()
                 if not serial then
                     -- Prompt for device selection
                     return Future.create(function(resolve, reject)
-                        device_source.scan_for_target(target, function(devices)
+                        device_source.scan(target:workspace(), function(devices)
                             local items = {}
                             for _, d in ipairs(devices or {}) do
                                 if d.state == "online" then
@@ -465,7 +464,7 @@ local function start_run_in_process(target, mode, from_deploy)
                                     reject("device selection cancelled")
                                     return
                                 end
-                                device_source.select_for_target(target, choice)
+                                device_source.select(target:workspace(), target._profile, choice)
                                 resolve(choice.key)
                             end)
                         end)
@@ -594,15 +593,22 @@ end
 --- preparation's own task was its build phase, D13). A program still
 --- running is stopped first, never left untracked. An error starting it is
 --- notified and fails the progress entry, as the in-process chain's.
---- @param target loomworks.LaunchTarget
+--- A run whose preparation found the target foreign (`device = true`, spec
+--- §18.1) is refused (spec §19.16 "Editor operations", §18.11): no program
+--- is started and nothing of the run continues in the editor.
+--- @param target loomworks.daemon.LaunchRef
 --- @param mode "launch"|"debug"
 --- @param done table the preparation's task result
 local function start_prepared(target, mode, done)
     local fidget = require("loomworks.fidget")
     local name = target:display_name()
+    if mode ~= "debug" and done.device then
+        vim.notify("loomworks: " .. name .. " runs on a device: the editor does not execute foreign targets "
+            .. "(spec §18.11); run it with lw run", vim.log.levels.ERROR)
+        return
+    end
     if is_active_running() then stop_run() end
     _active_run = nil
-    if mode ~= "debug" and done.device then return start_run_in_process(target, mode, true) end
     local handle
     local ok, err = pcall(function()
         if mode == "debug" then
@@ -665,7 +671,9 @@ end
 --- `Devices/1.stop`) until the connection it was sent on closes (the daemon
 --- then forgets the launch), and its device log opens, streamed by the
 --- daemon (`Launch/1.device_log`, step 5n C3: open_daemon_device_log).
---- @param target loomworks.LaunchTarget
+--- The profile's device is its `view.Workspace/1` row's `device` (by the
+--- profile's id); the choice `Profiles/1.set_device` (ui/model_calls, by ids).
+--- @param target loomworks.daemon.LaunchRef
 local function start_device_run(target)
     local ops = require("loomworks.daemon.editor_ops")
     local device_source = require("loomworks.device_source")
@@ -710,42 +718,46 @@ local function start_device_run(target)
         end)
     end
     local function choose()
-        device_source.chosen_for_target(target, function(serial, rerr)
+        if not live() then return end
+        local prow = M._profile_row(target)
+        if prow and prow.device then return install() end
+        fidget.report(handle, "scanning for devices...")
+        -- The scan is the current step: a stop cancels its task.
+        local scan = device_source.scan(nil, function(devices, err)
             if not live() then return end
-            -- The registry could not be read: its error (notified), never
-            -- taken for "none chosen" (a scan and a new choice).
-            if rerr then return fail(rerr, true) end
-            if serial then return install() end
-            fidget.report(handle, "scanning for devices...")
-            -- The scan is the current step: a stop cancels its task.
-            local scan = device_source.scan_for_target(target, function(devices, err)
+            token.preparation = nil
+            if not devices then return fail(err, true) end
+            local items = {}
+            for _, d in ipairs(devices) do
+                if d.state == "online" then items[#items + 1] = d end
+            end
+            if #items == 0 then return fail("no online devices found") end
+            vim.ui.select(items, {
+                prompt = "Select device:",
+                format_item = function(d) return d.label .. " (" .. d.key .. ")" end,
+            }, function(choice)
                 if not live() then return end
-                token.preparation = nil
-                if not devices then return fail(err, true) end
-                local items = {}
-                for _, d in ipairs(devices) do
-                    if d.state == "online" then items[#items + 1] = d end
-                end
-                if #items == 0 then return fail("no online devices found") end
-                vim.ui.select(items, {
-                    prompt = "Select device:",
-                    format_item = function(d) return d.label .. " (" .. d.key .. ")" end,
-                }, function(choice)
-                    if not live() then return end
-                    if not choice then return fail("device selection cancelled") end
-                    device_source.select_for_target(target, choice, function(ok, serr)
+                if not choice then return fail("device selection cancelled") end
+                local row = M._profile_row(target)
+                if not row then return fail("the workspace is no longer loaded") end
+                require("loomworks.ui.model_calls").call(nil, "Profiles/1.set_device",
+                    { profile = row, device = choice }, function(r)
                         if not live() then return end
-                        if not ok then return fail(serr, true) end
+                        if r.outcome ~= "ok" then
+                            if not r.notified then
+                                vim.notify("loomworks: " .. tostring(r.message), vim.log.levels.ERROR)
+                            end
+                            return fail(r.message, true)
+                        end
                         install()
                     end)
-                end)
             end)
-            if live() then
-                token.preparation = scan
-            elseif scan then
-                scan:cancel()
-            end
         end)
+        if live() then
+            token.preparation = scan
+        elseif scan then
+            scan:cancel()
+        end
     end
     fidget.report(handle, "building...")
     call(function(k) return ops.build_target(target, k) end, choose)
@@ -766,16 +778,16 @@ end
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
 local function start_run(target, mode)
+    if not require("loomworks.daemon.launch_ref").is(target) then return start_run_in_process(target, mode) end
     local ops = require("loomworks.daemon.editor_ops")
     if target:requires_device() then
-        if not ops.prepares(target) then return start_run_in_process(target, mode) end
         -- Not carried now: refused like any operation, nothing of it run.
-        if ops.device_run_refused(target) then return end
+        local row = M._profile_row(target)
+        if ops.device_run_refused(row ~= nil and row.device ~= nil) then return end
         return start_device_run(target)
     end
     local debug_mod = require("loomworks.debug")
     local prep = (mode == "debug" and debug_mod.available()) and "debug" or "launch"
-    if not ops.prepares(target) then return start_run_in_process(target, mode) end
 
     --- @type loomworks.PreparingRun
     local token = { target = target, mode = mode }
@@ -788,7 +800,7 @@ local function start_run(target, mode)
     end
     local function send()
         if _preparing ~= token then return end
-        local routed, preparation = ops.prepare(prep, target, {
+        local _, preparation = ops.prepare(prep, target, {
             resolve = function(done) if settle() then start_prepared(target, prep, done) end end,
             -- Refused (not carried, declined, degraded, refused), failed, or
             -- the connection lost after `accepted`: no program is started
@@ -801,47 +813,59 @@ local function start_run(target, mode)
                 end
             end,
         })
-        if not routed then
-            if settle() then start_run_in_process(target, mode) end
-            return
-        end
         token.preparation = preparation
         -- Settled or cancelled before `prepare` returned (refused at once):
         -- nothing more of it may run.
         if _preparing ~= token and preparation then preparation:cancel() end
     end
     if prep ~= "debug" then return send() end
-    ops.debug_adapter_resolver(target, function(resolve)
+    ops.debug_adapter_resolver(function(resolve)
         if _preparing ~= token then return end
         -- No daemon mapping (DebugConfig/1 not carried, or its read failed),
         -- or a language it does not name: unchecked here — never the
         -- editor's own mapping; debug.run checks the prepared adapter.
         if not resolve then return send() end
-        local adapter, language = target:primary_debug_adapter(resolve)
-        if not select(2, resolve(language)) then return send() end
-        if not debug_mod.adapter_installed(adapter) then
-            settle()
-            debug_mod.adapter_hint(adapter, language)
-            return
-        end
-        send()
+        -- The target's language from its project's declaration (unknown:
+        -- unchecked here too).
+        target:debug_language(function(language)
+            if _preparing ~= token then return end
+            if not language then return send() end
+            local adapter, named = resolve(language)
+            if not named then return send() end
+            if not debug_mod.adapter_installed(adapter) then
+                settle()
+                debug_mod.adapter_hint(adapter, language)
+                return
+            end
+            send()
+        end)
     end)
+end
+
+--- The profile row (`view.Workspace/1`) of a LaunchRef, by its id; nil
+--- while the view is not held or no longer lists it.
+--- @param target loomworks.daemon.LaunchRef
+--- @return table|nil
+function M._profile_row(target)
+    local view = require("loomworks.views").get("workspace")
+    for _, row in ipairs(view and view.profiles or {}) do
+        if row.id ~= nil and row.id == target.profile_id then return row end
+    end
+    return nil
 end
 
 --- Why a run or debug launch of `target` is refused now, or nil: in
 --- `daemon` mode while the editor's workspace is unloaded (spec §19.16
 --- "Editor operations": not offered, refused with that status). Never loads
 --- the daemon modules (in-process mode has no observer).
---- @param target loomworks.LaunchTarget
+--- @param target loomworks.LaunchTarget|loomworks.daemon.LaunchRef|nil
 --- @return string|nil
 function M.launch_refusal(target)
+    -- (A model's target is never the `daemon`-mode editor's, step 6b-α.)
+    if not require("loomworks.daemon.launch_ref").is(target) then return nil end
     local mod = package.loaded["loomworks.daemon.observer"]
-    if type(mod) ~= "table" or not (target and target._profile) then return nil end
-    local ws = require("loomworks.daemon.editor_ops").scope_workspace({ profile = target._profile })
-    -- (A target of a model is never the `daemon`-mode editor's, step 6b-α.
-    -- TODO(A1b): launch targets from `Launch/1.targets`.)
-    local obs = ws == nil and mod.current() or nil
-    if not obs then return nil end
+    local obs = type(mod) == "table" and mod.current() or nil
+    if not obs then return "the workspace is no longer loaded" end
     local unloaded, why = obs:workspace_unloaded()
     if not unloaded then return nil end
     return "the workspace is unloaded (" .. tostring(why) .. ")"
@@ -849,7 +873,7 @@ end
 
 --- Start a launch or debug run.
 --- Shows confirmation if something is already running.
---- @param target loomworks.LaunchTarget
+--- @param target loomworks.LaunchTarget|loomworks.daemon.LaunchRef a LaunchRef in `daemon` mode
 --- @param mode "launch"|"debug"
 function M.start(target, mode)
     -- Refuse incomplete profiles upfront. Going further would have
@@ -858,7 +882,7 @@ function M.start(target, mode)
     -- Module-agnostic — Profile:assert_buildable iterates module
     -- capability flags via Profile:is_complete.
     local profile = target._profile
-    if profile then
+    if profile and not require("loomworks.daemon.launch_ref").is(target) then
         local ok, err = profile:assert_buildable()
         if not ok then
             vim.notify("loomworks: " .. err, vim.log.levels.WARN)

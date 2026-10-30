@@ -34,7 +34,7 @@
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID
 --- @field _action string|nil "configure" or "build" while running
---- @field _remote_task loomworks.RemoteTask|nil a task observed in the workspace daemon that runs this unit (spec §19.16); runtime only
+--- @field _remote_task loomworks.RemoteTask|nil a task running in the workspace daemon on this unit (`lw status`, spec §16.18); runtime only
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
 --- @field _last_progress_notify number|nil clock() value of last progress notify
@@ -382,20 +382,13 @@ function ConfigUnit:shown_action()
     return nil
 end
 
---- Mark this unit as run by a task observed in the workspace daemon (spec
---- §19.16). Reporting only: it never blocks an editor operation (the
+--- Mark this unit as run by a task running in the workspace daemon (`lw
+--- status`, spec §16.18: cli.mark_daemon_tasks; one invocation, so never
+--- cleared). Reporting only: it never blocks an operation (the
 --- cross-process build-directory locks do).
 --- @param task loomworks.RemoteTask
 function ConfigUnit:begin_remote_task(task)
     self._remote_task = task
-    self:_notify()
-end
-
---- Clear the mark `task` set (a later task's mark is left alone).
---- @param task loomworks.RemoteTask
-function ConfigUnit:end_remote_task(task)
-    if self._remote_task ~= task then return end
-    self._remote_task = nil
     self:_notify()
 end
 

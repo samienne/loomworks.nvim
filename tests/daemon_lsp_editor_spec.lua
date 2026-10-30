@@ -811,12 +811,14 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             vim.api.nvim_buf_delete(buf, { force = true })
         end)
 
-        -- TODO(A1b): launch targets come from `Launch/1.targets` (no model in
-        -- `daemon` mode, step 6b-alpha); restore on the facade's launch.
-        pending("a run or debug launch is refused while the workspace is unloaded", function()
+        -- The `daemon`-mode editor's launch target is a `Launch/1.targets`
+        -- record (loomworks.daemon.LaunchRef; no model, step 6b-alpha).
+        it("a run or debug launch is refused while the workspace is unloaded", function()
             local tracker = require("loomworks.session_tracker")
-            local target = { _profile = { _workspace = ws } }
-            assert.is_nil(tracker.launch_refusal(target)) -- in-process mode
+            -- A model's target is the in-process mode's: never refused here.
+            assert.is_nil(tracker.launch_refusal({ _profile = { _workspace = ws } }))
+            local target = require("loomworks.daemon.launch_ref").new({ id = "p:1", key = "dev" },
+                { kind = "launch", project = { id = "pr:app", key = "app" }, name = "run", label = "run" })
             local obs = fake_obs()
             -- Only a daemon reporting `unloaded` or a lost connection
             -- unloads the workspace: no host binary, or a first connection
@@ -837,32 +839,42 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.truthy(tracker.launch_refusal(target):find(observer.LOST_NOTE, 1, true))
         end)
 
-        pending("a run or debug launch is not offered while the workspace is unloaded (no target picker)", function()
+        it("a run or debug launch is not offered while the workspace is unloaded (no target picker)", function()
             local lw = require("loomworks")
-            local profile = ws:get_profiles()[1]
-            assert.truthy(profile)
-            local orig_pick, orig_default, orig_notify = lw._pick_target, profile.default_target, vim.notify
-            local orig_active = lw.get_active_profile
-            lw.get_active_profile = function() return profile end
-            local picked, notes = 0, {}
-            lw._pick_target = function() picked = picked + 1 end
-            profile.default_target = function() return nil end
+            local orig_notify = vim.notify
+            local notes = {}
             vim.notify = function(m) notes[#notes + 1] = m end
             local ok, err = pcall(function()
-                local obs = fake_obs()
-                obs:_on_closed(obs.conn)
+                local obs, calls = fake_obs()
+                obs._feat.launch = "available"
+                obs._feat.tasks = "subscribed"
+                views.set(obs, "workspace", { profiles = { { id = "p:1", key = "dev", active = true, units = {} } },
+                    projects = {} })
+                local conn = obs.conn
+                obs:_on_closed(conn)
                 lw.launch_target()
-                assert.equals(0, picked)
                 assert.truthy(notes[#notes]:find(observer.LOST_NOTE, 1, true), notes[#notes])
-                -- Loaded again: offered.
-                obs._lost = nil
+                -- Nothing asked of the daemon: no `Launch/1.targets` read.
+                for _, c in ipairs(calls) do assert.are_not.equal("targets", c.method) end
+                -- Loaded again: offered (the profile's targets are read).
+                -- Reconnected and loaded again.
+                obs._lost, conn.closed, obs.conn = nil, false, conn
                 obs.state, obs.mode = "connected", "interfaces"
+                obs._feat = { launch = "available", tasks = "subscribed" }
                 views.set(obs, "header", { root = ws.root, state = "loaded" })
+                views.set(obs, "workspace", { profiles = { { id = "p:1", key = "dev", active = true, units = {} } },
+                    projects = {} })
                 lw.launch_target()
-                assert.equals(1, picked)
+                local read = false
+                for _, c in ipairs(calls) do
+                    if c.method == "targets" then
+                        read = true
+                        assert.same({ id = "p:1" }, c.args.profile)
+                    end
+                end
+                assert.is_true(read, vim.inspect(notes))
             end)
-            lw._pick_target, profile.default_target, vim.notify = orig_pick, orig_default, orig_notify
-            lw.get_active_profile = orig_active
+            vim.notify = orig_notify
             assert(ok, err)
         end)
     end)

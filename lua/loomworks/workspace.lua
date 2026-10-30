@@ -4096,7 +4096,8 @@ end
 --- @field source string|nil representative compiled source of the borrowed group, or nil
 
 --- @class loomworks.CompileCommandResult
---- @field status "ok"|"no_profile"|"no_project"|"unowned"|"unattributed"
+--- @field status "ok"|"no_profile"|"no_project"|"unowned"|"unattributed"|"refused" ("refused": `daemon` mode, spec §19.16 "Public API")
+--- @field message string|nil why it was refused
 --- @field entry { directory: string, file: string, arguments: string[], origin: loomworks.CompileCommandOrigin }|nil resolved command on "ok"
 --- @field project loomworks.Project|nil owning project (set once one is resolved)
 

@@ -19,7 +19,6 @@ local service = require("loomworks.daemon.service")
 local client = require("loomworks.daemon.client")
 local observer = require("loomworks.daemon.observer")
 local trust = require("loomworks.trust")
-local Core = require("loomworks.core")
 local events = require("loomworks.events")
 local device_source = require("loomworks.device_source")
 local editor_ops = require("loomworks.daemon.editor_ops")
@@ -56,13 +55,12 @@ local function rec(list, serial)
     return nil
 end
 
--- TODO(A1b): the daemon-mode cases below drive the routing from model
--- objects (Profile, ConfigUnit, LaunchTarget), which the `daemon`-mode editor
--- no longer holds (step 6b-alpha A1a: it loads no workspace). They are
--- pending until the facade acts by calls and view-row ids (A1b), which
--- restores them on that path.
+-- The `daemon`-mode editor holds no model (step 6b-alpha): the registry,
+-- the scan and the device choice are calls (device_source with no model,
+-- `Profiles/1.set_device` / `clear_device` by the profile row's id), the
+-- default target a `Launch/1.targets` record (loomworks.daemon.LaunchRef).
 describe("editor devices through a real daemon /devices (§19.16 Devices, step 5n C2)", function()
-    local root, srv, core, obs, sess, ws, profile
+    local root, srv, obs, sess
     local notes, orig_notify, saved_env, started, handlers, log
 
     local function on(ev, fn)
@@ -87,11 +85,6 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         dl._reset_for_tests()
         vim.env.LOOMWORKS_DEVICE_LOCK_DIR = H.tmp() .. "/locks"
         vim.env.LW_TEST_DEVICE_LOG = log
-        core = Core.new()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
-        profile = ws._active_profile
         notes, started, handlers = {}, {}, {}
         orig_notify = vim.notify
         vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
@@ -108,7 +101,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         sess = nil
         if srv and not srv.stopped then srv:stop("test end", 0) end
         srv = nil
-        pcall(function() core:shutdown() end)
+        observer.detach()
         vim.env.LOOMWORKS_DEVICE_LOCK_DIR = saved_env.lock
         vim.env.LW_TEST_DEVICE_LOG = saved_env.log
         vim.env.LW_TEST_DEVICE_FAIL = saved_env.fail
@@ -153,7 +146,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         service.attach(srv, require("loomworks.cli")._daemon_build_host())
         assert(srv:start())
         local fr = FR.new({})
-        obs = observer.attach(ws.root, { getenv = daemon_mode, keepalive_ms = 100,
+        obs = observer.attach(root, { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
         assert.is_true(vim.wait(60000, function()
             return obs:can_call("device_scan") and obs:can_call("Profiles/1.set_device") and obs._devices ~= nil
@@ -166,20 +159,52 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         end, 20), obs:runtime_line())
     end
 
+    --- The profile row (`dev`) of the daemon's workspace view.
+    local function profile_row()
+        assert.is_true(vim.wait(60000, function()
+            local v = obs:workspace_view()
+            return v ~= nil and #(v.profiles or {}) > 0
+        end, 20), obs:runtime_line())
+        for _, row in ipairs(obs:workspace_view().profiles) do
+            if row.key == "dev" then return row end
+        end
+        error("no profile row dev")
+    end
+
+    --- The device choice of the profile row (`Profiles/1.set_device`, or
+    --- `clear_device` for nil): its outcome.
+    local function set_device(device)
+        local r
+        local method = device and "Profiles/1.set_device" or "Profiles/1.clear_device"
+        require("loomworks.ui.model_calls").call(nil, method, { profile = profile_row(), device = device },
+            function(x) r = x end)
+        assert.is_true(vim.wait(30000, function() return r ~= nil end, 20), method)
+        return r
+    end
+
     --- Scan, then choose SER1 for the profile (Devices/1.scan, Profiles/1.set_device).
     local function choose_ser1()
         local scanned
-        device_source.scan(ws, function(list) scanned = list or false end)
+        device_source.scan(nil, function(list) scanned = list or false end)
         assert.is_true(vim.wait(60000, function() return scanned ~= nil end, 20))
-        local chosen
-        device_source.select(ws, profile, assert(rec(scanned, "SER1")),
-            function(ok, err) chosen = { ok = ok, err = err } end)
-        assert.is_true(vim.wait(30000, function() return chosen ~= nil end, 20))
-        assert.is_true(chosen.ok, tostring(chosen.err))
+        local r = set_device(assert(rec(scanned, "SER1")))
+        assert.equals("ok", r.outcome, vim.inspect(r))
         assert.is_true(vim.wait(30000, function()
-            local d = rec(device_source.list(ws), "SER1")
-            return d ~= nil and d.profiles ~= nil and d.profiles[1] == "dev"
+            local d = rec(device_source.list(nil), "SER1")
+            return d ~= nil and d.profiles ~= nil and d.profiles[1] == "dev" and profile_row().device ~= nil
         end, 20))
+    end
+
+    --- The profile's default target: its `Launch/1.targets` record marked
+    --- default (the fixture's device target `app`).
+    local function default_target()
+        local refs
+        require("loomworks.daemon.facade").targets(profile_row(), function(r) refs = r end)
+        assert.is_true(vim.wait(30000, function() return refs ~= nil end, 20), obs:runtime_line())
+        for _, r in ipairs(refs) do
+            if r.default then return r end
+        end
+        error("no default target: " .. vim.inspect(refs))
     end
 
     --- The kinds of the tasks the editor started, in order.
@@ -195,25 +220,26 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         return nil
     end
 
-    --- Start the profile's default target; true when a question was asked.
-    local function start_asked()
+    --- Start `target` (default: the profile's default target); true when a
+    --- question was asked.
+    local function start_asked(target)
         local asked = false
         local orig = vim.ui.select
         vim.ui.select = function() asked = true end
-        session_tracker.start(profile:default_target(), "launch")
+        session_tracker.start(target or default_target(), "launch")
         vim.ui.select = orig
         return asked
     end
 
-    pending("lists, scans, chooses, launches and stops through Devices/1; refused once disconnected", function()
+    it("lists, scans, chooses, launches and stops through Devices/1; refused once disconnected", function()
         serve()
 
         -- The list comes from Devices/1.list: empty until a scan.
-        assert.same({}, device_source.list(ws))
+        assert.same({}, device_source.list(nil))
 
         -- A scan is a Devices/1.scan task the editor owns; then the registry.
         local scanned
-        device_source.scan(ws, function(list, err) scanned = { list = list, err = err } end)
+        device_source.scan(nil, function(list, err) scanned = { list = list, err = err } end)
         assert.is_true(vim.wait(60000, function() return scanned ~= nil end, 20))
         assert.is_nil(scanned.err)
         assert.equals("online", rec(scanned.list, "SER1").state)
@@ -221,8 +247,6 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_string(rec(scanned.list, "SER1").id)
         assert.is_true(started[1] ~= nil and started[1].owned)
         assert.equals("scan", started[1].kind)
-        -- Nothing in the editor's own registry.
-        assert.same({}, ws:devices())
 
         -- `changed` refreshes it: another client chooses SER1 for `dev`.
         sess = assert(client.session(srv.address))
@@ -231,31 +255,26 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
             { profile = { key = "dev" }, device = { key = "SER1" } }, { env = env })
         assert.equals("ok", res and res.outcome, vim.inspect(res))
         assert.is_true(vim.wait(30000, function()
-            local d = rec(device_source.list(ws), "SER1")
+            local d = rec(device_source.list(nil), "SER1")
             return d ~= nil and d.profiles ~= nil and d.profiles[1] == "dev"
         end, 20))
 
-        -- clear / select are Profiles/1 writes.
-        local cleared
-        device_source.clear(ws, profile, function(ok, err) cleared = { ok = ok, err = err } end)
-        assert.is_true(vim.wait(30000, function() return cleared ~= nil end, 20))
-        assert.is_true(cleared.ok, tostring(cleared.err))
+        -- clear / select are Profiles/1 writes by the profile row's id.
+        local cleared = set_device(nil)
+        assert.equals("ok", cleared.outcome, vim.inspect(cleared))
         assert.is_true(vim.wait(30000, function()
-            return rec(device_source.list(ws), "SER1").profiles == nil
+            return rec(device_source.list(nil), "SER1").profiles == nil and profile_row().device == nil
         end, 20))
-        local chosen
-        device_source.select(ws, profile, rec(device_source.list(ws), "SER1"),
-            function(ok, err) chosen = { ok = ok, err = err } end)
-        assert.is_true(vim.wait(30000, function() return chosen ~= nil end, 20))
-        assert.is_true(chosen.ok, tostring(chosen.err))
+        local chosen = set_device(rec(device_source.list(nil), "SER1"))
+        assert.equals("ok", chosen.outcome, vim.inspect(chosen))
         assert.truthy(read(root .. "/.nvim/loomworks.user.json"):find('"SER1"', 1, true))
         assert.is_true(vim.wait(30000, function()
-            local d = rec(device_source.list(ws), "SER1")
-            return d.profiles ~= nil and d.profiles[1] == "dev"
+            local d = rec(device_source.list(nil), "SER1")
+            return d.profiles ~= nil and d.profiles[1] == "dev" and profile_row().device ~= nil
         end, 20))
 
         -- The default target's launch: Launch/1.build, install, launch.
-        local target = profile:default_target()
+        local target = default_target()
         assert.is_true(target:requires_device())
         session_tracker.start(target, "launch")
         assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
@@ -294,11 +313,11 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_true(vim.wait(30000, function() return not obs:can_call("device_scan") end, 20))
         notes = {}
         local refused
-        device_source.scan(ws, function(list, err) refused = { list = list, err = err } end)
+        device_source.scan(nil, function(list, err) refused = { list = list, err = err } end)
         assert.is_true(vim.wait(5000, function() return refused ~= nil end, 20))
         assert.is_nil(refused.list)
         assert.truthy(refused.err:find("^device scan: "), refused.err)
-        assert.same({}, device_source.list(ws))
+        assert.same({}, device_source.list(nil))
         local before = #started
         session_tracker.start(target, "launch")
         vim.wait(200)
@@ -306,37 +325,43 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.equals(before, #started)
         assert.is_false(session_tracker.is_running())
         local wrote
-        device_source.clear(ws, profile, function(ok, err) wrote = { ok = ok, err = err } end)
-        assert.is_false(wrote.ok)
-        assert.truthy(wrote.err:find("^device choice: "), wrote.err)
-        assert.same({}, ws:devices())
-        assert.is_nil(editor_ops.devices(ws))
+        require("loomworks.ui.model_calls").call(nil, "Profiles/1.clear_device", { profile = { id = "gone" } },
+            function(x) wrote = x end)
+        assert.is_true(vim.wait(5000, function() return wrote ~= nil end, 20))
+        assert.equals("refused", wrote.outcome, vim.inspect(wrote))
+        assert.is_nil(editor_ops.devices(nil))
     end)
 
-    pending("an install that fails ends the chain with its error; nothing is launched", function()
+    it("an install that fails ends the chain with its error; nothing is launched", function()
         serve()
         choose_ser1()
         vim.env.LW_TEST_DEVICE_FAIL = "install"
         notes = {}
-        session_tracker.start(profile:default_target(), "launch")
+        session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return #errors() > 0 end, 20), vim.inspect(notes))
         vim.wait(300)
         assert.same({ "scan", "build", "install" }, kinds())
         assert.is_false(session_tracker.is_running())
         assert.is_nil(read(log):find("launch SER1", 1, true), read(log))
-        -- Nothing left preparing: a new launch starts at once (no question).
+        -- Nothing left preparing: a new launch starts at once (no question),
+        -- reaches its install again and runs.
         vim.env.LW_TEST_DEVICE_FAIL = nil
         assert.is_false(start_asked())
+        assert.is_true(vim.wait(180000, function()
+            local n = 0
+            for _, k in ipairs(kinds()) do if k == "install" then n = n + 1 end end
+            return n == 2
+        end, 20), vim.inspect(kinds()))
         assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
             vim.inspect(errors()))
     end)
 
-    pending("a launch that fails ends the chain with its error; no run is tracked", function()
+    it("a launch that fails ends the chain with its error; no run is tracked", function()
         serve()
         choose_ser1()
         vim.env.LW_TEST_DEVICE_FAIL = "launch"
         notes = {}
-        session_tracker.start(profile:default_target(), "launch")
+        session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return #errors() > 0 end, 20), vim.inspect(notes))
         vim.wait(300)
         assert.same({ "scan", "build", "install", "launch" }, kinds())
@@ -344,28 +369,28 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_nil(session_tracker.active_run())
     end)
 
-    pending("a disconnect during the install ends the chain; nothing runs in-process", function()
+    it("a disconnect during the install ends the chain; nothing runs in-process", function()
         serve()
         choose_ser1()
         vim.env.LW_TEST_DEVICE_SLEEP = "5000"
         notes = {}
-        session_tracker.start(profile:default_target(), "launch")
+        local target = default_target()
+        session_tracker.start(target, "launch")
         assert.is_true(vim.wait(180000, function() return task_of("install") ~= nil end, 20), vim.inspect(notes))
         srv:stop("test", 0)
         assert.is_true(vim.wait(30000, function() return #errors() > 0 end, 20), vim.inspect(notes))
         assert.is_nil(task_of("launch"))
         assert.is_false(session_tracker.is_running())
-        assert.same({}, ws:devices())
         -- Nothing left preparing: a new launch asks nothing (refused: unloaded).
-        assert.is_false(start_asked())
+        assert.is_false(start_asked(target))
         vim.wait(200)
         assert.is_true(noted("loomworks: cannot run "), vim.inspect(notes))
     end)
 
-    pending("a launched run is forgotten when the daemon disconnects: its stop sends nothing, no error", function()
+    it("a launched run is forgotten when the daemon disconnects: its stop sends nothing, no error", function()
         serve()
         choose_ser1()
-        session_tracker.start(profile:default_target(), "launch")
+        session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
             vim.inspect(errors()))
         srv:stop("test", 0)
@@ -377,12 +402,12 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_nil(read(log):find("stop SER1", 1, true), read(log))
     end)
 
-    pending("a stop during a device run's build cancels the build; nothing installed", function()
+    it("a stop during a device run's build cancels the build; nothing installed", function()
         serve()
         choose_ser1()
         vim.env.LW_TEST_SLEEP = "20000"
         notes = {}
-        session_tracker.start(profile:default_target(), "launch")
+        session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(60000, function() return task_of("build") ~= nil end, 20), vim.inspect(notes))
         local build = task_of("build")
         session_tracker.stop()
@@ -393,11 +418,11 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_false(session_tracker.is_running())
     end)
 
-    pending("a stop during a device run's scan cancels the scan; no device is chosen", function()
+    it("a stop during a device run's scan cancels the scan; no device is chosen", function()
         serve()
         vim.env.LW_TEST_SCAN_SLEEP = "hang"
         notes = {}
-        session_tracker.start(profile:default_target(), "launch")
+        session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return task_of("scan") ~= nil end, 20), vim.inspect(notes))
         local scan = task_of("scan")
         session_tracker.stop()
@@ -416,21 +441,21 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
     local function launched_with_log()
         serve()
         choose_ser1()
-        session_tracker.start(profile:default_target(), "launch")
+        session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
             vim.inspect(errors()))
         assert.is_true(vim.wait(60000, function() return task_of("device_log") ~= nil end, 20))
         return task_of("device_log")
     end
 
-    pending("the device log's `start` level is the new view's filter", function()
+    it("the device log's `start` level is the new view's filter", function()
         launched_with_log()
         assert.is_true(vim.wait(60000, function() return view_has("hello from the app") end, 20))
         -- The devstub's options: level D.
         assert.equals("D", dl._filter_for_tests().level)
     end)
 
-    pending("records the daemon's queue dropped are a gap line in the view", function()
+    it("records the daemon's queue dropped are a gap line in the view", function()
         devices_mod.LOG_QUEUE_MAX = 5
         vim.env.LW_TEST_LOG_COUNT = "20"
         launched_with_log()
@@ -441,7 +466,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.same({}, errors())
     end)
 
-    pending("closing the view cancels the device log task; the run goes on", function()
+    it("closing the view cancels the device log task; the run goes on", function()
         vim.env.LW_TEST_LOG_SLEEP = "20000"
         local task = launched_with_log()
         assert.is_true(vim.wait(60000, function() return view_has("hello from the app") end, 20))

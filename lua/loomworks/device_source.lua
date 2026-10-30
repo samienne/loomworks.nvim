@@ -86,54 +86,6 @@ function M.scan(ws, cb)
     if ws then ws:scan_devices(function(devices) cb(records(devices)) end) end
 end
 
---- The workspace of a launch target's profile.
---- @param target loomworks.LaunchTarget
---- @return loomworks.Workspace|nil
-local function target_ws(target)
-    return require("loomworks.daemon.editor_ops").scope_workspace({ profile = target._profile })
-end
-
---- `scan` for a launch target's workspace (the session tracker's prompt).
---- @param target loomworks.LaunchTarget
---- @param cb fun(devices: loomworks.DeviceRecord[]|nil, err: string|nil)
---- @return loomworks.daemon.Preparation|nil handle `daemon` mode, the scan sent
-function M.scan_for_target(target, cb)
-    return M.scan(target_ws(target), cb)
-end
-
---- The serial of the device `profile` chose, from `list` (`daemon` mode:
---- the record whose `profiles` names it) or the model (`in-process`), nil
---- when none.
---- @param ws loomworks.Workspace|nil
---- @param profile loomworks.Profile
---- @param list loomworks.DeviceRecord[]|nil
---- @return string|nil
-function M.chosen_in(ws, profile, list)
-    if not daemon_ops(ws) then return profile:device_serial() end
-    for _, d in ipairs(list or {}) do
-        for _, p in ipairs(type(d.profiles) == "table" and d.profiles or {}) do
-            if p == profile.key then return d.key end
-        end
-    end
-    return nil
-end
-
---- `cb(serial|nil)` with the device a launch target's profile chose: in
---- `daemon` mode once the registry is read, at once in-process. A registry
---- that cannot be read (refused, or its read failed) is `cb(nil, err)`,
---- `err` notified — never taken for "none chosen".
---- @param target loomworks.LaunchTarget
---- @param cb fun(serial: string|nil, err: string|nil)
-function M.chosen_for_target(target, cb)
-    local ws = target_ws(target)
-    local ops = daemon_ops(ws)
-    if not ops then return cb(target._profile:device_serial()) end
-    ops.with_devices(ws, function(list, err)
-        if not list then return cb(nil, err) end
-        cb(M.chosen_in(ws, target._profile, list))
-    end)
-end
-
 --- The choice's write ended: on success, in-process with `ws`, the page is
 --- told (`active_set_changed`; in `daemon` mode the view's update tells it);
 --- a failed write is reported as an error.
@@ -148,10 +100,10 @@ local function written(ws, profile, what, ok, err)
     return false, err
 end
 
---- Select `device` (a record of `list` / `scan`) for the profile. `cb(ok,
---- err)` once the write ended (a failure reported). In-process the write is
---- synchronous and its result also returned; in `daemon` mode it is
---- `Profiles/1.set_device` (by the record's id) and nothing is returned.
+--- Select `device` (a record of `list` / `scan`) for the profile, in the
+--- `in-process` mode (in `daemon` mode the choice is `Profiles/1.set_device`
+--- by ids, ui/model_calls). `cb(ok, err)` once the write ended (a failure
+--- reported); its result is also returned.
 --- @param ws loomworks.Workspace|nil
 --- @param profile loomworks.Profile
 --- @param device loomworks.DeviceRecord
@@ -159,36 +111,22 @@ end
 --- @return boolean|nil ok, string|nil err
 function M.select(ws, profile, device, cb)
     cb = cb or function() end
-    local ops = daemon_ops(ws)
-    if ops then return ops.set_device(ws, profile, device, cb) end
     local ok, err = written(ws, profile, "save", profile:set_device(device.key))
     cb(ok, err)
     return ok, err
 end
 
---- Clear the profile's device selection (see `select`; `daemon` mode:
---- `Profiles/1.clear_device`).
+--- Clear the profile's device selection (see `select`; in `daemon` mode
+--- `Profiles/1.clear_device`, ui/model_calls).
 --- @param ws loomworks.Workspace|nil
 --- @param profile loomworks.Profile
 --- @param cb? fun(ok: boolean, err: string|nil)
 --- @return boolean|nil ok, string|nil err
 function M.clear(ws, profile, cb)
     cb = cb or function() end
-    local ops = daemon_ops(ws)
-    if ops then return ops.set_device(ws, profile, nil, cb) end
     local ok, err = written(ws, profile, "clear", profile:clear_device())
     cb(ok, err)
     return ok, err
-end
-
---- The target's selection: `select` for its profile, in its workspace.
---- @param target loomworks.LaunchTarget
---- @param device loomworks.DeviceRecord
---- @param cb? fun(ok: boolean, err: string|nil)
-function M.select_for_target(target, device, cb)
-    local ws = target_ws(target)
-    -- In-process the session tracker's choice tells no page (as before).
-    return M.select(daemon_ops(ws) and ws or nil, target._profile, device, cb)
 end
 
 return M

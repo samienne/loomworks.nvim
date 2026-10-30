@@ -1923,7 +1923,6 @@ function Observer:_add(task, runner)
         if ta.start_time ~= tb.start_time then return ta.start_time < tb.start_time end
         return a < b
     end)
-    task:attach_units()
     self:_emit("daemon_task_started", { task = task })
     local ok, err = pcall(require("loomworks.daemon.task_runner").add, self, task, runner)
     if not ok then vim.notify("loomworks: daemon task in the task runner: " .. tostring(err), vim.log.levels.WARN) end

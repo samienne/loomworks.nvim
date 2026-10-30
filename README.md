@@ -2715,6 +2715,27 @@ commands, the status page or the pickers, which call the daemon by id.
 available with the workspace daemon. In the deprecated `in-process` mode the
 objects below are unchanged until that mode is removed.
 
+The build, launch and picker functions act by calls to the daemon in `daemon`
+mode, naming its profiles and targets by id:
+
+- `lw.build_profile()` builds the active profile (`Build/1.build`).
+- `lw.build_target()`, `lw.launch_target()` and `lw.debug_target()` act on the
+  active profile's default target as the daemon lists it (`Launch/1.targets`),
+  showing the target picker when it has none. The default target is named by
+  its profile alone, so the daemon runs it as stored, its `working_dir`
+  included.
+- `lw.pick_target()` stores the choice as the profile's default target
+  (`Profiles/1.set_default_target`); "None" removes it.
+- `lw.pick_profile()` activates the chosen profile (`Profiles/1.set_active`).
+  It offers no "None", since the daemon has no way to deactivate a profile.
+- The functions no longer take a Profile argument, and a target found to run on
+  a device is refused with "run it with lw run".
+- `lw.create_workspace()` and the status page's `N` are refused; run `lw init`
+  in a terminal.
+
+A call the daemon cannot carry, or refuses, is one notification and changes
+nothing; nothing runs in the editor instead.
+
 ### Profile object
 
 ```lua

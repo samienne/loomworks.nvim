@@ -931,16 +931,18 @@ re-cut onto master step by step; this section is expanded as each step lands.
   without `via` is observed unchecked and never weighed; `_weigh_retire`
   also declines one itself). `:LoomworksDaemon status` and checkhealth keep reading the
   handle / lock read-only for diagnostics.
-- `daemon/remote_task.lua` — RemoteTask: resolves `start` meta once at the
-  wire boundary (profile by key among `ws:get_profiles()`, units through that
-  profile's ProfileProjects to their ConfigUnit); unresolved keys stay names
-  for display; keeps output (≤ `OUTPUT_CAP_BYTES`), `follow` for the output
-  buffer; `attach_units` / `detach_units` set `ConfigUnit._remote_task`
-  (`ConfigUnit:state()` reports `building`/`configuring` while it runs,
-  `shown_action()` and `Project:running_action()` the action for display,
-  `elapsed()` its time) and `Profile._remote_tasks` (`has_active_operation()`,
-  `operation_elapsed()`; on removal after the end, `_last_operation` = its
-  `outcome()`). `running_action()` / `is_running()` / `Profile:is_running()`
+- `daemon/remote_task.lua` — RemoteTask: display data and ids only (the
+  `start` meta's keys stay names for display, `profile_id` / `units[].id` are
+  what a row is matched by, `names_ids`); keeps output (≤ `OUTPUT_CAP_BYTES`),
+  `follow` for the output buffer. Only `lw status` (§16.18), a host with its
+  own model, puts an adopted task's running state on its objects:
+  `cli.mark_daemon_tasks` resolves the keys there, at the boundary, and sets
+  `ConfigUnit._remote_task` (`begin_remote_task`; `ConfigUnit:state()` reports
+  `building`/`configuring` while it runs, `shown_action()` and
+  `Project:running_action()` the action for display, `elapsed()` its time) and
+  `Profile._remote_tasks` (`add_remote_task`; `has_active_operation()`,
+  `operation_elapsed()`) for its one invocation. `running_action()` /
+  `is_running()` / `Profile:is_running()`
   stay local-only: they gate cancel and blocking, which a remote task never
   does. `origin_label()` is the `lw` / `editor` marker of the Tasks rows,
   the profile row and the fidget entry (none for an `owned` task). Each
@@ -948,29 +950,42 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `_runner` is its strategy).
   A task with `units` and no profile (`Build/1` `units`, step 5k) resolves
   them as `reset --all` does.
+- `daemon/facade.lua` — the public build, launch and picker functions in
+  `daemon` mode (step 6b-α, spec §19.16 "Public API"): `init.lua`'s
+  `build_profile`, `build_target`, `pick_profile`, `pick_target`,
+  `pick_target_action`, launch / debug, `compile_command_for_file` and
+  `create_workspace` delegate here when `facade.active()` (no model, selection
+  `daemon`). The active profile is the `view.Workspace/1` row marked `active`;
+  its targets come from one `Launch/1.targets` call as LaunchRefs, the default
+  one marked by the reply; the profile build is `Build/1.build` of the row
+  (ui/model_calls), a target's build `editor_ops.build_target`, a launch
+  `session_tracker.start(ref)`; the target picker stores its choice with
+  `Profiles/1.set_default_target`, the profile picker sends
+  `Profiles/1.set_active` (no "None"). `compile_command_for_file` and
+  `create_workspace` are refused. `daemon/launch_ref.lua` — LaunchRef: a
+  `Launch/1.targets` record bound to its profile row (ids, display name,
+  kind, the build target's module language for the adapter check, its unit
+  row's `artifact_block` / `unit_id`), with the started program's
+  task-runner task (`launch_resolved`, `is_running`, `stop`).
 - `daemon/editor_ops.lua` — the editor's operations as daemon calls (spec
-  §19.16 "Editor operations", step 5k part C1; plugin side). The overseer
-  entry points `run_profile_action`, `run_configuration_action` and
-  `launch_single_task` (a module target's build: `Target:build` puts the
-  target in `task_def.loomworks.target_id`) ask `overseer.route(method,
-  scope, opts)` first; `overseer.route_clean` likewise for a clean
-  (`Profile:clean` / `ConfigUnit:clean` of a model always run in-process:
-  a daemon-mode editor holds no model, step 6b-α). Both wrap
-  `editor_ops.run` / `editor_ops.clean` (callbacks only, `{ resolve,
-  reject }`) in a Future; not routed — a model's operation (`ws` non-nil),
-  or the deprecated `in-process` mode (`editor_ops.daemon_of(ws)`: daemon
-  only for `ws == nil` with the observer's selection `daemon`) → the
-  caller's in-process body, unchanged (`in_process_*`
-  locals, `_clean_in_process`). In `daemon` mode nothing runs in-process
-  (step 5s, §19.16 "Availability"): `run` asks the workspace's observer
+  §19.16 "Editor operations", step 5k part C1; plugin side). Step 6b-α: the
+  daemon-mode editor holds no model, so every entry point names ids — the
+  status page (`ui/model_calls`), the public facade (`daemon/facade.lua`) and
+  the session tracker (launch targets as `daemon/launch_ref.lua` LaunchRefs).
+  The overseer entry points `run_profile_action`, `run_configuration_action`,
+  `launch_single_task` and a model's `Profile:clean` / `ConfigUnit:clean`
+  always run in-process (the CLI, the daemon, the deprecated `in-process`
+  editor; `editor_ops.daemon_of(ws)` is daemon only for `ws == nil` with the
+  observer's selection `daemon`). In `daemon` mode nothing runs in-process
+  (step 5s, §19.16 "Availability"): `run_ids` asks the workspace's observer
   whether it carries the method (`Observer:can_call`: connected through
   interfaces, `operations` = Build/1 offered, Tasks/1 subscribed, the
   method not degraded, no incompatibility); not carried →
   `editor_ops.refuse` (one WARN notify `<verb>: <note>`, the note from
   `Observer:refusal(method)` — the method's `_method_why`, the feature's
-  `_why`, else the observer's state note — then `reject(msg, true)`). It
-  waits for pending deletions, asks the artifact-conflict question for
-  configured units (its Yes → `force`), then `Observer:start_owned`.
+  `_why`, else the observer's state note — then `reject(msg, true)`). A build
+  asks the artifact-conflict question (its Yes → `force`), then
+  `Observer:start_owned`.
   Outcomes: `declined` → reject + one WARN notify; `degraded`
   (unknown_method, invalid_args, …) → refused as not carried, the
   observer's `_method_notes`; `refused` → reject + ERROR notify, except a
@@ -978,13 +993,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
   resolve, so a rebuild goes on to its build; accepted →
   the owned task's `done` resolves (exit 0) or rejects; a disconnect or an
   internal error rejects and is never re-run (only the clean takes a
-  refusal on stdout as its answer: another method's is a failure). `clean`
-  never asks `overseer.plan_*_clean` (nothing to clean is the daemon's
-  refusal on stdout; 5o C2d-2), cancels the editor's owned tasks on
-  the same units (`Observer:cancel_owned`, waiting for their end) and stops
-  its local ones, then calls. *(5o C2d-1)* The status page's Profiles
-  section names its rows instead: `run_ids(ws, method, scope, opts, k)`
-  sends `Build/1` with `ids_args` (`profile = { id }` — the owned call
+  refusal on stdout as its answer: another method's is a failure). *(5o
+  C2d-1)* `run_ids(ws, method, scope, opts, k)` sends `Build/1` with
+  `ids_args` (`profile = { id }` — the owned call
   recording the row's `unit_id`s and `profile_id` — or `units = { { id } }`),
   under the same availability rule and outcomes, waiting on no in-process
   deletion; a build asks the artifact-conflict question from the unit
@@ -993,14 +1004,11 @@ re-cut onto master step by step; this section is expanded as each step lands.
   once started — `RemoteTask:names_ids` — else the ids the call was sent
   with; `owned_on_ids` lists them for the confirmation) through
   `cancel_owned_matching`, whose `match(task, call)` gets the call too.
-  Unlike `clean`, `run_ids` neither runs `cancel_conflicting_operations`
-  nor stops local tasks (neither asks `overseer.plan_*_clean`: the daemon
-  decides nothing to clean): in `daemon` mode every build, configure and
-  clean is an owned daemon task, and the only editor-side remainder is a
-  `device = true` run's post-build part, which is not an Operation on the
-  units. A call by objects (`run`: a `:Loomworks` build, a launch build)
-  records no row ids, so before its `start` arrives `call_names_ids`
-  cannot match it (BACKLOG).
+  It never asks `overseer.plan_*_clean` (nothing to clean is the daemon's
+  refusal on stdout, 5o C2d-2): in `daemon` mode every build, configure and
+  clean is an owned daemon task. A launch's owned call records its profile
+  row's id and its unit row's `unit_id` too (`launch_call`), so a clean of
+  those rows pre-empts it before its `start` arrives.
   `cancel(task)` backs the Tasks section's Cancel. *(5o C2d-2)* The
   Profiles rows' cancel and task output match tasks by id:
   `tasks_on_ids(ws, profile_id, unit_ids, ended?)` lists the tasks observed
@@ -1018,20 +1026,18 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `_owned_ended` from `done` / `_end_tasks`, `owns_tasks()` counted busy in
   `_check_retire`. `fidget.start_op_action(title)` shows no wrapper in
   daemon mode (the routed task's entry is its one entry; a refused
-  operation has none). `launch_single_task` without a target id refuses in
-  daemon mode too.
-  Launches (step 5k C2): `session_tracker.start_run` asks
-  `editor_ops.prepares(target)` (daemon mode) for a non-device target; a
-  device target (step 5n C2) is refused at once by
-  `editor_ops.device_run_refused(target)` when one of `launch_build`,
-  `device_list`, `device_install`, `device_launch` — and, when the cached
-  `Devices/1.list` (`Observer:devices(true)`, never a read; unread or failed
-  counts as none) shows no device for the profile, `device_scan` and
-  `set_device` — is not carried, else run by
-  `start_device_run`: `editor_ops.build_target`, the profile's device
-  (`device_source.chosen_for_target`: the cached `Devices/1.list`'s
-  `profiles`; a failed read is its error, never "none chosen"; none →
-  `scan_for_target` + a pick + `select_for_target`, i.e.
+  operation has none).
+  Launches (step 5k C2): `session_tracker.start_run` sends a LaunchRef (a
+  `Launch/1.targets` record of a profile row, addressed by ids; a model's
+  LaunchTarget runs the in-process chain, the `in-process` mode only) to the
+  daemon; a device target (step 5n C2) is refused at once by
+  `editor_ops.device_run_refused(has_device)` when one of `launch_build`,
+  `device_install`, `device_launch` — and, when the profile's view row names
+  no `device`, `device_scan` and `Profiles/1.set_device` — is not carried,
+  else run by
+  `start_device_run`: `editor_ops.build_target`, the profile's device (its
+  view row's `device`; none → `device_source.scan` + a pick +
+  `Profiles/1.set_device` by ids through `ui/model_calls`, i.e.
   `Devices/1.scan` — its handle the current step, so a stop cancels it — and
   `Profiles/1.set_device`), then
   `editor_ops.device_step("install" | "launch")` — `launch_call` with
@@ -1048,7 +1054,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   is active so reopening a closed view streams again; `stop_log_session`
   clears the source and cancels the stream (a debug
   without nvim-dap prepares a launch, as `LaunchTarget:debug` falls back);
-  a debug first checks `LaunchTarget:primary_debug_adapter(resolve)` against
+  a debug first checks the LaunchRef's `language` (a build target's module's
+  primary language; a launch configuration's is left to `debug.run`) against
   nvim-dap (`debug.adapter_installed` / `adapter_hint`, before the
   preparation), `resolve` the daemon's mapping from
   `editor_ops.debug_adapter_resolver` (`Observer:with_debug_adapters`: the
@@ -1060,32 +1067,32 @@ re-cut onto master step by step; this section is expanded as each step lands.
   (`Preparation:cancel`: drops every later outcome, `cancel_owned_id` once
   accepted), and a second `start` asks before replacing it.
   `editor_ops.prepare` sends `Launch/1.prepare_run` / `prepare_debug` with
-  `launch_args(target)` (profile, project, name + kind, a module target's
-  descriptor `working_dir` as `cwd`, `build_scope = "target"`) under the
+  `launch_args(ref)` (`LaunchRef:args`: the profile's and the project's ids,
+  name + kind; `build_scope = "target"`) under the
   same outcomes as `run` (shared `on_reply` / `failure`); the owned task's
   `done` task result (`observer.done_result`, passed as `on_done`'s third
   argument) resolves `k.resolve(done)`. The tracker then starts the
-  program: `launch` → `LaunchTarget:launch_resolved(spec)` (the overseer
+  program: `launch` → `LaunchRef:launch_resolved(spec)` (the overseer
   launch task, also behind `_launch_command`); `debug` → `start_dap` (the
   shared nvim-dap start of the in-process multi-adapter path: first
-  adapter launches, the rest attach on `on_pid`); `device = true` →
-  `start_run_in_process(target, mode, true)`, the in-process chain from the
-  post-build deploy (no build), so its launch is refused as in-process.
+  adapter launches, the rest attach on `on_pid`); `device = true` (a target
+  found foreign by probing its artifact) → refused with the §18.11 message;
+  nothing of the run continues in the editor.
   `start_prepared` stops a program still running first, and an error
   starting the program fails its progress entry and is notified (the
   observer's `_owned_ended` also notifies any `on_done` error). A
   preparation not carried, declined or degraded is refused (no program,
   never the in-process chain). `editor_ops.NO_RESTART` makes the
   task-runner restart of a preparation fail (`rerun`). Step 5t part C:
-  `LaunchTarget:build` of a non-device target in daemon mode is
-  `editor_ops.build_target(target, k)` — one owned `Launch/1.build` (the
+  a launch target's build in daemon mode (the facade's `build_target`) is
+  `editor_ops.build_target(ref, k)` — one owned `Launch/1.build` (the
   observer's call `launch_build`, `WIRE` → `build`;
-  `target_build_args` = `launch_args` without `build_scope` / `cwd`), no
+  `target_build_args` = `LaunchRef:args`), no
   dependency build, deploy or fallback in the editor; a device target's
   build is the same call from step 5n C2. The preparations and the build
   share `launch_call`, which asks the artifact-conflict question
-  (`ask_conflict` over `LaunchTarget:existing_build_units()`, never
-  materialising a unit) before the call and sends its Yes as `force`. The
+  (`ask_artifact_block` over the LaunchRef's unit row's `artifact_block`)
+  before the call and sends its Yes as `force`. The
   steps: `RemoteTask.steps` from `start.meta.steps` (`steps_of`),
   `Observer:_tasks_signal` counts every `Tasks/1` signal toward the
   object's seq (`_tasks_seq`, baseline from the subscribe reply), applies a
