@@ -413,11 +413,12 @@ end
 --- A profile's launchable targets (API.md §9.6 `Launch/1.targets`): `ok`
 --- with `targets` (LaunchTargetRecord[], per project in the profile's order),
 --- `incomplete` (the keys of its unconfigured projects whose build targets
---- are unknown) and `override` (a stored default-target choice). Read-only;
---- `opts.refresh` re-reads the units' targets first.
+--- are unknown) and `override` (a stored default-target choice). Writes
+--- nothing; parses targets a unit does not know yet unless `opts.parse ==
+--- false` (run_prep.target_listing).
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
---- @param opts? { refresh?: boolean }
+--- @param opts? { parse?: boolean }
 --- @return loomworks.CommandOutcome
 function M.launch_targets(ws, profile, opts)
     local r = stale(profile, "profile")
@@ -437,7 +438,7 @@ end
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
 --- @param target { kind: string, project: loomworks.Project, name: string }|nil
---- @param opts? { refresh?: boolean }
+--- @param opts? { parse?: boolean } as M.launch_targets
 --- @return loomworks.CommandOutcome
 function M.profile_set_default_target(ws, profile, target, opts)
     local r = stale(profile, "profile")

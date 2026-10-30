@@ -185,4 +185,190 @@ describe("Launch/1.targets, Profiles/1.set_default_target, view projects[].targe
         assert.is_table(prow, vim.inspect(r.projects))
         assert.same({ server = { type = "executable" }, core = { type = "static_library" } }, prow.targets)
     end)
+
+    --- Make app's unit parse its targets: the shell module given a
+    --- `parse_targets` (counting its calls, returning `targets()`) and the
+    --- unit configured here. `restore()` undoes it.
+    local function parsing(unit, targets)
+        local impl = unit._project._module.impl
+        local orig = impl.parse_targets
+        local p = { calls = 0 }
+        impl.parse_targets = function()
+            p.calls = p.calls + 1
+            return targets()
+        end
+        unit.state_value = "configured"
+        unit.build_dir_value = unit.build_dir_value or (root .. "/out/Debug")
+        function p.restore() impl.parse_targets = orig end
+        return p
+    end
+
+    --- A second session subscribed to the workspace view; `updates` its
+    --- `update` signals' states.
+    local function view_watcher()
+        local w = { updates = {} }
+        w.conn = assert(client.session(srv.address, { on_message = function(m)
+            if m.kind == "signal" and m.name == "update" and m.iface == "loomworks.view.Workspace" then
+                w.updates[#w.updates + 1] = m.args
+            end
+        end }))
+        local r, e
+        w.conn:call("/", "loomworks.Root", 1, "subscribe", { object = "/views", iface = "loomworks.view.Workspace",
+            v = 1, signals = { "update" } }, function(res, err) r, e = res, err end)
+        assert.is_true(vim.wait(30000, function() return r ~= nil or e ~= nil end, 10))
+        assert.is_nil(e, vim.inspect(e))
+        return w
+    end
+    local function app_targets(state)
+        for _, p in ipairs(state.projects or {}) do if p.key == "app" then return p.targets end end
+    end
+
+    it("targets parses unknown targets once; a second call does not re-parse; a newer build re-parses and"
+        .. " the view signals the change", function()
+        local _, dev, unit = loaded()
+        local list = { server = { type = "executable" } }
+        local p = parsing(unit, function() return vim.deepcopy(list) end)
+        local w = view_watcher()
+        local ok, err = pcall(function()
+            unit.targets = nil
+            local r = launch("targets", { profile = { id = id_of(dev) } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.equals(1, p.calls)
+            assert.equals("server", r.targets[2].name)
+            r = launch("targets", { profile = { id = id_of(dev) } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.equals(1, p.calls, "a second call re-parsed")
+
+            -- A build since: the build system's targets may have changed.
+            list.tool = { type = "executable" }
+            unit.last_built = "2099-01-01T00:00:00Z"
+            w.updates = {}
+            r = launch("targets", { profile = { id = id_of(dev) } })
+            assert.equals(2, p.calls)
+            local names = {}
+            for _, t in ipairs(r.targets) do names[#names + 1] = t.kind .. ":" .. t.name end
+            assert.same({ "launch:run", "target:server", "target:tool" }, names)
+            assert.is_true(vim.wait(10000, function()
+                for _, st in ipairs(w.updates) do
+                    local t = app_targets(st)
+                    if t and t.tool then return true end
+                end
+            end, 10), "no view update with the new target")
+            -- Current again: no parse.
+            launch("targets", { profile = { id = id_of(dev) } })
+            assert.equals(2, p.calls)
+        end)
+        p.restore()
+        pcall(w.conn.close, w.conn)
+        assert(ok, err)
+    end)
+
+    it("set_default_target accepts a target a newer build added, parsing once", function()
+        local _, dev, unit = loaded()
+        local list = { server = { type = "executable" } }
+        local p = parsing(unit, function() return vim.deepcopy(list) end)
+        local ok, err = pcall(function()
+            unit:set_targets(list)
+            list.tool = { type = "executable" }
+            unit.last_built = "2099-01-01T00:00:00Z"
+            local r = profiles("set_default_target", { profile = { id = id_of(dev) },
+                target = { kind = "target", project = { key = "app" }, name = "tool" } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.equals(1, p.calls)
+            assert.same({ project = "app", target = "tool" }, working_copy(root).default_target.dev)
+            r = profiles("set_default_target", { profile = { id = id_of(dev) },
+                target = { kind = "target", project = { key = "app" }, name = "server" } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.equals(1, p.calls, "current targets re-parsed")
+        end)
+        p.restore()
+        assert(ok, err)
+    end)
+
+    it("device targets: listed with their label, settable as the default, marked default", function()
+        local ws, dev, unit = loaded()
+        local app = find(ws._projects, "key", "app")
+        local impl = unit._project._module.impl
+        local has, dt = impl.has_devices, impl.device_targets
+        impl.has_devices = true
+        impl.device_targets = function(_, config_name)
+            assert.equals("Debug", config_name)
+            return { { id = "hap", label = "Phone app" } }
+        end
+        local ok, err = pcall(function()
+            local r = launch("targets", { profile = { id = id_of(dev) } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.same({ kind = "device", project = { id = id_of(app), key = "app" }, name = "hap",
+                label = "Phone app", default = false }, r.targets[3])
+            r = profiles("set_default_target", { profile = { id = id_of(dev) },
+                target = { kind = "device", project = { id = id_of(app) }, name = "hap" } })
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            local stored = { project = "app", device_target = "hap", device_target_label = "Phone app" }
+            assert.same(stored, dev._default_target_descriptor)
+            assert.same(stored, working_copy(root).default_target.dev)
+            r = launch("targets", { profile = { id = id_of(dev) } })
+            assert.is_true(r.override)
+            assert.same({ false, false, true }, { r.targets[1].default, r.targets[2].default, r.targets[3].default })
+            -- A device target id that is not offered.
+            r = profiles("set_default_target", { profile = { id = id_of(dev) },
+                target = { kind = "device", project = { id = id_of(app) }, name = "nope" } })
+            assert.equals("refused", r.outcome)
+            assert.equals("no launch target 'app:nope (device)' in profile 'dev'", r.message)
+        end)
+        impl.has_devices, impl.device_targets = has, dt
+        assert(ok, err)
+    end)
+
+    it("is_stored_default matches a device target by project and id only", function()
+        local run_prep = require("loomworks.run_prep")
+        local proj, other = { key = "app" }, { key = "lib" }
+        local desc = { project = "app", device_target = "hap", device_target_label = "Phone app" }
+        assert.is_true(run_prep.is_stored_default(desc, { kind = "device", project = proj, device_target = "hap" }))
+        assert.is_false(run_prep.is_stored_default(desc, { kind = "device", project = proj, device_target = "x" }))
+        assert.is_false(run_prep.is_stored_default(desc, { kind = "device", project = other, device_target = "hap" }))
+        assert.is_false(run_prep.is_stored_default(desc, { kind = "target", project = proj, target_id = "hap" }))
+        assert.is_false(run_prep.is_stored_default(desc, { kind = "launch", project = proj, name = "hap" }))
+    end)
+
+    it("a default-target write that fails restores the previous descriptor", function()
+        local ws, dev = loaded()
+        local app = find(ws._projects, "key", "app")
+        local prev = { project = "app", launch = "run" }
+        assert.is_true(dev:set_default_target_descriptor(prev))
+        local before = read(root .. "/.nvim/loomworks.user.json")
+        ws._no_write = "read-only for the test"
+        local ok, err = dev:set_default_target(app, "server")
+        assert.is_false(ok)
+        assert.equals("read-only for the test", err)
+        assert.same(prev, dev._default_target_descriptor)
+        ok = dev:clear_default_target()
+        assert.is_false(ok)
+        assert.same(prev, dev._default_target_descriptor)
+        -- Over the daemon: refused, nothing changed.
+        local r = profiles("set_default_target", { profile = { id = id_of(dev) },
+            target = { kind = "target", project = { id = id_of(app) }, name = "server" } })
+        assert.equals("refused", r.outcome)
+        assert.same(prev, dev._default_target_descriptor)
+        ws._no_write = nil
+        assert.equals(before, read(root .. "/.nvim/loomworks.user.json"))
+    end)
+
+    it("a default-target write refused as stale keeps the working copy reloaded from disk", function()
+        local ws, dev = loaded()
+        local app = find(ws._projects, "key", "app")
+        assert.is_true(dev:set_default_target_descriptor({ project = "app", launch = "run" }))
+        -- Another process writes the working copy: its default target differs.
+        local wc = working_copy(root)
+        wc.default_target = { dev = { project = "app", target = "core" } }
+        local signed, serr = trust.sign("user", trust.encode(wc))
+        assert.is_string(signed, serr)
+        local f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb"))
+        f:write(signed); f:close()
+        local ok, err = dev:set_default_target(app, "server")
+        assert.is_false(ok)
+        assert.is_string(err)
+        -- The reloaded value, neither this write's nor the one before it.
+        local cur = find(ws._profiles, "key", "dev")
+        assert.same({ project = "app", target = "core" }, cur._default_target_descriptor)
+    end)
 end)

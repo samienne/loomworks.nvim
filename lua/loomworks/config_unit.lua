@@ -44,6 +44,7 @@
 --- @field _listeners function[]
 --- @field _removed boolean
 --- @field targets table<string, loomworks.Target>|nil runtime-only
+--- @field _targets_stamp string|nil targets_stamp() when `targets` was last set (runtime only)
 --- Test integration (runtime-only):
 --- @field _test_tree table[]|nil cached merged test entries from all TestUnits
 --- @field _test_results table[]|nil last parsed test results
@@ -1024,9 +1025,33 @@ function ConfigUnit:referencing_profiles()
     return result
 end
 
+--- The freshness stamp of this unit's build tree as its parsed targets
+--- depend on it: the build directory and the last configure and build that
+--- loomworks recorded (either can rewrite the build system's target data).
+--- @return string
+function ConfigUnit:targets_stamp()
+    local bd = self.build_dir and self:build_dir()
+    return table.concat({ tostring(bd), tostring(self.last_configured), tostring(self.last_built) }, "|")
+end
+
+--- Are this unit's targets due a parse: the module parses targets, the unit
+--- has a build directory this machine configured (spec §17.8), and its
+--- targets are unknown or were set before its last configure or build
+--- (targets_stamp)?
+--- @return boolean
+function ConfigUnit:targets_stale()
+    local project = self._project
+    local mod = project and project._module and project._module.impl
+    if not (mod and mod.parse_targets and self:build_dir()) then return false end
+    if not self:configured_here() then return false end
+    return self.targets == nil or self._targets_stamp ~= self:targets_stamp()
+end
+
 --- Set targets from raw parse data, wrapping each in a Target object.
+--- Records the build tree's targets_stamp they were set at.
 --- @param raw table<string, { type: string, dependencies?: string[], artifact?: string }>|nil
 function ConfigUnit:set_targets(raw)
+    self._targets_stamp = self:targets_stamp()
     if not raw then
         self.targets = nil
         return

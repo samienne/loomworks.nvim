@@ -366,24 +366,66 @@ end
 --- @param opts? { refresh?: boolean }
 function M.ensure_unit_targets(ws, unit, opts)
     if not unit or (unit.targets and not (opts and opts.refresh)) then return end
+    local mod, ctx = M._targets_ctx(ws, unit)
+    if not mod then return end
+    local ok, targets = pcall(mod.parse_targets, ctx)
+    if ok and targets then unit:set_targets(targets) end
+end
+
+--- The module and `parse_targets` context of a unit whose targets can be
+--- parsed (the module parses targets; a build dir this machine configured,
+--- spec §17.8), else nil.
+--- @param ws loomworks.Workspace
+--- @param unit loomworks.ConfigUnit
+--- @return table|nil mod, table|nil ctx
+function M._targets_ctx(ws, unit)
     local project = unit._project
     local mod = project and project._module and project._module.impl
     local build_dir = unit.build_dir and unit:build_dir()
-    if not (mod and mod.parse_targets and build_dir) then return end
+    if not (mod and mod.parse_targets and build_dir) then return nil end
     -- Only a build dir this machine configured (signed cache, spec §17.8).
-    if unit.configured_here and not unit:configured_here() then return end
+    if unit.configured_here and not unit:configured_here() then return nil end
     -- config_name is the module build type (e.g. "Debug"); matters for
     -- multi-config generators, ignored by single-config ones.
     local cfg = unit.configuration and unit:configuration()
     local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
         or (unit._cached_module_config and unit._cached_module_config.variant)
         or (unit.variant and unit:variant())
-    local ok, targets = pcall(mod.parse_targets, {
+    return mod, {
         build_dir = build_dir,
         project_path = ws.root .. "/" .. (project.path or project.key),
         config_name = config_name,
-    })
-    if ok and targets then unit:set_targets(targets) end
+    }
+end
+
+--- Parse a unit's build targets without blocking the caller: the module's
+--- `parse_targets_async` (spec §8), else its `parse_targets` on a later
+--- event-loop turn. `cb(targets|nil)` always runs, once, on a later turn
+--- (nil: nothing parsed — not parseable, no data, or the module failed).
+--- Nothing is set on the unit: the caller applies the result.
+--- @param ws loomworks.Workspace
+--- @param unit loomworks.ConfigUnit
+--- @param cb fun(targets: table|nil)
+function M.parse_unit_targets_async(ws, unit, cb)
+    local called = false
+    local function once(t)
+        if called then return end
+        called = true
+        cb(t)
+    end
+    local okc, mod, ctx = pcall(M._targets_ctx, ws, unit)
+    if not (okc and mod) then return vim.schedule(function() once(nil) end) end
+    if mod.parse_targets_async then
+        local ok = pcall(mod.parse_targets_async, ctx, function(t)
+            vim.schedule(function() once(type(t) == "table" and t or nil) end)
+        end)
+        if not ok then vim.schedule(function() once(nil) end) end
+        return
+    end
+    vim.schedule(function()
+        local ok, t = pcall(mod.parse_targets, ctx)
+        once(ok and type(t) == "table" and t or nil)
+    end)
 end
 
 --- Split a target operand into the project it is qualified with and the

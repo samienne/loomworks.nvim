@@ -767,6 +767,69 @@ local function profile_of(service, ws, ref)
     return nil, "no profile '" .. tostring(ref.key) .. "'"
 end
 
+--- Run `fn(profile, ws)` — the request's own segment, `run` (read_segment
+--- or command), which replies — once the build targets of the profile
+--- `args.profile` names are current (Launch/1.targets,
+--- Profiles/1.set_default_target). A query segment of the caller's
+--- environment takes the profile's units whose targets are unknown or older
+--- than their unit's last configure or build (run_prep.stale_target_units);
+--- they are parsed off the model queue (build_run.parse_unit_targets_async),
+--- so a large build tree does not hold the other requests, and the request's
+--- segment first sets each result on its unit — unless the unit is gone or
+--- its build tree changed again meanwhile — so a change of targets is seen
+--- by the views' check after that segment, as any model change. Nothing
+--- stale: no parse. A failed parse leaves the unit as it was; every path
+--- replies (`fn` gets only the targets the units know: `{ parse = false }`).
+--- @param service loomworks.daemon.BuildService
+--- @param ctx table the call
+--- @param args table
+--- @param run fun(service: table, ctx: table, fn: fun(ws: table): table): any
+--- @param fn fun(profile: table, ws: table): table a model_commands outcome
+--- @return any interfaces.ASYNC
+local function with_fresh_targets(service, ctx, args, run, fn)
+    local mc = require("loomworks.model_commands")
+    local function go(parsed)
+        return run(service, ctx, function(ws)
+            for _, p in ipairs(parsed or {}) do
+                local u = p.unit
+                if p.targets and not u._removed and u._workspace == ws and u:targets_stamp() == p.stamp then
+                    u:set_targets(p.targets)
+                end
+            end
+            local profile, err = profile_of(service, ws, args.profile)
+            if not profile then return mc.refused(err) end
+            return fn(profile, ws)
+        end)
+    end
+    service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws, mctx)
+        local profile = profile_of(service, ws, args.profile)
+        local stale = profile and require("loomworks.run_prep").stale_target_units(profile) or {}
+        -- Deferred, not yet replied: a throw until `go` takes the request
+        -- over is still answered by the model queue.
+        mctx.deferred = true
+        if #stale == 0 then
+            mctx.replied = true
+            go(nil)
+            return {}
+        end
+        local build_run = require("loomworks.build_run")
+        local parsed, pending = {}, #stale
+        for _, unit in ipairs(stale) do
+            local stamp = unit:targets_stamp()
+            build_run.parse_unit_targets_async(ws, unit, function(targets)
+                parsed[#parsed + 1] = { unit = unit, stamp = stamp, targets = targets }
+                pending = pending - 1
+                if pending > 0 or ctx.conn.closed then return end
+                -- The reply is now `go`'s segment's.
+                mctx.replied = true
+                go(parsed)
+            end)
+        end
+        return {}
+    end, nil, function(fields) ctx.reply(fields) end)
+    return require("loomworks.daemon.interfaces").ASYNC
+end
+
 --- The project a call names (defined with the Projects/1 handlers below;
 --- Profiles/1.set_default_target resolves its target's project with it).
 local project_of
@@ -886,16 +949,20 @@ function M.profiles_impl(service)
     -- Step 6b-α (API.md §11): the profile's default launch target, `target`
     -- `{ kind, project, name }` (`project` a reference, resolved here) one of
     -- Launch/1.targets' records; no `target` removes the stored choice.
+    -- The target is checked against the profile's current targets
+    -- (with_fresh_targets: parsed off the model queue when stale).
     function methods.set_default_target(ctx, args)
-        return on_profile(ctx, args, function(profile, ws)
-            local t = args.target
-            if t == nil or t == vim.NIL then
+        local t = args.target
+        if t == nil or t == vim.NIL then
+            return on_profile(ctx, args, function(profile, ws)
                 return mc.profile_set_default_target(ws, profile, nil)
-            end
+            end)
+        end
+        return with_fresh_targets(service, ctx, args, command, function(profile, ws)
             local project, perr = project_of(service, ws, t.project)
             if not project then return mc.refused(perr) end
             return mc.profile_set_default_target(ws, profile, { kind = t.kind, project = project, name = t.name },
-                { refresh = true })
+                { parse = false })
         end)
     end
 
@@ -972,18 +1039,17 @@ end
 
 --- `Launch/1.targets { profile }` (API.md §9.6): the profile's launchable
 --- targets, in a model segment of the caller's environment, each record's
---- project as `{ id, key }`; the units' targets re-read first (a build since
---- they were parsed). Nothing is written.
+--- project as `{ id, key }`; targets unknown or older than their unit's last
+--- configure or build are parsed first, off the model queue
+--- (with_fresh_targets). Nothing is written.
 --- @param service loomworks.daemon.BuildService
 --- @param ctx table the call
 --- @param args table
 --- @return any interfaces.ASYNC
 launch_targets = function(service, ctx, args)
     local mc = require("loomworks.model_commands")
-    return read_segment(service, ctx, function(ws)
-        local profile, err = profile_of(service, ws, args.profile)
-        if not profile then return mc.refused(err) end
-        local r = mc.launch_targets(ws, profile, { refresh = true })
+    return with_fresh_targets(service, ctx, args, read_segment, function(profile, ws)
+        local r = mc.launch_targets(ws, profile, { parse = false })
         if r.outcome ~= "ok" then return r end
         for _, t in ipairs(r.targets) do
             t.project = { id = service.ids:id(t.project), key = t.project.key }

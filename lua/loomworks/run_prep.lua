@@ -26,11 +26,13 @@ local function build_run() return require("loomworks.build_run") end
 --- Enumerate the launchable targets of a profile: command / target-backed
 --- launch configurations and executable build targets across the profile's
 --- projects, launch configurations first, each group sorted. Parses targets
---- on demand (build first).
+--- on demand (build first), unless `opts.parse == false`: then only the
+--- targets the units already know.
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
+--- @param opts? { parse?: boolean }
 --- @return loomworks.RunCandidate[]
-function M.launchable_targets(ws, profile)
+function M.launchable_targets(ws, profile, opts)
     local list = {}
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
@@ -41,7 +43,7 @@ function M.launchable_targets(ws, profile)
                     list[#list + 1] = { kind = "launch", project = project, name = launch.name, launch = launch }
                 end
             end
-            build_run().ensure_unit_targets(ws, unit)
+            if not (opts and opts.parse == false) then build_run().ensure_unit_targets(ws, unit) end
             if type(unit.targets) == "table" then
                 local ids = {}
                 for id in pairs(unit.targets) do ids[#ids + 1] = id end
@@ -111,19 +113,15 @@ end
 --- and device target, the profile's default target marked — the stored
 --- choice, else (none stored) the sole launch configuration or build target
 --- (§16.17) — and the projects whose build targets are unknown because they
---- are not configured. Read-only: parses targets, never builds.
---- `opts.refresh` re-reads every unit's targets first (a long-lived daemon).
+--- are not configured. Parses targets a unit does not know yet, never
+--- builds; with `opts.parse == false` (a long-lived daemon, which parses off
+--- its model queue first: M.stale_target_units) only the known targets.
 --- @param ws loomworks.Workspace
 --- @param profile loomworks.Profile
---- @param opts? { refresh?: boolean }
+--- @param opts? { parse?: boolean }
 --- @return loomworks.TargetListing
 function M.target_listing(ws, profile, opts)
-    if opts and opts.refresh then
-        for _, pp in ipairs(profile:projects()) do
-            build_run().ensure_unit_targets(ws, pp._config_unit, { refresh = true })
-        end
-    end
-    local runnable = M.launchable_targets(ws, profile)
+    local runnable = M.launchable_targets(ws, profile, opts)
     local targets, incomplete = {}, {}
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
@@ -147,6 +145,23 @@ function M.target_listing(ws, profile, opts)
         c.default = (desc ~= nil and M.is_stored_default(desc, c)) or c == sole
     end
     return { targets = targets, incomplete = incomplete, override = desc ~= nil }
+end
+
+--- The configuration units of a profile whose build targets are due a parse
+--- (ConfigUnit:targets_stale: unknown, or set before the unit's last
+--- configure or build), each once.
+--- @param profile loomworks.Profile
+--- @return loomworks.ConfigUnit[]
+function M.stale_target_units(profile)
+    local out, seen = {}, {}
+    for _, pp in ipairs(profile:projects()) do
+        local unit = pp._config_unit
+        if unit and not seen[unit] and unit:targets_stale() then
+            seen[unit] = true
+            out[#out + 1] = unit
+        end
+    end
+    return out
 end
 
 --- A candidate for messages: `project:name (kind)`.

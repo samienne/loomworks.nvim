@@ -918,18 +918,15 @@ end
 
 --- Write the default-target descriptor to the working copy: `descriptor`
 --- (nil clears it). A write that fails restores the previous descriptor
---- unless the save already took in a newer working copy from disk.
+--- unless it was refused as stale: the model was then reloaded from disk,
+--- which undoing would overwrite.
 --- @param descriptor table|nil
 --- @return boolean ok, string|nil err the working copy's write
 function Profile:_write_default_target(descriptor)
-    local ws = self._workspace
     local before = self._default_target_descriptor
     self._default_target_descriptor = descriptor
-    local base = ws._disk_baseline and ws._disk_baseline.user
-    local ok, err = ws:_save_user()
-    if not ok and (ws._disk_baseline and ws._disk_baseline.user) == base then
-        self._default_target_descriptor = before
-    end
+    local ok, err, reason = self._workspace:_save_user()
+    if not ok and reason ~= "stale" then self._default_target_descriptor = before end
     return ok == true, err
 end
 
