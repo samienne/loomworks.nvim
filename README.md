@@ -2721,7 +2721,9 @@ mode, naming its profiles and targets by id:
 - `lw.build_profile()` builds the active profile (`Build/1.build`).
 - `lw.build_target()`, `lw.launch_target()` and `lw.debug_target()` act on the
   active profile's default target as the daemon lists it (`Launch/1.targets`),
-  showing the target picker when it has none.
+  showing the target picker when it has none. The default target is named by
+  its profile alone, so the daemon runs it as stored, its `working_dir`
+  included.
 - `lw.pick_target()` stores the choice as the profile's default target
   (`Profiles/1.set_default_target`); "None" removes it.
 - `lw.pick_profile()` activates the chosen profile (`Profiles/1.set_active`).

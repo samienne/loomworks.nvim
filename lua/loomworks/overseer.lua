@@ -1667,6 +1667,11 @@ local in_process_configuration_action
 --- @param opts? { parallel_jobs?: integer, force?: boolean }
 --- @return loomworks.Future
 function M.run_configuration_action(unit, action, on_complete, opts)
+    -- No `daemon`-mode refusal here (there was one before step 6b-α): this
+    -- runs in-process unconditionally, which is safe ONLY because a
+    -- `daemon`-mode editor holds no model and so has no unit to pass in.
+    -- Should that editor ever hold one again, refuse here (§19.16
+    -- "Availability": never run in-process in `daemon` mode).
     return in_process_configuration_action(unit, action, on_complete, opts)
 end
 
@@ -2168,6 +2173,11 @@ local in_process_single_task
 --- @param on_complete? function legacy callback (deprecated)
 --- @return loomworks.Future
 function M.launch_single_task(task_def, unit, on_complete)
+    -- No `daemon`-mode refusal here (there was one before step 6b-α): this
+    -- runs in-process unconditionally, which is safe ONLY because a
+    -- `daemon`-mode editor holds no model and so has no unit to pass in.
+    -- Should that editor ever hold one again, refuse here (§19.16
+    -- "Availability": never run in-process in `daemon` mode).
     return in_process_single_task(task_def, unit, on_complete)
 end
 
@@ -2229,6 +2239,11 @@ local in_process_profile_action
 --- @param opts? table { parallel_jobs?: integer }
 --- @return loomworks.Future
 function M.run_profile_action(profile, action, opts)
+    -- No `daemon`-mode refusal here (there was one before step 6b-α): this
+    -- runs in-process unconditionally, which is safe ONLY because a
+    -- `daemon`-mode editor holds no model and so has no profile to pass in.
+    -- Should that editor ever hold one again, refuse here (§19.16
+    -- "Availability": never run in-process in `daemon` mode).
     return in_process_profile_action(profile, action, opts)
 end
 

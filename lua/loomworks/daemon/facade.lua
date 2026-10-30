@@ -195,7 +195,7 @@ function M.build_profile()
     local row = active_row()
     if not row then return end
     require("loomworks.ui.model_calls").call(nil, "Build/1.build", { profile = row }, function(r)
-        if r.outcome ~= "ok" and not r.notified and r.message then warn(tostring(r.message)) end
+        if r.outcome ~= "ok" and not r.notified then warn(r.message and tostring(r.message) or "build failed") end
     end)
 end
 

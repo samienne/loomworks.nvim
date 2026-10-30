@@ -203,11 +203,29 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         assert.equals(0, #created)
     end)
 
-    it("a module target sends the project's id, its target id and kind; the daemon resolves its cwd", function()
+    it("a module target sends the project's id, its target id and kind", function()
         obs = fake_observer()
         local a = editor_ops.launch_args(rt("app", "target"))
         assert.same({ interactive = false, build_scope = "target", profile = { id = "p:1" },
             project = { id = "pr:app" }, target = "app", kind = "target" }, a)
+    end)
+
+    -- The profile's default target is addressed by its profile alone: the
+    -- daemon then runs the profile's own default target, its `working_dir`
+    -- override included (daemon_run_prepare_spec: "a run naming no target
+    -- runs the profile's default target in its working_dir").
+    it("the profile's default target is sent by its profile alone (target, project and kind omitted)", function()
+        obs = fake_observer()
+        local ref = require("loomworks.daemon.launch_ref").new(prow,
+            { kind = "target", project = { id = "pr:app", key = "app" }, name = "app", label = "app", default = true },
+            { id = "pr:app", key = "app", type = "cmake" })
+        assert.same({ interactive = false, build_scope = "target", profile = { id = "p:1" } },
+            editor_ops.launch_args(ref))
+        assert.same({ interactive = false, profile = { id = "p:1" } }, editor_ops.target_build_args(ref))
+        require("loomworks.session_tracker").start(ref, "launch")
+        assert.equals(1, #sent)
+        assert.same({ "/launch", "prepare_run" }, { sent[1].object, sent[1].method })
+        assert.same({ interactive = false, build_scope = "target", profile = { id = "p:1" } }, sent[1].args)
     end)
 
     it("a debug is a Launch/1.prepare_debug; its `debug` goes to nvim-dap", function()

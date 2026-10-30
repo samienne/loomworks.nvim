@@ -116,6 +116,41 @@ describe("daemon run preparation (§19.15 Run)", function()
         assert.are.equal(0, done.code)
         assert.are.equal("/bin/app", done.fields.launch.cmd)
     end)
+    -- A run naming no target (the editor's default target, §19.16) is
+    -- resolved by the daemon to the profile's own default target: its
+    -- descriptor's `working_dir` override is where the program runs.
+    it("a run naming no target runs the profile's default target in its working_dir", function()
+        local Target = require("loomworks.target")
+        local LaunchTarget = require("loomworks.launch_target")
+        local expand = require("loomworks.expand")
+        with(expand, "launch_context", function() return {} end)
+        with(run_prep, "validity_error", function() return nil end)
+        with(run_prep, "foreign_of", function() return nil end)
+        with(run_prep, "env_overrides", function() return {} end)
+        local unit = {
+            build_dir = function() return "/b" end,
+            _project = { key = "app", abs_path = function() return "/ws/app" end },
+            run_env = require("loomworks.config_unit").run_env,
+        }
+        local ws = { root = "/ws" }
+        local default_lt = setmetatable({ _workspace = ws, _project = unit._project,
+            _target = Target.new(unit, "app", { type = "executable", artifact = "app.exe" }),
+            _target_id = "app", _working_dir = "/data/run" }, LaunchTarget)
+        local profile = { key = "dbg", projects = function() return {} end,
+            default_target = function() return default_lt end }
+        local done
+        local task = {
+            start = function() end, line = function() end,
+            done = function(_, code, err, fields) done = { code = code, err = err, fields = fields } end,
+        }
+        local svc = { ws = ws, ids = require("loomworks.daemon.snapshot").registry(1) }
+        runner.run(svc, { op = "run", task = task, ws = ws, profile = profile, env = {},
+            args = { no_build = true, extra = {} } })
+        assert.are.equal(0, done.code, done.err)
+        assert.are.equal("/b/app.exe", done.fields.launch.cmd)
+        assert.are.equal("/data/run", done.fields.launch.cwd)
+    end)
+
     -- ---- Launch/1.prepare_debug (§19.15 "Debug") ----------------------------
 
     it("never declines a debug of a profile whose kit builds for another platform", function()

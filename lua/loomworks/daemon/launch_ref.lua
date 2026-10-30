@@ -106,12 +106,15 @@ end
 
 --- The `Launch/1` address of the target (API.md §9.1, §9.4): by the
 --- profile's id and, for a launch configuration or build target, the
---- project's id, its name and kind; a device target by its profile alone (it
---- is reached only as its profile's default target, API.md §15).
+--- project's id, its name and kind. The profile's default target — and so a
+--- device target, reached only as that (API.md §15) — by its profile alone:
+--- the daemon then runs the profile's own default target, its stored
+--- `working_dir` override included, which a target named by project, name
+--- and kind would lose (§19.16).
 --- @return table
 function LaunchRef:args()
     local a = { interactive = false, profile = { id = self.profile_id } }
-    if self.kind ~= "device" then
+    if self.kind ~= "device" and not self.default then
         a.project = { id = self.project_id }
         a.target, a.kind = self.name, self.kind
     end
