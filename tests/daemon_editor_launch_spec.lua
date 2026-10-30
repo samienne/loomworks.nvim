@@ -1134,20 +1134,20 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.same({}, sent)
     end)
 
-    pending("carried: read from `adapters` (never the in-process mapping), re-read on `changed`", function()
+    it("carried: read from `adapters` (never the in-process mapping), re-read on `changed`", function()
         connect()
         -- The first read is in flight: nothing meanwhile, and why.
-        local recs, why = editor_ops.debug_adapters(ws)
+        local recs, why = editor_ops.debug_adapters(nil)
         assert.is_nil(recs)
         assert.equals("reading them from the workspace daemon", why)
         assert.equals(1, #sent)
         assert.same({ "/debug", "loomworks.DebugConfig", "adapters" }, { sent[1].object, sent[1].iface, sent[1].method })
-        editor_ops.debug_adapters(ws)
+        editor_ops.debug_adapters(nil)
         assert.equals(1, #sent) -- single flight
         sent[1].cb({ languages = { REC } }, nil)
         assert.is_true(vim.wait(2000, function() return #emitted > 0 end, 10))
         assert.equals("daemon_debug_adapters", emitted[1])
-        assert.same({ REC }, editor_ops.debug_adapters(ws))
+        assert.same({ REC }, editor_ops.debug_adapters(nil))
         -- Workspace/1 `changed`: read again.
         obs:_on_message({ kind = "signal", object = "/workspace", iface = "loomworks.Workspace", name = "changed",
             args = { seq = 5, session_generation = 1 } })
@@ -1155,13 +1155,13 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.equals("adapters", sent[2].method)
     end)
 
-    pending("carried: a change is `set_adapter` (no adapter: back to the default); refused is notified", function()
+    it("carried: a change is `set_adapter` (no adapter: back to the default); refused is notified", function()
         connect()
         local orig = vim.notify
         local notes = {}
         vim.notify = function(m) notes[#notes + 1] = m end
         local res
-        editor_ops.set_debug_adapter(ws, "c++", nil, function(ok, err) res = { ok, err } end)
+        editor_ops.set_debug_adapter(nil, "c++", nil, function(ok, err) res = { ok, err } end)
         assert.same({ "set_adapter", { language = "c++" } }, { sent[1].method, sent[1].args })
         sent[1].cb({ outcome = "refused", message = "stale working copy", exit_code = 1 }, nil)
         assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
@@ -1169,7 +1169,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.same({ false, "stale working copy" }, res)
         assert.truthy(notes[1]:find("stale working copy", 1, true))
         res = nil
-        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok) res = ok end)
+        editor_ops.set_debug_adapter(nil, "c++", "cppdbg", function(ok) res = ok end)
         sent[2].cb({ outcome = "ok" }, nil)
         assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
         assert.is_true(res)
@@ -1188,7 +1188,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
     it("carried: the debug languages are `known_languages` (never the in-process list)", function()
         connect()
         local res
-        editor_ops.debug_languages(ws, function(l, why) res = { l, why } end)
+        editor_ops.debug_languages(nil, function(l, why) res = { l, why } end)
         assert.same({ "/debug", "loomworks.DebugConfig", "known_languages" },
             { sent[1].object, sent[1].iface, sent[1].method })
         sent[1].cb({ outcome = "ok", languages = { "c++", "zig" } }, nil)
@@ -1196,7 +1196,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.same({ "c++", "zig" }, res[1])
         -- Declined: no languages, and why.
         res = nil
-        editor_ops.debug_languages(ws, function(l, why) res = { l, why } end)
+        editor_ops.debug_languages(nil, function(l, why) res = { l, why } end)
         sent[2].cb({ outcome = "declined", reason = "the workspace runtime is stopping" }, nil)
         assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
         assert.is_nil(res[1])
@@ -1261,14 +1261,14 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.is_nil(text:find("→ ?", 1, true), text)
     end)
 
-    pending("a daemon without DebugConfig/1.set_adapter: the write fails, noted; nothing in-process", function()
+    it("a daemon without DebugConfig/1.set_adapter: the write fails, noted; nothing in-process", function()
         connect()
         local orig = vim.notify
         local notes = {}
         vim.notify = function(m) notes[#notes + 1] = m end
         local before = require("loomworks.debug_config").resolve_adapter(ws, "c++")
         local res
-        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
+        editor_ops.set_debug_adapter(nil, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
         sent[1].cb(nil, { code = "unknown_method", message = "no set_adapter" })
         assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
         local note = "debug adapters: daemon offers no loomworks.DebugConfig/1.set_adapter (no set_adapter)"
@@ -1278,7 +1278,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.truthy((obs.note or ""):find(note, 1, true))
         -- The next write fails at once, nothing sent.
         res = nil
-        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
+        editor_ops.set_debug_adapter(nil, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
         vim.notify = orig
         assert.same({ false, note }, res)
         assert.equals(1, #sent)
@@ -1286,13 +1286,13 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.truthy(notes[2]:find("debug adapter not saved: " .. note, 1, true))
     end)
 
-    pending("a failed or declined `adapters` read re-renders the section with why", function()
+    it("a failed or declined `adapters` read re-renders the section with why", function()
         connect()
-        assert.is_nil(editor_ops.debug_adapters(ws))
+        assert.is_nil(editor_ops.debug_adapters(nil))
         sent[1].cb(nil, { code = "internal", message = "boom" })
         assert.is_true(vim.wait(2000, function() return #emitted > 0 end, 10))
         assert.equals("daemon_debug_adapters", emitted[1])
-        local recs, why = editor_ops.debug_adapters(ws)
+        local recs, why = editor_ops.debug_adapters(nil)
         assert.is_nil(recs)
         assert.equals("the workspace daemon did not answer DebugConfig/1.adapters", why)
         obs:_refetch_debug_adapters()
@@ -1301,21 +1301,21 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.equals("daemon_debug_adapters", emitted[2])
     end)
 
-    pending("not carried: the section is unavailable with the observer's note; writes fail", function()
+    it("not carried: the section is unavailable with the observer's note; writes fail", function()
         connect({})
         obs._why = { ["debug adapters"] = "debug adapters: daemon offers no loomworks.DebugConfig" }
-        local recs, why = editor_ops.debug_adapters(ws)
+        local recs, why = editor_ops.debug_adapters(nil)
         assert.is_nil(recs)
         assert.equals("debug adapters: daemon offers no loomworks.DebugConfig", why)
         local orig = vim.notify
         local notes = {}
         vim.notify = function(m) notes[#notes + 1] = m end
         local res
-        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
+        editor_ops.set_debug_adapter(nil, "c++", "cppdbg", function(ok, err) res = { ok, err } end)
         -- Declined, too: fails with the reason.
         obs._feat = { ["debug adapters"] = "available" }
         local res2
-        editor_ops.set_debug_adapter(ws, "c++", "cppdbg", function(ok, err) res2 = { ok, err } end)
+        editor_ops.set_debug_adapter(nil, "c++", "cppdbg", function(ok, err) res2 = { ok, err } end)
         sent[#sent].cb({ outcome = "declined", reason = "trust" }, nil)
         assert.is_true(vim.wait(2000, function() return res2 ~= nil end, 10))
         vim.notify = orig
@@ -1325,7 +1325,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         -- The status page's section says so.
         local Tree = require("loomworks.ui.tree")
         local tree = Tree.new(function(t)
-            require("loomworks.ui.sections.debug")(t, { lw = require("loomworks") })
+            require("loomworks.ui.sections.debug")(t, { lw = { get_workspace = function() return nil end } })
         end)
         obs._feat = {}
         local lines = tree:render()

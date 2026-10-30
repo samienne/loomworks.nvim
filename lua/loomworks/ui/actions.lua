@@ -496,7 +496,9 @@ end
 function M.create_profile(ctx)
     return function()
         local ws = ctx.ws or require("loomworks").get_workspace()
-        if not ws then return end
+        -- (In `daemon` mode the editor holds no model, step 6b-alpha: the
+        -- calls go to the daemon with none.)
+        if not ws and not require("loomworks.daemon.editor_ops").daemon_of(nil) then return end
         local model = require("loomworks.ui.model_calls")
         model.call(ws, "ConfigSets/1.candidates", {}, function(r)
             if r.outcome ~= "ok" then

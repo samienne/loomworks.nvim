@@ -2245,12 +2245,18 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   mode goes only through `editor_ops.set_lsp_option` (`LspConfig/1.
   set_option`; not carried, `invalid`, `refused`, `declined` and a failed
   call each an error naming what happened, nothing written); the status
-  page shows the daemon's options or "unavailable". In `daemon` mode
-  `Workspace:generates_lsp_databases()` is false (an observer is attached):
-  `_refresh_lsp_database_for` settles at once without generating or
-  watching, and cmake's `lsp_configs` schedules nothing. §19.13: with an
-  observer `Core:view_header` / `view_projects_index` return `unloaded` /
-  no projects instead of building from the model; `Observer:
+  page shows the daemon's options or "unavailable". A `daemon`-mode editor
+  holds no model (step 6b-α), so it generates no owned database:
+  `Workspace:generates_lsp_databases()` is always true (every model is the
+  daemon's, the CLI's or the in-process editor's), and the guard in
+  `_refresh_lsp_database_for` / cmake's `lsp_configs` stays only as the
+  modules' question. §19.13: in `daemon` mode `views.get` never calls the
+  in-process builders (`Core:view_header` / `view_projects_index`):
+  `observer.attach` sets `views.daemon_root(root)`, and until the daemon's
+  subscription delivers a view the header is `unloaded` with the observed
+  root and the running version, and there is no ProjectsIndex view;
+  `observer.detach` (and an `attach` that selects `in-process`) clears
+  it. `Observer:
   workspace_unloaded()` (exactly: a lost connection not reported `loaded`
   again, or a connected daemon's header / LSP state `unloaded` — not
   no-binary or a first connection) makes `session_tracker.launch_refusal`

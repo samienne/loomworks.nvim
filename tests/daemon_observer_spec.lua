@@ -362,6 +362,17 @@ describe("the observer (§19.16)", function()
         assert.same({}, require("loomworks").get_daemon_tasks())
     end)
 
+    it("an in-process attach after a daemon one leaves daemon mode for the views too", function()
+        local views = require("loomworks.views")
+        obs = attach({ relay = stub_relay({}) })
+        assert.is_table(obs)
+        assert.equals("unloaded", views.get("header").state)
+        assert.is_nil(observer.attach(ws.root, { configured = "in-process" }))
+        assert.is_nil(observer.current())
+        -- The views are built in-process again (the loaded model's header).
+        assert.equals("loaded", views.get("header").state)
+    end)
+
     it("subscribes to /tasks and /workspace when offered (step 5g.3) and observes through them", function()
         s = new_server(root)
         obs = attach()

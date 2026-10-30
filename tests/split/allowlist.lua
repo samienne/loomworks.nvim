@@ -179,7 +179,9 @@ return {
         -- 5 -> 4: step 5o C2b2-1 (the configuration editor reads the declaration).
         -- 4 -> 1: step 5o C2b2-2 (the launch and deploy editors read the
         -- declaration, the view and expand_preview; the project's removal is left).
-        ["lua/loomworks/ui/sections/projects.lua"] = 1,
+        -- 1 -> 0: step 6b-alpha A1a (the Add project row opens the browser at
+        -- the loaded root, never the model's).
+        ["lua/loomworks/ui/sections/projects.lua"] = 0,
         -- 6 -> 1: step 5n C1 — the body and its `modified` read through
         -- status_source.lua (in `daemon` mode only the daemon's
         -- view.Workspace/1); the page's other model reads (the header's root,

@@ -426,7 +426,12 @@ function M.attach(root, opts)
     local cur = M.current()
     if cur and cur.root == root and sel.daemon then return cur end
     if cur then cur:stop() end
-    if not sel.daemon then return nil end
+    -- Not `daemon`: the views are built in-process again (an earlier
+    -- observer's root is left).
+    if not sel.daemon then
+        views.daemon_root(nil)
+        return nil
+    end
     local self = setmetatable({
         root = root, opts = opts, state = "idle", seq = 0,
         _tasks = {}, _order = {}, _owned = {},

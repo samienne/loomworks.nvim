@@ -113,8 +113,9 @@ local function open_launch_editor(ctx, prow, lrow, decl)
         end,
         -- Every known language, for "Add debug language".
         debug_languages = function(cb)
-            if not ws then return cb(nil, "no workspace") end
-            require("loomworks.daemon.editor_ops").debug_languages(ws, cb)
+            local ops = require("loomworks.daemon.editor_ops")
+            if not ws and not ops.daemon_of(nil) then return cb(nil, "no workspace") end
+            ops.debug_languages(ws, cb)
         end,
         -- The daemon's records arrive after the dialog opens: it re-renders.
         on_debug_adapters = function(arrived)
@@ -517,12 +518,13 @@ local function delete_project_configuration(prow, crow)
     })
 end
 
---- Open the project browser for adding a project.
+--- Open the project browser for adding a project, at the loaded
+--- workspace's root (in `daemon` mode the observed one: the editor holds
+--- no model, step 6b-alpha).
 local function open_add_project()
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    if ws then
-        require("loomworks.ui.project_browser").open(ws.root)
+    local root = require("loomworks").loaded_root()
+    if root then
+        require("loomworks.ui.project_browser").open(root)
     end
 end
 
@@ -548,11 +550,13 @@ local function field_saver(prow, name, bound)
 end
 
 --- The publish / revert actions shared by project and configuration rows,
---- naming the item by its view row (step 5o C2a).
---- @param ws loomworks.Workspace|nil
+--- naming the item by its view row (step 5o C2a). In `daemon` mode (no
+--- model, step 6b-alpha) a row with an id (helpers.actionable).
+--- @param ctx table the section context
 --- @param row table the project's or configuration's view row
-local function publish_actions(ws, row)
-    if not ws then return {} end
+local function publish_actions(ctx, row)
+    local ws = ctx.ws
+    if not ws and not (ctx.mode == "daemon" and helpers.actionable(ctx, row)) then return {} end
     return {
         on_publish = function() helpers.cycle_intent(row, ws) end,
         on_publish_now = function() helpers.publish_one(row, ws) end,
@@ -568,7 +572,7 @@ end
 --- @param prow table the project's view row
 local function project_actions(ctx, prow)
     local ws = ctx.ws
-    local acts = helpers.describe_action(publish_actions(ws, prow), helpers.row_item("project", prow))
+    local acts = helpers.describe_action(publish_actions(ctx, prow), helpers.row_item("project", prow))
     if helpers.actionable(ctx, prow) then acts.on_delete = actions.delete_project(prow, ws) end
     return acts
 end
@@ -586,7 +590,7 @@ local function configuration_actions(ctx, prow, crow)
         on_delete = crow.user and function() delete_project_configuration(prow, crow) end or nil,
     }
     local item = helpers.row_item("configuration", crow, prow.key .. "/" .. crow.key)
-    return helpers.describe_action(with(acts, publish_actions(ctx.ws, crow)), item)
+    return helpers.describe_action(with(acts, publish_actions(ctx, crow)), item)
 end
 
 --- `cb(decl)` with the project row `prow`'s declaration as read now
