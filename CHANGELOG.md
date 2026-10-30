@@ -37,7 +37,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   nil. Code that calls methods on these objects must use the records' fields,
   or keep `runtime = { mode = "in-process" }` until that mode is removed.
   `lw.compile_command_for_file()` and `:LoomworksCompileCommand` are not
-  available in `daemon` mode. (#TBD)
+  available in `daemon` mode. (#336)
 
 ### Upgrade notes
 - The editor now uses the workspace daemon by default: builds, configures,
