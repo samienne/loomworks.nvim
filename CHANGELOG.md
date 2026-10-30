@@ -963,15 +963,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   multi-file commit failed (or which hit an internal error) kept its change
   in memory although nothing was written, so the editor and the workspace
   daemon showed a state that was not on disk and the next save was refused as
-  stale. The workspace is now reloaded from disk in that case (#PR).
+  stale. The workspace is now reloaded from disk in that case (#338).
 - A clean whose wipe step removes the build directory showed the config's old
-  state, not "cleaning", for the rest of the clean (#PR).
+  state, not "cleaning", for the rest of the clean (#338).
 - A deletion that hit an internal error before it started removing anything
-  could leave the config shown as "deleting" until a reload (#PR).
+  could leave the config shown as "deleting" until a reload (#338).
 - A failed clean during a configuration rebuild (`R`) was reported twice
-  (#PR).
+  (#338).
 - A failed removal of a stray build directory did not say why in the log
-  (#PR).
+  (#338).
 - Rebuilding a configuration from the status page (`R`) built even when its
   clean failed; it now stops and reports the failed clean (#328).
 - A failed, stopped or refused clean no longer leaves the config shown as
