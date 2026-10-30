@@ -5,17 +5,16 @@
   "description": "Object /debug (API.md §12): the debug-adapter mapping read, set and reset in the working copy, the write's Workspace/1 changed before the reply.",
   "cases": [
     {
-      "name": "adapters and known_languages report the mapping with its defaults",
+      "name": "adapters reports the mapping of the modules' languages only; known_languages every declared language",
       "fixture": "shell",
       "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "known_languages", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "languages": { "$contains": ["c++", "typescript"] } } } },
         { "send": { "kind": "call", "req_id": 2, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "adapters", "args": {}, "env": { "$var": "env" } } },
-        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok", "languages": { "$contains": [
-            { "language": "c++", "adapter": "codelldb", "default": "codelldb", "known": ["codelldb", "cppdbg"], "overridden": false },
-            { "language": "typescript", "adapter": "pwa-node", "default": "pwa-node", "known": ["pwa-node", "pwa-chrome"], "overridden": false }
-        ] } } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok", "languages": [
+            { "language": "c++", "adapter": "codelldb", "default": "codelldb", "known": ["codelldb", "cppdbg"], "overridden": false }
+        ] } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "adapters", "args": { "x": 1 }, "env": { "$var": "env" } } },
         { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } }
       ]

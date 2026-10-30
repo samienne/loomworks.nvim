@@ -354,6 +354,17 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         opened.on_debug_adapters(function() arrived = arrived + 1 end)
         assert.equals(1, arrived)
         assert.same({ REC }, opened.debug_adapters())
+        -- "Add debug language" reads DebugConfig/1.known_languages.
+        assert.is_function(opened.debug_languages)
+        local asked
+        obs.request = function(_, m, _, cb)
+            asked = m
+            cb({ outcome = "ok", result = { outcome = "ok", languages = { "c++", "typescript" } } })
+        end
+        local langs
+        opened.debug_languages(function(l) langs = l end)
+        assert.equals("known_languages", asked)
+        assert.same({ "c++", "typescript" }, langs)
     end)
 
     it("the launch editor is told a target-backed launch resolves ${target_dir}; a command launch not (§8.7)", function()

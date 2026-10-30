@@ -287,7 +287,10 @@ return {
     -- conn:call(M.LAUNCH.object, M.LAUNCH.iface, ...), and
     -- Profiles/1.set_default_target, conn:call(M.PROFILES.object,
     -- M.PROFILES.iface, ...) — the versioned tables Launch/1 and Profiles/1.
-        ["lua/loomworks/daemon/observer.lua"] = 71,
+    -- 71 -> 72: WP-B T3 adds DebugConfig/1.known_languages (the launch
+    -- editor's "Add debug language"), conn:call(M.DEBUG.object,
+    -- M.DEBUG.iface, ...) — the versioned table DebugConfig/1.
+        ["lua/loomworks/daemon/observer.lua"] = 72,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

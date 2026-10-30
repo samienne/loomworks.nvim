@@ -568,6 +568,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- In `daemon` mode the status page's Debug Adapters section lists the
+  languages of the daemon's `DebugConfig/1.adapters` records instead of
+  reading the editor's model. `DebugConfig/1.adapters` now has one record
+  per language of the workspace's modules, as the in-process section shows,
+  instead of one per known language. The launch editor's "Add debug
+  language" still offers every known language: it reads
+  `DebugConfig/1.known_languages`. (#PR)
 - The status page's configuration-set edit dialog and the create dialog's
   custom set list the projects and configurations the status page shows,
   CMake presets included, instead of reading the editor's own copy of the

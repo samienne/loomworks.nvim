@@ -1173,6 +1173,67 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.equals("adapters", sent[3].method)
     end)
 
+    it("in-process: the debug languages are every known language, not only the modules'", function()
+        local langs
+        editor_ops.debug_languages(ws, function(l) langs = l end)
+        assert.same(require("loomworks.debug_config").workspace_languages(ws), langs)
+        assert.truthy(vim.tbl_contains(langs, "typescript"))
+        assert.same({}, sent)
+    end)
+
+    it("carried: the debug languages are `known_languages` (never the in-process list)", function()
+        connect()
+        local res
+        editor_ops.debug_languages(ws, function(l, why) res = { l, why } end)
+        assert.same({ "/debug", "loomworks.DebugConfig", "known_languages" },
+            { sent[1].object, sent[1].iface, sent[1].method })
+        sent[1].cb({ outcome = "ok", languages = { "c++", "zig" } }, nil)
+        assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
+        assert.same({ "c++", "zig" }, res[1])
+        -- Declined: no languages, and why.
+        res = nil
+        editor_ops.debug_languages(ws, function(l, why) res = { l, why } end)
+        sent[2].cb({ outcome = "declined", reason = "the workspace runtime is stopping" }, nil)
+        assert.is_true(vim.wait(2000, function() return res ~= nil end, 10))
+        assert.is_nil(res[1])
+        assert.truthy(res[2]:find("declined", 1, true))
+    end)
+
+    it("the launch editor's Add debug language offers every known language, not only the records'", function()
+        local View = require("loomworks.ui.view")
+        local tree
+        local orig_new = View.new
+        View.new = function(vopts)
+            tree = vopts.widget
+            return { open = function() end, close = function() end, refresh = function() end }
+        end
+        local ok, err = pcall(require("loomworks.ui.launch_editor").open, {
+            title = "Edit", name = "run", command = "", args = {}, working_dir = "", env = {},
+            projects = {}, profiles = {}, debug = { "c++" },
+            -- The records: only the workspace modules' languages.
+            debug_adapters = function() return { REC } end,
+            debug_languages = function(cb) cb({ "c", "c++", "typescript" }) end,
+            on_accept = function() end, on_cancel = function() end,
+        })
+        View.new = orig_new
+        assert(ok, err)
+        local offered
+        local orig_select = vim.ui.select
+        vim.ui.select = function(items) offered = items end
+        local ok2, err2 = pcall(function()
+            local lines = tree:render()
+            local row
+            for i, l in ipairs(lines) do
+                if l:find("Add debug language", 1, true) and tree.line_meta[i] then row = i end
+            end
+            assert(row, table.concat(lines, "\n"))
+            tree.line_meta[row].on_enter()
+        end)
+        vim.ui.select = orig_select
+        assert(ok2, err2)
+        assert.same({ "c", "typescript" }, offered)
+    end)
+
     it("a daemon without DebugConfig/1.set_adapter: the write fails, noted; nothing in-process", function()
         connect()
         local orig = vim.notify

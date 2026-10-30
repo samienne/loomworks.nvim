@@ -5,7 +5,7 @@
   "description": "Object /debug (API.md §12; spec 8.9.6 Adapter configuration): the workspace's debug-adapter mapping, per language. No signal of its own: a change reaches subscribers as Workspace/1 changed. Whether an adapter is installed is the client's question, never the daemon's.",
   "methods": {
     "adapters": {
-      "description": "One record per known language (known_languages): the adapter in effect, the integration's default, the adapters known for the language and whether the working copy overrides the default.",
+      "description": "One record per language of the workspace's modules (Module.languages), sorted; none when no module declares a language: the adapter in effect, the integration's default, the adapters known for the language and whether the working copy overrides the default.",
       "params": {
         "type": "object",
         "additionalProperties": false,

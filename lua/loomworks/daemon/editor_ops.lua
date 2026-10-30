@@ -1322,6 +1322,37 @@ function M.debug_adapters(ws)
     return nil, "the workspace daemon did not answer DebugConfig/1.adapters"
 end
 
+--- Every language a debug launch may name (§8.9.6 "Language-based adapter
+--- resolution"; the launch editor's "Add debug language"): in `daemon` mode
+--- **only** `DebugConfig/1.known_languages` — not carried, degraded,
+--- `declined` or failed, `cb(nil, why)`; never the in-process list. In the
+--- `in-process` mode debug_config.workspace_languages. `cb(languages, why)`
+--- on the main loop.
+--- @param ws loomworks.Workspace
+--- @param cb fun(languages: string[]|nil, why: string|nil)
+function M.debug_languages(ws, cb)
+    local daemon, obs = M.daemon_of(ws)
+    if not daemon then return cb(require("loomworks.debug_config").workspace_languages(ws)) end
+    if not (obs and obs.state ~= "stopped") then return cb(nil, "the workspace is no longer loaded") end
+    if not obs:can_call("known_languages") then return cb(nil, obs:refusal("known_languages")) end
+    obs:request("known_languages", {}, function(r)
+        if r.outcome == "degraded" then return cb(nil, obs:refusal("known_languages")) end
+        local res = type(r.result) == "table" and r.result or {}
+        if r.outcome ~= "ok" then return cb(nil, tostring(r.reason)) end
+        if res.outcome == "declined" then
+            return cb(nil, "the workspace daemon declined it (" .. tostring(res.reason) .. ")")
+        end
+        if res.outcome ~= "ok" or type(res.languages) ~= "table" then
+            return cb(nil, tostring(res.message or "the workspace daemon did not answer DebugConfig/1.known_languages"))
+        end
+        local langs = {}
+        for _, l in ipairs(res.languages) do
+            if type(l) == "string" then langs[#langs + 1] = l end
+        end
+        cb(langs)
+    end)
+end
+
 --- The language → adapter mapping a debug launch the daemon prepares is
 --- checked against before the call (§8.9.6, §19.16 "Editor operations"):
 --- the daemon's own (`DebugConfig/1.adapters`, the cached read, else a read
