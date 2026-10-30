@@ -345,6 +345,17 @@ CLI requests (only the request running when they fire gets them):
   (`test_targets.lua`) would need to raise synchronously during the load and
   dedupe per load (`loomworks.notify.once`).
 
+**A `user.json` change is not a load.** Only a `loomworks.json` edit counts as
+a load (spec §19.13); a `user.json` change remerges without capturing load
+notes (`Workspace:_on_file_changed`). So a stale mapping fixed in user.json
+keeps printing in a warm daemon's CLI replies (the old `_load_notes` stay),
+and a new one raised there never reaches `_load_notes`. The `once` key
+(`loomworks.notify.once`) also silences a mapping that was removed and then
+reintroduced within one load. Open question: should a user.json remerge
+count as a load? That needs spec wording first. Also (low): a failed reload
+("config reload failed") keeps the old model but replaces its load notes with
+just the failure note.
+
 ## Workspace view follow-ups (step 5n part B1, PR #285)
 
 - **Cancelled by another client shows "failed".** The in-process mirror's

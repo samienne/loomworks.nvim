@@ -392,6 +392,31 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         assert.equals(0, #s.updates())
     end)
 
+    it("a profile row whose configuration set is orphaned names the set but carries no config_set_id", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        local path = s.root .. "/.nvim/loomworks.user.json"
+        local f = assert(io.open(path, "rb"))
+        local status, body = trust.verify("user", f:read("*a"))
+        f:close()
+        assert.equals("valid", status)
+        local user = vim.json.decode(body)
+        -- A profile of a set no file declares (its key is the set's name).
+        user.profiles.gone = { configuration_set = "gone" }
+        local signed = assert(trust.sign("user", trust.encode(user)))
+        f = assert(io.open(path, "wb"))
+        f:write(signed)
+        f:close()
+        local v = s.view()
+        local lost = assert(profile(v, "gone"), "the orphaned profile")
+        assert.is_true(lost.orphaned_set)
+        assert.equals("gone", lost.config_set)
+        assert.is_nil(lost.config_set_id)
+        -- A profile whose set resolves still carries its id.
+        assert.is_string(assert(profile(v, "dev")).config_set_id)
+    end)
+
     it("a build sends updates only on a change, without progress, ending with the last result", function()
         s = session()
         s.load()
