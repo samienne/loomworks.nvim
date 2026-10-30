@@ -238,12 +238,25 @@ end)
 -- (spec §19.4 commit point): the writer, still holding the operation lock,
 -- rolls the journal forward itself, so a "refused" write never lands later.
 describe("failed apply after the commit point", function()
-  local root, ws, cache_path, real_rename
+  local root, ws, cache_path, real_rename, injected
+  -- The workspace names its files by its resolved root, which can be spelled
+  -- differently from `root` (a Windows 8.3 short temp dir like `RUNNER~1`):
+  -- match the target by the identity of its directory, not by its spelling.
+  local function same_file(a, b)
+    local function key(p)
+      p = p:gsub("\\", "/")
+      local dir, base = p:match("^(.*)/([^/]+)$")
+      return ((vim.uv.fs_realpath(dir) or dir):gsub("\\", "/")) .. "/" .. base
+    end
+    local ka, kb = key(a), key(b)
+    if vim.fn.has("win32") == 1 then ka, kb = ka:lower(), kb:lower() end
+    return ka == kb
+  end
   local function fail_rename_to(target, times)
-    local n = 0
+    injected = 0
     vim.uv.fs_rename = function(from, to, ...)
-      if to:gsub("\\", "/") == target and from:find(".txn-", 1, true) and n < times then
-        n = n + 1
+      if from:find(".txn-", 1, true) and injected < times and same_file(to, target) then
+        injected = injected + 1
         return nil, "EIO: injected", "EIO"
       end
       return real_rename(from, to, ...)
@@ -263,6 +276,7 @@ describe("failed apply after the commit point", function()
     fail_rename_to(cache_path, 1)
     local ok, err = ws:rename_project(find(ws._projects, "key", "App"), "App2")
     vim.uv.fs_rename = real_rename
+    assert.equals(1, injected)
     assert.is_true(ok, err)
     assert.is_nil(journal())
     assert.truthy(io_mod.read_file(user_mod.filepath(root)):find("App2", 1, true))
@@ -276,6 +290,7 @@ describe("failed apply after the commit point", function()
     fail_rename_to(cache_path, 1000)
     local ok, err = ws:rename_project(find(ws._projects, "key", "App"), "App2")
     vim.uv.fs_rename = real_rename
+    assert.is_true(injected > 1, "the apply and its completion both failed")
     assert.is_false(ok)
     assert.truthy(tostring(err):find("commit", 1, true))
     assert.is_truthy(journal())

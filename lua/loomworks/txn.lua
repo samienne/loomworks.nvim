@@ -268,8 +268,8 @@ function M.finish(t)
             local status, line = M.recover_locked(t.root)
             if status == "recovered" then
                 ok, err = true, nil
-            else
-                err = err .. " (" .. tostring(line) .. ")"
+            elseif line then
+                err = err .. " (" .. line .. ")"
             end
         end
     end
