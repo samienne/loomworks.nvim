@@ -138,9 +138,9 @@ project target, like the editor's launch editor does), e.g. `lw launch add
 the target exists in the active profile's configuration, and the same
 publish/intent defaults as the other CLI-created launch configs.
 
-## Daemon step 5d: route `lw reset`
+## ~~Daemon step 5d: route `lw reset`~~
 
-Decided 2026-10-05: `lw reset` shares build directories with build and clean,
+**Done** (step 5d, `Build/1.reset`). Decided 2026-10-05: `lw reset` shares build directories with build and clean,
 so it moves into the workspace daemon after step 5c, using the confirmation
 rule from spec/core/daemon.md section 19.15 (the client asks first and the
 request carries the answer). A standalone `lw configure` command was
@@ -309,26 +309,24 @@ The editor's `C` action deletes the build directory and resets the unit to
 unconfigured (spec section 4.7), while `lw clean` runs the build system's own
 clean target. Decide whether to align the names or the behaviour.
 
-## Daemon object identity: spec/code drift
+## Daemon object identity: module objects (step 5q)
 
-Found 2026-10-16 while listing the daemon's objects (staging/daemon bdb07c4).
-
-- **`objects_changed` after startup.** The spec says it fires when the
-  workspace loads or unloads and when a module loads (spec/core/daemon.md
-  §19.20, ~:4334-4340). The code mounts every object at service attach and
-  never fires it afterwards (`daemon/core_interfaces.lua:22-24`); nothing
-  calls `Registry:unmount` (`daemon/interfaces.lua:210-228`). Decide which is
-  right: align the spec to the fixed set, or mount/unmount on load (and for
-  `/modules/<id>`, step 5q).
-- **Stale ids are not refused as stale.** §19.12 (~:1509-1516) says an id
-  carries the session generation and an id from another generation is
-  refused as stale. No generation check was found: `daemon/snapshot.lua:76-82`
-  only matches ids it registered, so an old id most likely comes back as
-  "not found". Unverified for task ids (`daemon/tasks.lua`). Bugfix is
-  test-first: a failing spec sending a previous-generation id (entity and
-  task), then the refusal.
+Decided 2026-10-29 (D8): the spec follows the code. The daemon mounts every
+core object at service start and the object set is fixed for the session, so
+the root's `objects_changed` is never sent (spec/core/daemon.md section 19.20
+"Object set"); step 5q mounts and unmounts `/modules/<id>` and sends it then,
+together with a `Registry:unmount` caller (`daemon/interfaces.lua`). The
+stale-id half of the old entry is fixed: entity and task ids carry the
+session generation (`daemon/snapshot.lua` `registry`, `daemon/tasks.lua`),
+and an earlier session's id is refused as stale
+(`tests/daemon_snapshot_spec.lua`, `tests/daemon_resolve_ids_spec.lua`).
 
 ## Warm-daemon load warnings
+
+Decided 2026-10-29 (D7; spec/core/daemon.md section 19.13 "Load warnings",
+section 16.7): the load's warnings are persistent workspace diagnostics
+(`source = "load"`), shown in the views and carried in every request's reply
+notes. Implementation is step 6b-alpha part F. The original finding:
 
 In-process, the warnings a workspace load raises (`core._deps.notify`) print
 on every command. Through the daemon they reach only the request that loads
@@ -369,6 +367,10 @@ such target, and a default device target fails in `resolve_spec`
 
 ## Direct `vim.notify` calls bypass `core._deps.notify`
 
+Decided 2026-10-29 (D7): the call sites move to `core._deps.notify`, painted
+by role in both hosts (spec section 16.7 note, section 19.13 "Load
+warnings"); step 6b-alpha part F. The original finding:
+
 `config.lua:199` ("project 'x' directory not found") and about 45 other files
 call `vim.notify` directly instead of `core._deps.notify`. In-process, `lw`
 runs under `nvim -l`, which prints these on stderr in nvim's own unpainted
@@ -399,18 +401,15 @@ diagnostics stays undecided for local and daemon tasks alike.
 ## Per-file compile command over the daemon
 
 Step 5l dropped `compile_command` from `loomworks.LspConfig/1` (spec
-§19.20): no client asks the daemon for one file's command today, and the
-editor's `lw.compile_command_for_file` keeps answering from its in-process
-model (§8.4 `compile_command_for`) in every mode, so in `daemon` mode it can
-lag a configure the daemon ran until the editor's model has remerged. It is
-also the one LSP-side read left in the plugin that parses a compilation
-database itself, against the 5l rule that LSP configuration comes only from
-the daemon in `daemon` mode (§19.16 "LSP configuration"): in `daemon` mode it
-should answer from the daemon or fail, not from the editor's model.
-If a client needs it (a CLI `lw compile-command <file>`, an editor action),
-add it at the interface's next version: `{ file }` → the owned
-database's entry for the file, with its `origin`, or "not owned" for a
-module without an owned database.
+section 19.20). Decided 2026-10-29 (D3): in `daemon` mode
+`lw.compile_command_for_file` and `:LoomworksCompileCommand` are refused,
+"not available with the workspace daemon" (spec/core/daemon.md section
+19.16 "Public API", step 6b-alpha); they no longer answer from the editor's
+model, which no longer exists in that mode. When a client needs it (an
+editor action, a CLI `lw compile-command <file>`), add
+`LspConfig/2.compile_command { file }` → the owned database's entry for the
+file with its `origin`, or "not owned" for a module without an owned
+database, and lift the editor's refusal.
 
 ---
 

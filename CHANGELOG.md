@@ -26,6 +26,19 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Breaking
+- In the editor's default `daemon` mode the Lua getters return plain tables
+  copied from the workspace daemon's views, each with its `id`, instead of
+  Profile, Project and ConfigurationSet objects: `get_profiles`,
+  `get_active_profile`, `get_projects`, `project_for_buf`, `get_config_sets`,
+  `get_active_configuration_set`, `get_tool_entries`, `get_tools_by_type`,
+  `get_orphaned_configs` and `get_lsp_options`. They return nil while the
+  editor has no view from the daemon, and `get_workspace()` always returns
+  nil. Code that calls methods on these objects must use the records' fields,
+  or keep `runtime = { mode = "in-process" }` until that mode is removed.
+  `lw.compile_command_for_file()` and `:LoomworksCompileCommand` are not
+  available in `daemon` mode. (#TBD)
+
 ### Upgrade notes
 - The editor now uses the workspace daemon by default: builds, configures,
   cleans, launch preparations and tests run there. An operation the daemon

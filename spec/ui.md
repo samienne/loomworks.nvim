@@ -26,7 +26,7 @@ directly to `Snacks.win`. The page contains these sections in order:
    on disconnect"), and one
    `Runtime` line, the header's last line (above Diagnostics, never further
    down the page): the runtime mode, the source that selected it (core
-   §19.1: `default`, or — until step 6b — `setup` when set in `setup()`:
+   §19.1: `default`, or — until step 6b-β — `setup` when set in `setup()`:
    an explicit `runtime.mode = "daemon"` shows `daemon (setup)`, the
    deprecated `in-process` editor `in-process (setup)` with its deprecation
    note), and in `daemon` mode the
@@ -63,7 +63,9 @@ directly to `Snacks.win`. The page contains these sections in order:
    loomworks.view.Tests/1 — tests unavailable` in the warning highlight, and
    the test explorer's header shows the same status (LOOMTEST.md §4.2).
    Always shown.
-2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
+2. **Diagnostics** — aggregated structural diagnostics, and the warnings of
+   the workspace's last load (`source` `load`; in `daemon` mode the daemon's
+   load, core daemon.md §19.13 "Load warnings") (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
    health\``, shown only when the suggestion framework has one or more
    **actionable** items (hidden when none). `N` counts actionable items only
@@ -161,7 +163,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `R`     | rebuild     | Clean + build (destructive, with confirmation) |
 | `C`     | clean       | Run module clean tasks, reset to configured (with confirmation) |
 | `D`     | delete      | Delete profile or configuration (destructive, with confirmation) |
-| `N`     | init_workspace | Initialize workspace: create user.json in cwd |
+| `N`     | init_workspace | Initialize workspace: create user.json in cwd (refused in `daemon` mode, naming `lw init`) |
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
@@ -354,6 +356,8 @@ scope (profile-level) benefits from the explicit pick.
 - Default target, shown as `Target: <project>:<name>`, or `(stale)`, or
   `(no target set)`. `<CR>` opens the Build / Switch target picker. For a
   launch configuration, the row appends its description summary (§1.16).
+  In `daemon` mode the picker lists `Launch/1.targets` and a choice is
+  `Profiles/1.set_default_target` (core daemon.md §19.16 "Public API").
 - Device selection (only when the profile contains a project from a
   device-capable module) — shows `Device: <name> (<serial>)` (online),
   `Device: <serial> (offline)` (offline/stale), or

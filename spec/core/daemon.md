@@ -38,8 +38,8 @@ attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
 (`daemon/runtime.lua`), and the editor's selection with lw's `runtime-mode`
 setting and the source on its Runtime line (`runtime.editor_select`,
 `observer.runtime_line`) — the editor's `daemon` default and
-deprecated `in-process` mode below are step 5s, plan, its single mode step
-6b; the loopback transport and the attached server
+deprecated `in-process` mode below are step 5s (done), its single mode step
+6b-β; the loopback transport and the attached server
 (`daemon/loopback.lua`, `Server:start_attached` / `Server:adopt`,
 `client.loopback_session`, `command.start_attached`) and the CLI's attached
 routing of step 5e (`cli._attached_selected`, `cli._delegate_attached`)
@@ -62,14 +62,16 @@ shared even in CI); `CI=true` in the environment; the host setting
 (§19.10) — also the launch step itself failing with an error. Otherwise the command runs shared. An invalid configured value is
 reported and ignored (falls through to the next source).
 
-From step 6b the editor has one mode: it is a client of the workspace daemon
+From step 6b-β the editor has one mode: it is a client of the workspace daemon
 (§19.16). It never loads the workspace or runs an operation itself.
 `LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON`, `CI`, lw's `runtime-mode` setting
 and the former setup option `runtime.mode` do not apply to the editor; from
-6b a setup value `runtime.mode` is reported once as ignored. *(Transition,
-until step 6b: `daemon` is the editor's default, and of `runtime.mode` only
+6b-β a setup value `runtime.mode` is reported once as ignored. *(Transition,
+until step 6b-β: `daemon` is the editor's default, and of `runtime.mode` only
 `"in-process"` is honoured — it selects the deprecated in-process editor, with
-a deprecation note on the Runtime line.)*
+a deprecation note on the Runtime line. From step 6b-α the `daemon` mode
+editor already loads no workspace of its own: what it shows and does comes
+only from the daemon, §19.16 "End state".)*
 
 **During the transition**, for the CLI, the setting `runtime-mode` takes `in-process` (the
 default) or `daemon`, with `LOOMWORKS_RUNTIME` as the environment override. In
@@ -1515,7 +1517,7 @@ workspace; an editor's connection starts a load right after it (§19.16
 (`daemon/core_interfaces.lua`); the CLI's read commands call
 `Snapshot/1.get` over transport 11 since part B (`daemon/calls.lua`); the
 editor views steps 5j–5n, §19.19: `view.Header/1` and `view.ProjectsIndex/1`
-specified ("Views" below, step 5j part 0) and served (part B), the editor's use plan.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
+specified ("Views" below, step 5j part 0) and served (part B), the editor's use done, part C.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
 ([API.md](../protocol/API.md) §16), flagged `same_build`: the CLI's read commands and the parity tests
 use it, the editor never does, and `snapshot` stays as its v0 alias. The
 always-warm header is the `loomworks.view.Header/1` interface (and
@@ -1561,7 +1563,7 @@ separator-bounded, the one with the longest normalized `abs_path` wins.
 This deliberately fixes today's `project_for_buf`, whose bare prefix test
 lets `/a/foo` claim a buffer in `/a/foobar`.
 
-**The tests view.** *(Step 5m, plan: part 0 this spec; A the host-neutral
+**The tests view.** *(Step 5m, done: part 0 the spec; A the host-neutral
 builder, in-process only; B1 the daemon side; C1 the editor's read path.)*
 `loomworks.view.Tests/1` ([API.md](../protocol/API.md) §14.3), on `/views` like the two above, backs
 the test explorer, its gutter signs and inline marks (LOOMTEST.md). Its
@@ -1572,7 +1574,7 @@ Last results live in the daemon's memory: they survive the editor's
 reconnects, not a daemon restart (persisting them is later, §19.19 5m part
 D).
 
-**The workspace view.** *(Step 5n, plan: part 0 this spec; A the host-neutral
+**The workspace view.** *(Step 5n, done: part 0 the spec; A the host-neutral
 builder, in-process only; B1 the daemon side; C1 the editor's read path.)*
 `loomworks.view.Workspace/1` ([API.md](../protocol/API.md) §14.4), on `/views`
 like the views above, backs the status page's body: Diagnostics,
@@ -1612,6 +1614,23 @@ in-process writes reach the views at the next check. The editor in `daemon`
 mode writes only through command methods (step 5o, §19.16 "Model writes"),
 whose `update`s precede their replies.
 
+**Load warnings.** *(Step 6b-α, plan.)* What a workspace load reports
+besides the structural diagnostics — a declared project directory not
+found, an entry skipped, every warning or error the load raises — is kept as
+**persistent workspace diagnostics** of the loaded model, with `source =
+"load"` and severity `warn` or `error`, until the next load replaces them.
+They are in `view.Workspace/1`'s `diagnostics` (the status page's
+Diagnostics section) and count toward `view.Header/1`'s `diagnostics`
+level ([API.md](../protocol/API.md) §14.1, §14.4); the editor shows them
+there and holds no load of its own to notify them from. Every request that
+uses the loaded workspace — the one that loaded it and each later one on a
+warm daemon — carries them in its reply's `notes` with their roles (§19.15
+"Roles and verbose"), so each CLI command prints them as an in-process run,
+which loads the workspace each time, does. A load raises them only through
+the host's notification seam (core's `_deps.notify`), never through
+`vim.notify` directly, so both hosts color them by role (§16.7
+*Highlighting*).
+
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
 while it holds a subscription to the view, otherwise one it builds from its
@@ -1631,8 +1650,9 @@ buffer until the daemon reports `loaded`, and the tests view has no units
 (§19.16 "Tests"); a view the daemon does not offer
 is shown unavailable with that note, not built in-process. In `in-process`
 mode views are built in-process as above (removed with the in-process
-editor, §19.19 6b). The plugin keeps `lw.project_for_buf(bufnr)` (it returns
-the `loomworks.Project`; from step 5l it is public API only and the LSP layer
+editor, §19.19 6b-β). The plugin keeps `lw.project_for_buf(bufnr)` (it returns
+the `loomworks.Project` in `in-process` mode and, from step 6b-α, the
+buffer's ProjectsIndex record in `daemon` mode, §19.16 "Public API"; from step 5l it is public API only and the LSP layer
 no longer uses it, §19.16 "LSP configuration")
 and adds `lw.buf_project(bufnr)`, returning the buffer's ProjectsIndex record
 by the separator-bounded longest-prefix rule above (or `nil` when no record
@@ -1779,7 +1799,9 @@ notification the workspace raises before the call's task starts goes into
 the reply's `notes` with the role the in-process loader prints it with
 (`fail` for an error, `warn` for a warning), a test plan's pre-build note
 with `plain`, in `note_roles`; the client paints each as its in-process
-printer does on standard error.
+printer does on standard error. The load's warnings are the loaded
+workspace's, not the loading request's: every request that uses the
+workspace carries them (§19.13 "Load warnings"; step 6b-α).
 The client paints by role exactly as its in-process printer does, and decides
 colour per stream after the `quiet` redirection (`--print` sends `out` to
 stderr). The daemon never writes escape sequences and never sees
@@ -1853,7 +1875,7 @@ a device target's build ends with its post-build deploy).
 target-scoped task announces are [API.md](../protocol/API.md) §4.3; their ordering, `seq` and the
 re-read of `Tasks/1.list` on a gap are [PROTOCOL.md](../protocol/PROTOCOL.md) §14.7.
 
-**Tests.** *(Step 5m, plan: part 0 this spec; B1 discovery, B2 runs, debug
+**Tests.** *(Step 5m, done: part 0 the spec; B1 discovery, B2 runs, debug
 preparation and results; the editor's use §19.16 "Tests".)* The editor's
 test discovery and its runs of selected tests execute in the daemon, like
 its builds; only a test debug session's program is the client's. The
@@ -1992,7 +2014,7 @@ routed build, test or run preparation; a standalone configure is routed from
 step 5k, by the editor (`Build/1.configure`; the CLI has no configure
 command).
 
-*(Step 5k, plan; part C1.)* **The editor as owner.** A task the editor starts
+*(Step 5k part C1, done.)* **The editor as owner.** A task the editor starts
 through a call is owned by its connection like a CLI's. The editor cancels
 only its own tasks, always with `loomworks.Tasks/1.cancel` (graceful, as the
 CLI's first Ctrl-C) and then waits for the task's `done`: a stop from the
@@ -2122,7 +2144,9 @@ remote program's liveness stay with the client process:
 The editor's own run and debug launches stay in-process in this step; from
 step 5k their preparation is routed (`prepare_run`, `prepare_debug` with
 `build_scope = "target"`; §19.16 "Editor operations"), a device target's
-launch staying in-process.
+launch going through `Devices/1` from step 5n, and a preparation that ends
+with `device = true` refused in the editor from step 6b-α (§19.16 "Editor
+operations").
 
 `lw clean` (step 5c) is routed by the same rules, an argument `cmd_clean`
 refuses taking the place of one `cmd_build` refuses, and its lines name the
@@ -2187,9 +2211,10 @@ and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
 below): the subscription to `/tasks` and `/workspace` is implemented, step
 5g.3 (`daemon/observer.lua` `_subscribe`); no editor fallbacks
-("Availability"), step 5s, plan; the views
-and operations steps 5j–5o (§19.19) — "Editor operations" below (step 5k)
-specified, part 0, plan; the connection through the `--stdio`
+("Availability"), step 5s, *done*; the views
+and operations steps 5j–5o (§19.19), *done*; the editor without a model of
+its own in `daemon` mode ("End state", "Public API", "Load warnings"), step
+6b-α, plan; the connection through the `--stdio`
 relay, step 5i PR G: its spec (PR G0) *done*; the relay transport and
 lifecycle ("Through the relay" except "Skipping an incompatible daemon",
 `--retiring`) PR G1, *done* (`daemon/client.lua` `relay`, `daemon/observer.lua`
@@ -2199,7 +2224,8 @@ PR G2, *done* (`daemon/observer.lua` `_skip`, `_weigh_retire`). From G1 the obse
 launches a daemon itself ("Step 4" below marks what G1 superseded). The editor-owned child daemon of the
 earlier plan (step 5p) is dropped.*
 
-**End state.** *(Planned, step 5i.)* The editor is a **pure `lw` client**
+**End state.** *(Step 5i, done; the editor without a model of its own,
+step 6b-α, plan.)* The editor is a **pure `lw` client**
 of the **same daemon as the CLI**. It spawns `lw daemon run --root <root>
 --stdio`, which connects to the workspace's shared daemon or starts it first
 (§19.10 "Connections"), and speaks the protocol through that relay; it reads
@@ -2213,10 +2239,13 @@ binary ("Host binary" below): with none the editor spawns no relay and runs
 **degraded**: the status page shows the workspace unloaded with the reason,
 language servers it manages are withheld ("LSP configuration" below),
 operations are refused with that reason ("Availability" below), and nothing
-of the workspace is loaded or run in the editor — until steps 5n and 5o the
-transitional model ("Editor operations" below: the status page's body
-sections, the configuration mutations) applies while degraded too; it does
-not observe a daemon another client started. Its tasks are
+of the workspace is loaded or run in the editor; it does not observe a
+daemon another client started. **In `daemon` mode the editor holds no
+workspace model**, connected or not (step 6b-α): it loads none, detects no
+toolchains or build targets, runs no file tracker on the workspace's files,
+writes none of them (the cache included) and builds no view in-process.
+Everything it shows comes from the daemon's views and replies, and every
+public function answers from them ("Public API" below). Its tasks are
 owned by its connection, so an editor that quits or crashes leaves no task
 running; the daemon itself outlives it under §19.11. Operations move from the
 editor to commands in the order of §19.19. When the shared daemon cannot be
@@ -2409,7 +2438,7 @@ degraded ("End state").
 **Interface client.** *(Step 5g.3: discovery through `Root.describe` with
 `welcome.objects` as the fallback, the `/tasks` and `/workspace`
 subscriptions, `objects_changed` and the per-feature note; the views and
-operations: plan, steps 5j–5o — the `/views` features of step 5j specified,
+operations: done, steps 5j–5o — the `/views` features of step 5j specified,
 part 0, and implemented, part C.)* On every connect, including
 each reconnect, the editor **discovers** the daemon through the root object
 (`welcome.objects`, `Root.describe`; §19.20), picks per interface the highest
@@ -2451,7 +2480,7 @@ Against a daemon of protocol 10 (no `welcome.objects`) the editor observes
 through the v0 broadcasts as below and notes interface features as "daemon
 too old".
 
-**Editor operations.** *(Step 5k, plan: part 0 this spec; B1 and B2 the
+**Editor operations.** *(Step 5k, done: part 0 the spec; B1 and B2 the
 daemon side, §19.15 "Editor scopes and configure", "Debug", "Build scope of a
 launch", [API.md](../protocol/API.md) §12; C1 the calls, task runner and cancellation;
 C2 run and debug through preparation and the debug adapters.)* In `daemon`
@@ -2486,11 +2515,15 @@ owner"):
   `DebugConfig/1.adapters`, while it is carried — never the editor's own
   mapping: while it is not carried, its read failed, or it does not name the
   language, nothing is checked before the call and the debugger checks the
-  prepared adapter). A run that ends with
+  prepared adapter). A preparation that ends with
   `device = true` (a target found foreign by probing its artifact, spec
-  §18.1) continues in the editor from the post-build deploy, without
-  building again ("Build scope of a launch" above); runner devices (§18)
-  stay out of step 5n. A device target of spec §11 is launched through
+  §18.1) is **refused** *(step 6b-α; before it the run continued in the
+  editor from the post-build deploy)*: the editor does not execute foreign
+  targets (spec §18.11), so no program is started and nothing of the run
+  continues in the editor. Its error notification names the target and the
+  remedy, `<target> runs on a device: the editor does not execute foreign
+  targets (spec §18.11); run it with lw run`. Runner devices (§18) stay out
+  of the editor. A device target of spec §11 is launched through
   `Devices/1` ("Devices" below). The program is the editor's, never the daemon's; stopping a run or
   debug session stops it as in-process. While the preparation runs, a stop
   cancels its task (`Tasks/1.cancel`) and no program is started, and a
@@ -2507,8 +2540,7 @@ owner"):
 
 Test runs and discovery go through `Tests/1` (step 5m, "Tests" below);
 device-target launches through `Launch/1.build` and `Devices/1` (step 5n,
-"Devices" below). The editor runs no operation itself apart from the
-rest of a `device = true` run above.
+"Devices" below). The editor runs no operation itself.
 
 **Model writes.** *(Step 5o.)* In `daemon` mode the editor writes nothing
 to the workspace's files and runs no deletion: every status-page action and
@@ -2526,12 +2558,17 @@ plan, a held lock) is an error notification and changes nothing; the page
 shows the views' next `update`. The editor never keeps an id across a
 `header_changed` that reloaded the workspace. While a method's interface is
 not carried the action is refused ("Availability"), never run in-process.
-With no workspace loaded in the editor (its load failed, or a trust or
-schema refusal unloaded it) the mode is the editor's setup selection; in
-`daemon` mode every action is refused, nothing sent and nothing run — the
-nuke, trust and the removal of the working copy name their command
-(`lw nuke`, `lw trust`, `lw trust --discard`) *(until the editor can
-connect to a daemon for a root it has not loaded)*.
+With no workspace loaded (its load failed, or a trust or schema refusal
+unloaded it; from step 6b-α as `view.Header/1`'s `state` reports it) the
+mode is the editor's setup selection; in `daemon` mode every action is
+refused, nothing sent and nothing run — the nuke, trust and the removal of
+the working copy name their command (`lw nuke`, `lw trust`, `lw trust
+--discard`) *(until the editor can connect to a daemon for a root it has
+not loaded)*. Creating a workspace (the status page's `N`, a new
+`loomworks.json` where none is) is likewise refused in `daemon` mode, loaded
+or not, nothing written: its error notification names `lw init` *(step
+6b-α; [API.md](../protocol/API.md) §6 defers `Workspace/1.create` until a
+server serves a root with no `loomworks.json`)*.
 *(Status: every status-page action is a call. Its `Workspace/1`,
 `Profiles/1` and `ConfigSets/1` actions are calls from step 5o part C2a,
 its `Projects/1` actions from C2b (the removals, variable and
@@ -2556,7 +2593,7 @@ carries the editor process's whole environment **at call time**, under the
 rules of §19.15 "Environment" — what an in-process task of the editor
 inherits.
 
-**Availability.** *(Step 5s, plan; before it the editor ran an operation it
+**Availability.** *(Step 5s, done; before it the editor ran an operation it
 could not carry in-process.)* The editor routes an operation only when it
 can be carried; otherwise it refuses it. It is carried
 while connected through interfaces to a compatible daemon that offers
@@ -2585,14 +2622,56 @@ missing on this connection:
   calls"): the operation fails and is not re-run.
 
 There is no in-process fallback and no opt-out; the editor never runs
-workspace logic itself beyond the
-rest of a `device = true` run and the transitional model of "Editor
-operations" above. *(Transition, until step 6b: the deprecated
+workspace logic itself. *(Transition, until step 6b-β: the deprecated
 `runtime.mode = "in-process"` editor of §19.1 runs every operation
 in-process, never routing; the cross-process build-directory locks (§16.6)
 serialize its operations with a daemon's.)*
 
-**LSP configuration.** *(Step 5l, plan: part 0 this spec; A the
+**Public API.** *(Step 6b-α, plan; a breaking change of the plugin's Lua
+API in `daemon` mode.)* In `daemon` mode the plugin's public functions answer
+only from what the daemon gave the editor — its views, the `LspConfig/1`
+state ("LSP configuration" below) and replies — never from a model (the
+editor holds none, "End state"). A getter returns **plain tables**: copies
+of the view rows that carry the facts, with their ids, which are what a
+call's `{ id }` reference takes ([API.md](../protocol/API.md) §1.2); writing
+to a returned table changes nothing. While the view a getter reads is not
+held (not yet connected, disconnected, not offered) it returns `nil`:
+
+- `lw.get_profiles()` — `view.Workspace/1`'s `profiles` records, by key;
+  `lw.get_active_profile()` — the record whose `active` is true;
+- `lw.get_projects()` — its `projects` records, by key;
+  `lw.project_for_buf(bufnr)` — the buffer's `view.ProjectsIndex/1` record,
+  as `lw.buf_project` (§19.13);
+- `lw.get_config_sets()` — its `config_sets` records, by name;
+  `lw.get_active_configuration_set()` — the record whose `active` is true;
+  `lw.get_tool_entries()` — per configuration set name, the `profiles`
+  records of that set;
+- `lw.get_tools_by_type()` — per module type, the distinct `tools` rows
+  (`{ module, key?, label }`) the `profiles` records select; the toolchains
+  a module detects are `Toolchains/1.list`, a call;
+- `lw.get_orphaned_configs()` — its `orphaned.configurations` records;
+- `lw.get_lsp_options(server)` — that server's options in the held
+  `LspConfig/1` state;
+- `lw.get_workspace()` — always `nil`.
+
+The pickers and build functions act by calls: `lw.pick_profile()` lists the
+`profiles` records and sends `Profiles/1.set_active`; `lw.build_profile()`
+is `Build/1.build` of the active profile's id and `lw.build_target()`
+`Launch/1.build` of its default target, owned tasks as in "Editor
+operations"; `lw.pick_target()` lists `Launch/1.targets` (one call when it
+opens) and sends the choice, or the removal of the stored choice, with
+`Profiles/1.set_default_target` ([API.md](../protocol/API.md) §9.6, §11).
+The deploy editor's source targets are `view.Workspace/1`'s
+`projects[].targets`, joined by project id, so a project in no profile
+offers its targets too. A refused or uncarried call is an error
+notification and changes nothing ("Availability").
+`lw.compile_command_for_file(file)` and `:LoomworksCompileCommand` are
+**refused** in `daemon` mode — `not available with the workspace daemon` —
+and never read a compilation database or a model (BACKLOG "Per-file compile
+command over the daemon"). *(Transition, until step 6b-β: in `in-process`
+mode every function keeps its model objects and behaviour.)*
+
+**LSP configuration.** *(Step 5l, done: part 0 the spec; A the
 host-neutral builder of the state, in-process only; B the daemon side,
 [API.md](../protocol/API.md) §13; C the editor side.)* In `daemon` mode what the
 editor's language servers are configured with — each project's
@@ -2687,14 +2766,14 @@ an entry's server binary resolves as the editor would run it.
   `lw.buf_project` (§19.13, separator-bounded), matching the record to the
   state's project by key; `lw.project_for_buf` stays public API.
 
-*(Transition, until step 6b.)* In `in-process` mode the editor still builds
+*(Transition, until step 6b-β.)* In `in-process` mode the editor still builds
 the state from its own model with the same builder (§9.2), generates the
 owned databases and writes options in-process, under §9.7 as before 5l; the
 buffer → project rule above applies there too. That path is the
-`in-process` mode's, removed with the in-process editor (§19.19 6b); it is
+`in-process` mode's, removed with the in-process editor (§19.19 6b-β); it is
 never used in `daemon` mode.
 
-**Tests.** *(Step 5m, plan: part 0 this spec; A the host-neutral builder of
+**Tests.** *(Step 5m, done: part 0 the spec; A the host-neutral builder of
 the view and loomtest's adapter-executed runs, in-process only; B1 the
 daemon's discovery and view, B2 its runs, debug preparation and results,
 [API.md](../protocol/API.md) §10, §14.3; C1 the editor's read path, C2 its
@@ -2766,12 +2845,12 @@ editor's — rendering, navigation, the cursor's test, the output window.
   A daemon-mode neotest (positions from the view, runs through a CLI relay)
   is later (§19.19 5m part D).
 
-*(Transition, until step 6b.)* In `in-process` mode the editor keeps its
+*(Transition, until step 6b-β.)* In `in-process` mode the editor keeps its
 in-process discovery, its RunSpec runs with loomtest's own streaming and
 results parsing, its `ensure_built` and the neotest adapter, unchanged; that
 path is never used in `daemon` mode.
 
-**Devices.** *(Step 5n, plan: part 0 this spec; B2 the daemon side,
+**Devices.** *(Step 5n, done: part 0 the spec; B2 the daemon side,
 [API.md](../protocol/API.md) §9.4, §11, §15 — implemented; C2 the editor's use — implemented;
 B3 the device log stream, [API.md](../protocol/API.md) §9.5 — implemented; C3 its editor use — implemented.)*
 In `daemon` mode the editor neither lists nor probes devices, nor installs
@@ -3371,7 +3450,8 @@ a test before its routing is enabled.
 
 ### 19.18 Device and log records
 
-*Status: #88 (schema scaffold); wiring future.*
+*Status: implemented in step 5n (parts B2, B3 and C3: `Devices/1`,
+`Launch/1.device_log`).*
 
 Device logs travel on the task-stream channel as normalized records
 `{ ts, level, tag, pid, message, fields? }` (unknown level → a default,
@@ -3382,7 +3462,9 @@ as that interface's `log` signal.
 
 ### 19.19 Transition order
 
-*Status: plan. Each step is shippable on its own and keeps master green.*
+*Status: steps 1–5 done on `staging/daemon` except 5q, the retirement of
+protocol 10 and the optional parts 5k D and 5m D; 6b-α next, then 6, 6b-β,
+6c and 8a–8c. Each step is shippable on its own and keeps master green.*
 
 1. **Operation locks** — §19.3, §19.4 and §19.5 on the in-process path: the
    workspace operation lock, the lock order, `lw nuke` taking build locks,
@@ -3408,7 +3490,7 @@ as that interface's `log` signal.
      under the workspace operation lock and exclusive build-directory locks,
      through the same deletion as in-process; its confirmation asked by the
      client from the daemon's listing, the answer carrying a token of the
-     listed plan.
+     listed plan. *(Done.)*
    - **5e — Loopback for the routed operations** (§19.1 "Loopback during the
      transition"): in `daemon` mode an attached selection runs `lw build`,
      `lw test`, the preparation of `lw run`, `lw clean` and `lw reset` through
@@ -3420,9 +3502,9 @@ as that interface's `log` signal.
      shared and attached — later, with the command machinery of §19.14. The
      editor gets no loopback runtime (D8 is superseded) and no private
      daemon: when the shared daemon cannot be started it runs degraded
-     (steps 5i, 6b).
+     (steps 5i, 5s). *(Done.)*
    - **5f — Plugin/binary boundary**: the classification manifest and the
-     ratcheting guard test (`tests/split`), no behaviour change. *(In review,
+     ratcheting guard test (`tests/split`), no behaviour change. *(Done,
      #149.)*
    - **5g.1 — Transport 11 and the root object** *(done)* (§19.8, §19.20): the envelope
      (`call`, structured `error`, `signal`), `loomworks.Root/1`
@@ -3458,7 +3540,7 @@ as that interface's `log` signal.
      `observer._subscribe`, transport-11 delivery by subscription, the guard's
      interface ratchet in `tests/split`. Deferred to 5j: checking that the
      methods and signals the plugin uses on an interface version are covered
-     by its transcripts — done once merged: each versioned table declares
+     by its transcripts — done: each versioned table declares
      the `methods` the plugin calls and the `signals` it handles, every
      interface call names a declared method, and every declared one is sent
      or expected in that version's transcripts; uses not yet transcribed are
@@ -3519,8 +3601,9 @@ as that interface's `log` signal.
      CLI's `lw_version` equality, so it never restarts a compatible daemon;
      the editor's retirement then goes through the relay connection.
      In parts: the spec *(done)*; B — connection code extracted from the
-     CLI into `daemon/connect.lua`; C — the relay and `--private`; D —
-     `lw daemon list` / `kill` classification of relays; E — the idle rule
+     CLI into `daemon/connect.lua` *(done)*; C — the relay and `--private`
+     *(done)*; D — `lw daemon list` / `kill` classification of relays
+     *(done)*; E — the idle rule
      *(done: tool detection past the cap is abandoned by unloading the
      model, a run past it stops the daemon through the stop path)*;
      F — the CLI's two-stage Ctrl-C *(done)*; G — the editor uses the relay
@@ -3529,18 +3612,18 @@ as that interface's `log` signal.
      named retiring daemon") *(done)*, G2 the incompatible-daemon policy over the
      relay *(done)*.
    - **5r — Warm restarts** (§19.11 "Warm restarts", §16.43), right after 5i
-     (ids are not in order), in parts: A — the spec *(done once merged)*;
+     (ids are not in order), in parts: A — the spec *(done)*;
      B — the idle grace (`IDLE_GRACE_SECONDS` = 45 s as the default of
-     `daemon-idle-timeout`, the setting still overriding it) *(done once
-     merged)*; C — the
+     `daemon-idle-timeout`, the setting still overriding it) *(done)*;
+     C — the
      fingerprinted per-module-type tool cache in `tools.json` (fingerprint
      includes the `lw` identity with its `lw_version`, so results of a retired
      daemon of another version are not reused; each type written atomically
      on completion, an interrupted type not written; reused on the next start
      when its fingerprint matches; the same check in the in-process CLI)
-     *(done once merged)*;
+     *(done)*;
      D *(optional)* — `lw daemon status` shows the idle deadline (`status`
-     `idle_timeout` / `idle_deadline`) *(done once merged)*.
+     `idle_timeout` / `idle_deadline`) *(done)*.
    - **5j–5o — Editor consumers move to interfaces**, each step landing its
      interfaces with their schemas and transcripts: `view.Header/1` and
      `view.ProjectsIndex/1` (5j); the editor's operations as calls,
@@ -3551,30 +3634,30 @@ as that interface's `log` signal.
      `Sdks` and `Maintenance` (5o).
      - **5j — Header and project index** (§19.13 "Views"; §19.16 "Interface
        client"), in parts: A — the guard's method/signal coverage deferred
-       from 5g.3 (#185) *(done once merged)*; 0 — spec: the two views' fields,
-       the `update` rule and the two sources *(done once merged)*; B — daemon
+       from 5g.3 (#185) *(done)*; 0 — spec: the two views' fields,
+       the `update` rule and the two sources *(done)*; B — daemon
        side: the schemas of `loomworks.view.Header/1` and
        `loomworks.view.ProjectsIndex/1`, their transcripts on the `empty` and
        `shell` fixtures, and a new `daemon/views.lua` mounted on `/views`,
        sending `update` where `header_check` runs, with the ids the daemon
        alone fills (`active_profile_id`, `config_set_id`, the records' `id`
-       and `active.unit_id`) *(done once merged)*; C — editor side: a view
+       and `active.unit_id`) *(done)*; C — editor side: a view
        store fed by the observer's subscription or by the in-process builder,
        lualine and the status page's header moved onto it,
        `lw.buf_project` (separator-bounded longest prefix), the lualine → `loomworks.events` edge removed and the
-       reach-in counts lowered *(done once merged)*.
+       reach-in counts lowered *(done)*.
      - **5k — Editor operations as calls** (§19.15 "Editor scopes and
        configure", "Debug", "Build scope of a launch", "The editor as owner";
        §19.16 "Editor operations"; §19.20 `DebugConfig/1`), in parts: A —
        preparation with no behaviour change, in-process only: one debug-spec
        seam shared by both hosts, the adapter defaults and resolution in a
        host-neutral module, and a guard ratchet on the editor's operation
-       call sites; 0 — spec *(done once merged)*; B1 — daemon side: `Build/1`
+       call sites; 0 — spec *(done)*; B1 — daemon side: `Build/1`
        `configure`, `units`, `jobs` and project-qualified targets, with
-       schemas and transcripts on the `shell` fixture *(done once merged)*; B2 — daemon side:
+       schemas and transcripts on the `shell` fixture *(done)*; B2 — daemon side:
        `Launch/1.prepare_debug` with `Common/1` `DebugSpec`, `build_scope` on
        both preparations, and `DebugConfig/1` on `/debug`, with schemas and
-       transcripts *(done once merged)*; C1 — editor side: the call API with owned tasks, routing
+       transcripts *(done)*; C1 — editor side: the call API with owned tasks, routing
        of builds, configures and module cleans with the availability rule,
        the task-runner bridge (editor-owned and read-only observed tasks),
        cancellation, one progress entry per owned task, and retirement
@@ -3582,17 +3665,17 @@ as that interface's `log` signal.
        call API, routing, availability, cancellation, the one progress
        entry, retirement) and C1b (the task-runner bridge: owned and
        read-only observed tasks in overseer, `Open overseer` on their rows)
-       *(C1a and C1b done once merged)*;
+       *(C1a and C1b done)*;
        C2 — editor side: run and
        debug through `prepare_run` / `prepare_debug` for non-device targets,
        the module-target debug unified with run (§8.9.6), the debug adapters
        section on `DebugConfig/1`, the reach-in counts lowered (needs B2 and
-       C1) *(C2 done once merged)*; D *(optional)* — a real-daemon
+       C1) *(C2 done)*; D *(optional)* — a real-daemon
        end-to-end suite for the editor client, unless folded into C1 and C2.
-       B1 and B2 are independent.
+       B1 and B2 are independent. *(Done, except the optional D.)*
      - **5l — LSP configuration through the daemon** (§19.16 "LSP
        configuration"; §19.20 `LspConfig/1`; §9.2, §9.7, §9.8), in parts:
-       0 — spec *(done once merged)*; A — preparation with no behaviour
+       0 — spec *(done)*; A — preparation with no behaviour
        change, in-process only: one host-neutral builder of the state
        (entries with `db_state`, `db_dir` and `db_rev`, options, readiness),
        an LSP source the LSP layer and the integrations read instead of the
@@ -3608,7 +3691,7 @@ as that interface's `log` signal.
        the editor's own database generation stopped in `daemon` mode,
        and a real-daemon end-to-end check
        (needs A and B; may land as C1, the read path, and C2, the writes and
-       the generation owner).
+       the generation owner). *(Done.)*
      - **5m — Tests through the daemon** (§19.13 "The tests view"; §19.15
        "Tests"; §19.16 "Tests"; §19.20 `Tests/1`; §8.9; LOOMTEST.md), in
        parts: 0 — spec (this; the `loomworks.view.Tests/1` schema, the
@@ -3627,34 +3710,34 @@ as that interface's `log` signal.
        test module for the transcripts (it ships only in tests: a static
        TestUnit discovering from JSON and running an `nvim -l` script that
        prints gtest-format output and results), schemas and transcripts
-       *(done once merged)*; B2 — daemon side: `Tests/1.run_cases`, the `results` signal,
+       *(done)*; B2 — daemon side: `Tests/1.run_cases`, the `results` signal,
        `Tests/1.result`, `Tests/1.prepare_debug` and `Tests/1.collect`, the
        per-run results file, schemas and transcripts (B1 and B2 independent
        after 0); C1 — editor side: the view in the view store, the test
        source's daemon form, the explorer's header, tree, signs and inline
        marks on it, the `stale` → `discover` trigger, the unavailable and
        unloaded handling, no in-process discovery in `daemon` mode, the
-       neotest refusal *(done once merged)*;
+       neotest refusal *(done)*;
        C2 — editor side: runs through `run_cases` (owned
        overseer rows, cancel, live status from `results`), debug through
        `prepare_debug` → the debug seam → `collect`, `ensure_built` unused in
        `daemon` mode, the test output and error locations from `result`, a
-       real-daemon end-to-end check *(done once merged)*; D *(optional, later)* — last results persisted across daemon
+       real-daemon end-to-end check *(done)*; D *(optional, later)* — last results persisted across daemon
        restarts, and a daemon-mode neotest (positions and results from the
        view, runs through a CLI relay such as `lw test --select <id>…`,
-       designed with `lw test --list`).
+       designed with `lw test --list`). *(Done, except the optional D.)*
      - **5s — No editor fallbacks** (§19.16 "Availability"; before 5n): in
        `daemon` mode an operation the daemon cannot carry is refused, never
        run in-process; the debug-adapter section and its writes fail
        likewise. The `daemon` editor mode becomes the default, with
-       `in-process` deprecated for one beta cycle (§19.1), then 6b. The
+       `in-process` deprecated for one beta cycle (§19.1), then 6b-α and 6b-β. The
        status page's body sections and the model's mutations stay on the
        editor's in-process model until 5n (reads) and 5o (writes), marked
        transitional (§19.16 "Editor operations"); device-target launches
        stay in the editor until `Devices/1` (5n). The editor no longer reads
        `LOOMWORKS_RUNTIME`, `LOOMWORKS_NO_DAEMON` or `CI` for its mode, so a
        headless editor under `CI=true` (this repo's test suite included)
-       defaults to `daemon`.
+       defaults to `daemon`. *(Done.)*
      - **5t — Launch-target builds as one call** (§19.15 "Build of a launch
        target", "Steps of a task"; §19.16 "Editor operations"; §19.20
        `Launch/1`, `Tasks/1`; after 5s, before 5n), in parts: 0 — spec *(done)*; B —
@@ -3663,14 +3746,14 @@ as that interface's `log` signal.
        `force` on the preparations, `TaskInfo.steps` and the `Tasks/1.step`
        signal on every target-scoped task, schemas and transcripts on the
        `shell` fixture (a dependency, a pre-build deploy, a failing step, a
-       cancel) *(done once merged)*; C — editor side: `LaunchTarget:build` through
+       cancel) *(done)*; C — editor side: `LaunchTarget:build` through
        `Launch/1.build` for non-device targets (one owned task, the conflict
        question before the call, no editor deploy), the progress entry and
        the task runner row following the current step, prepare_run /
-       prepare_debug's progress likewise *(done once merged)*. Device targets' builds stay the
+       prepare_debug's progress likewise *(done)*. Device targets' builds stay the
        editor's until 5n, which extends `Launch/1.build` to device targets
        with the post-build deploy, leaving install and launch to
-       `Devices/1`.
+       `Devices/1`. *(Done.)*
      - **5n — Workspace view and devices through the daemon** (§19.13 "The
        workspace view"; §19.16 "Devices"; §19.18; §19.20 `view.Workspace/1`,
        `Devices/1`, `Profiles/1`, `Launch/1`; after 5s and 5t), in parts:
@@ -3689,7 +3772,7 @@ as that interface's `log` signal.
        `Profiles/1.set_device` / `clear_device`, `Launch/1.build` extended to
        device targets with the post-build deploy, and a tests-only stub
        device module, schemas and transcripts (B1 and B2 independent after
-       A; B2 *done once merged*: an install holds its build directory, then
+       A; B2 *done*: an install holds its build directory, then
        the device lock — §19.3's order — a launch and a stop the device lock
        only); C1 — editor side: the status page's body from the view, nothing of
        it built in-process in `daemon` mode, the `unavailable — <why>` lines;
@@ -3698,7 +3781,7 @@ as that interface's `log` signal.
        removed, an end-to-end check with the stub module; B3/C3 — the device
        log stream as `Launch/1.device_log`, daemon and editor sides. Runner
        devices (§18), `lw device clean` and `lw run --device` stay out of
-       5n.
+       5n. *(Done.)*
      - **5o — Model writes through the daemon** (§19.14 "As interfaces";
        §19.16 "Model writes"; §19.20 `Workspace/1`, `Profiles/1`,
        `Projects/1`, `ConfigSets/1`, `Sdks/1`, `Maintenance/1`,
@@ -3724,13 +3807,15 @@ as that interface's `log` signal.
        accept keys for later routing; an `ItemRef` is id-only). Publish and
        every rename that propagates into the cache take the workspace
        operation lock (§19.3) in the daemon and in-process alike; a launch
-       rename writes only the working copy and takes none.
+       rename writes only the working copy and takes none. *(Done: C2 landed
+       as C2a–C2d, B6 included.)*
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
-     the workspace itself in daemon mode is reached once 5j–5o have moved
+     the workspace itself in daemon mode is step 6b-α, after 5j–5o moved
      every consumer.
    - **5q — Module interfaces** (§19.20): `M.interfaces` registration, the
-     `/modules/<id>` objects, a first module interface with its schemas and
+     `/modules/<id>` objects mounted and unmounted with the root's
+     `objects_changed` (§19.20 "Object set"), a first module interface with its schemas and
      transcripts in the module's repository. Any time after 5g.2.
    - **Retirement of protocol 10**: `protocol_min` is raised to 11 and the v0
      aliases are deleted once no client in this repository sends a v0 kind
@@ -3741,12 +3826,30 @@ as that interface's `log` signal.
    editor's default flipped in 5s, after which the in-process editor stays
    one beta cycle behind `runtime.mode = "in-process"`, with a deprecation
    note.
-   - **6b** — the in-process editor is removed (its LSP path with it, §19.16
-     "LSP configuration"), and in `daemon` mode the editor no longer scans
-     tools or targets nor writes the cache; with no host binary the editor
-     runs degraded. It follows 5s's deprecation beta and 5n–5o, and does not
-     wait for the CLI's default flip (the CLI's in-process mode is a
-     separate decision).
+   - **6b-α — The editor without a model** (§19.16 "End state", "Public
+     API", "Editor operations", "Model writes"; §19.13 "Load warnings";
+     [API.md](../protocol/API.md) §9.6, §11, §14.4), after 5n–5o and before
+     the CLI's default flip: in `daemon` mode the editor loads no workspace,
+     scans no toolchains or targets, runs no file tracker, writes none of
+     the workspace's files (the cache included) and builds no view
+     in-process; its public getters return view rows with ids, its pickers
+     and build functions are calls, `lw.compile_command_for_file` and `N`
+     are refused, and a `device = true` preparation is refused (§18.11). In
+     parts: 0 — spec (this); C — daemon side: `Launch/1.targets`,
+     `Profiles/1.set_default_target` and `projects[].targets` in
+     `view.Workspace/1`, with schemas and transcripts; F — the load's
+     warnings as persistent diagnostics, the notification seam in every
+     load path; A1 — editor side: no model in `daemon` mode (the load,
+     the observer's attach by root, the views with no in-process fallback,
+     the facade by calls, `N` and `device = true`); A2 — editor side: the
+     public API and pickers on views and calls (needs C). **QA** of the
+     daemon editor runs on 6b-α (A1 and A2 landed), with the deprecated
+     `in-process` editor still present.
+   - **6b-β** — the in-process editor is removed (its LSP path with it, §19.16
+     "LSP configuration", and every "until step 6b-β" transition); with no
+     host binary the editor runs degraded. It follows 5s's deprecation beta
+     and 6b-α, may land during the QA beta, and does not wait for the CLI's
+     default flip (the CLI's in-process mode is a separate decision).
    - **6c** — the binary's Lua moves to its own tree (mechanical); the
      protocol schemas and transcripts become the cross-repository contract,
      in a separate protocol repository pinned by both sides (§19.20).
@@ -3799,8 +3902,8 @@ and the CLI's calls over transport 11 (`daemon/calls.lua`); each of these
 interfaces serves only the methods the catalogue's 5g.2 entries name, the rest
 being added with their steps. Step 5g.3 is implemented: the CLI policy, the
 busy rule, delivery to a transport-11 connection by subscription only and
-the guard's interface ratchet. The rest is
-plan: the editor's interfaces steps 5j–5o; module
+the guard's interface ratchet. The editor's interfaces of steps 5j–5o are
+implemented, and the additions of step 6b-α are plan. The rest is plan: module
 interfaces step 5q; out-of-process providers are reserved and built later
 (§19.19).*
 
@@ -3819,6 +3922,14 @@ what is specific to this implementation and its roadmap. The root's
 **Message envelope** is [PROTOCOL.md](../protocol/PROTOCOL.md) §8.
 
 **The root object** is [PROTOCOL.md](../protocol/PROTOCOL.md) §10 and [API.md](../protocol/API.md) §3.
+
+**Object set.** This daemon mounts every core object when its service
+starts, before it loads the workspace (a call that needs the workspace loads it
+on demand). The object set is therefore fixed for the session, `welcome.objects` and
+`describe` list it whole, and the root's `objects_changed` is never sent
+*(until step 5q, which mounts and unmounts `/modules/<id>` as modules load,
+and sends it then)*. A client still subscribes to an interface that appears
+later on `objects_changed` (§19.16 "Interface client").
 
 **Errors and domain results** are [PROTOCOL.md](../protocol/PROTOCOL.md) §11 and [API.md](../protocol/API.md) §4.1.
 
@@ -3858,12 +3969,12 @@ roadmap.
 | `/` | `loomworks.Root/1` (frozen) | describe, schema, subscribe, unsubscribe (objects_changed, retiring) |
 | — | `loomworks.Common/1` | shared types only: reference, id, outcome, environment, launch spec, debug spec, task meta |
 | `/workspace` | `loomworks.Workspace/1` | header, publish, publish_one, revert_to_baseline, revert_one, set_intent, set_description, trust_accept, delete_user_prefs (changed, header_changed); create deferred |
-| `/profiles` | `loomworks.Profiles/1` | list, set_active, create, tool_choices, add_tool, remove_tool, set_device, clear_device, query, compiler_cache |
+| `/profiles` | `loomworks.Profiles/1` | list, set_active, create, tool_choices, add_tool, remove_tool, set_device, clear_device, set_default_target *(6b-α)*, query, compiler_cache |
 | `/projects` | `loomworks.Projects/1` | candidates, add, declaration, configuration_save, configuration_remove, options_save, launch_save, launch_remove, deploy_save, variable_save, variable_remove, type_config_set, expand_preview, unit_options |
 | `/projects` | `loomworks.ConfigSets/1` | candidates, add, update, remove, generate_defaults |
 | `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
 | `/tests` | `loomworks.Tests/1` | discover T, run T, run_cases T, prepare_debug T, collect, result (results) |
-| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T *(5t, with part B)*, device_log T (log) |
+| `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, build T *(5t, with part B)*, device_log T (log), targets *(6b-α)* |
 | `/debug` | `loomworks.DebugConfig/1` | adapters, set_adapter, known_languages |
 | `/lsp` | `loomworks.LspConfig/1` | get, set_option (changed) |
 | `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended, step; task frames; `TaskInfo.steps`) |
@@ -3888,7 +3999,7 @@ workspace's debug-adapter mapping, on `/debug`, specified in [API.md](../protoco
 under the model lock, with a `model_change` (§19.12), and stores the adapter
 name as given, as in-process.
 
-**`LspConfig/1`.** *(Step 5l, plan: part B.)* What the workspace's language
+**`LspConfig/1`.** *(Step 5l part B, done.)* What the workspace's language
 servers are configured with (the editor's use: §19.16 "LSP configuration"),
 on `/lsp`, specified in [API.md](../protocol/API.md) §13. Project ids in `get` come only from the
 daemon, as in the views (§19.13). `set_option` writes as the in-process
@@ -3897,7 +4008,7 @@ daemon, as in the views (§19.13). `set_option` writes as the in-process
 the calls `set_option` answers with `invalid_args` the same way, writing
 nothing.
 
-**`Tests/1`.** *(Step 5m, plan: B1 `discover`, B2 the rest; the shared
+**`Tests/1`.** *(Step 5m, done: B1 `discover`, B2 the rest; the shared
 types `TestNodeRef`, `TestCaseResult` and `TestStatus` in
 `loomworks.Common/1`, the view `loomworks.view.Tests/1`, specified in part
 0.)* The editor's test discovery, runs and debug preparations, on `/tests`
@@ -3906,7 +4017,8 @@ version), are specified in [API.md](../protocol/API.md) §10; the daemon side is
 editor's use §19.16 "Tests".
 
 A per-file compile-command query (§8.4 `compile_command_for`) is not part of
-`LspConfig/1` (BACKLOG "Per-file compile command over the daemon").
+`LspConfig/1` (BACKLOG "Per-file compile command over the daemon"); in
+`daemon` mode the editor refuses it (§19.16 "Public API").
 
 **Module interfaces.** A module's interfaces — its namespace, the mount rule
 and rejection per interface version — are [API.md](../protocol/API.md) §17. A Lua module declares its

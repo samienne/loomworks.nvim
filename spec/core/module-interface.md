@@ -1280,7 +1280,7 @@ reads the tree and results from `view.Tests/1`. The editor's own ConfigUnits
 discover, build and run no tests then; the paths below that the editor drives
 (the loomtest adapter's `ensure_built` and RunSpecs, the neotest adapter,
 the debug listener's XML parsing) are the `in-process` mode's, until step
-6b.
+6b-β.
 
 #### 8.9.1 Architecture
 
@@ -1345,7 +1345,7 @@ Construct the command to run a specific test. Returns
 given, is where the run writes its results file; the daemon passes a per-run
 path (`<root>/.nvim/tmp/lw-test-<hex>.xml`, §16.40) so concurrent runs never
 share one. Without it a TestUnit uses its own location (the `in-process`
-editor's path, unchanged until step 6b).
+editor's path, unchanged until step 6b-β).
 
 **`test_command_all(opts?) → RunSpec|nil`**
 
