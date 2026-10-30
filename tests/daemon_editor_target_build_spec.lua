@@ -12,15 +12,14 @@
 
 local observer = require("loomworks.daemon.observer")
 local editor_ops = require("loomworks.daemon.editor_ops")
+local views = require("loomworks.views")
 local H = require("tests.daemon_helpers")
 
--- TODO(A1b): the daemon-mode cases below drive the routing from model
--- objects (Profile, ConfigUnit, LaunchTarget), which the `daemon`-mode editor
--- no longer holds (step 6b-alpha A1a: it loads no workspace). They are
--- pending until the facade acts by calls and view-row ids (A1b), which
--- restores them on that path.
+-- In `daemon` mode the editor holds no model (step 6b-alpha): a launch
+-- target is a LaunchRef (a `Launch/1.targets` record of a profile row of
+-- `view.Workspace/1`), built through editor_ops.build_target by ids.
 describe("a launch target's build through the daemon (§19.16, step 5t C)", function()
-    local root, core, ws, profile
+    local root, core, ws, profile, prow
     local obs, sent, created, notes, selects, events
     local saved = {}
 
@@ -41,11 +40,35 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
         }, observer.Observer)
         require("loomworks.daemon.observer")._current = o
         observer._current = o
+        -- The daemon's view of the workspace: the active profile's row.
+        prow = { id = "p:1", key = profile.key, active = true, units = {} }
+        views.set(o, "workspace", { profiles = { prow },
+            projects = { { id = "pr:app", key = "app", type = "shell" } } })
         return o
     end
 
     local function lt(name)
         return require("loomworks.launch_target").new(ws, profile, { project = "app", launch = name })
+    end
+
+    --- A launch target as the daemon-mode editor knows it (LaunchRef).
+    local function rt(name, kind)
+        return require("loomworks.daemon.launch_ref").new(prow,
+            { kind = kind or "launch", project = { id = "pr:app", key = "app" }, name = name, label = name },
+            { id = "pr:app", key = "app", type = "shell" })
+    end
+
+    --- Build `ref` (default the `run` launch) through the daemon; the
+    --- outcome lands in the returned table (`ok` / `err`), `handle` its
+    --- cancel handle.
+    local function build(ref)
+        local st = {}
+        local _, h = editor_ops.build_target(ref or rt("run"), {
+            resolve = function() st.ok = true end,
+            reject = function(e) st.err = e end,
+        })
+        st.handle = h
+        return st
     end
 
     local function stub(mod, key, fn)
@@ -124,6 +147,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             s[1][s[2]] = s[3]
         end
         if obs then
+            views.clear(obs)
             observer._current = nil
             require("loomworks.daemon.observer")._selection = nil
         end
@@ -131,106 +155,94 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
         pcall(function() core:shutdown() end)
     end)
 
-    pending("a non-device target's build is one Launch/1.build the editor owns; nothing runs here", function()
+    it("a non-device target's build is one Launch/1.build the editor owns; nothing runs here", function()
         obs = fake_observer()
-        local t = lt("run")
-        local deployed = 0
-        t._deploy_phase = function()
-            deployed = deployed + 1
-            return require("loomworks.future").resolved(true)
-        end
-        local ok
-        t:build():next(function() ok = true end):catch(function(e) ok = e end)
+        local st = build()
         assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
         local c = sent[1]
         assert.same({ "/launch", "loomworks.Launch", 1, "build" }, { c.object, c.iface, c.v, c.method })
-        assert.same({ interactive = false, profile = { key = profile.key }, project = { key = "app" },
+        assert.same({ interactive = false, profile = { id = "p:1" }, project = { id = "pr:app" },
             target = "run", kind = "launch" }, c.args)
         assert.same({ PATH = "x" }, c.env)
         accept(1, "b1")
         start_frame("b1", vim.deepcopy(STEPS))
         assert.is_true(obs._tasks["b1"].owned)
         done_frame("b1", 0)
-        assert.is_true(vim.wait(2000, function() return ok ~= nil end, 10))
-        assert.is_true(ok)
+        assert.is_true(vim.wait(2000, function() return st.ok ~= nil end, 10))
+        assert.is_true(st.ok)
         -- No dependency build, deploy or Build/1 call in the editor.
         assert.equals(1, #sent)
-        assert.equals(0, deployed)
+        assert.equals(0, #created)
     end)
 
-    pending("a failed build rejects with the task's failure line", function()
+    it("a failed build rejects with the task's failure line", function()
         obs = fake_observer()
-        local err
-        lt("run"):build():catch(function(e) err = e end)
+        local st = build()
         assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
         accept(1, "b2")
         start_frame("b2", vim.deepcopy(STEPS))
         done_frame("b2", 1, "deploy failed: no such file")
-        assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
-        assert.equals("deploy failed: no such file", err)
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.equals("deploy failed: no such file", st.err)
     end)
 
-    pending("refused by the daemon (no steps): its message once, rejected", function()
+    it("refused by the daemon (no steps): its message once, rejected", function()
         obs = fake_observer()
-        local err
-        lt("run"):build():catch(function(e) err = e end)
+        local st = build()
         assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
         sent[1].cb({ outcome = "refused", message = "workspace not trusted" }, nil)
-        assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
         assert.is_true(noted("workspace not trusted"))
     end)
 
-    pending("a daemon without Launch/1.build: refused with the method's note, nothing in the editor", function()
+    it("a daemon without Launch/1.build: refused with the method's note, nothing in the editor", function()
         obs = fake_observer()
-        local err
-        lt("run"):build():catch(function(e) err = e end)
+        local st = build()
         assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
         sent[1].cb(nil, { code = "unknown_method", message = "no method build" })
-        assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
         assert.is_false(obs:can_call("launch_build"))
         assert.is_true(noted("Launch/1.build"))
         -- Still refused, never sent again nor run in the editor.
-        local err2
-        lt("run"):build():catch(function(e) err2 = e end)
-        assert.is_true(vim.wait(2000, function() return err2 ~= nil end, 10))
+        local st2 = build()
+        assert.is_true(vim.wait(2000, function() return st2.err ~= nil end, 10))
         assert.equals(1, #sent)
         assert.equals(0, #created)
     end)
 
-    pending("no Launch/1 offered: refused, nothing built", function()
+    it("no Launch/1 offered: refused, nothing built", function()
         obs = fake_observer({ operations = "available", tasks = "subscribed" })
-        local err
-        lt("run"):build():catch(function(e) err = e end)
-        assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
-        assert.matches("^build: ", err)
+        local st = build()
+        assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+        assert.matches("^build: ", st.err)
         assert.same({}, sent)
         assert.equals(0, #created)
     end)
 
-    pending("a device target's build is one Launch/1.build too, addressed by its profile alone", function()
+    it("a device target's build is one Launch/1.build too, addressed by its profile alone", function()
         obs = fake_observer()
-        local t = require("loomworks.launch_target").new(ws, profile, { project = "app", device_target = "app" })
-        t:build()
+        build(rt("app", "device"))
         assert.is_true(vim.wait(2000, function() return #sent >= 1 end, 10))
         assert.equals(1, #sent)
         assert.same({ "/launch", "build" }, { sent[1].object, sent[1].method })
         assert.is_nil(sent[1].args.target)
-        assert.same({ key = profile.key }, sent[1].args.profile)
+        assert.is_nil(sent[1].args.project)
+        assert.same({ id = "p:1" }, sent[1].args.profile)
         assert.equals(0, #created)
     end)
 
     describe("the artifact-conflict question", function()
         local block = { profile = "other", path = "/w/out/app" }
-        before_each(function()
-            stub(ws, "artifact_conflict_block", function(_, unit, force)
-                if force then return nil end
-                return unit and block or nil
-            end)
-        end)
+        --- A target of the profile row whose `app` unit row carries the
+        --- artifact block (the daemon's, step 5o C2d; never the editor's model).
+        local function blocked(name)
+            prow.units = { { project = "app", unit_id = "u:1", artifact_block = block } }
+            return rt(name)
+        end
 
-        pending("is asked before the build's call; Yes sends force = true", function()
+        it("is asked before the build's call; Yes sends force = true", function()
             obs = fake_observer()
-            lt("run"):build()
+            build(blocked("run"))
             assert.is_true(vim.wait(2000, function() return #selects == 1 end, 10))
             assert.same({}, sent)
             assert.matches("owned by built profile 'other'", selects[1].prompt)
@@ -240,20 +252,19 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.is_true(sent[1].args.force)
         end)
 
-        pending("No: nothing is sent, the build is cancelled", function()
+        it("No: nothing is sent, the build is cancelled", function()
             obs = fake_observer()
-            local err
-            lt("run"):build():catch(function(e) err = e end)
+            local st = build(blocked("run"))
             assert.is_true(vim.wait(2000, function() return #selects == 1 end, 10))
             selects[1].cb("No")
-            assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
-            assert.matches("would overwrite profile 'other'", err)
+            assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+            assert.matches("would overwrite profile 'other'", st.err)
             assert.same({}, sent)
         end)
 
-        pending("is asked before a launch's preparation; Yes sends force = true on prepare_run", function()
+        it("is asked before a launch's preparation; Yes sends force = true on prepare_run", function()
             obs = fake_observer()
-            require("loomworks.session_tracker").start(lt("run"), "launch")
+            require("loomworks.session_tracker").start(blocked("run"), "launch")
             assert.is_true(vim.wait(2000, function() return #selects == 1 end, 10))
             assert.same({}, sent)
             selects[1].cb("Yes")
@@ -263,9 +274,9 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.equals("target", sent[1].args.build_scope)
         end)
 
-        pending("No before a preparation: nothing is sent, no program", function()
+        it("No before a preparation: nothing is sent, no program", function()
             obs = fake_observer()
-            require("loomworks.session_tracker").start(lt("run"), "launch")
+            require("loomworks.session_tracker").start(blocked("run"), "launch")
             assert.is_true(vim.wait(2000, function() return #selects == 1 end, 10))
             selects[1].cb("No")
             vim.wait(100)
@@ -275,10 +286,10 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
     end)
 
     describe("steps", function()
-        pending("the task follows its current step: progress entry, status row, task-runner row", function()
+        it("the task follows its current step: progress entry, status row, task-runner row", function()
             obs = fake_observer()
             obs._tasks_seq = 0
-            lt("run"):build()
+            build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "b3")
             start_frame("b3", vim.deepcopy(STEPS))
@@ -325,10 +336,10 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.equals(1, #sent)
         end)
 
-        pending("a failed step carries its failure line; the later step skipped", function()
+        it("a failed step carries its failure line; the later step skipped", function()
             obs = fake_observer()
             obs._tasks_seq = 0
-            lt("run"):build()
+            build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "b4")
             start_frame("b4", vim.deepcopy(STEPS))
@@ -340,10 +351,10 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.is_nil(task:step_text())
         end)
 
-        pending("a seq gap re-reads Tasks/1.list and adopts its step states", function()
+        it("a seq gap re-reads Tasks/1.list and adopts its step states", function()
             obs = fake_observer()
             obs._tasks_seq = 0
-            lt("run"):build()
+            build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "b5")
             start_frame("b5", vim.deepcopy(STEPS))
@@ -359,10 +370,10 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.equals("deploy (pre_build) (2/3)", task:step_text())
         end)
 
-        pending("started / ended signals count toward the seq (no gap, no re-read)", function()
+        it("started / ended signals count toward the seq (no gap, no re-read)", function()
             obs = fake_observer()
             obs._tasks_seq = 0
-            lt("run"):build()
+            build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "b6")
             start_frame("b6", vim.deepcopy(STEPS))
@@ -373,10 +384,10 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.equals(1, #sent)
         end)
 
-        pending("an unknown step state shows neutrally (no current step)", function()
+        it("an unknown step state shows neutrally (no current step)", function()
             obs = fake_observer()
             obs._tasks_seq = 0
-            lt("run"):build()
+            build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "b7")
             start_frame("b7", vim.deepcopy(STEPS))
@@ -413,11 +424,11 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.equals(1, #sent)
         end)
 
-        pending("signals before the /tasks subscribe reply are held: past the baseline applied, at or below ignored",
+        it("signals before the /tasks subscribe reply are held: past the baseline applied, at or below ignored",
             function()
             obs = fake_observer()
             obs._tasks_seq = 0
-            lt("run"):build()
+            build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "e1")
             start_frame("e1", vim.deepcopy(STEPS))
@@ -438,7 +449,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             assert.equals(1, #sent)
         end)
 
-        pending("the progress entry drops the step text once no step runs", function()
+        it("the progress entry drops the step text once no step runs", function()
             local creates, reports = {}, {}
             local saved_fp, saved_fid = package.loaded["fidget.progress"], package.loaded["loomworks.fidget"]
             package.loaded["fidget.progress"] = { handle = { create = function(o)
@@ -451,7 +462,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
             package.loaded["fidget.progress"], package.loaded["loomworks.fidget"] = saved_fp, saved_fid
             obs = fake_observer()
             obs._tasks_seq = 0
-            lt("run"):build()
+            build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "f1")
             start_frame("f1", vim.deepcopy(STEPS))
@@ -464,23 +475,23 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
     end)
 
     describe("cancel", function()
-        pending("cancelling the build's Future cancels the daemon task (Tasks/1.cancel)", function()
+        it("cancelling the build's Future cancels the daemon task (Tasks/1.cancel)", function()
             obs = fake_observer()
-            local f = lt("run"):build()
+            local st = build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             accept(1, "c1")
-            f:cancel()
+            st.handle:cancel()
             assert.is_true(vim.wait(2000, function() return #sent == 2 end, 10))
             assert.same({ "/tasks", "loomworks.Tasks", "cancel" }, { sent[2].object, sent[2].iface, sent[2].method })
             assert.same({ task_id = "c1" }, sent[2].args)
             assert.is_true(obs._owned["c1"].cancelling)
         end)
 
-        pending("a build cancelled before its reply is cancelled once accepted", function()
+        it("a build cancelled before its reply is cancelled once accepted", function()
             obs = fake_observer()
-            local f = lt("run"):build()
+            local st = build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
-            f:cancel()
+            st.handle:cancel()
             vim.wait(50)
             assert.equals(1, #sent)
             sent[1].cb({ outcome = "accepted", task_id = "c2" }, nil)
@@ -491,19 +502,15 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
     end)
 
     describe("the daemon is the single authority (thin shim)", function()
-        pending("an invalid target is not pre-checked in the editor: one Launch/1.build, the daemon's failure", function()
+        it("an invalid target is not pre-checked in the editor: one Launch/1.build, the daemon's failure", function()
             obs = fake_observer()
-            local t = lt("run")
-            t.is_valid = function() return false, { "stale mapping" } end
-            t.abstract_error = function() return "abstract" end
-            local err
-            t:build():catch(function(e) err = e end)
+            local st = build()
             assert.is_true(vim.wait(2000, function() return #sent == 1 end, 10))
             assert.equals("build", sent[1].method)
             accept(1, "v1")
             done_frame("v1", 1, "target 'app:run' is not buildable: stale mapping")
-            assert.is_true(vim.wait(2000, function() return err ~= nil end, 10))
-            assert.equals("target 'app:run' is not buildable: stale mapping", err)
+            assert.is_true(vim.wait(2000, function() return st.err ~= nil end, 10))
+            assert.equals("target 'app:run' is not buildable: stale mapping", st.err)
         end)
 
         it("in-process: an invalid target is still refused before anything runs", function()

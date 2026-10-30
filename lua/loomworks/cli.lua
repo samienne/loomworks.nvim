@@ -9776,6 +9776,65 @@ function M.cmd_daemon(root, args)
   return require("loomworks.daemon.command").run(args[2], root, args, M._daemon_host())
 end
 
+--- Put the running state of the workspace daemon's tasks (its `status`
+--- reply's `tasks`, §19.6) on this process's profiles and units, as `lw
+--- status` shows them (§16.18): each entry adopted as a RemoteTask (display
+--- data), its `profile` and `units` keys resolved against this host's own
+--- model here, at the boundary — a task of a profile runs that profile and its
+--- named units; a task with no profile (`reset --all`, a `units` build) runs
+--- the named units of the workspace, and every profile with one of them.
+--- Display only, never persisted; a bad entry is skipped.
+--- @param ws loomworks.Workspace
+--- @param entries table[]
+--- @param clock number now, clock seconds
+function M.mark_daemon_tasks(ws, entries, clock)
+  local rt = require("loomworks.daemon.remote_task")
+  for _, entry in ipairs(entries) do
+    pcall(function()
+      local task = rt.adopt(entry, clock)
+      if not task then return end
+      local profile
+      if task.profile_name then
+        for _, p in ipairs(ws:get_profiles() or {}) do
+          if p.key == task.profile_name and not p._removed then profile = p; break end
+        end
+      end
+      local units = {}
+      for _, u in ipairs(task.units) do
+        if u.configuration ~= nil then
+          if profile then
+            for _, pp in ipairs(profile:projects()) do
+              if pp:project_key() == u.project and pp:config_key() == u.configuration then
+                units[#units + 1] = pp._config_unit
+                break
+              end
+            end
+          elseif not task.profile_name then
+            for _, cu in pairs(ws._config_units or {}) do
+              local pk = cu._project and cu._project.key or cu._init_project_key
+              if pk == u.project and cu:config_key() == u.configuration then units[#units + 1] = cu; break end
+            end
+          end
+        end
+      end
+      local profiles = { profile }
+      if not profile and not task.profile_name then
+        local mine = {}
+        for _, cu in ipairs(units) do mine[cu] = true end
+        for _, p in ipairs(ws:get_profiles() or {}) do
+          if not p._removed then
+            for _, pp in ipairs(p:projects()) do
+              if pp._config_unit and mine[pp._config_unit] then profiles[#profiles + 1] = p; break end
+            end
+          end
+        end
+      end
+      for _, p in ipairs(profiles) do p:add_remote_task(task) end
+      for _, cu in ipairs(units) do cu:begin_remote_task(task) end
+    end)
+  end
+end
+
 function M.cmd_status(root, opts)
   opts = opts or {}
   if not root then
@@ -9879,17 +9938,7 @@ function M.cmd_status(root, opts)
     -- (§19.16), so the Profiles rows' state shows them running (§16.18).
     -- Display only, never persisted; a bad entry is skipped.
     if ok and type(reply) == "table" and type(reply.tasks) == "table" then
-      local rt = require("loomworks.daemon.remote_task")
-      local clock = uv.hrtime() / 1e9
-      for _, entry in ipairs(reply.tasks) do
-        pcall(function()
-          local task = rt.adopt(entry, clock)
-          if task then
-            task:resolve(ws)
-            task:attach_units()
-          end
-        end)
-      end
+      M.mark_daemon_tasks(ws, reply.tasks, uv.hrtime() / 1e9)
     end
   end
 

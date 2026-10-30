@@ -199,7 +199,7 @@ end
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
 --- @field _last_operation loomworks.ProfileLastResult|nil the last finished operation's outcome
---- @field _remote_tasks loomworks.RemoteTask[]|nil tasks observed in the workspace daemon that run this profile (spec §19.16); runtime only
+--- @field _remote_tasks loomworks.RemoteTask[]|nil tasks running in the workspace daemon on this profile (`lw status`, spec §16.18); runtime only
 --- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
 local Profile = {}
 Profile.__index = Profile
@@ -1253,9 +1253,9 @@ function Profile:active_operations()
     return self._operations or {}
 end
 
---- Register a task observed in the workspace daemon that runs this profile
---- (spec §19.16): it counts as an active operation (spec/ui.md §1.5).
---- Runtime only; it never blocks an editor operation.
+--- Register a task running in the workspace daemon on this profile (`lw
+--- status`, spec §16.18: cli.mark_daemon_tasks): it counts as an active
+--- operation (spec/ui.md §1.5). Runtime only; it never blocks an operation.
 --- @param task loomworks.RemoteTask
 function Profile:add_remote_task(task)
     self._remote_tasks = self._remote_tasks or {}
@@ -1263,27 +1263,6 @@ function Profile:add_remote_task(task)
         if t == task then return end
     end
     self._remote_tasks[#self._remote_tasks + 1] = task
-end
-
---- Remove a remote task; once it ended, its end message becomes the
---- profile's last operation result, as a local operation's does. A task
---- cleared by workspace teardown (spec §19.16 Teardown) did not end: it
---- leaves the last result alone.
---- @param task loomworks.RemoteTask
-function Profile:remove_remote_task(task)
-    local list = self._remote_tasks
-    if not list then return end
-    for i, t in ipairs(list) do
-        if t == task then
-            table.remove(list, i)
-            if task.finished and not task.cleared then
-                self:set_last_result(task.exit_code == 0 and "ok" or (task.cancelling and "cancelled" or "failed"),
-                    task:outcome())
-            end
-            break
-        end
-    end
-    if #list == 0 then self._remote_tasks = nil end
 end
 
 --- The running tasks observed in the workspace daemon on this profile.

@@ -159,7 +159,7 @@ local function pick_device_action(ws, row)
             else
                 local profile = require("loomworks.status_source").object_of(row)
                 if not profile then return end
-                local serial = devices.chosen_in(ws, profile, list)
+                local serial = profile:device_serial()
                 chosen = serial ~= nil
                 is_current = function(d) return d.key == serial end
             end

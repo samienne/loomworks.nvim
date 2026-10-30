@@ -4,16 +4,16 @@
 ---
 --- In `daemon` runtime mode, while the observer (loomworks.daemon.observer)
 --- is connected to a compatible daemon that carries the method, a build, a
---- configure or a module clean — of a profile or of configuration units, a
---- module target's build included — is sent as a `loomworks.Build/1` call
---- whose task the editor owns. The entry points (overseer.run_profile_action,
---- run_configuration_action, launch_single_task; a module clean through
---- `overseer.route_clean`) ask `overseer.route` / `route_clean`, which wrap `M.run` / `M.clean` in a
---- Future: not routed — only in the deprecated `in-process` mode (no
---- observer) — they run in-process. In `daemon` mode an operation is never
---- run in-process (§19.16 "Availability", step 5s): one the daemon cannot
---- carry is refused. This module keeps no Future of its own: it ends an
---- operation through its continuation `k` ({ resolve, reject }).
+--- configure or a module clean — of a profile or of configuration units — is
+--- sent as a `loomworks.Build/1` call whose task the editor owns, naming its
+--- scope by the view rows' ids (M.run_ids). The editor holds no model in
+--- `daemon` mode (step 6b-α), so every entry point names ids: the status
+--- page (ui/model_calls), the facade (loomworks.daemon.facade) and the
+--- session tracker (launch targets as loomworks.daemon.LaunchRef). An
+--- operation is never run in-process (§19.16 "Availability", step 5s): one
+--- the daemon cannot carry is refused. This module keeps no Future of its
+--- own: it ends an operation through its continuation `k` ({ resolve,
+--- reject }).
 ---
 --- The availability rule (§19.16):
 ---   not carried now (no connection, a feature or method degraded)
@@ -52,7 +52,7 @@
 --- (M.device_step), a stop `Devices/1.stop { task }` (M.device_stop); a
 --- scan is a `Devices/1.scan` task (M.scan_devices), the list the
 --- observer's cache of `Devices/1.list` (M.devices), and a profile's device
---- `Profiles/1.set_device` / `clear_device` (M.set_device). All under the
+--- `Profiles/1.set_device` (ui/model_calls, by ids). All under the
 --- same availability rule: refused when not carried, never in-process.
 ---
 --- Step 5o C2d-1: the status page's Profiles section sends its builds,
@@ -142,69 +142,6 @@ function M.refuse(method, obs, k)
 end
 
 
---- A configuration unit as a `units` item (§19.15: by project key and
---- configuration-unit key).
---- @param unit loomworks.ConfigUnit
---- @return { project: string, configuration: string }
-function M.unit_ref(unit)
-    local p = unit._project
-    return { project = p and p.key or unit._init_project_key, configuration = unit:config_key() }
-end
-
---- The workspace a scope belongs to.
---- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
---- @return loomworks.Workspace|nil
-function M.scope_workspace(scope)
-    local owner = scope.profile or (scope.units and scope.units[1])
-    return owner and owner._workspace or nil
-end
-
---- The configuration units of a scope.
---- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
---- @return loomworks.ConfigUnit[]
-local function scope_units(scope)
-    if scope.units then return scope.units end
-    local out = {}
-    for _, pp in ipairs(scope.profile and scope.profile:projects() or {}) do
-        if pp._config_unit then out[#out + 1] = pp._config_unit end
-    end
-    return out
-end
-
---- The call's arguments.
---- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
---- @param opts table { jobs?, force?, targets? }
---- @return table
-function M.args(scope, opts)
-    local a = { interactive = false }
-    if scope.units then
-        a.units = {}
-        for i, u in ipairs(scope.units) do a.units[i] = M.unit_ref(u) end
-    else
-        a.profile = { key = scope.profile.key }
-    end
-    if opts.jobs then a.jobs = tonumber(opts.jobs) end
-    if opts.force then a.force = true end
-    if opts.targets and #opts.targets > 0 then a.targets = opts.targets end
-    return a
-end
-
---- The artifact-conflict question of a build (§5.9), asked before the call
---- for units whose artifacts are known (the in-process build asks it after
---- its configure; a routed build never prompts mid-task). `cb(force|nil,
---- err)`: `force` true after a Yes, false when nothing conflicts.
---- @param ws loomworks.Workspace
---- @param units loomworks.ConfigUnit[]
---- @param cb fun(force: boolean|nil, err: string|nil)
-local function ask_conflict(ws, units, cb)
-    local block
-    for _, unit in ipairs(units) do
-        block = ws and ws.artifact_conflict_block and ws:artifact_conflict_block(unit, false) or nil
-        if block then break end
-    end
-    M.ask_artifact_block(block, cb)
-end
-
 --- The artifact-conflict question (§5.9) of one block `{ profile, path? }`
 --- — a view unit row's `artifact_block` (step 5o C2d) or the editor's
 --- model's — as `cb(force|nil, err)`: no block answers `false` at once.
@@ -272,125 +209,40 @@ local function failure(verb, task, reason)
         or (verb .. " failed")
 end
 
---- Run an operation through the daemon (see the header). False only in
---- the `in-process` mode — the caller runs it in-process. Otherwise true,
---- and the operation ends through `k`: `k.resolve(true)` or
---- `k.reject(message, notified)` — refused at once when the daemon cannot
---- carry it now, never run in-process.
---- @param method "build"|"configure"|"clean"
---- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
---- @param opts? { jobs?: integer, force?: boolean, targets?: table[] }
---- @param k loomworks.daemon.OpContinuation
---- @return boolean routed
-function M.run(method, scope, opts, k)
-    local ws = M.scope_workspace(scope)
-    local daemon, mode_obs = M.daemon_of(ws)
-    if not daemon then return false end
-    local obs = M.carrier(method, ws)
-    if not obs then
-        M.refuse(method, mode_obs, k)
-        return true
-    end
-    opts = opts or {}
-    local verb = VERB[method] or method
-
-    local function send(force)
-        -- Still carried? (A deletion waited for, or a question asked, may
-        -- have outlived the connection: nothing ran yet — refused.)
-        if not obs:can_call(method) then return M.refuse(method, obs, k) end
-        local args = M.args(scope, { jobs = opts.jobs, force = opts.force or force, targets = opts.targets })
-        obs:start_owned(method, args, {
-            units = scope_units(scope),
-            on_reply = on_reply(method, obs, k),
-            on_done = function(task, reason)
-                local err = failure(verb, task, reason)
-                if err then return k.reject(err) end
-                k.resolve(true)
-            end,
-        })
-    end
-
-    local function go()
-        if method ~= "build" or opts.force then return send(false) end
-        ask_conflict(obs.ws, scope_units(scope), function(force, err)
-            if err then
-                vim.notify("loomworks: " .. err, vim.log.levels.WARN)
-                return k.reject(err)
-            end
-            send(force)
-        end)
-    end
-
-    local lw = require("loomworks")
-    if lw.has_pending_deletions() then
-        vim.notify("loomworks: waiting for pending deletion to finish...", vim.log.levels.INFO)
-        lw.after_deletions(go)
-    else
-        go()
-    end
-    return true
-end
-
 --- The arguments of a launch's preparation (§19.15 "Run", "Debug", "Build
---- scope of a launch"): the launch target by its profile, project, name and
---- kind (`target` for a module target, `launch` for a launch
---- configuration), built as the editor's in-process launch builds it
---- (`build_scope = "target"`), and a module target's descriptor
---- `working_dir` as the `cwd` override (expanded by the daemon in the same
---- launch context, LaunchTarget:_effective_cwd).
---- @param target loomworks.LaunchTarget
+--- scope of a launch"): the launch target as its `Launch/1.targets` record
+--- addresses it (LaunchRef:args — by the profile's, the project's ids), built
+--- as the editor's in-process launch builds it (`build_scope = "target"`).
+--- @param ref loomworks.daemon.LaunchRef
 --- @return table
-function M.launch_args(target)
-    local a = { interactive = false, build_scope = "target" }
-    if target._profile then a.profile = { key = target._profile.key } end
-    if target._project then a.project = { key = target._project.key } end
-    if target._launch_name then
-        a.target, a.kind = target._launch_name, "launch"
-    elseif target._target_id then
-        a.target, a.kind = target._target_id, "target"
-        if target._working_dir and target._working_dir ~= "" then a.cwd = target._working_dir end
-    end
+function M.launch_args(ref)
+    local a = ref:args()
+    a.build_scope = "target"
     return a
 end
 
---- Is a launch's preparation the daemon's — `daemon` mode, carried or
---- refused (M.prepare) — rather than the in-process chain's (the
---- `in-process` mode)? (The editor checks the debug adapter before the
---- call, §8.9.6.)
---- @param target loomworks.LaunchTarget
---- @return boolean
-function M.prepares(target)
-    return (M.daemon_of(M.scope_workspace({ profile = target._profile })))
-end
-
 --- The calls of a device target's launch (§19.16 "Devices"), in order: its
---- build, the read of the profile's device, its install and launch.
-local DEVICE_RUN = { "launch_build", "device_list", "device_install", "device_launch" }
+--- build, its install and launch.
+local DEVICE_RUN = { "launch_build", "device_install", "device_launch" }
 --- The calls it adds when the profile has no device: a scan, then the choice.
 local DEVICE_CHOICE = { "device_scan", "Profiles/1.set_device" }
 
---- In `daemon` mode, refuse a device target's launch at once when the daemon
---- cannot carry one of its calls now (§19.16 "Availability": refused like
---- any operation, nothing of it run — a chain that cannot finish is refused
---- before its build): the refusal notified as `launch: <the first missing
---- call's note>`, then true. A profile without a device — as the observer's
---- cached `Devices/1.list` knows it; not read yet, or a failed read, counts
---- as none — also needs the scan and the choice. False when carried, and
---- always in the `in-process` mode (the caller then runs the in-process
---- chain).
---- @param target loomworks.LaunchTarget
+--- Refuse a device target's launch at once when the daemon cannot carry one
+--- of its calls now (§19.16 "Availability": refused like any operation,
+--- nothing of it run — a chain that cannot finish is refused before its
+--- build): the refusal notified as `launch: <the first missing call's
+--- note>`, then true. A profile without a device (its view row's `device`)
+--- also needs the scan and the choice. False when carried.
+--- @param has_device boolean the profile's view row names a device
 --- @return boolean refused
-function M.device_run_refused(target)
-    local ws = M.scope_workspace({ profile = target._profile })
-    local daemon, obs = M.daemon_of(ws)
-    if not daemon then return false end
+function M.device_run_refused(has_device)
+    local _, obs = M.daemon_of(nil)
     local calls = DEVICE_RUN
-    local cached = obs and obs.state ~= "stopped" and obs:can_call("device_list") and obs:devices(true) or nil
-    if not require("loomworks.device_source").chosen_in(ws, target._profile, cached) then
+    if not has_device then
         calls = vim.list_extend(vim.list_extend({}, DEVICE_RUN), DEVICE_CHOICE)
     end
     for _, method in ipairs(calls) do
-        if not M.carrier(method, ws) then
+        if not M.carrier(method, nil) then
             local why = obs and obs.state ~= "stopped" and obs:refusal(method) or "the workspace is no longer loaded"
             vim.notify("loomworks: launch: " .. why, vim.log.levels.WARN)
             return true
@@ -403,11 +255,14 @@ end
 --- "Editor operations"): the preparation of a run or debug launch
 --- (`prepare_run` / `prepare_debug`) or, step 5t, the target's build
 --- (`launch_build`, sent as `build`), under the availability rule of the
---- header; the artifact-conflict question asked first, its Yes sent as
---- `force` (step 5t). False only in the `in-process` mode — the caller runs the in-process
---- chain. Otherwise true, and it ends through `k`: `k.resolve(done)` with
---- the task result (`launch`, or `device = true` for a foreign artifact;
---- `debug`) once the preparation ended with exit 0 — the caller then starts
+--- header; the artifact-conflict question asked first (over the target's
+--- `artifact_block`, LaunchRef), its Yes sent as `force` (step 5t). The
+--- owned call records the profile's id (and its unit's), so a clean of the
+--- profile row pre-empts it (editor_ops.call_names_ids). Always routed
+--- (the `daemon`-mode editor's only; its targets are LaunchRefs), and it
+--- ends through `k`: `k.resolve(done)` with
+--- the task result (`launch`, or `device = true` for a foreign artifact —
+--- refused by the session tracker, spec §18.11; `debug`) once the preparation ended with exit 0 — the caller then starts
 --- the program — or `k.reject(message, notified)` (refused when the daemon
 --- cannot carry it now; no program is started).
 --- The second return value cancels the preparation (a stop, or a second
@@ -420,15 +275,13 @@ end
 --- device target is its default target, API.md §15), without the question
 --- (they build nothing).
 --- @param method "prepare_run"|"prepare_debug"|"launch_build"|"device_install"|"device_launch"
---- @param target loomworks.LaunchTarget
+--- @param target loomworks.daemon.LaunchRef
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
 --- @return loomworks.daemon.Preparation|nil preparation (routed, not refused at once)
 local function launch_call(method, target, k)
-    local ws = M.scope_workspace({ profile = target._profile })
-    local daemon, mode_obs = M.daemon_of(ws)
-    if not daemon then return false end
-    local obs = M.carrier(method, ws)
+    local _, mode_obs = M.daemon_of(nil)
+    local obs = M.carrier(method, nil)
     if not obs then
         M.refuse(method, mode_obs, k)
         return true
@@ -464,6 +317,7 @@ local function launch_call(method, target, k)
         if force then args.force = true end
         p.conn = obs.conn
         obs:start_owned(method, args, {
+            profile_id = target.profile_id, unit_ids = target.unit_id and { target.unit_id } or nil,
             on_reply = function(r)
                 if r.outcome == "accepted" then
                     p.task_id = r.task_id
@@ -487,7 +341,7 @@ local function launch_call(method, target, k)
     local function go()
         if p.cancelled then return end
         if method == "device_install" or method == "device_launch" then return send(false) end
-        ask_conflict(obs.ws, target:existing_build_units(), function(force, err)
+        M.ask_artifact_block(target.artifact_block, function(force, err)
             if err then
                 if p.cancelled then return end
                 vim.notify("loomworks: " .. err, vim.log.levels.WARN)
@@ -509,7 +363,7 @@ end
 --- Prepare a run (`mode` "launch") or debug launch of a non-device launch
 --- target through the daemon (see launch_call).
 --- @param mode "launch"|"debug"
---- @param target loomworks.LaunchTarget
+--- @param target loomworks.daemon.LaunchRef
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
 --- @return loomworks.daemon.Preparation|nil preparation (routed, not refused at once)
@@ -519,14 +373,12 @@ end
 
 --- The arguments of a launch target's build (`Launch/1.build`, §19.15
 --- "Build of a launch target"): the launch target addressed as a
---- preparation addresses it (M.launch_args) — no `build_scope`, `cwd`,
---- `extra` or `no_build`, which the build does not take.
---- @param target loomworks.LaunchTarget
+--- preparation addresses it — no `build_scope`, `cwd`, `extra` or
+--- `no_build`, which the build does not take.
+--- @param target loomworks.daemon.LaunchRef
 --- @return table
 function M.target_build_args(target)
-    local a = M.launch_args(target)
-    a.build_scope, a.cwd = nil, nil
-    return a
+    return target:args()
 end
 
 --- Build a non-device launch target through the daemon (step 5t, §19.16
@@ -534,12 +386,11 @@ end
 --- daemon builds its dependencies, runs its pre-build deploy and builds its
 --- own unit, reporting each as a step; nothing of it runs in the editor.
 --- The artifact-conflict question is asked before the call, its Yes sent as
---- `force`. False only in the `in-process` mode — the caller builds
---- in-process. Otherwise true, and it ends through `k` as M.prepare does:
+--- `force`. It ends through `k` as M.prepare does:
 --- `k.resolve(done)` once the task ended with exit 0, else
 --- `k.reject(message, notified)` (refused when the daemon cannot carry it
 --- now — never built in the editor).
---- @param target loomworks.LaunchTarget
+--- @param target loomworks.daemon.LaunchRef
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
 --- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
@@ -551,10 +402,10 @@ end
 --- `TargetParams`): its profile only — a device target is reached only as
 --- its profile's default target, so `target` (and `project`, which only
 --- scopes a name) is omitted.
---- @param target loomworks.LaunchTarget
+--- @param target loomworks.daemon.LaunchRef
 --- @return table
 function M.device_args(target)
-    return { profile = { key = target._profile.key } }
+    return { profile = { id = target.profile_id } }
 end
 
 --- Install (`"install"`) or launch (`"launch"`) a built device target on
@@ -564,9 +415,9 @@ end
 --- `k.resolve(done)` (a launch's `{ pid?, bundle? }`, `task_id`, the id a
 --- stop names, and `connection`, the one it was sent on: the daemon forgets
 --- the launch with it, M.launch_forgotten) once the task ended with exit 0,
---- else `k.reject(message, notified)`. False only in the `in-process` mode.
+--- else `k.reject(message, notified)`.
 --- @param step "install"|"launch"
---- @param target loomworks.LaunchTarget
+--- @param target loomworks.daemon.LaunchRef
 --- @param k { resolve: fun(done: table), reject: fun(err: any, notified: boolean|nil) }
 --- @return boolean routed
 --- @return loomworks.daemon.Preparation|nil handle (routed, not refused at once)
@@ -816,21 +667,6 @@ function M.scan_devices(ws, k)
     return true, p
 end
 
---- Choose `device` (a record of the registry, by its id) as the profile's
---- device (`Profiles/1.set_device`), or clear the choice (`device` nil:
---- `clear_device`). `cb(ok, err)` once; `err` was notified.
---- @param ws loomworks.Workspace|nil
---- @param profile loomworks.Profile
---- @param device loomworks.DeviceRecord|nil
---- @param cb fun(ok: boolean, err: string|nil)
-function M.set_device(ws, profile, device, cb)
-    if device then
-        return M.plain("Profiles/1.set_device", ws,
-            { profile = { key = profile.key }, device = { id = device.id } }, cb)
-    end
-    M.plain("Profiles/1.clear_device", ws, { profile = { key = profile.key } }, cb)
-end
-
 --- The discovery of the active profile's tests through the daemon (step 5m
 --- C1, §19.16 "Tests" Discovery): one `Tests/1.discover` the editor owns
 --- (one overseer row, cancellable), carrying its environment. False when it
@@ -1011,71 +847,6 @@ end
 --- @return boolean sent
 function M.test_result(ws, id, cb)
     return test_request("result", ws, { id = id }, cb)
-end
-
---- A module clean through the daemon (overseer.route_clean; TODO(A1b): the
---- facade's clean by ids — a `daemon`-mode editor has no Profile /
---- ConfigUnit to clean, step 6b-α). False only
---- in the `in-process` mode; otherwise it ends through `k` as `M.run` —
---- refused at once when the daemon cannot carry it now. Before the call, the
---- editor's own tasks on the same units are cancelled (`Tasks/1.cancel`,
---- waiting for their end, §19.15 "The editor as owner") — accepted ones whose
---- task has not started yet included — and, as the in-process clean
---- pre-empts them, its in-process operations on them cancelled
---- (`cancel_conflicting_operations`) and its local tasks on them stopped; another
---- client's task is never cancelled — the clean meets its build-directory
---- locks. Whether there is anything to clean is the daemon's answer (step 5o
---- C2d-2), never decided here: its refusal on stdout resolves (on_reply).
---- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
---- @param k loomworks.daemon.OpContinuation
---- @return boolean routed
-function M.clean(scope, k)
-    local scope_ws = M.scope_workspace(scope)
-    local daemon, mode_obs = M.daemon_of(scope_ws)
-    if not daemon then return false end
-    local obs = M.carrier("clean", scope_ws)
-    if not obs then
-        M.refuse("clean", mode_obs, k)
-        return true
-    end
-    local units = scope_units(scope)
-
-    local ws = obs.ws
-    local mine = {}
-    for _, u in ipairs(units) do mine[u] = true end
-    local pending = {}
-    for _, call in ipairs(obs:owned_calls()) do
-        for _, u in ipairs(call.task and call.task:config_units() or call.units or {}) do
-            if mine[u] then pending[#pending + 1] = call.id; break end
-        end
-    end
-    -- An in-process operation chain on these units (a device launch's, the
-    -- one operation the editor still runs itself) stops here, not after the
-    -- clean (D5).
-    if ws and ws.cancel_conflicting_operations then ws:cancel_conflicting_operations(units) end
-    local items = {}
-    for _, u in ipairs(units) do items[#items + 1] = { unit = u } end
-    local local_ids = {}
-    local running = ws and ws.find_running_tasks_for_items and ws:find_running_tasks_for_items(items) or {}
-    for task_id in pairs(running) do local_ids[#local_ids + 1] = task_id end
-
-    local function start()
-        local function send() M.run("clean", scope, {}, k) end
-        if #local_ids == 0 or not (ws and ws.stop_tasks_then) then return send() end
-        ws:stop_tasks_then(local_ids):next(send, function(e) k.reject(e) end)
-    end
-    local left = #pending
-    if left == 0 then
-        start()
-    else
-        for _, id in ipairs(pending) do
-            obs:cancel_owned_id(id, function()
-                left = left - 1
-                if left == 0 then start() end
-            end)
-        end
-    end
-    return true
 end
 
 --- Cancel the running calls the editor owns that `match` selects and call
@@ -1376,11 +1147,9 @@ end
 --- failed or was declined: no check before the call (debug.run checks the
 --- prepared adapter). Never the editor's in-process mapping — a language the
 --- daemon's records do not name resolves to nil, not named (unchecked too).
---- @param target loomworks.LaunchTarget the launch (its profile's workspace)
 --- @param cb fun(resolve: (fun(language: string): string|nil, boolean)|nil)
-function M.debug_adapter_resolver(target, cb)
-    local ws = M.scope_workspace({ profile = target._profile })
-    local obs = observer_of(ws)
+function M.debug_adapter_resolver(cb)
+    local obs = observer_of(nil)
     if not (obs and obs.state ~= "stopped" and obs:can_call("adapters")) then return cb(nil) end
     obs:with_debug_adapters(function(records)
         if not records then return cb(nil) end

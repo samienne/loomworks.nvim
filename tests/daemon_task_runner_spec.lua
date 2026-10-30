@@ -21,7 +21,7 @@ local H = require("tests.daemon_helpers")
 local fake_overseer = require("tests.fake_overseer")
 
 describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
-    local root, core, ws, profile, unit
+    local root, core, ws, profile
     local obs, sent, created, notes, saved, orig_notify
 
     local function fake_observer()
@@ -51,7 +51,8 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
 
     local function meta(origin)
         return { name = "build " .. profile.key, kind = "build", profile = profile.key,
-            units = { editor_ops.unit_ref(unit) }, origin = origin }
+            profile_id = "p:1", units = { { project = "app", configuration = "Debug", id = "u:1" } },
+            origin = origin }
     end
 
     --- Start the editor's own profile build and its task `id`.
@@ -86,7 +87,6 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
         ws = core:get_workspace()
         profile = ws:get_profiles()[1]
-        unit = profile:projects()[1]._config_unit
         sent, created, notes = {}, {}, {}
         saved = {
             ov = package.loaded["overseer"], strat = package.loaded["overseer.strategy"],

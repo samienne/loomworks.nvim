@@ -43,6 +43,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   configuration }` references (in the view also `missing`, which replaces the
   set's separate `missing` object) instead of a project key to configuration
   name object. (#345)
+- In the editor's default `daemon` mode `lw.build_profile()`,
+  `lw.build_target()`, `lw.launch_target()`, `lw.debug_target()`,
+  `lw.pick_target()`, `lw.pick_target_action()` and `lw.pick_profile()` act
+  through the workspace daemon on the active profile and the targets it lists,
+  and ignore a Profile argument. The profile picker has no "None" entry, a
+  target found to run on a device is refused ("run it with lw run"), and
+  `lw.create_workspace()` and the status page's `N` are refused in favour of
+  `lw init`. (#349)
 
 ### Upgrade notes
 - The editor now uses the workspace daemon by default: builds, configures,

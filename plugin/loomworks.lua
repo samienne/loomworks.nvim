@@ -197,7 +197,9 @@ vim.api.nvim_create_user_command("LoomworksCompileCommand", function(cmd)
   -- command. The four messages are distinct so the reason is unambiguous.
   if res.status ~= "ok" then
     local msg
-    if res.status == "no_profile" then
+    if res.status == "refused" then
+      msg = "loomworks: compile command: " .. tostring(res.message)
+    elseif res.status == "no_profile" then
       msg = "loomworks: no active profile — activate a profile to resolve compile commands"
     elseif res.status == "no_project" then
       msg = "loomworks: " .. file .. " is not under any project of the active profile"

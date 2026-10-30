@@ -278,14 +278,6 @@ re-render before the view's `update` keeps them."
   carry no project id to join by. Fix if unit rows gain one (view §14.4
   `profiles[].units[]`). The target picker joins by the project row's own
   `targets` since #344.
-- A clean by row ids (`editor_ops.run_ids` → `call_names_ids`) misses an
-  owned call by objects whose `start` has not arrived yet (a `:Loomworks`
-  build, a launch build): `editor_ops.run` records `units` but no
-  `unit_ids` / `profile_id`, and its objects carry no daemon row ids
-  (mapping them would be a key lookup). The clean then meets that build's
-  locks instead of cancelling it first. Fix when those entry points name
-  rows by id too (C1 / 6b; noted in PR #333 review, not part of C2d-2,
-  which covers the status page only).
 
 ## Lock record follow-ups (PR #180, atomic lock create/update)
 
@@ -312,6 +304,21 @@ re-render before the view's `update` keeps them."
 The editor's `C` action deletes the build directory and resets the unit to
 unconfigured (spec section 4.7), while `lw clean` runs the build system's own
 clean target. Decide whether to align the names or the behaviour.
+
+## Daemon: a call in another environment refuses its own ids (step 6b-alpha A1b)
+
+- A call whose environment differs (by `envscope.signature`) from the one the
+  daemon loaded the workspace in makes the daemon reload it (§19.15
+  "Environment"). The reload builds new objects, so the ids the call names
+  (`view.Workspace/1` rows, `Launch/1.targets` records) no longer resolve and
+  the call is refused as a stale reference. The view follows with new ids, so
+  the next call works. Since the `daemon`-mode editor names everything by id
+  (status page, facade, session tracker), its first build or launch after a
+  `:let $VAR = ...` fails once. Found by `daemon_editor_ops_e2e_spec` and
+  `daemon_devices_editor_e2e_spec`, which align the environment first. Fix
+  daemon-side: resolve a call's ids before the reload and carry the objects
+  across it by identity (as a refresh does), or keep ids stable across a
+  reload by semantic key.
 
 ## Daemon object identity: module objects (step 5q)
 
@@ -355,15 +362,6 @@ reintroduced within one load. Open question: should a user.json remerge
 count as a load? That needs spec wording first. Also (low): a failed reload
 ("config reload failed") keeps the old model but replaces its load notes with
 just the failure note.
-
-## Workspace view follow-ups (step 5n part B1, PR #285)
-
-- **Cancelled by another client shows "failed".** The in-process mirror's
-  `remove_remote_task` (`profile.lua`) records `cancelled` only when
-  `task.cancelling` is set, i.e. when this client asked for the cancel. A
-  daemon task cancelled by another client is recorded as `failed` while the
-  daemon's `last_result` says `cancelled`; take the outcome from the
-  daemon's task end instead.
 
 ## Device targets by name (step 5n part B2, PR #287)
 

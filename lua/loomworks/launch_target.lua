@@ -194,32 +194,6 @@ function LaunchTarget:build(on_complete)
     local future_mod = require("loomworks.future")
     local overseer = require("loomworks.overseer")
 
-    local editor_ops = require("loomworks.daemon.editor_ops")
-    -- `daemon` mode (step 5t, spec §19.16 "Editor operations"; a device
-    -- target from step 5n C2, "Devices"): ONE `Launch/1.build` the editor
-    -- owns — the daemon builds the dependencies, runs the pre-build deploy
-    -- and builds the target (a device target's post-build deploy too);
-    -- nothing of it runs here, and a build it cannot carry is refused. The
-    -- daemon is the single authority: its own buildability checks refuse
-    -- (the task ends nonzero with no steps); none are repeated here.
-    local routed
-    local routed_f = future_mod.create(function(resolve, reject, token)
-        local handle
-        routed, handle = editor_ops.build_target(self, {
-            resolve = function() resolve(true) end,
-            reject = function(err) reject(err) end,
-        })
-        -- Cancelling the Future cancels the daemon's task.
-        if handle then token:on_cancel(function() handle:cancel() end) end
-    end)
-    if routed then
-        if on_complete then
-            routed_f:next(function() on_complete(true) end)
-                    :catch(function() on_complete(false) end)
-        end
-        return routed_f
-    end
-
     -- In-process builds (the deprecated `in-process` mode): buildability
     -- gate via :is_valid().
     -- Covers profile incompleteness, invalid configurations (stubs, unresolved
@@ -848,7 +822,7 @@ end
 --- module's primary language). The editor checks it is installed before it
 --- asks the workspace daemon to prepare the debug launch (§19.16), with
 --- `resolve` the daemon's language → adapter mapping
---- (editor_ops.debug_adapter_resolver; default: the workspace's).
+--- (default: the workspace's).
 --- @param resolve? fun(language: string): string|nil
 --- @return string|nil adapter, string language
 function LaunchTarget:primary_debug_adapter(resolve)
@@ -1189,6 +1163,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Display
 -- ---------------------------------------------------------------------------
+
+--- The workspace this target belongs to (the in-process chain's device
+--- scan and choice).
+--- @return loomworks.Workspace
+function LaunchTarget:workspace()
+    return self._workspace
+end
 
 --- Get a display name for this target.
 --- @return string
