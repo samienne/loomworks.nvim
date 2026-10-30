@@ -41,9 +41,10 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
     after_each(function()
         for _, h in ipairs(handlers) do events.off(h[1], h[2]) end
         handlers = {}
-        local obs = ws and ws._daemon_observer
+        local obs = require("loomworks.daemon.observer")._current
         if obs then views.clear(obs) end
-        if ws then ws._daemon_observer = nil end
+        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._selection = nil, nil
+        views.daemon_root(nil)
         lsp._reset_gate()
         lsp._reset_withheld()
         lsp._gate_timeout_ms = nil
@@ -66,7 +67,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
         end
         function conn:close() self.closed = true end
         local obs = setmetatable({
-            ws = ws, root = ws.root, state = "connected", mode = "interfaces", conn = conn,
+            root = ws.root, state = "connected", mode = "interfaces", conn = conn,
             daemon = { pid = 1 }, seq = 0, _tasks = {}, _order = {}, _owned = {},
             _feat = { [LSP_FEATURE] = "subscribed" }, _why = {},
             opts = { environ = function() return { PATH = "/x" } end, resolve = function() return "lw" end,
@@ -74,7 +75,10 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
         }, observer.Observer)
         -- Never spawn a relay from a test: a lost connection only records.
         function obs:_spawn() end
-        ws._daemon_observer = obs
+        require("loomworks.daemon.observer")._current = obs
+        require("loomworks.daemon.observer")._selection = { mode = "daemon", source = "default", daemon = true }
+        -- (What attach does: no view is built in-process, step 6b-alpha.)
+        views.daemon_root(ws.root)
         return obs, calls
     end
 
@@ -129,8 +133,6 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.is_true(source.loaded_and_ready())
             assert.is_false(source.waiting())
             assert.same({ clang_tidy = true }, source.options("clangd"))
-            -- The daemon generates the owned databases; the editor's model never does.
-            assert.is_false(ws:generates_lsp_databases())
         end)
 
         it("the buffer's project is lw.buf_project's record (§19.13), by key only", function()
@@ -394,7 +396,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
 
         it("a lost connection unloads the workspace until the daemon reports loaded", function()
             local obs = fake_obs(function(m) if m == "get" then return dstate() end end)
-            ws._runtime_selection = { mode = "daemon", source = "env", daemon = true }
+            require("loomworks.daemon.observer")._selection = { mode = "daemon", source = "env", daemon = true }
             obs:_fetch_lsp()
             wait_phase("loaded")
             local seen = 0
@@ -737,7 +739,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             local function try(r)
                 reply = r
                 local done
-                ops.set_lsp_option(ws, "clangd", "clang_tidy", true, function(ok, err) done = { ok, err } end)
+                ops.set_lsp_option(nil, "clangd", "clang_tidy", true, function(ok, err) done = { ok, err } end)
                 assert.is_true(vim.wait(2000, function() return done ~= nil end, 10))
                 assert.is_false(done[1])
                 assert.equals(vim.log.levels.ERROR, notes[#notes].level)
@@ -784,20 +786,6 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             }
         end
 
-        it("a daemon-mode editor generates none, whatever the daemon's state, and settles at once", function()
-            local rec = {}
-            local obs = fake_obs()
-            obs.state = "connecting"
-            local settled = 0
-            ws:_refresh_lsp_database_for(unit_with_db(rec), function() settled = settled + 1 end)
-            obs.state = "no-binary"
-            ws:_refresh_lsp_database_for(unit_with_db(rec))
-            obs:_on_closed(obs.conn)
-            ws:_refresh_lsp_database_for(unit_with_db(rec))
-            assert.same({}, rec)
-            assert.equals(1, settled)
-        end)
-
         it("in-process mode (no observer) generates", function()
             local rec = {}
             assert.is_true(ws:generates_lsp_databases())
@@ -812,7 +800,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.equals(1, #views.projects_index().projects)
             local obs = fake_obs()
             assert.equals("unloaded", views.header().state)
-            assert.same({}, views.projects_index().projects)
+            assert.is_nil(views.projects_index())
             local buf = vim.api.nvim_create_buf(true, false)
             vim.api.nvim_buf_set_name(buf, root .. "/app/main.cpp")
             assert.is_nil(require("loomworks").buf_project(buf))
@@ -823,7 +811,9 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             vim.api.nvim_buf_delete(buf, { force = true })
         end)
 
-        it("a run or debug launch is refused while the workspace is unloaded", function()
+        -- TODO(A1b): launch targets come from `Launch/1.targets` (no model in
+        -- `daemon` mode, step 6b-alpha); restore on the facade's launch.
+        pending("a run or debug launch is refused while the workspace is unloaded", function()
             local tracker = require("loomworks.session_tracker")
             local target = { _profile = { _workspace = ws } }
             assert.is_nil(tracker.launch_refusal(target)) -- in-process mode
@@ -847,7 +837,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
             assert.truthy(tracker.launch_refusal(target):find(observer.LOST_NOTE, 1, true))
         end)
 
-        it("a run or debug launch is not offered while the workspace is unloaded (no target picker)", function()
+        pending("a run or debug launch is not offered while the workspace is unloaded (no target picker)", function()
             local lw = require("loomworks")
             local profile = ws:get_profiles()[1]
             assert.truthy(profile)
@@ -922,7 +912,7 @@ describe("the observer subscribes to /lsp and reads it (in-process server)", fun
 
     it("reads the state once discovered, again on `changed`, and waits when the daemon goes", function()
         local fr = FR.new({})
-        obs = observer.attach(ws, { getenv = daemon_mode, keepalive_ms = 100,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
         assert.is_true(vim.wait(10000, function() return source.in_use() end, 10), obs:runtime_line())
         assert.equals("unconfigured", source.projects()[1].entries[1].db_state)

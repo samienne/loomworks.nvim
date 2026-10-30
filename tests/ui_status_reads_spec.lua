@@ -18,12 +18,13 @@ local function fake_obs()
     return obs
 end
 
---- A daemon-mode workspace whose model fields are a trap: any read other
---- than its root and observer errors.
+--- The `daemon`-mode editor's workspace: none (it holds no model, step
+--- 6b-alpha); `obs` is its observer. Returns nil, the `ws` the page passes.
 local function trap_ws(obs)
-    return setmetatable({ root = "/w", _daemon_observer = obs }, {
-        __index = function(_, k) error("editor model read in daemon mode: " .. tostring(k), 2) end,
-    })
+    local observer = require("loomworks.daemon.observer")
+    observer._current = obs
+    observer._selection = obs and { mode = "daemon", source = "default", daemon = true } or nil
+    return nil
 end
 
 --- A tree recording nodes and items (label + opts).

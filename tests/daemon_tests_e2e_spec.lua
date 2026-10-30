@@ -127,7 +127,7 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
         assert.is_true(vim.wait(120000, function() return not srv.service.tasks:busy() end, 20))
 
         local fr = FR.new({})
-        obs = observer.attach(core:get_workspace(), { getenv = daemon_mode, keepalive_ms = 100,
+        obs = observer.attach(core:get_workspace().root, { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
         assert.is_true(vim.wait(60000, function()
             local v = test_source.daemon_view()

@@ -144,14 +144,16 @@ return {
     },
     reach_ins = {
         ["lua/loomtest/runner.lua"] = 1,
-        ["lua/loomworks/auto_load.lua"] = 1,
         -- 0 -> 1: step 5k C1a review fix — an operation is carried only by
         -- the observer of its own scope's workspace (editor_ops.scope_workspace),
         -- never the editor's current one after a workspace swap.
         ["lua/loomworks/daemon/editor_ops.lua"] = 1,
         -- device_log.lua 1 -> 0: step 5n C2 — the dropped-lines warning
         -- goes to the view itself, not the workspace's logger.
-        ["lua/loomworks/init.lua"] = 59,
+        -- 59 -> 57, auto_load.lua / reload.lua / plugin/loomworks.lua 1 -> 0:
+        -- step 6b-α A1a (`daemon` mode loads no model: the observer by root,
+        -- `lw.loaded_root`, `lw.shutdown`).
+        ["lua/loomworks/init.lua"] = 57,
         -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
         -- routes the test adapters' reads through test_source.lua; its one
         -- site is the in-process source's model read (the daemon source
@@ -162,7 +164,6 @@ return {
         -- in-process source's model read (the daemon source arrives in 5l C).
         ["lua/loomworks/lsp_source.lua"] = 1,
         ["lua/loomworks/overseer.lua"] = 22,
-        ["lua/loomworks/reload.lua"] = 1,
         -- actions.lua 9 -> 5, orphaned.lua 1 -> 0, tree.lua 4 -> 3: step 5o
         -- C2c-2 (the deletions and the nuke name their rows; their
         -- confirmations come from Maintenance/1).
@@ -187,7 +188,6 @@ return {
         ["lua/loomworks/ui/tree.lua"] = 3,
         -- 2 -> 1: step 5o C2b2-1 (compute_edit_configuration_context removed).
         ["lua/loomworks/workspace_view.lua"] = 1,
-        ["plugin/loomworks.lua"] = 1,
     },
     -- Plugin-side files: the editor's own starts. Binary-side files
     -- (config_unit, launch_target, profile, target): their calls into the

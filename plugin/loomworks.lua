@@ -132,12 +132,13 @@ end, {
 
 vim.api.nvim_create_user_command("LoomworksLog", function()
   local lw = require("loomworks")
-  local ws = lw.get_workspace()
-  if not ws then
+  -- (In `daemon` mode the editor holds no model: the observed root.)
+  local root = lw.loaded_root()
+  if not root then
     vim.notify("loomworks: no workspace loaded", vim.log.levels.WARN)
     return
   end
-  local path = ws.root .. "/.nvim/loomworks.log"
+  local path = root .. "/.nvim/loomworks.log"
   if not vim.uv.fs_stat(path) then
     vim.notify("loomworks: no log file yet", vim.log.levels.INFO)
     return

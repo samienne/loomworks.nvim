@@ -9,9 +9,13 @@
 ---     table it took from the subscription's `initial`, then each `update`
 ---     (`get` after a `seq` gap). Rendered as it is — a daemon that has not
 ---     loaded the workspace reports `state = "unloaded"` and no projects;
----   * otherwise the one the editor builds from its in-process model with the
----     daemon's builder (loomworks.view_state, through the builder init.lua
----     registers): the same shape, without what only the daemon knows.
+---   * otherwise, in the deprecated `in-process` mode only, the one the
+---     editor builds from its in-process model with the daemon's builder
+---     (loomworks.view_state, through the builder init.lua registers): the
+---     same shape, without what only the daemon knows. In `daemon` mode
+---     (`M.daemon_root`) nothing is built in-process (§19.16 "End state",
+---     step 6b-α): a view the observer does not hold is absent, the header
+---     reads the workspace `unloaded`.
 ---
 --- Readers (lualine through `buf_status`, the status page header,
 --- `lw.buf_project`) see one table per view and never know its source. Plugin
@@ -39,6 +43,11 @@ local builders = {}
 
 --- @type fun()[]
 local listeners = {}
+
+--- The root the editor observes the workspace daemon of (`daemon` mode), or
+--- nil (the `in-process` mode, or nothing attached).
+--- @type string|nil
+local daemon_root = nil
 
 local redraw_pending = false
 
@@ -71,6 +80,15 @@ function M.changed()
     end)
 end
 local changed = M.changed
+
+--- Enter `daemon` mode for `root` (loomworks.daemon.observer.attach), or
+--- leave it (nil): in `daemon` mode no view is built in-process.
+--- @param root string|nil
+function M.daemon_root(root)
+    if daemon_root == root then return end
+    daemon_root = root
+    changed()
+end
 
 --- Register the in-process builder of a view.
 --- @param name loomworks.ViewName
@@ -125,13 +143,19 @@ function M.daemon_state(owner, name)
     return nil
 end
 
---- A view's current table: the daemon's, else built in-process (nil when no
+--- A view's current table: the daemon's; else in `daemon` mode the header
+--- `unloaded` (with the observed root and the running loomworks version, no
+--- model state) and no other view; else built in-process (nil when no
 --- builder is registered or it fails).
 --- @param name loomworks.ViewName
 --- @return table|nil
 function M.get(name)
     local d = daemon[name]
     if d then return d.state end
+    if daemon_root then
+        if name ~= "header" then return nil end
+        return { root = daemon_root, state = "unloaded", version = require("loomworks.daemon.version").plugin_version() }
+    end
     local b = builders[name]
     if not b then return nil end
     local ok, state = pcall(b)
@@ -341,7 +365,8 @@ function M.status_of(header, index, path)
     }
 end
 
---- Test seam: forget the daemon's tables (builders and listeners stay).
-function M._reset() daemon = {} end
+--- Test seam: forget the daemon's tables and root (builders and listeners
+--- stay).
+function M._reset() daemon, daemon_root = {}, nil end
 
 return M

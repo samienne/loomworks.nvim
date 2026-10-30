@@ -7,9 +7,8 @@
 --- configure or a module clean — of a profile or of configuration units, a
 --- module target's build included — is sent as a `loomworks.Build/1` call
 --- whose task the editor owns. The entry points (overseer.run_profile_action,
---- run_configuration_action, launch_single_task; the clean of Profile /
---- ConfigUnit through the workspace's `_operation_router`) ask
---- `overseer.route` / `route_clean`, which wrap `M.run` / `M.clean` in a
+--- run_configuration_action, launch_single_task; a module clean through
+--- `overseer.route_clean`) ask `overseer.route` / `route_clean`, which wrap `M.run` / `M.clean` in a
 --- Future: not routed — only in the deprecated `in-process` mode (no
 --- observer) — they run in-process. In `daemon` mode an operation is never
 --- run in-process (§19.16 "Availability", step 5s): one the daemon cannot
@@ -89,30 +88,43 @@ M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = 
 
 --- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil) }
 
---- The observer of `ws` when it carries `method` now, or nil. Only the
---- workspace's own observer carries its operations: a step chained from a
---- workspace the editor has since swapped away from is never sent to another
---- workspace's daemon.
+--- The editor's observer for an operation of `ws`: the current one when
+--- `ws` is nil — a `daemon`-mode editor holds no model (spec §19.16 "End
+--- state", step 6b-α) — and never for a model: a model's operations run
+--- in-process (the daemon's own, the CLI's, the deprecated in-process
+--- editor's).
+--- @param ws loomworks.Workspace|nil
+--- @return loomworks.daemon.Observer|nil
+local function observer_of(ws)
+    if ws ~= nil then return nil end
+    return require("loomworks.daemon.observer").current()
+end
+
+--- The observer for an operation of `ws` (`observer_of`) when it carries
+--- `method` now, or nil.
 --- @param method "build"|"configure"|"clean"|"prepare_run"|"prepare_debug"|"launch_build"|"discover"|"run_cases"|"prepare_test_debug"|"collect"|"result"|"device_list"|"device_scan"|"device_install"|"device_launch"|"device_stop"|"Profiles/1.set_device"|"Profiles/1.clear_device"
 --- @param ws loomworks.Workspace|nil
 --- @return loomworks.daemon.Observer|nil
 function M.carrier(method, ws)
-    local obs = require("loomworks.daemon.observer").of(ws)
+    local obs = observer_of(ws)
     if obs and obs.state ~= "stopped" and obs:can_call(method) then return obs end
     return nil
 end
 
---- Is `ws` run in `daemon` mode — its operations then never run
---- in-process (§19.16 "Availability") — and its observer. False in the
---- deprecated `in-process` mode. A workspace selected for `daemon` whose
---- observer has stopped (swapped away) still counts: `obs` is then nil and
---- its operations are refused.
+--- Is an operation of `ws` the `daemon`-mode editor's — it then never runs
+--- in-process (§19.16 "Availability") — and its observer. Only with no
+--- model (`ws` nil: the editor holds none in `daemon` mode, step 6b-α) and
+--- the editor's runtime selection `daemon`; a model's operations are always
+--- in-process. With no observer (not attached, stopped) `obs` is nil and the
+--- operation is refused.
 --- @param ws loomworks.Workspace|nil
 --- @return boolean daemon, loomworks.daemon.Observer|nil obs
 function M.daemon_of(ws)
-    local obs = require("loomworks.daemon.observer").of(ws)
+    if ws ~= nil then return false, nil end
+    local observer = require("loomworks.daemon.observer")
+    local obs = observer.current()
     if obs then return true, obs end
-    local sel = ws and ws._runtime_selection
+    local sel = observer.selection()
     return sel ~= nil and sel.daemon == true, nil
 end
 
@@ -1001,8 +1013,9 @@ function M.test_result(ws, id, cb)
     return test_request("result", ws, { id = id }, cb)
 end
 
---- A module clean through the daemon (Profile:clean / ConfigUnit:clean, via
---- the workspace's `_operation_router` and overseer.route_clean). False only
+--- A module clean through the daemon (overseer.route_clean; TODO(A1b): the
+--- facade's clean by ids — a `daemon`-mode editor has no Profile /
+--- ConfigUnit to clean, step 6b-α). False only
 --- in the `in-process` mode; otherwise it ends through `k` as `M.run` —
 --- refused at once when the daemon cannot carry it now. Before the call, the
 --- editor's own tasks on the same units are cancelled (`Tasks/1.cancel`,
@@ -1077,7 +1090,7 @@ end
 --- @param match fun(task: loomworks.RemoteTask|nil, call: table): boolean
 --- @param done fun()
 function M.cancel_owned_matching(ws, match, done)
-    local obs = require("loomworks.daemon.observer").of(ws)
+    local obs = observer_of(ws)
     local ids = {}
     for _, call in ipairs(obs and obs:owned_calls() or {}) do
         if match(call.task, call) then ids[#ids + 1] = call.id end
@@ -1138,7 +1151,7 @@ end
 --- @param unit_ids string[]|nil
 --- @return { id: any, task: loomworks.RemoteTask|nil }[]
 function M.owned_on_ids(ws, profile_id, unit_ids)
-    local obs = require("loomworks.daemon.observer").of(ws)
+    local obs = observer_of(ws)
     local out = {}
     for _, call in ipairs(obs and obs:owned_calls() or {}) do
         if M.call_names_ids(call, profile_id, unit_ids) then out[#out + 1] = call end
@@ -1158,7 +1171,7 @@ end
 --- @param ended? boolean
 --- @return loomworks.RemoteTask[]
 function M.tasks_on_ids(ws, profile_id, unit_ids, ended)
-    local obs = require("loomworks.daemon.observer").of(ws)
+    local obs = observer_of(ws)
     local out = {}
     if not obs then return out end
     for _, t in ipairs(obs:tasks()) do
@@ -1185,7 +1198,7 @@ end
 --- @param unit_ids string[]|nil
 --- @return loomworks.RemoteTask[]
 function M.cancel_on_ids(ws, profile_id, unit_ids)
-    local obs = require("loomworks.daemon.observer").of(ws)
+    local obs = observer_of(ws)
     local stopped = {}
     for _, t in ipairs(M.tasks_on_ids(ws, profile_id, unit_ids)) do
         if t.owned then
@@ -1367,7 +1380,7 @@ end
 --- @param cb fun(resolve: (fun(language: string): string|nil, boolean)|nil)
 function M.debug_adapter_resolver(target, cb)
     local ws = M.scope_workspace({ profile = target._profile })
-    local obs = ws and require("loomworks.daemon.observer").of(ws)
+    local obs = observer_of(ws)
     if not (obs and obs.state ~= "stopped" and obs:can_call("adapters")) then return cb(nil) end
     obs:with_debug_adapters(function(records)
         if not records then return cb(nil) end
@@ -1444,7 +1457,7 @@ function M.set_lsp_option(ws, server, key, value, cb)
         cb(false, err)
         return false, err
     end
-    local obs = require("loomworks.daemon.observer").of(ws)
+    local obs = observer_of(ws)
     if not (obs and obs.state ~= "stopped" and obs:can_call("set_option")) then
         local note = obs and obs:lsp_note() or nil
         return fail("the workspace daemon does not carry the LSP configuration"
@@ -1471,11 +1484,5 @@ function M.set_lsp_option(ws, server, key, value, cb)
     end)
     return true
 end
-
---- The router a daemon-mode workspace carries (`ws._operation_router`): the
---- domain objects' cleans ask it, with no dependency on the editor.
-M.router = {
-    clean = function(scope) return require("loomworks.overseer").route_clean(scope) end,
-}
 
 return M

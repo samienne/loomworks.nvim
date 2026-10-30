@@ -105,9 +105,11 @@ local function open_launch_editor(ctx, prow, lrow, decl)
         -- A target-backed launch resolves ${target_dir} (§8.7); a
         -- command-type (or new) one does not.
         target_context = fields.target ~= nil,
+        -- (No `ws` in `daemon` mode: the editor holds no model, step 6b-alpha.)
         debug_adapters = function()
-            if not ws then return nil end
-            return (require("loomworks.daemon.editor_ops").debug_adapters(ws))
+            local ops = require("loomworks.daemon.editor_ops")
+            if not ws and not ops.daemon_of(nil) then return nil end
+            return (ops.debug_adapters(ws))
         end,
         -- Every known language, for "Add debug language".
         debug_languages = function(cb)
@@ -116,7 +118,6 @@ local function open_launch_editor(ctx, prow, lrow, decl)
         end,
         -- The daemon's records arrive after the dialog opens: it re-renders.
         on_debug_adapters = function(arrived)
-            if not ws then return end
             local daemon, obs = require("loomworks.daemon.editor_ops").daemon_of(ws)
             if daemon and obs and obs.state ~= "stopped" and obs:can_call("adapters") then
                 obs:with_debug_adapters(function() arrived() end)

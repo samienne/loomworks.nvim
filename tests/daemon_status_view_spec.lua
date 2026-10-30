@@ -26,7 +26,9 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
 
     before_each(function()
         root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
+        -- (The model the daemon's views are built from: not the editor's,
+        -- which holds none in `daemon` mode, step 6b-alpha.)
+        core = require("loomworks.core").new()
         core:setup({ root = root })
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
         ws = core:get_workspace()
@@ -40,7 +42,8 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
     end)
     after_each(function()
         if obs then views.clear(obs) end
-        if ws then ws._daemon_observer = nil end
+        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._selection = nil, nil
+        views.daemon_root(nil)
         obs = nil
         pcall(function() core:shutdown() end)
     end)
@@ -56,14 +59,16 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         end
         function conn:close() self.closed = true end
         obs = setmetatable({
-            ws = ws, root = ws.root, state = "connected", mode = "interfaces", conn = conn,
+            root = ws.root, state = "connected", mode = "interfaces", conn = conn,
             daemon = { pid = 1 }, seq = 0, _tasks = {}, _order = {}, _owned = {},
             _feat = feat or { [observer.VIEW_WORKSPACE.feature] = "subscribed", [observer.TASKS.feature] = "subscribed" },
             _why = {},
             opts = { environ = function() return {} end },
         }, observer.Observer)
         function obs:_spawn() end
-        ws._daemon_observer = obs
+        require("loomworks.daemon.observer")._current = obs
+        require("loomworks.daemon.observer")._selection = { mode = "daemon", source = "default", daemon = true }
+        views.daemon_root(ws.root)
         return obs
     end
 
@@ -76,6 +81,22 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         v.profiles[1].description = "from the daemon"
         if mutate then mutate(v) end
         return v
+    end
+
+    --- Load the workspace into the editor's own core (the deprecated
+    --- `in-process` editor), counting its in-process builds again.
+    local function load_in_editor()
+        core:shutdown()
+        core = require("loomworks")._core()
+        core:setup({ root = root })
+        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
+        ws = core:get_workspace()
+        built = 0
+        local orig = ws.view_workspace
+        ws.view_workspace = function(...)
+            built = built + 1
+            return orig(...)
+        end
     end
 
     local function header(state)
@@ -110,7 +131,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         header()
         local v = daemon_view()
         views.set(obs, "workspace", v)
-        assert.equals("daemon", status_source.read(ws).mode)
+        assert.equals("daemon", status_source.read(nil).mode)
         local lines, text = render()
         assert.equals(0, built)
         assert.truthy(text:find("from the daemon", 1, true), text)
@@ -120,9 +141,9 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(1, count(lines, "unavailable —"))
         -- The status buffer's 'modified' is the daemon's view's (5o C2a:
         -- publish and revert run in the daemon).
-        assert.is_false(status_source.modified(ws))
+        assert.is_false(status_source.modified(nil))
         v.modified = true
-        assert.is_true(status_source.modified(ws))
+        assert.is_true(status_source.modified(nil))
         assert.equals(0, built)
     end)
 
@@ -131,7 +152,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
             [observer.PROJECTS.feature] = "available" })
         header()
         views.set(obs, "workspace", daemon_view())
-        local body = status_source.read(ws)
+        local body = status_source.read(nil)
         assert.is_nil(body.ref)
         local prow = body.view.profiles[1]
         local u = prow.units[1]
@@ -141,7 +162,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
             body.view.projects[1].configurations[1] }) do
             assert.is_nil(status_source.object_of(row))
         end
-        require("loomworks.ui.actions").show_options(u, ws)()
+        require("loomworks.ui.actions").show_options(u, nil)()
         local sent
         for _, c in ipairs(calls) do
             if c.method == "unit_options" then sent = c end
@@ -165,7 +186,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
             p.configurations[1].id = "id:fresh/Debug"
             v.projects[#v.projects + 1] = p
         end))
-        local body = status_source.read(ws)
+        local body = status_source.read(nil)
         local fresh = body.view.projects[#body.view.projects]
         assert.equals("fresh", fresh.key)
         assert.is_nil(status_source.object_of(fresh))
@@ -189,10 +210,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_function(cfg_enter, "the configuration row has no editor")
         assert.is_function(add_enter, "Add configuration is inert")
         -- The editor's read names the project by the row's id.
-        local orig = observer.loaded_workspace
-        observer.loaded_workspace = function() return ws end
         local ok, err = pcall(cfg_enter)
-        observer.loaded_workspace = orig
         assert(ok, err)
         local sent
         for _, c in ipairs(calls) do
@@ -217,7 +235,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
             p.variables = { flavor = { type = "string", default = "x" } }
             v.projects[#v.projects + 1] = p
         end))
-        local body = status_source.read(ws)
+        local body = status_source.read(nil)
         local fresh = body.view.projects[#body.view.projects]
         assert.is_nil(status_source.object_of(fresh))
         local tree = Tree.new(require("loomworks.ui.status")._render_fn)
@@ -247,10 +265,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
             assert.is_function(found[name], name .. " is inert:\n" .. table.concat(lines, "\n"))
         end
         -- The launch editor's read names the project by the row's id.
-        local orig = observer.loaded_workspace
-        observer.loaded_workspace = function() return ws end
         local ok, err = pcall(found.launch)
-        observer.loaded_workspace = orig
         assert(ok, err)
         local sent
         for _, c in ipairs(calls) do
@@ -476,7 +491,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         fake_obs()
         header()
         views.set(obs, "workspace", daemon_view())
-        local body = status_source.read(ws)
+        local body = status_source.read(nil)
         local prow = body.view.projects[1]
         local lrow = prow.launches[1]
         assert.equals("run", lrow.key)
@@ -549,37 +564,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.equals(0, built)
     end)
 
-    it("an editor write (working copy, cache, publish) makes the observer get the view once", function()
-        local fresh = daemon_view(function(v) v.profiles[1].description = "fresh" end)
-        fake_obs(nil, function() return fresh end)
-        header()
-        views.set(obs, "workspace", daemon_view())
-        local function gets()
-            local n = 0
-            for _, c in ipairs(calls) do
-                if c.method == "get" and c.iface == "loomworks.view.Workspace" then n = n + 1 end
-            end
-            return n
-        end
-        -- Several files in one turn: one get.
-        assert.is_true(ws:_save_user())
-        ws:_save_cache()
-        assert.equals(0, gets())
-        assert.is_true(vim.wait(1000, function() return gets() == 1 end, 10))
-        vim.wait(50)
-        assert.equals(1, gets())
-        assert.equals("fresh", views.daemon_state(obs, "workspace").profiles[1].description)
-        -- A publish (loomworks.json) too.
-        local ok = ws:publish()
-        assert.is_true(ok)
-        assert.is_true(vim.wait(1000, function() return gets() == 2 end, 10))
-        -- Not subscribed: no get.
-        obs._feat[observer.VIEW_WORKSPACE.feature] = nil
-        ws:_save_user()
-        vim.wait(50)
-        assert.equals(2, gets())
-    end)
-
     it("overlays a busy profile's percent and a running unit's elapsed time from Tasks/1", function()
         fake_obs()
         header()
@@ -592,7 +576,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         -- A task another client started, as Tasks/1 `start` names it (by the
         -- rows' ids, step 5o C2d-2), with its last `progress` percent; the
         -- editor's model has no operation.
-        local t = remote_task.new(nil, 7, { kind = "build", name = "dev", profile = "dev", profile_id = v.profiles[1].id,
+        local t = remote_task.new(7, { kind = "build", name = "dev", profile = "dev", profile_id = v.profiles[1].id,
             units = { { project = "app", configuration = "Debug", id = v.profiles[1].units[1].unit_id } } },
             obs:_clock() - 65)
         t.pct = 42
@@ -618,12 +602,12 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local buf = vim.api.nvim_create_buf(false, true)
         vim.bo[buf].buftype = "acwrite"
         vim.api.nvim_buf_set_name(buf, "loomworks://status-revert-spec-" .. buf)
-        vim.bo[buf].modified = status_source.modified(ws)
+        vim.bo[buf].modified = status_source.modified(nil)
         local reverts = {}
         local mc = require("loomworks.ui.model_calls")
         local orig = mc.call
         mc.call = function(w, method, ...)
-            if method == "Workspace/1.revert_to_baseline" then reverts[#reverts + 1] = w; return end
+            if method == "Workspace/1.revert_to_baseline" then reverts[#reverts + 1] = w or false; return end
             return orig(w, method, ...)
         end
         require("loomworks.ui.view").attach_revert(buf, require("loomworks.ui.status")._on_revert)
@@ -646,62 +630,32 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         return n
     end
 
-    it("an editor state-file write refetches the workspace view once per turn (`_own_write`)", function()
-        local fresh = daemon_view(function(v) v.modified = true end)
-        fake_obs(nil, function() return fresh end)
-        header()
-        views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        obs:_own_write()
-        obs:_own_write()
-        assert.is_true(vim.wait(1000, function() return views.daemon_state(obs, "workspace") == fresh end, 10))
-        assert.equals(1, view_gets())
-        assert.is_true(status_source.modified(ws))
-    end)
-
-    it("the buffer's 'modified' follows the daemon's view while it is held and fresh, else the editor's model (5o C2a)", function()
+    it("the buffer's 'modified' follows the daemon's view while it is held and fresh, else not marked (5o C2a, 6b-alpha)", function()
         fake_obs()
         header()
-        -- An unpublished edit of the editor's own model.
-        ws:get_profiles()[1]._intent = "local+shared"
-        assert.is_true(ws:has_any_modified())
         -- Waiting for the view (none held yet): the daemon's state is not
-        -- known — the editor's model's (modified here).
+        -- known — not marked (the editor holds no model, step 6b-alpha).
         assert.is_nil((obs:workspace_view()))
-        assert.is_true(status_source.modified(ws))
+        assert.is_false(status_source.modified(nil))
         -- Held and fresh: the daemon's view's.
         views.set(obs, "workspace", daemon_view(function(v) v.modified = false end))
-        assert.is_false(status_source.modified(ws))
+        assert.is_false(status_source.modified(nil))
         views.set(obs, "workspace", daemon_view(function(v) v.modified = true end))
-        assert.is_true(status_source.modified(ws))
-        -- Selected for daemon mode but not connected at all: the editor's
-        -- model's.
+        assert.is_true(status_source.modified(nil))
+        -- Selected for daemon mode but not connected at all: not known.
         views.clear(obs)
-        ws._daemon_observer = nil
-        ws._runtime_selection = { daemon = true }
+        require("loomworks.daemon.observer")._current = nil
+        require("loomworks.daemon.observer")._selection = { daemon = true }
         obs = nil
-        assert.is_true(status_source.modified(ws))
-    end)
-
-    it("view not held and the editor's model modified: `:e` is refused (E37), no revert runs", function()
-        fake_obs()
-        header()
-        ws:get_profiles()[1]._intent = "local+shared"
-        assert.is_nil((obs:workspace_view()))
-        local reverts, edit, done = status_buffer()
-        local ok, err = edit("edit")
-        done()
-        assert.is_false(ok)
-        assert.truthy(tostring(err):find("E37", 1, true), tostring(err))
-        assert.equals(0, #reverts)
+        assert.is_false(status_source.modified(nil))
     end)
 
     it("in daemon mode a plain `:e` never reverts (the buffer's flag can lag); `:e!` does", function()
         fake_obs()
         header()
-        -- View not held, the editor's model clean: not marked, `:e` allowed —
-        -- it re-renders, never reverts.
-        assert.is_false(ws:has_any_modified())
-        assert.is_false(status_source.modified(ws))
+        -- View not held: not marked, `:e` allowed — it re-renders, never
+        -- reverts.
+        assert.is_false(status_source.modified(nil))
         local reverts, edit, done = status_buffer()
         assert.is_true((edit("edit")))
         assert.equals(0, #reverts)
@@ -714,9 +668,9 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
     it("a routed write with no workspace given is decided by the runtime selection: refused with the observer gone, never in-process", function()
         -- The loaded workspace selected for daemon mode, its observer gone
         -- (stopped: no longer current, detached from the workspace).
-        observer.attach(ws, { configured = "in-process" })
-        ws._runtime_selection = { daemon = true }
-        ws._daemon_observer = nil
+        observer.attach(ws.root, { configured = "in-process" })
+        require("loomworks.daemon.observer")._selection = { daemon = true }
+        require("loomworks.daemon.observer")._current = nil
         assert.is_nil(observer.current())
         local lw = require("loomworks")
         local orig = lw.trust_user_prefs
@@ -744,20 +698,20 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         assert.is_string(id)
         -- A units-scoped task (no profile) of another unit of app; and one
         -- naming this unit's key but no id (never matched by key).
-        local t = remote_task.new(nil, 8, { kind = "build", name = "app/Release",
+        local t = remote_task.new(8, { kind = "build", name = "app/Release",
             units = { { project = "app", configuration = "Release", id = "id:other" },
                 { project = "app", configuration = key } } }, obs:_clock() - 65)
         t.pct = 42
         obs._tasks[8], obs._order = t, { 8 }
-        local body = status_source.read(ws)
+        local body = status_source.read(nil)
         local row = body.view.profiles[1]
         assert.is_nil(body.unit_progress(row.units[1]))
         assert.is_nil(body.profile_progress(row))
         -- One of the row's unit's configuration: its elapsed time.
-        local t2 = remote_task.new(nil, 9, { kind = "build", name = "app/" .. key,
+        local t2 = remote_task.new(9, { kind = "build", name = "app/" .. key,
             units = { { project = "app", configuration = key, id = id } } }, obs:_clock() - 65)
         obs._tasks[9], obs._order = t2, { 8, 9 }
-        body = status_source.read(ws)
+        body = status_source.read(nil)
         row = body.view.profiles[1]
         local p = body.unit_progress(row.units[1])
         assert.is_not_nil(p)
@@ -766,6 +720,7 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
     end)
 
     it("in-process mode still builds the view from the editor's model", function()
+        load_in_editor()
         assert.equals("in-process", status_source.read(ws).mode)
         assert.equals(1, built)
         local _, text = render()
@@ -774,14 +729,11 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
     end)
 
     it("in-process mode: a launch row's editor opens on the declaration, its preview answered at once (5o C2b2-2)", function()
-        core:shutdown()
         root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
+        load_in_editor()
         -- (Loaded as the editor's setup does, in the in-process mode: its
         -- calls given no workspace go to it.)
-        require("loomworks.daemon.observer").attach(ws, { configured = "in-process" })
+        require("loomworks.daemon.observer").attach(ws.root, { configured = "in-process" })
         -- (A preview expands under the active profile.)
         assert(require("loomworks.workspace_view").activate_profile(ws:get_profiles()[1]))
         local body = status_source.read(ws)

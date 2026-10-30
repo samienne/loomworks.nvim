@@ -107,9 +107,13 @@ describe("Core:view_header version", function()
 
   it("carries it in daemon mode's unloaded header too", function()
     save_guard._set_version("0.1.43")
-    local c = core()
-    c._workspace = { root = "/r", _daemon_observer = {} }
-    assert.same({ root = "/r", state = "unloaded", version = "0.1.43" }, c:view_header())
+    -- (No model in `daemon` mode, step 6b-alpha: the view store's header.)
+    local views = require("loomworks.views")
+    views.daemon_root("/r")
+    local ok, hdr = pcall(views.header)
+    views.daemon_root(nil)
+    assert.is_true(ok, tostring(hdr))
+    assert.same({ root = "/r", state = "unloaded", version = "0.1.43" }, hdr)
   end)
 
   it("leaves it out when unknown", function()

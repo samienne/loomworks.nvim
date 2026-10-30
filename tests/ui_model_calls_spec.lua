@@ -88,6 +88,7 @@ describe("ui.model_calls", function()
             })
             -- (With no workspace given or loaded, the setup selection: in-process.)
             rawset(package.loaded["loomworks"], "runtime_mode", function() return "in-process" end)
+            rawset(package.loaded["loomworks"], "get_workspace", function() return nil end)
         end)
         after_each(function()
             package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] = saved[1], saved[2]
@@ -475,7 +476,7 @@ describe("ui.model_calls", function()
 
         it("cancels the editor's own tasks on the target first, matched by the meta's ids (5o C2d-2); all for a nuke", function()
             local remote_task = require("loomworks.daemon.remote_task")
-            local function task(meta) meta.name = meta.name or "t"; return remote_task.new(nil, 1, meta, 0) end
+            local function task(meta) meta.name = meta.name or "t"; return remote_task.new(1, meta, 0) end
             -- Matched by ids only: a task naming the profile's key or the
             -- build directory's path but not the ids is not the target's.
             local of_profile = task({ profile = "dev", profile_id = "1:1" })
@@ -532,18 +533,20 @@ describe("ui.model_calls", function()
             saved = { package.loaded["loomworks.daemon.observer"], package.loaded["loomworks.daemon.editor_ops"],
                 package.loaded["loomworks.workspace_view"], package.loaded["loomworks"] }
             package.loaded["loomworks.daemon.observer"] = {
-                loaded_workspace = function() return loaded end,
-                of = function() return nil end,
+                current = function() return nil end,
+                loaded_workspace = function() return nil end,
                 -- (Any request reaching an observer would be a send.)
                 request = function(_, method) sent[#sent + 1] = method end,
             }
             package.loaded["loomworks.daemon.editor_ops"] = {
-                -- A loaded workspace selected for `daemon` whose observer is gone.
-                daemon_of = function(ws) return ws ~= nil, nil end,
+                -- A root attached in `daemon` mode (`loaded`) whose observer
+                -- is gone: the editor holds no model (step 6b-alpha).
+                daemon_of = function() return loaded ~= nil, nil end,
                 carrier = function() return nil end,
             }
             local function recording(_, name)
                 return function()
+                    if name == "get_workspace" then return nil end
                     ran[#ran + 1] = name
                     if name == "runtime_mode" then return mode end
                     return { outcome = "ok" }
@@ -604,7 +607,7 @@ describe("ui.model_calls", function()
             assert.same({ "nuke", "trust_user_prefs", "delete_user_prefs" }, bodies())
         end)
 
-        it("a loaded workspace whose observer is gone is refused as before (no setup selection read)", function()
+        it("an attached root whose observer is gone is refused as before (no setup selection read)", function()
             loaded = { root = "/w" }
             mode = "in-process"
             assert.same({ outcome = "refused", message = "nuke: the workspace is no longer loaded" },
@@ -810,10 +813,10 @@ describe("ui.model_calls", function()
         local fake = {}
         function fake:owned_calls() return { { id = 1, task = T1 }, { id = 2, task = T2 }, { id = 3 } } end
         function fake:cancel_owned_id(id, cb) asked[#asked + 1] = id; ended[id] = cb end
-        package.loaded["loomworks.daemon.observer"] = { of = function() return fake end }
+        package.loaded["loomworks.daemon.observer"] = { current = function() return fake end }
         local ok, err = pcall(function()
             local done = 0
-            eo.cancel_owned_matching({}, function(t) return t == T1 or t == nil end, function() done = done + 1 end)
+            eo.cancel_owned_matching(nil, function(t) return t == T1 or t == nil end, function() done = done + 1 end)
             table.sort(asked)
             assert.same({ 1, 3 }, asked)
             assert.equals(0, done)
@@ -823,11 +826,11 @@ describe("ui.model_calls", function()
             assert.equals(1, done)
             -- Nothing selected (or no observer): done at once.
             asked = {}
-            eo.cancel_owned_matching({}, function() return false end, function() done = done + 1 end)
+            eo.cancel_owned_matching(nil, function() return false end, function() done = done + 1 end)
             assert.same({}, asked)
             assert.equals(2, done)
-            package.loaded["loomworks.daemon.observer"] = { of = function() return nil end }
-            eo.cancel_owned_matching({}, function() return true end, function() done = done + 1 end)
+            package.loaded["loomworks.daemon.observer"] = { current = function() return nil end }
+            eo.cancel_owned_matching(nil, function() return true end, function() done = done + 1 end)
             assert.equals(3, done)
         end)
         package.loaded["loomworks.daemon.observer"] = saved

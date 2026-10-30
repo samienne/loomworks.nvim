@@ -868,10 +868,20 @@ re-cut onto master step by step; this section is expanded as each step lands.
 
 **Step 4 (the editor observes, spec §19.16)** adds:
 
-- `daemon/observer.lua` — one Observer per loaded Workspace in daemon runtime
-  mode (`init.setup` hooks `workspace_changed` → `observer.attach(ws)`; the
-  CLI never calls setup, so it never attaches). Owned by the workspace
-  (`ws._daemon_observer`), stopped first in `Workspace:teardown`. `start`
+- `daemon/observer.lua` — the editor's one Observer, attached by root in
+  daemon runtime mode (`init.setup` → local `load(root)` →
+  `observer.attach(root)`; the CLI never calls setup, so it never attaches).
+  Step 6b-α: in daemon mode the editor loads NO Workspace — `load` records
+  the root (`core:set_pending_root`, the §9.7 gate) instead of
+  `core:setup`, so nothing is detected, tracked or written in-process; the
+  observer is held module-level (`M.current()`, `M.selection()` the
+  runtime selection of the last attach, either mode), an attach to another
+  root stops the old one, and `observer.detach` (`lw.shutdown`,
+  `:LoomworksReload`) stops it. `views.daemon_root(root)` puts the view
+  store in daemon mode (no in-process builder; the header reads
+  `unloaded` until the daemon's view arrives). Remote tasks are display
+  data and ids only (`remote_task.new(id, meta, clock)`, no model
+  resolution). `start`
   (load / `:LoomworksDaemon connect`) spawns an ordinary relay (step 5i PR
   G1, spec §19.16 "Through the relay"); the observer reads none of lw's
   internal files to connect, launch or follow a daemon (only `_prune`'s
@@ -942,14 +952,14 @@ re-cut onto master step by step; this section is expanded as each step lands.
   entry points `run_profile_action`, `run_configuration_action` and
   `launch_single_task` (a module target's build: `Target:build` puts the
   target in `task_def.loomworks.target_id`) ask `overseer.route(method,
-  scope, opts)` first, and `Profile:clean` / `ConfigUnit:clean` ask
-  the workspace's `_operation_router` (set by `observer.attach`, cleared by
-  `stop`; nil in in-process mode, so the domain stays free of the editor),
-  which goes to `overseer.route_clean`. Both wrap `editor_ops.run` /
-  `editor_ops.clean` (callbacks only, `{ resolve, reject }`) in a
-  Future; not routed — only in the deprecated `in-process` mode
-  (`editor_ops.daemon_of(ws)`: no observer, `ws._runtime_selection` not
-  `daemon`) → the caller's in-process body, unchanged (`in_process_*`
+  scope, opts)` first; `overseer.route_clean` likewise for a clean
+  (`Profile:clean` / `ConfigUnit:clean` of a model always run in-process:
+  a daemon-mode editor holds no model, step 6b-α). Both wrap
+  `editor_ops.run` / `editor_ops.clean` (callbacks only, `{ resolve,
+  reject }`) in a Future; not routed — a model's operation (`ws` non-nil),
+  or the deprecated `in-process` mode (`editor_ops.daemon_of(ws)`: daemon
+  only for `ws == nil` with the observer's selection `daemon`) → the
+  caller's in-process body, unchanged (`in_process_*`
   locals, `_clean_in_process`). In `daemon` mode nothing runs in-process
   (step 5s, §19.16 "Availability"): `run` asks the workspace's observer
   whether it carries the method (`Observer:can_call`: connected through
@@ -2041,11 +2051,10 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   Tasks section). No row reaches the editor's model in `daemon` mode (the
   transitional `ref` is gone); `helpers.actionable` asks
   `status_source.object_of` in-process.
-  Every state-file write of the editor's model
-  (`Workspace:_record_written`, `_save_config`, `publish_one`) emits
-  `state_file_written { workspace, kind }`; init.lua hands it to that
-  workspace's observer, which `get`s the workspace view once per
-  event-loop turn (`Observer:_own_write`, §19.13 "Freshness of views").
+  Every state-file write of a model (`Workspace:_record_written`,
+  `_save_config`, `publish_one`) emits `state_file_written { workspace,
+  kind }`; since step 6b-α no editor observer follows it (a daemon-mode
+  editor writes no state file).
 - *(5n part B2, spec §19.16 "Devices", API.md §15)* `daemon/devices.lua`
   (binary side) serves `Devices/1` on `/devices`: `list` (the registry,
   `Workspace:devices`, never loading or probing; records `{ id, key = serial,

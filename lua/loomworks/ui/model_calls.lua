@@ -1008,7 +1008,8 @@ ROUTED["Maintenance/1.execute_deletion"] = function(ws, p, cb)
             -- first (spec/ui.md §1.10), after the daemon's listing: every
             -- call editor_ops.cancel_owned_matching stops, a not-yet-started
             -- one by the ids it was sent with too.
-            local obs = r.outcome == "confirm" and require("loomworks.daemon.observer").of(ws) or nil
+            -- (The editor's observer: a `daemon`-mode editor holds no model.)
+            local obs = r.outcome == "confirm" and ws == nil and require("loomworks.daemon.observer").current() or nil
             local match, stopped = deletion_tasks(p.target, r.unit_ids), {}
             for _, call in ipairs(obs and obs:owned_calls() or {}) do
                 if match(call.task, call) then
@@ -1116,13 +1117,14 @@ function M.routed(method)
     return ROUTED[method] ~= nil
 end
 
---- Call a model method of the workspace `ws` (nil: the loaded workspace,
---- loomworks.daemon.observer.loaded_workspace).
---- In `daemon` mode it is a call to the workspace daemon (every method is
---- routed, step 5o C2c-2; a guard checks it, tests/ui_model_calls_spec.lua);
---- in the `in-process` mode its in-process body runs. With no workspace
---- loaded, `daemon` mode (the setup selection) refuses every method. `cb(r)`
---- gets its outcome (may be nil).
+--- Call a model method of the workspace `ws` (nil: the in-process editor's
+--- loaded model, loomworks.daemon.observer.loaded_workspace).
+--- In `daemon` mode — no model (the editor holds none, step 6b-α) — it is a
+--- call to the workspace daemon (every method is routed, step 5o C2c-2; a
+--- guard checks it, tests/ui_model_calls_spec.lua); in the `in-process` mode
+--- its in-process body runs. With no workspace attached, `daemon` mode (the
+--- setup selection) refuses every method. `cb(r)` gets its outcome (may be
+--- nil).
 --- @param ws loomworks.Workspace|nil
 --- @param method string `"<Interface>/<version>.<method>"`
 --- @param params table|nil
@@ -1131,25 +1133,22 @@ function M.call(ws, method, params, cb)
     local fn = CALLS[method]
     if not fn then error("loomworks.ui.model_calls: unknown method " .. tostring(method), 2) end
     params, cb = params or {}, cb or function() end
-    -- (No workspace given: the loaded one. Its mode is its runtime
-    -- selection's — never whether an observer is attached: in `daemon` mode
-    -- with its observer gone a method is refused, not run in-process. With
-    -- no workspace loaded at all the mode is the setup selection's; in
-    -- `daemon` mode every method is then refused, nothing sent and nothing
-    -- run — the recovery methods name their lw command, spec §19.16 "Model
-    -- writes".)
-    local target = ws or require("loomworks.daemon.observer").loaded_workspace()
-    local daemon
-    if target then
-        daemon = require("loomworks.daemon.editor_ops").daemon_of(target)
-    else
-        daemon = require("loomworks").runtime_mode() == "daemon"
-        if daemon then return cb(refusal(method, NO_WORKSPACE[method] or "the workspace is not loaded")) end
-    end
-    if daemon then
+    -- (The mode is editor_ops.daemon_of's: with no model given, the
+    -- editor's runtime selection — never whether an observer is attached:
+    -- in `daemon` mode with its observer gone a method is refused, not run
+    -- in-process. Not `daemon`: the model given, else the in-process
+    -- editor's. With no workspace attached at all the mode is the setup
+    -- selection's; in `daemon` mode every method is then refused, nothing
+    -- sent and nothing run — the recovery methods name their lw command,
+    -- spec §19.16 "Model writes".)
+    if require("loomworks.daemon.editor_ops").daemon_of(ws) then
         local route = ROUTED[method]
         if not route then error("loomworks.ui.model_calls: " .. method .. " is not routed to the daemon", 2) end
-        return route(target, params, cb)
+        return route(ws, params, cb)
+    end
+    local target = ws or require("loomworks.daemon.observer").loaded_workspace()
+    if not target and require("loomworks").runtime_mode() == "daemon" then
+        return cb(refusal(method, NO_WORKSPACE[method] or "the workspace is not loaded"))
     end
     return fn(target, params, cb)
 end

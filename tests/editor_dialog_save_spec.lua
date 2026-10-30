@@ -108,7 +108,8 @@ end
 local function open_config_editor(ws, name, on_saved)
   -- (Loaded as the editor's setup does, in the in-process mode: the page's
   -- calls given no workspace go to it.)
-  require("loomworks.daemon.observer").attach(ws, { configured = "in-process" })
+  require("loomworks.daemon.observer").attach(ws.root, { configured = "in-process" })
+  require("loomworks.daemon.observer").set_loaded_workspace(ws)
   local ss = require("loomworks.status_source")
   local view = ws:view_workspace({ bind = ss.bind })
   local ctx = { lw = require("loomworks"), view = view, ref = ss.object_of, ws = ws, mode = "in-process" }

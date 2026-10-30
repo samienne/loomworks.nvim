@@ -49,8 +49,9 @@ function M.check_cwd()
         cache_exists = vim.uv.fs_stat(cwd_root .. "/.nvim/loomworks.cache.json") ~= nil
     end
 
-    local ws = lw.get_workspace()
-    local loaded_root = ws and ws.root or nil
+    -- (In `daemon` mode the root the editor observes the daemon of: it holds
+    -- no model, step 6b-α.)
+    local loaded_root = lw.loaded_root()
 
     local action = M.decide({
         mode = mode,

@@ -154,6 +154,14 @@ function M.identity()
     return _identity
 end
 
+--- The running loomworks version (save_guard's; nil when unknown): what the
+--- editor's own `unloaded` header shows (loomworks.views, `daemon` mode).
+--- @return string|nil
+function M.plugin_version()
+    local ok, v = pcall(function() return require("loomworks.save_guard").version() end)
+    return ok and v or nil
+end
+
 --- Test seam: forget (or set) the memoized identity.
 --- @param v string|nil
 function M._set_identity(v) _identity = v end

@@ -18,6 +18,13 @@ local function model()
     return require("loomworks").get_workspace()
 end
 
+--- Whether the editor is the `daemon`-mode editor with a root attached (it
+--- then holds no model, step 6b-alpha; editor_ops.daemon_of).
+--- @return boolean
+local function daemon_editor()
+    return (require("loomworks.daemon.editor_ops").daemon_of(nil))
+end
+
 -- ---------------------------------------------------------------------------
 -- Render function — assembles sections
 -- ---------------------------------------------------------------------------
@@ -36,7 +43,9 @@ local function render_fn(tree)
     -- one shape"): the daemon's while the editor is subscribed to it,
     -- otherwise built in-process.
     local hdr = lw.view_header() or { state = "unloaded" }
-    if not ws then
+    -- In `daemon` mode the editor holds no model (step 6b-alpha): the page
+    -- renders from the daemon's views alone.
+    if not ws and not daemon_editor() then
         if hdr.state == "error" or hdr.state == "refused" then
             tree._level = 1
             tree:leaf(header_text(hdr), "Title")
@@ -83,7 +92,7 @@ local function render_fn(tree)
         tree:leaf("Workspace: the workspace daemon could not load it: " .. tostring(hdr.error or hdr.state),
             "DiagnosticWarn")
     end
-    tree:leaf("Root:      " .. tostring(hdr.root or ws.root), "Comment")
+    tree:leaf("Root:      " .. tostring(hdr.root or (ws and ws.root)), "Comment")
 
     -- The body renders from `loomworks.view.Workspace/1` (spec §19.13 "The
     -- workspace view"): in `daemon` mode only the daemon's (nil while it is
@@ -195,11 +204,12 @@ end
 --- @param force boolean `:e!`
 function M._on_revert(force)
     local ws = model()
-    if not ws then
+    local daemon = not ws and daemon_editor()
+    if not ws and not daemon then
         vim.notify("loomworks: no workspace", vim.log.levels.WARN)
         return
     end
-    if not force and require("loomworks.daemon.editor_ops").daemon_of(ws) then return end
+    if not force and daemon then return end
     local calls = require("loomworks.ui.model_calls")
     calls.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
         local ok, err = calls.result(r)
@@ -271,7 +281,7 @@ local view = View.new({
     -- (step 5o C2a), whose view `update` re-renders the page.
     on_write = function()
         local ws = model()
-        if not ws then
+        if not ws and not daemon_editor() then
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end

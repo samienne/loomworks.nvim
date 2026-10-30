@@ -206,21 +206,21 @@ end
 --- publish and revert (`:w`, `:e!`) run in the daemon (step 5o C2a), as does
 --- every other status-page write (C2c-2): the daemon's view's `modified`
 --- while that view is held; while it is not (connecting, waiting for it,
---- lost, a daemon without it, not connected at all) it is not known, and the
---- editor's model's is the best knowledge (the same files; it does not block
---- `:qa` for a clean working copy). The flag can still lag the daemon
---- (another client's write): a plain `:e` in `daemon` mode therefore never
---- reverts (ui/status.lua `_on_revert`), only `:e!` does. In the
---- `in-process` mode the editor's model's.
+--- lost, a daemon without it, not connected at all) it is not known and the
+--- buffer is not marked — a `daemon`-mode editor holds no model to ask
+--- (step 6b-α), and an unmarked buffer never blocks `:qa`. The flag can
+--- still lag the daemon (another client's write): a plain `:e` in `daemon`
+--- mode therefore never reverts (ui/status.lua `_on_revert`), only `:e!`
+--- does. In the `in-process` mode the editor's model's.
 --- @param ws loomworks.Workspace|nil
 --- @return boolean
 function M.modified(ws)
-    if not ws then return false end
     local is_daemon, obs = daemon_of(ws)
     if is_daemon then
         local view = obs and obs:workspace_view() or nil
-        if type(view) == "table" then return view.modified == true end
+        return type(view) == "table" and view.modified == true
     end
+    if not ws then return false end
     return ws:has_any_modified() and true or false
 end
 

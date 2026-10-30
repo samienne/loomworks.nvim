@@ -486,25 +486,14 @@ describe("lw reset in the daemon's build service (§19.15 Reset)", function()
         assert.is_false(exists(dir("app")))
         assert.is_false(exists(dir("lib")))
         assert.is_false(exists(orphan))
-        -- The observer's resolution (§19.16): no profile; the units among the
-        -- workspace's; every profile with one of them has it running.
-        local t = remote_task.new(ws, 1, meta, 0)
+        -- The observer's task (step 6b-α): display data and ids, resolved
+        -- to no model.
+        local t = remote_task.new(1, meta, 0)
         assert.is_nil(t.profile)
         assert.equals("all", t.scope)
         assert.equals("reset", t.action)
-        t:attach_units()
-        local keys = {}
-        for _, p in ipairs(t.profiles) do keys[#keys + 1] = p.key end
-        table.sort(keys)
-        assert.same({ "dev", "rel" }, keys)
-        for _, u in ipairs(t:config_units()) do
-            assert.equals("deleting", u:state())
-            assert.equals("deleting", u:deleting_reason())
-            assert.is_nil(u:shown_action())
-        end
-        for _, p in ipairs(ws._profiles) do assert.equals(1, #p:remote_tasks(), p.key) end
+        assert.equals(#meta.units, #t:unit_ids())
         t:finish(0, nil, nil, 1)
-        for _, p in ipairs(ws._profiles) do assert.equals(0, #p:remote_tasks(), p.key) end
         assert.equals("reset in 1s", t:outcome())
         r.conn:close()
     end)

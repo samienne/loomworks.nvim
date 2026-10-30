@@ -230,7 +230,7 @@ describe("daemon build service (§19.15)", function()
             return #lines == 1 and lines[1]:find("88%%$") ~= nil
         end, 50), vim.inspect(lines))
         -- An editor that joins now adopts the current percent, not 0.
-        local adopted = require("loomworks.daemon.remote_task").adopt(nil, st.tasks[1], 0, os.time())
+        local adopted = require("loomworks.daemon.remote_task").adopt(st.tasks[1], 0, os.time())
         assert.equals(88, adopted.pct)
         r.conn:close()
         assert.is_true(vim.wait(15000, function() return not srv.busy end, 20))

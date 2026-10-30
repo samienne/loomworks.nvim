@@ -4,8 +4,8 @@
 -- `--stdio` relay (loomworks.daemon.client.relay, step 5i PR G1), which
 -- launches the shared daemon on load; a real `lw build` from a "terminal"
 -- (another process) is routed to it, and the editor shows that build — the
--- remote task resolved to its own ConfigUnit, the unit `building` — and
--- reloads the daemon's committed cache on `model_change`. Then `lw daemon
+-- remote task as display data and ids (it holds no model, step 6b-alpha) —
+-- and follows the daemon's `model_change`. Then `lw daemon
 -- stop`: the observer drops, follows through a no-launch relay and never
 -- relaunches; a daemon the CLI starts later is observed again. The daemon
 -- survives its relay and the editor (a real editor process quitting), holds
@@ -96,7 +96,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
     it("connects through a relay that launches on load, shows a terminal `lw build`; a stop is not relaunched", function()
         local ws = core:get_workspace()
         local t = {}
-        obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         assert.is_not_nil(obs)
         assert.same({ "ordinary" }, t.forms)
@@ -114,8 +114,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.equals(1, #l[1].relays)
         assert.equals(relay.pid, l[1].relays[1].pid)
 
-        local unit = ws:get_profiles()[1]:projects()[1]._config_unit
-        assert.is_not_nil(unit)
+        local pp = ws:get_profiles()[1]:projects()[1]
 
         -- A build from a terminal, routed to the daemon (§19.15).
         local b = H.lw_start({ "build", "dev" }, { env = env, cwd = root })
@@ -124,21 +123,20 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.is_true(vim.wait(60000, function() return seen.started == 1 end, 20), b.stderr())
         local task = seen.task
         assert.equals("dev", task.profile_name)
-        assert.equals(ws:get_profiles()[1], task.profile)
-        -- Resolved to the editor's own ConfigUnit, by reference.
-        assert.equals(unit, task.units[1].unit)
-        if not task.finished then assert.equals("building", unit:state()) end
+        -- Display data and ids only: resolved to no model (step 6b-alpha).
+        assert.is_nil(task.profile)
+        assert.equals(pp:project_key(), task.units[1].project)
+        assert.is_nil(task.units[1].unit)
 
         assert.is_true(b.wait(120000))
         assert.equals(0, b.code, b.stderr())
         assert.truthy(b.stderr():find("building through the workspace daemon", 1, true), b.stderr())
         assert.is_true(vim.wait(30000, function() return seen.stopped == 1 end, 20))
         assert.equals(0, seen.last.exit_code)
-        assert.equals(0, #ws:get_daemon_tasks())
+        assert.equals(0, #require("loomworks").get_daemon_tasks())
         assert.truthy(seen.last:output():find("step build", 1, true))
-        -- The daemon's committed cache reached the editor (model_change).
+        -- The daemon's committed change reached the editor (model_change).
         assert.is_true(obs.seq > 0)
-        assert.is_true(vim.wait(30000, function() return unit:state() == "built" end, 20), unit:state())
 
         -- `lw daemon stop`: the observer drops, follows through one relay
         -- that never launches, and nothing is relaunched.
@@ -173,7 +171,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         -- The daemon the editor's relay launches claims another release (the
         -- relay and the daemon it launches inherit the variable).
         vim.env.LW_TEST_IDENTITY = "0.0.1+test.old"
-        obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         vim.env.LW_TEST_IDENTITY = nil
         assert.is_not_nil(obs)
@@ -208,8 +206,6 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.is_true(#t.forms == 2 or #t.forms == 3, vim.inspect(t.forms))
         for i = 2, #t.forms do assert.equals("no-launch", t.forms[i], vim.inspect(t.forms)) end
         assert.equals(seen.task, seen.last)
-        local unit = ws:get_profiles()[1]:projects()[1]._config_unit
-        assert.is_true(vim.wait(30000, function() return unit:state() == "built" end, 20), unit:state())
     end)
 
     -- §19.16 "The relay process": the daemon never inherits the relay's
@@ -219,7 +215,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
     it("the daemon outlives its relay and holds none of its pipes; no relay is left", function()
         local ws = core:get_workspace()
         local t = {}
-        obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         local lk = H.track_root(root)
@@ -238,7 +234,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         -- A relay ended by a plain kill of its own pid (the editor's
         -- backstop): the daemon lives on, and the editor follows it again
         -- through a no-launch relay.
-        obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         assert.equals(dpid, obs.daemon.pid)
@@ -266,12 +262,10 @@ describe("the editor observes the workspace daemon (§19.16)", function()
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local root, out = os.getenv("LW_TEST_EDITOR_ROOT"), os.getenv("LW_TEST_EDITOR_OUT")
 local okr, err = pcall(function()
-local core = require("loomworks")._core()
-core:setup({ root = root })
-vim.wait(30000, function() return core._state == "initialized" end, 20)
+-- (A `daemon`-mode editor loads no model, step 6b-alpha: it attaches by root.)
 local rc = require("loomworks.daemon.client").relay
 local relay
-local obs = require("loomworks.daemon.observer").attach(core:get_workspace(), {
+local obs = require("loomworks.daemon.observer").attach(require("loomworks.workspace").resolve_root(root), {
     resolve = function() return "lw" end,
     relay = function(ro, cb)
         local repo = os.getenv("LW_TEST_REPO")

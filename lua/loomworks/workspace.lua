@@ -641,9 +641,6 @@ end
 --- @field _save_stats { cache_merges: integer, user_refusals: integer }
 ---     stale saves handled (diagnostics/tests).
 --- @field _event_handlers { event: string, handler: function }[]
---- @field _daemon_observer loomworks.daemon.Observer|nil the editor's observer of the workspace daemon (spec §19.16), daemon runtime mode only
---- @field _operation_router { clean: fun(scope: table): loomworks.Future|nil }|nil set by the editor in daemon runtime mode (loomworks.daemon.editor_ops.router, step 5k): Profile:clean / ConfigUnit:clean ask it first (refused when the daemon cannot carry it, step 5s); nil → in-process
---- @field _runtime_selection loomworks.daemon.EditorSelection|nil the editor's runtime mode and its source, chosen on load (spec §19.1); the status page's Runtime line
 ---     event-bus subscriptions recorded for teardown. Mirrors the same
 ---     pattern on View. Populated only via `Workspace:on`, walked in
 ---     `Workspace:teardown` to call `events.off` per entry. Allows
@@ -3407,14 +3404,6 @@ function Workspace:find_running_tasks_for_items(items)
     return matches
 end
 
---- The tasks observed in the workspace daemon (spec §19.16), in start
---- order — empty without an observer (in-process runtime mode).
---- @return loomworks.RemoteTask[]
-function Workspace:get_daemon_tasks()
-    local obs = self._daemon_observer
-    return obs and obs:tasks() or {}
-end
-
 --- Snapshot every active task across the workspace, in a stable order.
 --- Powers the Tasks section of the status page. Each entry includes
 --- enough info to identify, time, and cancel the task without the
@@ -3977,15 +3966,14 @@ function Workspace._nudge_lsp(build_dir)
 end
 
 --- Whether this model generates the owned LSP databases (§8.4
---- `refresh_lsp_database`; daemon.md §19.16 "LSP configuration"): never in a
---- `daemon`-mode editor (an observer of the workspace daemon is attached —
---- only the daemon generates them, whether or not its state is in use);
---- always otherwise (in-process mode, the daemon itself, the CLI). Modules
---- ask it before a generation they schedule on their own (cmake's
---- `lsp_configs`).
+--- `refresh_lsp_database`; daemon.md §19.16 "LSP configuration"): always —
+--- a `daemon`-mode editor holds no model (step 6b-α), so every model is the
+--- daemon's, the CLI's or the deprecated in-process editor's, and each
+--- generates them. Modules ask it before a generation they schedule on their
+--- own (cmake's `lsp_configs`).
 --- @return boolean
 function Workspace:generates_lsp_databases()
-    return self._daemon_observer == nil
+    return true
 end
 
 --- @param unit loomworks.ConfigUnit
@@ -9272,9 +9260,6 @@ end
 --- reload. Acceptable for a dev-only feature.
 --- @return loomworks.Future resolves once tasks are confirmed stopped
 function Workspace:teardown()
-    -- The daemon observer (spec §19.16) stops first: no broadcast may reach
-    -- a workspace being torn down.
-    if self._daemon_observer then pcall(self._daemon_observer.stop, self._daemon_observer) end
     self:_stop_tracking()
     -- A deletion still removing its trees keeps its locks until it ends: wait
     -- for it (bounded, `TEARDOWN_WAIT_MS`) before the locks below are

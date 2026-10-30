@@ -6,6 +6,14 @@
 local model = require("loomworks.ui.model_calls")
 local remote_task = require("loomworks.daemon.remote_task")
 
+--- Make `obs` the editor's observer in `daemon` mode (no model, step 6b-alpha).
+local function set_daemon(obs)
+    local observer = require("loomworks.daemon.observer")
+    observer._current = obs
+    observer._selection = obs and { mode = "daemon", source = "default", daemon = true } or nil
+end
+
+
 --- A fake observer carrying every method: records owned calls, plain
 --- requests and cancels; `tasks` / `ended` its observed tasks.
 local function fake_obs()
@@ -46,7 +54,7 @@ local function fake_obs()
 end
 
 local function task(id, meta, owned)
-    local t = remote_task.new(nil, id, meta, 0)
+    local t = remote_task.new(id, meta, 0)
     t.owned = owned or nil
     return t
 end
@@ -55,7 +63,7 @@ describe("Profiles section by row id (step 5o C2d-2)", function()
     local obs, ws, saved_notify, notes
     before_each(function()
         obs = fake_obs()
-        ws = { root = "/w", _daemon_observer = obs }
+        ws = nil; set_daemon(obs)
         saved_notify = vim.notify
         notes = {}
         vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end

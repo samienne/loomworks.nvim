@@ -587,6 +587,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   profile whose set is missing. In `daemon` mode the configuration-set
   templates come from the workspace daemon, and the status page names
   mappings by id. (#345)
+- In the editor's default `daemon` mode the editor no longer loads the
+  workspace itself: it detects no toolchains or build targets, watches and
+  writes none of the workspace's files, and shows only what the workspace
+  daemon reports. Until the daemon has loaded the workspace the status line
+  and the status page show it as not loaded. Tasks another client runs are
+  listed by name and no longer mark the editor's own copy of a profile or
+  configuration as building. (#PRNUM)
 - The status page's configuration-set edit dialog and the create dialog's
   custom set list the projects and configurations the status page shows,
   CMake presets included, instead of reading the editor's own copy of the
