@@ -13,7 +13,7 @@
 --- @field _setup_error { root: string, message: string, trust?: { kind: "user"|"cache", status: string, path: string }, user_untrusted?: string, cache_untrusted?: boolean, user_version_mismatch?: boolean, newer?: boolean }|nil set when setup fails (`trust`: a refused `.nvim` file, spec §17.4; `newer`: a file with a newer schema, spec §2.7)
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _pending_root string|nil root passed to setup(), known before async init resolves
---- @field _load_capture { list: loomworks.LoadNote[], inner: function, fn: function }|nil the running load's notification capture (`_begin_load_notes`)
+--- @field _load_capture { list: loomworks.LoadNote[], inner: function, fn: function, quiet: boolean|nil }|nil the running load's notification capture (`_begin_load_notes`); `quiet` records without passing on to the host's notifier
 local Core = {}
 Core.__index = Core
 
@@ -263,6 +263,10 @@ function Core:_begin_load_notes()
                 text = tostring(msg),
                 in_diagnostics = type(opts) == "table" and opts.in_diagnostics or nil }
         end
+        -- (`quiet`: recorded only — a warning the host was already shown,
+        -- raised again so this load's diagnostics carry it.)
+        local c = self._load_capture
+        if c and c.fn == capture and c.quiet then return end
         return inner(msg, level, opts)
     end
     self._deps.notify = capture

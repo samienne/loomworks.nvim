@@ -995,6 +995,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   longer fails once with "a stale reference". The workspace daemon still
   reloads the workspace for the new environment, but the profiles, projects,
   configurations and launches keep their ids across that reload. (#351)
+- An edit to `.nvim/loomworks.user.json` now updates the workspace's load
+  warnings like an edit to `loomworks.json`: a stale configuration-set
+  mapping fixed there no longer keeps showing in `lw` output through a warm
+  workspace daemon, one added there is listed, and a mapping removed and then
+  added back is reported again. (#350)
 - A workspace's load warnings (a project directory not found, a skipped
   entry) now reach every `lw` command through a warm workspace daemon, not
   only the one that loaded it, and the editor lists them in the status page's

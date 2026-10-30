@@ -1626,7 +1626,7 @@ whose `update`s precede their replies.
 besides the structural diagnostics — a declared project directory not
 found, an entry skipped, every warning or error the load raises — is kept as
 **persistent workspace diagnostics** of the loaded model, with `source =
-"load"` and severity `warn` or `error`, until the next load replaces them (a re-assembly after an edit to `loomworks.json` is a load).
+"load"` and severity `warn` or `error`, until the next load replaces them (a re-assembly after an edit to `loomworks.json` or `user.json` is a load).
 They are in `view.Workspace/1`'s `diagnostics` (the status page's
 Diagnostics section) and count toward `view.Header/1`'s `diagnostics`
 level ([API.md](../protocol/API.md) §14.1, §14.4); the editor shows them
