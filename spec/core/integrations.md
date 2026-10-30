@@ -76,7 +76,7 @@ fetched with the editor's environment; the editor never builds it, calls
 generates an owned database, and there is no in-process fallback — while
 the daemon cannot give the state, buffers under the root are held or
 withheld (§9.7, §9.8). *(Transition, until the in-process editor is removed,
-daemon.md §19.19 6b:)* in `in-process` mode the state is built from the
+daemon.md §19.19 6b-β:)* in `in-process` mode the state is built from the
 editor's own model with the same builder, in the same shape, so the
 decisions below read alike in both modes. A buffer is mapped to its project
 only by the separator-bounded longest-prefix rule of `lw.buf_project`
@@ -791,6 +791,9 @@ was attributed to, how (`listed` as a target source, or nearest source
 owning project, a module that owns no database (e.g. meson — its database is
 build-system generated), or a file the module cannot attribute to a target, it
 states that plainly instead of showing a command.
+In `daemon` mode it is refused, `not available with the workspace daemon`,
+and reads neither a compilation database nor a model (daemon.md §19.16
+"Public API", step 6b-α).
 
 ---
 

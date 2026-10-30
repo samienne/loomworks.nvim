@@ -344,6 +344,12 @@ dim; success is green, failure red, a warning yellow.
 The output of the host operations that never redirect (§16.23) — reporting
 the host version and self-update — is printed by the invoked host and is never
 colored.
+A workspace load's warnings and errors are the runner's own lines, with the
+warning or failure role, on standard error: every command that uses the
+workspace prints them, in-process (which loads it each time) and through the
+daemon (§19.13 "Load warnings") alike. *(Step 6b-α: before it, some of them
+reached the in-process output uncolored, as Neovim's own notification
+lines, and a warm daemon's requests did not print them.)*
 
 Every command documents itself: `lw help <command>` and, equivalently,
 `--help` / `-h` anywhere among a command's own arguments (never after the `--`

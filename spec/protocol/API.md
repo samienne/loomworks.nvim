@@ -97,9 +97,12 @@ The core services are `/workspace`, `/profiles`, `/projects`, `/build`,
 
 In `loomworks.Root/1` (PROTOCOL.md §10): `describe().binary` is
 `{ lw_version, impl, dev }`; an object's `owner` is `core` or the module id.
-The root's `objects_changed` reports a module loaded or the workspace loaded
-or unloaded. A server that has not loaded its workspace lists the objects
-that need none.
+The root's `objects_changed` reports a module's objects mounted or
+unmounted. A server may mount the core objects before it loads the
+workspace, loading it on the first call that needs it; then its object set
+does not change with the workspace (spec §19.20 "Object set"). A server that
+mounts an object only once the workspace is loaded lists until then the
+objects that need none, and reports the change with `objects_changed`.
 
 ## 4. Common types
 
@@ -625,8 +628,9 @@ code and the failure line (a failed build, no such target, a failed deploy,
 built artifact (spec §18.1, no kit platform) is known only after the server
 built it: the task ends with `exit_code` 0, no `launch`, and `device =
 true`, before any deploy (of the `target` build scope: before its
-post-build deploy, §9.3); the client then continues the run itself from the
-deploy. The task, and every lock, ends before the program starts; the server
+post-build deploy, §9.3); the CLI then continues the run itself from the
+deploy, while the editor refuses it, executing no foreign target (spec
+§18.11, §19.16 "Editor operations"). The task, and every lock, ends before the program starts; the server
 keeps nothing of the run.
 
 ### 9.2 `prepare_debug`
@@ -745,6 +749,26 @@ first); or when the program has exited: its process id is probed every 3 s,
 as in-process, and two misses in a row end the task with exit 0 and the
 line `the program exited — log stream closed`. A reload of the workspace
 does not end it.
+
+### 9.6 `targets`
+
+*(Step 6b-α.)* `targets { profile }` → `{ outcome = "ok", targets,
+incomplete, override }` lists the profile's launchable targets, as headless
+introspection lists them (spec §16.18): a query, read-only, that builds nothing and
+runs in the client's environment as `Toolchains/1.list` does (§11).
+`targets` is one record per target, per project in the profile's order (its
+launch configurations, then its build targets, then its device targets): `{
+kind, project, name, label, description?, default }` — `kind` `launch` (a
+command launch configuration, §1.1), `target` (an executable build target
+of a configured unit) or `device` (a module's device target, spec §11);
+`project` the project's `{ id, key }`; `name` what a reference names
+(the launch configuration's name, the build target's id, the device
+target's id); `label` its display name; `description` a launch
+configuration's description; `default` true for the profile's default target
+(spec §8.6). `incomplete` lists the keys of the profile's projects whose build
+targets are unknown because they are not configured (empty when the list is
+complete); `override` is true when the profile stores a default-target choice
+in the working copy. An unknown profile or a stale id is `refused`.
 
 ## 10. `loomworks.Tests/1`
 
@@ -972,6 +996,17 @@ queries, each in a model segment of the client's environment:
 - **`Profiles/1.clear_device { profile }`** — removes it.
 
 An unknown profile or device, or a stale id, is `refused`.
+
+*(Step 6b-α.)* A profile's default launch target (spec §8.6) is likewise a
+write in a model segment of the client's environment:
+
+- **`Profiles/1.set_default_target { profile, target? }`** — `target` `{
+  kind, project, name }` as a record of `Launch/1.targets` (§9.6) gives it,
+  `project` a reference (§1.2), stores that target as the profile's default
+  in the working copy; without `target` it removes the stored choice, so the
+  default target is resolved again as spec §16.17 resolves it. A target
+  that is not among the profile's launchable targets is `refused` with `no
+  launch target '<project>:<name> (<kind>)' in profile '<key>'`.
 
 Each reaches subscribers as `Workspace/1` `changed` and in
 `view.Workspace/1` (§14.4); a write that is refused or fails changes neither
@@ -1408,6 +1443,10 @@ optional because the in-process builder leaves it out:
     `{ destination, sources }`, `sources` the normalized source descriptors;
   - `variables` (object) — variable name → `{ type, default? }`, the
     project's declarations;
+  - `targets` (object, optional) *(step 6b-α)* — the build targets its
+    configured units parsed, by name, each `{ type }`: the union over every
+    configuration unit of the project in the cache, in a profile or not;
+    absent when no unit of it has parsed targets;
   - `type_config` (object) — `{ fields }`: the module's editable
     `type_config` fields **in the module's order**, each `{ name, label?,
     kind?, placeholder?, value? }`, `value` the project's current value.
