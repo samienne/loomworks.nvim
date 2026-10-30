@@ -24,7 +24,7 @@ local M = {}
 --- @field config_set? string the active profile's configuration set
 --- @field config_set_id? string daemon only
 --- @field error? string the load failure (state error / refused)
---- @field diagnostics? "error"|"warn" the highest structural diagnostic
+--- @field diagnostics? "error"|"warn" the highest diagnostic of the workspace view (structural and the load's, §19.13 "Load warnings")
 --- @field trust? "user"|"cache" the file a trust refusal refused
 --- @field pid? integer daemon only
 --- @field lw_version? string daemon only
@@ -86,15 +86,30 @@ local function active_profile(ws)
     return nil
 end
 
---- The highest severity among the workspace's structural diagnostics.
+--- The workspace view's diagnostics: the structural ones, then the load's
+--- warnings and errors (`source = "load"`, core daemon.md §19.13 "Load
+--- warnings").
+--- @param ws table
+--- @return loomworks.Diagnostic[]
+local function view_diagnostics(ws)
+    local list = {}
+    if type(ws.diagnostics) == "function" then
+        local ok, d = pcall(ws.diagnostics, ws)
+        if ok and type(d) == "table" then vim.list_extend(list, d) end
+    end
+    if type(ws.load_diagnostics) == "function" then
+        local ok, d = pcall(ws.load_diagnostics, ws)
+        if ok and type(d) == "table" then vim.list_extend(list, d) end
+    end
+    return list
+end
+
+--- The highest severity among the workspace view's diagnostics.
 --- @param ws table
 --- @return "error"|"warn"|nil
 local function diagnostics_level(ws)
-    if type(ws.diagnostics) ~= "function" then return nil end
-    local ok, list = pcall(ws.diagnostics, ws)
-    if not ok or type(list) ~= "table" then return nil end
     local level
-    for _, d in ipairs(list) do
+    for _, d in ipairs(view_diagnostics(ws)) do
         if d.severity == "error" then return "error" end
         if d.severity == "warn" then level = "warn" end
     end
@@ -754,11 +769,9 @@ function M.workspace(ws, opts)
     local out = { published = opts.published ~= false, modified = ws:has_any_modified() and true or false }
 
     out.diagnostics = {}
-    if type(ws.diagnostics) == "function" then
-        for _, d in ipairs(ws:diagnostics()) do
-            out.diagnostics[#out.diagnostics + 1] = { severity = d.severity, source = d.source,
-                message = d.message, target_fold_key = d.target_fold_key }
-        end
+    for _, d in ipairs(view_diagnostics(ws)) do
+        out.diagnostics[#out.diagnostics + 1] = { severity = d.severity, source = d.source,
+            message = d.message, target_fold_key = d.target_fold_key }
     end
     -- Only actionable suggestions count (headless §16.31).
     local ok_s, n = pcall(function() return require("loomworks.suggestions").count_actionable(ws) end)

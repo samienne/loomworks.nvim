@@ -53,6 +53,7 @@
 --- @field _saved_tests_sig string|nil fingerprint of the saved test-target list
 ---        the cached TestUnits / test tree were built for (spec §1.3.4)
 --- @field _last_test_task_id number|nil most recent test overseer task ID
+local notify = require("loomworks.notify").notify
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
 
@@ -1919,7 +1920,7 @@ function ConfigUnit:_prepare_test_step(name, test_cmd)
     local ok, pok, perr = pcall(test_cmd.prepare)
     if ok and pok then return true end
     local msg = tostring((ok and perr) or (not ok and pok) or "preparation failed")
-    vim.notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
+    notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
     if test_cmd.test_id then
         self:_apply_test_results({ { test_id = test_cmd.test_id, status = "failed", message = msg } })
         local events = self._workspace and self._workspace._core and self._workspace._core._deps.events

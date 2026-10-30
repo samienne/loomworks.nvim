@@ -11,6 +11,7 @@
 ---   join via loomworks.paths.artifact_path, never a bare `build_dir .. artifact`)
 --- @field sources? string[] absolute source file paths (for test source mapping)
 --- @field _config_unit loomworks.ConfigUnit back-reference to owning unit
+local notify = require("loomworks.notify").notify
 local Target = {}
 Target.__index = Target
 
@@ -167,7 +168,7 @@ end
 function Target:launch(opts)
     local spec, err = self:resolve_run_spec(opts)
     if not spec then
-        if err then vim.notify("loomworks: " .. err, vim.log.levels.WARN) end
+        if err then notify("loomworks: " .. err, vim.log.levels.WARN) end
         return
     end
 

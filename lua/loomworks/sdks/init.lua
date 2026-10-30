@@ -3,6 +3,7 @@
 --- Auto-discovers SDK providers from runtimepath. Third-party plugins
 --- can add providers by placing files in lua/loomworks/sdks/.
 
+local notify = require("loomworks.notify").notify
 local API = require("loomworks.api_versions")
 local loader = require("loomworks.plugin_loader")
 
@@ -26,7 +27,7 @@ local _load_failed = {}
 local function reject(id, reason)
     if _rejected[id] then return end
     _rejected[id] = reason
-    vim.notify(
+    notify(
         "loomworks: SDK provider " .. loader.display_id(id) .. " will not load: " .. reason,
         vim.log.levels.ERROR)
 end

@@ -32,6 +32,14 @@
 
 --- @alias loomworks.DiagnosticSeverity "warn"|"error"
 
+--- A warning or error a workspace load raised through the host's notifier
+--- (core `_deps.notify`, captured by `Core:_begin_load_notes`): the load's
+--- persistent diagnostics (core daemon.md §19.13 "Load warnings").
+--- `text` is the notification exactly as the hosts print it.
+--- @class loomworks.LoadNote
+--- @field severity loomworks.DiagnosticSeverity
+--- @field text string
+
 --- A structural diagnostic surfaced by `Workspace:diagnostics()`.
 --- Aggregated from per-domain-object `:diagnostic()` methods (Profile,
 --- Configuration, ConfigurationSet, ...).

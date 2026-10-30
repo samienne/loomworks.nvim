@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 --- @type table<string, table>
@@ -26,14 +27,14 @@ local rejected = {}
 local load_failed = {}
 
 --- Notify the user once that a module file failed the load check.
---- Routed through vim.notify so it shows on the first nvim load
+--- Routed through the host's notifier (loomworks.notify) so it shows on the first load
 --- the mismatch happens; subsequent gets stay silent.
 --- @param id string
 --- @param reason string
 local function reject(id, reason)
     if rejected[id] then return end
     rejected[id] = reason
-    vim.notify(
+    notify(
         "loomworks: module " .. loader.display_id(id) .. " will not load: " .. reason,
         vim.log.levels.ERROR)
 end

@@ -3,6 +3,7 @@
 --- Supports module targets (e.g. cmake executables from file-api), command-type launch
 --- configs from loomworks.json.
 
+local notify = require("loomworks.notify").notify
 local expand = require("loomworks.expand")
 local debug_mod = require("loomworks.debug")
 
@@ -394,7 +395,7 @@ function LaunchTarget:_build_deps(deps)
                 return future_mod.rejected(
                     LaunchTarget.unresolved_dependency_message(captured_dep))
             end
-            vim.notify("loomworks: building dependency " .. captured_dep.key,
+            notify("loomworks: building dependency " .. captured_dep.key,
                 vim.log.levels.INFO)
             return overseer.run_configuration_action(unit, "build")
         end)
@@ -827,7 +828,7 @@ function LaunchTarget:debug()
     local spec, err, severity = require("loomworks.run_prep").resolve_debug(self)
     if not spec then
         if err then
-            vim.notify("loomworks: " .. err,
+            notify("loomworks: " .. err,
                 severity == "error" and vim.log.levels.ERROR or vim.log.levels.WARN)
         end
         return

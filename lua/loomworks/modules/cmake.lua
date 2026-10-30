@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local io_mod = require("loomworks.io")
@@ -206,7 +207,7 @@ local function warn_once(key, msg)
     if M._warned[key] then return end
     M._warned[key] = true
     vim.schedule(function()
-        vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+        notify("loomworks: " .. msg, vim.log.levels.WARN)
     end)
 end
 

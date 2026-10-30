@@ -13,6 +13,7 @@
 --- @field _setup_error { root: string, message: string, trust?: { kind: "user"|"cache", status: string, path: string }, user_untrusted?: string, cache_untrusted?: boolean, user_version_mismatch?: boolean, newer?: boolean }|nil set when setup fails (`trust`: a refused `.nvim` file, spec §17.4; `newer`: a file with a newer schema, spec §2.7)
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _pending_root string|nil root passed to setup(), known before async init resolves
+--- @field _load_capture { list: loomworks.LoadNote[], inner: function, fn: function }|nil the running load's notification capture (`_begin_load_notes`)
 local Core = {}
 Core.__index = Core
 
@@ -45,7 +46,9 @@ local DEFAULT_DEPS = {
     modules   = require("loomworks.modules"),
     FileTracker = require("loomworks.file_tracker"),
     log       = require("loomworks.log").default(),
-    notify    = vim.notify,
+    -- (Late-bound: a replaced `vim.notify` — an editor's notifier plugin, a
+    -- test's stub — is the one called.)
+    notify    = function(msg, level, opts) return vim.notify(msg, level, opts) end,
     now       = function() return os.date("!%Y-%m-%dT%H:%M:%SZ") end,
     clock     = function() return vim.uv.hrtime() / 1e9 end,
     --- Normalize a file path for comparison. On Windows, also lowercases
@@ -186,6 +189,9 @@ function Core:setup(opts)
     self:_stop_refused_watch()
     self._setup_error = nil
     self._state = "initializing"
+    -- What this load raises is kept as its load diagnostics (core daemon.md
+    -- §19.13 "Load warnings"), from here to the end of `_on_files_read`.
+    self:_begin_load_notes()
     self._deps.events.emit("workspace_initializing")
 
     local ws_mod = self._deps.workspace
@@ -202,10 +208,12 @@ function Core:setup(opts)
     -- it found it.)
     local okr, refused = pcall(self._recover_journal, self, root)
     if not okr then
+        self:_end_load_notes()
         self._state = "uninitialized"
         error(refused, 0)
     end
     if refused then
+        self:_end_load_notes()
         -- (a host that reports refusals itself — the CLI — prints it once)
         if not self._deps.quiet_trust_errors then
             self._deps.notify("loomworks: " .. refused, vim.log.levels.ERROR)
@@ -236,6 +244,36 @@ function Core:setup(opts)
             end)
         end
     )
+end
+
+--- Start capturing the running load's warnings and errors (core daemon.md
+--- §19.13 "Load warnings"): until `_end_load_notes`, every notification of
+--- level WARN or above (or none: the hosts print it as a warning) through
+--- `_deps.notify` is recorded, then passed on to the host's notifier. A
+--- capture still open (a load that never completed) is ended first.
+--- @return loomworks.LoadNote[] list the capture fills
+function Core:_begin_load_notes()
+    self:_end_load_notes()
+    local list, inner = {}, self._deps.notify
+    local function capture(msg, level)
+        if not level or level >= vim.log.levels.WARN then
+            list[#list + 1] = { severity = (level or 0) >= vim.log.levels.ERROR and "error" or "warn",
+                text = tostring(msg) }
+        end
+        return inner(msg, level)
+    end
+    self._deps.notify = capture
+    self._load_capture = { list = list, inner = inner, fn = capture }
+    return list
+end
+
+--- End the running load's capture: the host's notifier is restored (unless a
+--- host replaced it meanwhile). Nothing when none is open.
+function Core:_end_load_notes()
+    local c = self._load_capture
+    if not c then return end
+    self._load_capture = nil
+    if self._deps.notify == c.fn then self._deps.notify = c.inner end
 end
 
 --- Complete (or refuse) a commit journal of `root` before loading (spec
@@ -290,6 +328,7 @@ function Core:_on_files_read(root, paths, results)
         end
         return e
     end, self, root, paths, results)
+    self:_end_load_notes()
     if not ok then
         if old and self._workspace == old and old._tracker then
             old._tracker:resume()
@@ -432,6 +471,9 @@ function Core:_load_files(root, paths, results)
     end
 
     self._workspace = Workspace.new(self, data)
+    -- The load's notifications so far and to the end of this load (the
+    -- capture's list, still filling).
+    self._workspace._load_notes = self._load_capture and self._load_capture.list or {}
     self._workspace._shared_ignored = data.shared_ignored or {}
     self._workspace._user_unread = unread_user
 

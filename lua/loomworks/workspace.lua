@@ -626,6 +626,7 @@ end
 --- @field _user_provenance table<string, table> per-project sub-item provenance from merge
 --- @field _shared_baseline table|nil raw parsed loomworks.json for modified-state computation
 --- @field _shared_ignored table[] program-bearing fields stripped from loomworks.json (spec §17.6; program_fields.strip)
+--- @field _load_notes loomworks.LoadNote[]|nil the warnings and errors the load of this workspace raised (core daemon.md §19.13 "Load warnings"); nil for a workspace no load made (a daemon snapshot's projection)
 --- @field _user_unread "unsigned"|"invalid"|nil the working copy on disk was refused (spec §17.4) and this load, made for an import that replaces it unread (spec §16.39), treated it as absent; no save may overwrite it until that import writes
 --- @field _import_writing boolean|nil true while `commit_import` saves the working copy
 --- @field _merged_config table|nil last merged config (internal shape) — supplies-check for _shared_ignored diagnostics
@@ -2658,6 +2659,34 @@ end
 --- @return table[] ignored entries `{ project, kind, path, label, detail, ... }`
 function Workspace:ignored_program_settings()
     return require("loomworks.program_fields").active(self._shared_ignored, self._merged_config)
+end
+
+--- The load's warnings and errors as persistent workspace diagnostics
+--- (core daemon.md §19.13 "Load warnings"): `source = "load"`, the message
+--- without the notification's `loomworks: ` prefix, in the order raised.
+--- Kept apart from the structural `diagnostics()` (which `lw status` lists
+--- and `--check` gates on): the CLI prints them as the load's notes.
+--- @return loomworks.Diagnostic[]
+function Workspace:load_diagnostics()
+    local out = {}
+    for _, n in ipairs(self._load_notes or {}) do
+        out[#out + 1] = { severity = n.severity, source = "load",
+            message = (n.text:gsub("^loomworks: ", "")) }
+    end
+    return out
+end
+
+--- The load's warnings and errors as the notifications they were raised as
+--- (text and role, §19.15 "Roles and verbose"): what a request that uses
+--- this workspace carries in its reply notes.
+--- @return string[] texts, string[] roles
+function Workspace:load_notes()
+    local texts, roles = {}, {}
+    for _, n in ipairs(self._load_notes or {}) do
+        texts[#texts + 1] = n.text
+        roles[#roles + 1] = n.severity == "error" and "fail" or "warn"
+    end
+    return texts, roles
 end
 
 --- Sorted by `(severity, source)` so the order is stable across

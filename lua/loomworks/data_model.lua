@@ -2,6 +2,7 @@
 --- Pure-data _sync_* logic. Entry point: M.refresh(). Also exposes
 --- sync_build_dir_refs() for use by mutation methods.
 
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local BuildDir = require("loomworks.build_dir")
@@ -291,7 +292,7 @@ local function sync_config_sets(ctx, workspace, config)
                     local key = name .. "|" .. project_key .. "|" .. tostring(variant)
                     if not _reported_stale_mappings[key] then
                         _reported_stale_mappings[key] = true
-                        vim.notify(
+                        notify(
                             "loomworks: configuration_set '" .. name
                                 .. "' references unknown configuration '"
                                 .. tostring(variant) .. "' for project '"
