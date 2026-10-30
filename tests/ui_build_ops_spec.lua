@@ -10,6 +10,14 @@
 local model = require("loomworks.ui.model_calls")
 local remote_task = require("loomworks.daemon.remote_task")
 
+--- Make `obs` the editor's observer in `daemon` mode (no model, step 6b-alpha).
+local function set_daemon(obs)
+    local observer = require("loomworks.daemon.observer")
+    observer._current = obs
+    observer._selection = obs and { mode = "daemon", source = "default", daemon = true } or nil
+end
+
+
 --- A fake observer carrying every method: records owned calls; each call
 --- stays running until the test ends it.
 local function fake_obs()
@@ -49,7 +57,7 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
         local obs, ws, saved_select, saved_notify, notes
         before_each(function()
             obs = fake_obs()
-            ws = { root = "/w", _daemon_observer = obs }
+            ws = nil; set_daemon(obs)
             saved_select, saved_notify = vim.ui.select, vim.notify
             notes = {}
             vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
@@ -158,7 +166,7 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
             run("Build/1.build", { profile = other }) -- 102
             -- A started call matched by its task's meta ids (a call by objects).
             obs.owned[#obs.owned + 1] = { method = "build", args = {}, id = 103, h = {},
-                task = remote_task.new(nil, 5, { name = "dev", profile = "dev", profile_id = "p:1",
+                task = remote_task.new(5, { name = "dev", profile = "dev", profile_id = "p:1",
                     units = { { project = "app", configuration = "Debug-x", id = "u:1" } } }, 0) }
             run("Build/1.clean", { units = { UROW } })
             assert.same({ 100, 101, 103 }, obs.cancelled)
@@ -177,7 +185,7 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
             message = "nothing to clean for app/Debug — no configured build directories." }
         before_each(function()
             obs = fake_obs()
-            ws = { root = "/w", _daemon_observer = obs }
+            ws = nil; set_daemon(obs)
             saved = { vim.notify, actions._show_confirmation }
             notes = {}
             vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
@@ -364,9 +372,9 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
 
         it("lists the rows' configured units and, in daemon mode, the editor's own calls it stops", function()
             local obs = fake_obs()
-            local ws = { root = "/w", _daemon_observer = obs }
+            local ws = nil; set_daemon(obs)
             obs.owned[1] = { method = "build", args = {}, id = 1, h = { unit_ids = { "u:1" } } }
-            obs.owned[2] = { method = "build", args = {}, id = 2, h = {}, task = remote_task.new(nil, 2,
+            obs.owned[2] = { method = "build", args = {}, id = 2, h = {}, task = remote_task.new(2,
                 { name = "build other", profile_id = "p:9", units = { { project = "z", id = "u:9" } } }, 0) }
             local ctx = actions.clean_confirmation(ws, "Clean profile: dev", "p:1", PROW.units)
             local text = table.concat(ctx.lines, "\n")
@@ -386,14 +394,14 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
     end)
 
     it("a RemoteTask reads the meta's profile_id and units[].id and matches rows by them", function()
-        local t = remote_task.new(nil, 1, { name = "dev", profile = "dev", profile_id = "p:1",
+        local t = remote_task.new(1, { name = "dev", profile = "dev", profile_id = "p:1",
             units = { { project = "app", configuration = "app-Debug", id = "u:1" }, { project = "lib" } } }, 0)
         assert.equals("p:1", t.profile_id)
         assert.same({ "u:1" }, t:unit_ids())
         assert.is_true(t:names_ids("p:1", nil))
         assert.is_true(t:names_ids(nil, { "u:1" }))
         assert.is_false(t:names_ids("p:2", { "u:2" }))
-        local old = remote_task.new(nil, 2, { name = "x", profile = "dev", units = { { project = "app" } } }, 0)
+        local old = remote_task.new(2, { name = "x", profile = "dev", units = { { project = "app" } } }, 0)
         assert.is_nil(old.profile_id)
         assert.is_false(old:names_ids("p:1", { "u:1" }))
     end)

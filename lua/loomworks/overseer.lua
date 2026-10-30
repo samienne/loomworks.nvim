@@ -1683,8 +1683,8 @@ function M.route(method, scope, opts)
     return f
 end
 
---- A module clean as a daemon call (Profile:clean / ConfigUnit:clean through
---- the workspace's `_operation_router`; loomworks.daemon.editor_ops.clean):
+--- A module clean as a daemon call (loomworks.daemon.editor_ops.clean;
+--- TODO(A1b): the facade's clean by ids, step 6b-α):
 --- its Future, or nil in the `in-process` mode.
 --- @param scope { profile?: loomworks.Profile, units?: loomworks.ConfigUnit[] }
 --- @return loomworks.Future|nil

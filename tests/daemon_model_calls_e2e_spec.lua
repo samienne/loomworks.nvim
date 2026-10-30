@@ -34,6 +34,9 @@ end
 
 describe("status page model writes through a real daemon (step 5o C2a)", function()
     local root, srv, core, obs, ws, key
+    -- The workspace the calls name: none in `daemon` mode (the editor holds
+    -- no model, step 6b-alpha); the in-process tests name theirs.
+    local cws
     local notes, orig_notify, wv_saved
 
     -- The in-process writes of the routed methods: never reached in daemon
@@ -71,6 +74,8 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         for name, fn in pairs(wv_saved) do wv[name] = fn end
         vim.notify = orig_notify
         if obs then obs:stop() end
+        observer.detach()
+        cws = nil
         obs = nil
         if srv and not srv.stopped then srv:stop("test end", 0) end
         srv = nil
@@ -95,7 +100,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         service.attach(srv, require("loomworks.cli")._daemon_build_host())
         assert(srv:start())
         local fr = FR.new({})
-        obs = observer.attach(ws, { getenv = daemon_mode, keepalive_ms = 100,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
         assert.is_true(vim.wait(60000, function()
             return obs:can_call("Workspace/1.set_intent") and obs:can_call("Profiles/1.set_active")
@@ -103,7 +108,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         end, 20), obs:runtime_line())
         -- A first call loads the workspace in the daemon; the view follows.
         local r
-        model.call(ws, "ConfigSets/1.candidates", {}, function(x) r = x end)
+        model.call(nil, "ConfigSets/1.candidates", {}, function(x) r = x end)
         assert.is_true(vim.wait(60000, function() return r ~= nil end, 20))
         assert.equals("ok", r.outcome, vim.inspect(r))
         assert.is_true(vim.wait(60000, function()
@@ -115,7 +120,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     --- `method` called with `params`; its outcome once it arrived.
     local function call(method, params)
         local r
-        model.call(ws, method, params, function(x) r = x end)
+        model.call(cws, method, params, function(x) r = x end)
         assert.is_true(vim.wait(60000, function() return r ~= nil end, 20), method)
         return r
     end
@@ -143,17 +148,17 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         assert.equals("local", prow.intent)
 
         -- `P` on the profile row (helpers.cycle_intent: local → local+shared).
-        require("loomworks.ui.helpers").cycle_intent(prow, ws)
+        require("loomworks.ui.helpers").cycle_intent(prow, nil)
         until_view(function(v) return row("profiles", "dev").intent == "local+shared" end)
         -- Unpublished: the buffer is modified (`:e` refused), from the view.
         until_view(function(v) return v.modified == true end)
-        assert.is_true(status_source.modified(ws))
+        assert.is_true(status_source.modified(nil))
 
         -- `:w`: Workspace/1.publish; the view's update precedes the reply.
         local r = call("Workspace/1.publish", {})
         assert.equals("ok", r.outcome, vim.inspect(r))
         assert.is_false(obs:workspace_view().modified)
-        assert.is_false(status_source.modified(ws))
+        assert.is_false(status_source.modified(nil))
         local published = vim.json.decode(table.concat(vim.fn.readfile(root .. "/loomworks.json"), "\n"))
         assert.is_not_nil(published.profiles and published.profiles.dev)
 
@@ -168,7 +173,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         local prow = assert(row("profiles", "dev"))
         local stale = vim.deepcopy(prow)
         stale.id = "999999:999999"
-        require("loomworks.ui.helpers").cycle_intent(stale, ws)
+        require("loomworks.ui.helpers").cycle_intent(stale, nil)
         assert.is_true(vim.wait(30000, function() return #errors() > 0 end, 20))
         assert.truthy(errors()[1]:find("^loomworks: intent: "), errors()[1])
         assert.truthy(errors()[1]:find("stale", 1, true), errors()[1])
@@ -396,9 +401,9 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
 
         -- The editor opened from the page's row (the daemon's view and the
         -- declaration), and its save: a rename keeping the id.
-        local body = status_source.read(ws)
+        local body = status_source.read(nil)
         assert.equals("daemon", body.mode)
-        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
+        local ctx = { lw = require("loomworks"), view = body.view, ws = nil, mode = body.mode }
         local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
         setmetatable(page._folds, { __index = function() return true end })
         local enter
@@ -463,9 +468,9 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     --- and the `on_enter` of its first line matching `pat` after the line
     --- matching `after` (a plain find).
     local function page_action(pat, after)
-        local body = status_source.read(ws)
+        local body = status_source.read(nil)
         assert.equals("daemon", body.mode)
-        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
+        local ctx = { lw = require("loomworks"), view = body.view, ws = nil, mode = body.mode }
         local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
         setmetatable(page._folds, { __index = function() return true end })
         local seen = after == nil
@@ -588,8 +593,8 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
         assert.same({ project = "lib", path = "d" }, deploy["three/"])
 
         -- A step's removal (D): the rest unchanged.
-        local body = status_source.read(ws)
-        local ctx = { lw = require("loomworks"), view = body.view, ws = ws, mode = body.mode }
+        local body = status_source.read(nil)
+        local ctx = { lw = require("loomworks"), view = body.view, ws = nil, mode = body.mode }
         local page = require("loomworks.ui.tree").new(function(t) require("loomworks.ui.sections.projects")(t, ctx) end)
         setmetatable(page._folds, { __index = function() return true end })
         local delete
@@ -736,7 +741,7 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
                 variant = "Debug", state = "built", build_dir = dir }
             dws:remerge(nil, cache)
             dws:_save_cache()
-            obs:_own_write() -- a fresh read of the view
+            obs:_refetch_views(observer.VIEW_WORKSPACE) -- a fresh read of the view
             local orow
             until_view(function(v)
                 for _, o in ipairs(v.orphaned and v.orphaned.configurations or {}) do
@@ -848,7 +853,8 @@ describe("status page model writes through a real daemon (step 5o C2a)", functio
     -- `in-process` mode (no observer): its build state, then its declaration.
     it("in-process mode: the project row's D confirms, then deletes its build state and its declaration", function()
         local uv = vim.uv or vim.loop
-        assert.is_nil(observer.of(ws))
+        assert.is_nil(observer.current())
+        cws = ws
         local unit
         for _, p in pairs(ws._profiles) do
             if p.key == "dev" and not p._removed then unit = p:projects()[1]._config_unit end

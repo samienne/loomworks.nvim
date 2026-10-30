@@ -28,7 +28,6 @@ local M = {}
 local function build_added_set()
     local lw = require("loomworks")
     local ws = lw.get_workspace()
-    if not ws then return {} end
 
     local added = {}
     local function add(rel, type_name)
@@ -41,6 +40,7 @@ local function build_added_set()
         for _, row in ipairs(type(view) == "table" and view.projects or {}) do add(row.path, row.type) end
         return added
     end
+    if not ws then return added end
     for _, proj in pairs(ws._projects) do add(proj.path or proj.key, proj.type) end
     return added
 end
@@ -87,7 +87,8 @@ function M.open(root)
     local function do_add(entry, type_info)
         local lw = require("loomworks")
         local ws = lw.get_workspace()
-        if not ws then return end
+        -- (In `daemon` mode the editor holds no model, step 6b-alpha.)
+        if not ws and not require("loomworks.daemon.editor_ops").daemon_of(nil) then return end
         local function failed(err)
             vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
         end
@@ -111,7 +112,7 @@ function M.open(root)
         local rel = entry.abs_path:sub(#root + 2)
         if rel == "" then rel = "." end
         local ws = require("loomworks").get_workspace()
-        if not ws then return end
+        if not ws and not require("loomworks.daemon.editor_ops").daemon_of(nil) then return end
         local body = require("loomworks.status_source").read(ws)
         local prow
         for _, row in ipairs(type(body.view) == "table" and body.view.projects or {}) do

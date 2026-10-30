@@ -23,6 +23,9 @@ local M = {}
 
 --- @type loomtest.TestAdapter|nil
 local _adapter = nil
+--- The form `_adapter` was registered in ("daemon" / "in-process").
+--- @type string|nil
+local _adapter_mode = nil
 
 --- A tree entry as a loomtest node.
 --- @param e table
@@ -716,13 +719,14 @@ function M.register()
     local ok, loomtest = pcall(require, "loomtest")
     if not ok then return end
 
-    _adapter = test_source.mode() == "daemon" and create_daemon_adapter() or create_adapter()
+    _adapter_mode = test_source.mode()
+    _adapter = _adapter_mode == "daemon" and create_daemon_adapter() or create_adapter()
     loomtest.register_adapter(_adapter)
 end
 
 --- Test seam: forget the daemon form's state.
 function M._reset()
-    _adapter, _asked, _inflight, _rendering = nil, false, false, false
+    _adapter, _adapter_mode, _asked, _inflight, _rendering = nil, nil, false, false, false
     _last_stale, _stale_meanwhile, _held, _run = nil, false, false, nil
 end
 
@@ -783,7 +787,14 @@ function M.setup()
         if type(d) == "table" and d.view ~= nil and d.view ~= "tests" then return end
         schedule_render()
     end)
-    lw.on("daemon_runtime_changed", function() schedule_render() end)
+    lw.on("daemon_runtime_changed", function()
+        -- In `daemon` mode no model loads (no `workspace_changed`, step
+        -- 6b-α): the daemon form registers once the editor observes it.
+        if test_source.mode() == "daemon" and _adapter_mode ~= "daemon" then
+            return vim.schedule(M.register)
+        end
+        schedule_render()
+    end)
     -- A run's per-case progress (§19.16 "Tests" Runs): the editor's own run
     -- feeds its sink (progress), another client's run or a collect only the
     -- nodes.

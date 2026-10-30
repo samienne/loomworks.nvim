@@ -19,9 +19,10 @@ local debug_mod = require("loomworks.debug")
 return function(tree, ctx)
     local lw = ctx.lw
     local ws = lw.get_workspace()
-    if not ws then return end
-
     local ops = require("loomworks.daemon.editor_ops")
+    -- In `daemon` mode the editor holds no model (step 6b-alpha): the
+    -- section reads the daemon's records with no workspace.
+    if not ws and not ops.daemon_of(nil) then return end
     local records, why = ops.debug_adapters(ws)
     -- No language known: no section.
     if records and #records == 0 then return end

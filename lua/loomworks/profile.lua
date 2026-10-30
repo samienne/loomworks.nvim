@@ -1864,14 +1864,10 @@ function Profile:clean(on_done)
         return future_mod.resolved(true)
     end
 
-    -- In `daemon` mode the clean is a daemon call whose task the editor owns
-    -- (spec §19.16 "Editor operations"): the workspace's router (set by the
-    -- editor, loomworks.daemon.editor_ops) pre-empts and sends it, refused
-    -- when the daemon cannot carry it ("Availability"); without a router
-    -- (the `in-process` mode) in-process.
-    local router = self._workspace._operation_router
-    local routed = router and router.clean({ profile = self })
-    local f = routed or self:_clean_in_process()
+    -- (A `daemon`-mode editor holds no model, step 6b-α: a model's clean is
+    -- always in-process — the daemon's, the CLI's or the in-process
+    -- editor's.)
+    local f = self:_clean_in_process()
 
     if on_done then
         f:next(function() on_done() end)

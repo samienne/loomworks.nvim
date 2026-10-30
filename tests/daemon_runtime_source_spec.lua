@@ -75,12 +75,13 @@ describe("the Runtime line (spec/ui.md §1.1)", function()
     end)
     after_each(function()
         if obs then obs:stop() end
+        observer.detach()
         obs = nil
         pcall(function() core:shutdown() end)
     end)
 
     local function attach(configured)
-        return observer.attach(ws, { configured = configured, keepalive_ms = 100,
+        return observer.attach(ws.root, { configured = configured, keepalive_ms = 100,
             resolve = function() return nil end })
     end
 

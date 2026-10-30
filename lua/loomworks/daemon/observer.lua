@@ -1,9 +1,9 @@
 --- loomworks/daemon/observer.lua — the editor as an OBSERVER of the workspace
 --- daemon (spec §19.16, §19.19 step 4).
 ---
---- In `daemon` runtime mode every workspace the editor loads gets one
---- Observer (owned by the Workspace, `ws._daemon_observer`, stopped by
---- `Workspace:teardown`). From step 5k it also carries the editor's builds,
+--- In `daemon` runtime mode the editor loads no workspace of its own (step
+--- 6b-α): it attaches one Observer to the root it loads (`M.attach(root)`,
+--- `M.current()`; another root's stops it, `M.detach` on shutdown). From step 5k it also carries the editor's builds,
 --- configures and module cleans as interface calls whose tasks the editor
 --- owns (`start_owned`, `cancel_owned`; the routing is
 --- loomworks.daemon.editor_ops); an operation it cannot carry is refused
@@ -70,11 +70,20 @@ local views = require("loomworks.views")
 
 local M = {}
 
---- The observer last attached, until it stops (`M.current`).
+--- The observer last attached, until it stops (`M.current`). The editor has
+--- at most one: it observes the daemon of the root it loaded (spec §19.16
+--- "End state"; step 6b-α: no workspace model of its own).
 --- @type loomworks.daemon.Observer|nil
 M._current = nil
---- The workspace last attached (M.loaded_workspace); weak.
-local attached = setmetatable({}, { __mode = "v" })
+--- The editor's runtime selection, chosen on the last attach (either mode;
+--- `M.selection`): the Runtime line, and whether operations are refused
+--- rather than run in-process once no observer carries them.
+--- @type loomworks.daemon.EditorSelection|nil
+M._selection = nil
+--- The deprecated `in-process` editor's loaded model (weak), until step
+--- 6b-β: what a status-page call given no workspace goes to
+--- (ui/model_calls). Never set in `daemon` mode — the editor loads none.
+local loaded = setmetatable({}, { __mode = "v" })
 
 local function env_ms(name)
     local v = tonumber(os.getenv(name) or "")
@@ -95,8 +104,7 @@ M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting for it"
 
 --- @class loomworks.daemon.Observer
---- @field ws loomworks.Workspace
---- @field root string
+--- @field root string the workspace root it observes the daemon of
 --- @field state "idle"|"no-binary"|"probing"|"downloading"|"connecting"|"connected"|"waiting"|"stopped"
 --- @field note string|nil the current Runtime note
 --- @field conn loomworks.daemon.Conn|nil
@@ -109,7 +117,6 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _why table<string, string>|nil per feature: why it is not subscribed (its note)
 --- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `describe` reports `delivery = "subscription"`, step 5g.3)
 --- @field _view_seq integer|nil the last `seq` of the `/views` object seen on this connection (a gap re-fetches the views, step 5j)
---- @field _own_write_pending boolean|nil a `get` of the workspace view after an editor write is scheduled (`_own_write`, step 5n C1)
 --- @field generation any session generation of the observed daemon
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
@@ -376,9 +383,12 @@ function M.feature_note(want, offered, why)
     return string.format("%s: %s, editor needs /%d", label, theirs, want.v)
 end
 
---- Attach an observer to a freshly loaded workspace when the runtime mode
---- selects the daemon (spec §19.1). Returns the observer, or nil (in-process
---- mode: nothing happens).
+--- Attach the editor to the workspace daemon of `root` when the runtime mode
+--- selects the daemon (spec §19.1, §19.16 "End state"): the editor loads no
+--- workspace of its own then (step 6b-α), it only observes. Records the
+--- selection in either mode (`M.selection`, the Runtime line). Returns the
+--- observer, or nil (in-process mode: nothing else happens). An observer of
+--- another root stops first; one of the same root is kept.
 --- opts (tests inject):
 ---   configured  the setup option `runtime.mode`
 ---   getenv      replaces os.getenv for LOOMWORKS_LW
@@ -404,55 +414,67 @@ end
 ---   keepalive_ms, retire_check_ms
 ---   channel_tick_ms  replaces CHANNEL_TICK_MS
 ---   environ     fun() → table<string, string> (vim.fn.environ: the environment a Build/1 call carries)
---- @param ws loomworks.Workspace
+--- @param root string the workspace root (resolved)
 --- @param opts? table
 --- @return loomworks.daemon.Observer|nil
-function M.attach(ws, opts)
+function M.attach(root, opts)
     opts = opts or {}
-    if not ws or ws._torn_down then return nil end
+    if type(root) ~= "string" or root == "" then return nil end
     local runtime = require("loomworks.daemon.runtime")
-    -- Kept on the workspace for the Runtime line, in-process mode included.
     local sel = runtime.editor_select({ configured = opts.configured })
-    ws._runtime_selection = sel
-    attached.ws = ws
-    if not sel.daemon then return nil end
-    if ws._daemon_observer then return ws._daemon_observer end
+    M._selection = sel
+    local cur = M.current()
+    if cur and cur.root == root and sel.daemon then return cur end
+    if cur then cur:stop() end
+    -- Not `daemon`: the views are built in-process again (an earlier
+    -- observer's root is left).
+    if not sel.daemon then
+        views.daemon_root(nil)
+        return nil
+    end
     local self = setmetatable({
-        ws = ws, root = ws.root, opts = opts, state = "idle", seq = 0,
+        root = root, opts = opts, state = "idle", seq = 0,
         _tasks = {}, _order = {}, _owned = {},
         keepalive_ms = opts.keepalive_ms or M.KEEPALIVE_MS,
         retire_check_ms = opts.retire_check_ms or M.RETIRE_CHECK_MS,
         channel_tick_ms = opts.channel_tick_ms or M.CHANNEL_TICK_MS,
     }, Observer)
-    ws._daemon_observer = self
     M._current = self
-    -- The domain objects' cleans ask it (step 5k; loomworks.daemon.editor_ops).
-    ws._operation_router = require("loomworks.daemon.editor_ops").router
+    views.daemon_root(root)
     if sel.warning then self.warning = sel.warning end
     self:start(false)
     return self
 end
 
---- The workspace the editor loaded last (M.attach, either mode) until it is
---- torn down, else nil: the workspace of a status-page call given none
---- (ui/model_calls), whose mode is its runtime selection even once its
---- observer has stopped. Weak: never keeps a swapped-away workspace alive.
+--- Detach the editor from the workspace daemon (shutdown, `:LoomworksReload`):
+--- the observer stops and the views are built in-process again. The
+--- selection is forgotten.
+function M.detach()
+    local cur = M._current
+    if cur then cur:stop() end
+    M._current, M._selection, loaded.ws = nil, nil, nil
+    views.daemon_root(nil)
+end
+
+--- Record the in-process editor's loaded model (init.lua, on
+--- `workspace_changed` in the `in-process` mode).
+--- @param ws loomworks.Workspace|nil
+function M.set_loaded_workspace(ws) loaded.ws = ws end
+
+--- The in-process editor's loaded model until it is torn down, else nil.
 --- @return loomworks.Workspace|nil
 function M.loaded_workspace()
-    local ws = attached.ws
+    local ws = loaded.ws
     if ws and not ws._torn_down then return ws end
     return nil
 end
 
---- The observer of `ws`, if any.
---- @param ws loomworks.Workspace|nil
---- @return loomworks.daemon.Observer|nil
-function M.of(ws) return ws and ws._daemon_observer or nil end
+--- The editor's runtime selection (the last attach), or nil before any.
+--- @return loomworks.daemon.EditorSelection|nil
+function M.selection() return M._selection end
 
---- The observer of the workspace the editor has loaded (the last attached,
---- until it stops), if any. The editor's operation routing asks the
---- observer of the operation's own workspace (`M.of`) instead
---- (loomworks.daemon.editor_ops, step 5k).
+--- The editor's observer of the workspace daemon (the last attached, until
+--- it stops), if any.
 --- @return loomworks.daemon.Observer|nil
 function M.current()
     local o = M._current
@@ -461,9 +483,8 @@ function M.current()
 end
 
 function Observer:_emit(event, data)
-    local core = self.ws and self.ws._core
-    local events = core and core._deps and core._deps.events
-    if events then pcall(events.emit, event, data) end
+    -- (Through the facade: the plugin requires no event bus of its own.)
+    pcall(function() require("loomworks")._emit(event, data) end)
 end
 
 --- Adopt the daemon's full state of a view into the store; the status page
@@ -1049,9 +1070,6 @@ function Observer:_on_relay(token, conn, err, info)
     self.incompat_note = nil
     self:_subscribe(conn, function()
         self:_connected_note()
-        -- What the daemon wrote before we connected (and subscribed): catch
-        -- up now.
-        self:_reload()
         self:_join_late(conn)
         -- Older schemas only: observed, and weighed for a retirement.
         if inc then self:_weigh_retire(target, conn, ch, inc) end
@@ -1877,7 +1895,7 @@ function Observer:_join_late(conn)
             for _, entry in ipairs(list) do
                 local id = type(entry) == "table" and entry.task_id or nil
                 if id ~= nil and not self._tasks[id] then
-                    local task = remote_task.adopt(self.ws, entry, clock)
+                    local task = remote_task.adopt(entry, clock)
                     if task then
                         self:_add(task)
                         adopted = true
@@ -1971,14 +1989,6 @@ function Observer:_on_closed(c)
     self:_spawn({ form = "no-launch", prefix = M.LOST_NOTE })
 end
 
---- Apply the workspace files' pending changes now (spec §19.12).
-function Observer:_reload()
-    local ws = self.ws
-    if not ws or ws._torn_down then return end
-    local tr = ws._tracker
-    if tr and tr.sync then pcall(tr.sync, tr) end
-end
-
 function Observer:_clock() return uv.hrtime() / 1e9 end
 
 --- A broadcast or task event from the daemon.
@@ -2052,7 +2062,6 @@ function Observer:_model_change(seq, generation)
     if self._debug_adapters or self._debug_fetch then self:_refetch_debug_adapters() end
     -- The LSP state is read again on every `Workspace/1` `changed` (§19.20).
     if self._lsp_read or self._lsp_fetch then self:_fetch_lsp() end
-    return self:_reload()
 end
 
 --- A task-stream event (spec §19.15).
@@ -2062,7 +2071,7 @@ function Observer:_on_task(msg)
     local task = self._tasks[id]
     if msg.phase == "start" then
         if task then return end
-        task = remote_task.new(self.ws, id, msg.meta, self:_clock())
+        task = remote_task.new(id, msg.meta, self:_clock())
         -- A task the editor started through a call (step 5k): its own, no
         -- origin marker, cancelled from the editor.
         local owned = self._owned[id]
@@ -3006,7 +3015,8 @@ end
 --- A debug-log line (the editor's log, when it has one).
 --- @param msg string
 function Observer:_debug(msg)
-    local core = self.ws and self.ws._core
+    local lw = package.loaded["loomworks"]
+    local core = type(lw) == "table" and type(lw._core) == "function" and lw._core() or nil
     local log = core and core._deps and core._deps.log
     if log and log.debug then pcall(log.debug, log, "daemon: %s", msg) end
 end
@@ -3141,22 +3151,6 @@ function Observer:workspace_view()
         return nil, "waiting for the workspace daemon"
     end
     return nil, ((note or M.feature_note(want, {})):gsub("^" .. vim.pesc(want.feature) .. ": ", ""))
-end
-
---- The editor wrote a state file of this observer's workspace itself (an
---- in-process write of the editor's model, `state_file_written`): fetch the
---- workspace view (`get`), whose freshness check applies the write in the
---- daemon (§19.13 "Freshness of views"); the views' `update`s follow from it.
---- One `get` per event-loop turn however many files the write touched.
-function Observer:_own_write()
-    if self._own_write_pending then return end
-    if not (self._feat and self._feat[M.VIEW_WORKSPACE.feature] == "subscribed") then return end
-    self._own_write_pending = true
-    vim.schedule(function()
-        self._own_write_pending = nil
-        if self.state == "stopped" then return end
-        self:_refetch_views(M.VIEW_WORKSPACE)
-    end)
 end
 
 --- Where the tests stand with this observer (§19.16 "Tests" Unavailable or
@@ -3342,13 +3336,12 @@ end
 --- `daemon`-mode observer is not connected (a version mismatch, no host
 --- binary, waiting), while a lost connection keeps the workspace unloaded,
 --- while the LSP configuration is unavailable, and for an ignored value.
---- @param ws loomworks.Workspace|nil
 --- @return string|nil text, boolean warn
-function M.runtime_line(ws)
-    local sel = ws and ws._runtime_selection
+function M.runtime_line()
+    local sel = M._selection
     if not sel then return nil, false end
     local head = sel.mode .. " (" .. sel.source .. ")"
-    local obs = M.of(ws)
+    local obs = M.current()
     if obs then
         local _, lsp_warn = obs:lsp_note()
         return head .. " — " .. obs:runtime_line(), obs.state ~= "connected" or obs._lost == true or lsp_warn
@@ -3382,11 +3375,9 @@ function Observer:stop()
     self._tasks_seq, self._tasks_relist, self._tasks_early = nil, nil, nil
     self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)
-    if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end
+    -- The selection stays: with no observer a `daemon`-mode editor's
+    -- operations are refused, never run in-process (editor_ops.daemon_of).
     if M._current == self then M._current = nil end
-    -- The router stays: a daemon-mode workspace's cleans are refused like
-    -- its builds, never run in-process (editor_ops.daemon_of reads the
-    -- workspace's selection; in the `in-process` mode it routes nothing).
     self._lsp_read, self._lsp_fetch, self._lsp_again, self._lost = nil, nil, nil, nil
 end
 

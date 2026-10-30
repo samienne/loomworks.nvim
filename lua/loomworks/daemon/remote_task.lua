@@ -2,25 +2,21 @@
 --- workspace daemon (spec §19.16): an operation another client started (e.g.
 --- `lw build` in a terminal).
 ---
---- It puts the same RUNTIME state on the editor's objects as a local operation
---- of its kind: its resolved units report `building` (or `configuring`; a
---- clean's report `cleaning`, the display of the transient clean state; a
---- reset's `deleting`, the display of the in-process reset's deletion), and
---- its resolved profile counts as having an active operation. A task without
---- a profile (`meta.scope = "all"`: `lw reset --all`) resolves its units
---- among the workspace's configuration units, and every profile with one of
---- them counts as having it. Runtime only —
---- nothing is written to the cache or the working copy, and nothing blocks an
---- editor operation (the cross-process build-directory locks do).
+--- Display and matching data only (step 6b-α): in `daemon` mode the editor
+--- holds no workspace model (spec §19.16 "End state"), so nothing is resolved
+--- to domain objects. Its `start` meta carries semantic keys (§19.15), kept
+--- for display, and from step 5o C2d the ids `profile_id` and `units[].id`
+--- (API.md §4.2), kept as they came: a status-page row is matched to its
+--- tasks by those, never by key. Runtime only — nothing is written to the
+--- cache or the working copy.
 ---
---- Its `start` meta carries semantic keys (§19.15) and, from step 5o C2d, the
---- ids `profile_id` and `units[].id` (API.md §4.2), kept as they came: a
---- status-page row is matched to its tasks by those. The keys are resolved ONCE,
---- here at the wire boundary, to the editor's own domain objects: the profile
---- among the workspace's profiles, each unit through that profile's
---- project-in-profile to its ConfigUnit. A key that does not resolve is kept
---- as a name for display only — nothing is created or hydrated for it.
---- Domain logic afterwards only follows the references.
+--- A process that DOES hold a model of the workspace — `lw status` (spec
+--- §16.18, §19.6) — resolves the task's keys to its own domain objects with
+--- `RemoteTask:resolve(ws)` (once, at the wire boundary) and then
+--- `attach_units`, so its Profiles rows show the daemon's task running.
+--- TODO(A1b): in the editor `profile`, `profiles`, `units[].unit`,
+--- `config_units`, `attach_units` / `detach_units` stay empty (it never
+--- resolves); their editor readers go with A1b.
 
 local M = {}
 
@@ -29,7 +25,7 @@ local M = {}
 M.OUTPUT_CAP_BYTES = 1024 * 1024
 
 --- @class loomworks.RemoteTaskUnit
---- @field unit loomworks.ConfigUnit|nil the resolved configuration unit
+--- @field unit loomworks.ConfigUnit|nil the resolved configuration unit (`RemoteTask:resolve`; never in the editor)
 --- @field project string the project key the daemon sent (display)
 --- @field configuration string|nil the configuration-unit key the daemon sent (display)
 --- @field id string|nil the unit's id the daemon sent (API.md §4.2 `units[].id`; step 5o C2d): what a
@@ -82,13 +78,12 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 local RemoteTask = {}
 RemoteTask.__index = RemoteTask
 
---- Resolve a task's `start` meta against the workspace (the boundary).
---- @param ws loomworks.Workspace
+--- A task from its `start` meta (the boundary): display data and ids only.
 --- @param id integer
 --- @param meta table|nil { name, kind, profile, profile_id, scope, units = { { project, configuration, id } }, origin }
 --- @param clock number
 --- @return loomworks.RemoteTask
-function M.new(ws, id, meta, clock)
+function M.new(id, meta, clock)
     meta = type(meta) == "table" and meta or {}
     local kind = type(meta.kind) == "string" and meta.kind or "build"
     local self = setmetatable({
@@ -101,53 +96,12 @@ function M.new(ws, id, meta, clock)
     self.profile_name = type(meta.profile) == "string" and meta.profile or nil
     self.profile_id = type(meta.profile_id) == "string" and meta.profile_id or nil
     self.steps = M.steps_of(meta.steps)
-    local profile
-    if self.profile_name and ws then
-        for _, p in ipairs(ws:get_profiles() or {}) do
-            if p.key == self.profile_name and not p._removed then profile = p; break end
-        end
-    end
-    self.profile = profile
     self.scope = (meta.scope == "all" and not self.profile_name) and "all" or nil
-    -- A task of configuration units (`Build/1` `units`, step 5k) has no
-    -- profile: its units resolve as for `reset --all` (§19.15).
-    local by_units = not self.profile_name and type(meta.units) == "table" and #meta.units > 0
-    if profile then self.profiles[1] = profile end
     for _, u in ipairs(type(meta.units) == "table" and meta.units or {}) do
         if type(u) == "table" and type(u.project) == "string" then
-            local cfg = type(u.configuration) == "string" and u.configuration or nil
-            local unit
-            if profile then
-                for _, pp in ipairs(profile:projects()) do
-                    if pp:project_key() == u.project and cfg ~= nil and pp:config_key() == cfg then
-                        unit = pp._config_unit
-                        break
-                    end
-                end
-            elseif (self.scope == "all" or by_units) and ws and cfg ~= nil then
-                -- No profile: among the workspace's configuration units.
-                for _, cu in pairs(ws._config_units or {}) do
-                    local pk = cu._project and cu._project.key or cu._init_project_key
-                    if pk == u.project and cu:config_key() == cfg then unit = cu; break end
-                end
-            end
-            self.units[#self.units + 1] = { unit = unit, project = u.project, configuration = cfg,
+            self.units[#self.units + 1] = { project = u.project,
+                configuration = type(u.configuration) == "string" and u.configuration or nil,
                 id = type(u.id) == "string" and u.id or nil }
-        end
-    end
-    if (self.scope == "all" or by_units) and ws then
-        -- Every profile with one of its resolved units has it running.
-        local mine = {}
-        for _, unit in ipairs(self:config_units()) do mine[unit] = true end
-        for _, p in ipairs(ws:get_profiles() or {}) do
-            if not p._removed then
-                for _, pp in ipairs(p:projects()) do
-                    if pp._config_unit and mine[pp._config_unit] then
-                        self.profiles[#self.profiles + 1] = p
-                        break
-                    end
-                end
-            end
         end
     end
     return self
@@ -182,17 +136,16 @@ end
 --- "Joining late"): one entry of the `status` reply's `tasks` (§19.11). Its
 --- start time is taken from `started_at` (wall clock), its percent from
 --- `percent`; its output starts now.
---- @param ws loomworks.Workspace
 --- @param entry table { task_id, name, kind, profile, units, origin, started_at, percent? }
 --- @param clock number now, clock seconds
 --- @param now_wall? number now, os.time() (default)
 --- @return loomworks.RemoteTask|nil
-function M.adopt(ws, entry, clock, now_wall)
+function M.adopt(entry, clock, now_wall)
     if type(entry) ~= "table" or entry.task_id == nil then return nil end
     local started = clock
     local at = tonumber(entry.started_at)
     if at then started = clock - math.max(0, (now_wall or os.time()) - at) end
-    local self = M.new(ws, entry.task_id, entry, started)
+    local self = M.new(entry.task_id, entry, started)
     self.pct = tonumber(entry.percent)
     return self
 end
@@ -205,6 +158,59 @@ function RemoteTask:origin_label()
     if self.origin == "cli" then return "lw" end
     if self.origin == "editor" then return "editor" end
     return nil
+end
+
+--- Resolve the task's semantic keys against a model of the workspace (the
+--- wire boundary; spec §19.16, §16.18): the profile among `ws`'s profiles,
+--- each unit through that profile's project-in-profile to its ConfigUnit. A
+--- task without a profile (`lw reset --all`, or a `Build/1` of units) resolves
+--- its units among the workspace's configuration units, and every profile
+--- with one of them counts it. A key that does not resolve stays a name for
+--- display. Only a process that holds a model calls it (`lw status`); a
+--- `daemon`-mode editor holds none (step 6b-α).
+--- @param ws loomworks.Workspace
+function RemoteTask:resolve(ws)
+    local profile
+    if self.profile_name then
+        for _, p in ipairs(ws:get_profiles() or {}) do
+            if p.key == self.profile_name and not p._removed then profile = p; break end
+        end
+    end
+    self.profile = profile
+    self.profiles = {}
+    if profile then self.profiles[1] = profile end
+    local by_units = not self.profile_name and #self.units > 0
+    for _, u in ipairs(self.units) do
+        local cfg, unit = u.configuration, nil
+        if profile then
+            for _, pp in ipairs(profile:projects()) do
+                if pp:project_key() == u.project and cfg ~= nil and pp:config_key() == cfg then
+                    unit = pp._config_unit
+                    break
+                end
+            end
+        elseif (self.scope == "all" or by_units) and cfg ~= nil then
+            for _, cu in pairs(ws._config_units or {}) do
+                local pk = cu._project and cu._project.key or cu._init_project_key
+                if pk == u.project and cu:config_key() == cfg then unit = cu; break end
+            end
+        end
+        u.unit = unit
+    end
+    if self.scope == "all" or by_units then
+        local mine = {}
+        for _, unit in ipairs(self:config_units()) do mine[unit] = true end
+        for _, p in ipairs(ws:get_profiles() or {}) do
+            if not p._removed then
+                for _, pp in ipairs(p:projects()) do
+                    if pp._config_unit and mine[pp._config_unit] then
+                        self.profiles[#self.profiles + 1] = p
+                        break
+                    end
+                end
+            end
+        end
+    end
 end
 
 --- Seconds since it started.

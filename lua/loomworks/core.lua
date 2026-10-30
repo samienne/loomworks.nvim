@@ -1242,18 +1242,15 @@ end
 
 --- `loomworks.view.Header/1`'s state built from the in-process model (spec
 --- §19.13 "Two sources, one shape"): the daemon's builder, without the
---- session fields and ids only the daemon fills (`in-process` mode only). A failed load reports as
---- the daemon's `error_state` does (cli.lua).
+--- session fields and ids only the daemon fills (`in-process` mode only: in
+--- `daemon` mode the editor has no model and loomworks.views builds nothing,
+--- step 6b-α). A failed load reports as the daemon's `error_state` does
+--- (cli.lua).
 --- @return loomworks.ViewHeader
 function Core:view_header()
     local ws = self._workspace
-    -- In `daemon` mode a view is never built from the editor's model
-    -- (§19.13): with no daemon table (not connected yet, the connection
-    -- lost, the view not offered) the workspace shows unloaded.
-    -- `version` is the running loomworks version, not model state: the
-    -- editor's own while it has no daemon table.
+    -- `version` is the running loomworks version, not model state.
     local version = require("loomworks.save_guard").version()
-    if ws and ws._daemon_observer then return { root = ws.root, state = "unloaded", version = version } end
     local e = not ws and self._setup_error or nil
     local err
     if e then
@@ -1266,13 +1263,10 @@ function Core:view_header()
 end
 
 --- `loomworks.view.ProjectsIndex/1`'s state built from the in-process model
---- (no ids; no projects when no workspace is loaded).
+--- (no ids; no projects when no workspace is loaded; `in-process` mode only).
 --- @return loomworks.ViewProjectsIndex
 function Core:view_projects_index()
-    -- In `daemon` mode never built from the model (§19.13): empty, so
-    -- `lw.buf_project` maps no buffer until the daemon reports `loaded`.
     local ws = self._workspace
-    if ws and ws._daemon_observer then return { projects = {} } end
     return require("loomworks.view_state").projects_index(ws)
 end
 

@@ -50,21 +50,18 @@ local function model(lw)
     return lw.get_workspace()
 end
 
---- The editor's observer of the loaded workspace's daemon (daemon runtime
---- mode), or nil. Never loads the daemon modules: in in-process mode they
---- are not loaded and there is none.
+--- The editor's observer of the workspace daemon (daemon runtime mode; the
+--- editor then holds no model, step 6b-α), or nil. Never loads the daemon
+--- modules: in in-process mode they are not loaded and there is none.
 --- @return loomworks.daemon.Observer|nil
 local function observer()
     local mod = package.loaded["loomworks.daemon.observer"]
-    local ws = model(facade())
-    if not ws or type(mod) ~= "table" or type(mod.of) ~= "function" then return nil end
-    local obs = mod.of(ws)
-    if obs and obs.state ~= "stopped" then return obs end
-    return nil
+    if type(mod) ~= "table" or type(mod.current) ~= "function" then return nil end
+    return mod.current()
 end
 
---- The runtime mode the tests follow: "daemon" while the loaded workspace
---- has an observer of the workspace daemon, else "in-process".
+--- The runtime mode the tests follow: "daemon" while the editor observes
+--- the workspace daemon, else "in-process".
 --- @return "daemon"|"in-process"
 function M.mode()
     return observer() and "daemon" or "in-process"

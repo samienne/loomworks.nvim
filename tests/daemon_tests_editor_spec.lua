@@ -36,9 +36,9 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
     end)
     after_each(function()
         vim.notify = orig_notify
-        local obs = ws and ws._daemon_observer
+        local obs = require("loomworks.daemon.observer")._current
         if obs then views.clear(obs) end
-        if ws then ws._daemon_observer = nil end
+        require("loomworks.daemon.observer")._current, require("loomworks.daemon.observer")._selection = nil, nil
         loomtest.unregister_adapter("loomworks")
         loomtest.clear()
         adapter_mod._reset()
@@ -60,7 +60,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
         end
         function conn:close() self.closed = true end
         local obs = setmetatable({
-            ws = ws, root = ws.root, state = "connected", mode = "interfaces", conn = conn,
+            root = ws.root, state = "connected", mode = "interfaces", conn = conn,
             daemon = { pid = 1 }, seq = 0, _tasks = {}, _order = {}, _owned = {},
             _feat = feat or { [observer.VIEW_TESTS.feature] = "subscribed", [observer.TESTS.feature] = "subscribed",
                 [observer.TASKS.feature] = "subscribed" },
@@ -68,7 +68,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
             opts = { environ = function() return { PATH = "/x" } end },
         }, observer.Observer)
         function obs:_spawn() end
-        ws._daemon_observer = obs
+        require("loomworks.daemon.observer")._current = obs
         return obs, calls
     end
 

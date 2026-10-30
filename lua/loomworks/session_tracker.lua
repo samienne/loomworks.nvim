@@ -838,7 +838,9 @@ function M.launch_refusal(target)
     local mod = package.loaded["loomworks.daemon.observer"]
     if type(mod) ~= "table" or not (target and target._profile) then return nil end
     local ws = require("loomworks.daemon.editor_ops").scope_workspace({ profile = target._profile })
-    local obs = ws and mod.of(ws) or nil
+    -- (A target of a model is never the `daemon`-mode editor's, step 6b-α.
+    -- TODO(A1b): launch targets from `Launch/1.targets`.)
+    local obs = ws == nil and mod.current() or nil
     if not obs then return nil end
     local unloaded, why = obs:workspace_unloaded()
     if not unloaded then return nil end

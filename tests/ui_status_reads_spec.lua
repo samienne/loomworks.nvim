@@ -18,12 +18,13 @@ local function fake_obs()
     return obs
 end
 
---- A daemon-mode workspace whose model fields are a trap: any read other
---- than its root and observer errors.
+--- The `daemon`-mode editor's workspace: none (it holds no model, step
+--- 6b-alpha); `obs` is its observer. Returns nil, the `ws` the page passes.
 local function trap_ws(obs)
-    return setmetatable({ root = "/w", _daemon_observer = obs }, {
-        __index = function(_, k) error("editor model read in daemon mode: " .. tostring(k), 2) end,
-    })
+    local observer = require("loomworks.daemon.observer")
+    observer._current = obs
+    observer._selection = obs and { mode = "daemon", source = "default", daemon = true } or nil
+    return nil
 end
 
 --- A tree recording nodes and items (label + opts).
@@ -477,5 +478,142 @@ describe("the profile row's + Add tool (protocol ids)", function()
     it("is hidden for a profile whose set is orphaned", function()
         local obs = fake_obs()
         assert.is_nil(add_tool(trap_ws(obs), profile_row({ orphaned_set = true })))
+    end)
+end)
+
+describe("status page actions in daemon mode with no model (A1a)", function()
+    local obs, saved_notify, saved_get, saved_select
+    before_each(function()
+        obs = fake_obs()
+        function obs:workspace_view() return self.view end
+        function obs:tasks() return {} end
+        function obs:_clock() return 0 end
+        trap_ws(obs)
+        saved_notify = vim.notify
+        vim.notify = function() end
+        -- The `daemon`-mode editor holds no model.
+        local lw = require("loomworks")
+        saved_get = lw.get_workspace
+        lw.get_workspace = function() return nil end
+        saved_select = vim.ui.select
+        vim.ui.select = function() end
+    end)
+    after_each(function()
+        vim.notify = saved_notify
+        require("loomworks").get_workspace = saved_get
+        vim.ui.select = saved_select
+        local observer = require("loomworks.daemon.observer")
+        observer._current, observer._selection = nil, nil
+    end)
+
+    local function methods()
+        local out = {}
+        for _, r in ipairs(obs.requests) do out[#out + 1] = r.method end
+        return out
+    end
+
+    it("create profile asks the daemon's ConfigSets/1.candidates", function()
+        obs.answer = { outcome = "ok", sets = {} }
+        require("loomworks.ui.actions").create_profile({ view = { profiles = {} } })()
+        assert.same({ "ConfigSets/1.candidates" }, methods())
+    end)
+
+    it("a project row offers P, publish and revert, each sent by the row", function()
+        local prow = { id = "pr:1", key = "app", type = "cmake", intent = "local", configurations = {} }
+        local nodes = {}
+        local tree = setmetatable({}, { __index = function() return function() end end })
+        function tree:node(label, opts) nodes[#nodes + 1] = { label = label, opts = opts } end
+        package.loaded["loomworks.ui.sections.projects"] = nil
+        require("loomworks.ui.sections.projects")(tree, { mode = "daemon", view = { projects = { prow } }, lw = {} })
+        local opts
+        for _, n in ipairs(nodes) do
+            if n.opts and n.opts.fold_key == "project:app" then opts = n.opts end
+        end
+        assert.is_table(opts)
+        assert.is_function(opts.on_publish)
+        assert.is_function(opts.on_publish_now)
+        assert.is_function(opts.on_revert_one)
+        opts.on_publish()
+        opts.on_publish_now()
+        opts.on_revert_one()
+        assert.same({ "Workspace/1.set_intent", "Workspace/1.publish_one", "Workspace/1.revert_one" }, methods())
+        assert.same({ id = "pr:1" }, { id = obs.requests[1].args.item.id })
+    end)
+
+    describe("the project browser", function()
+        local root, tree, saved_new
+        before_each(function()
+            root = vim.fs.normalize(vim.fn.tempname())
+            vim.fn.mkdir(root, "p")
+            local View = require("loomworks.ui.view")
+            saved_new = View.new
+            View.new = function(vopts)
+                tree = vopts.widget
+                return { open = function() end, close = function() end, refresh = function() end }
+            end
+        end)
+        after_each(function()
+            require("loomworks.ui.view").new = saved_new
+            vim.fn.delete(root, "rf")
+        end)
+
+        local function root_meta()
+            local lines = tree:render()
+            for i, l in ipairs(lines) do
+                if l:find(root:match("([^/]+)$"), 1, true) and tree.line_meta[i] then return tree.line_meta[i] end
+            end
+            error(table.concat(lines, "\n"))
+        end
+
+        it("adds a project through Projects/1.candidates and Projects/1.add", function()
+            obs.view = { projects = {} }
+            obs.answer = { outcome = "ok", key = "app", path = "." }
+            require("loomworks.ui.project_browser").open(root)
+            vim.ui.select = function(items, _, cb)
+                for _, it in ipairs(items) do
+                    if it.label == "Add as shell (custom)" then return cb(it) end
+                end
+            end
+            local ok, err = pcall(function() root_meta().on_enter() end)
+            assert(ok, err)
+            assert.same({ "Projects/1.candidates", "Projects/1.add" }, methods())
+        end)
+
+        it("removes a project by its view row (Maintenance/1.execute_deletion)", function()
+            obs.view = { projects = { { id = "pr:1", key = "app", type = "shell", path = "." } } }
+            require("loomworks.ui.project_browser").open(root)
+            local meta = root_meta()
+            assert.is_function(meta.on_delete)
+            meta.on_delete()
+            assert.same({ "Maintenance/1.execute_deletion" }, methods())
+        end)
+    end)
+end)
+
+describe("the Add project row in daemon mode with no model (A1a)", function()
+    it("opens the project browser at the observed root", function()
+        local observer = require("loomworks.daemon.observer")
+        local obs = { root = "/ws/root", state = "connected" }
+        observer._current = obs
+        observer._selection = { mode = "daemon", source = "default", daemon = true }
+        local lw = require("loomworks")
+        local saved_get = lw.get_workspace
+        lw.get_workspace = function() return nil end
+        local saved_browser = package.loaded["loomworks.ui.project_browser"]
+        local opened
+        package.loaded["loomworks.ui.project_browser"] = { open = function(root) opened = root end }
+        local add
+        local tree = setmetatable({}, { __index = function() return function() end end })
+        function tree:item(label, opts) if label == "▸ Add project" then add = opts end end
+        package.loaded["loomworks.ui.sections.projects"] = nil
+        local ok, err = pcall(function()
+            require("loomworks.ui.sections.projects")(tree, { mode = "daemon", view = { projects = {} }, lw = {} })
+            add.on_enter()
+        end)
+        lw.get_workspace = saved_get
+        package.loaded["loomworks.ui.project_browser"] = saved_browser
+        observer._current, observer._selection = nil, nil
+        assert(ok, err)
+        assert.equals("/ws/root", opened)
     end)
 end)

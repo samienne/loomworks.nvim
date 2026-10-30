@@ -247,7 +247,7 @@ describe("binary.channel: the observer's background check", function()
             prune = function(o2) pruned = o2 end,
         }
         for k, v in pairs(extra or {}) do o[k] = v end
-        return observer.attach({ root = "/r" }, o)
+        return observer.attach("/r", o)
     end
 
     it("makes the pinned lw present, queries, downloads an accepted release, records it and keeps both", function()

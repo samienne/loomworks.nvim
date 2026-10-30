@@ -32,15 +32,14 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
         end
         function conn.close(c) c.closed = true end
         local o = setmetatable({
-            ws = ws, root = ws.root, state = "connected", conn = conn, mode = "interfaces",
+            root = ws.root, state = "connected", conn = conn, mode = "interfaces",
             _feat = { operations = "available", tasks = "subscribed" }, _why = {},
             _tasks = {}, _order = {}, _owned = {}, seq = 0,
             daemon = { pid = 1 },
             opts = { environ = function() return { PATH = "x" } end },
         }, observer.Observer)
-        ws._daemon_observer = o
-        ws._operation_router = editor_ops.router
         observer._current = o
+        observer._selection = { mode = "daemon", source = "default", daemon = true }
         return o
     end
 
@@ -58,8 +57,10 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
     --- Start the editor's own profile build and its task `id`.
     local function owned_build(id)
         local st = {}
-        require("loomworks.overseer").run_profile_action(profile, "build")
-            :next(function(v) st.ok = v end, function(e) st.err = e end)
+        -- (By the profile row's id: a `daemon`-mode editor holds no model,
+        -- step 6b-alpha.)
+        editor_ops.run_ids(nil, "build", { profile_id = "p:1", unit_ids = { "u:1" } }, {},
+            { resolve = function(v) st.ok = v end, reject = function(e) st.err = e end })
         sent[#sent].cb({ outcome = "accepted", task_id = id }, nil)
         assert.is_true(vim.wait(2000, function() return obs._owned[id] ~= nil end, 10))
         frame(id, "start", { meta = meta() })
@@ -103,7 +104,7 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
         package.loaded["overseer.util"] = saved.util
         if obs then
             observer._current = nil
-            if ws then ws._daemon_observer, ws._operation_router = nil, nil end
+            require("loomworks.daemon.observer")._selection = nil
         end
         obs = nil
         pcall(function() core:shutdown() end)
@@ -227,7 +228,7 @@ describe("daemon tasks in the task runner (§19.16, step 5k C1b)", function()
 
     it("a task joined late gets its overseer task too", function()
         obs = fake_observer()
-        local task = require("loomworks.daemon.remote_task").adopt(ws, { task_id = "c9", name = "build x",
+        local task = require("loomworks.daemon.remote_task").adopt({ task_id = "c9", name = "build x",
             kind = "build", origin = "editor", started_at = os.time() }, obs:_clock())
         obs:_add(task)
         assert.equals("[editor] build x", created[1].name)

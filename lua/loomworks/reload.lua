@@ -1,6 +1,7 @@
 --- loomworks/reload.lua — Dev-only reload orchestrator.
 ---
---- Tears down the active workspace via `core:shutdown()`, then asks
+--- Tears down the active workspace via `lw.shutdown()` (the workspace
+--- daemon's observer and any in-process model), then asks
 --- lazy.nvim to reload this plugin + siblings (clears `package.loaded`,
 --- re-runs init/config which re-calls `setup()`).
 ---
@@ -22,10 +23,7 @@ local PLUGINS = {
 --- @return boolean ok
 function M.reload()
     local ok_core, loomworks = pcall(require, "loomworks")
-    if ok_core then
-        local core = loomworks._core()
-        if core then core:shutdown() end
-    end
+    if ok_core then loomworks.shutdown() end
 
     local ok_lazy, lazy_config = pcall(require, "lazy.core.config")
     if not ok_lazy then

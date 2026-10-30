@@ -90,7 +90,7 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
 
     local function attach_editor()
         local fr = FR.new({})
-        obs = observer.attach(core:get_workspace(), { getenv = daemon_mode, keepalive_ms = 100,
+        obs = observer.attach(core:get_workspace().root, { getenv = daemon_mode, keepalive_ms = 100,
             resolve = function() return "lw" end, relay = fr.relay })
     end
 
@@ -132,8 +132,6 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
             return e and e.db_state == "ready"
         end, 20), vim.inspect(source.projects()))
         assert.is_true(vim.wait(5000, function() return hits.active > before end, 10))
-        -- The editor's model generated nothing meanwhile.
-        assert.is_false(core:get_workspace():generates_lsp_databases())
     end)
 
     it("an editor-only session reaches loaded and a ready entry with no other request", function()

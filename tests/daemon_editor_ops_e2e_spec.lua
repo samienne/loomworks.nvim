@@ -35,6 +35,11 @@ local function real_relays()
     end
 end
 
+-- TODO(A1b): the daemon-mode cases below drive the routing from model
+-- objects (Profile, ConfigUnit, LaunchTarget), which the `daemon`-mode editor
+-- no longer holds (step 6b-alpha A1a: it loads no workspace). They are
+-- pending until the facade acts by calls and view-row ids (A1b), which
+-- restores them on that path.
 describe("editor operations through a real daemon (§19.16, step 5k C1)", function()
     local root, env, core, obs, seen
     local handlers = {}
@@ -63,9 +68,9 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         H.cleanup()
     end)
 
-    it("builds the profile and a unit as calls the editor owns; unloading cancels its running task", function()
+    pending("builds the profile and a unit as calls the editor owns; unloading cancels its running task", function()
         local ws = core:get_workspace()
-        obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(), keepalive_ms = 500 })
         assert.is_not_nil(obs)
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
@@ -126,14 +131,14 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
     -- (`Launch/1.prepare_run`, `build_scope = "target"`): its unit is built
     -- there, by a task the editor owns, and the returned launch is started
     -- here, in the editor's task runner.
-    it("prepares an editor launch in the daemon and starts its program here", function()
+    pending("prepares an editor launch in the daemon and starts its program here", function()
         core:shutdown()
         root = H.shell_workspace({ profile = true, launch = { run = { command = "tool", args = { "-v" } } } })
         core = require("loomworks")._core()
         core:setup({ root = root })
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
         local ws = core:get_workspace()
-        obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(), keepalive_ms = 500 })
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         H.track_root(root)
@@ -175,7 +180,7 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
     -- overseer (tests/fake_overseer.lua): the editor's own build is one
     -- overseer task whose stop is `Tasks/1.cancel`; a CLI `lw build` is
     -- listed read-only as `[lw] …`, its stop refused.
-    it("lists daemon tasks in overseer: the editor's own stops by cancel, a CLI one is read-only", function()
+    pending("lists daemon tasks in overseer: the editor's own stops by cancel, a CLI one is read-only", function()
         local saved = { package.loaded["overseer"], package.loaded["overseer.strategy"],
             package.loaded["overseer.util"] }
         local created = {}
@@ -184,7 +189,7 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         package.loaded["overseer.util"] = nil
         local ok, err = pcall(function()
             local ws = core:get_workspace()
-            obs = observer.attach(ws, { getenv = daemon_mode, resolve = function() return "lw" end,
+            obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
                 relay = real_relays(), keepalive_ms = 500 })
             assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
             H.track_root(root)

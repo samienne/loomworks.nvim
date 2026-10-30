@@ -10,8 +10,9 @@ local events = require("loomworks.events")
 --- @type loomworks.Core
 local core = Core.new()
 
--- The editor's views (spec §19.13 "Two sources, one shape"): built from the
--- in-process model whenever the observer holds no daemon subscription.
+-- The editor's views (spec §19.13 "Two sources, one shape"): in the
+-- deprecated `in-process` mode built from the in-process model; in `daemon`
+-- mode only the daemon's (loomworks.views builds nothing then, step 6b-α).
 local views = require("loomworks.views")
 views.set_builder("header", function() return core:view_header() end)
 views.set_builder("projects", function() return core:view_projects_index() end)
@@ -26,14 +27,13 @@ for _, ev in ipairs({
 }) do
     events.on(ev, function() views.changed() end)
 end
--- The editor's own state-file writes (Workspace `state_file_written`; until
--- step 5o moves them to command methods): the written workspace's observer
--- of the workspace daemon fetches the workspace view (spec §19.13
--- "Freshness of views"). Never loads the daemon modules.
-events.on("state_file_written", function(data)
+
+-- The deprecated `in-process` editor's loaded model (until step 6b-β): the
+-- workspace a status-page call given none goes to (ui/model_calls). Never
+-- loads the daemon modules (the CLI's workspaces never reach them).
+events.on("workspace_changed", function(ws)
     local mod = package.loaded["loomworks.daemon.observer"]
-    local obs = type(mod) == "table" and type(data) == "table" and mod.of(data.workspace) or nil
-    if obs then obs:_own_write() end
+    if type(mod) == "table" then mod.set_loaded_workspace(ws) end
 end)
 
 --- Auto-load mode. Default: "auto".
@@ -60,6 +60,31 @@ end
 -- ---------------------------------------------------------------------------
 -- Setup & workspace
 -- ---------------------------------------------------------------------------
+
+--- Load the workspace at `root` (spec §19.1, §19.16 "End state"). In
+--- `daemon` runtime mode (the default) the editor loads NO workspace of its
+--- own (step 6b-α): it records the root (the deferred-LSP gate, §9.7) and
+--- observes the workspace daemon of it — everything it shows comes from the
+--- daemon's views and replies. In the deprecated `in-process` mode the model
+--- is loaded in-process. Only the editor attaches (the CLI never calls
+--- setup).
+--- @param root string
+local function load(root)
+    local observer = require("loomworks.daemon.observer")
+    local attach_opts = { configured = M._runtime_mode_config, binary = M._binary_config }
+    if M.runtime_mode() ~= "daemon" then
+        core:setup({ root = root })
+        -- (Records the selection for the Runtime line; attaches nothing.)
+        observer.attach(M.workspace_root(), attach_opts)
+        return
+    end
+    -- A model left from an earlier `in-process` load goes (tests switch
+    -- modes; a session does not), as does another root's pending state.
+    core:shutdown()
+    core:set_pending_root(root)
+    observer.attach(M.workspace_root(), attach_opts)
+end
+M._load = load
 
 --- Set up default keymaps.
 --- @param opts? { keys?: boolean|table }
@@ -133,20 +158,6 @@ function M.setup(opts)
         M._binary_config = setting
         if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
     end
-    -- In `daemon` runtime mode (the default, spec §19.1) every loaded
-    -- workspace observes the workspace daemon (spec §19.16). Only the editor
-    -- attaches (the CLI never calls setup); in the deprecated `in-process`
-    -- mode `attach` does nothing.
-    if not M._observer_hooked then
-        M._observer_hooked = true
-        events.on("workspace_changed", function(ws)
-            if ws then
-                require("loomworks.daemon.observer").attach(ws, { configured = M._runtime_mode_config,
-                    binary = M._binary_config })
-            end
-        end)
-    end
-
     if opts and opts.log_level then
         local log = require("loomworks.log")
         local levels = { error = log.ERROR, warn = log.WARN, info = log.INFO, debug = log.DEBUG }
@@ -189,7 +200,7 @@ function M.setup(opts)
 
     -- Load workspace if root is specified (auto_load passes root explicitly)
     if opts and opts.root then
-        core:setup(opts)
+        load(opts.root)
     end
 end
 
@@ -230,11 +241,13 @@ function M.runtime_mode()
     return sel.mode, sel.source
 end
 
---- The tasks observed in the workspace daemon (spec §19.16), in start order.
+--- The tasks observed in the workspace daemon (spec §19.16), in start order;
+--- empty in the `in-process` mode. Never loads the daemon modules.
 --- @return loomworks.RemoteTask[]
 function M.get_daemon_tasks()
-    local ws = core:get_workspace()
-    return ws and ws:get_daemon_tasks() or {}
+    local mod = package.loaded["loomworks.daemon.observer"]
+    local obs = type(mod) == "table" and mod.current() or nil
+    return obs and obs:tasks() or {}
 end
 
 --- The status page's Runtime line (spec/ui.md §1.1): the runtime mode, the
@@ -243,17 +256,20 @@ end
 --- warning highlight.
 --- @return string|nil text, boolean warn
 function M.daemon_runtime_line()
-    return require("loomworks.daemon.observer").runtime_line(core:get_workspace())
+    return require("loomworks.daemon.observer").runtime_line()
 end
 
 --- `:LoomworksDaemon connect` (spec §19.16): connect to the workspace daemon,
 --- launching it when none is live. Returns false + why when it cannot.
 --- @return boolean ok, string|nil why
 function M.daemon_connect()
-    local ws = core:get_workspace()
-    if not ws then return false, "no workspace loaded" end
+    if M.runtime_mode() ~= "daemon" then
+        return false, "the runtime mode is in-process (setup option runtime.mode)"
+    end
+    local root = M.workspace_root()
+    if not root then return false, "no workspace loaded" end
     local observer = require("loomworks.daemon.observer")
-    local obs = observer.of(ws) or observer.attach(ws, { configured = M._runtime_mode_config,
+    local obs = observer.current() or observer.attach(root, { configured = M._runtime_mode_config,
         binary = M._binary_config })
     if not obs then return false, "the runtime mode is in-process (setup option runtime.mode)" end
     obs:start(true)
@@ -288,10 +304,33 @@ function M.lsp_ready()
 end
 
 --- The configured workspace root, known synchronously even during async init
---- (spec §9.7). nil when setup was never called for a root.
+--- (spec §9.7); in `daemon` mode the root the editor observes the daemon of.
+--- nil when setup was never called for a root.
 --- @return string|nil
 function M.workspace_root()
     return core:workspace_root()
+end
+
+--- The root of the workspace the editor has loaded (auto-load's "already
+--- loaded" check): in `daemon` mode the root it observes the daemon of (it
+--- holds no model, step 6b-α), in the `in-process` mode its model's root;
+--- nil when nothing is loaded.
+--- @return string|nil
+function M.loaded_root()
+    local mod = package.loaded["loomworks.daemon.observer"]
+    local obs = type(mod) == "table" and mod.current() or nil
+    if obs then return obs.root end
+    local ws = core:get_workspace()
+    return ws and ws.root or nil
+end
+
+--- Tear down what the editor has loaded (`:LoomworksReload`): the workspace
+--- daemon's observer (the daemon keeps running, §19.11) and an in-process
+--- model.
+function M.shutdown()
+    local mod = package.loaded["loomworks.daemon.observer"]
+    if type(mod) == "table" then mod.detach() end
+    core:shutdown()
 end
 
 --- Get the task output window config (Snacks.win overrides).
@@ -442,7 +481,7 @@ function M.trust_user_prefs(root, opts)
         local norm = core._deps.normalize
         if err and err.trust and err.trust.kind == "user" and err.root
             and norm(err.root) == norm(root) then
-            core:setup({ root = root })
+            load(root)
         end
         return "valid"
     end

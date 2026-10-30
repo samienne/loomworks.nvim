@@ -29,7 +29,8 @@ local function make_ws()
   local ws = assert(cli._load_workspace(root, false))
   -- (Loaded as the editor's setup does, in the in-process mode: the page's
   -- calls given no workspace go to it.)
-  require("loomworks.daemon.observer").attach(ws, { configured = "in-process" })
+  require("loomworks.daemon.observer").attach(ws.root, { configured = "in-process" })
+  require("loomworks.daemon.observer").set_loaded_workspace(ws)
   return root, ws
 end
 

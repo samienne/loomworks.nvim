@@ -169,7 +169,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         for k, v in pairs(extra) do
             if k ~= "connect" and k ~= "launch" then o[k] = v end
         end
-        return observer.attach(ws, o)
+        return observer.attach(ws.root, o)
     end
 
     --- A fake daemon world: `f.daemons` maps an endpoint to the challenge it
