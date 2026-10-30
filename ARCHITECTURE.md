@@ -1907,7 +1907,10 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   Suggestions, Profiles, Orphaned Build Dirs, Configuration Sets, Projects,
   SDKs): plain rows, ids only through `opts.id`, never reading files — the
   host passes `published` and `stray_dirs` (`Workspace:view_workspace`, which
-  also runs `Workspace:find_stray_build_dirs`). In-process the status page
+  reads them through `Workspace:_view_stray_build_dirs`: the last
+  `find_stray_build_dirs` result, reused while the live build dir forms and
+  the modification stamps of the directories that scan listed are unchanged;
+  deletion safety always scans afresh). In-process the status page
   passes `opts.bind`, which records each row's domain object outside the
   state, so the sections (`ui/sections/*.lua`) render only from the rows and
   keep their actions apart: they name rows to `ui/model_calls.lua`, which

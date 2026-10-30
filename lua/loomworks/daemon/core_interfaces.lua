@@ -1052,12 +1052,48 @@ function M.projects_impl(service)
     local function cmd(ctx, args, fn) return on_project(command, ctx, args, fn) end
     local function rd(ctx, args, fn) return on_project(function(_, c, f) return read(c, f) end, ctx, args, fn) end
 
+    --- `go(detected)` once the keyed toolchains a request needs are known.
+    --- A read segment of the caller's environment asks `needs(ws)` for the
+    --- keyed module type whose toolchains the workspace has not detected
+    --- (model_commands.keyed_tools_needed); they are then detected without
+    --- blocking (model_commands.detect_keyed_tools_async: started in that
+    --- segment, its probes go on while the daemon serves other requests, as
+    --- the workspace's own detection does, §19.11) and `go` gets them as
+    --- `{ [mod_type] = list }`; with none needed, `go(nil)`. `go` runs the
+    --- request's own segment, which replies.
+    local function with_keyed_tools(ctx, needs, go)
+        service:_on_model_request(ctx.conn, { kind = "query", env = ctx.env }, function(ws, mctx)
+            local mod_type = needs(ws)
+            -- The reply is `go`'s segment's (a throw above is still
+            -- answered by the model queue).
+            mctx.deferred, mctx.replied = true, true
+            if not mod_type then
+                go(nil)
+                return {}
+            end
+            mc.detect_keyed_tools_async(mod_type, function(list)
+                if ctx.conn.closed then return end
+                go({ [mod_type] = list })
+            end)
+            return {}
+        end, nil, function(fields) ctx.reply(fields) end)
+        return require("loomworks.daemon.interfaces").ASYNC
+    end
+
     function methods.candidates(ctx, args)
-        return read(ctx, function(ws) return mc.project_candidates(ws, args.path, args.type) end)
+        return with_keyed_tools(ctx, function(ws)
+            local t = mc.candidate_type(ws, args.path, args.type)
+            return mc.keyed_tools_needed(ws, t) and t or nil
+        end, function(detected)
+            read(ctx, function(ws) return mc.project_candidates(ws, args.path, args.type, detected) end)
+        end)
     end
 
     function methods.add(ctx, args)
-        return command(service, ctx, function(ws)
+        local tool_key = type(args.tool) == "table" and args.tool.key or nil
+        return with_keyed_tools(ctx, function(ws)
+            return tool_key ~= nil and mc.keyed_tools_needed(ws, args.type, tool_key) and args.type or nil
+        end, function(detected) return command(service, ctx, function(ws)
             if not require("loomworks.modules").get(args.type) then
                 return mc.refused("unknown project type '" .. tostring(args.type) .. "'", 2)
             end
@@ -1068,13 +1104,13 @@ function M.projects_impl(service)
             local path = rel == "" and "." or rel
             local tool_entry
             if args.tool ~= nil then
-                tool_entry, refusal = mc.project_tool_entry(ws, args.type, args.tool.key)
+                tool_entry, refusal = mc.project_tool_entry(ws, args.type, args.tool.key, detected)
                 if not tool_entry then return refusal end
             end
             local r = mc.project_add(ws, args.key, args.type, path, plain(args.mappings), tool_entry)
             if r.outcome == "ok" then r.project = entity(r.project, r.project and r.project.key) end
             return r
-        end)
+        end) end)
     end
 
     function methods.declaration(ctx, args)

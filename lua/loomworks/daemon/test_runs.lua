@@ -318,6 +318,7 @@ function M.steps(ws, store, idx, recs, extra)
         steps[#steps + 1] = {
             unit = unit, project = g.project, name = name, tu = tu, path = path, results = cmd.output_path or path,
             spec = { cmd = argv, cwd = cmd.cwd, env = cmd.env }, prepare = cmd.prepare,
+            prepare_async = cmd.prepare_async,
             nodes = nodes, by_entry = by_entry, by_case = by_case, head = heads[1], target = target,
             build_target = target and build_target_of(ws, unit, target.executable) or nil,
         }
@@ -530,6 +531,46 @@ function M.phase(service, ctx, store, sel, kind)
     local disc_failed, failed_unit = {}, {} -- labels / units whose discovery failed
     local phase = { kind = kind }
 
+    --- Run a step's preparation (a saved launch entry's deploy), then
+    --- `k(ok, err)`. The async one (`prepare_async`) runs each copy on the
+    --- event loop, so other clients are served meanwhile, and stops between
+    --- copies on a cancel, which then ends the run once the copy in flight is
+    --- done (as the runner's `test_host.deploy`). A step with only a
+    --- synchronous `prepare` runs it in place.
+    --- @param api table the runner's phase api
+    --- @param s table the step
+    --- @param k fun(ok: boolean, err: string|nil)
+    local function prepare_step(api, s, k)
+        local run = api.run
+        if type(s.prepare_async) == "function" then
+            run.deploying = true
+            local called = false
+            local ok, perr = pcall(s.prepare_async, {
+                cancelled = function() return run.cancelled == true end,
+                resume = function(fn) service:with_model(ctx, fn) end,
+            }, function(pok, err)
+                called = true
+                run.deploying = false
+                if run.cancelled then return api.finish(run.cancel_code, api.stopped()) end
+                local okn, whyn = api.current()
+                if not okn then return api.finish(1, api.stopped(whyn)) end
+                k(pok == true, err)
+            end)
+            if not ok then
+                -- A throw after its callback ran is the continuation's own.
+                if called then error(perr, 0) end
+                run.deploying = false
+                return k(false, tostring(perr))
+            end
+            return
+        end
+        if type(s.prepare) == "function" then
+            local ok, pok, perr = pcall(s.prepare)
+            if not (ok and pok) then return k(false, tostring((ok and perr) or pok or "preparation failed")) end
+        end
+        return k(true)
+    end
+
     local function set_live(rec, st)
         mine[rec.key] = true
         store.live[rec.key] = st
@@ -701,10 +742,14 @@ function M.phase(service, ctx, store, sel, kind)
     --- The prepare_debug end: the step's program as a debug spec.
     function phase.debug(api)
         local s = steps[1]
-        if type(s.prepare) == "function" then
-            local ok, pok, perr = pcall(s.prepare)
-            if not (ok and pok) then return api.finish(1, tostring((ok and perr) or pok or "preparation failed")) end
-        end
+        return prepare_step(api, s, function(pok, perr)
+            if not pok then return api.finish(1, perr or "preparation failed") end
+            return phase.debug_spec(api, s)
+        end)
+    end
+
+    --- The prepare_debug end once its step is prepared.
+    function phase.debug_spec(api, s)
         local spec, herr = build_run.spawn_spec(s.spec, api.ws.root)
         if not spec then return api.finish(1, herr) end
         local rp = require("loomworks.run_prep")
@@ -727,7 +772,7 @@ function M.phase(service, ctx, store, sel, kind)
         local run = api.run
         local cases, counts = {}, { passed = 0, failed = 0, skipped = 0, errored = 0 }
         local si = 0
-        local next_test
+        local next_test, run_step
 
         local function report(rec, r)
             store:record(rec.key, r)
@@ -841,16 +886,20 @@ function M.phase(service, ctx, store, sel, kind)
             s.seen, s.captured, s.out = {}, {}, {}
             api.task:progress(0.5 + (si - 1) / #steps / 2)
             api.task:line("out", require("loomworks.cli_color").header("test", s.project .. ": " .. s.name), "phase")
-            if type(s.prepare) == "function" then
-                local ok, pok, perr = pcall(s.prepare)
-                if not (ok and pok) then
-                    local msg = tostring((ok and perr) or pok or "preparation failed")
+            return prepare_step(api, s, function(pok, perr)
+                if not pok then
+                    local msg = perr or "preparation failed"
                     api.task:line("err", "lw: " .. msg .. "\n", "fail")
                     s.output = msg
                     step_done(s, 1)
                     return next_test()
                 end
-            end
+                return run_step(s)
+            end)
+        end
+
+        --- Spawn a prepared step's program.
+        run_step = function(s)
             -- A program whose only result is its exit: running now.
             if #s.head.children == 0 then
                 set_live(s.head, "running")

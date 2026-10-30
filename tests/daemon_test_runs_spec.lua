@@ -307,6 +307,45 @@ describe("Tests/1 runs in the daemon (§19.15 Tests, §19.20 Tests/1)", function
         h.results()
     end)
 
+    it("a step's preparation (a saved launch entry's deploy) runs async: the loop serves other calls and a cancel stops it", function()
+        h = open(root, key)
+        h.subscribe(1)
+        h.op(2, "configure")
+        local ids, unit = h.discover()
+        -- The step's command carries a preparation, as a saved launch entry's
+        -- deploy does (test_units/saved_targets.lua): the synchronous one
+        -- must not run in the daemon; the async one is held open here.
+        local sync_called, pending, opts_seen = false, nil, nil
+        local orig = unit.test_command_for
+        unit.test_command_for = function(self, id, o)
+            local cmd, tu = orig(self, id, o)
+            if cmd then
+                cmd = vim.deepcopy(cmd)
+                cmd.prepare = function() sync_called = true; return true end
+                cmd.prepare_async = function(po, cb) opts_seen, pending = po, cb end
+            end
+            return cmd, tu
+        end
+        h.send(call(3, TESTS.object, TESTS.iface, "run_cases", { select = { { id = ids["Math.Add"] } }, no_build = true }))
+        h.ok(3, { outcome = "accepted", task_id = { ["$bind"] = "run" } })
+        assert.is_true(vim.wait(30000, function()
+            while h.s:_pull(0) do end
+            return pending ~= nil or sync_called
+        end, 20), "the step's preparation never started")
+        assert.is_false(sync_called, "the daemon ran the blocking preparation")
+        assert.is_function(opts_seen.cancelled)
+        assert.is_false(opts_seen.cancelled())
+        -- While the preparation is in flight, the daemon answers a cancel.
+        h.send(call(4, "/tasks", "loomworks.Tasks", "cancel", { task_id = { ["$var"] = "run" } }, true))
+        h.ok(4, { outcome = "ok" })
+        assert.is_true(opts_seen.cancelled(), "the preparation does not see the cancel")
+        pending(false, "cancelled")
+        h.expect({ kind = "task", task_id = { ["$var"] = "run" }, phase = "done", exit_code = 130 }, 60000)
+        unit.test_command_for = orig
+        h.drain()
+        h.results()
+    end)
+
     it("prepare_debug ends with the debug spec and a token; collect records the results the program wrote", function()
         h = open(root, key)
         h.subscribe(1)

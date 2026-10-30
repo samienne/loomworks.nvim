@@ -231,6 +231,55 @@ describe("loomworks.Projects/1 (step 5o part B3)", function()
         assert.equals(2, r.exit_code)
     end)
 
+    it("candidates and add { tool } detect a keyed module's toolchains off the model queue", function()
+        local ws = loaded()
+        vim.fn.mkdir(root .. "/libs/net", "p")
+        -- The shell module as a keyed one whose toolchains the workspace has
+        -- not detected: the synchronous detection must not run in the
+        -- daemon; the async one is held open while other calls are served.
+        local shell = require("loomworks.modules").get("shell")
+        local saved = {}
+        for _, k in ipairs({ "has_keyed_tools", "detect_tools", "detect_tools_async", "tool_key", "tool_label" }) do
+            saved[k] = shell[k] or false
+        end
+        local sync_called, pending = false, {}
+        shell.has_keyed_tools = true
+        shell.detect_tools = function() sync_called = true; return {} end
+        shell.detect_tools_async = function(cb) pending[#pending + 1] = cb end
+        shell.tool_key = function(td) return td and td.id or nil end
+        shell.tool_label = function(td) return td and ("kit " .. td.id) or nil end
+        local ok, err = pcall(function()
+            ws._tools_by_type.shell = nil
+            local r
+            conn:call("/projects", "loomworks.Projects", 1, "candidates", { path = "libs/net", type = "shell" },
+                function(res, e) r = res or e end, envscope.capture())
+            assert.is_true(vim.wait(30000, function() return #pending > 0 or sync_called or r ~= nil end, 10))
+            assert.is_false(sync_called, "the daemon detected the toolchains synchronously")
+            assert.equals(1, #pending)
+            -- Meanwhile the daemon answers another client's call.
+            local d = call("declaration", { project = APP })
+            assert.equals("ok", d.outcome, vim.inspect(d))
+            assert.is_nil(r)
+            pending[1]({ { tool_data = { id = "k1" } } })
+            assert.is_true(vim.wait(30000, function() return r ~= nil end, 10), "candidates never answered")
+            assert.equals("ok", r.outcome, vim.inspect(r))
+            assert.same({ { key = "k1", label = "kit k1" } }, r.tools)
+
+            local a
+            conn:call("/projects", "loomworks.Projects", 1, "add",
+                { key = "net", type = "shell", path = "libs/net", tool = { key = "k1" } },
+                function(res, e) a = res or e end, envscope.capture())
+            assert.is_true(vim.wait(30000, function() return #pending > 1 or sync_called or a ~= nil end, 10))
+            assert.is_false(sync_called, "add detected the toolchains synchronously")
+            pending[2]({ { tool_data = { id = "k1" } } })
+            assert.is_true(vim.wait(30000, function() return a ~= nil end, 10), "add never answered")
+            assert.equals("ok", a.outcome, vim.inspect(a))
+            assert.equals("net", a.project.key)
+        end)
+        for k, v in pairs(saved) do shell[k] = v ~= false and v or nil end
+        assert(ok, err)
+    end)
+
     it("candidates refuses a link inside the root that resolves outside it", function()
         loaded()
         local outside = H.tmp() .. "/outside"

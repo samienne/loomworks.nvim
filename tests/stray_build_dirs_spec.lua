@@ -246,3 +246,47 @@ describe("find_stray_build_dirs: directory identity, not spelling", function()
     end)
   end)
 end)
+
+describe("the workspace view's stray scan is cached", function()
+  it("a view check reuses the scan until a live build dir or a scanned directory changes", function()
+    local root = vim.fn.tempname():gsub("\\", "/")
+    vim.fn.mkdir(root, "p")
+    local ws, profile = make_ws(root)
+    root = ws.root
+    local unit = live_build_dir(ws, profile, root .. "/.nvim/build/App/Debug", root .. "/.nvim/build/App/Debug")
+    vim.fn.mkdir(root .. "/.nvim/build/Old", "p")
+    local scans = 0
+    local orig = uv.fs_scandir
+    uv.fs_scandir = function(p, ...)
+      if type(p) == "string" and p:gsub("\\", "/"):find("/.nvim/build", 1, true) then scans = scans + 1 end
+      return orig(p, ...)
+    end
+    local ok, err = pcall(function()
+      local function strays()
+        local out = {}
+        for _, d in ipairs(ws:view_workspace().orphaned.stray_dirs) do
+          out[#out + 1] = d:lower():match("/%.nvim/build/(.*)$")
+        end
+        return out
+      end
+      assert.same({ "old" }, strays())
+      local n = scans
+      assert.is_true(n > 0)
+      assert.same({ "old" }, strays())
+      assert.same({ "old" }, strays())
+      assert.equals(n, scans, "the view rescanned with nothing changed")
+      -- A directory appears in a scanned directory: the next view sees it.
+      vim.fn.mkdir(root .. "/.nvim/build/App/Release", "p")
+      assert.same({ "app/release", "old" }, strays())
+      -- A unit's build dir changes: the next view sees it.
+      unit.build_dir_value = root .. "/.nvim/build/App/Release"
+      assert.same({ "app/debug", "old" }, strays())
+      -- Deletion safety never reads the cache: a fresh scan each call.
+      n = scans
+      ws:find_stray_build_dirs()
+      assert.is_true(scans > n)
+    end)
+    uv.fs_scandir = orig
+    assert(ok, err)
+  end)
+end)

@@ -1376,6 +1376,10 @@ describe("ConfigUnit + saved-targets TestUnit (§8.9.2–§8.9.3)", function()
         package.loaded["loomworks.launch_target"] = { new = function(_, _, d)
             return {
                 deploy_sync = function() deployed[#deployed + 1] = d.launch; return true end,
+                deploy_async = function(_, o, cb)
+                    deployed[#deployed + 1] = { async = d.launch, opts = o }
+                    cb(d.launch ~= "chk", "copy failed")
+                end,
                 resolve_launch_spec = function()
                     return { cmd = "/usr/bin/tool", args = { "--own" }, cwd = "/w", env = { M = "1" } }
                 end,
@@ -1408,6 +1412,14 @@ describe("ConfigUnit + saved-targets TestUnit (§8.9.2–§8.9.3)", function()
         assert.is_function(lc.prepare)
         assert.is_true(lc.prepare())
         assert.same({ "chk" }, deployed)
+        -- The same deploy without blocking the loop (the daemon's runs):
+        -- deploy_async with the runner's options, its failure the step's.
+        assert.is_function(lc.prepare_async)
+        local res
+        local o = { cancelled = function() return false end }
+        lc.prepare_async(o, function(ok, err) res = { ok, err } end)
+        assert.same({ async = "chk", opts = o }, deployed[2])
+        assert.same({ false, "deploy failed: copy failed" }, res)
         assert.equals("launch:chk", lc.test_id)
         assert.same({ "/usr/bin/tool", "--own", "--e" }, lc.cmd)
         assert.equals("/w", lc.cwd)
