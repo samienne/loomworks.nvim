@@ -88,14 +88,26 @@ wins, so a deletion (or reset) of a unit started while a clean of it still
 runs keeps showing "cleaning" until the clean ends. Show the most recent
 reason (a reason stack) instead. Display only. Found in review of #338.
 
-## `rename_project` rewrites config-unit ids in the wrong form
+## Project rename onto the name of a removed project with cached build state
 
-`Workspace:rename_project` sets `unit.id = <new key>/<config key>`, but units
-are identified by their build directory (data_model's `expected_units` keys,
-e.g. `build/App/Debug`, unchanged by the rename since the path is pinned), so
-after a successful rename the next remerge drops and recreates every unit of
-the project (a running one kept as a ghost under the bogus id). Leave the id
-alone (or recompute it from the build dir). Seen while testing #338.
+`Workspace:rename_project` retags the BuildDirs its units reference with the
+new key. When an orphaned BuildDir of a removed project already carries that
+key (its cache entry survived the removal) and the same `config_key`, the cache
+holds two entries for one `(project_key, config_key)` identity, and
+`Workspace:find_cache_entry_for` (`pairs` over `cache.build_dirs`) picks either
+on the next remerge or load: the renamed project can adopt the dead project's
+build directory, its own becoming an orphan. No in-place mark is invisible: an
+orphan's `project_key` / `config_key` are what the status page, the orphan
+sort and the daemon's maintenance targets show and match it by. Proposed fix
+(spec change, §4.9 "Rename is rejected when"):
+
+> - The new key is the `project_key` of a cached build directory that no
+>   ConfigUnit references (an orphaned entry of a removed project), and that
+>   entry's configuration key equals one of the renamed project's. The error
+>   names the orphaned build directory; deleting it (or renaming to another
+>   key) lets the rename proceed.
+
+Seen while reviewing #341.
 
 ## master: in-process deletions take no locks
 

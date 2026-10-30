@@ -5266,8 +5266,9 @@ end
 --- an item's prior `_intent`) and its removed-upstream flag — and the
 --- identity fields the reload matches objects by, put back first so every
 --- object comes back as itself: project keys, configuration-set names,
---- profile keys (set name, tool keys, mappings) and config-unit ids (with the
---- variant, config key and build directory a configuration rename rewrites).
+--- profile keys (set name, tool keys, mappings), config-unit ids (with the
+--- variant, config key and build directory a configuration rename rewrites)
+--- and BuildDir project keys (a project rename retags them).
 --- Without them a renamed unit is dropped and replaced (one with a running
 --- task kept as a ghost under the new id), and the active profile replaced.
 --- @return table snapshot for `_txn_rollback`
@@ -5299,8 +5300,13 @@ function Workspace:_txn_snapshot()
             "build_dir_value", "state_value", "last_configured", "last_built", "module_info",
             "_cached_options", "_cached_module_config" })
     end
+    -- A BuildDir's project key: a project rename retags its BuildDirs, and
+    -- a reload that ignores an unsigned cache would not put it back.
     local build_dirs = {}
-    for i, bd in ipairs(self._build_dirs or {}) do build_dirs[i] = bd end
+    for i, bd in ipairs(self._build_dirs or {}) do
+        build_dirs[i] = bd
+        keep(bd, { "project_key" })
+    end
     return { items = items, fields = fields, build_dirs = build_dirs }
 end
 
@@ -8408,7 +8414,9 @@ function Workspace:remove_project(project)
 end
 
 --- Rename a project. Changes the project's identity (key), profile mappings
---- keyed by the project key string, and ConfigUnit ids. ConfigurationSet.mappings
+--- keyed by the project key string, and the project key recorded on its
+--- BuildDirs (so the next remerge re-finds their cache entries). ConfigUnits
+--- keep their ids (the build-dir key) and identity. ConfigurationSet.mappings
 --- is keyed by Project object reference so it doesn't need rebuilding.
 --- The rename never moves the project's files — loomworks is read-only toward
 --- project sources and never renames folders — so a path that resolved to the
@@ -8455,9 +8463,20 @@ function Workspace:rename_project(project, new_key)
         if unit._init_project_key == old_key then
             unit._init_project_key = new_key
         end
-        if unit._project == project then
-            local config_key = unit:config_key() or unit.id:match(".+/(.+)$") or ""
-            unit.id = new_key .. "/" .. config_key
+    end
+
+    -- A unit keeps its id (the persisted build-dir key — the folder does not
+    -- move); the next remerge re-finds its cache entry by (project_key,
+    -- config_key), so the project's BuildDirs carry the new key. Only the
+    -- BuildDirs this project's units reference: an orphaned BuildDir (a
+    -- removed project's, or a config no profile maps) keeps its key.
+    local retagged, seen = {}, {}
+    for _, unit in pairs(self._config_units) do
+        local bd = unit._build_dir
+        if unit._project == project and bd and not seen[bd] then
+            seen[bd] = true
+            retagged[#retagged + 1] = { bd, bd.project_key }
+            bd.project_key = new_key
         end
     end
 
@@ -8476,11 +8495,8 @@ function Workspace:rename_project(project, new_key)
             if unit._init_project_key == new_key then
                 unit._init_project_key = old_key
             end
-            if unit._project == project then
-                local config_key = unit:config_key() or unit.id:match(".+/(.+)$") or ""
-                unit.id = old_key .. "/" .. config_key
-            end
         end
+        for _, r in ipairs(retagged) do r[1].project_key = r[2] end
         return false, err
     end
     self:_save_cache()

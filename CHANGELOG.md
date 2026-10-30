@@ -964,6 +964,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- Renaming a project no longer throws away its configured and built build
+  directories' state on the next reload: the project's configurations keep
+  their build state and are not reconfigured from scratch (#341).
 - A toolchain rescan (or an SDK add or remove) no longer misses its toolchain
   change when an earlier, slower detection finishes during its wait: only the
   newest detection is taken in, and the editor's view is told about the
