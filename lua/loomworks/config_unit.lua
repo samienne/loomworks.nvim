@@ -1395,7 +1395,8 @@ end
 --- Mark this unit as deleting/cleaning (`true`), or end one mark (`false`).
 --- Marks nest: a deletion run inside a clean (its clean_wipe step) marks the
 --- unit again and its end leaves the clean's mark — and that mark's reason —
---- in place; the unit stops deleting when the last mark ends.
+--- in place; the unit stops deleting when the last mark ends. Never raises
+--- from a state listener (see below).
 --- @param flag boolean
 --- @param reason? "deleting"|"cleaning" defaults to "deleting"
 function ConfigUnit:mark_deleting(flag, reason)
@@ -1409,7 +1410,17 @@ function ConfigUnit:mark_deleting(flag, reason)
     end
     self._deleting_marks = n
     self._deleting = n > 0
-    self:_notify()
+    -- Marks are counted, so an unbalanced change never heals: a listener
+    -- that raises is reported, never propagated — a caller's mark/clear loop
+    -- over several units always completes (deletion safety).
+    for _, fn in ipairs(self._listeners) do
+        local ok, err = pcall(fn, self)
+        if not ok then
+            local ws = self._workspace
+            local log = ws and ws._core and ws._core._deps and ws._core._deps.log
+            if log then pcall(log.error, log, "state listener failed on a deleting mark: %s", tostring(err)) end
+        end
+    end
 end
 
 --- Get the reason this unit is being deleted/cleaned — its own, else

@@ -213,7 +213,9 @@ local function apply(e, id)
 end
 
 --- Finish (commit) the outermost transaction. Returns true, or false + err
---- (nothing applied when the journal could not be written).
+--- (nothing applied when the journal could not be written; after a failed
+--- apply that could not be completed at once, the journal stays for the next
+--- O holder).
 --- @param t table|nil
 --- @return boolean ok, string|nil err
 function M.finish(t)
@@ -255,8 +257,21 @@ function M.finish(t)
         flush_dir(t.root)
         flush_dir(abs(t.root, ".nvim"))
         crash_point("finish")
-        -- A failed apply keeps the journal: the next O holder completes it.
-        if ok then pcall(uv().fs_unlink, jpath) end
+        if ok then
+            pcall(uv().fs_unlink, jpath)
+        else
+            -- Past the commit point a failed apply is completed now, while
+            -- this process still holds O (the recovery path, §19.4): left to
+            -- the next O holder, a write reported as failed would land later.
+            -- Only a journal that cannot be completed stays (and the failure
+            -- with it).
+            local status, line = M.recover_locked(t.root)
+            if status == "recovered" then
+                ok, err = true, nil
+            else
+                err = err .. " (" .. tostring(line) .. ")"
+            end
+        end
     end
     release(t)
     return ok, err

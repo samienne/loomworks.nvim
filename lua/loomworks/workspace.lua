@@ -4805,6 +4805,8 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     end
     self:cancel_conflicting_operations(units)
 
+    -- `mark_deleting` never raises (a failing listener is logged), so every
+    -- unit is marked and the clearer below ends exactly these marks.
     for _, unit in ipairs(units) do
         unit:mark_deleting(true, reason)
     end
@@ -5262,36 +5264,68 @@ end
 --- Before a guarded operation (op_lock.guard): the in-memory state a reload
 --- from disk does not put back — each item's sticky intent (data_model keeps
 --- an item's prior `_intent`) and its removed-upstream flag — and the
---- project keys and configuration-set names, put back first so the reload
---- matches a renamed item by its on-disk identity (it stays the same object).
+--- identity fields the reload matches objects by, put back first so every
+--- object comes back as itself: project keys, configuration-set names,
+--- profile keys (set name, tool keys, mappings) and config-unit ids (with the
+--- variant, config key and build directory a configuration rename rewrites).
+--- Without them a renamed unit is dropped and replaced (one with a running
+--- task kept as a ghost under the new id), and the active profile replaced.
 --- @return table snapshot for `_txn_rollback`
 function Workspace:_txn_snapshot()
-    local items = {}
-    local function add(o, field)
-        items[#items + 1] = { o, o._intent, o._removed_upstream, field, field and o[field] }
+    local items, fields = {}, {}
+    local function add(o) items[#items + 1] = { o, o._intent, o._removed_upstream } end
+    local function keep(o, names)
+        for _, f in ipairs(names) do
+            local v = o[f]
+            if type(v) == "table" and getmetatable(v) == nil then v = vim.deepcopy(v) end
+            fields[#fields + 1] = { o, f, v }
+        end
     end
     for _, p in pairs(self._projects or {}) do
-        add(p, "key")
+        add(p)
+        keep(p, { "key", "path" })
         for _, cfg in ipairs(p._configurations or {}) do add(cfg) end
     end
-    for _, cs in pairs(self._config_sets or {}) do add(cs, "name") end
-    for _, pr in pairs(self._profiles or {}) do add(pr) end
-    return { items = items }
+    for _, cs in pairs(self._config_sets or {}) do
+        add(cs)
+        keep(cs, { "name" })
+    end
+    for _, pr in pairs(self._profiles or {}) do
+        add(pr)
+        keep(pr, { "key", "_configuration_set_name", "_tool_keys", "mappings" })
+    end
+    for _, u in pairs(self._config_units or {}) do
+        keep(u, { "id", "_init_project_key", "_variant", "_config_key", "_build_dir",
+            "build_dir_value", "state_value", "last_configured", "last_built", "module_info",
+            "_cached_options", "_cached_module_config" })
+    end
+    local build_dirs = {}
+    for i, bd in ipairs(self._build_dirs or {}) do build_dirs[i] = bd end
+    return { items = items, fields = fields, build_dirs = build_dirs }
 end
 
 --- After a guarded operation whose commit failed, or which raised: nothing
---- (or, after a failed apply whose journal the next holder rolls forward, not
---- everything) reached disk, so its in-memory change is dropped by reloading
---- the model from the files on disk (API.md §11: a refused write changes
---- neither the files nor the model). A profile whose key the operation
---- changed comes back as a new object under its on-disk key (unless the
---- guard's `undo` put it back). Files the load would
---- refuse (signature, schema) take the full setup path instead.
+--- reached disk (or, after a failed apply whose journal could not be
+--- completed at once — txn.finish rolls it forward itself — not everything;
+--- the journal stays for the next operation-lock holder), so its in-memory
+--- change is dropped by reloading the model from the files on disk (API.md
+--- §11: a refused write changes neither the files nor the model). The
+--- identity fields from `_txn_snapshot` are put back first, so every
+--- project, set, profile and config unit comes back as the same object.
+--- Files the load would refuse (signature, schema) take the full
+--- `Core:setup` path instead, as `_on_file_changed`'s refuse path does —
+--- also in the daemon, whose teardown of this workspace cancels its running
+--- tasks. That setup's `_recover_journal` leaves a remaining journal alone
+--- while this process holds the operation lock (`op_lock.held`).
 --- @param snap table from `_txn_snapshot`
 function Workspace:_txn_rollback(snap)
     for _, it in ipairs(snap.items) do
         it[1]._intent, it[1]._removed_upstream = it[2], it[3]
-        if it[4] then it[1][it[4]] = it[5] end
+    end
+    for _, f in ipairs(snap.fields) do f[1][f[2]] = f[3] end
+    if self._build_dirs then
+        for i = #self._build_dirs, 1, -1 do self._build_dirs[i] = nil end
+        for i, bd in ipairs(snap.build_dirs) do self._build_dirs[i] = bd end
     end
     local deps = self._core._deps
     local read = deps.io.read_file
@@ -5305,6 +5339,8 @@ function Workspace:_txn_rollback(snap)
             or data.cache_trust == "invalid" or data.user_newer
             or data.cache_newer or data.cache_version_mismatch or data.cache_inconsistent
             or data.user_version_mismatch or data.user_projects_invalid then
+        -- Mirrors `_on_file_changed`'s refuse path; the swap tears this
+        -- workspace down (its running tasks are cancelled, daemon included).
         if self._core._workspace == self then self._core:setup({ root = self.root }) end
         return
     end

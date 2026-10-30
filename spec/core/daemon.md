@@ -355,6 +355,13 @@ remedy: it acquires O, which completes or refuses the journal first, and it
 resets only build state — the journal also covers `loomworks.json` and the
 working copy.
 
+**Failed apply.** A writer whose apply step (4) fails without crashing rolls
+its own journal forward as above at once, still holding O: when that
+completes, the operation is committed (and reported so); only when it cannot
+be completed does the operation fail, its in-memory change dropped by
+reloading the files, and the journal stays for the next O holder. A write
+reported as failed thus never lands later unless the files already show it.
+
 **Validation.** Moved to [formats.md](../formats.md) §7: a journal that fails
 it refuses the workspace as above. Rolling forward never bypasses trust — the
 renamed files are verified on load as any file is (§17.4).

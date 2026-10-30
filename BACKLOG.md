@@ -49,6 +49,34 @@ it. Compare by directory identity (`_build_dir_identity`, spec §4.6) instead.
 Deletion safety: needs a failing test first (set `TMPDIR` to a short path).
 Found by `tests/view_deletion_locks_spec.lua` on Windows CI (#292).
 
+## Nested `op_lock.guard`: an inner undo keeps its staged writes
+
+A guarded method called from inside another guarded method shares the outer
+transaction (`txn.begin` nests by refcount, txn.lua). When the inner method
+raises or refuses and the outer one catches that and goes on to commit, the
+inner `undo` has put its in-memory change back but the inner method's
+staged file writes are still in the transaction and are committed with the
+outer ones (and the reload is left to the outermost guard, which does not
+run it on success). Fix: per-guard save points in the transaction (drop the
+inner entries' staged bytes on an inner failure), or refuse to continue an
+outer guard after an inner failure. Found in review of #338.
+
+## A deletion during a clean shows "cleaning"
+
+Deleting marks nest (`ConfigUnit:mark_deleting`): the first mark's reason
+wins, so a deletion (or reset) of a unit started while a clean of it still
+runs keeps showing "cleaning" until the clean ends. Show the most recent
+reason (a reason stack) instead. Display only. Found in review of #338.
+
+## `rename_project` rewrites config-unit ids in the wrong form
+
+`Workspace:rename_project` sets `unit.id = <new key>/<config key>`, but units
+are identified by their build directory (data_model's `expected_units` keys,
+e.g. `build/App/Debug`, unchanged by the rename since the path is pinned), so
+after a successful rename the next remerge drops and recreates every unit of
+the project (a running one kept as a ghost under the bogus id). Leave the id
+alone (or recompute it from the build dir). Seen while testing #338.
+
 ## master: in-process deletions take no locks
 
 master: in-process deletions take no locks (no operation lock; cross-process

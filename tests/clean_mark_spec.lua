@@ -242,6 +242,43 @@ describe("clean/deletion runtime mark", function()
             assert.is_false(unit:is_deleting())
         end)
 
+        -- Marks are counted (they nest), so an unbalanced change never heals:
+        -- a state-change listener that raises must not skip the count change
+        -- nor the clearing of the mark.
+        it("a listener raising while the mark is set leaves it balanced", function()
+            local core = make_core()
+            local unit = the_unit(core)
+            local ws = core._workspace
+            ws._core._deps.io.rm_rf_async = function(_, cb) cb(true, nil) end
+            local armed = true
+            unit:on_state_change(function(u)
+                if armed and u:is_deleting() then error("listener boom") end
+            end)
+            pcall(function()
+                ws:execute_deletion({ items = { { unit = unit, project_key = "App",
+                    config_key = "dev", disposition = "clean" } } })
+            end)
+            armed = false
+            assert.is_false(unit:is_deleting())
+            assert.equals(0, unit._deleting_marks or 0)
+        end)
+
+        it("a listener raising while the mark is cleared still clears every unit", function()
+            local core = make_core()
+            local unit = the_unit(core)
+            local ws = core._workspace
+            local Unit = getmetatable(unit).__index
+            local other = setmetatable({ _listeners = {}, _workspace = ws }, getmetatable(unit))
+            assert.equals(Unit, getmetatable(other).__index)
+            unit:mark_deleting(true); other:mark_deleting(true)
+            unit:on_state_change(function(u)
+                if not u:is_deleting() then error("listener boom") end
+            end)
+            pcall(ws:_deleting_mark_clearer({ unit, other }))
+            assert.is_false(unit:is_deleting())
+            assert.is_false(other:is_deleting())
+        end)
+
         it("clears the mark when stopping the running tasks fails", function()
             local core = make_core()
             local unit = the_unit(core)
