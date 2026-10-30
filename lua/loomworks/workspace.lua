@@ -9401,20 +9401,30 @@ function Workspace:_on_file_changed(path, content)
         end
     end
 
-    if path == paths.config then
-        -- loomworks.json changed: full reassemble. It is a load (core
-        -- daemon.md §19.13 "Load warnings"): what it raises replaces this
-        -- workspace's load diagnostics — a fixed warning goes, a new one is
-        -- carried. (Not inside a load already capturing; a refusal's setup
-        -- below starts its own.)
+    -- A re-assembly after an edit to loomworks.json or user.json is a load
+    -- (core daemon.md §19.13 "Load warnings"): what it raises replaces this
+    -- workspace's load diagnostics — a fixed warning goes, a new one is
+    -- carried — and `notify.once` reports again (`_begin_load_notes`). Not
+    -- inside a load already capturing (`fn(own)` is false then); a refusal's
+    -- setup starts its own.
+    local function as_load(fn)
         local core = self._core
         local notes = not core._load_capture and core:_begin_load_notes() or nil
-        local function end_notes()
-            if notes and core._load_capture and core._load_capture.list == notes then
-                core:_end_load_notes()
-                self._load_notes = notes
+        local ok, e = xpcall(function() return fn(notes ~= nil) end, function(x)
+            if type(x) == "string" and not x:find("stack traceback:", 1, true) then
+                return debug.traceback(x, 2)
             end
+            return x
+        end)
+        if notes and core._load_capture and core._load_capture.list == notes then
+            core:_end_load_notes()
+            self._load_notes = notes
         end
+        if not ok then error(e, 0) end
+    end
+
+    if path == paths.config then
+        -- loomworks.json changed: full reassemble.
         local function reassemble()
             local data, err = M.assemble(
                 self.root,
@@ -9475,14 +9485,7 @@ function Workspace:_on_file_changed(path, content)
                 self._core._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
             end
         end
-        local ok, e = xpcall(reassemble, function(x)
-            if type(x) == "string" and not x:find("stack traceback:", 1, true) then
-                return debug.traceback(x, 2)
-            end
-            return x
-        end)
-        end_notes()
-        if not ok then error(e, 0) end
+        as_load(reassemble)
 
     elseif path == paths.user then
         -- user.json changed: normalize user projects and pass through remerge
@@ -9491,19 +9494,33 @@ function Workspace:_on_file_changed(path, content)
         -- A newer schema is never reconciled (it would read as defaults and
         -- the next save would drop it): back to the refused state (spec §2.7).
         if newer then return refuse() end
-        local warning = save_guard.newer_writer_warning(path, ".nvim/loomworks.user.json", user_data._meta)
-        if warning then deps.notify("loomworks: " .. warning, vim.log.levels.WARN) end
-        if user_data.projects and next(user_data.projects) then
-            local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
-            if normalized then
-                user_data.projects = normalized
-            else
-                self._core._deps.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
-                user_data.projects = nil
+        as_load(function(own)
+            -- The shared layer's warnings are part of this load's too: the
+            -- delivered loomworks.json is parsed and validated again for its
+            -- warnings only (the model keeps its shared layer), recorded
+            -- without showing them to the host again.
+            local shared = self._tracker and self._tracker:content(paths.config)
+            local capture = self._core._load_capture
+            if own and shared and capture then
+                capture.quiet = true
+                local okp, parsed = pcall(config_mod.parse, shared, self.root)
+                if okp and parsed then pcall(self._core._validate_projects, self._core, parsed, self.root) end
+                capture.quiet = nil
             end
-        end
-        self:remerge(nil, nil, user_data)
-        self:_adopt_disk("user", raw)
+            local warning = save_guard.newer_writer_warning(path, ".nvim/loomworks.user.json", user_data._meta)
+            if warning then deps.notify("loomworks: " .. warning, vim.log.levels.WARN) end
+            if user_data.projects and next(user_data.projects) then
+                local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
+                if normalized then
+                    user_data.projects = normalized
+                else
+                    self._core._deps.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+                    user_data.projects = nil
+                end
+            end
+            self:remerge(nil, nil, user_data)
+            self:_adopt_disk("user", raw)
+        end)
 
     elseif path == paths.cache then
         -- cache.json changed: update cache data and remerge

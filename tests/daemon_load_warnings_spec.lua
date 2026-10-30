@@ -37,6 +37,20 @@ local function edit_config(root, fn)
     f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
 end
 
+--- Rewrite the working copy (`.nvim/loomworks.user.json`) through `fn(user)`,
+--- signed by this machine.
+local function edit_user(root, fn)
+    local path = root .. "/.nvim/loomworks.user.json"
+    local f = assert(io.open(path, "rb"))
+    local status, body = trust.verify("user", f:read("*a")); f:close()
+    assert.equals("valid", status)
+    local user = vim.json.decode(body)
+    fn(user)
+    local signed, serr = trust.sign("user", trust.encode(user))
+    if not signed then error(serr) end
+    f = assert(io.open(path, "wb")); f:write(signed); f:close()
+end
+
 --- How many of the view's diagnostics mention `needle`.
 local function view_count(ws, needle)
     local n = 0
@@ -142,6 +156,54 @@ describe("load warnings reach daemon clients (§19.13 Load warnings)", function(
         assert.is_not_nil(n, vim.inspect(r.notes))
         assert.equals("warn", role)
         assert.equals(1, view_count(svc.ws, "directory not found"))
+    end)
+
+    -- A re-assembly after an edit to user.json is a load too (§19.13).
+    local STALE = "references unknown configuration"
+
+    it("a user.json edit that fixes a stale mapping clears it: the views and a warm daemon's later request", function()
+        edit_user(root, function(u) u.configuration_sets = { bad = { app = "Nope" } } end)
+        assert.is_not_nil((find_note(snapshot(srv), STALE)))
+        edit_user(root, function(u) u.configuration_sets = nil end)
+        svc.ws._tracker:sync()
+        local r = snapshot(srv)
+        assert.equals("ok", r.outcome)
+        assert.is_nil((find_note(r, STALE)), vim.inspect(r.notes))
+        assert.equals(0, view_count(svc.ws, "Nope"))
+        -- The load's other warnings are carried again, not dropped.
+        assert.is_not_nil((find_note(r, "directory not found")), vim.inspect(r.notes))
+    end)
+
+    it("a user.json edit that introduces a stale mapping carries it: the views and a warm daemon's later request", function()
+        local first = snapshot(srv)
+        assert.is_nil((find_note(first, STALE)), vim.inspect(first.notes))
+        edit_user(root, function(u) u.configuration_sets = { bad = { app = "Nope" } } end)
+        svc.ws._tracker:sync()
+        local r = snapshot(srv)
+        local n, role = find_note(r, STALE)
+        assert.is_not_nil(n, vim.inspect(r.notes))
+        assert.equals("warn", role)
+        assert.equals(1, view_count(svc.ws, "Nope"))
+    end)
+
+    it("a stale mapping removed and then reintroduced by user.json edits is reported again", function()
+        assert.equals("ok", snapshot(srv).outcome)
+        local core = svc.ws._core
+        local host, seen = core._deps.notify, 0
+        core._deps.notify = function(msg, level, opts)
+            if tostring(msg):find(STALE, 1, true) then seen = seen + 1 end
+            return host(msg, level, opts)
+        end
+        edit_user(root, function(u) u.configuration_sets = { bad = { app = "Nope" } } end)
+        svc.ws._tracker:sync()
+        edit_user(root, function(u) u.configuration_sets = nil end)
+        svc.ws._tracker:sync()
+        seen = 0
+        edit_user(root, function(u) u.configuration_sets = { bad = { app = "Nope" } } end)
+        svc.ws._tracker:sync()
+        assert.equals(1, seen, "the reintroduced mapping was not reported")
+        local r = snapshot(srv)
+        assert.is_not_nil((find_note(r, STALE)), vim.inspect(r.notes))
     end)
 
     it("a daemon reload keeps the load warnings (once-per-process guards reset per load)", function()
