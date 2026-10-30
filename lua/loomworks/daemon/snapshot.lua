@@ -68,6 +68,16 @@ function Registry:id(obj)
     return id
 end
 
+--- Give `obj`, which has no id yet, the id `id` issued for the entity it
+--- replaces (an environment reload, spec §19.12, §19.15 "Environment"):
+--- the id stays the same entity's, never a new one's. An object that
+--- already has an id keeps it.
+--- @param obj table
+--- @param id string
+function Registry:adopt(obj, id)
+    if self.by_obj[obj] == nil then self.by_obj[obj] = id end
+end
+
 --- The object an id was issued for, among `candidates` (nil: none of them,
 --- e.g. a stale id of a removed entity or an earlier session).
 --- @param id string
@@ -111,6 +121,66 @@ function M.index(ws, reg)
         return a.configuration < b.configuration
     end)
     return idx
+end
+
+--- Every live entity of `ws` that has an id, under its kind-and-key (as a
+--- refresh matches it): a profile, configuration set, project or SDK by its
+--- key; a configuration, launch configuration or configuration unit by its
+--- project's key and its own. `fn(match_key, obj)` is called for each.
+--- @param ws table
+--- @param fn fun(match_key: string, obj: table)
+local function each_keyed(ws, fn)
+    local function list(kind, objs, key_of)
+        for _, o in pairs(objs or {}) do
+            local k = not o._removed and key_of(o) or nil
+            if k ~= nil then fn(kind .. "\0" .. tostring(k), o) end
+        end
+    end
+    list("profile", ws._profiles, function(o) return o.key end)
+    list("config_set", ws._config_sets, function(o) return o.name end)
+    list("sdk", ws._sdks, function(o) return o.key end)
+    for _, p in pairs(ws._projects or {}) do
+        if not p._removed and p.key then
+            fn("project\0" .. p.key, p)
+            list("configuration\0" .. p.key, p._configurations, function(o) return o.name end)
+            list("launch\0" .. p.key, p._launches, function(o) return o.name end)
+        end
+    end
+    list("config_unit", ws._config_units, function(u)
+        local pk = u._project and not u._project._removed and u._project.key or nil
+        local ck = u.config_key and u:config_key() or nil
+        return pk and ck and (pk .. "\0" .. ck) or nil
+    end)
+end
+
+--- The ids `reg` issued for `ws`'s entities, by kind-and-key — taken before
+--- an environment reload drops `ws` (spec §19.15 "Environment"), for
+--- `carry_ids` to hand on to the reloaded model.
+--- @param ws table
+--- @param reg loomworks.daemon.IdRegistry
+--- @return table<string, string> match key → id
+function M.ids_by_key(ws, reg)
+    local out = {}
+    each_keyed(ws, function(k, o)
+        local id = reg.by_obj[o]
+        if id then out[k] = id end
+    end)
+    return out
+end
+
+--- Give each entity of the reloaded `ws` the id of the one it replaces
+--- (`ids_by_key` of the model before the reload; API.md §1.2): ids issued
+--- before an environment reload keep naming their entities. An entity the
+--- reload no longer has leaves its id unmatched, so it resolves to nothing —
+--- a stale reference.
+--- @param ws table
+--- @param reg loomworks.daemon.IdRegistry
+--- @param by_key table<string, string>
+function M.carry_ids(ws, reg, by_key)
+    each_keyed(ws, function(k, o)
+        local id = by_key[k]
+        if id then reg:adopt(o, id) end
+    end)
 end
 
 -- ========================== daemon side ==========================

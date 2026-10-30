@@ -1423,8 +1423,9 @@ ignored; a new generation is always applied.
 
 The daemon keeps a session-local **opaque-id registry** keyed by object
 identity, which provides the ids of [PROTOCOL.md](../protocol/PROTOCOL.md) §12.1: an id survives renames (it
-follows the object, not its key) and refreshes (the deserializer reuses a
-matching object), and is discarded on restart (a new session generation).
+follows the object, not its key), refreshes (the deserializer reuses a
+matching object) and an environment reload (§19.15: the reloaded entity
+takes over the id of the one it replaces), and is discarded on restart (a new session generation).
 Snapshots carry
 a current-key → id index from which a client builds its id↔key map, a
 transport-layer router that domain logic never consults. *(Step 5g.2 part B
@@ -1955,7 +1956,10 @@ applies it to the operation and to nothing else. In the daemon:
   leak into builds;
 - the daemon's workspace model is kept for the environment it was loaded in:
   a request whose environment differs reloads the workspace from disk first,
-  as an in-process load in that environment would read it; while another
+  as an in-process load in that environment would read it; the reloaded
+  model's entities keep the ids of those they replace (§19.12), so the
+  request's references, resolved after the reload, still name their
+  entities; while another
   build runs in the daemon, such a request is declined instead. The
   comparison ignores variables that differ between two commands of one shell
   (`_`, `PWD`, `OLDPWD`, `SHLVL`) and between two terminals of one user — the

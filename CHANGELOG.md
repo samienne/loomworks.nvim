@@ -990,6 +990,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- In the editor's `daemon` mode the first build, launch or other action after
+  the editor's environment changed (for example after `:let $FOO=...`) no
+  longer fails once with "a stale reference". The workspace daemon still
+  reloads the workspace for the new environment, but the profiles, projects,
+  configurations and launches keep their ids across that reload. (#351)
 - A workspace's load warnings (a project directory not found, a skipped
   entry) now reach every `lw` command through a warm workspace daemon, not
   only the one that loaded it, and the editor lists them in the status page's
