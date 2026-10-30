@@ -964,6 +964,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- The deploy step editor's target picker now offers every build target of the
+  source project, also those of a configuration that is in no profile; before,
+  in daemon mode, such a configuration's targets were missing (#PR).
 - Renaming a project no longer throws away its configured and built build
   directories' state on the next reload: the project's configurations keep
   their build state and are not reconfigured from scratch (#341).
