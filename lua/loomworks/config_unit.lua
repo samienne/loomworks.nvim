@@ -40,6 +40,7 @@
 --- @field _last_progress_notify number|nil clock() value of last progress notify
 --- @field _deleting boolean
 --- @field _deleting_reason "deleting"|"cleaning"|nil
+--- @field _deleting_marks integer open deleting/cleaning marks (nested: a clean's clean_wipe deletion)
 --- @field _listeners function[]
 --- @field _removed boolean
 --- @field targets table<string, loomworks.Target>|nil runtime-only
@@ -88,6 +89,7 @@ function ConfigUnit.new(workspace, id, project_key)
     self._last_progress_notify = nil
     self._deleting = false
     self._deleting_reason = nil
+    self._deleting_marks = 0
     self._listeners = {}
     self._removed = false
     self.targets = nil
@@ -1390,12 +1392,23 @@ function ConfigUnit:open_task_output(win_opts, on_close)
     return true
 end
 
---- Mark this unit as deleting/cleaning (or clear the flag).
+--- Mark this unit as deleting/cleaning (`true`), or end one mark (`false`).
+--- Marks nest: a deletion run inside a clean (its clean_wipe step) marks the
+--- unit again and its end leaves the clean's mark — and that mark's reason —
+--- in place; the unit stops deleting when the last mark ends.
 --- @param flag boolean
 --- @param reason? "deleting"|"cleaning" defaults to "deleting"
 function ConfigUnit:mark_deleting(flag, reason)
-    self._deleting = flag
-    self._deleting_reason = flag and (reason or "deleting") or nil
+    local n = self._deleting_marks or 0
+    if flag then
+        n = n + 1
+        if n == 1 then self._deleting_reason = reason or "deleting" end
+    else
+        n = math.max(n - 1, 0)
+        if n == 0 then self._deleting_reason = nil end
+    end
+    self._deleting_marks = n
+    self._deleting = n > 0
     self:_notify()
 end
 

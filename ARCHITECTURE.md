@@ -589,7 +589,15 @@ files (waiting up to ~2 s for a writer that still holds O; a refusal is
 (`txn.abandon`) before releasing O. `txn.finish` fences on
 `op_lock.still_held(root)` (the O lockfile still carries this process's
 record); `op_lock.guard` aborts the transaction when the method returns
-`false`; `_execute_deletion_unlocked` stops (no tree removed) when its commit
+`false`. When the commit fails, or the method raises, the guard drops the
+method's in-memory change (API.md §11): an optional per-method `undo`
+(`opts.snapshot`, e.g. a profile's toolchain or a project's configuration
+names) restores in place, then `Workspace:_txn_rollback` puts back the
+sticky intents, removed-upstream flags, project keys and set names
+`_txn_snapshot` took and reloads the model from the files on disk (as an
+external change, objects matched by their on-disk keys; a load the files
+would refuse goes through `Core:setup`). A nested guard leaves the reload to
+the outermost one. `_execute_deletion_unlocked` stops (no tree removed) when its commit
 fails, and `_run_deletion` asserts that no transaction is open when it writes
 the `unknown` marks.
 

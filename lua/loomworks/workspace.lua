@@ -4739,11 +4739,12 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     return future_mod.when_all(futures):next(function() return true end)
 end
 
---- Return a function that clears the runtime deleting/cleaning mark of
---- `units` the first time it is called and does nothing afterwards, so every
---- exit path of a clean/deletion (success, failure, cancel, refusal, throw)
---- can call it and the mark is still cleared exactly once. Touches only the
---- in-memory mark, never cache state.
+--- Return a function that ends the runtime deleting/cleaning mark this
+--- clean/deletion set on `units` the first time it is called and does
+--- nothing afterwards, so every exit path (success, failure, cancel,
+--- refusal, throw) can call it and the mark still ends exactly once. Marks
+--- nest (ConfigUnit:mark_deleting): an enclosing clean's mark stays. Touches
+--- only the in-memory mark, never cache state.
 --- @param units loomworks.ConfigUnit[]
 --- @return fun()
 function Workspace:_deleting_mark_clearer(units)
@@ -4808,12 +4809,20 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         unit:mark_deleting(true, reason)
     end
     local clear_mark = self:_deleting_mark_clearer(units)
-    self._core._deps.events.emit("deletion_started", items)
-
-    local running = self:find_running_tasks_for_items(items)
-    local task_ids = {}
-    for task_id in pairs(running) do
-        task_ids[#task_ids + 1] = task_id
+    -- Up to the removal Future, a throw clears the mark it just set (nothing
+    -- is removed and no cache entry is marked yet) and propagates.
+    local ok_stop, stopped = pcall(function()
+        self._core._deps.events.emit("deletion_started", items)
+        local running = self:find_running_tasks_for_items(items)
+        local task_ids = {}
+        for task_id in pairs(running) do
+            task_ids[#task_ids + 1] = task_id
+        end
+        return self:stop_tasks_then(task_ids)
+    end)
+    if not ok_stop then
+        clear_mark()
+        error(stopped, 0)
     end
 
     local ws = self
@@ -4846,7 +4855,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     -- (a joined Future is not recorded as upstream), so it keeps running
     -- after a cancel.
     local removal
-    local f = self:stop_tasks_then(task_ids):next(function()
+    local f = stopped:next(function()
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
 
@@ -5248,6 +5257,66 @@ end
 --- @param t table|nil
 function Workspace:_txn_abort(t)
     if t then require("loomworks.txn").abort(t) end
+end
+
+--- Before a guarded operation (op_lock.guard): the in-memory state a reload
+--- from disk does not put back — each item's sticky intent (data_model keeps
+--- an item's prior `_intent`) and its removed-upstream flag — and the
+--- project keys and configuration-set names, put back first so the reload
+--- matches a renamed item by its on-disk identity (it stays the same object).
+--- @return table snapshot for `_txn_rollback`
+function Workspace:_txn_snapshot()
+    local items = {}
+    local function add(o, field)
+        items[#items + 1] = { o, o._intent, o._removed_upstream, field, field and o[field] }
+    end
+    for _, p in pairs(self._projects or {}) do
+        add(p, "key")
+        for _, cfg in ipairs(p._configurations or {}) do add(cfg) end
+    end
+    for _, cs in pairs(self._config_sets or {}) do add(cs, "name") end
+    for _, pr in pairs(self._profiles or {}) do add(pr) end
+    return { items = items }
+end
+
+--- After a guarded operation whose commit failed, or which raised: nothing
+--- (or, after a failed apply whose journal the next holder rolls forward, not
+--- everything) reached disk, so its in-memory change is dropped by reloading
+--- the model from the files on disk (API.md §11: a refused write changes
+--- neither the files nor the model). A profile whose key the operation
+--- changed comes back as a new object under its on-disk key (unless the
+--- guard's `undo` put it back). Files the load would
+--- refuse (signature, schema) take the full setup path instead.
+--- @param snap table from `_txn_snapshot`
+function Workspace:_txn_rollback(snap)
+    for _, it in ipairs(snap.items) do
+        it[1]._intent, it[1]._removed_upstream = it[2], it[3]
+        if it[4] then it[1][it[4]] = it[5] end
+    end
+    local deps = self._core._deps
+    local read = deps.io.read_file
+    if type(read) ~= "function" or self._torn_down then return end
+    local paths = M.paths(self.root)
+    local texts = { [paths.config] = read(paths.config), [paths.user] = read(paths.user),
+        [paths.cache] = read(paths.cache) }
+    local data = M.assemble(self.root, texts[paths.config], texts[paths.user], texts[paths.cache],
+        { trust = deps.trust, modules = deps.modules })
+    if not data or (data.user_trust and data.user_trust ~= "valid")
+            or data.cache_trust == "invalid" or data.user_newer
+            or data.cache_newer or data.cache_version_mismatch or data.cache_inconsistent
+            or data.user_version_mismatch or data.user_projects_invalid then
+        if self._core._workspace == self then self._core:setup({ root = self.root }) end
+        return
+    end
+    -- An unsigned cache is ignored (as at load): the in-memory build state stays.
+    if data.cache_trust == "unsigned" then data.cache = nil end
+    self._shared_ignored = data.shared_ignored or {}
+    self:remerge(data.config, data.cache, data.user)
+    self:_adopt_disk("user", texts[paths.user])
+    self:_adopt_disk("cache", texts[paths.cache])
+    if self._tracker then
+        for path, text in pairs(texts) do self._tracker:mark_written(path, text) end
+    end
 end
 
 --- Release a token from `_op_lock`.

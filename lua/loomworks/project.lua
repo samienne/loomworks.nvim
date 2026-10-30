@@ -1440,8 +1440,21 @@ end
 
 
 -- A configuration rename propagates into the cache (working copy + cache):
--- it runs holding the workspace operation lock (spec §19.3).
+-- it runs holding the workspace operation lock (spec §19.3). A failed commit
+-- puts the configurations' names (and the inherits naming them) back in place
+-- so the reload from disk the guard then runs matches each by its on-disk
+-- name: the renamed configuration keeps its identity.
 require("loomworks.op_lock").guard(Project, "rename_configuration", "rename",
-    function(p) return p._workspace end)
+    function(p) return p._workspace end, {
+        snapshot = function(project)
+            local names = {}
+            for _, cfg in ipairs(project._configurations) do
+                names[#names + 1] = { cfg, cfg.name, cfg.inherits_names and vim.deepcopy(cfg.inherits_names) }
+            end
+            return function()
+                for _, n in ipairs(names) do n[1].name, n[1].inherits_names = n[2], n[3] end
+            end
+        end,
+    })
 
 return Project

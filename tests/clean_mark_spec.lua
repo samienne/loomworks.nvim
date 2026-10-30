@@ -212,6 +212,36 @@ describe("clean/deletion runtime mark", function()
             assert.is_false(unit:is_deleting())
         end)
 
+        it("clears the mark when finding the running tasks throws", function()
+            local core = make_core()
+            local unit = the_unit(core)
+            local ws = core._workspace
+            ws.find_running_tasks_for_items = function() error("boom") end
+            assert.has_error(function()
+                ws:execute_deletion({ items = { { unit = unit, project_key = "App",
+                    config_key = "dev", disposition = "clean" } } })
+            end)
+            assert.is_false(unit:is_deleting())
+        end)
+
+        -- A clean_wipe step runs a deletion of the clean's own units while the
+        -- clean still runs: its end must not clear the clean's mark.
+        it("a nested clean_wipe deletion keeps the outer clean's mark", function()
+            local core = make_core()
+            local unit = the_unit(core)
+            local ws = core._workspace
+            ws._core._deps.io.rm_rf_async = function(_, cb) cb(true, nil) end
+            unit:clean()
+            assert.is_true(unit:is_deleting())
+            local done
+            ws:clean_wipe_build_dir({ unit }, "/root/.nvim/build/App-dev"):next(function(ok) done = ok end)
+            assert.is_true(done)
+            assert.is_true(unit:is_deleting(), "the clean still runs")
+            assert.equals("cleaning", unit:deleting_reason())
+            pending.resolve(true)
+            assert.is_false(unit:is_deleting())
+        end)
+
         it("clears the mark when stopping the running tasks fails", function()
             local core = make_core()
             local unit = the_unit(core)

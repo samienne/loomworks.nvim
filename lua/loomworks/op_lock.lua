@@ -172,19 +172,40 @@ end
 --- Wrap `class[name]` so it runs holding the operation lock of its workspace
 --- (`ws_of(self)`). A refused acquisition returns `false, message` (after
 --- `ws:_op_lock_refused`) without running the method; the lock is released
---- when the method returns or raises.
+--- when the method returns or raises. A commit that fails, or a method that
+--- raises, drops the method's in-memory change: `undo` (from
+--- `opts.snapshot(self, ...)`, taken before the method runs) puts back what
+--- the caller can restore in place, then the model is reloaded from the
+--- files on disk (`ws:_txn_rollback`), so it never diverges from them
+--- (API.md §11).
 --- @param class table
 --- @param name string
 --- @param operation string
 --- @param ws_of fun(self): table|nil
-function M.guard(class, name, operation, ws_of)
+--- @param opts? { snapshot: fun(self, ...): fun() }
+function M.guard(class, name, operation, ws_of, opts)
     local impl = class[name]
     assert(type(impl) == "function", "op_lock.guard: no method " .. name)
+    local snapshot = opts and opts.snapshot
     class[name] = function(self, ...)
         local ws = ws_of(self)
         if not ws or not ws.root or not ws._op_lock then return impl(self, ...) end
         local tok, msg = ws:_op_lock(operation)
         if not tok then return false, msg end
+        local snap = ws._txn_snapshot and ws:_txn_snapshot()
+        local undo = snapshot and snapshot(self, ...)
+        local function rollback()
+            if undo then pcall(undo) end
+            -- A nested guard leaves the reload to the outermost one (its
+            -- transaction is still open; reads would see staged bytes).
+            if snap and not require("loomworks.txn").active() then
+                local ok_r, rerr = pcall(ws._txn_rollback, ws, snap)
+                if not ok_r then
+                    ws._core._deps.notify("loomworks: reload after a failed commit: " .. tostring(rerr),
+                        vim.log.levels.ERROR)
+                end
+            end
+        end
         -- Its file writes commit together (spec §19.4).
         local t = ws:_txn_begin(operation)
         local r = pack(pcall(impl, self, ...))
@@ -195,11 +216,13 @@ function M.guard(class, name, operation, ws_of)
         elseif r[1] then
             local ok_c, cerr = ws:_txn_finish(t)
             if not ok_c then
+                rollback()
                 ws:_op_unlock(tok)
                 return false, cerr
             end
         else
             ws:_txn_abort(t)
+            rollback()
         end
         ws:_op_unlock(tok)
         if not r[1] then error(r[2], 0) end

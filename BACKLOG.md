@@ -49,25 +49,6 @@ it. Compare by directory identity (`_build_dir_identity`, spec §4.6) instead.
 Deletion safety: needs a failing test first (set `TMPDIR` to a short path).
 Found by `tests/view_deletion_locks_spec.lua` on Windows CI (#292).
 
-## A failed commit under `op_lock.guard` keeps the in-memory change
-
-When `_txn_finish` fails inside `op_lock.guard` (op_lock.lua: lock lost
-before committing, commit journal not written, a failed apply), the guarded
-method's in-memory change stays although nothing (or not everything) was
-written, and the working copy's `_disk_baseline.user` keeps the aborted
-staged text, so the next save is refused as stale and reloads (API.md §11:
-a refused write changes neither user.json nor the model). Fixed for the
-profile toolchain change only (`change_toolchain` in model_commands.lua,
-PR #310: the profile's tools/key and the baseline put back). Still open for
-the other guarded methods: `Workspace:publish`, `publish_one`,
-`commit_import`, `rename_project`, `rename_configuration_set`,
-`remove_profile`, `upgrade_profiles_for_tool`,
-`downgrade_profiles_from_tool` (end of workspace.lua) and
-`Project:rename_configuration` (end of project.lua). Likely better solved
-once in the guard (a per-method undo, or reload from disk on a failed
-commit) than per method; the cache baseline may drift the same way. Test
-by stubbing `ws._txn_finish` to abort and return false.
-
 ## master: in-process deletions take no locks
 
 master: in-process deletions take no locks (no operation lock; cross-process
@@ -230,17 +211,6 @@ re-render before the view's `update` keeps them."
 
 ## Clean and deletion leftovers (low; noted during step 5o C2c-2 / C2d)
 
-- A `clean_wipe` step's nested `_run_deletion` clears the outer clean's
-  deleting (`cleaning`) mark early, while the clean still holds the
-  build-directory lock: the unit shows its old state for the rest of the
-  clean. Keep the outer mark until the outer clean ends.
-- A throw between `mark_deleting(true)` and the removal Future in
-  `_run_deletion` leaves the mark set (the unit stays `deleting` until a
-  reload). Clear it on that error path (deletion-safety review applies).
-- A failed clean is notified twice (the routed call's refusal and the
-  caller's own report).
-- The stray-directory deletion test lost its assertion that the failure's
-  error text (`boom`) reaches the log; restore it.
 - The deploy editor still joins view rows by key at runtime (the same
   pattern the deletion pre-cancel had before C2d-2 matched by the confirm's
   `unit_ids`): `get_targets` (`ui/deploy_editor.lua:288`) keeps the profile

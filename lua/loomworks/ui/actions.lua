@@ -243,8 +243,8 @@ function M.configure_configuration(u, ws)
 end
 
 --- Rebuild a unit (`R`): confirmed, its clean, then — only once the clean
---- ended successfully — its build; a failed clean is reported and nothing
---- is built.
+--- ended successfully — its build; a failed clean is reported (once: not
+--- again when the routed call already notified it) and nothing is built.
 --- @param u table the unit's row
 --- @param ws? loomworks.Workspace
 function M.rebuild_configuration(u, ws)
@@ -255,6 +255,7 @@ function M.rebuild_configuration(u, ws)
             unit_op(ws, "Build/1.clean", { units = { u } }, function(r)
                 local ok, err = require("loomworks.ui.model_calls").result(r)
                 if ok then return build() end
+                if r.notified then return end
                 vim.notify("loomworks: rebuild of " .. unit_label(u) .. " stopped: clean failed ("
                     .. tostring(err) .. ")", vim.log.levels.ERROR)
             end)

@@ -524,6 +524,8 @@ describe("deletion safety (execute_deletion)", function()
             assert.is_false(ok)
             assert.is_not_nil(uv.fs_stat(stray))
             assert.equals("a build directory was not removed (see the log)", err)
+            -- The removal's own error text reaches the log.
+            assert.is_truthy(table.concat(errs, " | "):find("boom", 1, true), table.concat(errs, " | "))
             assert.is_true(locks_released(stray))
         end)
     end)
