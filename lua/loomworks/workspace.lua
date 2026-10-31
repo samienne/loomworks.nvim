@@ -871,18 +871,100 @@ function Workspace:_compute_unit_id(project, variant, tool_data_or_list, tool_ke
     return cache_mod.unit_id(rel_key, shared, config_key), abs_path, shared, rel_key
 end
 
+--- The build-directory claims of every profile's ProfileProjects in the live
+--- model (spec §1.7 "One build directory per configuration"): each profile's
+--- mappings from its live configuration set, resolved with its tools.
+--- @return loomworks.BuildDirClaim[] claims
+--- @return table<loomworks.BuildDirClaim, { profile: loomworks.Profile, project: loomworks.Project, configuration: loomworks.Configuration }> owners
+function Workspace:_live_build_dir_claims()
+    local claims, owners = {}, {}
+    local merge = self._core._deps.merge
+    for _, profile in pairs(self._profiles or {}) do
+        local cs = profile._config_set_ref
+        if not profile._removed and cs and not cs._removed then
+            for project, configuration in pairs(cs.mappings or {}) do
+                if not project._removed and configuration and not configuration._removed then
+                    local tool_data, tool_key, effective = data_model.mapping_tools(profile, project, configuration)
+                    local arg = effective and #effective > 0 and effective or tool_data
+                    local _, abs, shared = self:_compute_unit_id(project, configuration.name, arg, tool_key)
+                    local c = { project_key = project.key, config_name = configuration.name,
+                        tool_key = tool_key, config_key = merge.build_config_key(configuration.name, tool_key),
+                        abs = abs, shared = shared == true }
+                    claims[#claims + 1] = c
+                    owners[c] = { profile = profile, project = project, configuration = configuration }
+                end
+            end
+        end
+    end
+    return claims, owners
+end
+
+--- The configurations the live model refuses a build directory (spec §1.7):
+--- another configuration keeps it. Indexed by project, then configuration.
+--- @return table<loomworks.Project, table<loomworks.Configuration, string>> refused message
+--- @return string[] messages sorted
+function Workspace:_build_dir_refusals()
+    local claims, owners = self:_live_build_dir_claims()
+    local refused = require("loomworks.build_dir_claims").resolve(claims,
+        self:_serialize_cache().build_dirs, function(p) return self:_build_dir_identity(p) end,
+        { root = self.root })
+    local index, messages = {}, {}
+    for c, msg in pairs(refused) do
+        local o = owners[c]
+        index[o.project] = index[o.project] or {}
+        if not index[o.project][o.configuration] then
+            index[o.project][o.configuration] = msg
+            messages[#messages + 1] = msg
+        end
+    end
+    table.sort(messages)
+    return index, messages
+end
+
+--- A command's change, already made in memory, would refuse a configuration
+--- the loaded model does not refuse (spec §1.7 "Commands refuse to create
+--- one"): the first such refusal, else nil. The caller undoes its change and
+--- writes nothing.
+--- @param new_profile? loomworks.Profile a profile the command made: its
+---   ProfileProjects (already carrying their refusals) are not the loaded model
+--- @return string|nil message
+function Workspace:_new_build_dir_collision(new_profile)
+    local before = {}
+    for _, pp in pairs(self._profile_projects or {}) do
+        if not pp._removed and pp._build_dir_error and pp._project and pp._configuration
+            and not (new_profile and pp._profile == new_profile) then
+            before[pp._project] = before[pp._project] or {}
+            before[pp._project][pp._configuration] = true
+        end
+    end
+    local index = self:_build_dir_refusals()
+    local new = {}
+    for project, by_cfg in pairs(index) do
+        for cfg, msg in pairs(by_cfg) do
+            if not (before[project] and before[project][cfg]) then new[#new + 1] = msg end
+        end
+    end
+    table.sort(new)
+    return new[1]
+end
+
 --- Find or create a ConfigUnit for the given project, configuration, and tool.
 --- Searches by properties first. If not found, creates a new cache entry
---- and ConfigUnit. Key generation is a write-time cache concern only.
+--- and ConfigUnit. Key generation is a write-time cache concern only. A
+--- configuration refused its build directory (spec §1.7) gets none: nil.
 --- @param project loomworks.Project
 --- @param configuration loomworks.Configuration configuration domain object
 --- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
+--- @param refused? table the `_build_dir_refusals` index, when the caller has it
 --- @return loomworks.ConfigUnit|nil nil for a configuration the module
----   reported an `error` for (spec §8 `info`): no ConfigUnit exists for it
-function Workspace:ensure_config_unit(project, configuration, tool)
+---   reported an `error` for (spec §8 `info`) or whose build directory is
+---   refused (§1.7): no ConfigUnit exists for it
+function Workspace:ensure_config_unit(project, configuration, tool, refused)
     if configuration:module_error() then return nil end
     local existing = self:find_config_unit(project, configuration, tool)
     if existing then return existing end
+    refused = refused or self:_build_dir_refusals()
+    if refused[project] and refused[project][configuration] then return nil end
 
     local variant = configuration.name
     local tool_key = tool and tool.key or nil
@@ -1356,7 +1438,9 @@ function Workspace:_rebuild_profile_projects_for(profile)
         end
     end
 
-    -- Build new PPs from profile mappings
+    -- Build new PPs from profile mappings. A configuration refused its build
+    -- directory (spec §1.7) gets no ConfigUnit — never the owner's.
+    local refused = self:_build_dir_refusals()
     local new_pps = {}
     if profile.mappings then
         for project_key, variant in pairs(profile.mappings) do
@@ -1365,8 +1449,10 @@ function Workspace:_rebuild_profile_projects_for(profile)
             if project then
                 configuration = project:get_configuration(variant)
             end
+            local build_dir_error = project and configuration and refused[project]
+                and refused[project][configuration] or nil
             local config_unit = nil
-            if project then
+            if project and not build_dir_error then
                 local tool_data = nil
                 local tool_key = nil
                 local profile_tools = profile:tools_data()
@@ -1379,9 +1465,9 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 -- Create ConfigUnit if no existing one found. Link BuildDir if available.
                 if not config_unit and expected_id and configuration then
                     local tool = project._module and project._module:find_tool(tool_key) or nil
-                    config_unit = self:ensure_config_unit(project, configuration, tool)
+                    config_unit = self:ensure_config_unit(project, configuration, tool, refused)
                     -- Link to existing BuildDir at the expected path
-                    local bd = self:find_build_dir(expected_id)
+                    local bd = config_unit and self:find_build_dir(expected_id)
                     if bd then
                         config_unit._build_dir = bd
                         -- Sync ConfigUnit fields from BuildDir for backward compat
@@ -1393,7 +1479,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                         config_unit._cached_options = bd.options_snapshot
                         config_unit._cached_module_config = bd.module_config_snapshot
                     end
-                    units_by_id[config_unit.id] = config_unit
+                    if config_unit then units_by_id[config_unit.id] = config_unit end
                 end
             end
             -- Per-(profile, config) tool compatibility check. Mirrors
@@ -1422,6 +1508,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 configuration = configuration,
                 config_unit = config_unit,
                 tool_compat_error = tool_compat_error,
+                build_dir_error = build_dir_error,
             }
             local existing = existing_pps[reg_key]
             if existing then
@@ -2592,7 +2679,11 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
     end
 
     local changed = false
+    -- A configuration refused its build directory (spec §1.7) gets no unit
+    -- and never re-populates the owner's.
+    local refused = self:_build_dir_refusals()
     for project, config in pairs(config_set.mappings) do
+        if refused[project] and refused[project][config] then goto continue end
         local variant = config.name
         -- tool_key applies only to projects whose module type matches the tool
         local project_tool_key = tools and tools[project.type]
@@ -8904,7 +8995,10 @@ function Workspace:rename_project(project, new_key)
         end
     end
 
-    local ok, err = self:_save_user()
+    -- A key the build directory derives from (shell `${project_path}`) may
+    -- move it onto another configuration's (spec §1.7): refused, nothing written.
+    local ok, err = false, self:_new_build_dir_collision()
+    if not err then ok, err = self:_save_user() end
     if not ok then
         -- Rollback
         project.key = old_key
@@ -9132,7 +9226,10 @@ function Workspace:_ensure_profile_config_units(profile)
     local units_by_id = {}
     for _, u in pairs(self._config_units) do units_by_id[u.id] = u end
 
+    -- A configuration refused its build directory (spec §1.7) gets no unit.
+    local refused = self:_build_dir_refusals()
     for project, config in pairs(config_set.mappings) do
+        if refused[project] and refused[project][config] then goto continue end
         local variant = config.name
         local project_key = project.key
         -- Tool key applies only to projects whose module type matches
@@ -9161,6 +9258,7 @@ function Workspace:_ensure_profile_config_units(profile)
             self._config_units[#self._config_units + 1] = unit
             units_by_id[rel_key] = unit
         end
+        ::continue::
     end
 end
 

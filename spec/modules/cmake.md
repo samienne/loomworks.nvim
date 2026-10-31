@@ -129,6 +129,12 @@ full preset inheritance:
   directory, and loomworks builds that directory separately, so without it
   loomworks cannot locate the build. A preset that omits `binaryDir` is
   refused with a clear error rather than built into a mismatched directory.
+  Two presets, or a preset and any other configuration, whose `binaryDir`
+  resolves to one directory collide. Core refuses all but one of them with a
+  load error naming both (core §1.7 "One build directory per configuration").
+  A preset's `binaryDir` is never reported as a shared tree, even with a
+  multi-config generator. Only the module's own multi-config layout
+  (`.nvim/build/<project>/<kit>`) is (core §8.4 `resolve_build_dir`).
 - Preset's `cacheVariables.CMAKE_BUILD_TYPE`, when present, provides the
   configuration's variant. All other `cacheVariables` are applied by
   cmake itself when the preset is configured via `--preset`; the module

@@ -27,6 +27,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 ## Unreleased
 
 ### Breaking
+
+- Two configurations that resolve to one build directory (outside a module's
+  own multi-config tree, e.g. a shell `build_dir` without `${variant}`) no
+  longer share one build. The configuration a cache entry names, else the
+  first by project and configuration name, keeps the directory; each other one
+  is refused with a load error naming both. A profile build, configure, test
+  or clean runs the profile's other projects, then fails naming it, until its
+  directory resolves elsewhere. A command that would create such a collision
+  is refused without writing.
 - In the editor's default `daemon` mode the Lua getters return plain tables
   copied from the workspace daemon's views, each with its `id`, instead of
   Profile, Project and ConfigurationSet objects: `get_profiles`,

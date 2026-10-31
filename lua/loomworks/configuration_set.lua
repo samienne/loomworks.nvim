@@ -198,7 +198,10 @@ function ConfigurationSet:update_mapping(project, configuration)
         configuration:_mark_user_owned()
     end
 
-    local ok, err = ws:_save_user()
+    -- A change that would refuse another configuration's build directory is
+    -- refused, writing nothing (spec §1.7 "Commands refuse to create one").
+    local ok, err = false, ws:_new_build_dir_collision()
+    if not err then ok, err = ws:_save_user() end
     if not ok then
         self.mappings[project] = old
         return false, err

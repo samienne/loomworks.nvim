@@ -354,5 +354,16 @@ belongs in the matching `spec/` file.
     there is removed by the next run or by `lw cleanup` — only by exact name,
     never through a link, never while in use (§16.40).
 
+22. **One build directory, one configuration**: A ConfigUnit's id is its
+    build directory, plus its `config_key` in a module's shared tree, so two
+    (project, configuration) pairs never share a ConfigUnit. A shared tree is
+    a module's own multi-config layout, within one project and tool; its
+    configurations are distinct ConfigUnits on one build directory (§1.7,
+    §8.4). Two pairs that resolve to one directory outside a shared tree
+    collide. The configuration a cache entry for the directory names keeps
+    it; otherwise the pair that sorts first by project key, then
+    configuration name, keeps it. The others are refused with a load error
+    naming both, until they resolve elsewhere.
+
 ---
 

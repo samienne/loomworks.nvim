@@ -930,6 +930,64 @@ id.
 - An id is never parsed. The directory comes from the entry's `build_dir`;
   the configuration from its `project_key` and `config_key`.
 
+**One build directory per configuration.** Outside a shared tree, two
+configurations that resolve to one directory would get one id, and so one
+ConfigUnit: the second would build as the first and report the first's state.
+Core refuses that instead.
+
+- Core compares the build directories it resolves for every profile's
+  ProfileProjects (§8.4 `resolve_build_dir`, or the default formula), by
+  directory identity: the same comparison the build-directory reverse index
+  uses (state-lifecycle §4.6, "Shared build directory protection"), so two
+  spellings of one folder are one directory.
+- Two configurations **collide** when they are different (project,
+  configuration) pairs and resolve to the same directory. This covers two
+  configurations of one project and configurations of different projects.
+- **Exemption**: two configurations of the **same project** resolved with the
+  **same tool** do not collide when the module reported the directory as a
+  shared tree for both. They get distinct ids, as above. A shared tree is
+  never shared across projects.
+- One (project, configuration) resolved under different tools is not compared
+  with itself.
+- A **claimant** of a directory is one configuration, or all the
+  configurations of one shared tree together. A shared tree is placed in the
+  order below by its first configuration.
+- **The owner keeps the directory.** If a cache entry for the directory names
+  a colliding configuration (its `project_key` and `config_key`), that
+  configuration's claimant is the owner. If entries name several claimants,
+  or none, the owner is the claimant that sorts first by project key, then
+  configuration name, in byte order (among the named ones, if any). Every
+  configuration of every other claimant is **refused**.
+- A refused configuration gets no ConfigUnit for that directory and never
+  adopts the owner's cache entry. Its ProfileProject carries the collision as
+  an error, like a tool compat error (§8.4 `validate_config_tool`): build,
+  rebuild, configure, clean, deploy, launch, debug and test are refused with
+  the reason; delete is allowed and removes no directory and no cache entry.
+  The ProfileProject is invalid (invariant 11), so the profile's marker shows
+  ✗. A profile-level operation treats it as state-lifecycle §5.4 says.
+- A cache entry whose project or configuration no longer exists names no
+  colliding configuration. A configuration whose id equals the entry's key
+  adopts it, as today; that is not a collision. A shared-tree unit never
+  adopts an entry keyed by the plain directory.
+- The refusal lasts until the configuration resolves to a directory of its
+  own: a changed template or `binaryDir`, a renamed configuration, or removal
+  of the owner. The next load re-evaluates it. Nothing is migrated or
+  deleted.
+- **Load reports it.** Each refused configuration raises one load diagnostic
+  with severity `error`, naming the directory and both configurations:
+  `Build directory <dir> of <project>/<configuration> is already used by
+  <owner project>/<owner configuration>; <project>/<configuration> cannot be
+  built until its build directory resolves elsewhere.` It reaches the status
+  page Diagnostics section, the daemon's persistent load diagnostics
+  (daemon §19.13 "Load warnings") and every CLI command's standard error
+  (headless §16) by the usual load-diagnostic paths.
+- **Commands refuse to create one.** A command that would make a configuration
+  collide is refused with the same message and writes nothing. This covers
+  mapping a configuration into a profile, creating or materializing a profile,
+  adding a project or configuration, renaming one, or editing a build-directory
+  field from the UI. A collision that arrives through a file edit (loomworks.json,
+  user.json, CMakePresets.json) is reported by the load as above.
+
 **Overwritten marker.** A ConfigUnit may carry an **overwritten-by**
 reference to another ConfigUnit that most recently built over one of its
 shared artifacts (§5.9); `unit:is_overwritten()` reports the condition.

@@ -572,7 +572,12 @@ function M.profile_create(ws, set, tool_entry, activate)
     local intents = activate and activation_intents(profile) or {}
     if not existing then profile._intent = "local" end
     local saved, err, reason
-    if activate then
+    -- A new profile whose configurations would take another configuration's
+    -- build directory is refused, writing nothing (spec §1.7).
+    local collision = not existing and ws:_new_build_dir_collision(profile) or nil
+    if collision then
+        saved, err = false, collision
+    elseif activate then
         saved, err, reason = profile:activate()
     else
         saved, err, reason = ws:_save_user()
