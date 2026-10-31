@@ -583,6 +583,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- A profile build or configure no longer runs a project whose configuration
+  the profile's tool cannot honor (a tool compat error). The other projects
+  still run; the skipped one is named with its reason in the result, the
+  operation fails, and `lw build` exits non-zero after the others ran.
+  Before, such a project was built anyway.
 - In `daemon` mode the status page's Debug Adapters section lists the
   languages of the daemon's `DebugConfig/1.adapters` records instead of
   reading the editor's model. `DebugConfig/1.adapters` now has one record

@@ -364,4 +364,30 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         assert.equals("invalid_args", (r.err or {}).code, vim.inspect(r.err))
         r.conn:close()
     end)
+
+    -- Core state-lifecycle §5.4 "Invalid ProfileProjects": a profile build runs
+    -- every valid ProfileProject; an invalid one (a tool compat error) is not
+    -- run and fails the task, with its reason, after the others ran.
+    it("a profile build runs the valid projects, then fails naming the refused one (§5.4)", function()
+        local ProfileProject = require("loomworks.profile").ProfileProject
+        local orig = ProfileProject.tool_compat_error
+        ProfileProject.tool_compat_error = function(pp)
+            if pp._project and pp._project.key == "lib" then return "lib tool is wrong" end
+            return orig(pp)
+        end
+        local ok, e = pcall(function()
+            start()
+            local r = call(srv, "build", { profile = { key = "dev" } })
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.equals("built", cached_state(root, "app"))
+            assert.is_nil(cached_state(root, "lib"))
+            assert.is_nil(r.lines():find("[build] lib", 1, true), r.lines())
+            r.conn:close()
+        end)
+        ProfileProject.tool_compat_error = orig
+        assert.is_true(ok, tostring(e))
+    end)
 end)

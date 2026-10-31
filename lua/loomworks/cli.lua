@@ -1190,14 +1190,19 @@ local function run_build_steps(profile, ws, opts)
   -- The plan/gate/record sequence lives in loomworks.build_run (host-neutral);
   -- only the spawn (blocking here) and the reporting (die) are this host's.
   local build_run = require("loomworks.build_run")
-  local steps, plan_err = build_run.plan(profile, {
+  local steps, plan_err, refused = build_run.plan(profile, {
     for_test = opts.for_test,
     reconfigure = opts.reconfigure,
     extra_args = opts.extra_args,
     build_targets = opts.build_targets,
   })
   if not steps then die(plan_err) end
-  if #steps == 0 then return 0 end
+  -- Invalid ProfileProjects (core §5.4) are not run: the others build first,
+  -- then the command fails naming them.
+  if #steps == 0 then
+    if refused then die(build_run.refused_message(refused), 1) end
+    return 0
+  end
   -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
   -- so a machine consumer like `lw run --print` captures only its report.
   local quiet = opts.quiet or false
@@ -1223,6 +1228,7 @@ local function run_build_steps(profile, ws, opts)
       die(build_run.failure_message(step, code, th, sig), code)
     end
   end
+  if refused then die(build_run.refused_message(refused), 1) end
   return #steps
 end
 M._run_build_steps = run_build_steps  -- exported for tests

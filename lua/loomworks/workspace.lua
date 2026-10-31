@@ -3351,6 +3351,10 @@ function Workspace:create_operation(profile, action, units, target_states, opts)
         operation = op,
     })
 
+    -- Nothing to run (every ProfileProject refused, core §5.4): no unit will
+    -- report, so it ends (failed) now.
+    if #units == 0 then op:_check_completion() end
+
     return op
 end
 

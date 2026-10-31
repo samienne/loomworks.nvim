@@ -650,6 +650,9 @@ end
 ---   tool's parallelism, appended to each build step as the editor's
 ---   parallel-jobs option (overseer.append_parallel_jobs).
 --- @return table[]|nil steps (possibly empty), string|nil err
+--- @return string[]|nil refused the profile's ProfileProjects left out as
+---   invalid for the action (core §5.4 "Invalid ProfileProjects"), one result
+---   line each: the host runs the steps, then fails with `refused_message`
 function M.plan(profile, opts)
     opts = opts or {}
     local overseer = require("loomworks.overseer")
@@ -677,7 +680,7 @@ function M.plan(profile, opts)
             { reconfigure = opts.reconfigure, units = opts.units })
         if not picks then return nil, perr end
     end
-    local steps, plan_err
+    local steps, plan_err, refused
     if opts.units then
         steps, plan_err = overseer.plan_units_build(opts.units, {
             configure_only = opts.configure_only,
@@ -686,7 +689,7 @@ function M.plan(profile, opts)
             build_targets_for = picks,
         })
     else
-        steps, plan_err = overseer.plan_profile_build(profile, {
+        steps, plan_err, refused = overseer.plan_profile_build(profile, {
             for_test = opts.for_test,
             configure_only = opts.configure_only,
             reconfigure = opts.reconfigure,
@@ -718,7 +721,16 @@ function M.plan(profile, opts)
             end
         end
     end
-    return steps
+    return steps, nil, refused
+end
+
+--- The failure of a profile-level operation whose invalid ProfileProjects
+--- were not run (core §5.4 "Invalid ProfileProjects"): their result lines,
+--- one per line. Reported after the other projects ran.
+--- @param refused string[] `plan`'s third return
+--- @return string
+function M.refused_message(refused)
+    return table.concat(refused, "\n")
 end
 
 --- The gates evaluated immediately before a step runs (after recording the

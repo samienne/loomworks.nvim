@@ -784,6 +784,14 @@ Operations have three completion modes:
   clears on all affected units. Success if units return to "unconfigured",
   failure if they end up in "unknown" state (partial deletion).
 
+**Invalid ProfileProjects.** A profile-level operation runs every valid
+ProfileProject of the profile. A ProfileProject that is invalid for the
+action (a tool compat error, §8.4 `validate_config_tool`; a refused build
+directory, §1.7 "One build directory per configuration") is not run. It
+counts as finished and failed, with its reason in the result message, so
+the Operation fails and a CLI invocation exits non-zero after the other
+projects have run.
+
 Multiple Operations can coexist — they are independent objects, not a
 single slot on Profile. This means overlapping actions on different
 profiles don't clobber each other.

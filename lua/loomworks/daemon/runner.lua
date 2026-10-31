@@ -670,6 +670,9 @@ function M.run(svc, ctx)
 
     -- ---- the build steps ---------------------------------------------------
     local steps, i = nil, 0
+    -- The profile's ProfileProjects not run as invalid (core §5.4): the task
+    -- fails naming them once the other projects' steps ran.
+    local refused
     local case_api
     local next_step
     -- (Set by a target-scoped launch build: what follows a unit's steps.)
@@ -698,6 +701,10 @@ function M.run(svc, ctx)
         if not okc then return finish(1, stopped(why)) end
         i = i + 1
         if i > #steps then
+            if refused then
+                release_all()
+                return finish(1, build_run.refused_message(refused))
+            end
             if testing then return test_phase() end
             if cases then return cases.after_build(case_api) end
             release_all()
@@ -987,9 +994,9 @@ function M.run(svc, ctx)
             -- The for-test build: a unit whose runner rebuilds itself is not
             -- built separately unless it has saved test targets (`keep`); the
             -- arguments after `--` are the test steps'.
-            steps, plan_err = build_run.plan(profile, { for_test = { keep = ctx.test_pre.keep } })
+            steps, plan_err, refused = build_run.plan(profile, { for_test = { keep = ctx.test_pre.keep } })
         else
-            steps, plan_err = build_run.plan(profile, {
+            steps, plan_err, refused = build_run.plan(profile, {
                 -- (A run's `extra` are the program's arguments, not the build's.)
                 extra_args = not running and args.extra or nil,
                 build_targets = args.targets,
@@ -1000,6 +1007,10 @@ function M.run(svc, ctx)
             })
         end
         if not steps then finish(1, plan_err); return run end
+        if #steps == 0 and refused then
+            release_all()
+            finish(1, build_run.refused_message(refused)); return run
+        end
         if #steps == 0 then
             if testing then test_phase(); return run end
             if cases then cases.after_build(case_api); return run end

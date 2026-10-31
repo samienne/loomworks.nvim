@@ -17,6 +17,9 @@
 --- @field success boolean|nil nil while running, true/false when completed
 --- @field cancelled boolean|nil it ended by `cancel`
 --- @field message string|nil result message (set on completion)
+--- @field refused string[] the profile's ProfileProjects not run as invalid for
+---   the action (core §5.4 "Invalid ProfileProjects"), one result line each:
+---   each counts as finished and failed, so the operation fails
 --- @field _mode "rank"|"deletion"|"tasks" completion check mode
 --- @field _unit_done table<loomworks.ConfigUnit, boolean> tracks which units are done
 --- @field _unit_ok table<loomworks.ConfigUnit, boolean> tracks which units succeeded
@@ -55,8 +58,9 @@ local DELETION_ACTIONS = { clean = true, delete = true }
 --- @param units loomworks.ConfigUnit[]
 --- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
 --- @param on_complete? fun(op: loomworks.Operation) called when operation completes
---- @param opts? { track_tasks?: boolean } track_tasks: complete per unit only via
----   `unit_finished` (the operation's own tasks), never from observed state
+--- @param opts? { track_tasks?: boolean, refused?: string[] } track_tasks: complete
+---   per unit only via `unit_finished` (the operation's own tasks), never from
+---   observed state; refused: the ProfileProjects not run (`refused` field)
 --- @return loomworks.Operation
 function Operation.new(workspace, profile, action, units, target_states, on_complete, opts)
     local self = setmetatable({}, Operation)
@@ -71,6 +75,7 @@ function Operation.new(workspace, profile, action, units, target_states, on_comp
     self.completed = false
     self.success = nil
     self.message = nil
+    self.refused = opts and opts.refused or {}
     if opts and opts.track_tasks then
         self._mode = "tasks"
     else
@@ -199,6 +204,9 @@ function Operation:_check_completion()
         end
     end
 
+    -- A refused ProfileProject counts as finished and failed (§5.4).
+    if #self.refused > 0 then all_ok = false end
+
     self.completed = true
     self.success = all_ok
 
@@ -216,6 +224,9 @@ function Operation:_check_completion()
         verb = all_ok and "built" or "failed"
     end
     self.message = verb .. " in " .. format_duration(elapsed)
+    if #self.refused > 0 then
+        self.message = self.message .. "\n" .. table.concat(self.refused, "\n")
+    end
 
     for _, unsub in ipairs(self._unsubscribers) do
         unsub()

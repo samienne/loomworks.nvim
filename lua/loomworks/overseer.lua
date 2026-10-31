@@ -425,6 +425,19 @@ function M.build_spec_for(unit, target_id)
     return nil
 end
 
+--- The result line of a ProfileProject a profile-level operation does not run
+--- (core §5.4 "Invalid ProfileProjects"): `<project>/<configuration> not run:
+--- <reason> — <remedy>`.
+--- @param pp loomworks.ProfileProject
+--- @param reason string the tool compat error
+--- @return string
+function M.refusal_line(pp, reason)
+    local pk = pp._project and pp._project.key or "?"
+    local cn = pp.variant_name and pp:variant_name() or "?"
+    return pk .. "/" .. tostring(cn) .. " not run: " .. reason
+        .. " — change the profile's tool to match the configuration"
+end
+
 --- Collect task definitions for a profile, grouped by action.
 --- Does not change the active profile. Uses registered ProfileProject and
 --- Project objects instead of recomputing from scratch.
@@ -435,7 +448,11 @@ end
 ---   caller's build request for the build tasks (headless `lw build`, §16.4);
 ---   build_targets_for (the resolved `--target` operands) replaces
 ---   build_targets per project and skips every project it does not name
---- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
+--- A ProfileProject invalid for the action (a tool compat error, §8.4
+--- `validate_config_tool`) is not run (core §5.4 "Invalid ProfileProjects"):
+--- its tasks are left out and `refused` names it with its reason, so the
+--- caller fails the operation after the other projects ran.
+--- @return table|nil task_defs_by_action { configure = {...}, build = {...}, refused = string[] }
 local function collect_profile_tasks(profile, opts)
     opts = opts or {}
     local loomworks = require("loomworks")
@@ -447,7 +464,7 @@ local function collect_profile_tasks(profile, opts)
     local pps = profile:projects()
     if #pps == 0 then return nil end
 
-    local by_action = { configure = {}, build = {} }
+    local by_action = { configure = {}, build = {}, refused = {} }
 
     for _, pp in ipairs(pps) do
         local project = pp._project
@@ -456,6 +473,14 @@ local function collect_profile_tasks(profile, opts)
         -- A resolved `--target` request (§16.4) builds only the projects it
         -- selected, each with its own bare target names.
         if opts.build_targets_for and not opts.build_targets_for[project] then goto continue end
+
+        do
+            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+            if compat then
+                by_action.refused[#by_action.refused + 1] = M.refusal_line(pp, compat)
+                goto continue
+            end
+        end
 
         local mod = project._module and project._module.impl or nil
         if not mod or not mod.tasks then goto continue end
@@ -1318,7 +1343,8 @@ function M.plan_profile_build(profile, opts)
 
     local steps, plan_err = plan_steps(needs_configure, build_tasks)
     if plan_err then return nil, plan_err end
-    return steps
+    local refused = all_tasks.refused
+    return steps, nil, (refused and #refused > 0) and refused or nil
 end
 
 --- The plan of `plan_profile_build` for configuration units instead of a
@@ -2275,6 +2301,17 @@ in_process_profile_action = function(profile, action, opts)
             f:_reject("no tasks")
             return
         end
+        -- Invalid ProfileProjects (core §5.4) are not run: the operation
+        -- counts them finished and failed, and the action fails once the
+        -- other projects ran.
+        local refused = all_tasks.refused or {}
+        local function settle_ok()
+            if #refused > 0 then
+                f:_reject(table.concat(refused, "\n"))
+            else
+                f:_resolve(true)
+            end
+        end
 
         -- Apply parallel_jobs override: wrap build task builders to append -jN
         if opts and opts.parallel_jobs then
@@ -2309,9 +2346,9 @@ in_process_profile_action = function(profile, action, opts)
             -- build, an earlier configure) must not count as done when the
             -- unit reaches `built`/`configured` through that other task.
             local op
-            if #units > 0 then
+            if #units > 0 or #refused > 0 then
                 op = loomworks.create_operation(profile, "configure", units, target_states,
-                    { track_tasks = true })
+                    { track_tasks = true, refused = refused })
             end
             local pending, unit_ok = {}, {}
             for _, task_def in ipairs(launchable) do
@@ -2330,7 +2367,7 @@ in_process_profile_action = function(profile, action, opts)
                 end
             end
             launch_tasks(overseer, all_tasks.configure, nil, readiness_opts):next(
-                function() f:_resolve(true) end,
+                settle_ok,
                 function(err) f:_reject(err) end
             )
             return
@@ -2352,8 +2389,9 @@ in_process_profile_action = function(profile, action, opts)
                 end
 
                 local op
-                if #units > 0 then
-                    op = loomworks.create_operation(profile, "configure+build", units, target_states)
+                if #units > 0 or #refused > 0 then
+                    op = loomworks.create_operation(profile, "configure+build", units, target_states,
+                        { refused = refused })
                 end
 
                 launch_tasks(overseer, needs_configure):next(function()
@@ -2363,7 +2401,7 @@ in_process_profile_action = function(profile, action, opts)
                 end):next(function()
                     return launch_tasks(overseer, all_tasks.build)
                 end):next(
-                    function() f:_resolve(true) end,
+                    settle_ok,
                     function(err)
                         if op and not op.completed then
                             op:cancel(tostring(err))
@@ -2373,12 +2411,13 @@ in_process_profile_action = function(profile, action, opts)
                 )
             else
                 guard_build_conflicts(ws, all_tasks.build, force):next(function()
-                    if #units > 0 then
-                        loomworks.create_operation(profile, "build", units, target_states)
+                    if #units > 0 or #refused > 0 then
+                        loomworks.create_operation(profile, "build", units, target_states,
+                            { refused = refused })
                     end
                     return launch_tasks(overseer, all_tasks.build)
                 end):next(
-                    function() f:_resolve(true) end,
+                    settle_ok,
                     function(err) f:_reject(err) end
                 )
             end
