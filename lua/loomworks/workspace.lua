@@ -3201,15 +3201,15 @@ function Workspace:_stray_known_forms()
 end
 
 --- Every form (`_path_forms`) of every held build dir (`_held_build_dirs`:
---- an invalid configuration's entry), except the BuildDirs in `exempt` (the
---- entries a deletion batch itself removes). A deletion other than the reset
---- of all treats these like live build dirs (deletion safety).
---- @param exempt? table<loomworks.BuildDir, true>
+--- an invalid configuration's entry). A deletion other than the reset of all
+--- treats these like live build dirs (deletion safety) — including an entry
+--- of the batch itself that became held after the deletion was planned, so it
+--- keeps its own tree.
 --- @return string[]
-function Workspace:_held_build_dir_forms(exempt)
+function Workspace:_held_build_dir_forms()
     local known, seen = {}, {}
     for _, bd in ipairs(self:_held_build_dirs()) do
-        if bd.path and bd.path ~= "" and not (exempt and exempt[bd]) then
+        if bd.path and bd.path ~= "" then
             for _, f in ipairs(self:_path_forms(bd.path)) do
                 if not seen[f] then seen[f] = true; known[#known + 1] = f end
             end
@@ -4385,7 +4385,9 @@ end
 --- `_delete_orphaned_build_dir_unlocked` on the BuildDir object itself (a
 --- caller that resolved it at its input boundary, `Maintenance/1`'s
 --- `{ build_dir }` target through loomworks.deletion_plan). `bd` nil: the
---- entry is gone; nothing is removed.
+--- entry is gone; nothing is removed. A `bd` that is held at execution
+--- (`_held_build_dirs`, unless `opts.include_held`) is not an orphan any more:
+--- tree and entry are kept, reported as kept `"held"`.
 --- @param bd loomworks.BuildDir|nil
 --- @param on_done? function
 --- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
@@ -4393,10 +4395,34 @@ end
 function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
     local future_mod = require("loomworks.future")
     local stop = opts and opts.stop or nil
+    -- Whether `bd` is held now (`_held_build_dirs`: its configuration
+    -- exists but turned invalid since the deletion was planned) — then it is
+    -- not an orphan: neither its tree nor its entry is removed.
+    local function held_now()
+        if opts and opts.include_held then return false end
+        for _, h in ipairs(self:_held_build_dirs()) do
+            if h == bd then return true end
+        end
+        return false
+    end
     local function drop()
+        if held_now() then return end
         for i, b in ipairs(self._build_dirs) do
             if b == bd then table.remove(self._build_dirs, i); break end
         end
+    end
+    if bd and held_now() then
+        local dir = bd.path and self._core._deps.normalize(bd.path) or tostring(bd.rel_path)
+        self._core._deps.notify("loomworks: kept " .. dir
+            .. " — it is the build dir of an invalid configuration, not an orphan",
+            vim.log.levels.INFO)
+        local report = opts and opts.report or nil
+        if report then
+            report.kept = { { dir = dir, why = "held" } }
+            report.removed, report.removed_ids = {}, {}
+        end
+        if on_done then on_done() end
+        return future_mod.resolved(true)
     end
     if bd then
         if bd.path then
@@ -5222,15 +5248,13 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         local live_forms -- lazily, only when an orphaned entry is present
         -- Held build dirs (`_held_build_dirs`: an invalid configuration's
         -- entry) are protected like live ones, except by the reset of all
-        -- (`opts.include_held`) and for the held entries this batch removes.
+        -- (`opts.include_held`). Read now, at execution: an orphaned entry of
+        -- this batch that became held since it was planned (its
+        -- configuration turned invalid on a reload) protects its own tree.
         local held_forms -- lazily
         local function held_build_dir_forms()
             if opts and opts.include_held then return {} end
-            local in_batch = {}
-            for _, it in ipairs(items) do
-                if it.build_dir_obj then in_batch[it.build_dir_obj] = true end
-            end
-            return ws:_held_build_dir_forms(in_batch)
+            return ws:_held_build_dir_forms()
         end
         local report = opts and opts.report or nil
         if report then report.kept = {} end
@@ -5273,6 +5297,12 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                     -- A held build dir: a unit's dir that IS or CONTAINS it
                     -- (the shared-refs analogue), an orphaned entry's that
                     -- is, contains or lies inside it (as for a live dir).
+                    -- A unit's dir that lies INSIDE a held dir is removed,
+                    -- exactly as one nested in a live build dir is: it is the
+                    -- unit's own configured build tree (its path comes from a
+                    -- valid configuration, not the cache), the held dir's
+                    -- other contents stay, and a held in-source dir (the
+                    -- workspace root) would otherwise refuse every unit.
                     held_forms = held_forms or held_build_dir_forms()
                     if #held_forms > 0 then
                         local hit
