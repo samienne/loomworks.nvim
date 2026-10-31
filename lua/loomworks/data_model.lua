@@ -416,18 +416,24 @@ local function sync_build_dirs(ctx, workspace, cache)
     local cache_mod = require("loomworks.cache")
     local dir_exists = ctx.dir_exists
     local seen = {}
-    -- rel_path → true for build dirs whose cached state must reset because the
-    -- directory is gone from disk (spec §3.1 rule 7). Populated here, one stat
-    -- per directory, then reused by sync_profile_projects_and_config_units so
-    -- every ConfigUnit that shares the directory sees the reset without a
-    -- second stat.
+    -- entry key → true for entries whose cached state must reset because
+    -- their directory is gone from disk (spec §3.1 rule 7). Populated here,
+    -- one stat per entry — each sibling of a shared tree (spec §1.7) is its
+    -- own entry on the same directory, so every one of them is reset — then
+    -- reused by sync_profile_projects_and_config_units without a second stat.
     ctx.missing_build_dirs = {}
 
     if cache and cache.build_dirs then
         for rel_path, entry in pairs(cache.build_dirs) do
             if entry.state and entry.state ~= "unconfigured" then
+                -- The entry's directory is its `build_dir`; a path is never
+                -- derived from a key, which may be a unit id (`<dir>#<config_key>`,
+                -- spec §1.7). Only a version 8 file keys every entry by its
+                -- directory.
                 local abs_path = entry.build_dir
-                    or cache_mod.absolute_build_dir(rel_path, workspace.root)
+                if not abs_path and cache._v8_moved then
+                    abs_path = cache_mod.absolute_build_dir(rel_path, workspace.root)
+                end
 
                 if build_dir_vanished(entry.state, abs_path, dir_exists) then
                     -- Directory removed out of band: record the reset and drop
@@ -606,6 +612,15 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     if rel_key then
                         build_dir_id = rel_key
                         abs_path = entry.build_dir
+                        if not abs_path and cache._v8_moved and not cache._v8_moved[entry] then
+                            -- A version 8 file keys each entry by its directory.
+                            abs_path = cache_mod.absolute_build_dir(rel_key, workspace.root)
+                            entry.build_dir = abs_path
+                        end
+                        if not abs_path and deps.compute_unit_id then
+                            -- The unit's directory, never one derived from its id.
+                            abs_path = select(2, deps.compute_unit_id(project, variant, arg, tool_key))
+                        end
                         matched_entry = entry
                         if cache._v8_moved and not cache._v8_moved[entry]
                                 and deps.compute_unit_id then
@@ -651,7 +666,7 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                         local enriched = nil
                         if matched_entry then
                             enriched = vim.tbl_extend("keep", matched_entry, {
-                                build_dir = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
+                                build_dir = abs_path,
                             })
                             -- Build directory vanished (spec §3.1 rule 7): reset
                             -- to unconfigured so ConfigUnit:state() reports
@@ -665,6 +680,9 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                         end
 
                         local build_dir_obj = ctx.build_dirs[build_dir_id]
+                        if build_dir_obj and not build_dir_obj.path then
+                            build_dir_obj.path = abs_path
+                        end
 
                         expected_units[build_dir_id] = {
                             project_key = project_key,
@@ -673,7 +691,7 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                             tool = tool,
                             configuration = configuration,
                             build_dir = build_dir_obj,
-                            build_dir_value = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
+                            build_dir_value = abs_path,
                         }
                     end
                     config_unit_ref = build_dir_id

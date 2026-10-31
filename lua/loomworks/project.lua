@@ -874,14 +874,20 @@ function Project:rename_configuration(old_name, new_name, config_data)
                 -- An orphaned entry already keyed by the new id (a deleted
                 -- configuration of that name) is superseded by the moved
                 -- unit: drop the stale BuildDir object (cache state only —
-                -- nothing on disk is touched).
+                -- nothing on disk is touched). The references naming it
+                -- (`overwritten_by`, deploy records) described that deleted
+                -- configuration, not the renamed unit: they are dropped too
+                -- rather than silently passing to it (spec §4.8).
+                local superseded = false
                 for i = #ws._build_dirs, 1, -1 do
                     local other = ws._build_dirs[i]
                     if other ~= bd and other.rel_path == new_id then
                         other._removed = true
                         table.remove(ws._build_dirs, i)
+                        superseded = true
                     end
                 end
+                if superseded then ws:_drop_unit_references(new_id) end
                 if bd then
                     bd.rel_path = new_id
                     bd.variant = new_name

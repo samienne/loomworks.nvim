@@ -61,7 +61,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   workspace as a newer schema until it is updated. Each configuration of a
   CMake multi-config build directory (Ninja Multi-Config, Visual Studio)
   builds once more after the upgrade, incrementally, because its old state
-  could have come from another configuration's build. (#357)
+  could have come from another configuration's build. Running such a
+  configuration on a device stages it under a new directory on the device;
+  `lw device clean` removes the old one. (#357)
 - The editor now uses the workspace daemon by default: builds, configures,
   cleans, launch preparations and tests run there. An operation the daemon
   cannot take (not connected yet, no `lw` found, an older daemon) or declines

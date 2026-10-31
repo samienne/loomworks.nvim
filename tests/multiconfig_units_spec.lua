@@ -274,3 +274,232 @@ describe("multi-config cmake: renames and deletion", function()
         assert.is_true(kept, "deletion reached the shared-dir refs check")
     end)
 end)
+
+--- Build both units (configure + build) through record_task_result.
+local function build_both(core, ws)
+    local d, r = unit_of(ws, "debug"), unit_of(ws, "release")
+    for _, pair in ipairs({ { d, "debug" }, { r, "release" } }) do
+        local prof = h.find_profile(ws._profiles, pair[2] .. ":" .. KIT.id)
+        core:record_task_result({ unit = pair[1], action = "configure", success = true,
+            profile = prof, build_dir = pair[1]:build_dir() })
+        core:record_task_result({ unit = pair[1], action = "build", success = true, profile = prof })
+    end
+    return d, r
+end
+
+--- An io stub whose rm_rf_async records the dir, runs `on_rm` (to inspect the
+--- state at removal time) and reports success unless `ok` is false.
+local function rm_io(removed, on_rm, ok)
+    return {
+        rm_rf_async = function(dir, cb)
+            removed[#removed + 1] = dir
+            if on_rm then on_rm(dir) end
+            if ok == false then cb(false, "boom") else cb(true, nil) end
+        end,
+        rm_rf = function(dir) removed[#removed + 1] = dir; return ok ~= false end,
+    }
+end
+
+local function v9_entry(cfg, state)
+    return { project_key = "App", config_key = cfg .. ":ninja-mc", type = "cmake",
+        variant = cfg, state = state, build_dir = TREE_ABS, tool_key = KIT.id, tool_data = KIT }
+end
+
+describe("multi-config cmake: deleting a shared tree (spec §4.6, §5.7 crash safety)", function()
+    local function delete_items(ws, units)
+        local items = {}
+        for _, u in ipairs(units) do
+            items[#items + 1] = { unit = u, build_dir = u:build_dir(), disposition = "clean" }
+        end
+        local done, result = false, nil
+        ws:execute_deletion({ items = items }):next(function(ok) result = ok; done = true end,
+            function() done = true end)
+        vim.wait(1000, function() return done end)
+        return result
+    end
+
+    it("deleting both units removes the tree once, marking both unknown first and dropping both after", function()
+        local removed, at_rm = {}, nil
+        local core, ws, saves
+        core, ws, saves = make_core({ deps = { io = rm_io(removed, function()
+            local last = saves[#saves].build_dirs
+            at_rm = { last[TREE .. "#Debug:ninja-mc"].state, last[TREE .. "#Release:ninja-mc"].state }
+        end) } })
+        local d, r = build_both(core, ws)
+        assert.is_true(delete_items(ws, { d, r }))
+        assert.same({ TREE_ABS }, removed)
+        assert.same({ "unknown", "unknown" }, at_rm)
+        assert.equals("unconfigured", d:state())
+        assert.equals("unconfigured", r:state())
+    end)
+
+    it("a failed removal keeps both siblings unknown", function()
+        local removed = {}
+        local core, ws = make_core({ deps = { io = rm_io(removed, nil, false),
+            notify = function() end } })
+        local d, r = build_both(core, ws)
+        assert.is_false(delete_items(ws, { d, r }))
+        local s = ws:_serialize_cache().build_dirs
+        assert.equals("unknown", s[TREE .. "#Debug:ninja-mc"].state)
+        assert.equals("unknown", s[TREE .. "#Release:ninja-mc"].state)
+    end)
+
+    local function orphan_cache()
+        return {
+            _meta = { version = 9 },
+            build_dirs = {
+                [TREE .. "#Debug:ninja-mc"] = v9_entry("Debug", "built"),
+                -- A configuration no profile uses any more: an orphan in the same tree.
+                [TREE .. "#Old:ninja-mc"] = v9_entry("Old", "built"),
+            },
+        }
+    end
+
+    --- Only Debug is live (both profiles map App to Debug).
+    local function debug_only()
+        return { cache = orphan_cache(), sets = { release = { App = "Debug" } } }
+    end
+
+    it("an orphaned sibling is marked unknown before the tree is removed and dropped after", function()
+        local removed, at_rm = {}, nil
+        local ws, saves
+        local opts = debug_only()
+        opts.deps = { io = rm_io(removed, function()
+            local e = saves[#saves].build_dirs[TREE .. "#Old:ninja-mc"]
+            at_rm = e and e.state
+        end) }
+        _, ws, saves = make_core(opts)
+        assert.is_not_nil(ws:find_build_dir(TREE .. "#Old:ninja-mc"), "orphan loaded")
+        local d = unit_of(ws, "debug")
+        assert.equals(d, unit_of(ws, "release"))
+        assert.is_true(delete_items(ws, { d }))
+        assert.same({ TREE_ABS }, removed)
+        assert.equals("unknown", at_rm)
+        assert.is_nil(ws:find_build_dir(TREE .. "#Old:ninja-mc"))
+        assert.is_nil(ws:_serialize_cache().build_dirs[TREE .. "#Old:ninja-mc"])
+    end)
+
+    it("an orphaned sibling stays unknown when the removal fails", function()
+        local removed = {}
+        local opts = debug_only()
+        opts.deps = { io = rm_io(removed, nil, false), notify = function() end }
+        local _, ws = make_core(opts)
+        assert.is_false(delete_items(ws, { unit_of(ws, "debug") }))
+        assert.same({ TREE_ABS }, removed)
+        assert.equals("unknown", ws:_serialize_cache().build_dirs[TREE .. "#Old:ninja-mc"].state)
+    end)
+
+    it("a kept tree (still referenced) leaves its orphaned sibling untouched", function()
+        local removed = {}
+        local core, ws = make_core({ cache = orphan_cache(), deps = { io = rm_io(removed),
+            notify = function() end } })
+        local d = build_both(core, ws)
+        assert.is_true(delete_items(ws, { d }))
+        assert.same({}, removed)
+        assert.equals("built", ws:find_build_dir(TREE .. "#Old:ninja-mc").state)
+    end)
+end)
+
+describe("multi-config cmake: cache input hardening (three-file-model §2.3)", function()
+    it("a crafted top-level _v8_moved in a version 9 file is ignored", function()
+        local cache = require("loomworks.cache")
+        local data = cache.parse(vim.json.encode({ _meta = { version = 9 }, _v8_moved = { x = true },
+            build_dirs = { [TREE .. "#Debug:ninja-mc"] = v9_entry("Debug", "built") } }))
+        assert.is_nil(data._v8_moved)
+        local _, ws = make_core({ cache = { _meta = { version = 9 }, _v8_moved = { x = true },
+            build_dirs = { [TREE .. "#Debug:ninja-mc"] = v9_entry("Debug", "built") } } })
+        local d = unit_of(ws, "debug")
+        assert.equals(TREE .. "#Debug:ninja-mc", d.id)
+        assert.equals("built", d:state())
+    end)
+
+    it("a version 8 file still migrates", function()
+        local data = require("loomworks.cache").parse(
+            vim.json.encode({ _meta = { version = 8 }, build_dirs = {} }))
+        assert.is_not_nil(data._v8_moved)
+    end)
+
+    it("never derives a directory from a shared id (entry without build_dir)", function()
+        local entry = v9_entry("Debug", "built")
+        entry.build_dir = nil
+        local orphan = v9_entry("Old", "built")
+        orphan.build_dir = nil
+        local _, ws = make_core({ cache = { _meta = { version = 9 }, build_dirs = {
+            [TREE .. "#Debug:ninja-mc"] = entry, [TREE .. "#Old:ninja-mc"] = orphan } } })
+        assert.equals(TREE_ABS, unit_of(ws, "debug"):build_dir())
+        local bd = ws:find_build_dir(TREE .. "#Old:ninja-mc")
+        assert.is_true(bd == nil or bd.path == nil or not bd.path:find("#", 1, true),
+            "orphan path derived from its id: " .. tostring(bd and bd.path))
+    end)
+
+    it("record_task_result's fallback builds one id with or without a build_dir", function()
+        for _, with_dir in ipairs({ false, true }) do
+            local core, ws = make_core()
+            core:record_task_result({ project_key = "App", configuration_key = "Debug:ninja-mc",
+                tool = { key = KIT.id, data = KIT }, action = "configure", success = true,
+                build_dir = with_dir and TREE_ABS or nil })
+            local ids = {}
+            for _, u in pairs(ws._config_units) do ids[u.id] = true end
+            assert.is_true(ids[TREE .. "#Debug:ninja-mc"] or false,
+                "with_dir=" .. tostring(with_dir) .. " ids " .. vim.inspect(vim.tbl_keys(ids)))
+            for id in pairs(ids) do
+                assert.is_nil(id:find("ninja-mc:ninja-mc", 1, true), id)
+            end
+        end
+    end)
+end)
+
+describe("multi-config cmake: siblings share directory-level state", function()
+    it("a vanished tree resets every sibling (spec §3.1 rule 7)", function()
+        local _, ws = make_core({ cache = { _meta = { version = 9 }, build_dirs = {
+            [TREE .. "#Debug:ninja-mc"] = v9_entry("Debug", "built"),
+            [TREE .. "#Release:ninja-mc"] = v9_entry("Release", "configured"),
+        } }, deps = { dir_exists = function(p) return p ~= TREE_ABS end } })
+        assert.equals("unconfigured", unit_of(ws, "debug"):state())
+        assert.equals("unconfigured", unit_of(ws, "release"):state())
+    end)
+
+    it("an exclusive lock on Debug's tree queues a Release build (spec §16.6)", function()
+        local _, ws = make_core()
+        local d, r = unit_of(ws, "debug"), unit_of(ws, "release")
+        local ran = {}
+        assert.is_true(ws:acquire_build_dir_lock(d:build_dir(), "exclusive", function()
+            ran[#ran + 1] = "configure Debug" end))
+        assert.is_false(ws:acquire_build_dir_lock(r:build_dir(), "shared", function()
+            ran[#ran + 1] = "build Release" end))
+        assert.same({ "configure Debug" }, ran)
+        ws:release_build_dir_lock(d:build_dir(), "exclusive")
+        assert.same({ "configure Debug", "build Release" }, ran)
+    end)
+end)
+
+describe("multi-config cmake: rename onto an orphaned id (spec §4.8)", function()
+    it("drops the orphan's deploy records and overwritten_by instead of moving them to the renamed unit", function()
+        local core, ws = make_core({
+            app = { configurations = { Dev = { inherits = "Debug" } } },
+            sets = { dev = { App = "Dev" } },
+            profiles = { dev = { configuration_set = "dev",
+                tools = { cmake = { key = KIT.id, data = KIT } } } },
+            cache = { _meta = { version = 9 }, build_dirs = {
+                [TREE .. "#Dev2:ninja-mc"] = v9_entry("Dev2", "built"),
+                ["build/Other/Debug"] = { project_key = "Other", config_key = "Debug",
+                    type = "cmake", variant = "Debug", state = "built",
+                    build_dir = ROOT .. "/.nvim/build/Other/Debug",
+                    overwritten_by = TREE .. "#Dev2:ninja-mc" },
+            }, deploy_state = {
+                ["/root/out/old.exe"] = { source_build_dir = TREE .. "#Dev2:ninja-mc",
+                    source_rel_path = "Dev2/app.exe", source_mtime = 1 },
+            } },
+        })
+        local dev = unit_of(ws, "dev")
+        local dev_profile = h.find_profile(ws._profiles, "dev:" .. KIT.id)
+        core:record_task_result({ unit = dev, action = "configure", success = true,
+            profile = dev_profile, build_dir = dev:build_dir() })
+        local app = h.find_project_in(ws:get_projects(), "App")
+        assert.is_true((app:rename_configuration("Dev", "Dev2", { inherits = "Debug" })))
+        assert.equals(TREE .. "#Dev2:ninja-mc", dev.id)
+        assert.equals("configured", dev:state())
+        assert.is_nil(ws._deploy_records["/root/out/old.exe"])
+        assert.is_nil(ws:find_build_dir("build/Other/Debug").overwritten_by)
+    end)
+end)

@@ -442,7 +442,10 @@ config editor, all references are updated atomically:
    entry in a shared tree is keyed by its `config_key` too (data-model §1.7
    "Unit identity"): it moves to `<dir>#<new config_key>`, and every
    `overwritten_by` and `deploy_state` `source_build_dir` naming its old key
-   follows
+   follows. An orphaned entry already keyed by the new id (a deleted
+   configuration of that name) is dropped, and so are the `overwritten_by`
+   markers and `deploy_state` records naming it — they described that
+   configuration, never the renamed one (a deployed file stays on disk)
 3. **Profile configurations arrays**: replace old cache keys with new ones
 
 On next configure after rename, the module resolves a fresh build directory

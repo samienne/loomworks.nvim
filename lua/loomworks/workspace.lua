@@ -1650,6 +1650,27 @@ function Workspace:_rekey_unit_references(old_id, new_id)
     end
 end
 
+--- Drop every reference naming the unit id `id` — `overwritten_by` on units
+--- and BuildDirs, deploy records sourced from it — when the entry it named
+--- is gone and another unit takes the id (a configuration rename onto an
+--- orphaned entry's id, spec §4.8). Cache state only: a deploy record's
+--- destination file is left on disk.
+--- @param id string
+function Workspace:_drop_unit_references(id)
+    for _, unit in pairs(self._config_units) do
+        if unit._overwritten_by == id then unit._overwritten_by = nil end
+    end
+    for _, bd in pairs(self._build_dirs) do
+        if bd.overwritten_by == id then bd.overwritten_by = nil end
+    end
+    local records = self._deploy_records or {}
+    for dest, record in pairs(records) do
+        if type(record) == "table" and record.source_build_dir == id then
+            records[dest] = nil
+        end
+    end
+end
+
 --- Invalidate-on-completion (spec §5.9): after `builder` builds successfully,
 --- mark every OTHER still-`built` unit sharing one of its resolved artifacts as
 --- overwritten-by `builder`, and clear `builder`'s own overwritten marker (it
@@ -3702,23 +3723,31 @@ function Workspace:record_task_result(result)
             if p.key == result.project_key then project = p; break end
         end
         proj_type = project and project.type or "unknown"
-        -- Compute build_dir-based id
+        -- Compute the build_dir-based id (spec §1.7 "Unit identity"): the
+        -- result's directory (else the module's), and in a shared tree the
+        -- result's config_key — the one its entry records — whichever
+        -- directory is used.
         local tool_data = result.tool and result.tool.data or nil
-        local rel_key
+        local rel_key, dir_abs
         if project then
-            local shared, _
-            rel_key, _, shared = self:_compute_unit_id(project,
+            local _, module_abs, shared, module_rel = self:_compute_unit_id(project,
                 result.variant or result.configuration_key, tool_data,
                 result.tool and result.tool.key or nil)
+            local dir_rel = module_rel
+            dir_abs = module_abs
             if result.build_dir then
-                rel_key = cache_mod.unit_id(cache_mod.relative_build_dir(result.build_dir, self.root),
-                    shared, result.configuration_key)
+                dir_rel = cache_mod.relative_build_dir(result.build_dir, self.root)
+                dir_abs = result.build_dir
             end
+            rel_key = cache_mod.unit_id(dir_rel, shared, result.configuration_key)
         elseif result.build_dir then
             rel_key = cache_mod.relative_build_dir(result.build_dir, self.root)
+            dir_abs = result.build_dir
         else
-            -- Last resort: synthetic path
+            -- Last resort: synthetic directory (not a shared tree: the id is
+            -- the directory)
             rel_key = "build/" .. result.project_key .. "/" .. (result.variant or result.configuration_key)
+            dir_abs = cache_mod.absolute_build_dir(rel_key, self.root)
         end
         -- Find or create ConfigUnit for this build_dir key
         local existing_unit = nil
@@ -3728,8 +3757,7 @@ function Workspace:record_task_result(result)
         if existing_unit then
             config_unit = existing_unit
         else
-            local abs_path = result.build_dir
-                or cache_mod.absolute_build_dir(rel_key, self.root)
+            local abs_path = dir_abs
             local entry = {
                 project_key = result.project_key,
                 config_key = result.configuration_key,
@@ -3907,8 +3935,13 @@ function Workspace:record_task_result(result)
     if not bd then
         bd = self:find_build_dir(config_unit.id)
         if not bd then
+            -- The unit's directory, never one derived from its id (a shared
+            -- tree's id is `<dir>#<config_key>`, spec §1.7).
             local abs_path = config_unit.build_dir_value
-                or cache_mod.absolute_build_dir(config_unit.id, self.root)
+            if not abs_path and config_unit._project then
+                abs_path = select(2, self:_compute_unit_id(config_unit._project,
+                    config_unit._variant, config_unit._tool_data, config_unit._tool_key))
+            end
             bd = BuildDir.new(config_unit.id, abs_path)
             self._build_dirs[#self._build_dirs + 1] = bd
         end
@@ -4379,15 +4412,20 @@ end
 --- unit's `state_value` and BuildDir state, an orphaned item's BuildDir
 --- state). Returns a function that puts them back — used when the marks
 --- could not be saved and the deletion is abandoned.
+--- `siblings` (`_orphan_siblings`) are recorded too.
 --- @param items loomworks.DeletionItem[]
+--- @param siblings? loomworks.BuildDir[]
 --- @return fun()
-function Workspace:_snapshot_build_states(items)
+function Workspace:_snapshot_build_states(items, siblings)
     local units, bds = {}, {}
     for _, item in ipairs(items) do
         local unit = item.unit
         if unit and units[unit] == nil then units[unit] = { v = unit.state_value } end
         local bd = unit and unit._build_dir or item.build_dir_obj
         if bd and bds[bd] == nil then bds[bd] = { v = bd.state } end
+    end
+    for _, bd in ipairs(siblings or {}) do
+        if bds[bd] == nil then bds[bd] = { v = bd.state } end
     end
     return function()
         for unit, s in pairs(units) do unit.state_value = s.v end
@@ -4408,10 +4446,19 @@ end
 --- live build dir, or failing validation) stays as it is, since nothing would
 --- restore it if another removal in the batch failed — a shared BuildDir left
 --- `unknown` would block the surviving unit from configure/build.
+--- `siblings` (`_orphan_siblings`): the orphaned BuildDirs outside `items`
+--- that name a dir in `to_remove` — in a module's shared tree each unit has
+--- its own BuildDir on the one directory (spec §1.7), so an orphaned sibling
+--- entry would otherwise keep claiming its state while the tree is removed.
+--- They are marked `unknown` too.
 --- @param items loomworks.DeletionItem[]
 --- @param to_remove? table<string, true> identity keys (`_build_dir_identity`)
 ---   of the build dirs handed to rm-rf; nil marks every item (no skip set known)
-function Workspace:_mark_cache_unknown(items, to_remove)
+--- @param siblings? loomworks.BuildDir[]
+function Workspace:_mark_cache_unknown(items, to_remove, siblings)
+    for _, bd in ipairs(siblings or {}) do
+        if bd:has_state() then bd.state = "unknown" end
+    end
     for _, item in ipairs(items) do
         if to_remove and not (item.build_dir and to_remove[self:_build_dir_identity(item.build_dir)]) then
             goto continue
@@ -4427,6 +4474,59 @@ function Workspace:_mark_cache_unknown(items, to_remove)
             if bd and bd:has_state() then bd.state = "unknown" end
         end
         ::continue::
+    end
+end
+
+--- The orphaned BuildDirs (no ConfigUnit references them) with state whose
+--- directory is one of `to_remove` (by `_build_dir_identity`), other than
+--- the batch's own: the siblings of a removed shared tree (spec §1.7). A live
+--- unit outside the batch naming such a dir would have kept it (shared refs),
+--- so only orphans can be siblings here.
+--- @param items loomworks.DeletionItem[]
+--- @param to_remove table<string, true>
+--- @return loomworks.BuildDir[]
+function Workspace:_orphan_siblings(items, to_remove)
+    if not next(to_remove) then return {} end
+    local skip = {}
+    for _, item in ipairs(items) do
+        local bd = item.unit and item.unit._build_dir or item.build_dir_obj
+        if bd then skip[bd] = true end
+    end
+    for _, unit in pairs(self._config_units) do
+        if unit._build_dir then skip[unit._build_dir] = true end
+    end
+    local out = {}
+    for _, bd in ipairs(self._build_dirs) do
+        if not skip[bd] and bd.path and bd:has_state()
+                and to_remove[self:_build_dir_identity(bd.path)] then
+            out[#out + 1] = bd
+        end
+    end
+    return out
+end
+
+--- Drop orphaned sibling BuildDirs (`_orphan_siblings`) once the removal of
+--- their directory is confirmed — the orphan cleanup's drop (deploy records
+--- sourced from the entry, its state, the object). One a unit adopted while
+--- the removal ran stays (left `unknown`).
+--- @param siblings loomworks.BuildDir[]
+function Workspace:_drop_orphan_siblings(siblings)
+    if #siblings == 0 then return end
+    local adopted = {}
+    for _, unit in pairs(self._config_units) do
+        if unit._build_dir then adopted[unit._build_dir] = true end
+    end
+    local deploy = require("loomworks.deploy")
+    local drop = {}
+    for _, bd in ipairs(siblings) do
+        if not adopted[bd] then
+            drop[bd] = true
+            deploy.clean_deploy_records(self._deploy_records, bd.rel_path)
+            bd:clear_state()
+        end
+    end
+    for i = #self._build_dirs, 1, -1 do
+        if drop[self._build_dirs[i]] then table.remove(self._build_dirs, i) end
     end
 end
 
@@ -4974,6 +5074,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     -- (a joined Future is not recorded as upstream), so it keeps running
     -- after a cancel.
     local removal
+    -- Orphaned sibling BuildDirs of the removed dirs (`_orphan_siblings`):
+    -- marked with the batch, dropped only after the removal succeeded.
+    local siblings = {}
     local f = stopped:next(function()
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
@@ -5050,12 +5153,14 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
 
         -- Crash safety (spec §5.7): every dir about to be removed is `unknown`
         -- on disk before the async rm-rf starts — every entry naming one, by
-        -- directory identity; skipped dirs are untouched.
+        -- directory identity, including an orphaned sibling entry of a
+        -- shared tree outside the batch; skipped dirs are untouched.
         -- Never staged in an open transaction (spec §19.4).
         assert(not require("loomworks.txn").active(),
             "loomworks: a deletion's cache write ran inside a transaction")
-        local prior = ws:_snapshot_build_states(items)
-        ws:_mark_cache_unknown(items, to_remove)
+        siblings = ws:_orphan_siblings(items, to_remove)
+        local prior = ws:_snapshot_build_states(items, siblings)
+        ws:_mark_cache_unknown(items, to_remove, siblings)
         if not ws:_save_cache() then
             -- The marks never reached the disk (the runtime lost its lock, the
             -- workspace was torn down while its tasks stopped, or the write
@@ -5107,6 +5212,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         end
 
         work_fn(items)
+        ws:_drop_orphan_siblings(siblings)
         ws:_save_cache()
         ws:_sync_build_dir_refs()
         ws:_resolve_active_profile()

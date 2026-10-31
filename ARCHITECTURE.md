@@ -2684,7 +2684,7 @@ through files.
    matched back on the `(project, config)` identity (its `config_key`), and the
    unit adopts that entry's persisted `build_dir` rather than a recomputed path
 6. ProfileProjects — resolves Profile + Project + ConfigUnit references
-7. BuildDirs — domain objects for physical build directories with state
+7. BuildDirs — domain objects for cached build state, one per unit (siblings in a shared tree share a path)
 8. BuildDirRefs — reverse index from BuildDir identity (`_build_dir_identity`) to units
 9. ArtifactRefs — reverse index from resolved output-artifact paths to the
    ConfigUnits that produce them (output-artifact conflict detection, §5.9)
@@ -2817,8 +2817,10 @@ ConfigUnit stores first-class fields (`state_value`, `build_dir_value`,
 `_overwritten_by`, §5.9) and carries direct references: `_project`, `_tool`,
 `_configuration`, `_build_dir` (BuildDir object).
 
-**BuildDir** (`build_dir.lua`) represents a physical build directory with cached
-state (configured, built, failed). Separate from ConfigUnit (user intent).
+**BuildDir** (`build_dir.lua`) holds one cache entry's build state (configured,
+built, failed) — one per unit; siblings in a shared tree share a `path`, and
+directory-level state keys by `_build_dir_identity(path)`. Separate from
+ConfigUnit (user intent).
 ConfigUnit references a BuildDir via `_build_dir`. Orphaned BuildDirs have state
 but no ConfigUnit pointing to them. Created during `sync_build_dirs()` from cache
 entries; task completion handler creates new BuildDirs when needed. Workspace owns
@@ -2838,13 +2840,22 @@ BuildDir (per-unit state, timestamps, artifacts, overwritten marker) whose
 `path` is the same directory; everything per *directory* — the
 `_build_dir_refs` reverse index, `_build_dir_locks`, the deletion refs check
 and the missing-directory stat — keys by `_build_dir_identity(path)`, never by
-the id. The cache is version 9: `cache.parse` marks a version 8 file
-(`_v8_moved`), and `data_model` moves each entry a shared-tree unit matches
+the id. A path is never derived from an id: it is the entry's `build_dir`
+(only a version 8 file's keys are directories), else the unit's module
+directory. Removing a shared tree (`_run_deletion`) marks every entry on it
+`unknown` first — the batch's and any orphaned sibling's
+(`_orphan_siblings`) — and drops the orphaned siblings only after the
+removal succeeded (`_drop_orphan_siblings`); a tree kept for a remaining
+reference leaves them untouched. The cache is version 9: `cache.parse`
+marks a version 8 file (`_v8_moved`, always stripped from the file's own
+content first), and `data_model` moves each entry a shared-tree unit matches
 to the unit's id (`built`/`failed_build` → `configured`, `last_built`
 dropped; `overwritten_by` and deploy `source_build_dir` follow), in memory;
 the next save writes version 9. A configuration rename in a shared tree
 re-keys the unit and its BuildDir to `<dir>#<new config_key>`
-(`Workspace:_rekey_unit_references`).
+(`Workspace:_rekey_unit_references`); an orphaned entry already holding
+that id is dropped together with the references naming it
+(`Workspace:_drop_unit_references`), which never pass to the renamed unit.
 
 **Output-artifact conflicts** (§5.9) are a Workspace-level layer over the
 `_artifact_refs` index (rebuilt each remerge alongside `_build_dir_refs`).
@@ -4033,7 +4044,7 @@ loomworks.nvim/
 │   │   ├── profile.lua                Profile + ProfileProject classes
 │   │   ├── project.lua                Project class (owns Configuration[])
 │   │   ├── config_unit.lua            ConfigUnit: user intent (project+config+tool)
-│   │   ├── build_dir.lua             BuildDir: cached build artifacts for a directory
+│   │   ├── build_dir.lua             BuildDir: one unit's cached build state
 │   │   ├── device.lua               Device: physical/emulated deployment target
 │   │   ├── remote/                   Remote execution on devices (spec §18): probe, foreign,
 │   │   │                             runners, spec_exec, transport, devices, device_lock,

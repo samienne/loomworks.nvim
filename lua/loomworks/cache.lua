@@ -145,6 +145,9 @@ function M.parse(content)
     if require("loomworks.save_guard").schema_newer(raw._meta, CURRENT_VERSION) then
         return M.default(), true, raw._meta
     end
+    -- `_v8_moved` is the loader's own in-memory mark (`migrate_v8_to_v9`),
+    -- never file content: a file carrying one must not trigger the move.
+    raw._v8_moved = nil
     migrate_v7_to_v8(raw)
     migrate_v8_to_v9(raw)
     if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
@@ -182,6 +185,7 @@ function M.load(root)
         return M.default()
     end
 
+    data._v8_moved = nil  -- the loader's mark only (see M.parse)
     migrate_v7_to_v8(data)
     migrate_v8_to_v9(data)
     if not data._meta or data._meta.version ~= CURRENT_VERSION then

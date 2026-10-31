@@ -924,6 +924,9 @@ id.
   one entry in the build-directory reverse index (state-lifecycle §4.6), one
   missing-directory reset for all its units (state-lifecycle §3.1 rule 7). Deleting one
   configuration's unit keeps the directory while another unit references it.
+  When the directory is removed, every entry in it — an orphaned one too — is
+  `unknown` on disk before the removal and leaves the cache only after the
+  removal succeeded (state-lifecycle §5.7).
 - An id is never parsed. The directory comes from the entry's `build_dir`;
   the configuration from its `project_key` and `config_key`.
 
