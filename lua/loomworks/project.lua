@@ -198,6 +198,21 @@ function Project:_sync_configurations()
     for _, cfg in ipairs(self._configurations) do
         cfg:_resolve_inherits()
     end
+
+    -- A configuration the module reported an `error` for (spec §8 `info`)
+    -- is a load error, once per load. The configuration's structural
+    -- diagnostic (`Configuration:diagnostic`, error severity) shows it in
+    -- the views, so the load note is left out there.
+    for _, cfg in ipairs(self._configurations) do
+        local err = cfg:module_error()
+        if err then
+            require("loomworks.notify").once(
+                "config-error|" .. self.key .. "|" .. cfg.name .. "|" .. err,
+                "loomworks: configuration '" .. cfg.name .. "' of project '"
+                    .. self.key .. "' is invalid: " .. err,
+                vim.log.levels.ERROR, { in_diagnostics = true })
+        end
+    end
 end
 
 --- Sync the LaunchConfiguration registry with the merged `launch` dict

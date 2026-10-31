@@ -217,6 +217,34 @@ describe("load warnings reach daemon clients (§19.13 Load warnings)", function(
         assert.is_not_nil((find_note(r, "directory not found")), vim.inspect(r.notes))
     end)
 
+    -- Core §8 `info` `error` (shell spec §6): a build_dir template naming an
+    -- environment variable makes the configuration invalid, an error-severity
+    -- load diagnostic; the next load without it clears it.
+    it("a configuration the module reports an error for: an error in the views and a fail note, until fixed", function()
+        local BAD = "${LW_DAEMON_BD_CHECK}"
+        edit_config(root, function(cfg)
+            cfg.projects.app.shell.build_dir = "${workspace_root}/out/" .. BAD .. "/${variant}"
+        end)
+        local r = snapshot(srv)
+        local n, role = find_note(r, BAD)
+        assert.is_not_nil(n, vim.inspect(r.notes))
+        assert.equals("fail", role)
+        local found
+        for _, d in ipairs(view_state.workspace(svc.ws).diagnostics) do
+            if d.message:find(BAD, 1, true) and d.message:find("'Debug'", 1, true) then found = d end
+        end
+        assert.is_not_nil(found, vim.inspect(view_state.workspace(svc.ws).diagnostics))
+        assert.equals("error", found.severity)
+        assert.truthy(found.message:find("'app'", 1, true), found.message)
+        edit_config(root, function(cfg)
+            cfg.projects.app.shell.build_dir = "${workspace_root}/out/${variant}"
+        end)
+        svc.ws._tracker:sync()
+        r = snapshot(srv)
+        assert.is_nil((find_note(r, BAD)), vim.inspect(r.notes))
+        assert.equals(0, view_count(svc.ws, BAD))
+    end)
+
     it("a stale mapping is listed once in the views (the structural diagnostic), still a CLI note", function()
         edit_config(root, function(cfg) cfg.configuration_sets.bad = { app = "Nope" } end)
         local r = snapshot(srv)

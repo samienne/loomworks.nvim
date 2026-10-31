@@ -784,9 +784,10 @@ end
 --- @param project loomworks.Project
 --- @param variant string configuration variant name
 --- @param tool_data_or_list? table single tool_data, or list of `{key, data}` entries
---- @return string relative build_dir path (the ConfigUnit id outside a
----   shared tree; see `_compute_unit_id`)
---- @return string absolute build_dir path
+--- @return string|nil relative build_dir path (the ConfigUnit id outside a
+---   shared tree; see `_compute_unit_id`); nil for a configuration the
+---   module reported an `error` for (§8 `info`)
+--- @return string|nil absolute build_dir path (nil likewise)
 --- @return boolean shared the module reported the directory as a shared tree
 ---   (spec §8.4 `resolve_build_dir` second return value)
 function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
@@ -817,12 +818,17 @@ function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
         end
     end
 
+    -- A configuration the module reported an `error` for (spec §8 `info`)
+    -- resolves no build directory: `resolve_build_dir` is not called.
+    local configuration = project:get_configuration(variant)
+    if configuration and configuration:module_error() then return nil, nil end
+
     local mod = project._module and project._module.impl or nil
     local abs_path
     local shared = false
     if mod and mod.resolve_build_dir then
         local config_info = nil
-        local cfg = project:get_configuration(variant)
+        local cfg = configuration
         if cfg and cfg.module_config then
             config_info = cfg.module_config
         end
@@ -858,6 +864,9 @@ end
 --- @return string rel_key relative build_dir path
 function Workspace:_compute_unit_id(project, variant, tool_data_or_list, tool_key)
     local rel_key, abs_path, shared = self:_compute_build_dir(project, variant, tool_data_or_list)
+    -- No build dir (a configuration the module reported an `error` for, §8
+    -- `info`): no unit id either.
+    if not rel_key then return nil, nil, false, nil end
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
     return cache_mod.unit_id(rel_key, shared, config_key), abs_path, shared, rel_key
 end
@@ -868,8 +877,10 @@ end
 --- @param project loomworks.Project
 --- @param configuration loomworks.Configuration configuration domain object
 --- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
---- @return loomworks.ConfigUnit
+--- @return loomworks.ConfigUnit|nil nil for a configuration the module
+---   reported an `error` for (spec §8 `info`): no ConfigUnit exists for it
 function Workspace:ensure_config_unit(project, configuration, tool)
+    if configuration:module_error() then return nil end
     local existing = self:find_config_unit(project, configuration, tool)
     if existing then return existing end
 
@@ -2590,6 +2601,9 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
         -- Compute the unit id (spec §1.7 "Unit identity")
         local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
+        -- (None for a configuration the module reported an `error` for, §8
+        -- `info`: no ConfigUnit exists for it.)
+        if not rel_key then goto continue end
 
         -- Ensure ConfigUnit exists (or reuse stale one from prior deletion)
         local existing_unit = nil
@@ -2626,6 +2640,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
             self._config_units[#self._config_units + 1] = unit
             changed = true
         end
+        ::continue::
     end
     if profile then
         self:_rebuild_profile_projects_for(profile)
@@ -3743,6 +3758,9 @@ function Workspace:record_task_result(result)
                 dir_rel = cache_mod.relative_build_dir(result.build_dir, self.root)
                 dir_abs = result.build_dir
             end
+            -- No build dir (a configuration the module reported an `error`
+            -- for, §8 `info`): no ConfigUnit to record against.
+            if not dir_rel then return end
             rel_key = cache_mod.unit_id(dir_rel, shared, result.configuration_key)
         elseif result.build_dir then
             rel_key = cache_mod.relative_build_dir(result.build_dir, self.root)
@@ -8947,8 +8965,9 @@ function Workspace:_ensure_profile_config_units(profile)
         -- Compute the unit id (spec §1.7 "Unit identity")
         local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
 
-        -- Create skeleton ConfigUnit if absent
-        if not units_by_id[rel_key] then
+        -- Create skeleton ConfigUnit if absent (none for a configuration the
+        -- module reported an `error` for, §8 `info`: no build dir resolved)
+        if rel_key and not units_by_id[rel_key] then
             local entry = {
                 project_key = project_key,
                 config_key = config_key,

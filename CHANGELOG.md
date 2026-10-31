@@ -53,6 +53,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   target found to run on a device is refused ("run it with lw run"), and
   `lw.create_workspace()` and the status page's `N` are refused in favour of
   `lw init`. (#349)
+- A shell `build_dir` template may use only `${workspace_root}`,
+  `${project_path}` (the project key) and `${variant}`; other names, including
+  environment variables, are now a load error. (#PR)
 
 ### Upgrade notes
 - The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8

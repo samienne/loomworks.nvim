@@ -143,7 +143,7 @@ local function make_shell_root()
   vim.fn.mkdir(root .. "/App", "p")
   local f = assert(io.open(root .. "/loomworks.json", "w"))
   f:write(vim.json.encode({ projects = { App = { shell = {
-    build_dir = "${workspace_root}/.nvim/build/${project}/${configuration}",
+    build_dir = "${workspace_root}/.nvim/build/${project_path}/${variant}",
     configure_cmd = { "true" },
     build_cmd = { "true" },
     configurations = { Debug = vim.empty_dict() },

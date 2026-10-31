@@ -105,8 +105,20 @@ during merge to discover available configurations.
   user-declared configuration's info, because a user configuration's
   description is core-owned and read from the workspace files. This field is
   additive and optional, so there is no `api_versions.module` bump (§8.0).
+- A configuration's info MAY carry `error`, a string: the module cannot use
+  the configuration as declared (e.g. a field names something the module
+  cannot resolve). Core then treats the configuration as invalid (§15
+  invariant 11) with that reason: no build directory is resolved for it
+  (`resolve_build_dir` is not called), no ConfigUnit exists for it, and every
+  operation on it is refused. The load raises it as an error-severity load
+  diagnostic naming the project and configuration, which reaches the status
+  page Diagnostics section, the daemon's persistent load diagnostics (daemon
+  §19.13 "Load warnings") and every CLI command's standard error (headless
+  §16). The next load that no longer reports it makes the configuration valid
+  again. Additive and optional: no `api_versions.module` bump.
 
-`description` is a **core-reserved key** in two places: the module section
+`description` and `error` are **core-reserved keys** of a configuration's info,
+never part of `module_config`. `description` is also reserved in two places: the module section
 (`type_config`), and every configuration table under
 `type_config.configurations`. Core removes the key from the module section
 before calling `validate`, `info` or `tasks`. A configuration's `description`

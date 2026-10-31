@@ -2803,6 +2803,18 @@ no live config backs; cleared on next `_update` that carries
 `inherits` couldn't resolve). UI renders source-missing configs and
 unresolved inherits in `WarningMsg`.
 
+A module may also report a configuration as unusable: its `info()` entry's
+core-reserved `error` key (spec §8 `info`) becomes `_module_error`
+(`Configuration:module_error()`), a reason of `is_valid()` and an
+error-severity `diagnostic()`. `Workspace:_compute_build_dir` returns nil for
+it (the module's `resolve_build_dir` is not called), `data_model` /
+`ensure_config_unit` create no ConfigUnit for it (not even from a cache
+entry), `Project:_sync_configurations` raises it once per load as an error
+load note (`in_diagnostics`), and a profile operation refuses its
+ProfileProject (`overseer.collect_profile_tasks`, core §5.4). The shell module
+uses it for a `build_dir` template naming anything but `${workspace_root}`,
+`${project_path}` and `${variant}`.
+
 **ConfigurationSet** owns activation: `cs:activate(tool_entry)` finds or
 materializes a profile by property matching, never by computing a key.
 `cs:ensure_profile(tool_entry)` materializes without activating.
