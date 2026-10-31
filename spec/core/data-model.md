@@ -935,14 +935,24 @@ configurations that resolve to one directory would get one id, and so one
 ConfigUnit: the second would build as the first and report the first's state.
 Core refuses that instead.
 
-- Core compares the build directories it resolves for every profile's
-  ProfileProjects (§8.4 `resolve_build_dir`, or the default formula), by
-  directory identity: the same comparison the build-directory reverse index
-  uses (state-lifecycle §4.6, "Shared build directory protection"), so two
-  spellings of one folder are one directory.
+- Core compares the **effective** build directories of every profile's
+  ProfileProjects, by directory identity: the same comparison the
+  build-directory reverse index uses (state-lifecycle §4.6, "Shared build
+  directory protection"), so two spellings of one folder are one directory.
+- A configuration's effective directory is the `build_dir` of its cache
+  entry, the one that names its `project_key` and `config_key`. The unit
+  keeps that directory after its template or `binaryDir` changes; the
+  directory is its **anchor**. A configuration with no cache entry has the
+  directory core resolves (§8.4 `resolve_build_dir`, or the default
+  formula) as its effective directory.
+- An anchor is a shared tree when its entry's key is the directory, `#`, and
+  the configuration's `config_key`. Otherwise the module's report decides
+  (§8.4 `resolve_build_dir`, second return value).
 - Two configurations **collide** when they are different (project,
-  configuration) pairs and resolve to the same directory. This covers two
-  configurations of one project and configurations of different projects.
+  configuration) pairs with the same effective directory. This covers two
+  configurations of one project, configurations of different projects, and
+  a configuration that resolves to another's anchor. The anchored
+  configuration's cache entry names it, so it is the owner below.
 - **Exemption**: two configurations of the **same project** resolved with the
   **same tool** do not collide when the module reported the directory as a
   shared tree for both. They get distinct ids, as above. A shared tree is
@@ -973,6 +983,9 @@ Core refuses that instead.
   own: a changed template or `binaryDir`, a renamed configuration, or removal
   of the owner. The next load re-evaluates it. Nothing is migrated or
   deleted.
+- An anchored owner keeps its anchor until its cache entry leaves the cache:
+  deleting its unit, a reset (headless `lw reset`) or a nuke. Changing the
+  owner's template does not release the anchor.
 - **Load reports it.** Each refused configuration raises one load diagnostic
   with severity `error`, naming the directory and both configurations:
   `Build directory <dir> of <project>/<configuration> is already used by
@@ -982,7 +995,8 @@ Core refuses that instead.
   (daemon §19.13 "Load warnings") and every CLI command's standard error
   (headless §16) by the usual load-diagnostic paths.
 - **Commands refuse to create one.** A command that would make a configuration
-  collide is refused with the same message and writes nothing. This covers
+  collide is refused with the same message and writes nothing. Resolving to
+  another configuration's anchor is a collision. This covers
   mapping a configuration into a profile, creating or materializing a profile,
   adding a project or configuration, renaming one, or editing a build-directory
   field from the UI. A collision that arrives through a file edit (loomworks.json,

@@ -34,8 +34,9 @@ local function shell_project(p)
         build_cmd = { "true" }, configurations = cfgs } }
 end
 
---- @param opts? { projects?: table, sets?: table, cache?: string, profiles?: string[] }
+--- @param opts? { projects?: table, sets?: table, cache?: string, profiles?: string[], normalize?: function }
 ---   profiles: the sets made into profiles (default: every set)
+---   normalize: the path normalization (default: the test deps')
 local function make_core(opts)
     opts = opts or {}
     local projects, shared = {}, {}
@@ -56,6 +57,7 @@ local function make_core(opts)
     local deps = h.make_test_deps(files, {
         modules = { get = function(id) if id == "shell" then return mod end end },
         user = { save = function(_, data) user_saves[#user_saves + 1] = vim.deepcopy(data); return true end },
+        normalize = opts.normalize,
     })
     local core = Core.new(deps)
     -- The load's notifications (loomworks.notify) go to the process core.
@@ -390,6 +392,100 @@ describe("build directory collisions (core §1.7, invariant 22)", function()
         end)
     end)
 
+    -- A configuration's effective directory is its cache entry's build_dir
+    -- (its anchor), else the one it resolves to (core §1.7).
+    describe("an anchored directory", function()
+        local io_mod = require("loomworks.io")
+        local real_async, real_sync
+        before_each(function()
+            real_async, real_sync = io_mod.rm_rf_async, io_mod.rm_rf
+            io_mod.rm_rf_async = function(_, cb)
+                if cb then vim.schedule(function() cb(true, nil) end) end
+                return require("loomworks.future").resolved(true)
+            end
+            io_mod.rm_rf = function() return true end
+        end)
+        after_each(function() io_mod.rm_rf_async, io_mod.rm_rf = real_async, real_sync end)
+
+        --- Debug now resolves to `new`; its built entry anchors it at `old`.
+        --- Release resolves to `release_dir` (default `old`).
+        local function anchored(release_dir, extra)
+            local o = { projects = { App = { dirs = { Debug = "new", Release = release_dir or "old" } } },
+                cache = h.make_cache_json({ build_dirs = {
+                    ["/root/old"] = { project_key = "App", config_key = "Debug", variant = "Debug",
+                        type = "shell", build_dir = "/root/old", state = "built" },
+                } }) }
+            for k, v in pairs(extra or {}) do o[k] = v end
+            return o
+        end
+
+        it("keeps its anchor after its template changes; a configuration resolving to it is refused", function()
+            local _, ws = make_core(anchored())
+            local d, r = pp_of(ws, "debug"), pp_of(ws, "release")
+            assert.equals("/root/old", d._config_unit:build_dir())
+            assert.equals("built", d._config_unit:state())
+            assert.is_nil(r._config_unit)
+            local m = msg("old", "App", "Release", "App", "Debug")
+            assert.equals(m, r:build_dir_error())
+            assert.same({ m }, load_errors(ws))
+        end)
+
+        it("changing the owner's template again does not release it", function()
+            local core, ws = make_core(anchored())
+            local app = h.find_project_in(ws._projects, "App")
+            assert.is_true((app:save_configuration("Debug", { variant = "Debug",
+                build_dir = "${workspace_root}/newer" })))
+            core:remerge()
+            assert.equals("/root/old", pp_of(ws, "debug")._config_unit:build_dir())
+            assert.is_nil(pp_of(ws, "release")._config_unit)
+            assert.equals(msg("old", "App", "Release", "App", "Debug"), pp_of(ws, "release"):build_dir_error())
+        end)
+
+        it("a command that would make a configuration resolve to it is refused, writing nothing", function()
+            local _, ws, saves = make_core(anchored("rel"))
+            assert.same({}, load_errors(ws))
+            local app = h.find_project_in(ws._projects, "App")
+            local n = #saves
+            local ok, err = app:save_configuration("Release", { variant = "Release",
+                build_dir = "${workspace_root}/old" })
+            assert.is_false(ok)
+            assert.equals(msg("old", "App", "Release", "App", "Debug"), err)
+            assert.equals(n, #saves)
+            assert.equals("/root/rel", pp_of(ws, "release")._config_unit:build_dir())
+            assert.is_nil(pp_of(ws, "release"):build_dir_error())
+        end)
+
+        it("deleting the anchored unit releases it", function()
+            local core, ws = make_core(anchored())
+            assert.is_nil(pp_of(ws, "release")._config_unit)
+            ws:delete_cached_configs({ { unit = pp_of(ws, "debug")._config_unit } })
+            core:remerge()
+            assert.is_nil(pp_of(ws, "release"):build_dir_error())
+            assert.equals("/root/old", pp_of(ws, "release")._config_unit:build_dir())
+            assert.equals("/root/new", pp_of(ws, "debug")._config_unit:build_dir())
+            assert.is_nil(pp_of(ws, "debug"):build_dir_error())
+        end)
+
+        it("an anchor keyed by the directory and its config_key is a shared tree", function()
+            local _, ws = make_core({ projects = { App = { shared = true, dirs = { Debug = "new", Release = "old" } } },
+                cache = h.make_cache_json({ build_dirs = {
+                    ["/root/old#Debug"] = { project_key = "App", config_key = "Debug", variant = "Debug",
+                        type = "shell", build_dir = "/root/old", state = "built" },
+                } }) })
+            assert.equals("/root/old#Debug", pp_of(ws, "debug")._config_unit.id)
+            assert.equals("built", pp_of(ws, "debug")._config_unit:state())
+            assert.equals("/root/old#Release", pp_of(ws, "release")._config_unit.id)
+            assert.same({}, load_errors(ws))
+        end)
+
+        it("a different case spelling of the anchor is the same directory (Windows normalization)", function()
+            local _, ws = make_core(anchored("OLD", {
+                normalize = function(p) return (p:gsub("\\", "/"):lower()) end }))
+            assert.is_nil(pp_of(ws, "release")._config_unit)
+            assert.equals(msg("old", "App", "Release", "App", "Debug"), pp_of(ws, "release"):build_dir_error())
+        end)
+    end)
+
     describe("resolving claims", function()
         local claims_mod = require("loomworks.build_dir_claims")
         local function key_of(p) return (p:lower()) end
@@ -418,6 +514,29 @@ describe("build directory collisions (core §1.7, invariant 22)", function()
             assert.equals(1, #refusals)
             assert.equals(msg("out", "A", "Release", "A", "Debug"), refusals[1].message)
             assert.is_not_nil(next(refused))
+        end)
+
+        it("an anchor keyed by the directory and its config_key is a shared tree", function()
+            -- Debug now resolves to `new`, reported plain; its entry anchors
+            -- it at `old` as a shared-tree unit.
+            local entries = { ["/r/old#Debug-t1"] = { project_key = "A", config_key = "Debug-t1",
+                build_dir = "/r/old" } }
+            local _, refusals = claims_mod.resolve({
+                claim("A", "Debug", "t1", "/r/new", false),
+                claim("A", "Release", "t1", "/r/old", true),
+            }, entries, key_of, { root = "/r" })
+            assert.same({}, refusals)
+        end)
+
+        it("an anchor keyed by the plain directory follows the module's report", function()
+            local entries = { ["/r/old"] = { project_key = "A", config_key = "Debug-t1",
+                build_dir = "/r/old" } }
+            local _, refusals = claims_mod.resolve({
+                claim("A", "Debug", "t1", "/r/new", false),
+                claim("A", "Release", "t1", "/r/old", true),
+            }, entries, key_of, { root = "/r" })
+            assert.equals(1, #refusals)
+            assert.equals(msg("old", "A", "Release", "A", "Debug"), refusals[1].message)
         end)
 
         it("configurations shared under one tool are one claimant", function()

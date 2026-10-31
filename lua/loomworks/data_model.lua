@@ -618,9 +618,11 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                         build_dir_id, abs_path = deps.compute_unit_id(project, variant, arg, tool_key)
                     end
                 end
-                -- The directory the configuration resolves to (§8.4), compared
-                -- across profiles; a shared-tree unit never adopts an entry
-                -- keyed by the plain directory (§1.7).
+                -- The directory the configuration resolves to (§8.4); the
+                -- claims resolver compares each configuration's effective
+                -- directory — its cache entry's anchor, else this one (§1.7).
+                -- A shared-tree unit never adopts an entry keyed by the plain
+                -- directory (§1.7).
                 local claim = nil
                 if project and configuration and deps.compute_unit_id then
                     local arg = effective_tools and #effective_tools > 0
@@ -669,8 +671,9 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
         end
     end
 
-    -- Collisions: the owner keeps the directory, every other configuration
-    -- is refused — no ConfigUnit, an invalid ProfileProject, a load error.
+    -- Collisions, after cache matching and on effective directories (§1.7):
+    -- the owner keeps the directory, every other configuration is refused —
+    -- no ConfigUnit, an invalid ProfileProject, a load error.
     local claims = {}
     for _, r in ipairs(records) do
         if r.claim then claims[#claims + 1] = r.claim end

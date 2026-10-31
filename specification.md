@@ -359,11 +359,12 @@ belongs in the matching `spec/` file.
     (project, configuration) pairs never share a ConfigUnit. A shared tree is
     a module's own multi-config layout, within one project and tool; its
     configurations are distinct ConfigUnits on one build directory (§1.7,
-    §8.4). Two pairs that resolve to one directory outside a shared tree
-    collide. The configuration a cache entry for the directory names keeps
-    it; otherwise the pair that sorts first by project key, then
-    configuration name, keeps it. The others are refused with a load error
-    naming both, until they resolve elsewhere.
+    §8.4). Two pairs with one effective directory outside a shared tree
+    collide. A pair's effective directory is the `build_dir` its cache entry
+    records, else the directory it resolves to. The configuration a cache
+    entry for the directory names keeps it; otherwise the pair that sorts
+    first by project key, then configuration name, keeps it. The others are
+    refused with a load error naming both, until they resolve elsewhere.
 
 ---
 

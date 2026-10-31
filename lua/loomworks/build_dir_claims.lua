@@ -2,8 +2,10 @@
 --- (core §1.7 "One build directory per configuration", invariant 22).
 ---
 --- Pure: given the build directories resolved for every profile's
---- ProfileProjects (one claim each), decides which configurations collide and
---- which of them keeps each directory. Used by the load (data_model), by the
+--- ProfileProjects (one claim each) and the cache entries, decides which
+--- configurations collide on their effective directories (a cache entry's
+--- `build_dir`, the anchor, else the resolved one) and which of them keeps
+--- each directory. Used by the load (data_model), by the
 --- workspace's targeted rebuilds and skeleton paths, and by the commands that
 --- refuse to create a collision (Workspace:_new_build_dir_collision).
 
@@ -45,13 +47,57 @@ local function display(abs, root)
     return abs
 end
 
+--- The anchors of the cache's entries (core §1.7): `project_key \0
+--- config_key` → { key, dir }. Of two entries naming one configuration the
+--- smaller key wins, so the result never depends on table order.
+--- @param entries table<string, table>|nil
+--- @param entry_dir? fun(key: string, entry: table): string|nil
+--- @return table<string, { key: string, dir: string }>
+local function anchors_of(entries, entry_dir)
+    local out = {}
+    for key, e in pairs(entries or {}) do
+        if type(e) == "table" and e.project_key and e.config_key then
+            local dir = e.build_dir
+            if not dir and entry_dir then dir = entry_dir(key, e) end
+            if dir and dir ~= "" then
+                local id = e.project_key .. "\0" .. e.config_key
+                local prev = out[id]
+                if not prev or key < prev.key then out[id] = { key = key, dir = dir } end
+            end
+        end
+    end
+    return out
+end
+
+--- A claim's effective directory and whether it is a shared tree (core
+--- §1.7): the anchor its cache entry records — a shared tree when the
+--- entry's key is the directory, `#`, and the claim's config_key — else the
+--- directory it resolves to, shared as the module reports.
+--- @param c loomworks.BuildDirClaim
+--- @param anchors table<string, { key: string, dir: string }>
+--- @param root string|nil workspace root (relativizes the anchor for its key)
+--- @return string|nil abs
+--- @return boolean shared
+local function effective(c, anchors, root)
+    local a = anchors[c.project_key .. "\0" .. c.config_key]
+    if not a then return c.abs, c.shared end
+    local shared = c.shared
+    if root then
+        local cache_mod = require("loomworks.cache")
+        if a.key == cache_mod.unit_id(cache_mod.relative_build_dir(a.dir, root), true, c.config_key) then
+            shared = true
+        end
+    end
+    return a.dir, shared
+end
+
 --- (project key, configuration name) byte order.
 local function pair_less(a, b)
     if a.project_key ~= b.project_key then return a.project_key < b.project_key end
     return a.config_name < b.config_name
 end
 
---- Resolve the claims.
+--- Resolve the claims, each on its effective directory (`effective`).
 --- @param claims loomworks.BuildDirClaim[]
 --- @param entries table<string, table>|nil the cache's `build_dirs` (key → entry)
 --- @param key_of fun(dir: string): string|nil the directory identity (`_build_dir_identity`)
@@ -60,9 +106,16 @@ end
 --- @return { message: string, project_key: string, config_name: string }[] refusals one per refused configuration and directory, ordered
 function M.resolve(claims, entries, key_of, opts)
     opts = opts or {}
+    local anchors = anchors_of(entries, opts.entry_dir)
+    -- claim → its effective directory and shared-tree status.
+    local eff_abs, eff_shared = {}, {}
+    for _, c in ipairs(claims) do
+        eff_abs[c], eff_shared[c] = effective(c, anchors, opts.root)
+    end
     local groups, order = {}, {}
     for _, c in ipairs(claims) do
-        local id = c.abs and c.abs ~= "" and key_of(c.abs) or nil
+        local abs = eff_abs[c]
+        local id = abs and abs ~= "" and key_of(abs) or nil
         if id then
             local g = groups[id]
             if not g then
@@ -104,7 +157,7 @@ function M.resolve(claims, entries, key_of, opts)
             local function shared_tool(p)
                 local t
                 for _, c in ipairs(p.claims) do
-                    if not c.shared then return nil end
+                    if not eff_shared[c] then return nil end
                     local k = c.tool_key or "\0"
                     if t and t ~= k then return nil end
                     t = k
@@ -169,7 +222,7 @@ function M.resolve(claims, entries, key_of, opts)
                 -- order): stable whatever order the claims came in.
                 local abs
                 for _, c in ipairs(o.claims) do
-                    if not abs or c.abs < abs then abs = c.abs end
+                    if not abs or eff_abs[c] < abs then abs = eff_abs[c] end
                 end
                 local dir = display(abs, opts.root)
                 for _, cl in ipairs(claimants) do
