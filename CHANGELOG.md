@@ -1516,7 +1516,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Cleaning or deleting a configuration now removes a deployed file only
   when it lies inside the workspace (no link on the way). A destination
   outside the workspace is left in place with a warning, and a malformed
-  deploy record in the cache is dropped without touching disk. (#TBD)
+  deploy record in the cache is dropped without touching disk. (#359)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
