@@ -563,9 +563,18 @@ function M.profile_create(ws, set, tool_entry, activate)
         if r then return r end
     end
     local existing = cs:find_profile(tool_entry)
-    local profile = cs:ensure_profile(tool_entry)
+    -- A new profile whose configurations would take another configuration's
+    -- build directory is refused there, writing nothing (spec §1.7).
+    local profile, perr = cs:ensure_profile(tool_entry)
     if not profile then
-        return refused("no profile could be made of configuration set '" .. cs.name .. "'")
+        if perr and cs ~= set then
+            -- The automatic set added first stays, the profile is a warn
+            -- note (D1), as for a failed save below.
+            local r = ok({ config_set = cs })
+            warn(r, "configuration set '" .. cs.name .. "' added, but no profile was made of it: " .. perr)
+            return r
+        end
+        return refused(perr or ("no profile could be made of configuration set '" .. cs.name .. "'"))
     end
     local old_intent = profile._intent
     local old_active, old_active_key = ws._active_profile, ws._active_profile_key

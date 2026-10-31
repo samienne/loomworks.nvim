@@ -688,9 +688,12 @@ function Project:save_configuration(config_name, config_data)
         self._configurations[#self._configurations + 1] = cfg
     end
 
+    -- A change that would refuse another configuration's build directory is
+    -- refused, writing nothing (spec §1.7 "Commands refuse to create one").
     if not self.type_config then self.type_config = {} end
 
-    local ok, err = ws:_save_user()
+    local ok, err = false, ws:_new_build_dir_collision()
+    if not err then ok, err = ws:_save_user() end
     if not ok then
         -- Rollback
         if existing and old_cfg_snapshot then
@@ -831,8 +834,13 @@ function Project:rename_configuration(old_name, new_name, config_data)
         self.configurations[old_name] = nil
     end
 
-    -- Save config + cache to disk
-    local ok, err = ws:_save_user()
+    -- A change that would refuse another configuration's build directory is
+    -- refused, writing nothing (spec §1.7 "Commands refuse to create one").
+    -- Save config + cache to disk. The module resolves the renamed
+    -- configuration first (a template naming the configuration moves it).
+    self:_refresh_configurations()
+    local ok, err = false, ws:_new_build_dir_collision()
+    if not err then ok, err = ws:_save_user() end
     if not ok then
         -- Rollback: restore name, data, and sibling inherits
         target_cfg.name = old_name_snapshot
@@ -841,6 +849,11 @@ function Project:rename_configuration(old_name, new_name, config_data)
         for cfg, old_inh in pairs(old_sibling_inherits) do
             cfg.inherits_names = old_inh
         end
+        if self.configurations and self.configurations[new_name] and not self.configurations[old_name] then
+            self.configurations[old_name] = self.configurations[new_name]
+            self.configurations[new_name] = nil
+        end
+        self:_refresh_configurations()
         return false, err
     end
     -- Update profile mappings: re-derive from ConfigurationSet for set-based,
@@ -1005,9 +1018,15 @@ function Project:save_type_config_field(field, value)
     if type(value) == "table" and not next(value) then value = nil end
     self.type_config[field] = value
 
-    local ok, err = ws:_save_user()
+    -- A build-directory field (shell `build_dir`) moves configurations: the
+    -- configurations see the new value before the collision check (spec §1.7
+    -- "Commands refuse to create one"), which refuses it writing nothing.
+    self:_refresh_configurations()
+    local ok, err = false, ws:_new_build_dir_collision()
+    if not err then ok, err = ws:_save_user() end
     if not ok then
         self.type_config[field] = old
+        self:_refresh_configurations()
         return false, err
     end
 

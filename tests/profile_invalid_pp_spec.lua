@@ -17,7 +17,8 @@ local real_modules = require("loomworks.modules")
 local REASON = "targets OpenHarmony but profile tool is HarmonyOS"
 
 --- Shell projects `app` and `lib`, set + profile `dev` (app=Debug, lib=Debug).
---- `opts.shared`: both projects use one build directory, `out/shared`.
+--- `opts.collide`: lib's build directory is app's (`out/app/Debug`), so
+--- lib/Debug is refused (core §1.7 "One build directory per configuration").
 --- `opts.clean`: each project has a `cln-<name>` clean command and its build
 --- directory exists (so a clean plans a step for it). `opts.invalid`: the
 --- named projects' build_dir template names a variable a shell template may
@@ -36,12 +37,11 @@ local function make_ws(opts)
         vim.fn.mkdir(root .. "/" .. d, "p")
         if opts.clean then vim.fn.mkdir(root .. "/out/" .. d .. "/Debug", "p") end
     end
-    if opts.shared then vim.fn.mkdir(root .. "/out/shared", "p") end
     local function proj(name)
         return { path = name, shell = {
             build_dir = (opts.invalid and opts.invalid[name])
                 and "${workspace_root}/out/${LW_PIPP_UNDECLARED}/${variant}"
-                or opts.shared and "${workspace_root}/out/shared"
+                or (opts.collide and name == "lib" and "${workspace_root}/out/app/${variant}")
                 or ("${workspace_root}/out/" .. name .. "/${variant}"),
             configure_cmd = cmd("cfg-" .. name), build_cmd = cmd("bld-" .. name),
             clean_cmd = opts.clean and cmd("cln-" .. name) or nil,
@@ -586,11 +586,13 @@ describe("profile-level operation with an invalid ProfileProject (§5.4)", funct
 
         it("shell's default wipe clean keeps a build directory a refused project shares", function()
             local function run(refuse)
-                local ws, profile, r = make_ws({ shared = true, exe = true })
+                local ws, profile, r = make_ws({ exe = true })
                 root = r
                 if refuse then mark_incompatible(profile, { lib = true }) end
-                -- Configured once into the shared directory (projects sharing
-                -- a build directory share its config unit).
+                -- Both configured into one directory, as a module's shared
+                -- tree would be (two shell templates resolving to one
+                -- directory are a collision, core §1.7, so it is set here).
+                vim.fn.mkdir(r .. "/out/shared", "p")
                 for _, pp in ipairs(profile:projects()) do
                     pp._config_unit.build_dir_value = r .. "/out/shared"
                 end
@@ -681,6 +683,18 @@ describe("profile-level operation with an invalid ProfileProject (§5.4)", funct
             assert.truthy(refused[1]:find("LW_PIPP_UNDECLARED", 1, true), refused[1])
         end)
 
+        it("is an invalid ProfileProject with the module's error and its remedy, marking the profile", function()
+            local ws, profile, r = make_ws({ invalid = { lib = true } })
+            root = r
+            local reason, remedy = profile:project("lib"):invalid_reason()
+            assert.truthy(reason and reason:find("LW_PIPP_UNDECLARED", 1, true), tostring(reason))
+            assert.equals("fix the configuration in loomworks.json or user.json", remedy)
+            local view = require("loomworks.view_state").workspace(ws, {})
+            local row
+            for _, p in ipairs(view.profiles) do if p.key == profile.key then row = p end end
+            assert.equals(reason, row.compat_error)
+        end)
+
         it("headless lw clean cleans the valid project, then exits non-zero naming the invalid one", function()
             local ws, _, r = make_ws({ clean = true, invalid = { lib = true } })
             root = r
@@ -738,6 +752,100 @@ describe("profile-level operation with an invalid ProfileProject (§5.4)", funct
             assert.equals("refused", got.outcome)
             assert.truthy(got.message:find("lib/Debug not run", 1, true), got.message)
             assert.equals(1, #(got.not_run or {}), vim.inspect(got))
+        end)
+    end)
+    -- Core §1.7 "One build directory per configuration": a configuration whose
+    -- directory another one keeps is refused, an invalid ProfileProject
+    -- (`ProfileProject:invalid_reason`), so the §5.4 rule applies to it.
+    describe("a refused build directory (§1.7)", function()
+        local WANT = "lib/Debug not run: Build directory out/app/Debug of lib/Debug is already used by app/Debug"
+        local orig_notify
+        before_each(function()
+            orig_notify = vim.notify
+            vim.notify = function() end
+        end)
+        after_each(function() vim.notify = orig_notify end)
+
+        it("is an invalid ProfileProject without a ConfigUnit", function()
+            local _, profile, r = make_ws({ collide = true })
+            root = r
+            local lib = profile:project("lib")
+            assert.is_nil(lib._config_unit)
+            local reason, remedy = lib:invalid_reason()
+            assert.truthy(reason and reason:find("cannot be built until", 1, true), tostring(reason))
+            assert.is_nil(remedy)
+            assert.is_nil(profile:project("app"):invalid_reason())
+            assert.is_true((profile:assert_buildable()))
+        end)
+
+        it("the build plan runs the valid project and names the refused one", function()
+            local ws, profile, r = make_ws({ collide = true })
+            root = r
+            local steps, err, refused = with_ws(ws, function() return build_run.plan(profile) end)
+            assert.is_nil(err)
+            assert.same({ "app:configure", "app:build" }, step_projects(steps))
+            assert.equals(1, #refused)
+            assert.truthy(refused[1]:find(WANT, 1, true), refused[1])
+            -- No tool remedy: the reason says what to change.
+            assert.is_nil(refused[1]:find("change the profile's tool", 1, true), refused[1])
+        end)
+
+        it("the test plan leaves it out and names it", function()
+            local ws, profile, r = make_ws({ collide = true })
+            root = r
+            local pre = with_ws(ws, function()
+                return require("loomworks.test_plan").precheck(profile, { extra = {} })
+            end)
+            assert.equals(1, #pre.refused)
+            assert.truthy(pre.refused[1]:find(WANT, 1, true), pre.refused[1])
+            for _, u in ipairs(pre.plan or {}) do assert.equals("app", u.project.key) end
+        end)
+
+        describe("headless lw", function()
+            local orig_spawn, orig_stderr, orig_exit, orig_write
+            before_each(function()
+                orig_spawn = cli._run_spec
+                orig_stderr, orig_exit, orig_write = io.stderr, os.exit, io.write
+            end)
+            after_each(function()
+                cli._run_spec = orig_spawn
+                io.stderr, os.exit, io.write = orig_stderr, orig_exit, orig_write
+            end)
+
+            local function run(ws, fn, ...)
+                local spawned, err = {}, {}
+                cli._run_spec = function(s) spawned[#spawned + 1] = s.cmd[1]; return 0 end
+                io.write = function() end
+                io.stderr = { write = function(_, s) err[#err + 1] = s end }
+                local code
+                os.exit = function(c) code = c or 0; error({ __exit = true }, 0) end
+                local loomworks = require("loomworks")
+                local orig = loomworks.get_workspace
+                loomworks.get_workspace = function() return ws end
+                local ok, e = pcall(fn, ...)
+                loomworks.get_workspace = orig
+                if not ok and not (type(e) == "table" and e.__exit) then error(e, 0) end
+                if ok and code == nil then code = e end
+                return spawned, code, table.concat(err)
+            end
+
+            it("lw build builds the valid project, then exits 1 naming the refused one", function()
+                local ws, profile, r = make_ws({ collide = true })
+                root = r
+                local spawned, code, err = run(ws, cli._run_build_steps, profile, ws, {})
+                assert.same({ "cfg-app", "bld-app" }, spawned)
+                assert.equals(1, code)
+                assert.truthy(err:find(WANT, 1, true), err)
+            end)
+
+            it("lw clean cleans the valid project, then exits 1 naming the refused one", function()
+                local ws, _, r = make_ws({ collide = true, clean = true })
+                root = r
+                local spawned, code, err = run(ws, cli.cmd_clean, ws, { "clean", "dev" })
+                assert.same({ "cln-app" }, spawned)
+                assert.equals(1, code)
+                assert.truthy(err:find(WANT, 1, true), err)
+            end)
         end)
     end)
 end)

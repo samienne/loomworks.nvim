@@ -14,6 +14,7 @@ local description_mod = require("loomworks.description")
 --- @field _configuration loomworks.Configuration|nil resolved configuration
 --- @field _config_unit loomworks.ConfigUnit|nil resolved config unit
 --- @field _tool_compat_error string|nil tool/configuration compatibility error for this (profile, configuration) pair, or nil when compatible. Recomputed every sync.
+--- @field _build_dir_error string|nil the configuration's build directory is another configuration's (spec §1.7 "One build directory per configuration"): the refusal, or nil. Recomputed every sync; a refused ProfileProject has no ConfigUnit.
 --- @field _removed boolean
 local ProfileProject = {}
 ProfileProject.__index = ProfileProject
@@ -21,7 +22,7 @@ ProfileProject.__index = ProfileProject
 --- Create a ProfileProject.
 --- @param workspace loomworks.Workspace
 --- @param project_key string used for identity and fallback resolution
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string, build_dir_error?: string }
 --- @return loomworks.ProfileProject
 function ProfileProject.new(workspace, project_key, data)
     local self = setmetatable({}, ProfileProject)
@@ -34,7 +35,7 @@ end
 
 --- Update in place (preserves table identity).
 --- Receives pre-resolved references from _sync_profile_projects.
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string, build_dir_error?: string }
 function ProfileProject:_apply(data)
     self._profile = data.profile
     self._project = data.project
@@ -43,6 +44,7 @@ function ProfileProject:_apply(data)
     -- Compat error is recomputed each sync — preserve nil when the
     -- module didn't report one, set the reason when it did.
     self._tool_compat_error = data.tool_compat_error
+    self._build_dir_error = data.build_dir_error
 end
 
 --- Get the tool/configuration compatibility error for this
@@ -52,6 +54,37 @@ end
 --- @return string|nil reason
 function ProfileProject:tool_compat_error()
     return self._tool_compat_error
+end
+
+--- The refusal of this configuration's build directory, which another
+--- configuration keeps (spec §1.7 "One build directory per configuration"),
+--- or nil. A refused ProfileProject has no ConfigUnit: build, rebuild,
+--- configure, clean, deploy, launch, debug and test are refused with it.
+--- @return string|nil reason
+function ProfileProject:build_dir_error()
+    return self._build_dir_error
+end
+
+--- Why this ProfileProject is invalid (invariant 11), else nil: the one
+--- check behind every profile-level gate (core §5.4 "Invalid
+--- ProfileProjects": build, configure, test, clean, rebuild) and the status
+--- marks. A configuration the module reported an `error` for (§8 `info`),
+--- a refused build directory (§1.7) or a tool compat error (§8.4); a new
+--- reason a configuration is invalid is added here.
+--- @return string|nil reason
+--- @return string|nil remedy what the user changes to clear it, when the
+---   reason does not say
+function ProfileProject:invalid_reason()
+    local cfg = self._configuration
+    local cfg_err = cfg and cfg.module_error and cfg:module_error() or nil
+    if cfg_err then return cfg_err, "fix the configuration in loomworks.json or user.json" end
+    local dir_err = self:build_dir_error()
+    if dir_err then return dir_err end
+    local compat = self:tool_compat_error()
+    if compat then
+        return compat, "change the profile's tool to match the configuration"
+    end
+    return nil
 end
 
 function ProfileProject:__tostring()
@@ -1869,11 +1902,9 @@ function Profile:_clean_in_process(opts)
     local items = {}
     local units = {}
     local target_states = {}
-    -- A ProfileProject with a tool compat error (§8.4) or whose
-    -- configuration the module reported an `error` for (§8 `info`: no
-    -- ConfigUnit) is not cleaned (core §5.4 "Invalid ProfileProjects"): the
-    -- operation counts it finished and failed, and the clean fails once the
-    -- others are cleaned.
+    -- An invalid ProfileProject (`invalid_reason`) is not cleaned (core §5.4
+    -- "Invalid ProfileProjects", §8.4): the operation counts it finished and
+    -- failed, and the clean fails once the others are cleaned.
     local refused = {}
     local overseer = require("loomworks.overseer")
     for _, pp in ipairs(pps) do

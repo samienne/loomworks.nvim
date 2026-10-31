@@ -1045,7 +1045,7 @@ end
 --- there is nothing to clean (`nothing_to_clean_message`).
 --- With `units` the scope is those configuration units (`Build/1.clean`
 --- `units`, spec §19.15; overseer.plan_units_clean).
---- A profile's ProfileProject with a tool compat error is not cleaned (core
+--- A profile's invalid ProfileProject (`invalid_reason`) is not cleaned (core
 --- §5.4 "Invalid ProfileProjects"): `refused` names it; the host cleans the
 --- others, then fails with `refused_message`.
 --- @param profile table|nil (nil with `units`)

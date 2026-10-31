@@ -93,8 +93,9 @@ end
 --- entries. `sel` is nil, "saved" or "discovered". Pure model data — reads no
 --- build directory beyond the static batch-runner question. An invalid `tests`
 --- declaration (§1.3.4) is planned as one invalid entry, so it fails like a
---- missing entry. A ProfileProject invalid for the action (a tool compat
---- error, §8.4 `validate_config_tool`) is not planned (core §5.4 "Invalid
+--- missing entry. A ProfileProject invalid for the action
+--- (`ProfileProject:invalid_reason`: a module `error`, §8 `info`; a refused
+--- build directory, §1.7; a tool compat error, §8.4 `validate_config_tool`) is not planned (core §5.4 "Invalid
 --- ProfileProjects"): `refused` names it, and the run fails after the others.
 --- @return table[] units { unit, project, pp, batch, batch_dropped, platform, kit_platform, saved, entries }
 --- @return integer n_batch, integer n_exec
@@ -105,8 +106,6 @@ function M.units(profile, sel)
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
         local project = unit and unit._project
-        -- (A configuration the module reported an `error` for, §8 `info`,
-        -- or a tool compat error, §8.4: refused, §5.4.)
         local refusal = require("loomworks.overseer").pp_refusal(pp)
         if refusal then
             refused[#refused + 1] = refusal
