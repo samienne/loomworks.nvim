@@ -423,8 +423,12 @@ describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", fu
         -- The shell template puts the unit's build directory at <root>/out/Debug,
         -- outside `.nvim`: nuke removes only `.nvim/build`, so it must neither
         -- list nor remove it.
-        local rel = vim.fs.normalize(bd):sub(#vim.fs.normalize(s.root) + 2)
-        assert.equals("out/Debug", rel, tostring(bd))
+        -- Compared by real path: the root and the build dir may be spelled
+        -- differently (Windows 8.3 short names in TEMP).
+        local uv = vim.uv or vim.loop
+        local real_bd = vim.fs.normalize(assert(uv.fs_realpath(bd)))
+        local real_root = vim.fs.normalize(assert(uv.fs_realpath(s.root)))
+        assert.equals(real_root .. "/out/Debug", real_bd, tostring(bd))
         local bd_files = vim.fn.readdir(bd)
         -- A file of the workspace outside `.nvim`.
         vim.fn.mkdir(s.root .. "/keep", "p")

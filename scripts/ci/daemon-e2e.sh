@@ -232,7 +232,8 @@ else
  "configuration_sets":{"dev":{"app":"Debug"}}}
 JSON
   (cd "$CTRLC_WS" && "$LW" --no-input --no-daemon profile create dev >/dev/null 2>&1) || bad "profile create"
-  (cd "$CTRLC_WS" && LOOMWORKS_RUNTIME=daemon exec "$LW" --no-input build dev >"$CTRLC_WS/out" 2>"$CTRLC_WS/err") &
+  # Not "$CTRLC_WS/out": that is the build dir's parent (the build_dir template).
+  (cd "$CTRLC_WS" && LOOMWORKS_RUNTIME=daemon exec "$LW" --no-input build dev >"$CTRLC_WS/lw.out" 2>"$CTRLC_WS/err") &
   bpid=$!
   # The Ctrl-C must come after the daemon accepted the task (before that it
   # just closes the connection) and while its step runs.
