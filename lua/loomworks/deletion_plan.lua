@@ -189,11 +189,10 @@ function M.orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs, opts)
     local function remove_build_dir_objects()
         -- Remove BuildDir objects and clear their state — only those still
         -- orphaned (a unit may have adopted one while the removal ran).
-        local deploy = require("loomworks.deploy")
         for _, item in ipairs(orphaned_configs) do
             local bd = item.build_dir_obj
             if bd and still_orphaned(ws, bd) then
-                deploy.clean_deploy_records(ws._deploy_records, bd.rel_path)
+                ws:_clean_deploy_records(bd.rel_path)
                 bd:clear_state()
                 for i, b in ipairs(ws._build_dirs) do
                     if b == bd then

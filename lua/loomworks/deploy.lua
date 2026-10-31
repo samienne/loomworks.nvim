@@ -5,6 +5,7 @@
 --- only copied when the source has changed or the configuration has switched.
 
 local expand = require("loomworks.expand")
+local uv = vim.uv or vim.loop
 
 local M = {}
 
@@ -528,26 +529,118 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
     return result or future_mod.Future.new()
 end
 
---- Clean deploy records sourced from a given build directory.
---- Deletes destination files and removes records.
+--- Fold backslashes to "/" and drop trailing slashes.
+--- @param p string
+--- @return string
+local function slash(p)
+    return (p:gsub("\\", "/"):gsub("/+$", ""))
+end
+
+--- Split a "/"-separated path into its non-empty segments.
+--- @param p string
+--- @return string[]
+local function segments(p)
+    local out = {}
+    for seg in p:gmatch("[^/]+") do out[#out + 1] = seg end
+    return out
+end
+
+--- Whether `p` has a `.` / `..` segment, or (on Windows) a segment ending
+--- in "." or " " that Win32 would silently trim into another name.
+--- @param p string
+--- @return boolean
+local function has_dot_segment(p)
+    local win = vim.fn.has("win32") == 1
+    for _, seg in ipairs(segments(p)) do
+        if seg == "." or seg == ".." then return true end
+        if win and seg:match("[%. ]$") then return true end
+    end
+    return false
+end
+
+--- Strictly under: `path` is a descendant of `prefix` (separator-bounded).
+local function strictly_under(path, prefix)
+    return path:sub(1, #prefix + 1) == prefix .. "/"
+end
+
+--- Classify a deploy record's destination for cleanup (spec §8.8.5 step 2).
+---   "remove"  — absolute, traversal-free, a regular file (lstat), lexically
+---               and canonically strictly under the workspace root, every
+---               directory from the root down a real directory (no link or
+---               junction on the way): safe to unlink.
+---   "outside" — a regular file that is not inside the workspace (or no root
+---               is known): never unlinked, left in place and reported.
+---   "invalid" — not an absolute, traversal-free path to a regular file
+---               (relative, `.`/`..`, a directory, a link, missing): dropped
+---               without touching disk.
+--- @param dest any record key (from loomworks.cache.json — untrusted)
+--- @param root string|nil absolute workspace root
+--- @param normalize fun(p: string): string comparison normalizer
+--- @return "remove"|"outside"|"invalid"
+function M.cleanup_disposition(dest, root, normalize)
+    if type(dest) ~= "string" or dest == "" then return "invalid" end
+    local p = slash(dest)
+    if not (p:match("^/") or p:match("^%a:/")) then return "invalid" end
+    if has_dot_segment(p) then return "invalid" end
+    local st = uv.fs_lstat(p)
+    if not st or st.type ~= "file" then return "invalid" end
+    if type(root) ~= "string" or root == "" then return "outside" end
+
+    -- Canonical containment: the file's realpath strictly under the root's.
+    local root_real = uv.fs_realpath(root)
+    local dest_real = uv.fs_realpath(p)
+    if not root_real or not dest_real then return "outside" end
+    root_real = normalize(slash(root_real))
+    if not strictly_under(normalize(slash(dest_real)), root_real) then
+        return "outside"
+    end
+
+    -- Lexical containment under the root (as given or canonical), then lstat
+    -- every directory from the root down: no link or junction on the way.
+    local np = normalize(p)
+    local base
+    for _, r in ipairs({ normalize(slash(root)), root_real }) do
+        if strictly_under(np, r) then base = r; break end
+    end
+    if not base then return "outside" end
+    local segs = segments(np:sub(#base + 2))
+    local cur = base
+    for i = 1, #segs - 1 do
+        cur = cur .. "/" .. segs[i]
+        local dst = uv.fs_lstat(cur)
+        if not dst or dst.type ~= "directory" then return "outside" end
+    end
+    return "remove"
+end
+
+--- Clean deploy records sourced from a given build directory (spec §8.8.5).
+--- Every matching record is dropped. Its destination file is unlinked only
+--- when `cleanup_disposition` says "remove"; a destination outside the
+--- workspace is left in place and passed to `opts.on_left`, an invalid key
+--- to `opts.on_invalid`. With no `opts.root`, nothing is unlinked.
 --- @param deploy_records table<string, table> workspace deploy records (mutated)
 --- @param build_dir_id string config unit id (spec §8.8.5) to match
+--- @param opts? { root?: string, normalize?: fun(p: string): string, on_left?: fun(dest: string), on_invalid?: fun(dest: string) }
 --- @return string[] removed_keys list of removed destination keys
-function M.clean_deploy_records(deploy_records, build_dir_id)
+function M.clean_deploy_records(deploy_records, build_dir_id, opts)
+    opts = opts or {}
+    local normalize = opts.normalize or function(p) return p end
     local removed = {}
     for dest_key, record in pairs(deploy_records) do
         if record.source_build_dir == build_dir_id then
-            -- Try to delete destination file
-            pcall(function()
-                local uv = vim.uv or vim.loop
-                uv.fs_unlink(dest_key)
-            end)
             removed[#removed + 1] = dest_key
         end
     end
-    -- Remove records
     for _, key in ipairs(removed) do
         deploy_records[key] = nil
+        local disposition = M.cleanup_disposition(key, opts.root, normalize)
+        if disposition == "remove" then
+            uv.fs_unlink(slash(key))
+        elseif disposition == "outside" then
+            if opts.on_left then opts.on_left(key) end
+        elseif opts.on_invalid then
+            opts.on_invalid(key)
+        end
     end
     return removed
 end

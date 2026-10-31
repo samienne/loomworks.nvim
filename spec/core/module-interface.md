@@ -1247,7 +1247,12 @@ When a config unit is deleted or cleaned (sections 4.6, 4.7):
 
 1. Scan deploy records for entries where `source_build_dir` matches the
    affected config unit's id
-2. Delete the destination files (if they exist on disk)
+2. Delete each destination file that lies inside the workspace (canonical
+   path strictly under the workspace root, no link on the way, a regular
+   file). A destination outside the workspace — legal only from the working
+   copy (§17.6) — is never removed by cleanup: its record is dropped and the
+   file is left in place, reported. A record that is not an absolute,
+   traversal-free path to a regular file is dropped without touching disk.
 3. Remove the deploy records from cache
 4. Save cache
 

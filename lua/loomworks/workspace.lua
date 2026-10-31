@@ -4330,13 +4330,33 @@ function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
     return future_mod.resolved(true)
 end
 
+--- Drop the deploy records sourced from a config unit / build dir and remove
+--- their destination files (spec §8.8.5): only files inside the workspace
+--- are unlinked (`deploy.cleanup_disposition`); one outside is left in place
+--- and reported, an invalid key dropped with a debug log.
+--- @param build_dir_id string config unit id / build dir rel path
+--- @return string[] removed_keys
+function Workspace:_clean_deploy_records(build_dir_id)
+    local deps = self._core._deps
+    return require("loomworks.deploy").clean_deploy_records(self._deploy_records, build_dir_id, {
+        root = self.root,
+        normalize = deps.normalize,
+        on_left = function(dest)
+            deps.notify("loomworks: deploy cleanup: left " .. dest
+                .. " (outside the workspace)", vim.log.levels.WARN)
+        end,
+        on_invalid = function(dest)
+            if deps.log then deps.log:debug("deploy cleanup: dropped invalid record %s", dest) end
+        end,
+    })
+end
+
 function Workspace:delete_cached_configs(items)
-    local deploy = require("loomworks.deploy")
     for _, item in ipairs(items) do
         if item.unit then
             -- Clean deploy records sourced from this build dir
             if item.unit.id then
-                deploy.clean_deploy_records(self._deploy_records, item.unit.id)
+                self:_clean_deploy_records(item.unit.id)
             end
             -- Clear BuildDir state (by reference or by path lookup)
             local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
@@ -4359,12 +4379,11 @@ end
 --- Keeps the cache entry skeleton (variant, tool_key, tool_data) intact.
 --- @param items loomworks.DeletionItem[]
 function Workspace:reset_cached_configs(items)
-    local deploy = require("loomworks.deploy")
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
         -- Clean deploy records sourced from this build dir
         if item.unit.id then
-            deploy.clean_deploy_records(self._deploy_records, item.unit.id)
+            self:_clean_deploy_records(item.unit.id)
         end
         -- Clear BuildDir state (by reference or by path lookup)
         local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
@@ -4520,12 +4539,11 @@ function Workspace:_drop_orphan_siblings(siblings)
     for _, unit in pairs(self._config_units) do
         if unit._build_dir then adopted[unit._build_dir] = true end
     end
-    local deploy = require("loomworks.deploy")
     local drop = {}
     for _, bd in ipairs(siblings) do
         if not adopted[bd] then
             drop[bd] = true
-            deploy.clean_deploy_records(self._deploy_records, bd.rel_path)
+            self:_clean_deploy_records(bd.rel_path)
             bd:clear_state()
         end
     end
