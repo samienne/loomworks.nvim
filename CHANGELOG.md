@@ -35,7 +35,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   is refused with a load error naming both. A profile build, configure, test
   or clean runs the profile's other projects, then fails naming it, until its
   directory resolves elsewhere. A command that would create such a collision
-  is refused without writing.
+  is refused without writing. (#360)
 - In the editor's default `daemon` mode the Lua getters return plain tables
   copied from the workspace daemon's views, each with its `id`, instead of
   Profile, Project and ConfigurationSet objects: `get_profiles`,
