@@ -37,7 +37,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   nil. Code that calls methods on these objects must use the records' fields,
   or keep `runtime = { mode = "in-process" }` until that mode is removed.
   `lw.compile_command_for_file()` and `:LoomworksCompileCommand` are not
-  available in `daemon` mode. (#336)
+  available in `daemon` mode, and `require("loomworks.overseer")
+  .run_profile_action()` is refused there; build with `lw.build_profile()`.
+  (#336, #354)
 - A configuration set's `mappings` in the workspace view (`view.Workspace/1`)
   and in `ConfigSets/1.add` / `update` is now a list of `{ project,
   configuration }` references (in the view also `missing`, which replaces the
