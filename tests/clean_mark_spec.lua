@@ -212,6 +212,28 @@ describe("clean/deletion runtime mark", function()
             assert.is_false(unit:is_deleting())
         end)
 
+        -- The Future tells callers whether the build dir was removed: a
+        -- failed removal resolves `false` (reported, not rejected).
+        for _, case in ipairs({ { ok = true, want = true }, { ok = false, want = false } }) do
+            it("resolves " .. tostring(case.want) .. " when the removal "
+                    .. (case.ok and "succeeds" or "fails"), function()
+                local core = make_core()
+                local unit = the_unit(core)
+                local ws = core._workspace
+                ws._core._deps.notify = function() end
+                ws._core._deps.io.rm_rf_async = function(_, cb)
+                    cb(case.ok, not case.ok and "access denied" or nil)
+                end
+                local result = "unsettled"
+                ws:execute_deletion({ items = { { unit = unit, project_key = "App",
+                    config_key = "dev", disposition = "clean",
+                    build_dir = "/root/.nvim/build/App-dev" } } })
+                    :next(function(v) result = v end, function(e) result = "rejected: " .. tostring(e) end)
+                assert.equals(case.want, result)
+                assert.is_false(unit:is_deleting())
+            end)
+        end
+
         it("clears the mark when stopping the running tasks fails", function()
             local core = make_core()
             local unit = the_unit(core)

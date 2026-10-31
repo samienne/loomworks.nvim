@@ -4400,7 +4400,8 @@ end
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
 --- @param reason? "deleting"|"cleaning"
---- @return loomworks.Future
+--- @return loomworks.Future resolves `true` when every removal succeeded, `false` when
+--- one failed (reported via notify + `deletion_failed`; the cache keeps those `unknown`)
 function Workspace:_run_deletion(items, work_fn, on_done, reason)
     local future_mod = require("loomworks.future")
     if #items == 0 then
@@ -4540,7 +4541,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             ws._core._deps.events.emit("deletion_failed", { items = items, errors = errors })
             -- Dirs that WERE removed lose their mirror; failed ones keep it.
             return ws:_remove_owned_lsp_dbs(deleted_ok(results))
-                :next(function() return true end)  -- don't reject — deletion "completed" with errors reported
+                :next(function() return false end)  -- don't reject: the errors are reported; `false` = not deleted
         end
 
         work_fn(items)
@@ -4586,7 +4587,7 @@ end
 --- @param plan loomworks.DeletionPlan
 --- @param opts? { deactivate_profile?: loomworks.Profile }
 --- @param on_done? function legacy callback (deprecated)
---- @return loomworks.Future
+--- @return loomworks.Future resolves `true`, or `false` when a build-dir removal failed
 function Workspace:execute_deletion(plan, opts, on_done)
     local future_mod = require("loomworks.future")
     opts = opts or {}

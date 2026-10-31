@@ -80,6 +80,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 
+- Deleting a profile or a configuration from the status page no longer
+  reports it removed when a build directory could not be removed; only the
+  error is shown. Scripts and plugins calling the deletion now get `false`
+  in that case instead of `true`. (#NNN)
 - With a CMake multi-config generator (Ninja Multi-Config, Visual Studio),
   Debug and Release are separate configurations again, each with its own
   state, artifacts and status line, although they share one build directory.

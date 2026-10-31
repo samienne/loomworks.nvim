@@ -153,8 +153,13 @@ function M.delete_profile(profile)
         local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: " .. profile.key, plan,
             profile.description)
         M._show_confirmation(ctx, function()
-            require("loomworks").execute_deletion(plan, { deactivate_profile = profile }, function()
-                vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
+            -- A failed removal (`false`) was already reported as an error.
+            ws:execute_deletion(plan, { deactivate_profile = profile }):next(function(ok)
+                if ok then
+                    vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
+                end
+            end):catch(function(err)
+                vim.notify("loomworks: deletion failed: " .. tostring(err), vim.log.levels.ERROR)
             end)
         end)
     end
@@ -232,8 +237,13 @@ function M.delete_config(unit)
         local ctx = wv.compute_delete_confirmation_context(ws,
             "Delete: " .. pkey .. " / " .. ckey, plan, cfg and cfg.description)
         M._show_confirmation(ctx, function()
-            unit:delete(function()
-                vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+            -- A failed removal (`false`) was already reported as an error.
+            unit:delete():next(function(ok)
+                if ok then
+                    vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
+                end
+            end):catch(function(err)
+                vim.notify("loomworks: deletion failed: " .. tostring(err), vim.log.levels.ERROR)
             end)
         end)
     end

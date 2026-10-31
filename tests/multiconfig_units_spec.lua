@@ -338,9 +338,7 @@ describe("multi-config cmake: deleting a shared tree (spec §4.6, §5.7 crash sa
         local core, ws = make_core({ deps = { io = rm_io(removed, nil, false),
             notify = function() end } })
         local d, r = build_both(core, ws)
-        -- On master execute_deletion resolves `true` even when a removal
-        -- failed (the failure is reported via notify + `deletion_failed`).
-        assert.is_true(delete_items(ws, { d, r }))
+        assert.is_false(delete_items(ws, { d, r }))
         local s = ws:_serialize_cache().build_dirs
         assert.equals("unknown", s[TREE .. "#Debug:ninja-mc"].state)
         assert.equals("unknown", s[TREE .. "#Release:ninja-mc"].state)
@@ -386,8 +384,7 @@ describe("multi-config cmake: deleting a shared tree (spec §4.6, §5.7 crash sa
         local opts = debug_only()
         opts.deps = { io = rm_io(removed, nil, false), notify = function() end }
         local _, ws = make_core(opts)
-        -- Master resolves `true` on a failed removal (see above).
-        assert.is_true(delete_items(ws, { unit_of(ws, "debug") }))
+        assert.is_false(delete_items(ws, { unit_of(ws, "debug") }))
         assert.same({ TREE_ABS }, removed)
         assert.equals("unknown", ws:_serialize_cache().build_dirs[TREE .. "#Old:ninja-mc"].state)
     end)
