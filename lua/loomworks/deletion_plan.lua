@@ -140,13 +140,18 @@ function M.recheck_orphans(ws, orphans)
     return out
 end
 
---- Whether no ConfigUnit references `bd` (it is still an orphan).
+--- Whether no ConfigUnit references `bd` and it is not held
+--- (`Workspace:_held_build_dirs`: its configuration turned invalid while the
+--- removal ran) — it is still an orphan.
 --- @param ws loomworks.Workspace
 --- @param bd loomworks.BuildDir
 --- @return boolean
 local function still_orphaned(ws, bd)
     for _, unit in pairs(ws._config_units) do
         if unit._build_dir == bd then return false end
+    end
+    for _, h in ipairs(ws:_held_build_dirs()) do
+        if h == bd then return false end
     end
     return true
 end

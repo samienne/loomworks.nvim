@@ -280,6 +280,101 @@ describe("shell build_dir template error keeps the configuration's build directo
     assert.equals(0, vim.fn.isdirectory(parent))
   end)
 
+  it("keeps the held directory's contents when an orphan entry's directory lies inside it", function()
+    local ws = load(root)
+    local inner = dir .. "/sub"
+    add_orphan(ws, inner)
+    local mf = assert(io.open(inner .. "/obj.o", "w")); mf:write("x"); mf:close()
+    run_orphans(ws)
+    assert.equals(1, vim.fn.filereadable(dir .. "/marker.txt"), "the held build's contents survive")
+    assert.equals(1, vim.fn.filereadable(inner .. "/obj.o"), "the tree inside the held dir survives")
+    assert.same({}, ws:get_orphaned_configs(), "the orphan entry itself is dropped")
+  end)
+
+  it("keeps the held directory when an orphan names it in another case or its 8.3 spelling", function()
+    if vim.fn.has("win32") ~= 1 then return end
+    local spellings = { dir:upper() }
+    local out = vim.fn.system({ "cmd", "/c", "for %I in (\"" .. dir:gsub("/", "\\") .. "\") do @echo %~sI" })
+    local short = vim.trim(out or ""):gsub("\\", "/")
+    if vim.v.shell_error == 0 and short:find("~", 1, true) then spellings[#spellings + 1] = short end
+    for _, spelling in ipairs(spellings) do
+      local ws = load(root)
+      add_orphan(ws, spelling)
+      run_orphans(ws)
+      assert.equals(1, vim.fn.filereadable(dir .. "/marker.txt"), "kept under " .. spelling)
+      assert.same({}, ws:get_orphaned_configs())
+      ws:_save_cache()
+    end
+  end)
+
+  --- The orphan entry (Gone/Old) of `ws`.
+  local function orphan_bd(ws)
+    for _, bd in ipairs(ws._build_dirs) do
+      if bd.project_key == "Gone" then return bd end
+    end
+  end
+
+  --- Make `bd` held (as if its configuration turned invalid on a reload)
+  --- once `when()` says so.
+  local function hold_when(ws, bd, when)
+    local orig = ws._held_build_dirs
+    ws._held_build_dirs = function(self)
+      local out = orig(self)
+      if when() then out[#out + 1] = bd end
+      return out
+    end
+  end
+
+  it("keeps an orphan's directory and entry that became held while its cleanup stopped tasks", function()
+    local ws = load(root)
+    local other = root .. "/out/Gone/Old" -- outside .nvim/build: not also a stray
+    add_orphan(ws, other)
+    local bd = assert(orphan_bd(ws))
+    local flipped = false
+    hold_when(ws, bd, function() return flipped end)
+    local orig_stop = ws.stop_tasks_then
+    ws.stop_tasks_then = function(self, ids) flipped = true; return orig_stop(self, ids) end
+    run_orphans(ws)
+    assert.is_true(flipped, "test setup: the cleanup stopped tasks")
+    assert.equals(1, vim.fn.isdirectory(other), "the now-held directory is kept")
+    assert.equals(bd, orphan_bd(ws), "the now-held entry is kept")
+  end)
+
+  it("keeps an orphan's directory and entry that became held after its deletion was planned", function()
+    local ws = load(root)
+    local other = root .. "/out/Gone/Old" -- outside .nvim/build: not also a stray
+    add_orphan(ws, other)
+    local bd = assert(orphan_bd(ws))
+    local plan = dp.plan(ws, { build_dir = bd })
+    assert.is_nil(plan.refusal, tostring(plan.refusal))
+    local flipped = false
+    hold_when(ws, bd, function() return flipped end)
+    flipped = true
+    local result
+    dp.execute(ws, plan):next(function(r) result = r end)
+    assert.is_true(vim.wait(5000, function() return result ~= nil end, 20), "deletion never finished")
+    assert.equals(1, vim.fn.isdirectory(other), "the now-held directory is kept")
+    assert.equals(bd, orphan_bd(ws), "the now-held entry is kept")
+  end)
+
+  it("keeps an orphan's directory and entry that became held while its deletion stopped tasks", function()
+    local ws = load(root)
+    local other = root .. "/out/Gone/Old" -- outside .nvim/build: not also a stray
+    add_orphan(ws, other)
+    local bd = assert(orphan_bd(ws))
+    local flipped = false
+    hold_when(ws, bd, function() return flipped end)
+    local orig_stop = ws.stop_tasks_then
+    ws.stop_tasks_then = function(self, ids) flipped = true; return orig_stop(self, ids) end
+    local report = {}
+    local result
+    ws:_delete_orphan_unlocked(bd, nil, { report = report }):next(function(r) result = r end)
+    assert.is_true(vim.wait(5000, function() return result ~= nil end, 20), "deletion never finished")
+    assert.equals(1, vim.fn.isdirectory(other), "the now-held directory is kept")
+    assert.equals(bd, orphan_bd(ws), "the now-held entry is kept")
+    assert.equals("held", report.kept and report.kept[1] and report.kept[1].why, vim.inspect(report))
+  end)
+
   it("is adopted again with its state once the template is fixed", function()
     load(root)
     set_user_template(root, VALID_NB)
@@ -288,6 +383,75 @@ describe("shell build_dir template error keeps the configuration's build directo
     assert.equals("built", unit.state_value)
     assert.same({}, ws:get_orphaned_configs())
     assert.equals(1, vim.fn.isdirectory(dir))
+  end)
+end)
+
+-- A configuration's deletion (a unit item, not an orphan) next to an invalid
+-- configuration's held build dir: a unit dir that IS or CONTAINS the held dir
+-- is kept (the shared-refs analogue); one that lies INSIDE it is the unit's
+-- own tree and is removed, like a unit dir nested in a live one.
+describe("a configuration's deletion beside a held build dir", function()
+  local VALID_NB = "${workspace_root}/.nvim/build/${project_path}/${variant}"
+  local INVALID_NB = "${workspace_root}/.nvim/build/${" .. ENV .. "}/${variant}"
+  local root, held_dir
+  after_each(function()
+    vim.env[ENV] = nil
+    if root then vim.fn.delete(root, "rf") end
+  end)
+
+  --- App (VALID_NB) and Lib (`lib_template`) in one active profile, built;
+  --- then App's template turned invalid. Returns ws and Lib's unit.
+  local function setup(lib_template)
+    vim.env[ENV] = "leaked"
+    root = vim.fn.tempname():gsub("\\", "/")
+    vim.fn.mkdir(root .. "/App", "p")
+    vim.fn.mkdir(root .. "/Lib", "p")
+    local function shell(t)
+      return { shell = { build_dir = t, configure_cmd = { "configure" }, build_cmd = { "build" },
+        configurations = { Debug = vim.empty_dict() } } }
+    end
+    local f = assert(io.open(root .. "/loomworks.json", "w"))
+    f:write(vim.json.encode({ projects = { App = shell(VALID_NB), Lib = shell(lib_template) } }))
+    f:close()
+    capture(function()
+      cli.cmd_cset("create", root, { "configuration-set", "create", "Dev", "App=Debug", "Lib=Debug" })
+      cli.cmd_profile_create(root, { "profile", "create", "Dev", "--activate" })
+    end)
+    local ws, dev, app, debug = load(root)
+    local r = stubbed(ws, function() return cli.cmd_build(ws, { "build", dev.key }) end)
+    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    held_dir = assert(assert(ws:find_config_unit(app, debug, nil)):build_dir())
+    vim.fn.mkdir(held_dir, "p")
+    local mf = assert(io.open(held_dir .. "/marker.txt", "w")); mf:write("x"); mf:close()
+    set_user_template(root, INVALID_NB)
+    ws = load(root)
+    local lib
+    for _, p in ipairs(ws._projects) do if p.key == "Lib" then lib = p end end
+    local unit = assert(ws:find_config_unit(lib, assert(lib:get_configuration("Debug")), nil))
+    vim.fn.mkdir(unit:build_dir(), "p")
+    return ws, unit
+  end
+
+  local function delete_unit(ws, unit)
+    local report, result = {}, nil
+    ws:execute_deletion(unit:plan_deletion(), { report = report }):next(function(ok) result = ok end)
+    assert.is_true(vim.wait(5000, function() return result ~= nil end, 20), "deletion never finished")
+    return report
+  end
+
+  it("keeps the held dir when the unit's dir contains it", function()
+    local ws, unit = setup("${workspace_root}/.nvim/build/App")
+    local report = delete_unit(ws, unit)
+    assert.equals(1, vim.fn.filereadable(held_dir .. "/marker.txt"), "the held build's contents survive")
+    assert.equals("held", report.kept[1] and report.kept[1].why, vim.inspect(report))
+  end)
+
+  it("removes the unit's own dir lying inside the held dir, keeping the rest of it", function()
+    local ws, unit = setup("${workspace_root}/.nvim/build/App/${variant}/lib")
+    local lib_dir = unit:build_dir()
+    delete_unit(ws, unit)
+    assert.equals(0, vim.fn.isdirectory(lib_dir), "the unit's own tree is removed")
+    assert.equals(1, vim.fn.filereadable(held_dir .. "/marker.txt"), "the held build's contents survive")
   end)
 end)
 
