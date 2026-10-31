@@ -375,6 +375,29 @@ describe("shell build_dir template error keeps the configuration's build directo
     assert.equals("held", report.kept and report.kept[1] and report.kept[1].why, vim.inspect(report))
   end)
 
+  it("keeps a stray directory that became held while its cleanup stopped tasks", function()
+    local ws = load(root)
+    local other = root .. "/out/Gone/Old" -- outside .nvim/build: not also a stray
+    add_orphan(ws, other)
+    local late = root .. "/.nvim/build/Late"
+    vim.fn.mkdir(late, "p")
+    local mf = assert(io.open(late .. "/marker.txt", "w")); mf:write("x"); mf:close()
+    local listed = false
+    for _, d in ipairs(ws:find_stray_build_dirs()) do
+      if d:lower():find("/late$") then listed = true end
+    end
+    assert.is_true(listed, "test setup: the directory is a stray when planned")
+    -- An existing configuration's entry naming it turns invalid (held) while
+    -- the cleanup stops tasks.
+    local flipped = false
+    hold_when(ws, { path = late }, function() return flipped end)
+    local orig_stop = ws.stop_tasks_then
+    ws.stop_tasks_then = function(self, ids) flipped = true; return orig_stop(self, ids) end
+    run_orphans(ws)
+    assert.is_true(flipped, "test setup: the cleanup stopped tasks")
+    assert.equals(1, vim.fn.filereadable(late .. "/marker.txt"), "the now-held directory is kept")
+  end)
+
   it("is adopted again with its state once the template is fixed", function()
     load(root)
     set_user_template(root, VALID_NB)
