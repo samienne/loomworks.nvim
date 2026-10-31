@@ -52,7 +52,7 @@
  26|          ○ ▼ Tool [shell] → variant:default (unconfigured)
    hl 10-14 Comment; 14-18 LoomworksProject; 18-22 LoomworksProject; 22-30 Comment; 30-35 Comment; 35-50 LoomworksVariant; 50-65 Comment
    w  enter_label=Open task output fold_key=profile_proj:only:Tool on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
- 27|                Build dir: /root/.nvim/build/Tool/variant:default
+ 27|                Build dir: /root/out
    hl 0--1 Comment
  28|
  29|  ▸ Create new profile

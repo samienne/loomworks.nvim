@@ -43,7 +43,8 @@ local function make_ws(build_dir)
 end
 
 --- Two shell projects A and B (Debug + Release, no clean_cmd => wipe) that
---- both build into `${workspace_root}/build`; profiles Both (A=Debug,
+--- the tests record as built in one `<root>/build` (each unit has its own
+--- template dir, so the units stay distinct); profiles Both (A=Debug,
 --- B=Debug) and Other (A=Release).
 local function make_shared_ws()
   local root = vim.fn.tempname():gsub("\\", "/")
@@ -51,7 +52,7 @@ local function make_shared_ws()
   for _, name in ipairs({ "A", "B" }) do
     vim.fn.mkdir(root .. "/" .. name, "p")
     projects[name] = { shell = {
-      build_dir = "${workspace_root}/build",
+      build_dir = "${workspace_root}/build/${project_path}/${variant}",
       configure_cmd = { "true" },
       build_cmd = { "true" },
       configurations = { Debug = vim.empty_dict(), Release = vim.empty_dict() },
@@ -155,7 +156,7 @@ describe("editor clean (wipe_build_dir)", function()
   end)
 
   it("Profile:clean resets the unit to unconfigured after the wipe", function()
-    local root = make_ws("${workspace_root}/out/${configuration}")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local ws, by = load(root)
     local unit = unit_of(by.Dev)
     local dir = root .. "/out/Debug"
@@ -174,7 +175,7 @@ describe("editor clean (wipe_build_dir)", function()
   end)
 
   it("marks the cache unknown on disk before the tree is removed", function()
-    local root = make_ws("${workspace_root}/out/${configuration}")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local ws, by = load(root)
     local unit = unit_of(by.Dev)
     local dir = root .. "/out/Debug"
@@ -197,7 +198,7 @@ describe("editor clean (wipe_build_dir)", function()
   end)
 
   it("keeps a build dir still referenced by another configuration", function()
-    local root = make_ws("${workspace_root}/out")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local ws, by = load(root)
     local dev, rel = unit_of(by.Dev), unit_of(by.Rel)
     local dir = root .. "/out"
@@ -212,7 +213,7 @@ describe("editor clean (wipe_build_dir)", function()
   end)
 
   it("fails and leaves the cache unknown when the removal fails", function()
-    local root = make_ws("${workspace_root}/out/${configuration}")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local ws, by = load(root)
     local unit = unit_of(by.Dev)
     local dir = root .. "/out/Debug"
@@ -276,10 +277,10 @@ describe("editor clean (wipe_build_dir)", function()
   end)
 
   it("fails when the removal fails for a unit with no cached build dir", function()
-    local root = make_ws("${workspace_root}/out")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local ws, by = load(root)
     local unit = unit_of(by.Dev)
-    local dir = root .. "/out"
+    local dir = root .. "/out/Debug"
     vim.fn.mkdir(dir, "p")
     unit.build_dir_value = nil
     unit.state_value = "configured"

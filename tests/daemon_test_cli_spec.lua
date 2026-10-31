@@ -131,7 +131,10 @@ local function cache_of(root, key_path)
         end
         if type(v) ~= "table" then return v end
         local out = {}
-        for kk, vv in pairs(v) do out[kk] = walk(vv, kk) end
+        -- Keys too: a build dir outside `.nvim/build` is keyed by its path.
+        for kk, vv in pairs(v) do
+            out[type(kk) == "string" and unroot(kk, root) or kk] = walk(vv, kk)
+        end
         return out
     end
     return walk(vim.json.decode(body))
@@ -502,7 +505,12 @@ describe("lw test through the workspace daemon (real processes)", function()
             "build first: lw build dev", "or run without --no-build" }) do
             assert.truthy(r.stderr:find(s, 1, true), s .. "\n" .. r.stderr)
         end
-        assert.is_nil(vim.uv.fs_stat(b .. "/out"), "the daemon configured or built")
+        -- (The build dirs' parents, out/app and out/lib, are left empty, by the
+        -- in-process run as by the daemon — where a dir's build lockfile is
+        -- taken — but no build dir was created.)
+        for _, p in ipairs({ "app", "lib" }) do
+            assert.is_nil(vim.uv.fs_stat(b .. "/out/" .. p .. "/Debug"), "the daemon configured or built " .. p)
+        end
         -- Built once; then a build that would fail never runs under --no-build.
         for _, root in ipairs({ a, b }) do
             local rb = lw(root, { "--no-input", "--no-daemon", "build", "dev" }, { LOOMWORKS_RUNTIME = "in-process" })

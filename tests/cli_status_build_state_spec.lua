@@ -36,7 +36,7 @@ local function make_ws()
   local root = vim.fn.tempname():gsub("\\", "/")
   vim.fn.mkdir(root .. "/App", "p")
   local lw = { projects = { App = { shell = {
-    build_dir = "${workspace_root}/out/${configuration}",
+    build_dir = "${workspace_root}/out/${variant}",
     configure_cmd = { "true" },
     build_cmd = { "true" },
     configurations = { Debug = vim.empty_dict(), Release = vim.empty_dict() },

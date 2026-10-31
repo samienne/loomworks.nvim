@@ -342,10 +342,11 @@ describe("lw attached runs in runtime-mode daemon (real processes)", function()
         H.track(p.pid, p.start)
         local asked = vim.wait(60000, function() return (p.stdout()):find("[y/N]", 1, true) ~= nil end, 20)
         assert.is_true(asked, p.stdout() .. p.stderr())
-        -- (The reset would remove the build directory, .nvim/build/app/Debug,
-        -- and the cache's entries: the tree and the cache's mtime show it.)
+        -- (The reset would remove the build directory, out/Debug from the
+        -- shell build_dir template, and the cache's entries: the tree and the
+        -- cache's mtime show it.)
         local built = tree(root)
-        assert.truthy(vim.tbl_contains(built, ".nvim/build/app/Debug"), table.concat(built, ", "))
+        assert.truthy(vim.tbl_contains(built, "out/Debug"), table.concat(built, ", "))
         local before = mtimes(root)
         -- Another runtime's record replaces ours while the prompt waits.
         local rec = vim.json.decode(read(lock_path(root)))

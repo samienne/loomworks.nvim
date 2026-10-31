@@ -1000,6 +1000,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- A `shell` project's `build_dir` template is used again. It was ignored, so
+  every shell configuration built in `.nvim/build/<project>/<configuration>`
+  instead of the declared directory (for example `out/Debug` for
+  `"${workspace_root}/out/${variant}"`). After upgrading, a shell project with
+  a template builds in its declared directory: its first build there is a
+  fresh configure, and the old `.nvim/build/<project>/...` directory is no
+  longer used. (#355)
 - In the editor's `daemon` mode the first build, launch or other action after
   the editor's environment changed (for example after `:let $FOO=...`) no
   longer fails once with "a stale reference". The workspace daemon still

@@ -72,8 +72,8 @@ describe("Launch/1.build in the daemon (§19.15 Build of a launch target)", func
         local key = H.tmp() .. "/trust.key"
         local root = runner.fixture("shell", key)
         -- The pre-build source, in app's build directory.
-        vim.fn.mkdir(root .. "/.nvim/build/app/Debug", "p")
-        local f = assert(io.open(root .. "/.nvim/build/app/Debug/missing.txt", "w"))
+        vim.fn.mkdir(root .. "/out/Debug", "p")
+        local f = assert(io.open(root .. "/out/Debug/missing.txt", "w"))
         f:write("artifact")
         f:close()
         local okc, err = run(build_case("first build"), root, key)
