@@ -55,7 +55,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw init`. (#349)
 - A shell `build_dir` template may use only `${workspace_root}`,
   `${project_path}` (the project key) and `${variant}`; other names, including
-  environment variables, are now a load error. (#PR)
+  environment variables, are now a load error. (#358)
 
 ### Upgrade notes
 - The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8
