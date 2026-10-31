@@ -61,7 +61,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   workspace as a newer schema until it is updated. Each configuration of a
   CMake multi-config build directory (Ninja Multi-Config, Visual Studio)
   builds once more after the upgrade, incrementally, because its old state
-  could have come from another configuration's build. (#TBD)
+  could have come from another configuration's build. (#357)
 - The editor now uses the workspace daemon by default: builds, configures,
   cleans, launch preparations and tests run there. An operation the daemon
   cannot take (not connected yet, no `lw` found, an older daemon) or declines
@@ -1012,7 +1012,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   state, artifacts and status line, although they share one build directory.
   They were one unit, so building Debug made Release show as built and a
   build of Release could be skipped. Deleting one of them keeps the shared
-  directory while the other still uses it. (#TBD)
+  directory while the other still uses it. (#357)
 - A `shell` project's `build_dir` template is used again. It was ignored, so
   every shell configuration built in `.nvim/build/<project>/<configuration>`
   instead of the declared directory (for example `out/Debug` for
