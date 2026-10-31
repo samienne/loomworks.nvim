@@ -71,10 +71,10 @@ end
 
 --- A shell App (Debug); set + profile Dev (active), built once with a valid
 --- template so the cache holds the unit's entry.
-local function make_ws()
+local function make_ws(template)
   local root = vim.fn.tempname():gsub("\\", "/")
   vim.fn.mkdir(root .. "/App", "p")
-  write_config(root, VALID)
+  write_config(root, template or VALID)
   capture(function()
     cli.cmd_cset("create", root, { "configuration-set", "create", "Dev", "App=Debug" })
     cli.cmd_profile_create(root, { "profile", "create", "Dev", "--activate" })
@@ -177,5 +177,64 @@ describe("shell build_dir template names (shell spec §6, core §8 info error)",
     local r = stubbed(ws, function() return cli.cmd_build(ws, { "build", dev.key }) end)
     assert.is_nil(r.exit_code, r.stderr .. r.stdout)
     assert.is_true(#r.spawned > 0)
+  end)
+end)
+
+-- An invalid configuration's build directory (core §8 `info` error: no
+-- ConfigUnit adopts its cache entry) is not an orphan: the configuration
+-- still exists, only temporarily invalid. No orphan listing offers it, no
+-- orphan / stray deletion removes it, and fixing the template adopts the
+-- entry again with its state (deletion safety).
+describe("shell build_dir template error keeps the configuration's build directory", function()
+  local dp = require("loomworks.deletion_plan")
+  local commands = require("loomworks.model_commands")
+  local VALID_NB = "${workspace_root}/.nvim/build/${project_path}/${variant}"
+  local INVALID_NB = "${workspace_root}/.nvim/build/${" .. ENV .. "}/${variant}"
+  local root, dir
+  before_each(function()
+    vim.env[ENV] = "leaked"
+    root = make_ws(VALID_NB)
+    local ws, dev, app, debug = load(root)
+    local r = stubbed(ws, function() return cli.cmd_build(ws, { "build", dev.key }) end)
+    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    local unit = assert(ws:find_config_unit(app, debug, nil))
+    dir = assert(unit:build_dir())
+    vim.fn.mkdir(dir, "p")
+    set_user_template(root, INVALID_NB)
+  end)
+  after_each(function()
+    vim.env[ENV] = nil
+    if root then vim.fn.delete(root, "rf") end
+  end)
+
+  it("is not listed as orphaned or stray, and no orphan deletion removes it", function()
+    local ws = load(root)
+    assert.same({}, ws:get_orphaned_configs())
+    for _, d in ipairs(ws:find_stray_build_dirs()) do
+      assert.is_nil(dir:lower():find(d:lower(), 1, true), "stray " .. d)
+    end
+    local plan = dp.plan(ws, { orphans = true })
+    assert.is_true(dp.is_empty(plan), vim.inspect(plan.orphans) .. vim.inspect(plan.strays))
+    local held
+    for _, bd in ipairs(ws._build_dirs) do
+      if bd.project_key == "App" then held = bd end
+    end
+    assert.is_not_nil(held, "the cache entry is kept")
+    local refused = dp.plan(ws, { build_dir = held })
+    assert.is_not_nil(refused.refusal, "a build_dir deletion of it is refused")
+    local res = commands.execute_deletion(ws, { orphans = true }, { yes = true })
+    assert.equals("refused", res.outcome, vim.inspect(res))
+    assert.equals(dp.NOTHING, res.message)
+    assert.equals(1, vim.fn.isdirectory(dir))
+  end)
+
+  it("is adopted again with its state once the template is fixed", function()
+    load(root)
+    set_user_template(root, VALID_NB)
+    local ws, _, app, debug = load(root)
+    local unit = assert(ws:find_config_unit(app, debug, nil))
+    assert.equals("built", unit.state_value)
+    assert.same({}, ws:get_orphaned_configs())
+    assert.equals(1, vim.fn.isdirectory(dir))
   end)
 end)

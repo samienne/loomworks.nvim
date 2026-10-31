@@ -3180,6 +3180,26 @@ function Workspace:_live_build_dir_forms(exempt)
     return known
 end
 
+--- The directories a stray scan treats as known (`find_stray_build_dirs`):
+--- every form of each live build dir (`_live_build_dir_forms`) and of each
+--- held one (`_held_build_dirs`: an invalid configuration's entry), so the
+--- directory of a configuration that is only temporarily invalid is never a
+--- stray either.
+--- @return string[]
+function Workspace:_stray_known_forms()
+    local known = self:_live_build_dir_forms()
+    local seen = {}
+    for _, f in ipairs(known) do seen[f] = true end
+    for _, bd in ipairs(self:_held_build_dirs()) do
+        if bd.path and bd.path ~= "" then
+            for _, f in ipairs(self:_path_forms(bd.path)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
 --- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
 --- of each side, separator-bounded) — such a dir must never be deleted as
 --- stray or orphaned. "Lies inside" only counts for a live dir that is not a
@@ -3233,8 +3253,9 @@ function Workspace:find_stray_build_dirs(opts)
     local normalize = self._core._deps.normalize
     local on_list = opts and opts.on_list
 
-    -- Every form of every build dir referenced by a ConfigUnit object
-    local known_dirs = opts and opts.known or self:_live_build_dir_forms()
+    -- Every form of every build dir referenced by a ConfigUnit object, and
+    -- of every held one (an invalid configuration's, `_held_build_dirs`)
+    local known_dirs = opts and opts.known or self:_stray_known_forms()
     local function forms(dir) return self:_path_forms(dir) end
 
     -- Build a set for exact match and a list for prefix checks
@@ -3328,7 +3349,7 @@ end
 --- when its answer can differ. Deletion safety never reads this cache.
 --- @return string[]
 function Workspace:_view_stray_build_dirs()
-    local known = self:_live_build_dir_forms()
+    local known = self:_stray_known_forms()
     local sorted = vim.list_slice(known)
     table.sort(sorted)
     local sig = table.concat(sorted, "\0")
@@ -3351,21 +3372,69 @@ function Workspace:_view_stray_build_dirs()
     return vim.list_slice(stray)
 end
 
+--- The BuildDirs of configurations that still exist but are invalid: the
+--- module reported an `error` for them (§8 `info`), so no ConfigUnit adopts
+--- their cache entry. Such an entry is held for the configuration — not an
+--- orphan, its directory not a stray — until the configuration is valid
+--- again and adopts it (deletion safety: never offer to delete the build
+--- directory of a configuration that is only temporarily invalid).
+--- Matched on the stable (project_key, config_key) identity
+--- (`find_cache_entry_for`).
+--- @return loomworks.BuildDir[]
+function Workspace:_held_build_dirs()
+    local invalid = {}
+    for _, project in pairs(self._projects or {}) do
+        if not project._removed then
+            for _, cfg in pairs(project._configurations or {}) do
+                if not cfg._removed and cfg.module_error and cfg:module_error() then
+                    invalid[#invalid + 1] = { project = project, name = cfg.name }
+                end
+            end
+        end
+    end
+    if #invalid == 0 then return {} end
+    local build_config_key = self._core._deps.merge.build_config_key
+    local out = {}
+    for _, bd in pairs(self._build_dirs) do
+        for _, ic in ipairs(invalid) do
+            if bd.project_key == ic.project.key then
+                local tool_key = bd.tool_snapshot and bd.tool_snapshot.key or nil
+                if bd.config_key == ic.name or bd.variant == ic.name
+                        or bd.config_key == build_config_key(ic.name, tool_key) then
+                    out[#out + 1] = bd
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
 --- Get orphaned BuildDirs: build directories with state not referenced by
 --- any ConfigUnit (and therefore not referenced by any profile).
---- Orphaned BuildDirs are domain objects, not raw cache entries.
+--- Orphaned BuildDirs are domain objects, not raw cache entries. A held
+--- BuildDir (`_held_build_dirs`: a configuration that still exists but the
+--- module reported an `error` for) is not orphaned, except for a caller that
+--- removes every build dir (`opts.include_held`: the reset of all, §16.30).
+--- @param opts? { include_held?: boolean }
 --- @return loomworks.OrphanedConfig[]
-function Workspace:get_orphaned_configs()
+function Workspace:get_orphaned_configs(opts)
     -- Build set of BuildDirs that are live (referenced by a ConfigUnit)
     local live_bds = {}
     for _, unit in pairs(self._config_units) do
         if unit._build_dir then live_bds[unit._build_dir] = true end
     end
+    -- An invalid configuration's entry is held, not orphaned (unless the
+    -- caller removes every build dir, `opts.include_held`).
+    local held = {}
+    if not (opts and opts.include_held) then
+        for _, bd in ipairs(self:_held_build_dirs()) do held[bd] = true end
+    end
 
     -- Find BuildDirs not referenced by any ConfigUnit
     local result = {}
     for _, bd in pairs(self._build_dirs) do
-        if not live_bds[bd] and bd:has_state() then
+        if not live_bds[bd] and not held[bd] and bd:has_state() then
             result[#result + 1] = {
                 project_key = bd.project_key,
                 config_key = bd.config_key or bd.variant,
@@ -5380,10 +5449,11 @@ function Workspace:_reset_all_unlocked(on_done, opts)
         end
     end
 
-    -- Phase 2: orphaned build dirs (state, no ConfigUnit). Snapshot their keys
+    -- Phase 2: orphaned build dirs (state, no ConfigUnit; held ones too: a
+    -- reset of all leaves no build dirs, §16.30). Snapshot their keys
     -- before any mutation so the list is stable across the async phases.
     local orphan_keys = {}
-    for _, o in ipairs(self:get_orphaned_configs()) do
+    for _, o in ipairs(self:get_orphaned_configs({ include_held = true })) do
         orphan_keys[#orphan_keys + 1] = o.build_dir_key
     end
 
