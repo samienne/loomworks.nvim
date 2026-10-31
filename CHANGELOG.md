@@ -1004,7 +1004,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `"${workspace_root}/out/${variant}"`). After upgrading, a shell project with
   a template builds in its declared directory: its first build there is a
   fresh configure, and the old `.nvim/build/<project>/...` directory is no
-  longer used. (#PR)
+  longer used. (#355)
 - In the editor's `daemon` mode the first build, launch or other action after
   the editor's environment changed (for example after `:let $FOO=...`) no
   longer fails once with "a stale reference". The workspace daemon still
