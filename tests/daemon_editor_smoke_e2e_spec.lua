@@ -255,7 +255,7 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
     -- `module_config`, so it lands at `module_config.module_config.build_dir`
     -- and shell.resolve_build_dir falls back to `<root>/.nvim/build/app/Debug`.
     -- Enable once fixed.
-    pending("3b. the unit's build dir is the shell project's build_dir template's", function()
+    it("3b. the unit's build dir is the shell project's build_dir template's", function()
         assert.equals(norm(root .. "/out/Debug"), norm(row().units[1].build_dir), vim.inspect(row().units[1]))
     end)
 

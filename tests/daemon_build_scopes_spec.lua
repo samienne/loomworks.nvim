@@ -42,7 +42,8 @@ end
 --- `app` and `lib` (shell projects running the STEP script), the set and
 --- profile `dev` (app=Debug, lib=Debug). `opts.lib_invalid`: lib's build_dir
 --- template names a variable a shell template may not use, so the module
---- reports an `error` for its Debug (§8 `info`).
+--- reports an `error` for its Debug (§8 `info`). `opts.collide`: lib's build directory
+--- is app's (`out/app/Debug`), so lib/Debug is refused (core §1.7).
 local function workspace(opts)
     opts = opts or {}
     local root = vim.fs.normalize(assert(uv.fs_realpath(H.tmp())))
@@ -58,6 +59,7 @@ local function workspace(opts)
                 configurations = { Debug = vim.empty_dict() } } },
             lib = { path = "lib", shell = { build_dir = opts.lib_invalid
                     and "${workspace_root}/out/${LW_DBS_UNDECLARED}/${variant}"
+                    or opts.collide and "${workspace_root}/out/app/${variant}"
                     or "${workspace_root}/out/lib/${variant}",
                 configure_cmd = cmd("configure"), build_cmd = cmd("build"),
                 configurations = { Debug = vim.empty_dict() } } },
@@ -493,5 +495,29 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         assert.equals("configured", cached_state(root, "app"))
         assert.equals(1, #((done.result or done).not_run or {}), vim.inspect(done))
         r.conn:close()
+    end)
+
+    -- Core §1.7 "One build directory per configuration": lib/Debug resolves to
+    -- app/Debug's directory, so it is refused, an invalid ProfileProject
+    -- (§5.4): the profile build and clean run app, then fail naming lib.
+    it("a refused build directory: build and clean run the valid project, then fail naming it (§1.7, §5.4)", function()
+        start({ collide = true })
+        local want = "lib/Debug not run: Build directory out/app/Debug of lib/Debug is already used by app/Debug"
+        local b = call(srv, "build", { profile = { key = "dev" } })
+        local bd = b.finish()
+        assert.equals(1, bd.exit_code, b.lines())
+        assert.truthy(tostring(bd.error):find(want, 1, true), tostring(bd.error))
+        assert.equals("built", cached_state(root, "app"))
+        assert.is_nil(cached_state(root, "lib"))
+        assert.is_nil(b.lines():find("[build] lib", 1, true), b.lines())
+        b.conn:close()
+        local c = call(srv, "clean", { profile = { key = "dev" } })
+        local cd = c.finish()
+        assert.equals(1, cd.exit_code, c.lines())
+        assert.truthy(tostring(cd.error):find(want, 1, true), tostring(cd.error))
+        assert.truthy(c.lines():find("[clean] app", 1, true), c.lines())
+        assert.is_nil(c.lines():find("[clean] lib", 1, true), c.lines())
+        assert.equals(1, #((cd.result or cd).not_run or {}), vim.inspect(cd))
+        c.conn:close()
     end)
 end)

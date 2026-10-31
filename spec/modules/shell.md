@@ -137,6 +137,15 @@ name of an environment variable, is a load error: the configuration is
 invalid (core invariant 11) and resolves no build directory until the
 template is fixed.
 
+The template must resolve to a different directory for each configuration,
+including configurations of other projects. A template without a
+per-configuration part (e.g. `${workspace_root}/out` for a project with Debug
+and Release) makes the configurations collide. Core then keeps the directory
+for one configuration and refuses the others with a load error naming both
+(core §1.7 "One build directory per configuration"). The module never
+reports a shell directory as shared (`resolve_build_dir`'s second return
+value, core §8.4).
+
 ## 7. LSP integration (`lsp_configs`)
 
 Emits a single clangd entry when `shell.compile_commands` is set:

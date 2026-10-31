@@ -464,7 +464,10 @@ local function profile_row(ws, profile, active, opts)
     row.status = profile:status()
     local pps = profile:projects()
     for _, pp in ipairs(pps) do
-        if pp._tool_compat_error then row.compat_error = pp._tool_compat_error; break end
+        -- An invalid ProfileProject (a module error, a tool compat error or a refused build
+        -- directory, spec §1.7) marks the profile ✗ (invariant 11).
+        local reason = pp:invalid_reason()
+        if reason then row.compat_error = reason; break end
     end
     row.artifact_conflict = ws.profile_has_artifact_conflict
         and ws:profile_has_artifact_conflict(profile) and true or false
@@ -534,7 +537,7 @@ local function profile_row(ws, profile, active, opts)
         u.type = pp._project and pp._project.type or nil
         u.configuration = pp:variant_name()
         u.missing = pp:is_configuration_missing() and true or false
-        u.compat_error = pp._tool_compat_error
+        u.compat_error = pp:invalid_reason()
         u.overwritten = unit and unit.is_overwritten and unit:is_overwritten() and true or false
         u.launcher_changed = unit and unit.launcher_changed and unit:launcher_changed(profile) and true or false
         if unit and opts.id then
