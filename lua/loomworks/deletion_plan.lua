@@ -160,7 +160,7 @@ end
 --- external changes, `M.resync`): delete the build dirs of the orphaned
 --- configurations still orphaned now (`M.recheck_orphans`) and drop their
 --- BuildDir objects, then delete the stray dirs still stray now
---- (`M.recheck_stray`).
+--- (`M.recheck_stray`, asked again once running tasks are stopped).
 --- The orphans go through `Workspace:_run_deletion` like every cache-backed
 --- deletion (spec §4.6, §5.7): their entries are marked `unknown` on disk
 --- before any tree is removed, a directory a live configuration still
@@ -223,6 +223,10 @@ function M.orphan_cleanup_unlocked(ws, orphaned_configs, stray_dirs, opts)
     return ws:_run_deletion(items, remove_build_dir_objects, nil, nil, stop and { stop = stop } or nil)
         :next(function(orphans_ok)
             if stop and stop() then valid_stray = {} ; orphans_ok = false end
+            -- Recheck now that running tasks are stopped: a dir that became
+            -- known or held (a configuration turned invalid on a reload)
+            -- while they stopped is no longer a stray and is kept.
+            valid_stray = M.recheck_stray(ws, valid_stray)
             return ws:_delete_build_dirs_async(valid_stray, nil, stop and { stop = stop } or nil)
                 :next(function(results)
                     local ok = orphans_ok ~= false
