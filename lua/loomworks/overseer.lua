@@ -441,8 +441,19 @@ end
 --- The result line of a ProfileProject a profile-level operation did not run
 --- (core §5.4 "Invalid ProfileProjects"; `refusal_line`): the project, its
 --- configuration, the reason and the remedy. The host reports these after the
---- other projects ran (build_run.refused_message) and fails the operation.
+--- other projects ran (`refused_message`) and fails the operation.
 --- @alias loomworks.RefusalLine string
+
+--- The failure of a profile-level operation whose invalid ProfileProjects
+--- were not run (core §5.4 "Invalid ProfileProjects"): their result lines,
+--- one per line. Reported after the other projects ran. (Here, beside
+--- `refusal_line`, so both hosts' callers reach it without a plugin→binary
+--- require; build_run.refused_message is this.)
+--- @param refused loomworks.RefusalLine[]
+--- @return string
+function M.refused_message(refused)
+    return table.concat(refused, "\n")
+end
 
 --- The task definitions of a profile-level operation, grouped by action
 --- (`collect_profile_tasks`).
@@ -710,6 +721,38 @@ local function collect_profile_clean_tasks(profile)
         end
 
         ::continue::
+    end
+
+    -- A refused ProfileProject's build directory is kept (core §5.4: it is
+    -- not cleaned): a core-performed wipe of a valid one's dir is dropped
+    -- when that dir is the refused one's — the same config unit (projects
+    -- sharing one build dir share it) or the same directory identity. (A
+    -- distinct unit merely referencing the dir is kept by the deletion's
+    -- shared-dir check, spec §4.6.)
+    if #refused > 0 and #tasks > 0 then
+        local function ident(p)
+            if type(p) ~= "string" or p == "" then return nil end
+            return ws._build_dir_identity and ws:_build_dir_identity(p) or p
+        end
+        local refused_units, refused_dirs = {}, {}
+        for _, pp in ipairs(pps) do
+            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+            local unit = pp._config_unit
+            if compat and unit then
+                refused_units[unit] = true
+                local id = ident(unit:build_dir())
+                if id then refused_dirs[id] = true end
+            end
+        end
+        local kept = {}
+        for _, td in ipairs(tasks) do
+            local lw = td.loomworks
+            local id = lw and lw.wipe_build_dir and ident(lw.build_dir) or nil
+            if not (lw and lw.wipe_build_dir and (refused_units[lw.unit] or (id and refused_dirs[id]))) then
+                kept[#kept + 1] = td
+            end
+        end
+        tasks = kept
     end
 
     return #tasks > 0 and tasks or nil, #refused > 0 and refused or nil
@@ -1949,8 +1992,11 @@ end
 --- Run clean tasks for all projects in a profile. Returns a Future.
 --- @param profile loomworks.Profile
 --- @param on_complete? fun(success: boolean) legacy callback (deprecated)
---- @param opts? { refused_ok?: boolean } refused_ok: the ProfileProjects not
----   cleaned as invalid (core §5.4) do not reject the Future (Profile:clean)
+--- @param opts? { refused_ok?: boolean } refused_ok: when the ProfileProjects
+---   not cleaned as invalid (core §5.4) are the clean's only failure, the
+---   Future resolves with their result lines (loomworks.RefusalLine[])
+---   instead of rejecting (Profile:clean; the editor's rebuild goes on to
+---   its build). A failed clean task always rejects, naming them too.
 --- @return loomworks.Future
 function M.run_profile_clean(profile, on_complete, opts)
     local future_mod = require("loomworks.future")
@@ -1964,11 +2010,13 @@ function M.run_profile_clean(profile, on_complete, opts)
     -- Invalid ProfileProjects (core §5.4) are not cleaned: the others are,
     -- then the clean fails naming them.
     local tasks, refused = collect_profile_clean_tasks(profile)
-    if opts and opts.refused_ok then refused = nil end
+    if refused and #refused == 0 then refused = nil end
+    local refused_ok = opts and opts.refused_ok
     if not tasks or #tasks == 0 then
         if refused then
             if on_complete then on_complete(false) end
-            return future_mod.rejected(require("loomworks.build_run").refused_message(refused))
+            if refused_ok then return future_mod.resolved(refused) end
+            return future_mod.rejected(M.refused_message(refused))
         end
         if on_complete then on_complete(true) end
         return future_mod.resolved(true)
@@ -2048,8 +2096,13 @@ function M.run_profile_clean(profile, on_complete, opts)
         for _, r in ipairs(results) do
             if not r.ok then all_ok = false; break end
         end
-        if not all_ok then error("clean failed") end
-        if refused then error(require("loomworks.build_run").refused_message(refused), 0) end
+        if not all_ok then
+            error(refused and ("clean failed\n" .. M.refused_message(refused)) or "clean failed", 0)
+        end
+        if refused then
+            if refused_ok then return refused end
+            error(M.refused_message(refused), 0)
+        end
         return true
     end)
 

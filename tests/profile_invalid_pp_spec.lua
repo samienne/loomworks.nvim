@@ -17,6 +17,7 @@ local real_modules = require("loomworks.modules")
 local REASON = "targets OpenHarmony but profile tool is HarmonyOS"
 
 --- Shell projects `app` and `lib`, set + profile `dev` (app=Debug, lib=Debug).
+--- `opts.shared`: both projects use one build directory, `out/shared`.
 --- `opts.clean`: each project has a `cln-<name>` clean command and its build
 --- directory exists (so a clean plans a step for it). `opts.exe`: each command
 --- runs this nvim with the name as its argument (resolvable on PATH, for the
@@ -32,9 +33,11 @@ local function make_ws(opts)
         vim.fn.mkdir(root .. "/" .. d, "p")
         if opts.clean then vim.fn.mkdir(root .. "/out/" .. d .. "/Debug", "p") end
     end
+    if opts.shared then vim.fn.mkdir(root .. "/out/shared", "p") end
     local function proj(name)
         return { path = name, shell = {
-            build_dir = "${workspace_root}/out/" .. name .. "/${variant}",
+            build_dir = opts.shared and "${workspace_root}/out/shared"
+                or ("${workspace_root}/out/" .. name .. "/${variant}"),
             configure_cmd = cmd("cfg-" .. name), build_cmd = cmd("bld-" .. name),
             clean_cmd = opts.clean and cmd("cln-" .. name) or nil,
             configurations = { Debug = vim.empty_dict() },
@@ -489,6 +492,138 @@ describe("profile-level operation with an invalid ProfileProject (§5.4)", funct
             vim.wait(2000, function() return created[1].completed end, 10)
             assert.is_false(created[1].success)
             assert.truthy(created[1].message:find(REASON, 1, true), created[1].message)
+        end)
+
+        it("a failed clean task fails the clean naming the refused one beside it", function()
+            local ws, profile, r = make_ws({ clean = true, exe = true })
+            root = r
+            mark_incompatible(profile, { lib = true })
+            local tasks = fake_overseer()
+            setup_editor(ws)
+            local rejected, resolved
+            profile:clean():next(function() resolved = true end, function(e) rejected = e end)
+            vim.wait(2000, function() return #tasks >= 1 end, 10)
+            tasks[1]:complete("FAILURE")
+            vim.wait(2000, function() return rejected ~= nil or resolved ~= nil end, 10)
+            assert.is_nil(resolved)
+            assert.truthy(tostring(rejected):find("clean failed", 1, true), tostring(rejected))
+            assert.truthy(tostring(rejected):find("lib/Debug not run", 1, true), tostring(rejected))
+        end)
+
+        it("the in-process Build/1.clean names the refused ones as not_run", function()
+            local ws, profile, r = make_ws({ clean = true, exe = true })
+            root = r
+            mark_incompatible(profile, { lib = true })
+            local tasks = fake_overseer()
+            setup_editor(ws)
+            local model = require("loomworks.ui.model_calls")
+            local row = { key = "dev", units = {} }
+            require("loomworks.status_source").bind(row, profile)
+            local got
+            model.call(ws, "Build/1.clean", { profile = row }, function(res) got = res end)
+            vim.wait(2000, function() return #tasks >= 1 end, 10)
+            tasks[1]:complete("SUCCESS")
+            vim.wait(2000, function() return got ~= nil end, 10)
+            assert.equals("refused", got.outcome)
+            assert.truthy(got.message:find("lib/Debug not run", 1, true), got.message)
+            assert.equals(1, #got.not_run)
+            -- A failed clean task is a real failure: no not_run.
+            got = nil
+            model.call(ws, "Build/1.clean", { profile = row }, function(res) got = res end)
+            vim.wait(2000, function() return #tasks >= 2 end, 10)
+            tasks[2]:complete("FAILURE")
+            vim.wait(2000, function() return got ~= nil end, 10)
+            assert.equals("refused", got.outcome)
+            assert.is_nil(got.not_run)
+        end)
+
+        it("the status-page rebuild builds the valid project after the clean, then fails naming the refused one",
+            function()
+            local ws, profile, r = make_ws({ clean = true, exe = true })
+            root = r
+            mark_incompatible(profile, { lib = true })
+            local tasks = fake_overseer()
+            setup_editor(ws)
+            local actions = require("loomworks.ui.actions")
+            local fidget = require("loomworks.fidget")
+            local saved_show, saved_start = actions._show_confirmation, fidget.start_op_action
+            local handle = { reports = {} }
+            function handle:report(m) self.reports[#self.reports + 1] = m.message end
+            function handle:finish() self.finished = true end
+            function handle:cancel() self.failed = true end
+            actions._show_confirmation = function(_, on_confirm) on_confirm() end
+            fidget.start_op_action = function() return handle end
+            local row = { key = "dev", units = {} }
+            require("loomworks.status_source").bind(row, profile)
+            local ok, err = pcall(function()
+                actions.rebuild(row, ws)()
+                -- Complete every task as it starts: the clean, then the build.
+                vim.wait(5000, function()
+                    for _, t in ipairs(tasks) do
+                        if not t:is_complete() then t:complete("SUCCESS") end
+                    end
+                    return handle.finished or handle.failed
+                end, 10)
+            end)
+            actions._show_confirmation, fidget.start_op_action = saved_show, saved_start
+            assert.is_true(ok, tostring(err))
+            local names = {}
+            for _, t in ipairs(tasks) do names[#names + 1] = tostring(t.name) end
+            assert.truthy(#tasks >= 2, vim.inspect(names))
+            for _, n in ipairs(names) do
+                assert.truthy(n:find("app", 1, true), "only the valid project runs: " .. vim.inspect(names))
+            end
+            assert.truthy(table.concat(names, "|"):find("clean", 1, true), vim.inspect(names))
+            assert.is_true(handle.failed == true, vim.inspect(handle))
+            assert.truthy(handle.reports[#handle.reports]:find("lib/Debug not run", 1, true),
+                vim.inspect(handle.reports))
+        end)
+
+        it("shell's default wipe clean keeps a build directory a refused project shares", function()
+            local function run(refuse)
+                local ws, profile, r = make_ws({ shared = true, exe = true })
+                root = r
+                if refuse then mark_incompatible(profile, { lib = true }) end
+                -- Configured once into the shared directory (projects sharing
+                -- a build directory share its config unit).
+                for _, pp in ipairs(profile:projects()) do
+                    pp._config_unit.build_dir_value = r .. "/out/shared"
+                end
+                ws:_sync_build_dir_refs()
+                fake_overseer()
+                setup_editor(ws)
+                local removed = {}
+                local io_dep = ws._core._deps.io
+                io_dep.rm_rf_async = function(path, cb)
+                    removed[#removed + 1] = path
+                    cb(true, nil)
+                end
+                io_dep.rm_rf = function(path) removed[#removed + 1] = path; return true end
+                -- The daemon's / CLI's plan: no wipe of the shared dir either.
+                local steps = with_ws(ws, function() return build_run.plan_clean(profile) end)
+                local planned = {}
+                for _, st in ipairs(steps or {}) do
+                    if st.wipe_build_dir then planned[#planned + 1] = st.build_dir end
+                end
+                local settled, rejected
+                profile:clean():next(function() settled = true end,
+                    function(e) settled = true; rejected = e end)
+                vim.wait(3000, function() return settled end, 10)
+                vim.fn.delete(r, "rf"); root = nil
+                return removed, rejected, planned
+            end
+            -- Control: nothing refused, the shared directory is wiped.
+            local removed, rejected, planned = run(false)
+            assert.is_nil(rejected, tostring(rejected))
+            assert.truthy(#removed >= 1, "the wipe ran")
+            assert.truthy(#planned >= 1, "the plan wipes it")
+            -- lib refused: the valid project's wipe keeps the directory lib uses.
+            removed, rejected, planned = run(true)
+            assert.truthy(tostring(rejected):find("lib/Debug not run", 1, true), tostring(rejected))
+            assert.same({}, planned)
+            for _, p in ipairs(removed) do
+                assert.is_nil(p:find("out/shared", 1, true), "removed " .. p)
+            end
         end)
     end)
 end)

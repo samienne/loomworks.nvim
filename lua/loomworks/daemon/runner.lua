@@ -627,7 +627,12 @@ function M.run(svc, ctx)
         if ended_by_cancel() then return end
         code, signal = build_run.exit_status(code, signal)
         build_run.after_clean_step(ws, step, code)
-        if code ~= 0 then return finish(code, build_run.failure_message(step, code, nil, signal)) end
+        if code ~= 0 then
+            local msg = build_run.failure_message(step, code, nil, signal)
+            -- The invalid ProfileProjects (core §5.4) are named too.
+            if ctx.clean_refused then msg = msg .. "\n" .. build_run.refused_message(ctx.clean_refused) end
+            return finish(code, msg)
+        end
         task:progress(ci / #csteps)
         next_clean()
     end
@@ -639,7 +644,12 @@ function M.run(svc, ctx)
         if ci > #csteps then
             release_all()
             -- Invalid ProfileProjects (core §5.4): failed once the others are cleaned.
-            if ctx.clean_refused then return finish(1, build_run.refused_message(ctx.clean_refused)) end
+            -- Its task result names them as `not_run` (Build/1 clean): the
+            -- editor's rebuild goes on to build the others.
+            if ctx.clean_refused then
+                return finish(1, build_run.refused_message(ctx.clean_refused),
+                    { result = { not_run = ctx.clean_refused } })
+            end
             task:line("out", build_run.ok_line("clean", label))
             return finish(0)
         end

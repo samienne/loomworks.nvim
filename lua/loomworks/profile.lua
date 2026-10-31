@@ -1835,8 +1835,11 @@ end
 --- Clean this profile's configs. Returns a Future.
 --- @param on_done? function legacy callback (deprecated)
 --- @param opts? { refused_ok?: boolean } refused_ok: the ProfileProjects not
----   cleaned as invalid (core §5.4) still fail the clean's Operation, but do
----   not reject the Future (a rebuild goes on to build the others)
+---   cleaned as invalid (core §5.4) still fail the clean's Operation, but when
+---   they are its only failure the Future resolves with their result lines
+---   (loomworks.RefusalLine[]) instead of rejecting (the in-process
+---   `Build/1.clean` reports them as its `not_run`: a rebuild goes on to
+---   build the others)
 --- @return loomworks.Future
 function Profile:clean(on_done, opts)
     local future_mod = require("loomworks.future")
@@ -1906,9 +1909,11 @@ function Profile:_clean_in_process(opts)
 
         return ws:stop_tasks_then(task_ids):next(function()
             return require("loomworks.overseer").run_profile_clean(self, nil, opts)
-        end):next(function()
+        end):next(function(v)
             clear_mark()
-            return true
+            -- (With refused_ok: the result lines of the ProfileProjects not
+            -- cleaned, when they are the clean's only failure.)
+            return v
         end, function(err)
             clear_mark()
             error(err, 0)

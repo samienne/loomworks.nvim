@@ -447,6 +447,28 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
             assert.equals("configured", cached_state(root, "app"))
             assert.equals("built", cached_state(root, "lib"))
             assert.is_true(exists(root .. "/out/lib/Debug"))
+            -- The refusals are the clean's only failure: its task result says
+            -- so (an editor's rebuild goes on to build).
+            local result = done.result or done
+            assert.same({ "lib/Debug not run: lib tool is wrong — change the profile's tool to match the configuration" },
+                result.not_run)
+            r.conn:close()
+        end)
+    end)
+
+    it("a profile clean with nothing else to clean is a task failing with the refused one as not_run", function()
+        start()
+        built()
+        with_lib_refused(function()
+            local r = call(srv, "clean", { profile = { key = "dev" } })
+            r.wait_reply()
+            assert.equals("accepted", r.reply and r.reply.outcome, vim.inspect(r.reply or r.err))
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.equals(1, #((done.result or done).not_run or {}), vim.inspect(done))
+            assert.equals("built", cached_state(root, "lib"))
             r.conn:close()
         end)
     end)

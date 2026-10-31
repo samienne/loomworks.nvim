@@ -258,6 +258,24 @@ describe("ui.model_calls Build/1 (step 5o C2d-1)", function()
             obs.owned[2].h.on_reply({ outcome = "refused", exit_code = 1, message = "a lock is held" })
             assert.equals(2, #obs.owned)
         end)
+
+        it("profile R: a clean failing only on refused ProfileProjects (not_run, core §5.4) builds", function()
+            local prow = { id = "p:1", key = "dev", units = { GONE } }
+            local LINE = "lib/Debug not run: wrong tool — change the profile's tool to match the configuration"
+            actions.rebuild(prow, ws)()
+            obs.owned[1].h.on_reply({ outcome = "accepted", task_id = 7 })
+            obs.owned[1].h.on_done({ exit_code = 1, error = LINE }, nil,
+                { phase = "done", exit_code = 1, error = LINE,
+                    result = { exit_code = 1, error = LINE, not_run = { LINE } } })
+            assert.equals(2, #obs.owned)
+            assert.equals("build", obs.owned[2].method)
+            -- The same failure without not_run (a clean step failed): no build.
+            actions.rebuild(prow, ws)()
+            obs.owned[3].h.on_reply({ outcome = "accepted", task_id = 8 })
+            obs.owned[3].h.on_done({ exit_code = 1, error = "clean failed\n" .. LINE }, nil,
+                { phase = "done", exit_code = 1, result = { exit_code = 1, error = "clean failed\n" .. LINE } })
+            assert.equals(3, #obs.owned)
+        end)
     end)
 
     -- Step 5o C2d-1: a daemon-mode row without an id offers no build,

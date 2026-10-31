@@ -498,6 +498,13 @@ canonical order (a dead holder's lock reclaimed and its state recovered as
 for a build), `cleaning profile: <p>`, one `==> [clean] <name>` line and
 step per project, and `CLEAN OK: <profile>`; a failing step ends the task
 with its failure line and the step's exit code, the later steps not run.
+A profile's ProfileProjects invalid for the clean (spec core §5.4
+"Invalid ProfileProjects") are not cleaned and their directories are kept:
+the others are cleaned (with nothing else to clean, the clean is still
+accepted, a task with no steps), then the task ends with exit code 1, their
+result lines as its error and as the task result's `not_run` — the editor's
+rebuild then goes on to its build. A failing step's error names them too,
+without `not_run`.
 
 A **core-performed wipe** (spec §8.1 `wipe_build_dir`) is the build-directory
 deletion of spec §4.6 and §4.7: the path is validated first (spec §4.6:

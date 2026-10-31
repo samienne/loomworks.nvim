@@ -730,7 +730,7 @@ end
 --- @param refused loomworks.RefusalLine[] `plan`'s third return (or `plan_clean`'s second)
 --- @return string
 function M.refused_message(refused)
-    return table.concat(refused, "\n")
+    return require("loomworks.overseer").refused_message(refused)
 end
 
 --- The gates evaluated immediately before a step runs (after recording the
