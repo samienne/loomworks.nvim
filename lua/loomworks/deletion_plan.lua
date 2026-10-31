@@ -95,7 +95,7 @@ function M.recheck_stray(ws, dirs)
     local function canon(p) return ws:_canonicalize_boundary_path(p) end
     local current = {}
     for _, d in ipairs(ws:find_stray_build_dirs()) do current[canon(d)] = true end
-    local known = ws:_live_build_dir_forms()
+    local known = ws:_stray_known_forms()
     local out = {}
     for _, d in ipairs(dirs) do
         if not current[canon(d)] then
@@ -400,7 +400,7 @@ function M.plan(ws, target)
             if ws:_canonicalize_boundary_path(d) == canon then found = d; break end
         end
         if not found then return refuse("not a stray build directory: " .. dir) end
-        if ws:_overlaps_live_build_dir(found) then
+        if ws:_overlaps_live_build_dir(found, ws:_stray_known_forms()) then
             return refuse("directory holds a live build dir: " .. dir)
         end
         plan.strays = { found }
@@ -413,7 +413,7 @@ function M.plan(ws, target)
             add_dir(o.build_dir)
             plan.state_to_clear = true
         end
-        local known = ws:_live_build_dir_forms()
+        local known = ws:_stray_known_forms()
         for _, d in ipairs(ws:find_stray_build_dirs()) do
             if not ws:_overlaps_live_build_dir(d, known) then
                 plan.strays[#plan.strays + 1] = d

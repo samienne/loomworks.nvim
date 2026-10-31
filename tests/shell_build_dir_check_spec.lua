@@ -228,6 +228,58 @@ describe("shell build_dir template error keeps the configuration's build directo
     assert.equals(1, vim.fn.isdirectory(dir))
   end)
 
+  --- Add a real orphan entry (a removed project's) at `orphan_dir`; a file
+  --- inside the held dir marks its contents.
+  local function add_orphan(ws, orphan_dir)
+    vim.fn.mkdir(orphan_dir, "p")
+    local f = assert(io.open(dir .. "/marker.txt", "w")); f:write("x"); f:close()
+    local cache = ws:_serialize_cache()
+    cache.build_dirs = cache.build_dirs or {}
+    cache.build_dirs["Gone/Old"] = {
+      project_key = "Gone", config_key = "Old", type = "shell", variant = "Old",
+      state = "built", build_dir = orphan_dir,
+    }
+    ws:remerge(nil, cache)
+    assert.equals(1, #ws:get_orphaned_configs(), "test setup: one orphan")
+  end
+
+  local function run_orphans(ws)
+    local done = false
+    local res = commands.execute_deletion(ws, { orphans = true },
+      { yes = true, done = function() done = true end })
+    assert.equals("accepted", res.outcome, vim.inspect(res))
+    assert.is_true(vim.wait(5000, function() return done end, 20), "cleanup never finished")
+  end
+
+  it("keeps the held directory when an orphan entry's directory contains it", function()
+    local ws = load(root)
+    local parent = vim.fn.fnamemodify(dir, ":h")
+    add_orphan(ws, parent)
+    run_orphans(ws)
+    assert.equals(1, vim.fn.isdirectory(dir))
+    assert.equals(1, vim.fn.filereadable(dir .. "/marker.txt"), "the held build's contents survive")
+    assert.same({}, ws:get_orphaned_configs(), "the orphan entry itself is dropped")
+  end)
+
+  it("keeps the held directory when an orphan entry names exactly it", function()
+    local ws = load(root)
+    add_orphan(ws, dir)
+    run_orphans(ws)
+    assert.equals(1, vim.fn.filereadable(dir .. "/marker.txt"), "the held build's contents survive")
+  end)
+
+  it("a reset of all still removes both the orphan's and the held directory", function()
+    local ws = load(root)
+    local parent = vim.fn.fnamemodify(dir, ":h")
+    add_orphan(ws, parent)
+    local result
+    ws:reset_all(nil):next(function(ok) result = ok end)
+    assert.is_true(vim.wait(5000, function() return result ~= nil end, 20), "reset never finished")
+    assert.is_true(result)
+    assert.equals(0, vim.fn.isdirectory(dir))
+    assert.equals(0, vim.fn.isdirectory(parent))
+  end)
+
   it("is adopted again with its state once the template is fixed", function()
     load(root)
     set_user_template(root, VALID_NB)

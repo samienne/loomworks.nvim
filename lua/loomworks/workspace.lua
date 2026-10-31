@@ -3200,6 +3200,24 @@ function Workspace:_stray_known_forms()
     return known
 end
 
+--- Every form (`_path_forms`) of every held build dir (`_held_build_dirs`:
+--- an invalid configuration's entry), except the BuildDirs in `exempt` (the
+--- entries a deletion batch itself removes). A deletion other than the reset
+--- of all treats these like live build dirs (deletion safety).
+--- @param exempt? table<loomworks.BuildDir, true>
+--- @return string[]
+function Workspace:_held_build_dir_forms(exempt)
+    local known, seen = {}, {}
+    for _, bd in ipairs(self:_held_build_dirs()) do
+        if bd.path and bd.path ~= "" and not (exempt and exempt[bd]) then
+            for _, f in ipairs(self:_path_forms(bd.path)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
 --- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
 --- of each side, separator-bounded) — such a dir must never be deleted as
 --- stray or orphaned. "Lies inside" only counts for a live dir that is not a
@@ -4359,7 +4377,7 @@ end
 --- still dropped) when a live unit references the dir under any spelling or
 --- the dir contains / lies inside a live build dir — like the bulk cleanup.
 --- `opts.overlap_exempt` / `opts.report`: as `_run_deletion`'s.
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
 function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
     return self:_delete_orphan_unlocked(self:find_build_dir(build_dir_key), on_done, opts)
 end
@@ -4370,7 +4388,7 @@ end
 --- entry is gone; nothing is removed.
 --- @param bd loomworks.BuildDir|nil
 --- @param on_done? function
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
 --- @return loomworks.Future
 function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
     local future_mod = require("loomworks.future")
@@ -4403,6 +4421,7 @@ function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
                       build_dir = bd.path, build_dir_obj = bd, disposition = "clean" },
                 }, drop, on_done, nil, { stop = stop,
                     overlap_exempt = opts and opts.overlap_exempt or nil,
+                    include_held = opts and opts.include_held or nil,
                     report = opts and opts.report or nil })
             end
         end
@@ -5085,14 +5104,17 @@ end
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
 --- @param reason? "deleting"|"cleaning"
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
+---   `include_held`: the reset of all (§16.30) — held build dirs
+---   (`_held_build_dirs`) get no protection; every other deletion keeps a dir
+---   that is, contains or holds one (kept as `"held"`).
 ---   `stop`: asked before each entry of the removal; a stopped removal is a
 ---   failed one (resolves `false`, units left `unknown`) without an error
 ---   report of its own. `overlap_exempt`: live build dirs an orphaned entry's
 ---   tree may contain or lie inside (every form of each) — only the dirs a
 ---   reset-all has itself just removed (`_reset_all_unlocked`); the shared-
 ---   refs and root checks still apply. `report`: a table that receives
----   `kept` = `{ dir, why = "shared"|"live" }[]`, the dirs left on disk by
+---   `kept` = `{ dir, why = "shared"|"live"|"held" }[]`, the dirs left on disk by
 ---   those checks (their entries still dropped), `removed` = the
 ---   normalized dirs whose removal was confirmed (never a dir refused by
 ---   `_validate_build_dir` or kept by those checks), and `removed_ids` = the
@@ -5180,6 +5202,18 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         -- `unknown` before the removal.
         local to_remove = {}
         local live_forms -- lazily, only when an orphaned entry is present
+        -- Held build dirs (`_held_build_dirs`: an invalid configuration's
+        -- entry) are protected like live ones, except by the reset of all
+        -- (`opts.include_held`) and for the held entries this batch removes.
+        local held_forms -- lazily
+        local function held_build_dir_forms()
+            if opts and opts.include_held then return {} end
+            local in_batch = {}
+            for _, it in ipairs(items) do
+                if it.build_dir_obj then in_batch[it.build_dir_obj] = true end
+            end
+            return ws:_held_build_dir_forms(in_batch)
+        end
         local report = opts and opts.report or nil
         if report then report.kept = {} end
         local function kept(dir, why)
@@ -5215,6 +5249,30 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                                     .. " — still referenced by " .. remaining_refs .. " config(s)",
                                 vim.log.levels.INFO)
                             kept(normalized, "shared")
+                            goto skip_dir
+                        end
+                    end
+                    -- A held build dir: a unit's dir that IS or CONTAINS it
+                    -- (the shared-refs analogue), an orphaned entry's that
+                    -- is, contains or lies inside it (as for a live dir).
+                    held_forms = held_forms or held_build_dir_forms()
+                    if #held_forms > 0 then
+                        local hit
+                        if item.unit then
+                            for _, c in ipairs(ws:_path_forms(normalized)) do
+                                for _, h in ipairs(held_forms) do
+                                    if h == c or h:sub(1, #c + 1) == c .. "/" then hit = true; break end
+                                end
+                                if hit then break end
+                            end
+                        else
+                            hit = ws:_overlaps_live_build_dir(normalized, held_forms)
+                        end
+                        if hit then
+                            ws._core._deps.notify("loomworks: skipped deleting " .. normalized
+                                .. " — it holds the build dir of an invalid configuration",
+                                vim.log.levels.INFO)
+                            kept(normalized, "held")
                             goto skip_dir
                         end
                     end
@@ -5344,7 +5402,7 @@ end
 --- Execute a deletion plan asynchronously. Returns a Future.
 --- @param plan loomworks.DeletionPlan
 --- `opts.report`: as `_run_deletion`'s (`kept`, `removed`).
---- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table, include_held?: boolean }
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
@@ -5412,7 +5470,8 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         if #eff_reset > 0 then
             self:reset_cached_configs(eff_reset)
         end
-    end, on_done, opts.reason, { stop = opts.stop, report = opts.report })
+    end, on_done, opts.reason, { stop = opts.stop, report = opts.report,
+        include_held = opts.include_held })
 
     return f
 end
@@ -5482,7 +5541,8 @@ function Workspace:_reset_all_unlocked(on_done, opts)
         end
         local report = {}
         return ws:delete_orphaned_build_dir(orphan_keys[i], nil,
-                { stop = stop, overlap_exempt = exempt, report = report }):next(function(ok)
+                { stop = stop, overlap_exempt = exempt, report = report,
+                  include_held = true }):next(function(ok)
             if ok ~= true then all_ok = false end
             for _, k in ipairs(report.kept or {}) do
                 if k.why == "live" then all_ok = false end
@@ -5491,7 +5551,8 @@ function Workspace:_reset_all_unlocked(on_done, opts)
         end)
     end
 
-    return self:execute_deletion({ items = items }, { stop = stop, report = phase1 }):next(function(ok)
+    return self:execute_deletion({ items = items },
+            { stop = stop, report = phase1, include_held = true }):next(function(ok)
         if ok ~= true then
             all_ok = false
         else
@@ -5817,7 +5878,7 @@ end
 --- build-directory locks of the directories it removes (spec §19.3); see
 --- `_execute_deletion_unlocked`.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table, include_held?: boolean }
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:execute_deletion(plan, opts, on_done)
@@ -5842,7 +5903,7 @@ end
 --- holding the workspace operation lock and its build-directory lock.
 --- @param build_dir_key string
 --- @param on_done? function
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
 --- @return loomworks.Future
 function Workspace:delete_orphaned_build_dir(build_dir_key, on_done, opts)
     local norm = self._core._deps.normalize
