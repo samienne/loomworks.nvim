@@ -6615,9 +6615,19 @@ function M.cmd_profile_create(root, args)
     first_entry = { tool_key = t.key, tool_data = t.data, tool_label = t.label, tool_mod_type = order[1] }
   end
   local existed = cs:find_profile(first_entry) ~= nil
-  local profile = cs:ensure_profile(first_entry)
-  if not profile then die("failed to create profile for set '" .. cs.name .. "'") end
+  -- A new profile that would take another configuration's build directory
+  -- is refused, writing nothing (spec §1.7): by ensure_profile for its first
+  -- toolchain, here once the others are added.
+  local profile, perr = cs:ensure_profile(first_entry)
+  if not profile then die(perr or ("failed to create profile for set '" .. cs.name .. "'")) end
   for i = 2, #order do profile:add_tool(resolved[order[i]].key) end
+  if not existed and #order > 1 then
+    local collision = ws:_new_build_dir_collision(profile)
+    if collision then
+      ws:_remove_profile(profile)
+      die(collision)
+    end
+  end
   -- Profiles default to `local`: the toolchains they pin were resolved on
   -- this machine, so publishing one by default would push a build environment
   -- into the shared contract that other machines may not have. Only a new

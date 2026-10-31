@@ -2710,8 +2710,12 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
         end
 
         if existing_unit then
-            -- Re-populate stale unit (e.g. after deletion cleared state)
-            if not existing_unit._configuration then
+            -- Re-populate stale unit (e.g. after deletion cleared state) —
+            -- only this project's: another project's unit at this id is its
+            -- configuration's, which keeps the directory (§1.7).
+            local unit_pk = existing_unit._project and existing_unit._project.key
+                or existing_unit._init_project_key
+            if not existing_unit._configuration and (unit_pk == nil or unit_pk == project.key) then
                 existing_unit:_apply({
                     project = project,
                     tool = tool_obj,
@@ -9521,14 +9525,13 @@ end
 --- @param tool_entry? table
 --- @param activate? boolean
 --- @return loomworks.Profile|nil
+--- @return string|nil err the refusal of a new profile that would take
+---   another configuration's build directory (spec §1.7)
 function Workspace:create_profile(config_set, tool_entry, activate)
-    local profile
     if activate then
-        profile = config_set:activate(tool_entry)
-    else
-        profile = config_set:ensure_profile(tool_entry)
+        return config_set:activate(tool_entry)
     end
-    return profile
+    return config_set:ensure_profile(tool_entry)
 end
 
 --- Activate a profile by key. Writes user.json and remerges.

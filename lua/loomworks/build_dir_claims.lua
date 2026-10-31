@@ -66,7 +66,7 @@ function M.resolve(claims, entries, key_of, opts)
         if id then
             local g = groups[id]
             if not g then
-                g = { id = id, abs = c.abs, pairs = {}, pair_list = {} }
+                g = { id = id, pairs = {}, pair_list = {} }
                 groups[id] = g
                 order[#order + 1] = id
             end
@@ -90,26 +90,33 @@ function M.resolve(claims, entries, key_of, opts)
         if #list > 1 then
             table.sort(list, pair_less)
             -- Claimants: one configuration, or a shared tree's configurations
-            -- (same project, same tool, both reported shared) together.
+            -- (same project, same tool, both reported shared) together. A
+            -- configuration joins a shared tree only when every claim it has
+            -- on this directory is shared under that one tool: a plain claim
+            -- (or one under another tool) keeps it its own claimant.
             local parent = {}
             for i = 1, #list do parent[i] = i end
             local function find(i)
                 while parent[i] ~= i do i = parent[i] end
                 return i
             end
+            --- The one tool every claim of `p` is shared under, else nil.
+            local function shared_tool(p)
+                local t
+                for _, c in ipairs(p.claims) do
+                    if not c.shared then return nil end
+                    local k = c.tool_key or "\0"
+                    if t and t ~= k then return nil end
+                    t = k
+                end
+                return t
+            end
             for i = 1, #list do
                 for j = i + 1, #list do
                     local a, b = list[i], list[j]
                     if a.project_key == b.project_key then
-                        local linked = false
-                        for _, ca in ipairs(a.claims) do
-                            for _, cb in ipairs(b.claims) do
-                                if ca.shared and cb.shared and ca.tool_key == cb.tool_key then
-                                    linked = true
-                                end
-                            end
-                        end
-                        if linked then parent[find(j)] = find(i) end
+                        local ta = shared_tool(a)
+                        if ta and ta == shared_tool(b) then parent[find(j)] = find(i) end
                     end
                 end
             end
@@ -158,7 +165,13 @@ function M.resolve(claims, entries, key_of, opts)
                     end
                 end
                 local o = owner.pairs[1]
-                local dir = display(g.abs, opts.root)
+                -- Shown as the owner's spelling (its first claim's, in byte
+                -- order): stable whatever order the claims came in.
+                local abs
+                for _, c in ipairs(o.claims) do
+                    if not abs or c.abs < abs then abs = c.abs end
+                end
+                local dir = display(abs, opts.root)
                 for _, cl in ipairs(claimants) do
                     if cl ~= owner then
                         for _, p in ipairs(cl.pairs) do

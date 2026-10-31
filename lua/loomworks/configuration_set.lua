@@ -328,16 +328,17 @@ function ConfigurationSet:find_profile(tool_entry)
 end
 
 --- Ensure a profile exists for this configuration set + tool, materializing if needed.
---- Does NOT activate the profile.
+--- Does NOT activate the profile. A new profile whose configurations would
+--- take a build directory another configuration keeps is refused (spec §1.7
+--- "Commands refuse to create one"): it is not added, no unit is
+--- materialized, and the refusal is returned.
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
 --- @return loomworks.Profile|nil
+--- @return string|nil err the refusal, when the profile was not made
 function ConfigurationSet:ensure_profile(tool_entry)
     if not self._workspace then
         return nil
     end
-
-    -- Materialize: ensures skeleton ConfigUnits exist
-    self._workspace:_materialize_from_data(self, tool_entry)
 
     -- Find matching profile
     local profile = self:find_profile(tool_entry)
@@ -374,8 +375,19 @@ function ConfigurationSet:ensure_profile(tool_entry)
 
         profile = Profile.new(self._workspace, data)
         self._workspace._profiles[#self._workspace._profiles + 1] = profile
-        self._workspace:_rebuild_profile_projects_for(profile)
+        -- Checked with the profile in the model, before any unit exists.
+        local collision = self._workspace:_new_build_dir_collision(profile)
+        if collision then
+            self._workspace:_remove_profile(profile)
+            return nil, collision
+        end
     end
+
+    -- Materialize: ensures skeleton ConfigUnits exist. After the profile is
+    -- in the model, so a configuration it refuses a build directory (§1.7)
+    -- gets no unit.
+    self._workspace:_materialize_from_data(self, tool_entry)
+    self._workspace:_rebuild_profile_projects_for(profile)
     return profile
 end
 
@@ -383,12 +395,13 @@ end
 --- Materializes the profile if it doesn't exist yet.
 --- @param tool_entry? { tool_key: string, tool_data: table, tool_label: string, tool_mod_type: string }
 --- @return loomworks.Profile|nil
+--- @return string|nil err the refusal, when no profile was made (`ensure_profile`)
 function ConfigurationSet:activate(tool_entry)
-    local profile = self:ensure_profile(tool_entry)
+    local profile, err = self:ensure_profile(tool_entry)
     if profile then
         profile:activate()
     end
-    return profile
+    return profile, err
 end
 
 return ConfigurationSet

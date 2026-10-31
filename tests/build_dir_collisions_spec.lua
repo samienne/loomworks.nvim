@@ -304,5 +304,218 @@ describe("build directory collisions (core §1.7, invariant 22)", function()
             assert.is_falsy(pp_of(ws, "debug")._profile._removed)
             assert.is_nil(pp_of(ws, "debug"):invalid_reason())
         end)
+
+        --- Set `other` (App=Other) maps Debug's directory `out`; only `debug`
+        --- is a profile. Returns ws, saves.
+        local function other_ws()
+            local _, ws, saves = make_core({
+                projects = { App = { names = { "Debug", "Other" } } },
+                sets = { debug = { App = "Debug" }, other = { App = "Other" } },
+                profiles = { "debug" },
+            })
+            return ws, saves
+        end
+        local OTHER = msg("out", "App", "Other", "App", "Debug")
+
+        it("every profile-creating entry point refuses it the same way", function()
+            for _, make in ipairs({
+                function(_, cs) return cs:ensure_profile(nil) end,
+                function(_, cs) return cs:activate(nil) end,
+                function(ws, cs) return ws:create_profile(cs, nil, false) end,
+                function(ws, cs) return ws:create_profile(cs, nil, true) end,
+            }) do
+                local ws, saves = other_ws()
+                local n, np, nu = #saves, #ws._profiles, #ws._config_units
+                local active = ws._active_profile
+                local profile, err = make(ws, cs_of(ws, "other"))
+                assert.is_nil(profile)
+                assert.equals(OTHER, err)
+                assert.equals(n, #saves)
+                assert.equals(np, #ws._profiles)
+                assert.equals(nu, #ws._config_units)
+                assert.equals(active, ws._active_profile)
+                assert.is_nil(pp_of(ws, "debug"):invalid_reason())
+            end
+        end)
+
+        it("a stale owner unit is never re-applied to the refused configuration", function()
+            local ws = other_ws()
+            local u = pp_of(ws, "debug")._config_unit
+            local debug_cfg = u._configuration
+            -- As after a deletion cleared it.
+            u._configuration = nil
+            local r = require("loomworks.model_commands").profile_create(ws, cs_of(ws, "other"), nil, false)
+            assert.equals("refused", r.outcome)
+            assert.is_nil(u._configuration)
+            u._configuration = debug_cfg
+        end)
+    end)
+
+    describe("deleting a profile whose configuration is refused", function()
+        local io_mod = require("loomworks.io")
+        local real_async, real_sync
+        local removed
+        before_each(function()
+            removed = {}
+            real_async, real_sync = io_mod.rm_rf_async, io_mod.rm_rf
+            io_mod.rm_rf_async = function(dir, cb)
+                removed[#removed + 1] = dir
+                if cb then vim.schedule(function() cb(true, nil) end) end
+                return require("loomworks.future").resolved(true)
+            end
+            io_mod.rm_rf = function(dir) removed[#removed + 1] = dir; return true end
+        end)
+        after_each(function() io_mod.rm_rf_async, io_mod.rm_rf = real_async, real_sync end)
+
+        it("removes no directory and no cache entry", function()
+            local _, ws = make_core({ cache = h.make_cache_json({ build_dirs = {
+                ["/root/out"] = { project_key = "App", config_key = "Debug", variant = "Debug",
+                    type = "shell", build_dir = "/root/out", state = "built" },
+            } }) })
+            local rel = pp_of(ws, "release")
+            assert.is_not_nil(rel:build_dir_error())
+            local plan = rel._profile:plan_deletion()
+            for _, item in ipairs(plan.items) do
+                assert.is_nil(item.unit)
+                assert.is_nil(item.build_dir)
+            end
+            local done = false
+            rel._profile:delete(function() done = true end)
+            vim.wait(2000, function() return done end, 10)
+            assert.same({}, removed)
+            local d = pp_of(ws, "debug")._config_unit
+            assert.is_not_nil(d)
+            assert.equals("built", d:state())
+            assert.is_not_nil(ws:_serialize_cache().build_dirs["/root/out"])
+        end)
+    end)
+
+    describe("resolving claims", function()
+        local claims_mod = require("loomworks.build_dir_claims")
+        local function key_of(p) return (p:lower()) end
+        local function claim(pk, cfg, tool, abs, shared)
+            return { project_key = pk, config_name = cfg, tool_key = tool,
+                config_key = cfg .. (tool and ("-" .. tool) or ""), abs = abs, shared = shared == true }
+        end
+
+        it("shows the directory as the owner spells it, whatever the claim order", function()
+            local a = claim("A", "Debug", nil, "/r/Out")
+            local b = claim("B", "Debug", nil, "/r/OUT")
+            local _, r1 = claims_mod.resolve({ a, b }, {}, key_of, { root = "/r" })
+            local _, r2 = claims_mod.resolve({ b, a }, {}, key_of, { root = "/r" })
+            assert.equals(msg("Out", "B", "Debug", "A", "Debug"), r1[1].message)
+            assert.same(r1, r2)
+        end)
+
+        it("a configuration with a plain claim besides its shared one is its own claimant", function()
+            -- Debug is shared under t1 but also plain under t2 on the same
+            -- directory; Release is shared under t1. Not one shared tree.
+            local refused, refusals = claims_mod.resolve({
+                claim("A", "Debug", "t1", "/r/out", true),
+                claim("A", "Debug", "t2", "/r/out", false),
+                claim("A", "Release", "t1", "/r/out", true),
+            }, {}, key_of, { root = "/r" })
+            assert.equals(1, #refusals)
+            assert.equals(msg("out", "A", "Release", "A", "Debug"), refusals[1].message)
+            assert.is_not_nil(next(refused))
+        end)
+
+        it("configurations shared under one tool are one claimant", function()
+            local _, refusals = claims_mod.resolve({
+                claim("A", "Debug", "t1", "/r/out", true),
+                claim("A", "Release", "t1", "/r/out", true),
+            }, {}, key_of, { root = "/r" })
+            assert.same({}, refusals)
+        end)
+    end)
+end)
+
+-- On disk, through `lw profile create` (spec §1.7): two spellings of one
+-- folder are one directory, and the CLI refuses a profile that would collide.
+describe("build directory collisions on disk (core §1.7)", function()
+    _G.LOOMWORKS_CLI_NO_AUTORUN = true
+    local cli = require("loomworks.cli")
+    local uv = vim.uv or vim.loop
+    local is_win = vim.fn.has("win32") == 1
+    local lw = require("loomworks")
+    local orig_core = lw._core
+    after_each(function() lw._core = orig_core end)
+
+    --- Run `fn`, capturing stderr and an exit code (`die` → os.exit).
+    local function run(fn)
+        local rw, rs, rx = io.write, io.stderr, os.exit
+        local err, code = {}, nil
+        io.write = function() end
+        io.stderr = { write = function(_, s) err[#err + 1] = s end }
+        os.exit = function(c) code = c or 0; error({ __exit = true }, 0) end
+        local ok, e = pcall(fn)
+        io.write, io.stderr, os.exit = rw, rs, rx
+        if not ok and not (type(e) == "table" and e.__exit) then error(e, 0) end
+        return code or 0, table.concat(err)
+    end
+
+    --- A real workspace root with `<root>/Long Build Directory`.
+    local function make_root()
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        root = vim.fs.normalize(assert(uv.fs_realpath(root)))
+        vim.fn.mkdir(root .. "/App", "p")
+        vim.fn.mkdir(root .. "/Long Build Directory", "p")
+        return root
+    end
+
+    --- App: Debug in `<root>/Long Build Directory`, Release in `rel_dir`
+    --- (a template); sets Dev (App=Debug), Rel (App=Release); profile Dev.
+    local function setup_ws(root, rel_dir)
+        local f = assert(io.open(root .. "/loomworks.json", "w"))
+        f:write(vim.json.encode({ projects = { App = { shell = {
+            build_dir = "${workspace_root}/Long Build Directory",
+            configure_cmd = { "true" }, build_cmd = { "true" },
+            configurations = { Debug = vim.empty_dict(), Release = { build_dir = rel_dir } },
+        } } } }))
+        f:close()
+        local code, err = run(function()
+            cli.cmd_cset("create", root, { "configuration-set", "create", "Dev", "App=Debug" })
+            cli.cmd_cset("create", root, { "configuration-set", "create", "Rel", "App=Release" })
+            cli.cmd_profile_create(root, { "profile", "create", "Dev" })
+        end)
+        assert.equals(0, code, err)
+    end
+
+    local function user_json(root)
+        local f = io.open(root .. "/.nvim/loomworks.user.json", "rb")
+        if not f then return nil end
+        local s = f:read("*a"); f:close()
+        return s
+    end
+
+    local function refused_create(root, rel_dir)
+        setup_ws(root, rel_dir)
+        local before = user_json(root)
+        local code, err = run(function() cli.cmd_profile_create(root, { "profile", "create", "Rel" }) end)
+        assert.equals(1, code, err)
+        assert.truthy(err:find("of App/Release is already used by App/Debug", 1, true), err)
+        assert.equals(before, user_json(root))
+    end
+
+    it("lw profile create refuses a profile that would collide, writing nothing", function()
+        refused_create(make_root(), "${workspace_root}/Long Build Directory")
+    end)
+
+    it("a different case of the directory collides on Windows", function()
+        if not is_win then pending("case-insensitive paths are Windows-only"); return end
+        refused_create(make_root(), "${workspace_root}/LONG BUILD DIRECTORY")
+    end)
+
+    it("the directory's 8.3 short spelling collides", function()
+        if not is_win then pending("8.3 short names are Windows-only"); return end
+        local root = make_root()
+        local dir = root .. "/Long Build Directory"
+        local out = vim.fn.system({ "cmd", "/c", "for %I in (\"" .. dir:gsub("/", "\\") .. "\") do @echo %~sI" })
+        local short = vim.trim(out or ""):gsub("\\", "/"):match("[^/]+$")
+        if vim.v.shell_error ~= 0 or not short or not short:find("~", 1, true) then
+            pending("8.3 short names unavailable on this volume"); return
+        end
+        refused_create(root, "${workspace_root}/" .. short)
     end)
 end)

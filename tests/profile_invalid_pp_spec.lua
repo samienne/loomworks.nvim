@@ -683,6 +683,18 @@ describe("profile-level operation with an invalid ProfileProject (§5.4)", funct
             assert.truthy(refused[1]:find("LW_PIPP_UNDECLARED", 1, true), refused[1])
         end)
 
+        it("is an invalid ProfileProject with the module's error and its remedy, marking the profile", function()
+            local ws, profile, r = make_ws({ invalid = { lib = true } })
+            root = r
+            local reason, remedy = profile:project("lib"):invalid_reason()
+            assert.truthy(reason and reason:find("LW_PIPP_UNDECLARED", 1, true), tostring(reason))
+            assert.equals("fix the configuration in loomworks.json or user.json", remedy)
+            local view = require("loomworks.view_state").workspace(ws, {})
+            local row
+            for _, p in ipairs(view.profiles) do if p.key == profile.key then row = p end end
+            assert.equals(reason, row.compat_error)
+        end)
+
         it("headless lw clean cleans the valid project, then exits non-zero naming the invalid one", function()
             local ws, _, r = make_ws({ clean = true, invalid = { lib = true } })
             root = r
@@ -774,6 +786,8 @@ describe("profile-level operation with an invalid ProfileProject (§5.4)", funct
             assert.same({ "app:configure", "app:build" }, step_projects(steps))
             assert.equals(1, #refused)
             assert.truthy(refused[1]:find(WANT, 1, true), refused[1])
+            -- No tool remedy: the reason says what to change.
+            assert.is_nil(refused[1]:find("change the profile's tool", 1, true), refused[1])
         end)
 
         it("the test plan leaves it out and names it", function()
