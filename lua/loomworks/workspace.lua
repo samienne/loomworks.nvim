@@ -4327,7 +4327,7 @@ function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
 end
 
 --- Drop the deploy records sourced from a config unit / build dir and remove
---- their destination files (spec ง8.8.5): only files inside the workspace
+--- their destination files (spec ยง8.8.5): only files inside the workspace
 --- are unlinked (`deploy.cleanup_disposition`); one outside is left in place
 --- and reported, an invalid key dropped with a debug log.
 --- @param build_dir_id string config unit id / build dir rel path

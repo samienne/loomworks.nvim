@@ -563,17 +563,17 @@ local function strictly_under(path, prefix)
     return path:sub(1, #prefix + 1) == prefix .. "/"
 end
 
---- Classify a deploy record's destination for cleanup (spec §8.8.5 step 2).
----   "remove"  — absolute, traversal-free, a regular file (lstat), lexically
+--- Classify a deploy record's destination for cleanup (spec Â§8.8.5 step 2).
+---   "remove"  â€” absolute, traversal-free, a regular file (lstat), lexically
 ---               and canonically strictly under the workspace root, every
 ---               directory from the root down a real directory (no link or
 ---               junction on the way): safe to unlink.
----   "outside" — a regular file that is not inside the workspace (or no root
+---   "outside" â€” a regular file that is not inside the workspace (or no root
 ---               is known): never unlinked, left in place and reported.
----   "invalid" — not an absolute, traversal-free path to a regular file
+---   "invalid" â€” not an absolute, traversal-free path to a regular file
 ---               (relative, `.`/`..`, a directory, a link, missing): dropped
 ---               without touching disk.
---- @param dest any record key (from loomworks.cache.json — untrusted)
+--- @param dest any record key (from loomworks.cache.json â€” untrusted)
 --- @param root string|nil absolute workspace root
 --- @param normalize fun(p: string): string comparison normalizer
 --- @return "remove"|"outside"|"invalid"
@@ -613,13 +613,13 @@ function M.cleanup_disposition(dest, root, normalize)
     return "remove"
 end
 
---- Clean deploy records sourced from a given build directory (spec §8.8.5).
+--- Clean deploy records sourced from a given build directory (spec Â§8.8.5).
 --- Every matching record is dropped. Its destination file is unlinked only
 --- when `cleanup_disposition` says "remove"; a destination outside the
 --- workspace is left in place and passed to `opts.on_left`, an invalid key
 --- to `opts.on_invalid`. With no `opts.root`, nothing is unlinked.
 --- @param deploy_records table<string, table> workspace deploy records (mutated)
---- @param build_dir_id string config unit id (spec §8.8.5) to match
+--- @param build_dir_id string config unit id (spec Â§8.8.5) to match
 --- @param opts? { root?: string, normalize?: fun(p: string): string, on_left?: fun(dest: string), on_invalid?: fun(dest: string) }
 --- @return string[] removed_keys list of removed destination keys
 function M.clean_deploy_records(deploy_records, build_dir_id, opts)
