@@ -1206,8 +1206,10 @@ local function resolve_build_dir(project_name, config_name, config_info, workspa
     end
 
     if multi_config then
-        -- Multi-config: one dir per kit (Debug/Release selected at build time via --config)
-        return kit_suffix and (base .. "/" .. sanitize_path_component(kit_suffix)) or base
+        -- Multi-config: one dir per kit (Debug/Release selected at build time
+        -- via --config). It is a shared tree (spec §8.4): every configuration
+        -- of this project is built into it with this kit.
+        return kit_suffix and (base .. "/" .. sanitize_path_component(kit_suffix)) or base, true
     end
     -- Single-config: one dir per config per kit
     local config_part = sanitize_path_component(config_name or "default")
@@ -1225,6 +1227,9 @@ end
 --- @param workspace_root string absolute workspace root path
 --- @param tool_data table|nil module-specific tool data (cmake kit)
 --- @return string absolute build directory path
+--- @return boolean|nil shared true for the multi-config layout cmake lays out
+---   itself (one tree for every configuration, spec §8.4); never for a
+---   preset `binaryDir`
 function M.resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data)
     local generator = (config_info and config_info.generator)
             or (tool_data and tool_data.generator)

@@ -145,11 +145,12 @@ belongs in the matching `spec/` file.
    ConfigUnit.
 
 6. **Cache is keyed by build directory, not profile**: Build state lives in
-   `cache.build_dirs`, keyed by each ConfigUnit's build-directory path; there
-   is no `cache.profiles` dict. A materialized profile's cache footprint is the
-   skeleton `build_dirs` entries of its configured ConfigUnits (§7); the
-   profile's own definition (configuration set + tool) is persisted to
-   user.json, not the cache.
+   `cache.build_dirs`, keyed by each ConfigUnit's id: its build-directory
+   path, plus its `config_key` in a module's shared tree (§1.7 "Unit
+   identity"); there is no `cache.profiles` dict. A materialized profile's
+   cache footprint is the skeleton `build_dirs` entries of its configured
+   ConfigUnits (§7); the profile's own definition (configuration set + tool)
+   is persisted to user.json, not the cache.
 
 7. **Materialization before action**: No build/configure task runs without
    the profile being materialized to cache first.
@@ -205,11 +206,13 @@ belongs in the matching `spec/` file.
     project-side diagnostic.
 
 11. **Cache version check**: On load, the cache version (`_meta.version`) is
-    checked against the expected version. If the version is incompatible,
-    setup refuses to load — the workspace stays nil, the cache file on disk
-    is untouched, and the user is notified. The status page shows the
-    normal "No workspace loaded" state. The user can press `<C-n>` to nuke
-    the cache and build artifacts, which deletes `.nvim/build/` and
+    checked against the expected version. An older version that has a
+    migration (version 8, three-file-model §2.3) is migrated in memory and
+    written as the current version by the next save. If the version is
+    incompatible, setup refuses to load — the workspace stays nil, the cache
+    file on disk is untouched, and the user is notified. The status page
+    shows the normal "No workspace loaded" state. The user can press `<C-n>`
+    to nuke the cache and build artifacts, which deletes `.nvim/build/` and
     `loomworks.cache.json`, then re-runs setup. This is the only way to
     resolve a version mismatch — the system never silently discards or
     overwrites an incompatible cache.

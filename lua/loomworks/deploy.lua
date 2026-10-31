@@ -330,11 +330,10 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
                     local filename = source_rel_path:match("[^/\\]+$")
                     dest_path_final = dest_path_final .. "/" .. filename
                 end
-                local cache_mod = require("loomworks.cache")
                 return {
                     source_path = source_path,
                     dest_path = dest_path_final,
-                    source_build_dir_id = cache_mod.relative_build_dir(build_dir, ws.root),
+                    source_build_dir_id = source_unit.id,
                     source_rel_path = source_rel_path,
                 }
             end
@@ -360,9 +359,9 @@ function M.resolve_deploy_step(dest_template, source_def, ctx)
         dest_path = dest_path .. "/" .. filename
     end
 
-    -- Build dir ID for freshness tracking
-    local cache_mod = require("loomworks.cache")
-    local source_build_dir_id = cache_mod.relative_build_dir(build_dir, ws.root)
+    -- Source unit id for freshness tracking (spec §8.8.3: the id of the
+    -- config unit, which in a shared tree is not just its directory)
+    local source_build_dir_id = source_unit.id
 
     return {
         source_path = source_path,
@@ -532,7 +531,7 @@ end
 --- Clean deploy records sourced from a given build directory.
 --- Deletes destination files and removes records.
 --- @param deploy_records table<string, table> workspace deploy records (mutated)
---- @param build_dir_id string relative build dir path to match
+--- @param build_dir_id string config unit id (spec §8.8.5) to match
 --- @return string[] removed_keys list of removed destination keys
 function M.clean_deploy_records(deploy_records, build_dir_id)
     local removed = {}

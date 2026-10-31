@@ -2,9 +2,9 @@ local cache = require("loomworks.cache")
 
 describe("cache", function()
     describe("default", function()
-        it("returns table with version 8 and empty build_dirs", function()
+        it("returns table with version 9 and empty build_dirs", function()
             local d = cache.default()
-            assert.equals(8, d._meta.version)
+            assert.equals(9, d._meta.version)
             assert.are.same({}, d.build_dirs)
         end)
     end)
@@ -12,7 +12,7 @@ describe("cache", function()
     describe("parse", function()
         it("parses valid cache.json", function()
             local json = vim.json.encode({
-                _meta = { version = 8, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 9, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 build_dirs = {
                     ["build/App/Debug"] = {
                         project_key = "App",
@@ -24,13 +24,38 @@ describe("cache", function()
                 },
             })
             local result = cache.parse(json)
-            assert.equals(8, result._meta.version)
+            assert.equals(9, result._meta.version)
             assert.equals("built", result.build_dirs["build/App/Debug"].state)
+        end)
+
+        it("accepts a version 8 cache and marks it for the shared-tree migration (spec §2.3)", function()
+            local json = vim.json.encode({
+                _meta = { version = 8 },
+                build_dirs = { ["build/App/mc"] = { project_key = "App", config_key = "Debug:mc",
+                    variant = "Debug", state = "built" } },
+            })
+            local result, mismatch = cache.parse(json)
+            assert.is_false(mismatch)
+            assert.equals(9, result._meta.version)
+            assert.are.same({}, result._v8_moved)
+            -- Keys move only when data_model matches a shared-tree unit.
+            assert.equals("built", result.build_dirs["build/App/mc"].state)
+        end)
+
+        it("does not mark a version 9 cache for migration", function()
+            local result = cache.parse(vim.json.encode({ _meta = { version = 9 }, build_dirs = {} }))
+            assert.is_nil(result._v8_moved)
+        end)
+
+        it("refuses a version 10 cache as a newer schema", function()
+            local _, mismatch, newer = cache.parse(vim.json.encode({ _meta = { version = 10 }, build_dirs = {} }))
+            assert.is_true(mismatch)
+            assert.is_not_nil(newer)
         end)
 
         it("returns no version mismatch on valid parse", function()
             local json = vim.json.encode({
-                _meta = { version = 8, loomworks_hash = "abc", cached_at = "2025-01-01" },
+                _meta = { version = 9, loomworks_hash = "abc", cached_at = "2025-01-01" },
                 build_dirs = {},
             })
             local _, mismatch = cache.parse(json)
@@ -39,7 +64,7 @@ describe("cache", function()
 
         it("returns defaults on invalid JSON without version mismatch", function()
             local result, mismatch = cache.parse("broken {{{")
-            assert.equals(8, result._meta.version)
+            assert.equals(9, result._meta.version)
             assert.are.same({}, result.build_dirs)
             assert.is_false(mismatch)
         end)
@@ -75,7 +100,7 @@ describe("cache", function()
 
         it("ensures build_dirs field exists", function()
             local json = vim.json.encode({
-                _meta = { version = 8 },
+                _meta = { version = 9 },
             })
             local result = cache.parse(json)
             assert.are.same({}, result.build_dirs)
@@ -96,7 +121,7 @@ describe("cache", function()
             })
             local result, mismatch = cache.parse(json)
             assert.is_false(mismatch, "v7 cache should migrate without triggering mismatch")
-            assert.equals(8, result._meta.version)
+            assert.equals(9, result._meta.version)
             local entry = result.build_dirs["build/App/Debug"]
             assert.is_nil(entry.cmake, "old cmake field should be cleared")
             assert.is_not_nil(entry.module_info)
@@ -117,7 +142,7 @@ describe("cache", function()
                 },
             })
             local result = cache.parse(json)
-            assert.equals(8, result._meta.version)
+            assert.equals(9, result._meta.version)
             assert.is_nil(result.build_dirs["build/App/Debug"].module_info)
         end)
 
