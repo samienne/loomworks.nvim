@@ -105,9 +105,11 @@ function M.units(profile, sel)
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
         local project = unit and unit._project
-        local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
-        if compat then
-            refused[#refused + 1] = require("loomworks.overseer").refusal_line(pp, compat)
+        -- (A configuration the module reported an `error` for, §8 `info`,
+        -- or a tool compat error, §8.4: refused, §5.4.)
+        local refusal = require("loomworks.overseer").pp_refusal(pp)
+        if refusal then
+            refused[#refused + 1] = refusal
         elseif unit and project then
             local u = { unit = unit, project = project, pp = pp, entries = {} }
             if sel ~= "saved" then

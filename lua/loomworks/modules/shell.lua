@@ -98,20 +98,58 @@ local function resolve_env(project, ctx)
     return next(env) and env or nil
 end
 
+--- The only names a `build_dir` template may use (shell spec §6). No
+--- environment variable, no project variable.
+local BUILD_DIR_VARS = { workspace_root = true, project_path = true, variant = true }
+
+--- Why a `build_dir` template cannot be used (shell spec §6): the names it
+--- uses besides `BUILD_DIR_VARS`, or nil when it uses none.
+--- @param template any
+--- @return string|nil
+local function build_dir_error(template)
+    if type(template) ~= "string" then return nil end
+    local bad, seen = {}, {}
+    for var in template:gmatch("%${([^}]+)}") do
+        if not BUILD_DIR_VARS[var] and not seen[var] then
+            seen[var] = true
+            bad[#bad + 1] = var
+        end
+    end
+    if #bad == 0 then return nil end
+    table.sort(bad)
+    return "build_dir template uses ${" .. table.concat(bad, "}, ${")
+        .. "}: only ${workspace_root}, ${project_path} and ${variant} are available"
+end
+
+--- Expand a validated `build_dir` template with exactly the three names of
+--- shell spec §6 (`project_path` is the project KEY). Never falls back to
+--- the environment.
+--- @param template string
+--- @param workspace_root string
+--- @param project_key string
+--- @param variant string
+--- @return string
+local function expand_build_dir(template, workspace_root, project_key, variant)
+    local vars = { workspace_root = workspace_root, project_path = project_key, variant = variant }
+    return (template:gsub("%${([^}]+)}", function(var) return vars[var] end))
+end
+
 --- Resolve the build_dir for `tasks()` / `clean_tasks()`.
 --- Prefers core's cached value (which came from resolve_build_dir).
---- Falls back to live expansion of the user-declared build_dir
---- template, then to the standard .nvim/build path so the module is
---- never crippled.
+--- Falls back to expanding the user-declared build_dir template, then to
+--- the standard .nvim/build path. A template that names anything else
+--- (shell spec §6) is never expanded: core refuses every operation on such
+--- a configuration, so reaching here with one is an error.
 --- @param project loomworks.ModuleContext
 --- @param active_config string
---- @param ctx table
 --- @return string
-local function resolve_build_dir_for_tasks(project, active_config, ctx)
+local function resolve_build_dir_for_tasks(project, active_config)
     if project.cached_build_dir then return project.cached_build_dir end
     local tc = shell_block(project)
     if type(tc.build_dir) == "string" and tc.build_dir ~= "" then
-        return expand.expand_string(tc.build_dir, ctx)
+        local err = build_dir_error(tc.build_dir)
+        if err then error(project.name .. "/" .. tostring(active_config) .. ": " .. err, 0) end
+        return expand_build_dir(tc.build_dir, project.workspace_root, project.name, active_config)
     end
     return project.workspace_root .. "/.nvim/build/" .. project.name .. "/" .. active_config
 end
@@ -202,6 +240,11 @@ function M.info(path, config)
             cfg._derived = cfg._derived or {}
             cfg._derived.build_dir = true
         end
+        -- A template naming anything but the three build_dir names (shell
+        -- spec §6) makes the configuration invalid: reported to core as the
+        -- configuration info's `error` (core §8 `info`), which then never
+        -- asks for its build directory. nil clears a stale one.
+        cfg.error = build_dir_error(cfg.build_dir)
     end
 
     return { configurations = configurations }
@@ -267,12 +310,10 @@ end
 --- @return string
 function M.resolve_build_dir(project_name, config_name, config_info, workspace_root, _tool_data)
     local template = config_info and config_info.build_dir
+    -- (Core never calls this for a configuration whose template `info`
+    -- reported as an `error`; such a template expands no name here either.)
     if type(template) == "string" and template ~= "" then
-        return expand.expand_string(template, {
-            workspace_root = workspace_root,
-            project_path = project_name,
-            variant = config_name or "default",
-        })
+        return expand_build_dir(template, workspace_root, project_name, config_name or "default")
     end
     return workspace_root .. "/.nvim/build/" .. project_name
         .. "/" .. (config_name or "default")
@@ -287,7 +328,7 @@ function M.tasks(project, active_config)
     local configuration_key = project.configuration_key or active_config
 
     local ctx = build_ctx(project, active_config)
-    local build_dir = resolve_build_dir_for_tasks(project, active_config, ctx)
+    local build_dir = resolve_build_dir_for_tasks(project, active_config)
     ctx.build_dir = build_dir
 
     local shell = shell_block(project)
@@ -344,7 +385,7 @@ function M.clean_tasks(project, active_config)
     local configuration_key = project.configuration_key or active_config
 
     local ctx = build_ctx(project, active_config)
-    local build_dir = resolve_build_dir_for_tasks(project, active_config, ctx)
+    local build_dir = resolve_build_dir_for_tasks(project, active_config)
     ctx.build_dir = build_dir
 
     local shell = shell_block(project)

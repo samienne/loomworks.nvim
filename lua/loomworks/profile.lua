@@ -1869,16 +1869,18 @@ function Profile:_clean_in_process(opts)
     local items = {}
     local units = {}
     local target_states = {}
-    -- A ProfileProject with a tool compat error is not cleaned (core §5.4
-    -- "Invalid ProfileProjects", §8.4): the operation counts it finished and
-    -- failed, and the clean fails once the others are cleaned.
+    -- A ProfileProject with a tool compat error (§8.4) or whose
+    -- configuration the module reported an `error` for (§8 `info`: no
+    -- ConfigUnit) is not cleaned (core §5.4 "Invalid ProfileProjects"): the
+    -- operation counts it finished and failed, and the clean fails once the
+    -- others are cleaned.
     local refused = {}
     local overseer = require("loomworks.overseer")
     for _, pp in ipairs(pps) do
-        local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
-        if compat then
-            refused[#refused + 1] = overseer.refusal_line(pp, compat)
-        else
+        local refusal = overseer.pp_refusal(pp)
+        if refusal then
+            refused[#refused + 1] = refusal
+        elseif pp._config_unit then
             items[#items + 1] = { unit = pp._config_unit }
             units[#units + 1] = pp._config_unit
             target_states[pp._config_unit] = "configured"

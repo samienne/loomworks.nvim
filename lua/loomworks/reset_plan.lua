@@ -121,7 +121,9 @@ function M.plan(ws, scope)
             if unit.state_value ~= nil then state_to_clear = true end
             if bd then units[#units + 1] = unit end
         end
-        for _, o in ipairs(ws:get_orphaned_configs()) do
+        -- (Held entries too — an invalid configuration's: a reset of all
+        -- leaves no build dirs, §16.30; Workspace:reset_all removes them.)
+        for _, o in ipairs(ws:get_orphaned_configs({ include_held = true })) do
             local p = o.build_dir_obj and o.build_dir_obj.path or nil
             add_lock(p)
             add_removal(p, nil, o.build_dir_obj)

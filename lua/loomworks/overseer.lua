@@ -429,13 +429,32 @@ end
 --- (core §5.4 "Invalid ProfileProjects"): `<project>/<configuration> not run:
 --- <reason> — <remedy>`.
 --- @param pp loomworks.ProfileProject
---- @param reason string the tool compat error
+--- @param reason string the tool compat error, or the configuration's
+---   module-reported error (§8 `info`)
+--- @param remedy? string defaults to the tool compat error's remedy
 --- @return string
-function M.refusal_line(pp, reason)
+function M.refusal_line(pp, reason, remedy)
     local pk = pp._project and pp._project.key or "?"
     local cn = pp.variant_name and pp:variant_name() or "?"
     return pk .. "/" .. tostring(cn) .. " not run: " .. reason
-        .. " — change the profile's tool to match the configuration"
+        .. " — " .. (remedy or "change the profile's tool to match the configuration")
+end
+
+--- The result line of a ProfileProject a profile-level operation refuses
+--- (core §5.4 "Invalid ProfileProjects"), nil when it is valid for it: a
+--- configuration the module reported an `error` for (§8 `info`: no build
+--- directory, no ConfigUnit) or a tool compat error (§8.4).
+--- @param pp loomworks.ProfileProject
+--- @return loomworks.RefusalLine|nil
+function M.pp_refusal(pp)
+    local cfg = pp._configuration
+    local cfg_err = cfg and cfg.module_error and cfg:module_error() or nil
+    if cfg_err then
+        return M.refusal_line(pp, cfg_err, "fix the configuration in loomworks.json or user.json")
+    end
+    local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+    if compat then return M.refusal_line(pp, compat) end
+    return nil
 end
 
 --- The result line of a ProfileProject a profile-level operation did not run
@@ -474,7 +493,8 @@ end
 ---   build_targets_for (the resolved `--target` operands) replaces
 ---   build_targets per project and skips every project it does not name
 --- A ProfileProject invalid for the action (a tool compat error, §8.4
---- `validate_config_tool`) is not run (core §5.4 "Invalid ProfileProjects"):
+--- `validate_config_tool`; a configuration the module reported an `error`
+--- for, §8 `info`) is not run (core §5.4 "Invalid ProfileProjects"):
 --- its tasks are left out and `refused` names it with its reason, so the
 --- caller fails the operation after the other projects ran.
 --- @return loomworks.ProfileTaskDefs|nil task_defs_by_action
@@ -500,9 +520,12 @@ local function collect_profile_tasks(profile, opts)
         if opts.build_targets_for and not opts.build_targets_for[project] then goto continue end
 
         do
-            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
-            if compat then
-                by_action.refused[#by_action.refused + 1] = M.refusal_line(pp, compat)
+            -- An invalid ProfileProject (a configuration the module reported
+            -- an `error` for, §8 `info`; a tool compat error, §8.4) is
+            -- refused (§5.4).
+            local refusal = M.pp_refusal(pp)
+            if refusal then
+                by_action.refused[#by_action.refused + 1] = refusal
                 goto continue
             end
         end
@@ -642,7 +665,8 @@ end
 
 --- Collect clean task definitions for all projects in a profile.
 --- A ProfileProject with a tool compat error (§8.4 `validate_config_tool`:
---- clean is blocked on it) is not cleaned (core §5.4 "Invalid
+--- clean is blocked on it) or whose configuration the module reported an
+--- `error` for (§8 `info`) is not cleaned (core §5.4 "Invalid
 --- ProfileProjects"): it is left out and named in `refused`.
 --- @param profile loomworks.Profile
 --- @return table[]|nil clean_tasks
@@ -664,9 +688,12 @@ local function collect_profile_clean_tasks(profile)
         if not project then goto continue end
 
         do
-            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
-            if compat then
-                refused[#refused + 1] = M.refusal_line(pp, compat)
+            -- A configuration the module reported an `error` for (§8
+            -- `info`: no build directory resolves for it) or a tool compat
+            -- error (§8.4) is refused, as for a build (§5.4).
+            local refusal = M.pp_refusal(pp)
+            if refusal then
+                refused[#refused + 1] = refusal
                 goto continue
             end
         end
@@ -736,9 +763,8 @@ local function collect_profile_clean_tasks(profile)
         end
         local refused_units, refused_dirs = {}, {}
         for _, pp in ipairs(pps) do
-            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
             local unit = pp._config_unit
-            if compat and unit then
+            if unit and M.pp_refusal(pp) then
                 refused_units[unit] = true
                 local id = ident(unit:build_dir())
                 if id then refused_dirs[id] = true end

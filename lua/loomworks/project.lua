@@ -198,6 +198,21 @@ function Project:_sync_configurations()
     for _, cfg in ipairs(self._configurations) do
         cfg:_resolve_inherits()
     end
+
+    -- A configuration the module reported an `error` for (spec §8 `info`)
+    -- is a load error, once per load. The configuration's structural
+    -- diagnostic (`Configuration:diagnostic`, error severity) shows it in
+    -- the views, so the load note is left out there.
+    for _, cfg in ipairs(self._configurations) do
+        local err = cfg:module_error()
+        if err then
+            require("loomworks.notify").once(
+                "config-error|" .. self.key .. "|" .. cfg.name .. "|" .. err,
+                "loomworks: configuration '" .. cfg.name .. "' of project '"
+                    .. self.key .. "' is invalid: " .. err,
+                vim.log.levels.ERROR, { in_diagnostics = true })
+        end
+    end
 end
 
 --- Sync the LaunchConfiguration registry with the merged `launch` dict
@@ -855,9 +870,18 @@ function Project:rename_configuration(old_name, new_name, config_data)
     for _, unit in pairs(ws._config_units) do
         if unit._configuration == target_cfg then
             -- Skip running/deleting units — task is using the old build_dir.
-            if unit:is_running() or unit:is_deleting() then
+            local busy = unit:is_running() or unit:is_deleting()
+            local new_rel, new_abs, new_shared
+            if not busy then
+                new_rel, new_abs, new_shared = ws:_compute_build_dir(self, new_name, unit._tool_data)
+            end
+            if busy then
                 -- noop: Configuration ref auto-sees new name
-            elseif select(3, ws:_compute_build_dir(self, new_name, unit._tool_data)) then
+            elseif not new_rel then
+                -- noop: no build directory resolves for the new name (a
+                -- module `error`, §8 `info`) — the unit keeps its id and
+                -- directory rather than taking a nil one.
+            elseif new_shared then
                 -- Shared tree (spec §4.8 step 2): the unit stays in its
                 -- directory with its state; its id and cache entry move to
                 -- `<dir>#<new config_key>`, and every reference follows.
@@ -865,8 +889,9 @@ function Project:rename_configuration(old_name, new_name, config_data)
                 local cache_mod = require("loomworks.cache")
                 unit._variant = new_name
                 unit._config_key = merge_mod.build_config_key(new_name, unit._tool_key)
-                local dir = unit.build_dir_value
-                    or select(2, ws:_compute_build_dir(self, new_name, unit._tool_data))
+                local dir = unit.build_dir_value or new_abs
+                -- (Non-nil: the branch above refused a name resolving none.)
+                assert(dir, "rename: no build directory for " .. tostring(new_name))
                 local new_id = cache_mod.unit_id(
                     cache_mod.relative_build_dir(dir, ws.root), true, unit._config_key)
                 unit.id = new_id
@@ -902,8 +927,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
                 unit._variant = new_name
                 unit._config_key = merge_mod.build_config_key(new_name, unit._tool_key)
 
-                -- Compute new build_dir path from new variant name
-                local new_rel, new_abs = ws:_compute_build_dir(self, new_name, unit._tool_data)
+                -- The new build_dir path from the new variant name (above)
                 unit.id = new_rel
                 unit.build_dir_value = new_abs
 

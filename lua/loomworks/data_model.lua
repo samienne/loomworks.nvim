@@ -601,7 +601,10 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 local build_dir_id = nil
                 local abs_path = nil
                 local matched_entry = nil
-                if project then
+                -- A configuration the module reported an `error` for (spec
+                -- §8 `info`) has no build directory and no ConfigUnit, not
+                -- even one adopted from the cache.
+                if project and not (configuration and configuration:module_error()) then
                     -- Pass the effective tools list when we have one
                     -- (multi-tool path); otherwise fall back to the
                     -- legacy single-tool_data call.

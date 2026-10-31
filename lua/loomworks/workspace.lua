@@ -784,9 +784,10 @@ end
 --- @param project loomworks.Project
 --- @param variant string configuration variant name
 --- @param tool_data_or_list? table single tool_data, or list of `{key, data}` entries
---- @return string relative build_dir path (the ConfigUnit id outside a
----   shared tree; see `_compute_unit_id`)
---- @return string absolute build_dir path
+--- @return string|nil relative build_dir path (the ConfigUnit id outside a
+---   shared tree; see `_compute_unit_id`); nil for a configuration the
+---   module reported an `error` for (§8 `info`)
+--- @return string|nil absolute build_dir path (nil likewise)
 --- @return boolean shared the module reported the directory as a shared tree
 ---   (spec §8.4 `resolve_build_dir` second return value)
 function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
@@ -817,12 +818,17 @@ function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
         end
     end
 
+    -- A configuration the module reported an `error` for (spec §8 `info`)
+    -- resolves no build directory: `resolve_build_dir` is not called.
+    local configuration = project:get_configuration(variant)
+    if configuration and configuration:module_error() then return nil, nil end
+
     local mod = project._module and project._module.impl or nil
     local abs_path
     local shared = false
     if mod and mod.resolve_build_dir then
         local config_info = nil
-        local cfg = project:get_configuration(variant)
+        local cfg = configuration
         if cfg and cfg.module_config then
             config_info = cfg.module_config
         end
@@ -858,6 +864,9 @@ end
 --- @return string rel_key relative build_dir path
 function Workspace:_compute_unit_id(project, variant, tool_data_or_list, tool_key)
     local rel_key, abs_path, shared = self:_compute_build_dir(project, variant, tool_data_or_list)
+    -- No build dir (a configuration the module reported an `error` for, §8
+    -- `info`): no unit id either.
+    if not rel_key then return nil, nil, false, nil end
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
     return cache_mod.unit_id(rel_key, shared, config_key), abs_path, shared, rel_key
 end
@@ -868,8 +877,10 @@ end
 --- @param project loomworks.Project
 --- @param configuration loomworks.Configuration configuration domain object
 --- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
---- @return loomworks.ConfigUnit
+--- @return loomworks.ConfigUnit|nil nil for a configuration the module
+---   reported an `error` for (spec §8 `info`): no ConfigUnit exists for it
 function Workspace:ensure_config_unit(project, configuration, tool)
+    if configuration:module_error() then return nil end
     local existing = self:find_config_unit(project, configuration, tool)
     if existing then return existing end
 
@@ -2590,6 +2601,9 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
         -- Compute the unit id (spec §1.7 "Unit identity")
         local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
+        -- (None for a configuration the module reported an `error` for, §8
+        -- `info`: no ConfigUnit exists for it.)
+        if not rel_key then goto continue end
 
         -- Ensure ConfigUnit exists (or reuse stale one from prior deletion)
         local existing_unit = nil
@@ -2626,6 +2640,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
             self._config_units[#self._config_units + 1] = unit
             changed = true
         end
+        ::continue::
     end
     if profile then
         self:_rebuild_profile_projects_for(profile)
@@ -3165,6 +3180,44 @@ function Workspace:_live_build_dir_forms(exempt)
     return known
 end
 
+--- The directories a stray scan treats as known (`find_stray_build_dirs`):
+--- every form of each live build dir (`_live_build_dir_forms`) and of each
+--- held one (`_held_build_dirs`: an invalid configuration's entry), so the
+--- directory of a configuration that is only temporarily invalid is never a
+--- stray either.
+--- @return string[]
+function Workspace:_stray_known_forms()
+    local known = self:_live_build_dir_forms()
+    local seen = {}
+    for _, f in ipairs(known) do seen[f] = true end
+    for _, bd in ipairs(self:_held_build_dirs()) do
+        if bd.path and bd.path ~= "" then
+            for _, f in ipairs(self:_path_forms(bd.path)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
+--- Every form (`_path_forms`) of every held build dir (`_held_build_dirs`:
+--- an invalid configuration's entry), except the BuildDirs in `exempt` (the
+--- entries a deletion batch itself removes). A deletion other than the reset
+--- of all treats these like live build dirs (deletion safety).
+--- @param exempt? table<loomworks.BuildDir, true>
+--- @return string[]
+function Workspace:_held_build_dir_forms(exempt)
+    local known, seen = {}, {}
+    for _, bd in ipairs(self:_held_build_dirs()) do
+        if bd.path and bd.path ~= "" and not (exempt and exempt[bd]) then
+            for _, f in ipairs(self:_path_forms(bd.path)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
 --- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
 --- of each side, separator-bounded) — such a dir must never be deleted as
 --- stray or orphaned. "Lies inside" only counts for a live dir that is not a
@@ -3218,8 +3271,9 @@ function Workspace:find_stray_build_dirs(opts)
     local normalize = self._core._deps.normalize
     local on_list = opts and opts.on_list
 
-    -- Every form of every build dir referenced by a ConfigUnit object
-    local known_dirs = opts and opts.known or self:_live_build_dir_forms()
+    -- Every form of every build dir referenced by a ConfigUnit object, and
+    -- of every held one (an invalid configuration's, `_held_build_dirs`)
+    local known_dirs = opts and opts.known or self:_stray_known_forms()
     local function forms(dir) return self:_path_forms(dir) end
 
     -- Build a set for exact match and a list for prefix checks
@@ -3313,7 +3367,7 @@ end
 --- when its answer can differ. Deletion safety never reads this cache.
 --- @return string[]
 function Workspace:_view_stray_build_dirs()
-    local known = self:_live_build_dir_forms()
+    local known = self:_stray_known_forms()
     local sorted = vim.list_slice(known)
     table.sort(sorted)
     local sig = table.concat(sorted, "\0")
@@ -3336,21 +3390,69 @@ function Workspace:_view_stray_build_dirs()
     return vim.list_slice(stray)
 end
 
+--- The BuildDirs of configurations that still exist but are invalid: the
+--- module reported an `error` for them (§8 `info`), so no ConfigUnit adopts
+--- their cache entry. Such an entry is held for the configuration — not an
+--- orphan, its directory not a stray — until the configuration is valid
+--- again and adopts it (deletion safety: never offer to delete the build
+--- directory of a configuration that is only temporarily invalid).
+--- Matched on the stable (project_key, config_key) identity
+--- (`find_cache_entry_for`).
+--- @return loomworks.BuildDir[]
+function Workspace:_held_build_dirs()
+    local invalid = {}
+    for _, project in pairs(self._projects or {}) do
+        if not project._removed then
+            for _, cfg in pairs(project._configurations or {}) do
+                if not cfg._removed and cfg.module_error and cfg:module_error() then
+                    invalid[#invalid + 1] = { project = project, name = cfg.name }
+                end
+            end
+        end
+    end
+    if #invalid == 0 then return {} end
+    local build_config_key = self._core._deps.merge.build_config_key
+    local out = {}
+    for _, bd in pairs(self._build_dirs) do
+        for _, ic in ipairs(invalid) do
+            if bd.project_key == ic.project.key then
+                local tool_key = bd.tool_snapshot and bd.tool_snapshot.key or nil
+                if bd.config_key == ic.name or bd.variant == ic.name
+                        or bd.config_key == build_config_key(ic.name, tool_key) then
+                    out[#out + 1] = bd
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
 --- Get orphaned BuildDirs: build directories with state not referenced by
 --- any ConfigUnit (and therefore not referenced by any profile).
---- Orphaned BuildDirs are domain objects, not raw cache entries.
+--- Orphaned BuildDirs are domain objects, not raw cache entries. A held
+--- BuildDir (`_held_build_dirs`: a configuration that still exists but the
+--- module reported an `error` for) is not orphaned, except for a caller that
+--- removes every build dir (`opts.include_held`: the reset of all, §16.30).
+--- @param opts? { include_held?: boolean }
 --- @return loomworks.OrphanedConfig[]
-function Workspace:get_orphaned_configs()
+function Workspace:get_orphaned_configs(opts)
     -- Build set of BuildDirs that are live (referenced by a ConfigUnit)
     local live_bds = {}
     for _, unit in pairs(self._config_units) do
         if unit._build_dir then live_bds[unit._build_dir] = true end
     end
+    -- An invalid configuration's entry is held, not orphaned (unless the
+    -- caller removes every build dir, `opts.include_held`).
+    local held = {}
+    if not (opts and opts.include_held) then
+        for _, bd in ipairs(self:_held_build_dirs()) do held[bd] = true end
+    end
 
     -- Find BuildDirs not referenced by any ConfigUnit
     local result = {}
     for _, bd in pairs(self._build_dirs) do
-        if not live_bds[bd] and bd:has_state() then
+        if not live_bds[bd] and not held[bd] and bd:has_state() then
             result[#result + 1] = {
                 project_key = bd.project_key,
                 config_key = bd.config_key or bd.variant,
@@ -3743,6 +3845,9 @@ function Workspace:record_task_result(result)
                 dir_rel = cache_mod.relative_build_dir(result.build_dir, self.root)
                 dir_abs = result.build_dir
             end
+            -- No build dir (a configuration the module reported an `error`
+            -- for, §8 `info`): no ConfigUnit to record against.
+            if not dir_rel then return end
             rel_key = cache_mod.unit_id(dir_rel, shared, result.configuration_key)
         elseif result.build_dir then
             rel_key = cache_mod.relative_build_dir(result.build_dir, self.root)
@@ -4272,7 +4377,7 @@ end
 --- still dropped) when a live unit references the dir under any spelling or
 --- the dir contains / lies inside a live build dir — like the bulk cleanup.
 --- `opts.overlap_exempt` / `opts.report`: as `_run_deletion`'s.
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
 function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
     return self:_delete_orphan_unlocked(self:find_build_dir(build_dir_key), on_done, opts)
 end
@@ -4283,7 +4388,7 @@ end
 --- entry is gone; nothing is removed.
 --- @param bd loomworks.BuildDir|nil
 --- @param on_done? function
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
 --- @return loomworks.Future
 function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
     local future_mod = require("loomworks.future")
@@ -4316,6 +4421,7 @@ function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
                       build_dir = bd.path, build_dir_obj = bd, disposition = "clean" },
                 }, drop, on_done, nil, { stop = stop,
                     overlap_exempt = opts and opts.overlap_exempt or nil,
+                    include_held = opts and opts.include_held or nil,
                     report = opts and opts.report or nil })
             end
         end
@@ -5016,14 +5122,17 @@ end
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
 --- @param reason? "deleting"|"cleaning"
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
+---   `include_held`: the reset of all (§16.30) — held build dirs
+---   (`_held_build_dirs`) get no protection; every other deletion keeps a dir
+---   that is, contains or holds one (kept as `"held"`).
 ---   `stop`: asked before each entry of the removal; a stopped removal is a
 ---   failed one (resolves `false`, units left `unknown`) without an error
 ---   report of its own. `overlap_exempt`: live build dirs an orphaned entry's
 ---   tree may contain or lie inside (every form of each) — only the dirs a
 ---   reset-all has itself just removed (`_reset_all_unlocked`); the shared-
 ---   refs and root checks still apply. `report`: a table that receives
----   `kept` = `{ dir, why = "shared"|"live" }[]`, the dirs left on disk by
+---   `kept` = `{ dir, why = "shared"|"live"|"held" }[]`, the dirs left on disk by
 ---   those checks (their entries still dropped), `removed` = the
 ---   normalized dirs whose removal was confirmed (never a dir refused by
 ---   `_validate_build_dir` or kept by those checks), and `removed_ids` = the
@@ -5111,6 +5220,18 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
         -- `unknown` before the removal.
         local to_remove = {}
         local live_forms -- lazily, only when an orphaned entry is present
+        -- Held build dirs (`_held_build_dirs`: an invalid configuration's
+        -- entry) are protected like live ones, except by the reset of all
+        -- (`opts.include_held`) and for the held entries this batch removes.
+        local held_forms -- lazily
+        local function held_build_dir_forms()
+            if opts and opts.include_held then return {} end
+            local in_batch = {}
+            for _, it in ipairs(items) do
+                if it.build_dir_obj then in_batch[it.build_dir_obj] = true end
+            end
+            return ws:_held_build_dir_forms(in_batch)
+        end
         local report = opts and opts.report or nil
         if report then report.kept = {} end
         local function kept(dir, why)
@@ -5146,6 +5267,30 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
                                     .. " — still referenced by " .. remaining_refs .. " config(s)",
                                 vim.log.levels.INFO)
                             kept(normalized, "shared")
+                            goto skip_dir
+                        end
+                    end
+                    -- A held build dir: a unit's dir that IS or CONTAINS it
+                    -- (the shared-refs analogue), an orphaned entry's that
+                    -- is, contains or lies inside it (as for a live dir).
+                    held_forms = held_forms or held_build_dir_forms()
+                    if #held_forms > 0 then
+                        local hit
+                        if item.unit then
+                            for _, c in ipairs(ws:_path_forms(normalized)) do
+                                for _, h in ipairs(held_forms) do
+                                    if h == c or h:sub(1, #c + 1) == c .. "/" then hit = true; break end
+                                end
+                                if hit then break end
+                            end
+                        else
+                            hit = ws:_overlaps_live_build_dir(normalized, held_forms)
+                        end
+                        if hit then
+                            ws._core._deps.notify("loomworks: skipped deleting " .. normalized
+                                .. " — it holds the build dir of an invalid configuration",
+                                vim.log.levels.INFO)
+                            kept(normalized, "held")
                             goto skip_dir
                         end
                     end
@@ -5275,7 +5420,7 @@ end
 --- Execute a deletion plan asynchronously. Returns a Future.
 --- @param plan loomworks.DeletionPlan
 --- `opts.report`: as `_run_deletion`'s (`kept`, `removed`).
---- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table, include_held?: boolean }
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
@@ -5343,7 +5488,8 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         if #eff_reset > 0 then
             self:reset_cached_configs(eff_reset)
         end
-    end, on_done, opts.reason, { stop = opts.stop, report = opts.report })
+    end, on_done, opts.reason, { stop = opts.stop, report = opts.report,
+        include_held = opts.include_held })
 
     return f
 end
@@ -5380,10 +5526,11 @@ function Workspace:_reset_all_unlocked(on_done, opts)
         end
     end
 
-    -- Phase 2: orphaned build dirs (state, no ConfigUnit). Snapshot their keys
+    -- Phase 2: orphaned build dirs (state, no ConfigUnit; held ones too: a
+    -- reset of all leaves no build dirs, §16.30). Snapshot their keys
     -- before any mutation so the list is stable across the async phases.
     local orphan_keys = {}
-    for _, o in ipairs(self:get_orphaned_configs()) do
+    for _, o in ipairs(self:get_orphaned_configs({ include_held = true })) do
         orphan_keys[#orphan_keys + 1] = o.build_dir_key
     end
 
@@ -5412,7 +5559,8 @@ function Workspace:_reset_all_unlocked(on_done, opts)
         end
         local report = {}
         return ws:delete_orphaned_build_dir(orphan_keys[i], nil,
-                { stop = stop, overlap_exempt = exempt, report = report }):next(function(ok)
+                { stop = stop, overlap_exempt = exempt, report = report,
+                  include_held = true }):next(function(ok)
             if ok ~= true then all_ok = false end
             for _, k in ipairs(report.kept or {}) do
                 if k.why == "live" then all_ok = false end
@@ -5421,7 +5569,8 @@ function Workspace:_reset_all_unlocked(on_done, opts)
         end)
     end
 
-    return self:execute_deletion({ items = items }, { stop = stop, report = phase1 }):next(function(ok)
+    return self:execute_deletion({ items = items },
+            { stop = stop, report = phase1, include_held = true }):next(function(ok)
         if ok ~= true then
             all_ok = false
         else
@@ -5747,7 +5896,7 @@ end
 --- build-directory locks of the directories it removes (spec §19.3); see
 --- `_execute_deletion_unlocked`.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table, include_held?: boolean }
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:execute_deletion(plan, opts, on_done)
@@ -5772,7 +5921,7 @@ end
 --- holding the workspace operation lock and its build-directory lock.
 --- @param build_dir_key string
 --- @param on_done? function
---- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table }
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
 --- @return loomworks.Future
 function Workspace:delete_orphaned_build_dir(build_dir_key, on_done, opts)
     local norm = self._core._deps.normalize
@@ -8965,8 +9114,9 @@ function Workspace:_ensure_profile_config_units(profile)
         -- Compute the unit id (spec §1.7 "Unit identity")
         local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
 
-        -- Create skeleton ConfigUnit if absent
-        if not units_by_id[rel_key] then
+        -- Create skeleton ConfigUnit if absent (none for a configuration the
+        -- module reported an `error` for, §8 `info`: no build dir resolved)
+        if rel_key and not units_by_id[rel_key] then
             local entry = {
                 project_key = project_key,
                 config_key = config_key,

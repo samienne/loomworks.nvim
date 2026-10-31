@@ -40,8 +40,11 @@ local function cached_state(root, project)
 end
 
 --- `app` and `lib` (shell projects running the STEP script), the set and
---- profile `dev` (app=Debug, lib=Debug).
-local function workspace()
+--- profile `dev` (app=Debug, lib=Debug). `opts.lib_invalid`: lib's build_dir
+--- template names a variable a shell template may not use, so the module
+--- reports an `error` for its Debug (§8 `info`).
+local function workspace(opts)
+    opts = opts or {}
     local root = vim.fs.normalize(assert(uv.fs_realpath(H.tmp())))
     for _, d in ipairs({ "app", "lib", ".nvim" }) do vim.fn.mkdir(root .. "/" .. d, "p") end
     local step = root .. "/step.lua"
@@ -53,7 +56,9 @@ local function workspace()
             app = { path = "app", shell = { build_dir = "${workspace_root}/out/app/${variant}",
                 configure_cmd = cmd("configure"), build_cmd = cmd("build"), clean_cmd = cmd("clean"),
                 configurations = { Debug = vim.empty_dict() } } },
-            lib = { path = "lib", shell = { build_dir = "${workspace_root}/out/lib/${variant}",
+            lib = { path = "lib", shell = { build_dir = opts.lib_invalid
+                    and "${workspace_root}/out/${LW_DBS_UNDECLARED}/${variant}"
+                    or "${workspace_root}/out/lib/${variant}",
                 configure_cmd = cmd("configure"), build_cmd = cmd("build"),
                 configurations = { Debug = vim.empty_dict() } } },
         },
@@ -121,8 +126,8 @@ end
 
 describe("Build/1 editor scopes in the daemon's build service (§19.15)", function()
     local root, srv
-    local function start()
-        root = workspace()
+    local function start(opts)
+        root = workspace(opts)
         srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000 })
         service.attach(srv, cli._daemon_build_host())
         assert(srv:start())
@@ -471,5 +476,22 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
             assert.equals("built", cached_state(root, "lib"))
             r.conn:close()
         end)
+    end)
+    it("a profile clean refuses a configuration the module reported an error for, cleaning the others (§5.4)", function()
+        start({ lib_invalid = true })
+        local b = call(srv, "build", { profile = { key = "dev" } })
+        assert.equals(1, b.finish().exit_code, b.lines())
+        b.conn:close()
+        assert.equals("built", cached_state(root, "app"))
+        vim.fn.mkdir(root .. "/out/app/Debug", "p")
+        local r = call(srv, "clean", { profile = { key = "dev" } })
+        local done = r.finish()
+        assert.equals(1, done.exit_code, r.lines())
+        assert.truthy(tostring(done.error):find("lib/Debug not run", 1, true), tostring(done.error))
+        assert.truthy(tostring(done.error):find("LW_DBS_UNDECLARED", 1, true), tostring(done.error))
+        assert.truthy(r.lines():find("[clean] app", 1, true), r.lines())
+        assert.equals("configured", cached_state(root, "app"))
+        assert.equals(1, #((done.result or done).not_run or {}), vim.inspect(done))
+        r.conn:close()
     end)
 end)
