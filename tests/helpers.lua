@@ -197,6 +197,12 @@ function M.make_mock_workspace(overrides)
         _user_cs_names = overrides._user_cs_names or {},
     }
 
+    -- The mock models no build-directory claims (spec §1.7), so a command's
+    -- change never refuses a new configuration here. Tests of the refusal
+    -- itself use a real Workspace.
+    ws._new_build_dir_collision = overrides._new_build_dir_collision
+        or function() return nil end
+
     -- Add config unit methods (same logic as Workspace)
     local ConfigUnit = require("loomworks.config_unit")
     local cache_mod_h = require("loomworks.cache")
