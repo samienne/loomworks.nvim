@@ -131,8 +131,28 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         return out
     end
 
-    after_each(function()
+    --- Restore the editor and stop/kill whatever this run started.
+    --- Idempotent; run by test 8 and, whatever happened, after the last test.
+    local function teardown()
+        vim.notify = orig_notify
         vim.ui.select = orig_select
+        for _, h in ipairs(handlers) do events.off(h[1], h[2]) end
+        handlers = {}
+        if observer.current() then pcall(lw.shutdown) end
+        if root then
+            if inspect.state(root).kind == "live" then pcall(H.stop_daemon, root, env) end
+            H.track_root(root)
+        end
+        H.cleanup()
+    end
+
+    -- plenary's busted has no `teardown`: count the tests run and tear down
+    -- after the last one, whichever tests failed.
+    local TESTS, ran = 8, 0
+    after_each(function()
+        ran = ran + 1
+        vim.ui.select = orig_select
+        if ran >= TESTS then teardown() end
         no_model()
     end)
 
@@ -183,7 +203,18 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
             return text
         end
         vim.wait(30000, function() return not render():find("unavailable", 1, true) end, 50)
-        assert.truthy(text:find("dev", 1, true), text)
+        -- The profile row: a line under the Profiles header naming `dev`.
+        assert.equals("dev", row().key)
+        local in_profiles, profile_line = false, nil
+        for line in vim.gsplit(text, "\n", { plain = true }) do
+            if line:find("Profiles", 1, true) then
+                in_profiles = true
+            elseif in_profiles and line:find("%f[%w_]dev%f[^%w_]") then
+                profile_line = line
+                break
+            end
+        end
+        assert.is_not_nil(profile_line, text)
         assert.truthy(text:find("app", 1, true), text)
         assert.falsy(text:find("unavailable", 1, true), text)
         no_model()
@@ -242,18 +273,23 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
             return row().default_target ~= nil and row().default_target_valid ~= false
         end, 20), vim.inspect({ row = row(), notes = notes }))
         assert.is_not_nil(picked)
+        assert.equals("app: run", row().default_target)
+        assert.is_true(row().default_target_valid)
         vim.ui.select = function() error("no picker expected: the default target is stored") end
 
         -- build_target: Launch/1.build of the default target, a task the editor owns.
         local n = #started
         lw.build_target()
         local task = next_task(n)
+        assert.equals("build", task.kind)
         assert.is_true(task.owned)
+        assert.equals(row().id, task.profile_id)
         assert.equals(0, task.exit_code, task:output())
 
         -- launch_target: prepared in the daemon, started here. The task
         -- runner's start is replaced by running the prepared program directly
-        -- (no overseer in the test host).
+        -- (no overseer in the test host), asynchronously: the stub returns at
+        -- once and the event loop keeps serving the daemon connection.
         local ov = require("loomworks.overseer")
         local orig = ov.launch_run_task
         local launched = {}
@@ -261,13 +297,15 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
             launched[#launched + 1] = spec
             local cmd = { spec.cmd }
             for _, a in ipairs(spec.args or {}) do cmd[#cmd + 1] = a end
-            spec.result = vim.system(cmd, { cwd = spec.cwd, env = spec.env }):wait(60000)
+            vim.system(cmd, { cwd = spec.cwd, env = spec.env }, function(r) spec.result = r end)
             return nil
         end
         local ok, err = pcall(function()
             lw.launch_target()
             assert.is_true(vim.wait(120000, function() return #launched > 0 end, 20),
                 obs:runtime_line() .. "\n" .. vim.inspect(notes))
+            assert.is_true(vim.wait(60000, function() return launched[1].result ~= nil end, 20),
+                vim.inspect(launched[1]))
         end)
         ov.launch_run_task = orig
         assert(ok, err)
@@ -323,21 +361,21 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
     end)
 
     it("8. lw.shutdown() leaves no daemon process behind", function()
-        vim.notify = orig_notify
-        for _, h in ipairs(handlers) do events.off(h[1], h[2]) end
-        handlers = {}
-        assert.is_not_nil(daemon)
-        lw.shutdown()
-        assert.is_nil(observer.current())
-        no_model()
+        -- Everything that can fail runs first and the assertions come last,
+        -- so the daemon is stopped (or killed) whatever happens.
+        local ok_shutdown, shutdown_err = pcall(lw.shutdown)
+        local current = observer.current()
+        local had_model = lw.get_workspace() ~= nil
         -- Detached, the daemon is idle: it exits on its idle timeout (5 s here).
-        local gone = vim.wait(90000, function() return not H.alive(daemon.pid, daemon.start_time) end, 200)
-        local stopped_by_test = false
-        if not gone and inspect.state(root).kind == "live" then
-            stopped_by_test = true
-            H.stop_daemon(root, env)
-        end
-        H.cleanup()
+        local gone = daemon ~= nil and vim.wait(90000, function()
+            return not H.alive(daemon.pid, daemon.start_time)
+        end, 200)
+        local stopped_by_test = not gone and root ~= nil and inspect.state(root).kind == "live"
+        teardown()
+        assert(ok_shutdown, shutdown_err)
+        assert.is_not_nil(daemon)
+        assert.is_nil(current)
+        assert.is_false(had_model, "the daemon-mode editor loaded a workspace model")
         assert.is_true(gone, "the daemon was still running after lw.shutdown()"
             .. (stopped_by_test and " (stopped by the test)" or ""))
         assert.equals(0, H.survivors)
