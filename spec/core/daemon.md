@@ -1638,7 +1638,7 @@ in-process run, which loads the workspace each time, does. An editor's later
 requests do not carry them: the editor shows them in the views. A load raises them only through
 the host's notification seam (core's `_deps.notify`), never through
 `vim.notify` directly, so both hosts color them by role (§16.7
-*Highlighting*).
+*Highlighting*). A load note that a structural diagnostic of the loaded model already shows (a stale mapping, a configuration a module reported an error for) is listed once in the views, as that diagnostic; CLI replies still carry it as a note.
 
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
