@@ -77,7 +77,7 @@ local function call(srv, method, args, opts)
     rec.conn = conn
     local env = envscope.capture()
     for k, v in pairs(opts.env or {}) do env[k] = v or nil end
-    conn:call("/build", "loomworks.Build", 1, method, args, function(r, e) rec.reply = r; rec.err = e end, env)
+    conn:call(opts.object or "/build", opts.iface or "loomworks.Build", 1, method, args, function(r, e) rec.reply = r; rec.err = e end, env)
     function rec.wait_reply() return vim.wait(60000, function() return rec.reply ~= nil or rec.err ~= nil end, 10) end
     function rec.done()
         for _, m in ipairs(rec.events) do if m.phase == "done" then return m end end
@@ -363,5 +363,113 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         assert.is_nil(r.reply, vim.inspect(r.reply))
         assert.equals("invalid_args", (r.err or {}).code, vim.inspect(r.err))
         r.conn:close()
+    end)
+
+    -- Core state-lifecycle §5.4 "Invalid ProfileProjects": a profile build runs
+    -- every valid ProfileProject; an invalid one (a tool compat error) is not
+    -- run and fails the task, with its reason, after the others ran.
+    it("a profile build runs the valid projects, then fails naming the refused one (§5.4)", function()
+        local ProfileProject = require("loomworks.profile").ProfileProject
+        local orig = ProfileProject.tool_compat_error
+        ProfileProject.tool_compat_error = function(pp)
+            if pp._project and pp._project.key == "lib" then return "lib tool is wrong" end
+            return orig(pp)
+        end
+        local ok, e = pcall(function()
+            start()
+            local r = call(srv, "build", { profile = { key = "dev" } })
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.equals("built", cached_state(root, "app"))
+            assert.is_nil(cached_state(root, "lib"))
+            assert.is_nil(r.lines():find("[build] lib", 1, true), r.lines())
+            r.conn:close()
+        end)
+        ProfileProject.tool_compat_error = orig
+        assert.is_true(ok, tostring(e))
+    end)
+
+    --- Run `fn` with `lib`'s ProfileProject carrying a tool compat error (§8.4).
+    local function with_lib_refused(fn)
+        local ProfileProject = require("loomworks.profile").ProfileProject
+        local orig = ProfileProject.tool_compat_error
+        ProfileProject.tool_compat_error = function(pp)
+            if pp._project and pp._project.key == "lib" then return "lib tool is wrong" end
+            return orig(pp)
+        end
+        local ok, e = pcall(fn)
+        ProfileProject.tool_compat_error = orig
+        assert.is_true(ok, tostring(e))
+    end
+
+    it("a profile test runs the valid projects' tests, then fails naming the refused one (§5.4)", function()
+        -- Each unit's native batch runner: the STEP script with `test-<project>`.
+        local ConfigUnit = require("loomworks.config_unit")
+        local orig_units = ConfigUnit.batch_runner_test_units
+        local nv = (vim.v.progpath:gsub("\\", "/"))
+        ConfigUnit.batch_runner_test_units = function(unit)
+            local name = unit._project and unit._project.key or "?"
+            return { { run_command_all = function()
+                return { cmd = { nv, "--headless", "-u", "NONE", "-l", root .. "/step.lua", "test-" .. name } }
+            end } }
+        end
+        local ok, e = pcall(with_lib_refused, function()
+            start()
+            local r = call(srv, "run", { profile = { key = "dev" } },
+                { object = "/tests", iface = "loomworks.Tests" })
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.truthy(r.output():find("step test-app", 1, true), r.output())
+            assert.is_nil(r.output():find("step test-lib", 1, true), r.output())
+            r.conn:close()
+        end)
+        ConfigUnit.batch_runner_test_units = orig_units
+        assert.is_true(ok, tostring(e))
+    end)
+
+    it("a profile clean cleans the valid projects, then fails naming the refused one (§5.4)", function()
+        start()
+        built()
+        vim.fn.mkdir(root .. "/out/app/Debug", "p")
+        vim.fn.mkdir(root .. "/out/lib/Debug", "p")
+        with_lib_refused(function()
+            local r = call(srv, "clean", { profile = { key = "dev" } })
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.truthy(r.lines():find("[clean] app", 1, true), r.lines())
+            assert.is_nil(r.lines():find("[clean] lib", 1, true), r.lines())
+            assert.equals("configured", cached_state(root, "app"))
+            assert.equals("built", cached_state(root, "lib"))
+            assert.is_true(exists(root .. "/out/lib/Debug"))
+            -- The refusals are the clean's only failure: its task result says
+            -- so (an editor's rebuild goes on to build).
+            local result = done.result or done
+            assert.same({ "lib/Debug not run: lib tool is wrong — change the profile's tool to match the configuration" },
+                result.not_run)
+            r.conn:close()
+        end)
+    end)
+
+    it("a profile clean with nothing else to clean is a task failing with the refused one as not_run", function()
+        start()
+        built()
+        with_lib_refused(function()
+            local r = call(srv, "clean", { profile = { key = "dev" } })
+            r.wait_reply()
+            assert.equals("accepted", r.reply and r.reply.outcome, vim.inspect(r.reply or r.err))
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.equals(1, #((done.result or done).not_run or {}), vim.inspect(done))
+            assert.equals("built", cached_state(root, "lib"))
+            r.conn:close()
+        end)
     end)
 end)

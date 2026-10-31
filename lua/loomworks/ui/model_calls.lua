@@ -491,11 +491,20 @@ CALLS["Build/1.configure"] = function(_, p, cb)
         return overseer.run_configuration_action(unit, "configure")
     end, cb)
 end
---- `{ profile | units }`: the module clean (the configuration kept).
+--- `{ profile | units }`: the module clean (the configuration kept). When
+--- the profile's invalid ProfileProjects (core §5.4) are the clean's only
+--- failure, the refusal carries their result lines as `not_run` (as the
+--- daemon's clean task result does): the editor's rebuild goes on to build
+--- the others.
 CALLS["Build/1.clean"] = function(_, p, cb)
     local scope, err = op_scope(p)
     if not scope then return cb(err) end
-    if scope.profile then return settle(scope.profile:clean(), cb) end
+    if scope.profile then
+        return scope.profile:clean(nil, { refused_ok = true }):next(function(v)
+            if type(v) ~= "table" then return cb({ outcome = "ok" }) end
+            cb({ outcome = "refused", message = require("loomworks.overseer").refused_message(v), not_run = v })
+        end, function(e) cb({ outcome = "refused", message = tostring(e) }) end)
+    end
     each_unit(scope.units, function(unit) return unit:clean() end, cb)
 end
 
@@ -1090,8 +1099,9 @@ local function by_ids(method, op)
             { jobs = op == "build" and p.jobs or nil, force = op == "build" and p.force or nil,
                 artifact_block = op == "build" and block or nil }, {
                 resolve = function() cb({ outcome = "ok" }) end,
-                reject = function(err, notified)
-                    cb({ outcome = "refused", message = tostring(err), notified = notified or nil })
+                reject = function(err, notified, not_run)
+                    cb({ outcome = "refused", message = tostring(err), notified = notified or nil,
+                        not_run = not_run })
                 end,
             })
     end

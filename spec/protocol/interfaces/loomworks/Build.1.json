@@ -214,6 +214,13 @@
             },
             "error": {
               "type": "string"
+            },
+            "not_run": {
+              "description": "The result lines of the profile's invalid ProfileProjects (core 5.4), not cleaned, when they are the clean's only failure (the others cleaned, or nothing else to clean): an editor's rebuild goes on to its build. Absent when a clean step failed.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           }
         }

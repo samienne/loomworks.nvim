@@ -425,6 +425,44 @@ function M.build_spec_for(unit, target_id)
     return nil
 end
 
+--- The result line of a ProfileProject a profile-level operation does not run
+--- (core §5.4 "Invalid ProfileProjects"): `<project>/<configuration> not run:
+--- <reason> — <remedy>`.
+--- @param pp loomworks.ProfileProject
+--- @param reason string the tool compat error
+--- @return string
+function M.refusal_line(pp, reason)
+    local pk = pp._project and pp._project.key or "?"
+    local cn = pp.variant_name and pp:variant_name() or "?"
+    return pk .. "/" .. tostring(cn) .. " not run: " .. reason
+        .. " — change the profile's tool to match the configuration"
+end
+
+--- The result line of a ProfileProject a profile-level operation did not run
+--- (core §5.4 "Invalid ProfileProjects"; `refusal_line`): the project, its
+--- configuration, the reason and the remedy. The host reports these after the
+--- other projects ran (`refused_message`) and fails the operation.
+--- @alias loomworks.RefusalLine string
+
+--- The failure of a profile-level operation whose invalid ProfileProjects
+--- were not run (core §5.4 "Invalid ProfileProjects"): their result lines,
+--- one per line. Reported after the other projects ran. (Here, beside
+--- `refusal_line`, so both hosts' callers reach it without a plugin→binary
+--- require; build_run.refused_message is this.)
+--- @param refused loomworks.RefusalLine[]
+--- @return string
+function M.refused_message(refused)
+    return table.concat(refused, "\n")
+end
+
+--- The task definitions of a profile-level operation, grouped by action
+--- (`collect_profile_tasks`).
+--- @class loomworks.ProfileTaskDefs
+--- @field configure table[] the configure task definitions
+--- @field build table[] the build task definitions
+--- @field refused loomworks.RefusalLine[] the ProfileProjects left out as invalid
+---   for the action (empty when every one is valid)
+
 --- Collect task definitions for a profile, grouped by action.
 --- Does not change the active profile. Uses registered ProfileProject and
 --- Project objects instead of recomputing from scratch.
@@ -435,7 +473,11 @@ end
 ---   caller's build request for the build tasks (headless `lw build`, §16.4);
 ---   build_targets_for (the resolved `--target` operands) replaces
 ---   build_targets per project and skips every project it does not name
---- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
+--- A ProfileProject invalid for the action (a tool compat error, §8.4
+--- `validate_config_tool`) is not run (core §5.4 "Invalid ProfileProjects"):
+--- its tasks are left out and `refused` names it with its reason, so the
+--- caller fails the operation after the other projects ran.
+--- @return loomworks.ProfileTaskDefs|nil task_defs_by_action
 local function collect_profile_tasks(profile, opts)
     opts = opts or {}
     local loomworks = require("loomworks")
@@ -447,7 +489,7 @@ local function collect_profile_tasks(profile, opts)
     local pps = profile:projects()
     if #pps == 0 then return nil end
 
-    local by_action = { configure = {}, build = {} }
+    local by_action = { configure = {}, build = {}, refused = {} }
 
     for _, pp in ipairs(pps) do
         local project = pp._project
@@ -456,6 +498,14 @@ local function collect_profile_tasks(profile, opts)
         -- A resolved `--target` request (§16.4) builds only the projects it
         -- selected, each with its own bare target names.
         if opts.build_targets_for and not opts.build_targets_for[project] then goto continue end
+
+        do
+            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+            if compat then
+                by_action.refused[#by_action.refused + 1] = M.refusal_line(pp, compat)
+                goto continue
+            end
+        end
 
         local mod = project._module and project._module.impl or nil
         if not mod or not mod.tasks then goto continue end
@@ -591,8 +641,12 @@ local function collect_configuration_clean_tasks(unit)
 end
 
 --- Collect clean task definitions for all projects in a profile.
+--- A ProfileProject with a tool compat error (§8.4 `validate_config_tool`:
+--- clean is blocked on it) is not cleaned (core §5.4 "Invalid
+--- ProfileProjects"): it is left out and named in `refused`.
 --- @param profile loomworks.Profile
 --- @return table[]|nil clean_tasks
+--- @return loomworks.RefusalLine[]|nil refused nil when none
 local function collect_profile_clean_tasks(profile)
     local loomworks = require("loomworks")
     local modules = require("loomworks.modules")
@@ -603,11 +657,19 @@ local function collect_profile_clean_tasks(profile)
     local pps = profile:projects()
     if #pps == 0 then return nil end
 
-    local tasks = {}
+    local tasks, refused = {}, {}
 
     for _, pp in ipairs(pps) do
         local project = pp._project
         if not project then goto continue end
+
+        do
+            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+            if compat then
+                refused[#refused + 1] = M.refusal_line(pp, compat)
+                goto continue
+            end
+        end
 
         local mod = project._module and project._module.impl or nil
         if not mod or not mod.clean_tasks then goto continue end
@@ -661,7 +723,39 @@ local function collect_profile_clean_tasks(profile)
         ::continue::
     end
 
-    return #tasks > 0 and tasks or nil
+    -- A refused ProfileProject's build directory is kept (core §5.4: it is
+    -- not cleaned): a core-performed wipe of a valid one's dir is dropped
+    -- when that dir is the refused one's — the same config unit (projects
+    -- sharing one build dir share it) or the same directory identity. (A
+    -- distinct unit merely referencing the dir is kept by the deletion's
+    -- shared-dir check, spec §4.6.)
+    if #refused > 0 and #tasks > 0 then
+        local function ident(p)
+            if type(p) ~= "string" or p == "" then return nil end
+            return ws._build_dir_identity and ws:_build_dir_identity(p) or p
+        end
+        local refused_units, refused_dirs = {}, {}
+        for _, pp in ipairs(pps) do
+            local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+            local unit = pp._config_unit
+            if compat and unit then
+                refused_units[unit] = true
+                local id = ident(unit:build_dir())
+                if id then refused_dirs[id] = true end
+            end
+        end
+        local kept = {}
+        for _, td in ipairs(tasks) do
+            local lw = td.loomworks
+            local id = lw and lw.wipe_build_dir and ident(lw.build_dir) or nil
+            if not (lw and lw.wipe_build_dir and (refused_units[lw.unit] or (id and refused_dirs[id]))) then
+                kept[#kept + 1] = td
+            end
+        end
+        tasks = kept
+    end
+
+    return #tasks > 0 and tasks or nil, #refused > 0 and refused or nil
 end
 
 --- A module clean task (the build system's artifact clean, not a wipe)
@@ -1291,6 +1385,9 @@ end
 ---   collect_profile_tasks and plans those directly, shaped the same way.
 --- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, applied_build_args, applied_build_targets, cmd, cwd, env }
 --- @return string|nil err a task builder that raised (the plan is refused, not partial)
+--- @return loomworks.RefusalLine[]|nil refused the ProfileProjects left out as
+---   invalid for the action (core §5.4 "Invalid ProfileProjects"), nil when
+---   none: the caller runs the steps, then fails the operation with them
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
     local all_tasks = opts.tasks or collect_profile_tasks(profile, {
@@ -1318,7 +1415,8 @@ function M.plan_profile_build(profile, opts)
 
     local steps, plan_err = plan_steps(needs_configure, build_tasks)
     if plan_err then return nil, plan_err end
-    return steps
+    local refused = all_tasks.refused
+    return steps, nil, (refused and #refused > 0) and refused or nil
 end
 
 --- The plan of `plan_profile_build` for configuration units instead of a
@@ -1425,8 +1523,11 @@ end
 ---   { kind, name, build_dir, wipe_build_dir = true, unit } for a core-performed
 ---   wipe (run it with `Workspace:clean_wipe_build_dir(units, build_dir)`,
 ---   passing every wipe step's unit for the same build_dir as one batch)
+--- @return loomworks.RefusalLine[]|nil refused the ProfileProjects not cleaned
+---   as invalid (core §5.4): the caller cleans the others, then fails
 function M.plan_profile_clean(profile)
-    return M._clean_steps(collect_profile_clean_tasks(profile))
+    local tasks, refused = collect_profile_clean_tasks(profile)
+    return M._clean_steps(tasks), refused
 end
 
 --- The clean plan of `plan_profile_clean` for configuration units instead of
@@ -1525,13 +1626,18 @@ M._junit_dest_for = junit_dest_for  -- exported for tests
 --- runner; a self-rebuilding runner whose spec does not confirm it
 --- (`no_rebuild = true`) yields a step with `refused` set (the reason) — the
 --- caller refuses it before any step runs, never letting it rebuild.
+--- A ProfileProject invalid for the action (a tool compat error) gets no step
+--- (core §5.4 "Invalid ProfileProjects"): it is named in `refused`, so the
+--- caller runs the other projects' tests, then fails.
 --- @param profile loomworks.Profile
 --- @param opts? table { extra_args?: string[], junit?: string, no_rebuild?: boolean, skip_units?: table<loomworks.ConfigUnit, boolean>, junit_dest_for?: fun(label: string, unit: loomworks.ConfigUnit): string|nil }
 --- @return table[]|nil steps, integer units_seen
+--- @return loomworks.RefusalLine[]|nil refused nil when none
 function M.plan_profile_test(profile, opts)
     opts = opts or {}
     local all_tasks = collect_profile_tasks(profile)
     if not all_tasks then return nil, 0 end
+    local refused = (all_tasks.refused and #all_tasks.refused > 0) and all_tasks.refused or nil
 
     local seen, units = {}, {}
     for _, td in ipairs(all_tasks.build or {}) do
@@ -1596,7 +1702,7 @@ function M.plan_profile_test(profile, opts)
             }
         end
     end
-    return steps, #units
+    return steps, #units, refused
 end
 
 --- Run a configure or build action on a single ConfigUnit. If building and the
@@ -1886,8 +1992,13 @@ end
 --- Run clean tasks for all projects in a profile. Returns a Future.
 --- @param profile loomworks.Profile
 --- @param on_complete? fun(success: boolean) legacy callback (deprecated)
+--- @param opts? { refused_ok?: boolean } refused_ok: when the ProfileProjects
+---   not cleaned as invalid (core §5.4) are the clean's only failure, the
+---   Future resolves with their result lines (loomworks.RefusalLine[])
+---   instead of rejecting (Profile:clean; the editor's rebuild goes on to
+---   its build). A failed clean task always rejects, naming them too.
 --- @return loomworks.Future
-function M.run_profile_clean(profile, on_complete)
+function M.run_profile_clean(profile, on_complete, opts)
     local future_mod = require("loomworks.future")
     local ok, overseer = pcall(require, "overseer")
     if not ok then
@@ -1896,8 +2007,17 @@ function M.run_profile_clean(profile, on_complete)
         return future_mod.rejected("overseer.nvim not found")
     end
 
-    local tasks = collect_profile_clean_tasks(profile)
+    -- Invalid ProfileProjects (core §5.4) are not cleaned: the others are,
+    -- then the clean fails naming them.
+    local tasks, refused = collect_profile_clean_tasks(profile)
+    if refused and #refused == 0 then refused = nil end
+    local refused_ok = opts and opts.refused_ok
     if not tasks or #tasks == 0 then
+        if refused then
+            if on_complete then on_complete(false) end
+            if refused_ok then return future_mod.resolved(refused) end
+            return future_mod.rejected(M.refused_message(refused))
+        end
         if on_complete then on_complete(true) end
         return future_mod.resolved(true)
     end
@@ -1976,7 +2096,14 @@ function M.run_profile_clean(profile, on_complete)
         for _, r in ipairs(results) do
             if not r.ok then all_ok = false; break end
         end
-        if all_ok then return true else error("clean failed") end
+        if not all_ok then
+            error(refused and ("clean failed\n" .. M.refused_message(refused)) or "clean failed", 0)
+        end
+        if refused then
+            if refused_ok then return refused end
+            error(M.refused_message(refused), 0)
+        end
+        return true
     end)
 
     if on_complete then
@@ -2275,6 +2402,17 @@ in_process_profile_action = function(profile, action, opts)
             f:_reject("no tasks")
             return
         end
+        -- Invalid ProfileProjects (core §5.4) are not run: the operation
+        -- counts them finished and failed, and the action fails once the
+        -- other projects ran.
+        local refused = all_tasks.refused or {}
+        local function settle_ok()
+            if #refused > 0 then
+                f:_reject(table.concat(refused, "\n"))
+            else
+                f:_resolve(true)
+            end
+        end
 
         -- Apply parallel_jobs override: wrap build task builders to append -jN
         if opts and opts.parallel_jobs then
@@ -2309,9 +2447,9 @@ in_process_profile_action = function(profile, action, opts)
             -- build, an earlier configure) must not count as done when the
             -- unit reaches `built`/`configured` through that other task.
             local op
-            if #units > 0 then
+            if #units > 0 or #refused > 0 then
                 op = loomworks.create_operation(profile, "configure", units, target_states,
-                    { track_tasks = true })
+                    { track_tasks = true, refused = refused })
             end
             local pending, unit_ok = {}, {}
             for _, task_def in ipairs(launchable) do
@@ -2330,7 +2468,7 @@ in_process_profile_action = function(profile, action, opts)
                 end
             end
             launch_tasks(overseer, all_tasks.configure, nil, readiness_opts):next(
-                function() f:_resolve(true) end,
+                settle_ok,
                 function(err) f:_reject(err) end
             )
             return
@@ -2352,8 +2490,9 @@ in_process_profile_action = function(profile, action, opts)
                 end
 
                 local op
-                if #units > 0 then
-                    op = loomworks.create_operation(profile, "configure+build", units, target_states)
+                if #units > 0 or #refused > 0 then
+                    op = loomworks.create_operation(profile, "configure+build", units, target_states,
+                        { refused = refused })
                 end
 
                 launch_tasks(overseer, needs_configure):next(function()
@@ -2363,7 +2502,7 @@ in_process_profile_action = function(profile, action, opts)
                 end):next(function()
                     return launch_tasks(overseer, all_tasks.build)
                 end):next(
-                    function() f:_resolve(true) end,
+                    settle_ok,
                     function(err)
                         if op and not op.completed then
                             op:cancel(tostring(err))
@@ -2373,12 +2512,13 @@ in_process_profile_action = function(profile, action, opts)
                 )
             else
                 guard_build_conflicts(ws, all_tasks.build, force):next(function()
-                    if #units > 0 then
-                        loomworks.create_operation(profile, "build", units, target_states)
+                    if #units > 0 or #refused > 0 then
+                        loomworks.create_operation(profile, "build", units, target_states,
+                            { refused = refused })
                     end
                     return launch_tasks(overseer, all_tasks.build)
                 end):next(
-                    function() f:_resolve(true) end,
+                    settle_ok,
                     function(err) f:_reject(err) end
                 )
             end

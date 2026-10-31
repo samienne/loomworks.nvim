@@ -93,16 +93,22 @@ end
 --- entries. `sel` is nil, "saved" or "discovered". Pure model data — reads no
 --- build directory beyond the static batch-runner question. An invalid `tests`
 --- declaration (§1.3.4) is planned as one invalid entry, so it fails like a
---- missing entry.
+--- missing entry. A ProfileProject invalid for the action (a tool compat
+--- error, §8.4 `validate_config_tool`) is not planned (core §5.4 "Invalid
+--- ProfileProjects"): `refused` names it, and the run fails after the others.
 --- @return table[] units { unit, project, pp, batch, batch_dropped, platform, kit_platform, saved, entries }
 --- @return integer n_batch, integer n_exec
+--- @return loomworks.RefusalLine[]|nil refused nil when none
 function M.units(profile, sel)
     local foreign = require("loomworks.remote.foreign")
-    local units, n_batch, n_exec = {}, 0, 0
+    local units, n_batch, n_exec, refused = {}, 0, 0, {}
     for _, pp in ipairs(profile:projects()) do
         local unit = pp._config_unit
         local project = unit and unit._project
-        if unit and project then
+        local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+        if compat then
+            refused[#refused + 1] = require("loomworks.overseer").refusal_line(pp, compat)
+        elseif unit and project then
             local u = { unit = unit, project = project, pp = pp, entries = {} }
             if sel ~= "saved" then
                 local list_fn = unit.batch_runner_test_units or unit.test_units
@@ -133,7 +139,7 @@ function M.units(profile, sel)
             units[#units + 1] = u
         end
     end
-    return units, n_batch, n_exec
+    return units, n_batch, n_exec, #refused > 0 and refused or nil
 end
 
 --- The project's executable targets, for messages ("App:a, App:b").
@@ -192,14 +198,16 @@ end
 --- @field err string|nil the invocation's refusal (printed after `notes`)
 --- @field code integer|nil its exit code
 --- @field device_platform string|nil a unit built by a foreign kit has saved entries: its steps run on a device
+--- @field refused loomworks.RefusalLine[]|nil the ProfileProjects not tested as invalid (core §5.4
+---   "Invalid ProfileProjects"): the host runs the others' tests, then fails (`with_refused`)
 
 --- What `lw test` checks before the build (spec §16.16): the plan, its notes
 --- and a refusal. `opts = { sel?, extra?, dev? }`.
 --- @return loomworks.TestPlanPre
 function M.precheck(profile, opts)
-    local plan, n_batch, n_exec = M.units(profile, opts.sel)
+    local plan, n_batch, n_exec, refused = M.units(profile, opts.sel)
     local extra = opts.extra or {}
-    local pre = { plan = plan, n_batch = n_batch, n_exec = n_exec, keep = {}, notes = {} }
+    local pre = { plan = plan, n_batch = n_batch, n_exec = n_exec, keep = {}, notes = {}, refused = refused }
     local function refuse(msg, code)
         pre.err, pre.code = msg, code or 1
         return pre
@@ -273,6 +281,20 @@ end
 --- @field batch_steps table<table, table[]> per unit, its planned native runner steps
 --- @field junit_for fun(label: string): string|nil the JUnit path of a step
 --- @field notes string[] stderr notes printed before the steps (`--no-build`: possibly stale builds)
+
+--- A test run's result with the ProfileProjects it did not test (core §5.4
+--- "Invalid ProfileProjects"; `pre.refused`): once the other projects' tests
+--- ran, the run fails (exit 1 unless already failing) and its message ends
+--- with their result lines. Unchanged when there are none.
+--- @param pre loomworks.TestPlanPre|nil
+--- @param code integer the run's exit code
+--- @param err string|nil the run's failure
+--- @return integer code, string|nil err
+function M.with_refused(pre, code, err)
+    if not (pre and pre.refused) then return code, err end
+    local msg = require("loomworks.build_run").refused_message(pre.refused)
+    return (code ~= 0) and code or 1, err and (err .. "\n" .. msg) or msg
+end
 
 --- `lw test --no-build` (spec §16.16 "Skipping the build"): whether a build
 --- target's artifact exists. `t` is the target, `unit` its config unit.

@@ -1834,8 +1834,14 @@ end
 
 --- Clean this profile's configs. Returns a Future.
 --- @param on_done? function legacy callback (deprecated)
+--- @param opts? { refused_ok?: boolean } refused_ok: the ProfileProjects not
+---   cleaned as invalid (core §5.4) still fail the clean's Operation, but when
+---   they are its only failure the Future resolves with their result lines
+---   (loomworks.RefusalLine[]) instead of rejecting (the in-process
+---   `Build/1.clean` reports them as its `not_run`: a rebuild goes on to
+---   build the others)
 --- @return loomworks.Future
-function Profile:clean(on_done)
+function Profile:clean(on_done, opts)
     local future_mod = require("loomworks.future")
     local pps = self:projects()
     if #pps == 0 then
@@ -1846,7 +1852,7 @@ function Profile:clean(on_done)
     -- (A `daemon`-mode editor holds no model, step 6b-α: a model's clean is
     -- always in-process — the daemon's, the CLI's or the in-process
     -- editor's.)
-    local f = self:_clean_in_process()
+    local f = self:_clean_in_process(opts)
 
     if on_done then
         f:next(function() on_done() end)
@@ -1856,16 +1862,27 @@ function Profile:clean(on_done)
 end
 
 --- The in-process module clean of this profile (Profile:clean).
+--- @param opts? { refused_ok?: boolean } as Profile:clean
 --- @return loomworks.Future
-function Profile:_clean_in_process()
+function Profile:_clean_in_process(opts)
     local pps = self:projects()
     local items = {}
     local units = {}
     local target_states = {}
+    -- A ProfileProject with a tool compat error is not cleaned (core §5.4
+    -- "Invalid ProfileProjects", §8.4): the operation counts it finished and
+    -- failed, and the clean fails once the others are cleaned.
+    local refused = {}
+    local overseer = require("loomworks.overseer")
     for _, pp in ipairs(pps) do
-        items[#items + 1] = { unit = pp._config_unit }
-        units[#units + 1] = pp._config_unit
-        target_states[pp._config_unit] = "configured"
+        local compat = pp.tool_compat_error and pp:tool_compat_error() or nil
+        if compat then
+            refused[#refused + 1] = overseer.refusal_line(pp, compat)
+        else
+            items[#items + 1] = { unit = pp._config_unit }
+            units[#units + 1] = pp._config_unit
+            target_states[pp._config_unit] = "configured"
+        end
     end
 
     self._workspace:cancel_conflicting_operations(units)
@@ -1880,7 +1897,7 @@ function Profile:_clean_in_process()
     local ws = self._workspace
     local clear_mark = ws:_deleting_mark_clearer(units)
     local ok, f = pcall(function()
-        ws:create_operation(self, "clean", units, target_states)
+        ws:create_operation(self, "clean", units, target_states, { refused = refused })
         -- The built state is recorded per module clean task once it succeeds
         -- (overseer.record_module_clean); a wipe resets the unit itself.
 
@@ -1891,10 +1908,12 @@ function Profile:_clean_in_process()
         end
 
         return ws:stop_tasks_then(task_ids):next(function()
-            return require("loomworks.overseer").run_profile_clean(self)
-        end):next(function()
+            return require("loomworks.overseer").run_profile_clean(self, nil, opts)
+        end):next(function(v)
             clear_mark()
-            return true
+            -- (With refused_ok: the result lines of the ProfileProjects not
+            -- cleaned, when they are the clean's only failure.)
+            return v
         end, function(err)
             clear_mark()
             error(err, 0)
@@ -1908,9 +1927,12 @@ function Profile:_clean_in_process()
 end
 
 --- Rebuild: clean then build. Returns a Future.
+--- A ProfileProject invalid for the action (core §5.4) does not stop the
+--- rebuild of the others: the clean's refusal of it fails only the clean's
+--- Operation, and the build fails naming it once the others are built.
 --- @return loomworks.Future
 function Profile:rebuild()
-    return self:clean():next(function()
+    return self:clean(nil, { refused_ok = true }):next(function()
         return self:build()
     end)
 end

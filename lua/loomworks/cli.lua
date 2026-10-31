@@ -1177,27 +1177,35 @@ M._unknown_target_hint = unknown_target_hint
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean, verbose?: boolean }
+--- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean, verbose?: boolean, defer_refused?: boolean }
 ---   for_test skips building units whose native test runner rebuilds itself;
 ---   extra_args are forwarded to the build tool and build_targets select what
 ---   it builds — both handed to the module's build task (core §8.1), which
 ---   puts them on its native build command before any wrapping (§16.4);
 ---   force overrides the output-artifact conflict gate (§5.9); reconfigure
 ---   forces a FULL reconfigure of every unit before building (§16.4);
----   verbose prints each step's command line + cwd (always logged, §16.4).
+---   verbose prints each step's command line + cwd (always logged, §16.4);
+---   defer_refused returns the ProfileProjects not run as invalid (core §5.4)
+---   as a second value instead of dying on them, for a caller with more to
+---   run first (`lw test` tests the others, then fails).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- The plan/gate/record sequence lives in loomworks.build_run (host-neutral);
   -- only the spawn (blocking here) and the reporting (die) are this host's.
   local build_run = require("loomworks.build_run")
-  local steps, plan_err = build_run.plan(profile, {
+  local steps, plan_err, refused = build_run.plan(profile, {
     for_test = opts.for_test,
     reconfigure = opts.reconfigure,
     extra_args = opts.extra_args,
     build_targets = opts.build_targets,
   })
   if not steps then die(plan_err) end
-  if #steps == 0 then return 0 end
+  -- Invalid ProfileProjects (core §5.4) are not run: the others build first,
+  -- then the command fails naming them.
+  if #steps == 0 then
+    if refused and not opts.defer_refused then die(build_run.refused_message(refused), 1) end
+    return 0, refused
+  end
   -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
   -- so a machine consumer like `lw run --print` captures only its report.
   local quiet = opts.quiet or false
@@ -1223,7 +1231,8 @@ local function run_build_steps(profile, ws, opts)
       die(build_run.failure_message(step, code, th, sig), code)
     end
   end
-  return #steps
+  if refused and not opts.defer_refused then die(build_run.refused_message(refused), 1) end
+  return #steps, refused
 end
 M._run_build_steps = run_build_steps  -- exported for tests
 
@@ -1376,7 +1385,10 @@ function M.cmd_clean(ws, args)
   local profile_name, verbose = M._parse_clean_args(args, die)
   local profile
   profile, ws = resolve_build_target(ws, profile_name, "lw clean <profile>")
-  local steps = build_run.plan_clean(profile)
+  local steps, refused = build_run.plan_clean(profile)
+  -- Invalid ProfileProjects (core §5.4) are not cleaned: the others are,
+  -- then the command fails naming them.
+  if not steps and refused then die(build_run.refused_message(refused), 1) end
   -- Nothing to clean: an ordinary stdout line (as the daemon's refusal on
   -- stdout, API.md §8.4), its exit code 1 kept.
   if not steps then
@@ -1422,6 +1434,7 @@ function M.cmd_clean(ws, args)
     end
   end)
   if op_tok then require("loomworks.op_lock").release(op_tok) end
+  if refused then die(build_run.refused_message(refused), 1) end
   out(build_run.ok_line("clean", profile.key))
   return 0
 end
@@ -3114,7 +3127,10 @@ function M._test_plan(ws, profile, opts, deps)
       if deps.build then
         deps.build(profile, ws, pre.keep)
       else
-        run_build_steps(profile, ws, { for_test = { keep = pre.keep }, verbose = opts.verbose })
+        -- Invalid ProfileProjects (core §5.4): the others are tested first;
+        -- `pre.refused` names the same ones (test_plan.with_refused).
+        run_build_steps(profile, ws, { for_test = { keep = pre.keep }, verbose = opts.verbose,
+          defer_refused = true })
       end
     end
     for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
@@ -3123,10 +3139,13 @@ function M._test_plan(ws, profile, opts, deps)
     for _, n in ipairs(prepared.notes or {}) do note(n, "plain") end
     if #prepared.steps == 0 then
       out("no tests to run for profile '" .. profile.key .. "'", "plain")
+      local _, rerr = test_plan.with_refused(pre, 0, nil)
+      if rerr then die(rerr, 1) end
       return 0
     end
     local rc, err
     test_plan.run(ws, profile, prepared, opts, M._test_host(ws, deps, opts.verbose), function(code, msg) rc, err = code, msg end)
+    rc, err = test_plan.with_refused(pre, rc or 0, err)
     if err then die(err, rc) end
     return rc
   end

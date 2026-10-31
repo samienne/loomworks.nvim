@@ -55,18 +55,22 @@ alongside `shell` at the project level.
 }
 ```
 
-All command / path fields accept `${var}` expansion. The context
-includes the standard built-ins (`workspace_root`, `project_path`,
-`config_set`, `variant`, `build_dir`) plus all resolved project
-variables (see core spec §4.2 / `expand.lua`). `${build_dir}` resolves
-to the expanded value of the `build_dir` template, so `compile_commands`
-and `clean_cmd` can reference it without repeating the template.
+All command / path fields except `build_dir` accept `${var}` expansion.
+The context includes the standard built-ins (`workspace_root`,
+`project_path`, `config_set`, `variant`, `build_dir`) plus all resolved
+project variables (see core spec §4.2 / `expand.lua`). `${build_dir}`
+resolves to the expanded value of the `build_dir` template, so
+`compile_commands` and `clean_cmd` can reference it without repeating the
+template.
+
+`build_dir` has a narrower context (§6): `${workspace_root}`,
+`${project_path}` and `${variant}` only.
 
 Fields inside the `shell:` block:
 
 | Field | Required | Notes |
 |------|----------|------|
-| `build_dir` | yes | Resolved per-configuration. Determines the cache key path and is checked by deletion safety. |
+| `build_dir` | yes | Resolved per-configuration, from `${workspace_root}`, `${project_path}` and `${variant}` only (§6). Determines the cache key path and is checked by deletion safety. |
 | `configure_cmd` | yes | First-build and explicit Configure invoke this. |
 | `build_cmd` | yes | Default Build keymap invokes this. |
 | `clean_cmd` | no | If omitted, Clean wipes the build dir: the task declares `wipe_build_dir` and core removes it (validated, in-process — core §8.1), never a spawned `rm`/`rd`. |
@@ -113,10 +117,25 @@ trailing message.
 
 ## 6. Build directory (`resolve_build_dir`)
 
-Resolves `shell.build_dir` with the standard expansion context for the
-target configuration. The path must lie under `workspace_root` —
-deletion safety (`_validate_build_dir`) enforces this regardless of
-what the user declares.
+Resolves `shell.build_dir` for the target configuration. The path must
+lie under `workspace_root` — deletion safety (`_validate_build_dir`)
+enforces this regardless of what the user declares.
+
+The directory belongs to a configuration and is resolved without a
+profile (core §8.4), so the template sees only these variables:
+
+| Variable | Value |
+|----------|-------|
+| `workspace_root` | Absolute workspace root. |
+| `project_path` | The project **key** — not the project's `path` field, which the command fields' `${project_path}` uses. |
+| `variant` | The configuration name. |
+
+`config_set` cannot apply: one configuration may be mapped by several
+configuration sets. Project variables and `build_dir` itself are not
+available either. Any other `${name}` in the template, including the
+name of an environment variable, is a load error: the configuration is
+invalid (core invariant 11) and resolves no build directory until the
+template is fixed.
 
 ## 7. LSP integration (`lsp_configs`)
 

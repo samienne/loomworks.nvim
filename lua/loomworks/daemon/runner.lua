@@ -260,7 +260,8 @@ end
 --- locks, gates and lines restricted to them, the lines naming the units
 --- (`<project>/<configuration>`), `meta.profile` absent.
 --- @param svc table the build service (with_model, host)
---- @param ctx table the request: { op?, env, args, command, task, ws, profile?, units?, clean_steps?, cases?,
+--- @param ctx table the request: { op?, env, args, command, task, ws, profile?, units?, clean_steps?,
+---   clean_refused?, test_pre?, cases?,
 ---   on_run? } — on_run(run) is called with the run before any of its work (a caller whose request is
 ---   another table registers the run there, so a throw while starting cancels it)
 ---   cases (op "cases"): { kind = "test"|"debug" (meta.kind), plan() → steps|nil, err; wait(dirs, fn, api);
@@ -543,13 +544,17 @@ function M.run(svc, ctx)
         if not prepared then return finish(1, perr) end
         -- (`no_build`: a possibly stale build's notes, §16.16.)
         for _, n in ipairs(prepared.notes or {}) do task:line("note", n, "plain") end
+        -- Invalid ProfileProjects (core §5.4): not tested; the run fails
+        -- naming them once the others' tests ran.
         if #prepared.steps == 0 then
             release_all()
             task:line("out", "no tests to run for profile '" .. profile.key .. "'", "plain")
-            return finish(0, nil, { result = { steps = {}, junit = {} } })
+            local rcode, rerr = test_plan.with_refused(ctx.test_pre, 0, nil)
+            return finish(rcode, rerr, { result = { steps = {}, junit = {} } })
         end
         test_plan.run(ws, profile, prepared, topts, test_host, function(code, err, results)
             -- (The structured results: Tests/1.run's task result, §19.15.)
+            code, err = test_plan.with_refused(ctx.test_pre, code, err)
             finish(code, err, { result = results })
         end)
     end
@@ -622,7 +627,12 @@ function M.run(svc, ctx)
         if ended_by_cancel() then return end
         code, signal = build_run.exit_status(code, signal)
         build_run.after_clean_step(ws, step, code)
-        if code ~= 0 then return finish(code, build_run.failure_message(step, code, nil, signal)) end
+        if code ~= 0 then
+            local msg = build_run.failure_message(step, code, nil, signal)
+            -- The invalid ProfileProjects (core §5.4) are named too.
+            if ctx.clean_refused then msg = msg .. "\n" .. build_run.refused_message(ctx.clean_refused) end
+            return finish(code, msg)
+        end
         task:progress(ci / #csteps)
         next_clean()
     end
@@ -633,6 +643,13 @@ function M.run(svc, ctx)
         ci = ci + 1
         if ci > #csteps then
             release_all()
+            -- Invalid ProfileProjects (core §5.4): failed once the others are cleaned.
+            -- Its task result names them as `not_run` (Build/1 clean): the
+            -- editor's rebuild goes on to build the others.
+            if ctx.clean_refused then
+                return finish(1, build_run.refused_message(ctx.clean_refused),
+                    { result = { not_run = ctx.clean_refused } })
+            end
             task:line("out", build_run.ok_line("clean", label))
             return finish(0)
         end
@@ -670,6 +687,9 @@ function M.run(svc, ctx)
 
     -- ---- the build steps ---------------------------------------------------
     local steps, i = nil, 0
+    -- The profile's ProfileProjects not run as invalid (core §5.4): the task
+    -- fails naming them once the other projects' steps ran.
+    local refused
     local case_api
     local next_step
     -- (Set by a target-scoped launch build: what follows a unit's steps.)
@@ -698,6 +718,11 @@ function M.run(svc, ctx)
         if not okc then return finish(1, stopped(why)) end
         i = i + 1
         if i > #steps then
+            -- (A test run tests the others first: test_phase fails on them.)
+            if refused and not testing then
+                release_all()
+                return finish(1, build_run.refused_message(refused))
+            end
             if testing then return test_phase() end
             if cases then return cases.after_build(case_api) end
             release_all()
@@ -987,9 +1012,9 @@ function M.run(svc, ctx)
             -- The for-test build: a unit whose runner rebuilds itself is not
             -- built separately unless it has saved test targets (`keep`); the
             -- arguments after `--` are the test steps'.
-            steps, plan_err = build_run.plan(profile, { for_test = { keep = ctx.test_pre.keep } })
+            steps, plan_err, refused = build_run.plan(profile, { for_test = { keep = ctx.test_pre.keep } })
         else
-            steps, plan_err = build_run.plan(profile, {
+            steps, plan_err, refused = build_run.plan(profile, {
                 -- (A run's `extra` are the program's arguments, not the build's.)
                 extra_args = not running and args.extra or nil,
                 build_targets = args.targets,
@@ -1000,6 +1025,10 @@ function M.run(svc, ctx)
             })
         end
         if not steps then finish(1, plan_err); return run end
+        if #steps == 0 and refused and not testing then
+            release_all()
+            finish(1, build_run.refused_message(refused)); return run
+        end
         if #steps == 0 then
             if testing then test_phase(); return run end
             if cases then cases.after_build(case_api); return run end

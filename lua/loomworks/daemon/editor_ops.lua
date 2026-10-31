@@ -86,7 +86,8 @@ local VERB = { build = "build", configure = "configure", clean = "clean",
 M.NO_RESTART = { prepare_run = true, prepare_debug = true, prepare_test_debug = true, device_launch = true,
     device_log = true, ["Maintenance/1.execute_deletion"] = true, ["Maintenance/1.nuke"] = true }
 
---- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil) }
+--- @alias loomworks.daemon.OpContinuation { resolve: fun(v: any), reject: fun(err: any, notified: boolean|nil, not_run: string[]|nil) }
+--- (`not_run`: a clean's task result's lines, core §5.4, M.run_ids.)
 
 --- The editor's observer for an operation of `ws`: the current one when
 --- `ws` is nil — a `daemon`-mode editor holds no model (spec §19.16 "End
@@ -1017,9 +1018,17 @@ function M.run_ids(ws, method, scope, opts, k)
         obs:start_owned(method, M.ids_args(scope, { jobs = opts.jobs, force = opts.force or force }), {
             unit_ids = scope.unit_ids, profile_id = scope.profile_id,
             on_reply = on_reply(method, obs, k),
-            on_done = function(task, reason)
+            on_done = function(task, reason, done)
                 local err = failure(verb, task, reason)
-                if err then return k.reject(err) end
+                if err then
+                    -- A clean whose only failure is the profile's invalid
+                    -- ProfileProjects (core §5.4): the daemon's task result
+                    -- names them as `not_run` (a rebuild goes on to build).
+                    local result = (not reason and done) and require("loomworks.daemon.observer").done_result(done)
+                    local not_run = method == "clean" and type(result) == "table"
+                        and type(result.not_run) == "table" and result.not_run or nil
+                    return k.reject(err, nil, not_run)
+                end
                 k.resolve(true)
             end,
         })

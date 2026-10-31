@@ -148,7 +148,11 @@ end
 --- only once the clean ended successfully — its build (spec §19.16 "Editor
 --- operations"). Nothing to clean is the clean's own answer, never decided
 --- from the rows (in `daemon` mode the daemon's refusal on stdout, INFO and
---- ok; in-process resolved at once): the build follows.
+--- ok; in-process resolved at once): the build follows. So does a clean
+--- whose only failure is the profile's invalid ProfileProjects (core §5.4),
+--- as its refusal's `not_run` says (the daemon's clean task result, or the
+--- in-process call's): the others are built and the rebuild fails naming
+--- them.
 --- @param row table the profile's row
 --- @param ws? loomworks.Workspace
 function M.rebuild(row, ws)
@@ -159,18 +163,22 @@ function M.rebuild(row, ws)
             local model = require("loomworks.ui.model_calls")
             local fidget = require("loomworks.fidget")
             local handle = fidget.start_op_action("Rebuilding " .. key)
-            local function build()
+            -- `not_run`: the clean's own answer that its only failure is the
+            -- profile's invalid ProfileProjects (core §5.4): the others are
+            -- built, then the rebuild fails naming them.
+            local function build(not_run)
                 fidget.report(handle, "building...")
                 model.call(ws, "Build/1.build", { profile = row }, function(r)
                     local ok, err = model.result(r)
-                    if ok then return fidget.finish(handle, "rebuilt") end
-                    fidget.fail(handle, err or "the build failed")
+                    if ok and not not_run then return fidget.finish(handle, "rebuilt") end
+                    fidget.fail(handle, err or not_run or "the build failed")
                 end)
             end
             fidget.report(handle, "cleaning...")
             model.call(ws, "Build/1.clean", { profile = row }, function(r)
                 local ok, err = model.result(r)
                 if ok then return build() end
+                if type(r.not_run) == "table" then return build(err) end
                 fidget.fail(handle, err or "the clean failed")
             end)
         end)

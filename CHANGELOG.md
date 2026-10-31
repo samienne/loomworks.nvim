@@ -592,6 +592,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- A profile build, configure, clean or test no longer runs a project whose
+  configuration the profile's tool cannot honor (a tool compat error). The
+  other projects still run; the skipped one is named with its reason in the
+  result, the operation fails, and `lw build`, `lw clean` and `lw test` exit
+  non-zero after the others ran (`lw test` after their tests). The status
+  page's rebuild still builds the other projects, and a clean keeps the
+  skipped project's build directory even when another project shares it.
+  Before, such a project was built and cleaned anyway. (#356)
 - In `daemon` mode the status page's Debug Adapters section lists the
   languages of the daemon's `DebugConfig/1.adapters` records instead of
   reading the editor's model. `DebugConfig/1.adapters` now has one record
