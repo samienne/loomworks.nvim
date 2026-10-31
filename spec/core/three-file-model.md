@@ -481,7 +481,7 @@ Sparse record of what has actually been configured and built.
 
 ```json
 {
-  "_meta": { "version": 8, "cached_at": "...", "written_by": "0.1.43" },
+  "_meta": { "version": 9, "cached_at": "...", "written_by": "0.1.45" },
   "build_dirs": {
     "build/App/ninja-gcc-12/Debug": {
       "project_key": "App",
@@ -500,6 +500,15 @@ Sparse record of what has actually been configured and built.
         "/workspace/App/bin/app.pdb"
       ],
       "overwritten_by": "build/App/ninja-clang-17/Debug"
+    },
+    "build/Lib/ninja-mc#Release:ninja-mc": {
+      "project_key": "Lib",
+      "config_key": "Release:ninja-mc",
+      "type": "cmake",
+      "state": "configured",
+      "variant": "Release",
+      "build_dir": "/workspace/.nvim/build/Lib/ninja-mc",
+      ...
     }
   },
   "deploy_state": {
@@ -520,13 +529,16 @@ Sparse record of what has actually been configured and built.
   from detection (§17.7).
 - Never auto-removes entries — survives git branch switches intact.
 - Grows as builds happen; shrinks only on explicit delete/clean.
-- Flat `build_dirs` dict keyed by the config unit's **relative build-dir
-  path** (`unit.id` / `bd.rel_path`, e.g. `build/App/ninja-gcc-12/Debug`; an
-  external build system's key is its absolute path). Each entry is
-  self-describing (includes `project_key`, `config_key`, `type`, `variant`,
-  and tool properties), so it stands alone without a separate profiles table
-  — a profile's cache linkage is the set of build-dir keys its config units
-  resolve to.
+- Flat `build_dirs` dict keyed by the config unit's **id** (data-model §1.7
+  "Unit identity"): its **relative build-dir path** (e.g.
+  `build/App/ninja-gcc-12/Debug`; an external build system's key is its
+  absolute path). In a shared tree the key is that path, `#`, and the
+  entry's `config_key` (e.g. `build/Lib/ninja-mc#Release:ninja-mc`), so each
+  configuration in the tree has its own entry; their `build_dir` fields name
+  the same directory. Each entry is self-describing (includes `project_key`,
+  `config_key`, `type`, `variant`, and tool properties), so it stands alone
+  without a separate profiles table — a profile's cache linkage is the set of
+  unit ids its config units resolve to. Keys are never parsed.
 - `deploy_state` dict keyed by normalized absolute destination path. Tracks
   which source config unit's artifact was last deployed to each destination.
   Cleaned when source config units are deleted/cleaned.
@@ -546,7 +558,7 @@ Sparse record of what has actually been configured and built.
 - `overwritten_by` — present when another config unit has built over one of
   this unit's shared artifacts (§5.9), marking this unit's `built` state no
   longer trustworthy. Its value is the **cache key of the overwriting unit** —
-  the same relative build-dir path (`unit.id`) that keys the `build_dirs` dict
+  the same unit id that keys the `build_dirs` dict
   (e.g. `build/App/ninja-clang-17/Debug`). Present only while the condition holds: the
   field is absent when the unit is not overwritten, and is dropped on the next
   save when the unit rebuilds or a resync finds the two units no longer share
@@ -559,6 +571,26 @@ Sparse record of what has actually been configured and built.
   async work begins" rule that guards destructive operations (deletion/clean):
   there is no pre-async placeholder to write. Deleting or cleaning a unit
   removes its whole entry, taking both fields with it.
+- **Version 9; migration from 8.** Version 9 added shared-tree keys. A
+  version 8 cache is migrated in memory at load and written as version 9 by
+  the next save; loading never writes it. Version 8 kept one entry per
+  directory, so a shared tree had one entry, holding whichever configuration
+  resolved first, with build results of every configuration built into the
+  tree. Migration runs as units are matched to entries, by the entry's
+  `project_key` and `config_key`, as at every load:
+  - An entry matched by a unit whose module reports its directory as a
+    shared tree moves to that unit's id. It keeps every field except its
+    build result: `state` `built` or `failed_build` becomes `configured`,
+    and `last_built` is removed. Its next build is incremental.
+  - The tree's other configurations had no entry and get none. Each is
+    unconfigured until its own first configure. Nothing is copied from the
+    moved entry.
+  - Every `overwritten_by` and `deploy_state` `source_build_dir` that names a
+    moved entry's old key names its new key.
+  - An entry no unit matches keeps its key and is orphaned (§2.5). Every
+    other entry is unchanged.
+
+  A version 8 loomworks refuses a version 9 cache as a newer schema (§2.7).
 - **Purely a serialization format.** At runtime, domain objects (ConfigUnit,
   Profile) own all mutable state as first-class fields. The cache file is
   generated from domain objects on save via `serialize()` methods. After

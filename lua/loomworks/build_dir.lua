@@ -1,11 +1,17 @@
---- loomworks/build_dir.lua — BuildDir: cached build artifacts for a directory.
---- Represents a physical build directory with its state on disk.
+--- loomworks/build_dir.lua — BuildDir: one cache entry's build state.
+--- One per unit (cache entry): siblings in a module's shared tree (spec §1.7)
+--- each have their own BuildDir with the same `path`, so directory-level
+--- state (refs, locks, deletion, the missing-directory stat) keys by
+--- `Workspace:_build_dir_ref_key(path)`, never by `rel_path`.
 --- Separate from ConfigUnit (user intent) — a ConfigUnit references a BuildDir.
 --- Orphaned BuildDirs have state but no ConfigUnit pointing to them.
 
 --- @class loomworks.BuildDir
---- @field rel_path string relative build dir path (cache key, e.g., "build/App/Debug")
---- @field path string absolute build directory path
+--- @field rel_path string the unit id keying its cache entry (spec §1.7): the relative
+---   build dir ("build/App/Debug"), or in a shared tree `<dir>#<config_key>`
+---   ("build/App/ninja-mc#Debug:ninja-mc"). Never parsed, never a path.
+--- @field path string|nil absolute build directory path (shared by a tree's siblings);
+---   nil only for an entry recorded without one
 --- @field state string|nil "configured" | "built" | "failed_configure" | "failed_build" | "unknown"
 --- @field last_configured string|nil ISO 8601 timestamp
 --- @field last_built string|nil ISO 8601 timestamp

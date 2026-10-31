@@ -423,18 +423,24 @@ local function sync_build_dirs(ctx, workspace, cache)
     local cache_mod = require("loomworks.cache")
     local dir_exists = ctx.dir_exists
     local seen = {}
-    -- rel_path → true for build dirs whose cached state must reset because the
-    -- directory is gone from disk (spec §3.1 rule 7). Populated here, one stat
-    -- per directory, then reused by sync_profile_projects_and_config_units so
-    -- every ConfigUnit that shares the directory sees the reset without a
-    -- second stat.
+    -- entry key → true for entries whose cached state must reset because
+    -- their directory is gone from disk (spec §3.1 rule 7). Populated here,
+    -- one stat per entry — each sibling of a shared tree (spec §1.7) is its
+    -- own entry on the same directory, so every one of them is reset — then
+    -- reused by sync_profile_projects_and_config_units without a second stat.
     ctx.missing_build_dirs = {}
 
     if cache and cache.build_dirs then
         for rel_path, entry in pairs(cache.build_dirs) do
             if entry.state and entry.state ~= "unconfigured" then
+                -- The entry's directory is its `build_dir`; a path is never
+                -- derived from a key, which may be a unit id (`<dir>#<config_key>`,
+                -- spec §1.7). Only a version 8 file keys every entry by its
+                -- directory.
                 local abs_path = entry.build_dir
-                    or cache_mod.absolute_build_dir(rel_path, workspace.root)
+                if not abs_path and cache._v8_moved then
+                    abs_path = cache_mod.absolute_build_dir(rel_path, workspace.root)
+                end
 
                 if build_dir_vanished(entry.state, abs_path, dir_exists) then
                     -- Directory removed out of band: record the reset and drop
@@ -484,6 +490,54 @@ local function sync_build_dirs(ctx, workspace, cache)
     return arr
 end
 
+--- Version 8 → 9 cache migration of one matched entry (three-file-model
+--- §2.3 "Version 9; migration from 8"). A version 8 cache kept one entry per
+--- directory, so a shared tree's entry holds whichever configuration
+--- resolved first, with build results of every configuration built into the
+--- tree. The entry matched by a shared-tree unit moves to that unit's id
+--- with its build result downgraded (`built`/`failed_build` → `configured`,
+--- `last_built` removed); every `overwritten_by` and deploy `source_build_dir`
+--- naming the old key follows. In memory only — loading never writes.
+--- @param ctx table deserialization context (its BuildDir for the old key is re-keyed)
+--- @param cache table parsed cache data (mutated)
+--- @param old_key string the entry's version 8 key (its directory)
+--- @param entry table the matched cache entry
+--- @param new_id string the unit's id
+local function migrate_v8_shared_entry(ctx, cache, old_key, entry, new_id)
+    cache._v8_moved[entry] = true
+    cache.build_dirs[old_key] = nil
+    cache.build_dirs[new_id] = entry
+    if entry.state == "built" or entry.state == "failed_build" then
+        entry.state = "configured"
+    end
+    entry.last_built = nil
+    for _, other in pairs(cache.build_dirs) do
+        if other.overwritten_by == old_key then other.overwritten_by = new_id end
+    end
+    for _, record in pairs(cache.deploy_state or {}) do
+        if type(record) == "table" and record.source_build_dir == old_key then
+            record.source_build_dir = new_id
+        end
+    end
+    -- sync_build_dirs already made a BuildDir (and a missing-dir mark) for
+    -- the old key: move them with the entry.
+    local bd = ctx.build_dirs[old_key]
+    if bd then
+        ctx.build_dirs[old_key] = nil
+        ctx.build_dirs[new_id] = bd
+        bd.rel_path = new_id
+        bd.state = entry.state
+        bd.last_built = nil
+    end
+    for _, other in pairs(ctx.build_dirs) do
+        if other.overwritten_by == old_key then other.overwritten_by = new_id end
+    end
+    if ctx.missing_build_dirs[old_key] then
+        ctx.missing_build_dirs[old_key] = nil
+        ctx.missing_build_dirs[new_id] = true
+    end
+end
+
 --- Sync profile projects and config units together.
 --- ConfigUnits are created from profile resolution (what profiles need),
 --- NOT from cache entries. A cache entry is linked back on the stable
@@ -492,7 +546,7 @@ end
 --- @param ctx table deserialization context with O(1) lookups
 --- @param workspace table workspace reference for domain object constructors
 --- @param cache table parsed cache data
---- @param deps table { compute_build_dir }
+--- @param deps table { compute_unit_id }
 --- @return table[] config_units array
 --- @return table[] profile_projects array
 local function sync_profile_projects_and_config_units(ctx, workspace, cache, deps)
@@ -549,23 +603,42 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 -- key when one exists, so a volatile recomputed path segment
                 -- can't orphan a built entry. Only mint a fresh path when
                 -- nothing was ever built for this identity.
+                -- The id is the directory, plus the config_key in a module's
+                -- shared tree (spec §1.7 "Unit identity").
                 local build_dir_id = nil
                 local abs_path = nil
                 local matched_entry = nil
                 if project then
+                    -- Pass the effective tools list when we have one
+                    -- (multi-tool path); otherwise fall back to the
+                    -- legacy single-tool_data call.
+                    local arg = effective_tools and #effective_tools > 0
+                        and effective_tools or tool_data
                     local rel_key, entry = workspace:find_cache_entry_for(
                         cache, project_key, variant, tool_key)
                     if rel_key then
                         build_dir_id = rel_key
                         abs_path = entry.build_dir
+                        if not abs_path and cache._v8_moved and not cache._v8_moved[entry] then
+                            -- A version 8 file keys each entry by its directory.
+                            abs_path = cache_mod.absolute_build_dir(rel_key, workspace.root)
+                            entry.build_dir = abs_path
+                        end
+                        if not abs_path and deps.compute_unit_id then
+                            -- The unit's directory, never one derived from its id.
+                            abs_path = select(2, deps.compute_unit_id(project, variant, arg, tool_key))
+                        end
                         matched_entry = entry
-                    elseif deps.compute_build_dir then
-                        -- Pass the effective tools list when we have one
-                        -- (multi-tool path); otherwise fall back to the
-                        -- legacy single-tool_data call.
-                        local arg = effective_tools and #effective_tools > 0
-                            and effective_tools or tool_data
-                        build_dir_id, abs_path = deps.compute_build_dir(project, variant, arg)
+                        if cache._v8_moved and not cache._v8_moved[entry]
+                                and deps.compute_unit_id then
+                            local _, _, shared = deps.compute_unit_id(project, variant, arg, tool_key)
+                            if shared then
+                                build_dir_id = require("loomworks.cache").unit_id(rel_key, true, entry.config_key)
+                                migrate_v8_shared_entry(ctx, cache, rel_key, entry, build_dir_id)
+                            end
+                        end
+                    elseif deps.compute_unit_id then
+                        build_dir_id, abs_path = deps.compute_unit_id(project, variant, arg, tool_key)
                     end
                 end
 
@@ -600,7 +673,7 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                         local enriched = nil
                         if matched_entry then
                             enriched = vim.tbl_extend("keep", matched_entry, {
-                                build_dir = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
+                                build_dir = abs_path,
                             })
                             -- Build directory vanished (spec §3.1 rule 7): reset
                             -- to unconfigured so ConfigUnit:state() reports
@@ -614,6 +687,9 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                         end
 
                         local build_dir_obj = ctx.build_dirs[build_dir_id]
+                        if build_dir_obj and not build_dir_obj.path then
+                            build_dir_obj.path = abs_path
+                        end
 
                         expected_units[build_dir_id] = {
                             project_key = project_key,
@@ -622,7 +698,7 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                             tool = tool,
                             configuration = configuration,
                             build_dir = build_dir_obj,
-                            build_dir_value = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
+                            build_dir_value = abs_path,
                         }
                     end
                     config_unit_ref = build_dir_id

@@ -26,6 +26,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Upgrade notes
+- The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8
+  cache is migrated when it loads and written as version 9 by the next save;
+  after that an older `lw` or editor (including a pinned one) refuses the
+  workspace as a newer schema until it is updated. Each configuration of a
+  CMake multi-config build directory (Ninja Multi-Config, Visual Studio)
+  builds once more after the upgrade, incrementally, because its old state
+  could have come from another configuration's build. Running such a
+  configuration on a device stages it under a new directory on the device;
+  `lw device clean` removes the old one. (#357)
+
 ### Added
 
 - `lw launch set` takes `--description <para>` (repeatable), like
@@ -69,6 +80,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 
+- With a CMake multi-config generator (Ninja Multi-Config, Visual Studio),
+  Debug and Release are separate configurations again, each with its own
+  state, artifacts and status line, although they share one build directory.
+  They were one unit, so building Debug made Release show as built and a
+  build of Release could be skipped. Deleting one of them keeps the shared
+  directory while the other still uses it. (#357)
 - Renaming a project no longer throws away its configured and built build
   directories' state on the next reload: the project's configurations keep
   their build state and are not reconfigured from scratch (#342).
