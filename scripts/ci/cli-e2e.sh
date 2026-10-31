@@ -186,9 +186,11 @@ test_lock_recovery() {
         printf '#!/bin/sh\n[ -f "$(dirname "$0")/slow-$1" ] && sleep %d\nexit 0\n' "$LOCK_SLEEP" > "$ws/slow.sh"
         step="\"sh\",\"$ws/slow.sh\""
     fi
+    # The build dir lies under .nvim/build: nuke (step 3) removes only that
+    # tree and takes only the locks found there (spec 19.3).
     cat > "$ws/loomworks.json" <<JSON
 {"projects":{"App":{"path":"App","shell":{
-  "build_dir":"\${workspace_root}/out/b",
+  "build_dir":"\${workspace_root}/.nvim/build/b",
   "configure_cmd":[$step,"configure"],
   "build_cmd":[$step,"build"],
   "configurations":{"Debug":{}}}}},

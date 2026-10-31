@@ -420,6 +420,12 @@ describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", fu
         local x, cache = prepared()
         local bd = s.unit():build_dir()
         assert.is_true(exists(bd), "built: " .. tostring(bd))
+        -- The shell template puts the unit's build directory at <root>/out/Debug,
+        -- outside `.nvim`: nuke removes only `.nvim/build`, so it must neither
+        -- list nor remove it.
+        local rel = vim.fs.normalize(bd):sub(#vim.fs.normalize(s.root) + 2)
+        assert.equals("out/Debug", rel, tostring(bd))
+        local bd_files = vim.fn.readdir(bd)
         -- A file of the workspace outside `.nvim`.
         vim.fn.mkdir(s.root .. "/keep", "p")
         local kf = assert(io.open(s.root .. "/keep/f.txt", "w")); kf:write("x"); kf:close()
@@ -428,6 +434,7 @@ describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", fu
         assert.equals("confirm", c.outcome, vim.inspect(c))
         assert.equals(maint.NUKE_HEADER, c.lines[1])
         assert.truthy(table.concat(c.lines, "\n"):find("/.nvim/build/", 1, true), vim.inspect(c.lines))
+        assert.falsy(table.concat(c.lines, "\n"):find("/out/Debug", 1, true), vim.inspect(c.lines))
         assert.is_string(c.plan)
         assert.is_true(exists(x) and exists(cache), "a confirm removes nothing")
         local r = s.nuke({ yes = true, plan = c.plan })
@@ -440,8 +447,9 @@ describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", fu
         assert.is_false(exists(x))
         assert.is_false(exists(s.root .. "/.nvim/build"))
         -- Outside `.nvim` nothing is touched: not even the unit's build
-        -- directory, which the shell template puts at <root>/out/Debug.
+        -- directory, which keeps its contents (only the cache forgets it).
         assert.is_true(exists(bd), "the unit's build directory outside .nvim is kept: " .. tostring(bd))
+        assert.same(bd_files, vim.fn.readdir(bd), "its contents are untouched")
         assert.is_true(exists(s.root .. "/keep/f.txt"), "a file outside .nvim is kept")
         assert.is_true(exists(s.root .. "/loomworks.json"))
         -- Loaded again: a new model, its cache claims nothing built.
