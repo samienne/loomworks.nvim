@@ -276,13 +276,27 @@ function M.daemon_connect()
     return true
 end
 
---- Get the merged active configuration set.
---- @return loomworks.ActiveSet|nil
+--- The daemon-mode facade while the editor's runtime selection is `daemon`
+--- (it then holds no model, spec §19.16 "Public API"): the getters answer
+--- from the daemon's views through it. nil in `in-process` mode.
+--- @return table|nil
+local function daemon_rows()
+    local facade = require("loomworks.daemon.facade")
+    return facade.active() and facade or nil
+end
+
+--- Get the merged active configuration set. In `daemon` mode the
+--- `view.Workspace/1` `config_sets` record whose `active` is true (a copy,
+--- with its id; nil while the view is not held).
+--- @return loomworks.ActiveSet|loomworks.ViewConfigSet|nil
 function M.get_active_configuration_set()
+    local d = daemon_rows()
+    if d then return d.active_configuration_set() end
     return core:get_active_configuration_set()
 end
 
---- Get the active workspace.
+--- Get the active workspace; always nil in `daemon` mode (the editor holds
+--- no model, spec §19.16 "Public API").
 --- @return loomworks.Workspace|nil
 function M.get_workspace()
     return core:get_workspace()
@@ -364,33 +378,53 @@ end
 -- Object factories
 -- ---------------------------------------------------------------------------
 
---- Get the active Profile object.
---- @return loomworks.Profile|nil
+-- In `daemon` mode (spec §19.16 "Public API", a breaking change) the getters
+-- below return plain copies of the daemon's view rows, with their ids, instead
+-- of objects, and nil while the view they read is not held.
+
+--- Get the active Profile object. In `daemon` mode the `view.Workspace/1`
+--- `profiles` record whose `active` is true.
+--- @return loomworks.Profile|loomworks.ViewProfile|nil
 function M.get_active_profile()
+    local d = daemon_rows()
+    if d then return d.active_profile() end
     return core:get_active_profile()
 end
 
---- Get all Profile objects as a dict.
---- @return table<string, loomworks.Profile>
+--- Get all Profile objects as a dict. In `daemon` mode the
+--- `view.Workspace/1` `profiles` records, by key (nil while not held).
+--- @return table<string, loomworks.Profile|loomworks.ViewProfile>|nil
 function M.get_profiles()
+    local d = daemon_rows()
+    if d then return d.profiles() end
     return core:get_profiles()
 end
 
---- Get tool entries for the configuration sets UI.
---- @return table<string, loomworks.ToolEntry[]> set_name -> entries
+--- Get tool entries for the configuration sets UI. In `daemon` mode, per
+--- configuration set name, the `view.Workspace/1` `profiles` records of
+--- that set (nil while not held).
+--- @return table<string, loomworks.ToolEntry[]|loomworks.ViewProfile[]>|nil set_name -> entries
 function M.get_tool_entries()
+    local d = daemon_rows()
+    if d then return d.tool_entries() end
     return core:get_tool_entries()
 end
 
---- Get all Project objects from the active set as a dict.
---- @return table<string, loomworks.Project>
+--- Get all Project objects from the active set as a dict. In `daemon` mode
+--- the `view.Workspace/1` `projects` records, by key (nil while not held).
+--- @return table<string, loomworks.Project|loomworks.ViewProject>|nil
 function M.get_projects()
+    local d = daemon_rows()
+    if d then return d.projects() end
     return core:get_projects()
 end
 
---- Get all ConfigurationSet objects.
---- @return table<string, loomworks.ConfigurationSet>
+--- Get all ConfigurationSet objects. In `daemon` mode the
+--- `view.Workspace/1` `config_sets` records, by name (nil while not held).
+--- @return table<string, loomworks.ConfigurationSet|loomworks.ViewConfigSet>|nil
 function M.get_config_sets()
+    local d = daemon_rows()
+    if d then return d.config_sets() end
     return core:get_config_sets()
 end
 
@@ -517,9 +551,14 @@ function M.trust_user_prefs(root, opts)
     return "cancelled"
 end
 
---- Get detected tools organized by module type.
---- @return table<string, loomworks.DetectedTool[]>
+--- Get detected tools organized by module type. In `daemon` mode, per
+--- module type, the distinct `{ module, key?, label }` tool rows the
+--- `view.Workspace/1` `profiles` records select (nil while not held); the
+--- toolchains a module detects are the `Toolchains/1.list` call.
+--- @return table<string, loomworks.DetectedTool[]|loomworks.ViewProfileTool[]>|nil
 function M.get_tools_by_type()
+    local d = daemon_rows()
+    if d then return d.tools_by_type() end
     return core:get_tools_by_type()
 end
 
@@ -573,10 +612,14 @@ function M.cancel_tasks_for_profile(profile)
     return core:cancel_tasks_for_profile(profile)
 end
 
---- Get effective LSP options for a server (defaults applied).
+--- Get effective LSP options for a server (defaults applied). In `daemon`
+--- mode a copy of that server's options in the held `LspConfig/1` state
+--- (nil while it is not held).
 --- @param server string
---- @return table
+--- @return table|nil
 function M.get_lsp_options(server)
+    local d = daemon_rows()
+    if d then return d.lsp_options(server) end
     return core:get_lsp_options(server)
 end
 
@@ -651,9 +694,14 @@ function M.find_running_tasks_for_items(items)
     return core:find_running_tasks_for_items(items)
 end
 
---- Get orphaned cached configs (configs with state not referenced by any profile).
---- @return loomworks.OrphanedConfig[]
+--- Get orphaned cached configs (configs with state not referenced by any
+--- profile). In `daemon` mode the `view.Workspace/1`
+--- `orphaned.configurations` records `{ id, key, build_dir? }` (nil while
+--- not held).
+--- @return loomworks.OrphanedConfig[]|{ id?: string, key: string, build_dir?: string }[]|nil
 function M.get_orphaned_configs()
+    local d = daemon_rows()
+    if d then return d.orphaned_configs() end
     return core:get_orphaned_configs()
 end
 
@@ -661,10 +709,13 @@ end
 -- Queries
 -- ---------------------------------------------------------------------------
 
---- Find the project containing a buffer's file.
+--- Find the project containing a buffer's file. In `daemon` mode a copy
+--- of the buffer's `view.ProjectsIndex/1` record, as `lw.buf_project`.
 --- @param bufnr number
---- @return loomworks.Project|nil
+--- @return loomworks.Project|loomworks.ViewProjectRecord|nil
 function M.project_for_buf(bufnr)
+    local d = daemon_rows()
+    if d then return d.project_for_buf(bufnr) end
     return core:project_for_buf(bufnr)
 end
 

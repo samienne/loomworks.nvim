@@ -118,8 +118,6 @@ local function render_fn(tree)
     end
     tree:blank()
 
-    local active_set = lw.get_active_configuration_set()
-
     local ctx = {
         lw = lw,
         view = view,
@@ -133,11 +131,6 @@ local function render_fn(tree)
         -- call, in both modes; a row's cancel and task output are the tasks
         -- naming its ids, step 5o C2d-2).
         ws = ws,
-        all_profiles = lw.get_profiles(),
-        active_profile = lw.get_active_profile(),
-        active_set = active_set,
-        config_sets = lw.get_config_sets(),
-        tool_entries = lw.get_tool_entries(),
     }
 
     -- A body section while the daemon's view is not held (`daemon` mode):

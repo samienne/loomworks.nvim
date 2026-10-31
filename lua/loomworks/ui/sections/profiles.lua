@@ -519,7 +519,7 @@ end
 
 --- Render the profiles section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, view, mode, ws, all_profiles, active_profile, config_sets, tool_entries }
+--- @param ctx table { lw, view, mode, ws, ... }
 return function(tree, ctx)
     local view = ctx.view
 

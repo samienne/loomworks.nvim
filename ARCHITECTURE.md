@@ -950,8 +950,15 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `_runner` is its strategy).
   A task with `units` and no profile (`Build/1` `units`, step 5k) resolves
   them as `reset --all` does.
-- `daemon/facade.lua` — the public build, launch and picker functions in
-  `daemon` mode (step 6b-α, spec §19.16 "Public API"): `init.lua`'s
+- `daemon/facade.lua` — the public getters, build, launch and picker
+  functions in `daemon` mode (step 6b-α, spec §19.16 "Public API"). The
+  getters (`get_profiles`, `get_active_profile`, `get_projects`,
+  `project_for_buf`, `get_config_sets`, `get_active_configuration_set`,
+  `get_tool_entries`, `get_tools_by_type`, `get_orphaned_configs`,
+  `get_lsp_options`) return deep copies of the `view.Workspace/1`,
+  `view.ProjectsIndex/1` and `LspConfig/1` rows, ids included, and nil while
+  the view is not held; `overseer.run_profile_action` refuses in this mode, so
+  a profile row never reaches the in-process build. `init.lua`'s
   `build_profile`, `build_target`, `pick_profile`, `pick_target`,
   `pick_target_action`, launch / debug, `compile_command_for_file` and
   `create_workspace` delegate here when `facade.active()` (no model, selection

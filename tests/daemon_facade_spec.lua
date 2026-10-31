@@ -206,4 +206,128 @@ describe("the daemon-mode facade (§19.16 Public API, step 6b-alpha)", function(
         assert.equals(0, vim.fn.filereadable(dir .. "/loomworks.json"))
         vim.fn.delete(dir, "rf")
     end)
+
+    -- The getters (§19.16 "Public API", D2): plain copies of the view rows
+    -- with their ids; nil while the view they read is not held.
+    describe("getters", function()
+        local function full_view()
+            views.set(obs, "workspace", {
+                profiles = {
+                    { id = "p:1", key = "dev", active = true, config_set = "main", config_set_id = "cs:1",
+                        tools = { { module = "cmake", key = "ninja-gcc", label = "Ninja GCC" } }, units = {} },
+                    { id = "p:2", key = "rel", active = false, config_set = "main", config_set_id = "cs:1",
+                        tools = { { module = "cmake", key = "ninja-gcc", label = "Ninja GCC" },
+                            { module = "shell", label = "shell" } }, units = {} },
+                    { id = "p:3", key = "old", active = false, orphaned_set = true, tools = {}, units = {} },
+                },
+                projects = { { id = "pr:app", key = "app", type = "shell" } },
+                config_sets = {
+                    { id = "cs:1", name = "main", active = true, mappings = {} },
+                    { id = "cs:2", name = "empty", active = false, mappings = {} },
+                },
+                orphaned = { configurations = { { id = "bd:1", key = "app:Old", build_dir = "/w/build/old" } },
+                    stray_dirs = {} },
+            })
+        end
+
+        it("are nil while no view is held", function()
+            views.clear(obs)
+            stub(obs, "lsp_phase", function() return "waiting", { why = "connecting" } end)
+            assert.is_nil(lw.get_profiles())
+            assert.is_nil(lw.get_active_profile())
+            assert.is_nil(lw.get_projects())
+            assert.is_nil(lw.get_config_sets())
+            assert.is_nil(lw.get_active_configuration_set())
+            assert.is_nil(lw.get_tool_entries())
+            assert.is_nil(lw.get_tools_by_type())
+            assert.is_nil(lw.get_orphaned_configs())
+            assert.is_nil(lw.get_lsp_options("clangd"))
+            assert.is_nil(lw.project_for_buf(0))
+            assert.is_nil(lw.get_workspace())
+        end)
+
+        it("get_profiles / get_active_profile return the profile rows by key, with ids", function()
+            full_view()
+            local all = lw.get_profiles()
+            assert.same({ "dev", "old", "rel" }, vim.fn.sort(vim.tbl_keys(all)))
+            assert.equals("p:2", all.rel.id)
+            local active = lw.get_active_profile()
+            assert.equals("p:1", active.id)
+            assert.equals("dev", active.key)
+        end)
+
+        it("returns copies: writing to a returned table changes nothing", function()
+            full_view()
+            lw.get_active_profile().key = "changed"
+            lw.get_profiles().dev.active = false
+            assert.equals("dev", lw.get_active_profile().key)
+        end)
+
+        it("get_projects returns the project rows by key, with ids", function()
+            full_view()
+            assert.same({ id = "pr:app", key = "app", type = "shell" }, lw.get_projects().app)
+        end)
+
+        it("get_config_sets / get_active_configuration_set return the set rows by name, with ids", function()
+            full_view()
+            local sets = lw.get_config_sets()
+            assert.equals("cs:2", sets.empty.id)
+            assert.equals("cs:1", lw.get_active_configuration_set().id)
+        end)
+
+        it("get_tool_entries lists each set's profile rows by the set's id", function()
+            full_view()
+            local entries = lw.get_tool_entries()
+            assert.same({ "p:1", "p:2" }, vim.tbl_map(function(r) return r.id end, entries.main))
+            assert.same({}, entries.empty)
+        end)
+
+        it("get_tools_by_type returns the distinct tool rows the profiles select", function()
+            full_view()
+            assert.same({
+                cmake = { { module = "cmake", key = "ninja-gcc", label = "Ninja GCC" } },
+                shell = { { module = "shell", label = "shell" } },
+            }, lw.get_tools_by_type())
+        end)
+
+        it("get_orphaned_configs returns the orphaned configuration rows, with ids", function()
+            full_view()
+            assert.same({ { id = "bd:1", key = "app:Old", build_dir = "/w/build/old" } }, lw.get_orphaned_configs())
+        end)
+
+        it("get_lsp_options reads the held LspConfig/1 state", function()
+            local st = { state = "loaded", options = { clangd = { clang_tidy = true } } }
+            stub(obs, "lsp_phase", function() return "loaded", st end)
+            local opts = lw.get_lsp_options("clangd")
+            assert.same({ clang_tidy = true }, opts)
+            opts.clang_tidy = false
+            assert.is_true(st.options.clangd.clang_tidy)
+            assert.same({}, lw.get_lsp_options("qmlls"))
+        end)
+
+        it("project_for_buf returns the buffer's ProjectsIndex record, as buf_project", function()
+            local dir = vim.fn.tempname()
+            vim.fn.mkdir(dir .. "/app", "p")
+            local abs = views.normalize(dir .. "/app")
+            views.set(obs, "projects", { projects = { { id = "pr:app", key = "app", type = "shell",
+                path = "app", abs_path = abs } } })
+            local buf = vim.api.nvim_create_buf(false, true)
+            vim.api.nvim_buf_set_name(buf, dir .. "/app/main.c")
+            local rec = lw.project_for_buf(buf)
+            assert.equals("pr:app", rec and rec.id, vim.inspect(rec))
+            assert.same(lw.buf_project(buf), rec)
+            vim.api.nvim_buf_delete(buf, { force = true })
+            vim.fn.delete(dir, "rf")
+        end)
+
+        it("overseer.run_profile_action refuses a profile row (never in-process)", function()
+            full_view()
+            local f = require("loomworks.overseer").run_profile_action(lw.get_active_profile(), "build")
+            local rejected
+            f:catch(function(e) rejected = e end)
+            assert.is_true(vim.wait(1000, function() return rejected ~= nil end, 10))
+            assert.is_true(noted("lw.build_profile()"), vim.inspect(notes))
+            assert.same({}, sent)
+        end)
+    end)
 end)
