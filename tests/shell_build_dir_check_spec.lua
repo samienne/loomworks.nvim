@@ -238,3 +238,26 @@ describe("shell build_dir template error keeps the configuration's build directo
     assert.equals(1, vim.fn.isdirectory(dir))
   end)
 end)
+
+-- A configuration rename whose new name resolves no build directory (a
+-- module `error`, core §8 `info`) leaves the unit where it is rather than
+-- giving it a nil id or directory.
+describe("configuration rename to a name resolving no build directory", function()
+  local root
+  after_each(function() if root then vim.fn.delete(root, "rf") end end)
+
+  it("keeps the unit's id and directory", function()
+    root = make_ws()
+    local ws, dev, app, debug = load(root)
+    local r = stubbed(ws, function() return cli.cmd_build(ws, { "build", dev.key }) end)
+    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    local unit = assert(ws:find_config_unit(app, debug, nil))
+    local id, dir = unit.id, unit:build_dir()
+    ws._compute_build_dir = function() return nil, nil end
+    local ok, err = pcall(function() return app:rename_configuration("Debug", "Renamed", {}) end)
+    ws._compute_build_dir = nil
+    assert.is_true(ok, tostring(err))
+    assert.equals(id, unit.id)
+    assert.equals(dir, unit:build_dir())
+  end)
+end)

@@ -872,6 +872,10 @@ function Project:rename_configuration(old_name, new_name, config_data)
             -- Skip running/deleting units — task is using the old build_dir.
             if unit:is_running() or unit:is_deleting() then
                 -- noop: Configuration ref auto-sees new name
+            elseif not ws:_compute_build_dir(self, new_name, unit._tool_data) then
+                -- noop: no build directory resolves for the new name (a
+                -- module `error`, §8 `info`) — the unit keeps its id and
+                -- directory rather than taking a nil one.
             elseif select(3, ws:_compute_build_dir(self, new_name, unit._tool_data)) then
                 -- Shared tree (spec §4.8 step 2): the unit stays in its
                 -- directory with its state; its id and cache entry move to
@@ -882,6 +886,8 @@ function Project:rename_configuration(old_name, new_name, config_data)
                 unit._config_key = merge_mod.build_config_key(new_name, unit._tool_key)
                 local dir = unit.build_dir_value
                     or select(2, ws:_compute_build_dir(self, new_name, unit._tool_data))
+                -- (Non-nil: the branch above refused a name resolving none.)
+                assert(dir, "rename: no build directory for " .. tostring(new_name))
                 local new_id = cache_mod.unit_id(
                     cache_mod.relative_build_dir(dir, ws.root), true, unit._config_key)
                 unit.id = new_id
