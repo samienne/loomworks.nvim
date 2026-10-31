@@ -2239,11 +2239,15 @@ local in_process_profile_action
 --- @param opts? table { parallel_jobs?: integer }
 --- @return loomworks.Future
 function M.run_profile_action(profile, action, opts)
-    -- No `daemon`-mode refusal here (there was one before step 6b-α): this
-    -- runs in-process unconditionally, which is safe ONLY because a
-    -- `daemon`-mode editor holds no model and so has no profile to pass in.
-    -- Should that editor ever hold one again, refuse here (§19.16
-    -- "Availability": never run in-process in `daemon` mode).
+    -- A `daemon`-mode editor holds no model, but its getters hand out the
+    -- view rows (`lw.get_active_profile()`, §19.16 "Public API"): a row passed
+    -- here is refused, never run in-process (§19.16 "Availability"). Its
+    -- build is `lw.build_profile()` (Build/1.build by id).
+    if require("loomworks.daemon.editor_ops").daemon_of(nil) then
+        local msg = "run_profile_action is not available with the workspace daemon — use lw.build_profile()"
+        vim.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        return require("loomworks.future").rejected(msg)
+    end
     return in_process_profile_action(profile, action, opts)
 end
 

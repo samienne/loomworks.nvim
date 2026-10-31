@@ -17,7 +17,9 @@
 ---     and stores the choice, or removes it, with
 ---     `Profiles/1.set_default_target`;
 ---   * the profile picker lists the `profiles` rows and sends
----     `Profiles/1.set_active` (no "None": the protocol has no deactivation).
+---     `Profiles/1.set_active` (no "None": the protocol has no deactivation);
+---   * the getters (`lw.get_profiles`, ...) return plain copies of the view
+---     rows with their ids, nil while the view is not held.
 --- A call the daemon cannot carry, or refuses, is one notification and
 --- changes nothing ("Availability"); nothing runs in-process.
 
@@ -288,6 +290,144 @@ function M.launch(mode)
     local row = active_row()
     if not row then return end
     with_default(row, function(ref) tracker.start(ref, mode) end)
+end
+
+-- ---------------------------------------------------------------------------
+-- The getters (§19.16 "Public API"): plain copies of the view rows, with
+-- their ids; nil while the view they read is not held. Writing to a returned
+-- table changes nothing.
+-- ---------------------------------------------------------------------------
+
+local copy = vim.deepcopy
+
+--- The copies of `rows` keyed by `field` of each row (the getters' documented
+--- shape: profiles and projects by key, configuration sets by name).
+--- @param rows table[]|nil
+--- @param field string
+--- @return table<string, table>
+local function by(rows, field)
+    local out = {}
+    for _, row in ipairs(rows or {}) do
+        if type(row[field]) == "string" then out[row[field]] = copy(row) end
+    end
+    return out
+end
+
+--- The copy of the first of `rows` whose `active` is true, or nil.
+--- @param rows table[]|nil
+--- @return table|nil
+local function active_of(rows)
+    for _, row in ipairs(rows or {}) do
+        if row.active then return copy(row) end
+    end
+    return nil
+end
+
+--- `lw.get_profiles()`: `view.Workspace/1`'s `profiles` records, by key.
+--- @return table<string, loomworks.ViewProfile>|nil
+function M.profiles()
+    local view = workspace_view()
+    return view and by(view.profiles, "key") or nil
+end
+
+--- `lw.get_active_profile()`: the `profiles` record whose `active` is true.
+--- @return loomworks.ViewProfile|nil
+function M.active_profile()
+    local view = workspace_view()
+    return view and active_of(view.profiles) or nil
+end
+
+--- `lw.get_projects()`: `view.Workspace/1`'s `projects` records, by key.
+--- @return table<string, loomworks.ViewProject>|nil
+function M.projects()
+    local view = workspace_view()
+    return view and by(view.projects, "key") or nil
+end
+
+--- `lw.get_config_sets()`: its `config_sets` records, by name.
+--- @return table<string, loomworks.ViewConfigSet>|nil
+function M.config_sets()
+    local view = workspace_view()
+    return view and by(view.config_sets, "name") or nil
+end
+
+--- `lw.get_active_configuration_set()`: the `config_sets` record whose
+--- `active` is true.
+--- @return loomworks.ViewConfigSet|nil
+function M.active_configuration_set()
+    local view = workspace_view()
+    return view and active_of(view.config_sets) or nil
+end
+
+--- `lw.get_tool_entries()`: per configuration set name, the `profiles`
+--- records of that set (a profile names its set by `config_set_id`; one of
+--- an orphaned set has none and is in no list).
+--- @return table<string, loomworks.ViewProfile[]>|nil
+function M.tool_entries()
+    local view = workspace_view()
+    if not view then return nil end
+    local out = {}
+    for _, set in ipairs(view.config_sets or {}) do
+        local list = {}
+        for _, row in ipairs(view.profiles or {}) do
+            if set.id ~= nil and row.config_set_id == set.id then list[#list + 1] = copy(row) end
+        end
+        if type(set.name) == "string" then out[set.name] = list end
+    end
+    return out
+end
+
+--- `lw.get_tools_by_type()`: per module type, the distinct `tools` rows
+--- (`{ module, key?, label }`) the `profiles` records select, in profile
+--- order. The toolchains a module detects are `Toolchains/1.list`, a call.
+--- @return table<string, loomworks.ViewProfileTool[]>|nil
+function M.tools_by_type()
+    local view = workspace_view()
+    if not view then return nil end
+    local out, seen = {}, {}
+    for _, row in ipairs(view.profiles or {}) do
+        for _, t in ipairs(row.tools or {}) do
+            if type(t.module) == "string" then
+                local sig = t.module .. "\0" .. tostring(t.key) .. "\0" .. tostring(t.label)
+                if not seen[sig] then
+                    seen[sig] = true
+                    out[t.module] = out[t.module] or {}
+                    table.insert(out[t.module], copy(t))
+                end
+            end
+        end
+    end
+    return out
+end
+
+--- `lw.get_orphaned_configs()`: `view.Workspace/1`'s
+--- `orphaned.configurations` records.
+--- @return { id?: string, key: string, build_dir?: string }[]|nil
+function M.orphaned_configs()
+    local view = workspace_view()
+    if not view then return nil end
+    return copy(view.orphaned and view.orphaned.configurations or {})
+end
+
+--- `lw.project_for_buf(bufnr)`: the buffer's `view.ProjectsIndex/1`
+--- record, as `lw.buf_project` (§19.13).
+--- @param bufnr? integer
+--- @return loomworks.ViewProjectRecord|nil
+function M.project_for_buf(bufnr)
+    local rec = require("loomworks.views").buf_project(bufnr)
+    return rec and copy(rec) or nil
+end
+
+--- `lw.get_lsp_options(server)`: that server's options in the held
+--- `LspConfig/1` state (empty when the state names none for it); nil while
+--- the state is not held.
+--- @param server string
+--- @return table|nil
+function M.lsp_options(server)
+    local phase, st = require("loomworks.lsp_source").daemon_phase()
+    if phase ~= "loaded" or type(st) ~= "table" then return nil end
+    local opts = type(st.options) == "table" and st.options[server] or nil
+    return type(opts) == "table" and copy(opts) or {}
 end
 
 --- `lw.compile_command_for_file` in `daemon` mode (§19.16 "Public API"):

@@ -326,7 +326,7 @@ end
 --- Render the configuration sets section (from the workspace view's
 --- `config_sets`; the actions name the set by its row).
 --- @param tree loomworks.Tree
---- @param ctx table { lw, view, mode, ws, all_profiles, ... }
+--- @param ctx table { lw, view, mode, ws, ... }
 return function(tree, ctx)
     local view = ctx.view
     -- Show the section when sets exist, or when projects exist so create is offered.
