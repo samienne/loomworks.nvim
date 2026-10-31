@@ -77,7 +77,7 @@ local function call(srv, method, args, opts)
     rec.conn = conn
     local env = envscope.capture()
     for k, v in pairs(opts.env or {}) do env[k] = v or nil end
-    conn:call("/build", "loomworks.Build", 1, method, args, function(r, e) rec.reply = r; rec.err = e end, env)
+    conn:call(opts.object or "/build", opts.iface or "loomworks.Build", 1, method, args, function(r, e) rec.reply = r; rec.err = e end, env)
     function rec.wait_reply() return vim.wait(60000, function() return rec.reply ~= nil or rec.err ~= nil end, 10) end
     function rec.done()
         for _, m in ipairs(rec.events) do if m.phase == "done" then return m end end
@@ -389,5 +389,65 @@ describe("Build/1 editor scopes in the daemon's build service (§19.15)", functi
         end)
         ProfileProject.tool_compat_error = orig
         assert.is_true(ok, tostring(e))
+    end)
+
+    --- Run `fn` with `lib`'s ProfileProject carrying a tool compat error (§8.4).
+    local function with_lib_refused(fn)
+        local ProfileProject = require("loomworks.profile").ProfileProject
+        local orig = ProfileProject.tool_compat_error
+        ProfileProject.tool_compat_error = function(pp)
+            if pp._project and pp._project.key == "lib" then return "lib tool is wrong" end
+            return orig(pp)
+        end
+        local ok, e = pcall(fn)
+        ProfileProject.tool_compat_error = orig
+        assert.is_true(ok, tostring(e))
+    end
+
+    it("a profile test runs the valid projects' tests, then fails naming the refused one (§5.4)", function()
+        -- Each unit's native batch runner: the STEP script with `test-<project>`.
+        local ConfigUnit = require("loomworks.config_unit")
+        local orig_units = ConfigUnit.batch_runner_test_units
+        local nv = (vim.v.progpath:gsub("\\", "/"))
+        ConfigUnit.batch_runner_test_units = function(unit)
+            local name = unit._project and unit._project.key or "?"
+            return { { run_command_all = function()
+                return { cmd = { nv, "--headless", "-u", "NONE", "-l", root .. "/step.lua", "test-" .. name } }
+            end } }
+        end
+        local ok, e = pcall(with_lib_refused, function()
+            start()
+            local r = call(srv, "run", { profile = { key = "dev" } },
+                { object = "/tests", iface = "loomworks.Tests" })
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.truthy(r.output():find("step test-app", 1, true), r.output())
+            assert.is_nil(r.output():find("step test-lib", 1, true), r.output())
+            r.conn:close()
+        end)
+        ConfigUnit.batch_runner_test_units = orig_units
+        assert.is_true(ok, tostring(e))
+    end)
+
+    it("a profile clean cleans the valid projects, then fails naming the refused one (§5.4)", function()
+        start()
+        built()
+        vim.fn.mkdir(root .. "/out/app/Debug", "p")
+        vim.fn.mkdir(root .. "/out/lib/Debug", "p")
+        with_lib_refused(function()
+            local r = call(srv, "clean", { profile = { key = "dev" } })
+            local done = r.finish()
+            assert.equals(1, done.exit_code, r.lines())
+            assert.truthy(tostring(done.error):find("lib/Debug not run: lib tool is wrong", 1, true),
+                tostring(done.error))
+            assert.truthy(r.lines():find("[clean] app", 1, true), r.lines())
+            assert.is_nil(r.lines():find("[clean] lib", 1, true), r.lines())
+            assert.equals("configured", cached_state(root, "app"))
+            assert.equals("built", cached_state(root, "lib"))
+            assert.is_true(exists(root .. "/out/lib/Debug"))
+            r.conn:close()
+        end)
     end)
 end)

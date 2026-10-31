@@ -650,7 +650,7 @@ end
 ---   tool's parallelism, appended to each build step as the editor's
 ---   parallel-jobs option (overseer.append_parallel_jobs).
 --- @return table[]|nil steps (possibly empty), string|nil err
---- @return string[]|nil refused the profile's ProfileProjects left out as
+--- @return loomworks.RefusalLine[]|nil refused the profile's ProfileProjects left out as
 ---   invalid for the action (core §5.4 "Invalid ProfileProjects"), one result
 ---   line each: the host runs the steps, then fails with `refused_message`
 function M.plan(profile, opts)
@@ -727,7 +727,7 @@ end
 --- The failure of a profile-level operation whose invalid ProfileProjects
 --- were not run (core §5.4 "Invalid ProfileProjects"): their result lines,
 --- one per line. Reported after the other projects ran.
---- @param refused string[] `plan`'s third return
+--- @param refused loomworks.RefusalLine[] `plan`'s third return (or `plan_clean`'s second)
 --- @return string
 function M.refused_message(refused)
     return table.concat(refused, "\n")
@@ -1045,15 +1045,19 @@ end
 --- there is nothing to clean (`nothing_to_clean_message`).
 --- With `units` the scope is those configuration units (`Build/1.clean`
 --- `units`, spec §19.15; overseer.plan_units_clean).
+--- A profile's ProfileProject with a tool compat error is not cleaned (core
+--- §5.4 "Invalid ProfileProjects"): `refused` names it; the host cleans the
+--- others, then fails with `refused_message`.
 --- @param profile table|nil (nil with `units`)
 --- @param units? loomworks.ConfigUnit[]
---- @return table[]|nil
+--- @return table[]|nil steps
+--- @return loomworks.RefusalLine[]|nil refused
 function M.plan_clean(profile, units)
     local overseer = require("loomworks.overseer")
-    local steps
-    if units then steps = overseer.plan_units_clean(units) else steps = overseer.plan_profile_clean(profile) end
-    if not steps or #steps == 0 then return nil end
-    return steps
+    local steps, refused
+    if units then steps = overseer.plan_units_clean(units) else steps, refused = overseer.plan_profile_clean(profile) end
+    if not steps or #steps == 0 then return nil, refused end
+    return steps, refused
 end
 
 --- The refusal of a clean with nothing to clean (exit 1).

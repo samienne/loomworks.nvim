@@ -974,9 +974,15 @@ function Service:_accept(ctx)
     -- clean): refused with the in-process line, before any lock — on stdout
     -- (API.md §4.1), an ordinary result: the editor's rebuild goes on to
     -- its build.
-    local clean_steps
+    local clean_steps, clean_refused
     if ctx.op == "clean" then
-        clean_steps = build_run.plan_clean(profile, units)
+        clean_steps, clean_refused = build_run.plan_clean(profile, units)
+        -- Invalid ProfileProjects (core §5.4) are not cleaned: with nothing
+        -- else to clean, the clean fails naming them.
+        if not clean_steps and clean_refused then
+            return ctx.reply({ outcome = "refused", message = build_run.refused_message(clean_refused),
+                exit_code = 1, notes = ctx.notes, note_roles = ctx.note_roles })
+        end
         if not clean_steps then
             return ctx.reply({ outcome = "refused", message = build_run.nothing_to_clean_message(profile,
                 units and build_run.units_label(units) or nil), exit_code = 1, stream = "out",
@@ -1021,7 +1027,7 @@ function Service:_accept(ctx)
     -- `ctx.run` to cancel (its end frees the locks and sends `done`).
     runner.run(self, {
         op = ctx.op, task = task, ws = ws, profile = profile, units = units, env = ctx.env, command = ctx.command,
-        args = args, clean_steps = clean_steps, test_pre = test_pre,
+        args = args, clean_steps = clean_steps, clean_refused = clean_refused, test_pre = test_pre,
         on_run = function(run)
             run.ctx = ctx
             ctx.run = run
