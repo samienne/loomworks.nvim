@@ -19,7 +19,10 @@ local REASON = "targets OpenHarmony but profile tool is HarmonyOS"
 --- Shell projects `app` and `lib`, set + profile `dev` (app=Debug, lib=Debug).
 --- `opts.shared`: both projects use one build directory, `out/shared`.
 --- `opts.clean`: each project has a `cln-<name>` clean command and its build
---- directory exists (so a clean plans a step for it). `opts.exe`: each command
+--- directory exists (so a clean plans a step for it). `opts.invalid`: the
+--- named projects' build_dir template names a variable a shell template may
+--- not use, so the module reports an `error` for their Debug (§8 `info`): the
+--- configuration is invalid. `opts.exe`: each command
 --- runs this nvim with the name as its argument (resolvable on PATH, for the
 --- editor's task hardening).
 local function make_ws(opts)
@@ -36,7 +39,9 @@ local function make_ws(opts)
     if opts.shared then vim.fn.mkdir(root .. "/out/shared", "p") end
     local function proj(name)
         return { path = name, shell = {
-            build_dir = opts.shared and "${workspace_root}/out/shared"
+            build_dir = (opts.invalid and opts.invalid[name])
+                and "${workspace_root}/out/${LW_PIPP_UNDECLARED}/${variant}"
+                or opts.shared and "${workspace_root}/out/shared"
                 or ("${workspace_root}/out/" .. name .. "/${variant}"),
             configure_cmd = cmd("cfg-" .. name), build_cmd = cmd("bld-" .. name),
             clean_cmd = opts.clean and cmd("cln-" .. name) or nil,
@@ -624,6 +629,115 @@ describe("profile-level operation with an invalid ProfileProject (§5.4)", funct
             for _, p in ipairs(removed) do
                 assert.is_nil(p:find("out/shared", 1, true), "removed " .. p)
             end
+        end)
+    end)
+    describe("clean of a configuration the module reported an error for (§8 info, §5.4)", function()
+        local loomworks = require("loomworks")
+        local saved
+        before_each(function()
+            saved = { gw = loomworks.get_workspace, pd = loomworks.has_pending_deletions,
+                co = loomworks.create_operation, ov = package.loaded["overseer"] }
+        end)
+        after_each(function()
+            loomworks.get_workspace, loomworks.has_pending_deletions = saved.gw, saved.pd
+            loomworks.create_operation = saved.co
+            package.loaded["overseer"] = saved.ov
+        end)
+
+        local function fake_overseer()
+            local tasks = {}
+            package.loaded["overseer"] = {
+                new_task = function(spec)
+                    local subs, done = {}, false
+                    local t = { id = #tasks + 1, name = spec.name, cmd = spec.cmd }
+                    function t.subscribe(_, ev, fn) subs[ev] = subs[ev] or {}; table.insert(subs[ev], fn) end
+                    function t.start() end
+                    function t.stop() end
+                    function t.is_complete() return done end
+                    function t.complete(_, status)
+                        done = true
+                        for _, fn in ipairs(subs["on_complete"] or {}) do fn(t, status) end
+                    end
+                    tasks[#tasks + 1] = t
+                    return t
+                end,
+            }
+            return tasks
+        end
+
+        local function setup_editor(ws)
+            loomworks.get_workspace = function() return ws end
+            loomworks.has_pending_deletions = function() return false end
+            loomworks.create_operation = function(p, a, u, t, o) return ws:create_operation(p, a, u, t, o) end
+        end
+
+        it("plan_profile_clean cleans the valid project and names the invalid one with its error", function()
+            local ws, profile, r = make_ws({ clean = true, invalid = { lib = true } })
+            root = r
+            local steps, refused = with_ws(ws, function() return overseer.plan_profile_clean(profile) end)
+            assert.same({ "app:clean" }, step_projects(steps))
+            assert.equals(1, #(refused or {}), vim.inspect(refused))
+            assert.truthy(refused[1]:find("lib/Debug not run", 1, true), refused[1])
+            assert.truthy(refused[1]:find("LW_PIPP_UNDECLARED", 1, true), refused[1])
+        end)
+
+        it("headless lw clean cleans the valid project, then exits non-zero naming the invalid one", function()
+            local ws, _, r = make_ws({ clean = true, invalid = { lib = true } })
+            root = r
+            local orig_spawn, orig_stderr, orig_exit, orig_write = cli._run_spec, io.stderr, os.exit, io.write
+            local spawned, err = {}, {}
+            cli._run_spec = function(s) spawned[#spawned + 1] = s.cmd[1]; return 0 end
+            io.write = function() end
+            io.stderr = { write = function(_, s) err[#err + 1] = s end }
+            local code
+            os.exit = function(c) code = c or 0; error({ __exit = true }, 0) end
+            local orig_gw = loomworks.get_workspace
+            loomworks.get_workspace = function() return ws end
+            local ok, e = pcall(cli.cmd_clean, ws, { "clean", "dev" })
+            loomworks.get_workspace = orig_gw
+            cli._run_spec, io.stderr, os.exit, io.write = orig_spawn, orig_stderr, orig_exit, orig_write
+            if not ok and not (type(e) == "table" and e.__exit) then error(e, 0) end
+            if ok then code = e end
+            local text = table.concat(err)
+            assert.same({ "cln-app" }, spawned)
+            assert.equals(1, code)
+            assert.truthy(text:find("lib/Debug not run", 1, true), text)
+            assert.truthy(text:find("LW_PIPP_UNDECLARED", 1, true), text)
+        end)
+
+        it("the editor's profile clean cleans the valid project, then fails naming the invalid one", function()
+            local ws, profile, r = make_ws({ clean = true, exe = true, invalid = { lib = true } })
+            root = r
+            local tasks = fake_overseer()
+            setup_editor(ws)
+            local rejected, resolved
+            profile:clean():next(function() resolved = true end, function(e) rejected = e end)
+            vim.wait(2000, function() return #tasks >= 1 or rejected ~= nil end, 10)
+            assert.equals(1, #tasks, tostring(rejected))
+            assert.truthy(tostring(tasks[1].name):find("app", 1, true), tostring(tasks[1].name))
+            tasks[1]:complete("SUCCESS")
+            vim.wait(2000, function() return rejected ~= nil or resolved ~= nil end, 10)
+            assert.is_nil(resolved)
+            assert.truthy(tostring(rejected):find("lib/Debug not run", 1, true), tostring(rejected))
+        end)
+
+        it("the in-process Build/1.clean names the invalid one as not_run", function()
+            local ws, profile, r = make_ws({ clean = true, exe = true, invalid = { lib = true } })
+            root = r
+            local tasks = fake_overseer()
+            setup_editor(ws)
+            local model = require("loomworks.ui.model_calls")
+            local row = { key = "dev", units = {} }
+            require("loomworks.status_source").bind(row, profile)
+            local got
+            model.call(ws, "Build/1.clean", { profile = row }, function(res) got = res end)
+            vim.wait(2000, function() return #tasks >= 1 or got ~= nil end, 10)
+            assert.equals(1, #tasks, vim.inspect(got))
+            tasks[1]:complete("SUCCESS")
+            vim.wait(2000, function() return got ~= nil end, 10)
+            assert.equals("refused", got.outcome)
+            assert.truthy(got.message:find("lib/Debug not run", 1, true), got.message)
+            assert.equals(1, #(got.not_run or {}), vim.inspect(got))
         end)
     end)
 end)
