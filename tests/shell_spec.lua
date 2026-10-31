@@ -118,14 +118,42 @@ describe("shell module", function()
     end)
 
     describe("info", function()
-        it("puts build_dir template into each config's module_config", function()
+        it("puts the build_dir template on each config's info, flat (§8 info shape)", function()
             local info = shell.info("/x", {
                 build_dir = "${workspace_root}/out/${variant}",
             })
             local cfg = info.configurations["variant:default"]
             assert.is_not_nil(cfg)
-            assert.equals("${workspace_root}/out/${variant}", cfg.module_config.build_dir)
-            assert.equals("default", cfg.module_config.variant)
+            assert.equals("${workspace_root}/out/${variant}", cfg.build_dir)
+            assert.equals("default", cfg.variant)
+            assert.is_nil(cfg.module_config)
+        end)
+
+        -- Regression: the template reached the Configuration nested as
+        -- module_config.module_config.build_dir, so the build dir fell back
+        -- to <root>/.nvim/build/<project>/<variant>.
+        it("the build_dir template reaches resolve_build_dir through a Configuration", function()
+            local Configuration = require("loomworks.configuration")
+            local info = shell.info("/x", {
+                build_dir = "${workspace_root}/out/${variant}",
+                configurations = { Debug = vim.empty_dict() },
+            })
+            local cfg = Configuration.new(nil, "Debug", info.configurations.Debug)
+            assert.equals("/ws/out/Debug",
+                shell.resolve_build_dir("app", "Debug", cfg.module_config, "/ws", nil))
+            -- The project-level template is the project's, not this
+            -- configuration's to persist (no frozen copy in user.json).
+            local entry = cfg:serialize_user_override() or {}
+            assert.is_nil(entry.build_dir)
+            assert.is_nil(entry.module_config)
+        end)
+
+        it("keeps a configuration's own build_dir over the project template", function()
+            local info = shell.info("/x", {
+                build_dir = "${workspace_root}/out/${variant}",
+                configurations = { Debug = { build_dir = "${workspace_root}/dbg" } },
+            })
+            assert.equals("${workspace_root}/dbg", info.configurations.Debug.build_dir)
         end)
 
         it("preserves user-declared configurations alongside the default", function()

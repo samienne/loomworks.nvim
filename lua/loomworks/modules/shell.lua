@@ -168,7 +168,7 @@ function M.info(path, config)
     local configurations = Configuration.canonicalize(
         auto, config.configurations, M.id)
 
-    -- Propagate variant from inherits + fill in `module_config.build_dir`
+    -- Propagate variant from inherits + fill in each config's `build_dir`
     -- so the core's _compute_build_dir picks up the user's template
     -- without needing to crack open type_config. Built-in vars only
     -- (no user-declared variable refs in build_dir templates).
@@ -188,11 +188,20 @@ function M.info(path, config)
             cfg.variant = (cfg.base_name or name)
         end
 
-        cfg.module_config = cfg.module_config or {}
-        if config.build_dir and not cfg.module_config.build_dir then
-            cfg.module_config.build_dir = config.build_dir
+        -- Module fields go flat on the config info (spec §8 `info`): core's
+        -- Configuration copies every non-generic key into its
+        -- `module_config`, so a nested `module_config` table would land at
+        -- `module_config.module_config` and the template would be lost.
+        -- A `module_config` key read back from an older user.json is that
+        -- same misplaced copy — drop it.
+        cfg.module_config = nil
+        if config.build_dir and not cfg.build_dir then
+            cfg.build_dir = config.build_dir
+            -- The project's template, not this configuration's: never
+            -- persist a frozen copy (Configuration._derived).
+            cfg._derived = cfg._derived or {}
+            cfg._derived.build_dir = true
         end
-        cfg.module_config.variant = cfg.variant
     end
 
     return { configurations = configurations }

@@ -59,7 +59,10 @@ local function cache_of(root, key_path)
         end
         if type(v) ~= "table" then return v end
         local out = {}
-        for kk, vv in pairs(v) do out[kk] = walk(vv, kk) end
+        -- Keys too: a build dir outside `.nvim/build` is keyed by its path.
+        for kk, vv in pairs(v) do
+            out[type(kk) == "string" and unroot(kk, root) or kk] = walk(vv, kk)
+        end
         return out
     end
     return walk(t)

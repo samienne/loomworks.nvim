@@ -134,13 +134,13 @@ describe("shared build dir protection by real path (spec 4.6)", function()
   end
 
   it("keeps a dir another unit references through a junction/symlink", function()
-    local root = make_ws("${workspace_root}/out")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local dir, alias = link_alias(root)
     keeps_aliased_dir(dir, alias, root)
   end)
 
   it("keeps a dir another unit references by its 8.3 short name", function()
-    local root = make_ws("${workspace_root}/Long Build Directory")
+    local root = make_ws("${workspace_root}/Long Build Directory/${variant}")
     local dir, short = short_alias(root)
     if not dir then
       pending("8.3 short names unavailable on this volume")
@@ -150,7 +150,7 @@ describe("shared build dir protection by real path (spec 4.6)", function()
   end)
 
   it("keeps the dir when the deletion names the aliased spelling", function()
-    local root = make_ws("${workspace_root}/out")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local dir, alias = link_alias(root)
     local ws, by = load(root)
     local dev, rel = unit_of(by.Dev), unit_of(by.Rel)
@@ -169,7 +169,7 @@ describe("shared build dir protection by real path (spec 4.6)", function()
     -- The index keys a missing dir by its normalized spelling; once the dir
     -- exists a lookup resolves it to its real path. Through an aliased root
     -- those differ, and a stale index must not hide the reference.
-    local root = make_ws("${workspace_root}/out")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local rootlink = vim.fn.tempname():gsub("\\", "/")
     assert(uv.fs_symlink(root, rootlink, is_win and { junction = true } or nil))
     local ws, by = load(root)
@@ -189,7 +189,7 @@ describe("shared build dir protection by real path (spec 4.6)", function()
   end)
 
   it("groups a clean's wipes of one dir spelled two ways into one batch", function()
-    local root = make_ws("${workspace_root}/out")
+    local root = make_ws("${workspace_root}/out/${variant}")
     local dir, alias = link_alias(root)
     local ws, by = load(root)
     local dev, rel = unit_of(by.Dev), unit_of(by.Rel)

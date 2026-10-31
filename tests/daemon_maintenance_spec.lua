@@ -439,8 +439,9 @@ describe("Maintenance/1.nuke in the workspace daemon (API.md §22, part B6)", fu
         assert.equals(0, f.exit_code, vim.inspect(lines) .. " " .. tostring(f.error))
         assert.is_false(exists(x))
         assert.is_false(exists(s.root .. "/.nvim/build"))
-        assert.is_false(exists(bd), "the unit's build directory under .nvim/build went with it")
-        -- Outside `.nvim` nothing is touched.
+        -- Outside `.nvim` nothing is touched: not even the unit's build
+        -- directory, which the shell template puts at <root>/out/Debug.
+        assert.is_true(exists(bd), "the unit's build directory outside .nvim is kept: " .. tostring(bd))
         assert.is_true(exists(s.root .. "/keep/f.txt"), "a file outside .nvim is kept")
         assert.is_true(exists(s.root .. "/loomworks.json"))
         -- Loaded again: a new model, its cache claims nothing built.
