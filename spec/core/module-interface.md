@@ -402,7 +402,7 @@ spawns directly. A caller that must not block (the workspace daemon's
 `Projects/1.unit_options`, API.md §19) uses the companion when present, else
 `get_options`. Additive and optional: no `api_versions.module` bump.
 
-**`resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data) → string`** *(optional)*
+**`resolve_build_dir(project_name, config_name, config_info, workspace_root, tool_data) → string, shared?`** *(optional)*
 
 Return the absolute path of the build directory for a given project
 configuration. Modules that use external build systems return paths
@@ -410,6 +410,21 @@ outside `.nvim/build/` managed by the external tool. The path must be
 under `workspace_root` for deletion safety. If not implemented, the
 core uses the default formula:
 `{workspace_root}/.nvim/build/{project}/{config}`.
+
+`project_name` is the project key. The call has no profile: the directory
+belongs to the configuration, whatever profile maps it.
+
+Each (project, configuration) must resolve to a directory of its own. Two
+configurations that resolve to one directory collide, and core refuses all
+but one of them (§1.7 "One build directory per configuration"). The optional
+second return value `shared`, when `true`, states that the directory is one
+build tree that the module builds every configuration of this project into
+with this tool, as a multi-config generator does. Configurations of the same
+project and tool that are all resolved with `shared = true` do not collide.
+Each is its own ConfigUnit, whose id adds its `config_key` to the directory
+(§1.7 "Unit identity"). A module returns it only for a directory it lays
+out itself, never for a user-declared location (a template, a preset's
+`binaryDir`). Additive and optional: no `api_versions.module` bump.
 
 **`validate_config_tool(configuration, tool) → ok, reason`** *(optional)*
 
@@ -1183,8 +1198,8 @@ still copy the Debug artifact.
 ```
 
 Keyed by **normalized absolute destination path**. Each record tracks:
-- `source_build_dir` — config unit id (relative build dir path) from which
-  the file was last copied
+- `source_build_dir` — id of the config unit (§1.7 "Unit identity") from
+  which the file was last copied
 - `source_rel_path` — relative path within that build dir
 - `source_mtime` — mtime of the source file at the time of the last copy
 
@@ -1231,7 +1246,7 @@ a specific error. Deploy steps within a phase execute sequentially.
 When a config unit is deleted or cleaned (sections 4.6, 4.7):
 
 1. Scan deploy records for entries where `source_build_dir` matches the
-   affected config unit's build dir id
+   affected config unit's id
 2. Delete the destination files (if they exist on disk)
 3. Remove the deploy records from cache
 4. Save cache

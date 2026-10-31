@@ -412,7 +412,7 @@ plugin/loomworks.lua
                 strips loomworks.json program-bearing fields (program_fields)
           → core:_trust_error(): unsigned/invalid working copy or invalid cache
               → refuse (setup_error.trust; status page T/U/<C-n>, `lw trust`/`lw nuke`)
-          → cache version check (refuse if incompatible)
+          → cache version check (refuse if incompatible; version 8 is migrated in memory)
           → core._validate_projects()
           → Workspace.new(core, data)                  ← creates domain container
           → ws:_migrate_set_names()
@@ -2827,6 +2827,24 @@ retained after deserialization — BuildDir objects are the source of truth.
 BuildDir also carries the config unit's persisted `artifacts` (resolved
 output-artifact set) and `overwritten_by` marker, so those survive a reload
 alongside build state.
+
+**Unit ids** (spec §1.7 "Unit identity"). A ConfigUnit's `id` keys its cache
+entry and its BuildDir (`bd.rel_path`): the relative build directory, or, when
+the module's `resolve_build_dir` returns `shared = true` (cmake's own
+multi-config layout), `<rel dir>#<config_key>` — built by `cache.unit_id`
+from `Workspace:_compute_unit_id` (`_compute_build_dir` returns
+`rel, abs, shared`), never parsed. A shared tree's units each have their own
+BuildDir (per-unit state, timestamps, artifacts, overwritten marker) whose
+`path` is the same directory; everything per *directory* — the
+`_build_dir_refs` reverse index, `_build_dir_locks`, the deletion refs check
+and the missing-directory stat — keys by `_build_dir_identity(path)`, never by
+the id. The cache is version 9: `cache.parse` marks a version 8 file
+(`_v8_moved`), and `data_model` moves each entry a shared-tree unit matches
+to the unit's id (`built`/`failed_build` → `configured`, `last_built`
+dropped; `overwritten_by` and deploy `source_build_dir` follow), in memory;
+the next save writes version 9. A configuration rename in a shared tree
+re-keys the unit and its BuildDir to `<dir>#<new config_key>`
+(`Workspace:_rekey_unit_references`).
 
 **Output-artifact conflicts** (§5.9) are a Workspace-level layer over the
 `_artifact_refs` index (rebuilt each remerge alongside `_build_dir_refs`).

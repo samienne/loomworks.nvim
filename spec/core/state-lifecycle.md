@@ -168,7 +168,8 @@ UI.
 2. Look up set_name in `configuration_sets` → mappings
 3. For each project in the mappings:
    - Compute config_key (variant + tool_key for keyed modules)
-   - Create skeleton `cache.build_dirs` entry if absent (keyed by build-dir path)
+   - Create skeleton `cache.build_dirs` entry if absent (keyed by the
+     ConfigUnit's id, data-model §1.7 "Unit identity")
 4. Write the profile entry (with `configuration_set` and tool fields) to
    user.json — there is no `cache.profiles` dict
 5. Save user.json, trigger remerge
@@ -437,7 +438,11 @@ config editor, all references are updated atomically:
 2. **Cache entries**: rekey `cache.configurations` entries matching
    `project_key + old variant` → new config_key, update `variant` and
    `config_key` fields. **Build directory is preserved as-is** (the old
-   path stays in the cache — the system accepts any build_dir path)
+   path stays in the cache — the system accepts any build_dir path). An
+   entry in a shared tree is keyed by its `config_key` too (data-model §1.7
+   "Unit identity"): it moves to `<dir>#<new config_key>`, and every
+   `overwritten_by` and `deploy_state` `source_build_dir` naming its old key
+   follows
 3. **Profile configurations arrays**: replace old cache keys with new ones
 
 On next configure after rename, the module resolves a fresh build directory
@@ -460,7 +465,8 @@ updated atomically:
    keyed by project_key string; entries are rekeyed.
 3. **ConfigUnits and build directories**: ConfigUnit ids are not
    changed (a unit's id identifies its build directory, which is not
-   renamed). Each cached build directory referenced by the project's
+   renamed, and in a shared tree its `config_key`, which a project rename
+   does not change). Each cached build directory referenced by the project's
    ConfigUnits takes `new_key` as its project key, so the units keep
    their build state across the next reload. `_init_project_key`
    follows.

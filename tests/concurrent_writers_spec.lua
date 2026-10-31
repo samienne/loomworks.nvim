@@ -259,7 +259,7 @@ describe("writer version stamp (spec §2.7)", function()
     assert.equals(2, udata._meta.version)
     local cdata = read_signed(cache_mod.filepath(root), "cache")
     assert.equals(sg.version(), cdata._meta.written_by)
-    assert.equals(8, cdata._meta.version)
+    assert.equals(9, cdata._meta.version)
     -- Round trip through the loaders.
     assert.is_not_nil(user_mod.load(root))
     local ews2, notes2, core2 = editor(root)

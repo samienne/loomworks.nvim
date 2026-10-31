@@ -784,8 +784,11 @@ end
 --- @param project loomworks.Project
 --- @param variant string configuration variant name
 --- @param tool_data_or_list? table single tool_data, or list of `{key, data}` entries
---- @return string relative build_dir key (used as ConfigUnit id and cache key)
+--- @return string relative build_dir path (the ConfigUnit id outside a
+---   shared tree; see `_compute_unit_id`)
 --- @return string absolute build_dir path
+--- @return boolean shared the module reported the directory as a shared tree
+---   (spec §8.4 `resolve_build_dir` second return value)
 function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
     -- Normalize to a primary tool_data + sorted effective keys.
     local primary_data = nil
@@ -816,13 +819,16 @@ function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
 
     local mod = project._module and project._module.impl or nil
     local abs_path
+    local shared = false
     if mod and mod.resolve_build_dir then
         local config_info = nil
         local cfg = project:get_configuration(variant)
         if cfg and cfg.module_config then
             config_info = cfg.module_config
         end
-        abs_path = mod.resolve_build_dir(project.key, variant, config_info, self.root, primary_data)
+        local mod_shared
+        abs_path, mod_shared = mod.resolve_build_dir(project.key, variant, config_info, self.root, primary_data)
+        shared = mod_shared == true
     else
         local segment = nil
         if effective_keys and #effective_keys > 1 then
@@ -837,7 +843,23 @@ function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
         end
     end
     local rel_key = cache_mod.relative_build_dir(abs_path, self.root)
-    return rel_key, abs_path
+    return rel_key, abs_path, shared
+end
+
+--- Compute a ConfigUnit's id and build directory for a project configuration
+--- resolved with a tool (spec §1.7 "Unit identity").
+--- @param project loomworks.Project
+--- @param variant string configuration name
+--- @param tool_data_or_list? table single tool_data, or list of `{key, data}` entries
+--- @param tool_key? string the (primary) tool key; part of the config_key
+--- @return string id ConfigUnit id and cache key
+--- @return string abs_path absolute build_dir path
+--- @return boolean shared the directory is a shared tree
+--- @return string rel_key relative build_dir path
+function Workspace:_compute_unit_id(project, variant, tool_data_or_list, tool_key)
+    local rel_key, abs_path, shared = self:_compute_build_dir(project, variant, tool_data_or_list)
+    local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
+    return cache_mod.unit_id(rel_key, shared, config_key), abs_path, shared, rel_key
 end
 
 --- Find or create a ConfigUnit for the given project, configuration, and tool.
@@ -856,8 +878,8 @@ function Workspace:ensure_config_unit(project, configuration, tool)
     local tool_data = tool and tool.data or nil
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
 
-    -- Compute build_dir-based identity
-    local rel_key, abs_path = self:_compute_build_dir(project, variant, tool_data)
+    -- Compute build_dir-based identity (spec §1.7 "Unit identity")
+    local unit_id, abs_path = self:_compute_unit_id(project, variant, tool_data, tool_key)
 
     -- Create cache entry as owned data on the ConfigUnit
     local entry = {
@@ -871,7 +893,7 @@ function Workspace:ensure_config_unit(project, configuration, tool)
     }
 
     -- Create ConfigUnit and register — pre-resolve references
-    local unit = ConfigUnit.new(self, rel_key, project.key)
+    local unit = ConfigUnit.new(self, unit_id, project.key)
     unit:_apply({
         cached = entry,
         project = project,
@@ -1213,8 +1235,8 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         user_profile_keys = user_profile_keys,
         shared_baseline = self._shared_baseline,
         intent_overrides = intent_overrides,
-        compute_build_dir = function(project, variant, tool_data)
-            return self:_compute_build_dir(project, variant, tool_data)
+        compute_unit_id = function(project, variant, tool_data, tool_key)
+            return self:_compute_unit_id(project, variant, tool_data, tool_key)
         end,
         dir_exists = self._core._deps.dir_exists,
     })
@@ -1341,7 +1363,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                     tool_data = profile_tools[project.type].data
                     tool_key = profile_tools[project.type].key
                 end
-                local expected_id = self:_compute_build_dir(project, variant, tool_data)
+                local expected_id = self:_compute_unit_id(project, variant, tool_data, tool_key)
                 config_unit = units_by_id[expected_id]
                 -- Create ConfigUnit if no existing one found. Link BuildDir if available.
                 if not config_unit and expected_id and configuration then
@@ -1606,6 +1628,26 @@ function Workspace:profile_has_artifact_conflict(profile)
         end
     end
     return false
+end
+
+--- Re-point every reference to a ConfigUnit id that moved (a configuration
+--- rename in a shared tree, spec §4.8 step 2): overwritten markers on units
+--- and BuildDirs, and deploy records' `source_build_dir`. In memory; the
+--- caller saves the cache.
+--- @param old_id string
+--- @param new_id string
+function Workspace:_rekey_unit_references(old_id, new_id)
+    for _, unit in pairs(self._config_units) do
+        if unit._overwritten_by == old_id then unit._overwritten_by = new_id end
+    end
+    for _, bd in pairs(self._build_dirs) do
+        if bd.overwritten_by == old_id then bd.overwritten_by = new_id end
+    end
+    for _, record in pairs(self._deploy_records or {}) do
+        if type(record) == "table" and record.source_build_dir == old_id then
+            record.source_build_dir = new_id
+        end
+    end
 end
 
 --- Invalidate-on-completion (spec §5.9): after `builder` builds successfully,
@@ -2525,8 +2567,8 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
             and tools[project.type].key or nil
         local project_tool_data = project_tool_key and tools[project.type].data or nil
 
-        -- Compute build_dir-based id
-        local rel_key, abs_path = self:_compute_build_dir(project, variant, project_tool_data)
+        -- Compute the unit id (spec §1.7 "Unit identity")
+        local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
 
         -- Ensure ConfigUnit exists (or reuse stale one from prior deletion)
         local existing_unit = nil
@@ -3663,10 +3705,17 @@ function Workspace:record_task_result(result)
         -- Compute build_dir-based id
         local tool_data = result.tool and result.tool.data or nil
         local rel_key
-        if result.build_dir then
+        if project then
+            local shared, _
+            rel_key, _, shared = self:_compute_unit_id(project,
+                result.variant or result.configuration_key, tool_data,
+                result.tool and result.tool.key or nil)
+            if result.build_dir then
+                rel_key = cache_mod.unit_id(cache_mod.relative_build_dir(result.build_dir, self.root),
+                    shared, result.configuration_key)
+            end
+        elseif result.build_dir then
             rel_key = cache_mod.relative_build_dir(result.build_dir, self.root)
-        elseif project then
-            rel_key = self:_compute_build_dir(project, result.variant or result.configuration_key, tool_data)
         else
             -- Last resort: synthetic path
             rel_key = "build/" .. result.project_key .. "/" .. (result.variant or result.configuration_key)
@@ -8785,8 +8834,8 @@ function Workspace:_ensure_profile_config_units(profile)
         local project_tool_data = project_tool and project_tool.data or nil
         local config_key = self._core._deps.merge.build_config_key(variant, project_tool_key)
 
-        -- Compute build_dir-based id
-        local rel_key, abs_path = self:_compute_build_dir(project, variant, project_tool_data)
+        -- Compute the unit id (spec §1.7 "Unit identity")
+        local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
 
         -- Create skeleton ConfigUnit if absent
         if not units_by_id[rel_key] then

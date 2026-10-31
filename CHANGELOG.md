@@ -55,6 +55,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw init`. (#349)
 
 ### Upgrade notes
+- The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8
+  cache is migrated when it loads and written as version 9 by the next save;
+  after that an older `lw` or editor (including a pinned one) refuses the
+  workspace as a newer schema until it is updated. Each configuration of a
+  CMake multi-config build directory (Ninja Multi-Config, Visual Studio)
+  builds once more after the upgrade, incrementally, because its old state
+  could have come from another configuration's build. (#TBD)
 - The editor now uses the workspace daemon by default: builds, configures,
   cleans, launch preparations and tests run there. An operation the daemon
   cannot take (not connected yet, no `lw` found, an older daemon) or declines
@@ -1000,6 +1007,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- With a CMake multi-config generator (Ninja Multi-Config, Visual Studio),
+  Debug and Release are separate configurations again, each with its own
+  state, artifacts and status line, although they share one build directory.
+  They were one unit, so building Debug made Release show as built and a
+  build of Release could be skipped. Deleting one of them keeps the shared
+  directory while the other still uses it. (#TBD)
 - A `shell` project's `build_dir` template is used again. It was ignored, so
   every shell configuration built in `.nvim/build/<project>/<configuration>`
   instead of the declared directory (for example `out/Debug` for

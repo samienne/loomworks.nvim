@@ -3,7 +3,7 @@ local M = {}
 
 local io_mod = require("loomworks.io")
 
-local CURRENT_VERSION = 8
+local CURRENT_VERSION = 9
 --- The cache schema this version reads and writes (`_meta.version`).
 M.CURRENT_VERSION = CURRENT_VERSION
 
@@ -71,6 +71,19 @@ function M.absolute_build_dir(rel_key, root)
     return root .. "/.nvim/" .. rel_key
 end
 
+--- The id of a ConfigUnit in a build directory (spec §1.7 "Unit identity"),
+--- which keys its `build_dirs` entry: the relative directory, or — in a
+--- module's shared tree — the directory, `#`, and the unit's config_key.
+--- Ids are built here and never parsed.
+--- @param rel_key string relative build_dir path
+--- @param shared boolean|nil the directory is a shared tree
+--- @param config_key string the unit's config_key
+--- @return string id
+function M.unit_id(rel_key, shared, config_key)
+    if shared then return rel_key .. "#" .. config_key end
+    return rel_key
+end
+
 --- Return a default (empty) CacheData structure.
 --- @return loomworks.CacheData
 function M.default()
@@ -96,6 +109,21 @@ local function migrate_v7_to_v8(raw)
             entry.cmake = nil
         end
     end
+    raw._meta.version = 8
+    return true
+end
+
+--- Version 8 → 9 (spec three-file-model §2.3 "Version 9; migration from
+--- 8"). Version 9 keys a shared tree's entries by unit id; which version 8
+--- entry belongs to a shared tree is only known once units are matched to
+--- entries, so this marks the cache and `data_model` moves each matched
+--- shared-tree entry (`_v8_moved`: entry table → true once moved). The mark
+--- is in memory only; the next save writes version 9.
+--- @param raw table parsed cache
+--- @return boolean migrated
+local function migrate_v8_to_v9(raw)
+    if not raw._meta or raw._meta.version ~= 8 then return false end
+    raw._v8_moved = {}
     raw._meta.version = CURRENT_VERSION
     return true
 end
@@ -118,6 +146,7 @@ function M.parse(content)
         return M.default(), true, raw._meta
     end
     migrate_v7_to_v8(raw)
+    migrate_v8_to_v9(raw)
     if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
         return M.default(), true
     end
@@ -153,6 +182,8 @@ function M.load(root)
         return M.default()
     end
 
+    migrate_v7_to_v8(data)
+    migrate_v8_to_v9(data)
     if not data._meta or data._meta.version ~= CURRENT_VERSION then
         notify("loomworks: cache.json has unexpected version, using defaults", vim.log.levels.WARN)
         return M.default()

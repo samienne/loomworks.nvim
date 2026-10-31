@@ -871,7 +871,7 @@ On materialization:
    key parsing needed
 2. Mappings are derived from the configuration set
 3. For each project in the mappings, a skeleton `cache.build_dirs` entry is
-   created (keyed by the ConfigUnit's build-directory path)
+   created (keyed by the ConfigUnit's id, §1.7 "Unit identity")
 4. The profile's definition (configuration set + tool) is written to user.json
    — there is no `cache.profiles` dict
 5. Cache and user.json are saved; merge is triggered
@@ -905,8 +905,27 @@ Resolution granularity is the **ConfigUnit**, never the build directory.
 This subsumes two shapes at once: two profiles that differ only by
 compiler already resolve to *distinct* build directories (§1.5.2, §1.6),
 yet a project that hard-codes an output path emits to the *same* artifact
-from both; and multi-config generators, where Debug and Release share one
-build directory but resolve to *distinct* per-config artifacts.
+from both; and multi-config generators, where Debug and Release are
+*distinct* ConfigUnits in one shared build directory and resolve to
+*distinct* per-config artifacts.
+
+**Unit identity.** A ConfigUnit's **id** is its resolved build directory:
+relative to the workspace root, or absolute for an external one
+(three-file-model §2.3). When the module reports the directory as a
+**shared tree** (§8.4 `resolve_build_dir`, second return value `shared`), the
+id is the directory, `#`, and the unit's `config_key`:
+`build/App/ninja-mc#Debug:ninja-mc`. The cache keys the unit's entry by its
+id.
+
+- Each configuration built into a shared tree is its own ConfigUnit. It has
+  its own state, timestamps, artifact set and overwritten marker. Configuring
+  or building one configuration changes no other configuration's unit.
+- The tree is still one build directory: one lock (state-lifecycle §5.3),
+  one entry in the build-directory reverse index (state-lifecycle §4.6), one
+  missing-directory reset for all its units (state-lifecycle §3.1 rule 7). Deleting one
+  configuration's unit keeps the directory while another unit references it.
+- An id is never parsed. The directory comes from the entry's `build_dir`;
+  the configuration from its `project_key` and `config_key`.
 
 **Overwritten marker.** A ConfigUnit may carry an **overwritten-by**
 reference to another ConfigUnit that most recently built over one of its

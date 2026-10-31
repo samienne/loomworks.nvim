@@ -857,6 +857,37 @@ function Project:rename_configuration(old_name, new_name, config_data)
             -- Skip running/deleting units — task is using the old build_dir.
             if unit:is_running() or unit:is_deleting() then
                 -- noop: Configuration ref auto-sees new name
+            elseif select(3, ws:_compute_build_dir(self, new_name, unit._tool_data)) then
+                -- Shared tree (spec §4.8 step 2): the unit stays in its
+                -- directory with its state; its id and cache entry move to
+                -- `<dir>#<new config_key>`, and every reference follows.
+                local old_id = unit.id
+                local cache_mod = require("loomworks.cache")
+                unit._variant = new_name
+                unit._config_key = merge_mod.build_config_key(new_name, unit._tool_key)
+                local dir = unit.build_dir_value
+                    or select(2, ws:_compute_build_dir(self, new_name, unit._tool_data))
+                local new_id = cache_mod.unit_id(
+                    cache_mod.relative_build_dir(dir, ws.root), true, unit._config_key)
+                unit.id = new_id
+                local bd = unit._build_dir
+                -- An orphaned entry already keyed by the new id (a deleted
+                -- configuration of that name) is superseded by the moved
+                -- unit: drop the stale BuildDir object (cache state only —
+                -- nothing on disk is touched).
+                for i = #ws._build_dirs, 1, -1 do
+                    local other = ws._build_dirs[i]
+                    if other ~= bd and other.rel_path == new_id then
+                        other._removed = true
+                        table.remove(ws._build_dirs, i)
+                    end
+                end
+                if bd then
+                    bd.rel_path = new_id
+                    bd.variant = new_name
+                    bd.config_key = unit._config_key
+                end
+                ws:_rekey_unit_references(old_id, new_id)
             else
                 -- Detach old BuildDir (stays in _build_dirs as orphaned)
                 unit._build_dir = nil
