@@ -577,10 +577,17 @@ still refreshes the published file's time meanwhile. A record identical to the
 one last written is not rewritten.
 
 **Legacy files.** `loomworks.daemon.json`, `.lock` and `.log` (lw before
-slots) are never read to find or connect to a daemon. A legacy runtime lock
+slots) are never read to connect to a daemon. A legacy runtime lock
 whose holder is a live daemon of this slot (§19.5 identity rules) is a
-daemon of another version (§19.9): it is stopped before this slot's daemon
-starts. Housekeeping, `lw daemon stop` and `lw cleanup` remove the legacy
+daemon of another version (§19.9). It is stopped before this slot's daemon
+starts, and by `lw daemon stop` (with or without `--force`), `kill` and
+`restart`, in the same way (asked, then its tree killed and verified gone).
+These commands report it ("stopped the workspace daemon of an earlier lw
+(pid N)"), and stopping it alone counts as stopping a daemon. `lw daemon
+status` reports it on its own line, `daemon of an earlier lw (pid N,
+legacy runtime lock) — stop it with: lw daemon stop`, and never connects to
+it. A holder of another slot, an attached run, or a hung, dead or foreign
+holder is not stopped by these commands. Housekeeping, `lw daemon stop` and `lw cleanup` remove the legacy
 lock and handle only as a reclaimer would (§19.5: holder dead, these exact
 regular files) and the legacy log only as a leftover (these exact regular
 files, `.log` and `.log.1`). A process removes only its own slot's files
@@ -1446,7 +1453,9 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
 same-host daemon, asks it for `status` (clients, running operations, versions,
 from step 5r the idle timeout and deadline — "Warm restarts");
 it never launches. `lw daemon stop` sends `stop` (the daemon exits as above)
-and waits (about 10 s) for the runtime lock to be released; it never kills —
+and waits (about 10 s) for the runtime lock to be released; it never kills
+(a daemon of an earlier lw holding the legacy lock is the exception,
+§19.6 "Legacy files") —
 a daemon that does not stop in time is reported as not responding, with
 `lw daemon stop --force` as the remedy. A daemon still starting (it holds the
 runtime lock, its handle is not published yet) is first given the same

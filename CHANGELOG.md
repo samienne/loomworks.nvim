@@ -1053,6 +1053,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- `lw daemon stop` (also `--force`, `kill` and `restart`) now stops a
+  workspace daemon started by an earlier lw that still holds the old
+  unslotted runtime lock, instead of saying no daemon is running.
+  `lw daemon status` reports such a daemon on a `Legacy` line. (#383)
 - The workspace daemon applies another process's change to `loomworks.json`
   or `.nvim/loomworks.user.json` when it sees it, without waiting for a
   request. A working copy caught half-written no longer unloads the
