@@ -240,6 +240,9 @@ describe("FileTracker", function()
 
     -- The workspace daemon's tracker (spec/core/daemon.md §19.13).
     describe("hold and saves (the daemon's watch)", function()
+        local recheck_ms = FileTracker.SAVE_RECHECK_MS
+        after_each(function() FileTracker.SAVE_RECHECK_MS = recheck_ms end)
+
         it("a held change holds the whole sync until it passes; then everything is delivered", function()
             local disk = { ["/a"] = "a1", ["/b"] = "b1" }
             local seen, holds = {}, 0
@@ -309,7 +312,6 @@ describe("FileTracker", function()
 
         for _, staged in ipairs({ "/a.tmp", "/a.txn-0123abcd" }) do
             it("a file missing beside its staged copy " .. staged .. " is a save in progress: kept, re-checked, then applied", function()
-                local recheck = FileTracker.SAVE_RECHECK_MS
                 FileTracker.SAVE_RECHECK_MS = 20
                 local disk = { ["/a"] = "a1" }
                 local seen, signals = {}, { n = 0 }
@@ -330,9 +332,30 @@ describe("FileTracker", function()
                 tracker:sync()
                 assert.same({ { "/a", "a2" } }, seen)
                 tracker:stop()
-                FileTracker.SAVE_RECHECK_MS = recheck
             end)
         end
+
+        it("a save whose last rename lands between the missing read and the staged check reads the saved file", function()
+            local disk = { ["/a"] = "a1" }
+            local seen = {}
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                -- The `.tmp -> target` rename completes just before the check:
+                -- no staged copy is left, and the target is back.
+                staged = function(path)
+                    disk[path], disk[path .. ".tmp"] = "a2", nil
+                    return false
+                end,
+                manual = true, saves = true,
+            })
+            tracker:watch("/a")
+            disk["/a"], disk["/a.tmp"] = nil, "a2"
+            tracker:sync()
+            assert.same({ { "/a", "a2" } }, seen)
+            assert.equals("a2", tracker:content("/a"))
+            tracker:stop()
+        end)
 
         it("a file deleted with no staged copy reads as missing", function()
             local disk = { ["/a"] = "a1" }
@@ -345,13 +368,13 @@ describe("FileTracker", function()
             tracker:stop()
         end)
 
-        it("staged_copy matches only <file>.tmp and <file>.txn-<id> of that exact file", function()
+        it("staged_copy matches only <file>.tmp and <file>.txn-<hex id> of that exact file", function()
             local dir = vim.fn.tempname():gsub("\\", "/")
             vim.fn.mkdir(dir, "p")
             local function touch(name) local f = assert(io.open(dir .. "/" .. name, "wb")); f:write("x"); f:close() end
             local target = dir .. "/w.json"
             assert.is_false(FileTracker.staged_copy(target))
-            for _, name in ipairs({ "w.json.bak", "w.json.txn-", "xw.json.txn-1", "w.jsonx.txn-1", "w.json.tmpx", "w.json.txnx-1" }) do
+            for _, name in ipairs({ "w.json.bak", "w.json.txn-", "xw.json.txn-1", "w.jsonx.txn-1", "w.json.tmpx", "w.json.txnx-1", "w.json.txn-foo", "w.json.txn-0a1g" }) do
                 touch(name)
             end
             assert.is_false(FileTracker.staged_copy(target))
@@ -384,7 +407,6 @@ describe("FileTracker", function()
         end)
 
         it("a re-check queued before stop_signals never calls the removed signal", function()
-            local recheck = FileTracker.SAVE_RECHECK_MS
             FileTracker.SAVE_RECHECK_MS = 10
             local queued = {}
             local signals = 0
@@ -405,7 +427,6 @@ describe("FileTracker", function()
             assert.has_no.errors(function() for _, fn in ipairs(queued) do fn() end end)
             assert.equals(0, signals)
             tracker:stop()
-            FileTracker.SAVE_RECHECK_MS = recheck
         end)
     end)
 end)

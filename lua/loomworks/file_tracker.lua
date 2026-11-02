@@ -32,7 +32,8 @@ FileTracker.SAVE_RECHECK_MS = 500
 --- Whether a save of `path` is staged: `<path>.tmp` (io.write_file_atomic)
 --- or a transaction's `<path>.txn-<id>` (loomworks.txn `staged_path`) exists.
 --- The transaction name is matched by its prefix, `staged_path(path, "")`,
---- against the directory's entries (ids are not parsed).
+--- followed by a hex id, as txn recovery's `strays` matches it (the id is
+--- only format-checked, not used).
 --- @param path string
 --- @return boolean
 function FileTracker.staged_copy(path)
@@ -47,7 +48,10 @@ function FileTracker.staged_copy(path)
     while req do
         local name = uv.fs_scandir_next(req)
         if not name then break end
-        if #name > #pbase and fold(name:sub(1, #pbase)) == pbase then return true end
+        if #name > #pbase and fold(name:sub(1, #pbase)) == pbase
+            and name:sub(#pbase + 1):match("^%x+$") then
+            return true
+        end
     end
     return false
 end
@@ -152,13 +156,15 @@ end
 --- missing file with no staged copy reads as missing at once, as a deleted
 --- file does. (A save always leaves a staged copy until its last rename; a
 --- deletion leaves none. The `.bak` says nothing: a save of identical bytes
---- leaves it equal to the content last applied.)
+--- leaves it equal to the content last applied.) A save's last rename can
+--- land between the missing read and the staged check, leaving no staged
+--- copy: the target is then read once more before it counts as missing.
 --- @param path string
 --- @return string|nil
 function FileTracker:_read(path)
     local content = self._read_file(path)
     if content ~= nil or not self._saves then return content end
-    if not self._staged(path) then return nil end
+    if not self._staged(path) then return self._read_file(path) end
     self:_recheck()
     return self._content[path]
 end
