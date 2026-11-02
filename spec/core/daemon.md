@@ -3287,8 +3287,10 @@ terminal). It runs none of the editor's own operations; where those run is
   - its schemas are not newer than the editor's;
   - the binary the editor selected passed the interface check (the probe's
     *compatible* verdict, or the managed `lw`);
-  - when the daemon is compatible, the relay's `welcome` carries `relay` and
-    its identity differs from the daemon's;
+  - the binary that would start in its place has another code
+    identity (`lw_version`, §19.9) than the daemon: for a compatible
+    daemon the relay's (`welcome.relay`, which must be present), for
+    an incompatible one the selected binary's;
   - the editor has not already retired a daemon of that identity for this
     workspace in this editor session.
 
