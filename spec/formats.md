@@ -47,7 +47,7 @@ described in §5 for information only.
 | Machine key | `trust.key` in the per-user data directory | normative | §2.1 |
 | Lock files | see §6.2 | normative | §6 |
 | Commit journal | `<root>/.nvim/loomworks.txn.json` | normative | §7 |
-| Daemon handle | `<root>/.nvim/loomworks.daemon.json` | normative | §8 |
+| Daemon handle | `<root>/.nvim/loomworks.daemon-<S>.json` | normative | §8 |
 | Version pin | `lw.pin` at the repository root | normative | §9 |
 
 `<root>` is the workspace root (spec §1.1).
@@ -97,7 +97,11 @@ releases (spec §16.11), so the editor and the CLI on one machine share one key.
 key is never stored in, or derived from, a workspace. It is created with
 owner-only permissions where the platform has them (mode `0600`, in a `0700`
 directory); on Windows the per-user local application-data directory is
-already private to the user. An existing key is never overwritten; a malformed
+already private to the user. On POSIX an existing key is used only when it
+and its directory are owned by the effective uid and not writable by group
+or others (lstat, no links); otherwise it is an error naming the file (a
+root process with the user's `$HOME` never uses or creates the user's key).
+An existing key is never overwritten; a malformed
 key is an error that names the file (deleting it creates a new key — every
 workspace's signed files then read as `invalid`, spec §17.4).
 
@@ -420,7 +424,7 @@ host's live holder; one still empty then is judged as a record without fields.
 
 | Lock | File | Record | Section |
 |--|--|--|--|
-| Runtime (R) | `<root>/.nvim/loomworks.daemon.lock` | the common record (§6.1) plus the runtime's fields below | spec §19.2 |
+| Runtime (R) | `<root>/.nvim/loomworks.daemon-<S>.lock` | the common record (§6.1) plus the runtime's fields below | spec §19.2 |
 | Workspace operation (O) | `<root>/.nvim/loomworks.op.lock` | the common record | spec §19.3 |
 | Build directory (B) | `<build dir>.loomworks-lock` | the common record | spec §16.6 |
 | Device (D) | `<data>/device-locks/<serial>.lock`, with `<data>/device-locks/<serial>.leftover` for a program left running (spec §16.40); `LOOMWORKS_DEVICE_LOCK_DIR` relocates the directory (spec §16.34) | the common record plus the device fields of spec §18.7 "Leftover programs" | spec §18.7 |
@@ -445,13 +449,13 @@ match `<file>.txn-<hex id>` beside them; anything else refuses the workspace
 (spec §19.4 "Recovery"). How the files it rolls forward are then verified
 is spec §19.4 "Validation".
 
-## 8. Daemon handle `.nvim/loomworks.daemon.json`
+## 8. Daemon handle `.nvim/loomworks.daemon-<S>.json`
 
 When the handle is written, refreshed and rewritten, and how it is used for
 discovery, are spec §19.6; the daemon key *K* is spec §19.8. (Moved from spec
 §19.6:)
 
-A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
+A daemon publishes `<root>/.nvim/loomworks.daemon-<S>.json` after binding its
 endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
 schemas = { user, cache }, session_generation, started_at, clients, busy,
 idle_since, lock_nonce, key_id, exe }` (`start_time` is the daemon's process start time of

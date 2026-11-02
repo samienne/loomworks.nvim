@@ -345,7 +345,7 @@ describe("housekeeping (spec §16.40)", function()
         local removed, failed = hk.startup(sb.root, o)
         assert.is_true(removed > 0)
         assert.equals(0, failed)
-        local log = read(sb.root .. "/.nvim/loomworks.daemon.log") or ""
+        local log = read(require("loomworks.daemon.paths").log_path(sb.root)) or ""
         assert.is_truthy(log:find("housekeeping: removed " .. removed, 1, true), log)
         assert.is_true(exists(sb.data .. "/.housekeeping"))
         -- Within the day: nothing runs, the new leftover stays.

@@ -2488,7 +2488,7 @@ workspace-root/
     ├── loomworks.health.json    Always gitignored. Advisory suggestion cache
     │                            (`lw health` / `N suggestions`); self-healing,
     │                            recomputed if missing or stale.
-    ├── loomworks.daemon.log     The workspace daemon's runtime log (2 MB + one .1).
+    ├── loomworks.daemon-<S>.log The workspace daemon's runtime log (2 MB + one .1).
     ├── tmp/                     Temporary files of `lw test <target>` and
     │                            `describe -e`, removed after use.
     └── build/

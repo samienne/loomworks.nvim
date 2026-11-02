@@ -336,7 +336,7 @@ M._processes_probe = nil
 
 --- The processes of this host with their executable base names, for the
 --- daemon scan (spec §19.6.1): `{ pid, name }[]`. Windows: one Toolhelp
---- snapshot (`szExeFile`); Linux: the `/proc` entries owned by this uid
+--- snapshot (`szExeFile`); Linux: the `/proc` entries owned by this euid
 --- (`comm`, at most 15 characters); macOS: `proc_listallpids` + `proc_name`
 --- (fallback `ps -x -o pid=,comm=`). Names are as the OS reports them (a path
 --- on the `ps` fallback); callers take the base name.
@@ -362,14 +362,17 @@ function M.processes()
     if OS == "Linux" then
         local req = uv().fs_scandir("/proc")
         if req then
-            local me = uv().getuid and uv().getuid() or nil
+            -- This process's effective uid (§19.7; /proc/<pid> is owned by
+            -- the process's effective uid). Unreadable: nothing is listed.
+            local me = require("loomworks.daemon.identity").euid()
+            if not me then return list end
             while true do
                 local name = uv().fs_scandir_next(req)
                 if not name then break end
                 local pid = tonumber(name)
                 if pid then
                     local st = uv().fs_stat("/proc/" .. name)
-                    if st and (me == nil or st.uid == me) then
+                    if st and st.uid == me then
                         local f = io.open("/proc/" .. name .. "/comm", "r")
                         if f then
                             local comm = (f:read("*l") or ""):gsub("%s+$", "")
@@ -411,6 +414,38 @@ function M.processes()
         p:close()
     end
     return list
+end
+
+--- The effective uid of process `pid` (POSIX), or nil when it cannot be read
+--- (gone, no reader; always nil on Windows). Linux: the second `Uid:` field
+--- of `/proc/<pid>/status`; macOS: `pbi_uid` of `proc_pidinfo`
+--- (PROC_PIDTBSDINFO); else `ps -o uid=`.
+--- @param pid integer
+--- @return integer|nil
+function M.euid(pid)
+    if OS == "Windows" or type(pid) ~= "number" or pid <= 0 then return nil end
+    if OS == "Linux" then
+        local f = io.open("/proc/" .. tostring(pid) .. "/status", "r")
+        if f then
+            local s = f:read("*a") or ""
+            f:close()
+            local e = s:match("\nUid:%s+%d+%s+(%d+)")
+            return e and tonumber(e) or nil
+        end
+    end
+    local ffi = mac()
+    if ffi then
+        local buf = ffi.new("uint8_t[?]", MAC_BSDINFO_SIZE)
+        local n = ffi.C.proc_pidinfo(pid, MAC_BSDINFO, 0, buf, MAC_BSDINFO_SIZE)
+        if n < MAC_BSDINFO_SIZE then return nil end
+        return tonumber(ffi.cast("uint32_t*", buf)[5]) -- pbi_uid (effective)
+    end
+    if OS == "Linux" then return nil end
+    local p = io.popen("ps -o uid= -p " .. tostring(math.floor(pid)) .. " 2>/dev/null")
+    if not p then return nil end
+    local out = p:read("*a") or ""
+    p:close()
+    return tonumber(out:match("^%s*(%d+)"))
 end
 
 local _clk_tck

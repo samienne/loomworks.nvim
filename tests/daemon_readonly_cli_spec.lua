@@ -77,14 +77,14 @@ end
 
 --- How many snapshots a root's runtime log records.
 local function snapshots(root)
-    local log = read(root .. "/.nvim/loomworks.daemon.log") or ""
+    local log = read(require("loomworks.daemon.paths").log_path(root)) or ""
     local _, n = log:gsub("snapshot %(scope all%)", "")
     return n
 end
 
 --- How many times a root's runtime log records query `name`.
 local function queries(root, name)
-    local log = read(root .. "/.nvim/loomworks.daemon.log") or ""
+    local log = read(require("loomworks.daemon.paths").log_path(root)) or ""
     local _, n = log:gsub("query " .. name .. " for", "")
     return n
 end
@@ -172,7 +172,7 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         assert.equals(proj[1], projections(roots3[1]), what .. ": in-process built a projection")
         assert.is_true(projections(roots3[2]) > proj[2], what .. ": shared built no projection")
         assert.equals(proj[3], projections(roots3[3]), what .. ": attached built a projection")
-        local log = read(roots3[3] .. "/.nvim/loomworks.daemon.log") or ""
+        local log = read(require("loomworks.daemon.paths").log_path(roots3[3])) or ""
         assert.falsy(log:find("attached run of", 1, true), what .. ": a loopback runtime ran\n" .. log)
         return res
     end

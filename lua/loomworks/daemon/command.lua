@@ -318,6 +318,16 @@ end
 --- @param opts { force?: boolean, kill?: boolean }
 --- @return integer
 function M.stop(root, host, opts)
+    -- The legacy (unslotted) lock and handle of an earlier lw's daemon that
+    -- is gone, removed as a reclaimer would (§19.6 "Legacy files"). Never
+    -- used to find or stop a daemon.
+    if not opts._again then
+        local lok, removed = pcall(require("loomworks.daemon.legacy").reclaim, root)
+        if lok and #removed > 0 then
+            M.record(root, "lw daemon stop: removed the files of an earlier lw's daemon that is gone: "
+                .. table.concat(removed, ", "))
+        end
+    end
     local st = inspect.state(root)
     local lk = st.lock or {}
     if st.kind == "none" then

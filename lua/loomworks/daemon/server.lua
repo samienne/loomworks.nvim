@@ -290,6 +290,13 @@ end
 --- @return boolean|nil ok, string|nil err, integer|nil code
 function Server:start()
     lock_record.set_holder_kind("daemon")
+    -- A live daemon of this slot that holds the legacy (unslotted) runtime
+    -- lock is an earlier lw's: stopped before this one starts (§19.6
+    -- "Legacy files"). Its files are never read to find or connect to it.
+    if uv.fs_stat(self.root) then
+        local lout = require("loomworks.daemon.legacy").stop_live(self.root, function(l) self:log("%s", l) end)
+        if lout == "stopped" then self:log("stopped the workspace daemon of an earlier lw (legacy runtime lock)") end
+    end
     local aok, aerr, acode = self:_acquire({ mode = "daemon" })
     if not aok then return nil, aerr, acode end
     local R = self.R
@@ -307,8 +314,9 @@ function Server:start()
     self.listener, self.address = server, addr
     self.candidates = endpoint._posix_candidates(self.root)
     -- The socket file this daemon bound (POSIX): removed on exit only while
-    -- it is still that file.
-    local sst = uv.fs_lstat(addr)
+    -- it is still that file. Never stat a named pipe: opening it for the
+    -- stat connects an instance (a phantom client the daemon then accepts).
+    local sst = package.config:sub(1, 1) ~= "\\" and uv.fs_lstat(addr) or nil
     self.sock_ino = sst and sst.type == "socket" and sst.ino or nil
     self:_write_handle()
     self:_start_tick()
@@ -735,6 +743,14 @@ function Server:_on_connection(err)
     if err or self.stopped then return end
     local sock = uv.new_pipe(false)
     if not pcall(function() assert(self.listener:accept(sock) == 0) end) then
+        pcall(function() sock:close() end)
+        return
+    end
+    -- The peer check (§19.7, Windows) before anything is read: the client
+    -- process must be of this daemon's slot (user SID and elevation).
+    local okp, why = endpoint.peer_check(sock, "client")
+    if not okp then
+        self:log("refused a connection: %s", tostring(why))
         pcall(function() sock:close() end)
         return
     end

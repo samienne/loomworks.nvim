@@ -1,10 +1,13 @@
---- loomworks/daemon/discover.lua — every workspace daemon of this user on
+--- loomworks/daemon/discover.lua — every workspace daemon of this slot on
 --- this host, found by a process scan (spec §19.6.1).
 ---
 --- There is no registry: nothing is written outside the workspaces. The scan
 --- lists the processes with their executable names (loomworks.proc.processes),
 --- keeps the lw-host candidates (`lw`, `lw-*`, `luvi`, `nvim`), reads their
---- command lines and keeps `lw … daemon run` (loomworks.proc.is_daemon_for).
+--- command lines and keeps `lw … daemon run` (loomworks.proc.is_daemon_for)
+--- of this process's slot (§19.7.1, loomworks.daemon.identity.same_slot: a
+--- process of another user or elevation, or whose token / euid cannot be
+--- read, is skipped).
 --- Each daemon's workspace is its `--root`; its runtime lock R and handle are
 --- read (files only) to classify it:
 ---
@@ -33,6 +36,7 @@
 
 local proc = require("loomworks.proc")
 local paths = require("loomworks.daemon.paths")
+local identity = require("loomworks.daemon.identity")
 
 local M = {}
 
@@ -160,7 +164,11 @@ function M.scan()
             local st = proc.start_time(p.pid)
             if type(st) == "string" then
                 local args = proc.cmdline(p.pid, st)
-                if args and proc.is_daemon_for(args) then
+                -- Another slot's process (§19.7.1: another user or elevation,
+                -- or a token / euid that cannot be read) is skipped: an
+                -- elevated or root caller lists, stops and kills only its own
+                -- slot's daemons.
+                if args and proc.is_daemon_for(args) and identity.same_slot(p.pid) then
                     -- The root it names (§19.10: launched daemons always do);
                     -- is_daemon_for(args, root) matches its own --root.
                     found[#found + 1] = { pid = p.pid, start_time = st, args = args, root = M.root_of(args) }

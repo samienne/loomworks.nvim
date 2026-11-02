@@ -479,7 +479,8 @@ describe("lifetime rules (§19.11, in-process server)", function()
         rlog.MAX_BYTES = 100
         for i = 1, 5 do rlog.write(root, "line " .. i .. string.rep("x", 40)) end
         local p = rlog.path(root)
-        assert.equals(dpaths.norm_root(root) .. "/.nvim/loomworks.daemon.log", p)
+        assert.equals(dpaths.norm_root(root) .. "/.nvim/loomworks.daemon-"
+            .. require("loomworks.daemon.identity").slot() .. ".log", p)
         assert.truthy(uv.fs_stat(p .. ".1"))
         assert.truthy(uv.fs_stat(p).size <= 200)
         assert.is_nil(uv.fs_stat(d .. "/daemon/logs"))
@@ -495,21 +496,21 @@ describe("lifetime rules (§19.11, in-process server)", function()
         -- An existing root without .nvim: .nvim is created (one level).
         vim.fn.mkdir(base .. "/ws", "p")
         rlog.write(base .. "/ws", "first")
-        local body = assert(io.open(base .. "/ws/.nvim/loomworks.daemon.log")):read("*a")
+        local body = assert(io.open(require("loomworks.daemon.paths").log_path(base .. "/ws"))):read("*a")
         assert.truthy(body:find("first", 1, true))
         -- A link planted at the log's name is never written through.
         vim.fn.mkdir(base .. "/ws2/.nvim", "p")
         local target = base .. "/victim.txt"
         local f = assert(io.open(target, "wb")); f:write("keep"); f:close()
-        local linked = uv.fs_symlink(target, base .. "/ws2/.nvim/loomworks.daemon.log")
+        local linked = uv.fs_symlink(target, require("loomworks.daemon.paths").log_path(base .. "/ws2"))
         if linked then
             rlog.write(base .. "/ws2", "planted")
             assert.equals("keep", assert(io.open(target, "rb")):read("*a"))
         end
         -- A directory at the name is left alone.
-        vim.fn.mkdir(base .. "/ws3/.nvim/loomworks.daemon.log", "p")
+        vim.fn.mkdir(require("loomworks.daemon.paths").log_path(base .. "/ws3"), "p")
         rlog.write(base .. "/ws3", "dir")
-        assert.equals("directory", uv.fs_lstat(base .. "/ws3/.nvim/loomworks.daemon.log").type)
+        assert.equals("directory", uv.fs_lstat(require("loomworks.daemon.paths").log_path(base .. "/ws3")).type)
         vim.fn.delete(base, "rf")
     end)
 
@@ -523,19 +524,19 @@ describe("lifetime rules (§19.11, in-process server)", function()
         local saved_max = rlog.MAX_BYTES
         rlog.MAX_BYTES = 10
         -- A foreign log, over the cap: left exactly as it is, no .1 made.
-        local log = base .. "/ws/.nvim/loomworks.daemon.log"
+        local log = require("loomworks.daemon.paths").log_path(base .. "/ws")
         put(log, "# committed by someone\nnot a runtime log line\n")
         rlog.write(base .. "/ws", "line")
         assert.equals("# committed by someone\nnot a runtime log line\n", get(log))
         assert.is_nil(uv.fs_lstat(log .. ".1"))
         -- An lw log over the cap with a foreign .1: the .1 is kept, nothing rotated.
-        local log2 = base .. "/ws2/.nvim/loomworks.daemon.log"
+        local log2 = require("loomworks.daemon.paths").log_path(base .. "/ws2")
         put(log2, "2026-10-02T10:00:00Z pid 1 started the workspace daemon\n")
         put(log2 .. ".1", "precious\n")
         rlog.write(base .. "/ws2", "line")
         assert.equals("precious\n", get(log2 .. ".1"))
         -- An lw log over the cap with no .1 rotates as before.
-        local log3 = base .. "/ws3/.nvim/loomworks.daemon.log"
+        local log3 = require("loomworks.daemon.paths").log_path(base .. "/ws3")
         put(log3, "2026-10-02T10:00:00Z pid 1 started the workspace daemon\n")
         rlog.write(base .. "/ws3", "next")
         assert.truthy(get(log3 .. ".1"))
@@ -760,7 +761,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.equals(0, r.code, r.stderr)
         assert.equals(lk.pid, rlock.read(root).pid)
         -- The runtime log names the launch.
-        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
+        local log = assert(io.open(require("loomworks.daemon.paths").log_path(root))):read("*a")
         assert.truthy(log:find("launched the workspace daemon (pid " .. lk.pid, 1, true), log)
         assert.truthy(log:find("serving", 1, true), log)
         assert.equals(0, lw({ "daemon", "stop" }).code)
@@ -806,7 +807,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.truthy(r.stderr:find("is not responding — recover with: lw daemon stop --force", 1, true), r.stderr)
         assert.is_true(H.alive(lk.pid, lk.start_time))
         assert.equals(0, lw({ "daemon", "kill" }).code)
-        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
+        local log = assert(io.open(require("loomworks.daemon.paths").log_path(root))):read("*a")
         assert.truthy(log:find("killed", 1, true), log)
     end)
 
@@ -853,7 +854,7 @@ describe("runtime-mode daemon with real processes", function()
         local f = assert(io.open(root .. "/.nvim/loomworks.op.lock", "w")); f:write(vim.json.encode(rec)); f:close()
         local r = lw({ "--no-daemon", "unlock", "--workspace", "--force" })
         assert.equals(0, r.code, r.stderr)
-        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
+        local log = assert(io.open(require("loomworks.daemon.paths").log_path(root))):read("*a")
         assert.truthy(log:find("lw unlock --force: removed the workspace operation lock held by pid 4242", 1, true), log)
     end)
 end)

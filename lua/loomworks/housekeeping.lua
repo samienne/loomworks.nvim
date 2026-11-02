@@ -23,6 +23,11 @@
 ---     replaced), pinned releases never the current pin's / the running
 ---     exe's / the running bundle's / recently used (renamed to `.trash-*`
 ---     before the tree is removed).
+---   * in the workspace, the legacy (unslotted) daemon files of lw before
+---     slots (spec §19.6 "Legacy files"), through loomworks.daemon.legacy:
+---     exact names in a verified `<root>/.nvim`, regular files, the lock and
+---     handle only of a dead holder (nonce-checked reclaim / re-checked
+---     unlink), the logs past the legacy-log age; never another slot's files.
 --- Bundle-side on purpose: every host (old ones included, §16.14) runs it;
 --- it needs no boot module (`boot.pin`, 0.1.6, only through pcall).
 
@@ -287,10 +292,13 @@ end
 --- POSIX per-user socket directories (spec §19.7).
 local function default_run_dirs()
     if IS_WIN then return {} end
-    local id = (uv().getuid and uv().getuid()) or 0
     local out = {}
     local xdg = os.getenv("XDG_RUNTIME_DIR")
     if xdg and xdg ~= "" then out[#out + 1] = norm(xdg) .. "/loomworks" end
+    -- The `-<euid>` directories only for a readable euid: never another
+    -- user's (no fallback uid).
+    local id = require("loomworks.daemon.identity").euid()
+    if type(id) ~= "number" then return out end
     local t = os.getenv("TMPDIR")
     if t and t ~= "" then out[#out + 1] = norm(t) .. "/loomworks-" .. id end
     out[#out + 1] = "/tmp/loomworks-" .. id
@@ -614,7 +622,7 @@ end
 local function scan_run_dir(items, ctx, dir)
     local st = uv().fs_lstat(dir)
     if not st or st.type ~= "directory" then return end
-    local me = (uv().getuid and uv().getuid()) or -1
+    local me = (require("loomworks.daemon.identity").euid() or -1)
     if type(st.uid) ~= "number" or st.uid ~= me then return end
     if not st.mode or (st.mode % 512) ~= tonumber("700", 8) then return end
     for _, n in ipairs(names(dir)) do
@@ -682,6 +690,42 @@ local function scan_workspace_tmp(items, ctx, root)
     end
 end
 
+--- The workspace's legacy (unslotted) daemon files (spec §19.6 "Legacy
+--- files", loomworks.daemon.legacy): the runtime lock and handle only as a
+--- reclaimer would remove them (holder dead), the runtime log (`.log`,
+--- `.log.1`) as a leftover of the legacy-log age. Exact names, regular files
+--- in a verified `<root>/.nvim`; each removal re-checks through the module.
+local function scan_workspace_legacy(items, ctx, root)
+    local legacy = require("loomworks.daemon.legacy")
+    root = norm(root)
+    local dir = legacy.nvim_dir(root)
+    if not dir then return end
+    local lp, info = legacy.lock_reclaimable(root)
+    if lp then
+        consider(items, ctx, dir, lp:match("[^/]+$"), "file", "daemon lock", 0, {
+            remove = function() return legacy.reclaim_lock(root, lp, info), "the lock changed meanwhile" end,
+        })
+    end
+    local hp, rec = legacy.handle_removable(root)
+    if hp then
+        consider(items, ctx, dir, hp:match("[^/]+$"), "file", "daemon handle", 0, {
+            remove = function() return legacy.remove_handle(root, hp, rec), "the handle changed meanwhile" end,
+        })
+    end
+    -- The logs only while no live (or unreadable) holder has the legacy
+    -- lock: an older lw's daemon may be writing them. Re-checked at removal.
+    if not legacy.logs_removable(root) then return end
+    local min = ctx.legacy_any and 0 or M.AGE.legacy_log
+    for _, l in ipairs(legacy.logs(root)) do
+        consider(items, ctx, dir, l.path:match("[^/]+$"), "file", "runtime log", min, {
+            remove = function(it)
+                if not legacy.logs_removable(root) then return false, "the legacy daemon lock is held" end
+                return unlink_file(it)
+            end,
+        })
+    end
+end
+
 --- Find what housekeeping (or `lw cleanup`) would remove (spec §16.40).
 --- Never raises for a missing or odd directory: it is just skipped.
 --- @param opts? loomworks.HousekeepingOpts
@@ -701,7 +745,7 @@ function M.collect(opts)
         live_hashes = opts.live_daemon_hashes,
     }
     if ctx.is_windows == nil then ctx.is_windows = IS_WIN end
-    if ctx.uid == nil then ctx.uid = (uv().getuid and uv().getuid()) or -1 end
+    if ctx.uid == nil then ctx.uid = (require("loomworks.daemon.identity").euid() or -1) end
     local items = {}
     local function guarded(fn, ...)
         local ok, err = pcall(fn, ...)
@@ -760,7 +804,10 @@ function M.collect(opts)
     local exe = opts.exe
     if exe == nil then exe = M.lw_host_exe() end
     if exe then guarded(scan_exe, items, ctx, exe) end
-    if opts.root then guarded(scan_workspace_tmp, items, ctx, opts.root) end
+    if opts.root then
+        guarded(scan_workspace_tmp, items, ctx, opts.root)
+        guarded(scan_workspace_legacy, items, ctx, opts.root)
+    end
 
     -- One entry per path (a temp dir listed twice, …).
     local seen, out = {}, {}

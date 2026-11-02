@@ -1,8 +1,10 @@
 --- loomworks/daemon/client.lua — connect to a workspace daemon and authenticate
 --- (spec §19.8), then send control requests.
 ---
---- The endpoint comes from the handle (clients never compute it). The client
---- sends `hello`, verifies the daemon's `server_proof` BEFORE sending anything
+--- The endpoint comes from the handle (clients never compute it). On
+--- Windows the client first checks the pipe's server process (§19.7 "Peer
+--- check": this process's user SID and elevation, else ERR_UNTRUSTED with
+--- nothing sent). It then sends `hello`, verifies the daemon's `server_proof` BEFORE sending anything
 --- else — a process squatting the endpoint cannot prove knowledge of K, and
 --- the client then closes and reports the endpoint as untrusted — answers
 --- with its own proof, and waits for `welcome`.
@@ -267,6 +269,11 @@ function M.connect(endpoint, opts, cb)
     local ok_c = pcall(function()
         pipe:connect(endpoint, function(cerr)
             if cerr then return finish(nil, M.ERR_CONNECT, tostring(cerr)) end
+            -- The peer check (§19.7, Windows) before `hello`: the pipe's server
+            -- process must be of this process's slot (user SID and elevation)
+            -- — a daemon or squatter of another slot gets no frame.
+            local okp, why = require("loomworks.daemon.endpoint").peer_check(pipe, "server")
+            if not okp then return finish(nil, M.ERR_UNTRUSTED, why) end
             conn._reader = frame_reader(conn, opts, "hello", finish, is_done, on_challenge)
             pipe:read_start(conn._reader)
             pcall(function() pipe:write(hello) end)

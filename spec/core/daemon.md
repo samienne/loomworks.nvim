@@ -128,8 +128,8 @@ record makes the daemon exit 1); the attached runtime's side
 stop without ending the process), its use by the CLI and the busy wait
 (`cli._delegate_attached`, setting `runtime-busy-wait`) implemented.*
 
-The **runtime lock** `<root>/.nvim/loomworks.daemon.lock` designates the one
-runtime of a workspace. It uses the build-directory lock primitive (§16.6): an
+The **runtime lock** `<root>/.nvim/loomworks.daemon-<S>.lock` designates the
+one runtime of a workspace for a slot (§19.7.1). It uses the build-directory lock primitive (§16.6): an
 exclusive create and an mtime heartbeat (about 5 s); a dead or hung holder is
 handled per §19.5. Its record is [formats.md](../formats.md) §6.2.
 
@@ -202,7 +202,7 @@ locks still guard against older versions and version-bypass runs (§19.9).
 
 | # | Lock | Scope / file | Held | Acquisition |
 |--|--|--|--|--|
-| R | Runtime | `.nvim/loomworks.daemon.lock` (§19.2) | daemon lifetime / attached command | brief wait, then fail |
+| R | Runtime | `.nvim/loomworks.daemon-<S>.lock` (§19.2) | daemon lifetime / attached command | brief wait, then fail |
 | O | Workspace operation | `.nvim/loomworks.op.lock` | one multi-file operation | fail-fast |
 | B | Build directory | `<build dir>.loomworks-lock` (§16.6) | one build-directory operation | fail-fast |
 | D | Device | per-serial, per-user (§18.7) | one remote operation | waits by default (§18.7) |
@@ -555,8 +555,8 @@ dangerous things.
 by `daemon/server.lua`), the Runtime row and `lw daemon status`; the running-task
 lines (`daemon/running.lua`).*
 
-A daemon publishes its handle `<root>/.nvim/loomworks.daemon.json`
-([formats.md](../formats.md) §8) after binding its endpoint. It
+A daemon publishes its handle `<root>/.nvim/loomworks.daemon-<S>.json`
+(its slot's, §19.7.1; [formats.md](../formats.md) §8) after binding its endpoint. It
 refreshes the file's modification time on its heartbeat and rewrites it when
 `clients`/`busy` change. Liveness is judged by the heartbeat, never by probing
 the pid (§16.6). The handle is **discovery only**: the runtime lock (§19.2)
@@ -575,6 +575,16 @@ so clients never keep reading an outdated `clients`/`busy`, and notes it in the
 runtime log only once it has kept failing for a few seconds. The heartbeat
 still refreshes the published file's time meanwhile. A record identical to the
 one last written is not rewritten.
+
+**Legacy files.** `loomworks.daemon.json`, `.lock` and `.log` (lw before
+slots) are never read to find or connect to a daemon. A legacy runtime lock
+whose holder is a live daemon of this slot (§19.5 identity rules) is a
+daemon of another version (§19.9): it is stopped before this slot's daemon
+starts. Housekeeping, `lw daemon stop` and `lw cleanup` remove the legacy
+lock and handle only as a reclaimer would (§19.5: holder dead, these exact
+regular files) and the legacy log only as a leftover (these exact regular
+files, `.log` and `.log.1`). A process removes only its own slot's files
+and the legacy names; another slot's files are never touched.
 
 **Runtime row.** `lw status` shows one `Runtime` line computed **only** from the
 handle and the runtime lock — it never launches or connects (the running-task
@@ -650,8 +660,11 @@ stale. It never launches, connects to or signals a daemon, and writes nothing.
 3. Read each candidate's command line (§19.5: Windows the process command
    line, Linux `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`) and its start
    time; keep those that are `lw … daemon run` by the §19.5 identity rules. A
-   command line that cannot be read (another user's process, access denied)
-   is skipped. A kept process that is the parent of another kept process with
+   command line that cannot be read is skipped, and so is a process of
+   another slot (§19.7.1: on Windows its token's user SID or elevation differs,
+   or the token cannot be read; on POSIX its effective uid differs) — an
+   elevated or root caller can read every process but lists, stops and kills
+   only its own slot's daemons. A kept process that is the parent of another kept process with
    the same `--root`, which started no earlier than it, is a pin redirect's
    wrapper (§16.23: the invoked lw waiting on the pinned `daemon run`), not a
    daemon, and is dropped — it is never listed, and never stopped or killed
@@ -773,23 +786,37 @@ builds, i.e. execute code as the owner — so it is restricted by the operating
 system **and** gated by authentication (§19.8).
 
 - **POSIX:** a Unix-domain socket in a short per-user directory created `0700`
-  and verified to be owned by the caller (`$XDG_RUNTIME_DIR/loomworks`, else
-  `$TMPDIR` / `/tmp` with a `loomworks-<uid>` directory). The socket is named by
+  and verified to be owned by the caller's effective uid
+  (`$XDG_RUNTIME_DIR/loomworks`, else `$TMPDIR` / `/tmp` with a
+  `loomworks-<euid>` directory). "Owned by the caller" below means by its
+  effective uid. The socket is named by
   a short hash of the normalized workspace root, so the path fits the `sun_path`
   limit (about 104 bytes on macOS, 108 on Linux) regardless of repository depth.
   A stale socket file is unlinked by a daemon or client only while holding
   the runtime lock. Outside that, only housekeeping and `lw cleanup` remove a
   socket, under the conditions of §16.40 (it refuses a connection, is older
   than an hour, and is put back if a daemon bound the name meanwhile).
-- **Windows:** a named pipe whose name contains a hash of the user and the
-  workspace root. Immediately after creating it, the daemon replaces its
+- **Windows:** a named pipe whose name contains a hash of the slot token *S*
+  (§19.7.1) and the workspace root. Immediately after creating it, the daemon replaces its
   security descriptor (`SetSecurityInfo` through the host's foreign-function
   interface) with a protected DACL granting full access to the owner's SID and
   `SYSTEM` only and an explicit deny for the `NETWORK` SID. A daemon that cannot
   apply the DACL does not serve and exits with an error.
+- **Peer check (Windows).** The daemon checks each accepted connection, and
+  a client the pipe it connected to, before any frame: the peer process
+  (the pipe's client or server process) must run with this process's user
+  SID and elevation. A peer whose token cannot be read is refused. This,
+  not *K*, keeps a standard process from an elevated daemon and an elevated
+  client from a daemon (or a squatter) of the standard slot. (POSIX needs no
+  extra check: the euid-owned `0700` directory admits only that euid and
+  root, and a client accepts only a socket owned by its own euid.)
+- **Local only.** An endpoint is a local pipe or Unix-domain socket of the
+  caller's slot on this host. The protocol is never served or connected to
+  over a network, nor across users or elevation.
 
-Clients read the address from the handle, and use it only when it is an
-address a daemon of this workspace binds — on Windows exactly the pipe name
+Clients read the address from their slot's handle, and use it — for any
+connection, including the running-task lines of `lw status` — only when it
+is an address a daemon of this workspace and slot binds — on Windows exactly the pipe name
 above; on POSIX one of the per-user socket paths of the client's own
 environment, or — since the daemon binds the first path of the environment
 that launched it, which a client from ssh, cron, `sudo -u` or a container may
@@ -801,6 +828,22 @@ remote `\\host\pipe\…`, another user's socket) marks the handle as
 untrusted: nothing is connected to, and the command says so. The handle sits
 in a `.nvim/` other local users may be able to write; connecting to a remote
 pipe would hand the user's credentials to that host.
+
+#### 19.7.1 Runtime slot
+
+Runtimes are separated per **slot**: the operating-system user and, on
+Windows, whether the process token is elevated. Its identity string *I* is
+the user's SID and `elevated` or `standard` (from the token's elevation) on
+Windows, and the decimal effective uid on POSIX (root is its own slot). The
+**slot token** *S* is the first 16 hex digits of
+SHA-256(`loomworks-daemon-slot-v1` ‖ LF ‖ *I*), computed once per process.
+*S* is opaque: it is only ever computed and compared, never parsed, listed
+or derived from a file name. Two slots never share a runtime lock, handle,
+log or endpoint, and never connect to each other; work on one workspace from
+two slots is coordinated only by the operation locks (§19.3) and
+crash-consistent commits (§19.4). Separation across slots is enforced by the
+operating system (§19.7), not by *K*: an elevated and a standard process of
+one user share the machine key.
 
 ### 19.8 Wire protocol and authentication
 
@@ -1019,7 +1062,7 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
 - **Detached**, in a new process group/session, with **no inherited standard
   handles** (on Windows, standard input, output and error are not inherited;
   on POSIX they are `/dev/null`); the daemon writes its own **runtime log**
-  inside the workspace, `<root>/.nvim/loomworks.daemon.log`, capped at a few
+  inside the workspace, `<root>/.nvim/loomworks.daemon-<S>.log`, capped at a few
   megabytes with one rotated predecessor (`.log.1`). Each line is appended
   with the file opened and closed again, so no process keeps it open, and as
   one atomic append (the system places the write at the end of the file:
