@@ -466,7 +466,10 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_false(sent(f, "old:retire"))
         assert.is_nil(obs.incompat_note)
         assert.is_nil(obs:runtime_line():find("incompatible", 1, true), obs:runtime_line())
-        assert.is_true(obs:can_call("get") or obs.mode ~= "interfaces")
+        -- The pending stale retirement does not block the features (the gate
+        -- of `can_call`; an incompatible one would block them).
+        assert.is_true(obs._retire ~= nil and obs._retire.inc.stale == true)
+        assert.is_false(obs:_retire_blocks())
         assert.equals(1, f.connects)
         f.busy = false
         assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
@@ -495,6 +498,26 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         vim.wait(300)
         assert.is_false(sent(g, "old:retire"))
+    end)
+
+    it("(c'4) a failed retirement of a stale daemon is its stale note; it stays observed", function()
+        local f = compatible(fake(), "0.0.1")
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "retire" then rcb(nil, "retire refused: test"); return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs.stale_note ~= nil and obs.stale_note:find("retiring it failed (retire refused: test)", 1, true)
+                ~= nil
+        end, 10), obs:runtime_line())
+        assert.truthy(obs.stale_note:find("other code than the selected lw v9.9.9", 1, true), obs.stale_note)
+        assert.is_nil(obs.incompat_note)
+        assert.equals("connected", obs.state)
+        assert.equals(f.conn, obs.conn)
+        assert.is_true(R.retire_failed(ws.root, "0.0.1"))
+        vim.wait(200)
+        assert.equals(0, f.spawned)
+        assert.same({}, f.notes)
     end)
 
     it("(c'') an incompatible daemon of the selected binary's own version is not retired", function()
