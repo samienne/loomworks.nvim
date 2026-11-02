@@ -942,6 +942,46 @@ do
   eq(("x__LW_EXIT_n.1=3"):match(vim.pesc("__LW_EXIT_n.1") .. "=(%d+)$"), "3", "vim.pesc output is a literal pattern")
 end
 
+print("loomworks.shim — vim.list_slice / vim.defer_fn used by the daemon")
+do
+  -- Regression: the daemon's view.Workspace/1 initial state failed with
+  -- "attempt to call field 'list_slice' (a nil value)" (workspace.lua's stray
+  -- build dir view), and its task output flush calls vim.defer_fn.
+  local vim = require("loomworks.shim")
+  ok(type(vim.list_slice) == "function", "vim.list_slice exists")
+  if type(vim.list_slice) == "function" then
+    local t = { "a", "b", "c", "d" }
+    local all = vim.list_slice(t)
+    ok(all ~= t and table.concat(all, ",") == "a,b,c,d", "list_slice(t) is a copy of the whole list")
+    eq(table.concat(vim.list_slice(t, 2), ","), "b,c,d", "list_slice(t, 2): from start to the end")
+    eq(table.concat(vim.list_slice(t, 2, 3), ","), "b,c", "list_slice(t, 2, 3): finish is inclusive")
+    eq(table.concat(vim.list_slice(t, nil, 2), ","), "a,b", "list_slice(t, nil, 2): start defaults to 1")
+    eq(#vim.list_slice(t, 3, 2), 0, "list_slice with start > finish is empty")
+    eq(#vim.list_slice({}), 0, "list_slice of an empty list is empty")
+  end
+  -- The call site the daemon reached: the workspace view's stray build dirs.
+  local Workspace = require("loomworks.workspace").Workspace
+  local fake = {
+    _stray_known_forms = function() return { "b", "a" } end,
+    _stray_cache = { sig = "a\0b", dirs = {}, stamps = {}, stray = { "x" } },
+  }
+  local okv, res = pcall(Workspace._view_stray_build_dirs, fake)
+  ok(okv and type(res) == "table" and res[1] == "x" and res ~= fake._stray_cache.stray,
+    "Workspace:_view_stray_build_dirs runs under the shim  (" .. tostring(okv and #res or res) .. ")")
+  ok(type(vim.defer_fn) == "function", "vim.defer_fn exists")
+  if type(vim.defer_fn) == "function" then
+    local fired = false
+    local timer = vim.defer_fn(function() fired = true end, 10)
+    ok(timer ~= nil, "vim.defer_fn returns its timer")
+    ok(vim.wait(2000, function() return fired end, 5), "vim.defer_fn runs the callback after the timeout")
+    local stopped = false
+    local t2 = vim.defer_fn(function() stopped = true end, 50)
+    t2:stop(); t2:close()
+    vim.wait(120)
+    ok(not stopped, "a stopped and closed defer_fn timer never fires")
+  end
+end
+
 print("loomworks.proc / lock records — process identity under luvi (spec §19.5)")
 do
   -- The start-time probe, tree kill and suspend run under the luvi host on the

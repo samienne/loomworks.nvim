@@ -1029,6 +1029,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- A workspace daemon run by the standalone `lw` no longer fails every status
+  page section with "loomworks.view.Workspace/1 refused (internal error)":
+  the standalone host's `vim` shim lacked `vim.list_slice`, which the
+  workspace view calls. It also lacked `vim.defer_fn`, which the daemon's
+  task output flush and test runs call. Both now match Neovim. (#373)
 - The editor no longer launches its workspace daemon from an `lw` on the
   search path that predates the binary descriptor (0.1.43 and older, or a
   build of master), which has no `daemon` command and left the status page

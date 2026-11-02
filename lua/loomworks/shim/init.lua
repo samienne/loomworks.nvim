@@ -83,6 +83,13 @@ function vim.list_extend(dst, src, s, e)
   for i = s, e do dst[#dst + 1] = src[i] end
   return dst
 end
+-- nvim's semantics: a new list of list[start..finish], start defaulting to 1
+-- and finish (inclusive) to #list.
+function vim.list_slice(list, start, finish)
+  local r = {}
+  for i = start or 1, finish or #list do r[#r + 1] = list[i] end
+  return r
+end
 
 function vim.tbl_isempty(t) return next(t) == nil end
 function vim.tbl_count(t) local n = 0; for _ in pairs(t) do n = n + 1 end; return n end
@@ -633,6 +640,16 @@ function vim.schedule_wrap(fn)
     local a = { ... }
     vim.schedule(function() fn(unpack(a)) end)
   end
+end
+-- nvim's semantics: run `fn` once, scheduled, after `timeout` ms; returns the
+-- timer (a caller may stop and close it to cancel).
+function vim.defer_fn(fn, timeout)
+  local timer = assert(uv.new_timer())
+  timer:start(timeout, 0, vim.schedule_wrap(function()
+    if not timer:is_closing() then timer:close() end
+    fn()
+  end))
+  return timer
 end
 
 --- Drive the libuv loop until `condition` is true or `timeout` ms elapse.
