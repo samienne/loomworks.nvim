@@ -651,9 +651,11 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `_set_identity`, `_process_probe`, `_euid_override`.
 - `legacy.lua` — the unslotted files of lw before slots (§19.6 "Legacy
   files"), never read to connect: `stop_live` (from `Server:start`, before
-  R, and from `lw daemon stop` / `kill` / `restart`, `command.lua`) stops a live daemon of this slot holding the legacy lock via
-  `lock_break.break_holder` (ask, then kill + verify); `live_daemon` is that
-  holder for `lw daemon status` (reported, not connected to); `reclaim` (`lw daemon
+  R, and from `lw daemon stop` / `kill` / `restart`, `command.lua`) stops a
+  live daemon of this slot holding the legacy lock via
+  `lock_break.break_holder` (ask, then kill + verify); `live_daemon` (this
+  host, alive with its start time, same slot) is that holder, also for
+  `lw daemon status` (reported, not connected to); `reclaim` (`lw daemon
   stop`) and housekeeping / `lw cleanup` remove the legacy lock (dead holder,
   nonce-checked `lock_record.reclaim`) and handle (names a gone process, no
   live holder) and list `.log` / `.log.1` as leftovers — exact names, regular

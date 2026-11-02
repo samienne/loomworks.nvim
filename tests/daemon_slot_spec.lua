@@ -265,6 +265,59 @@ describe("legacy daemon files", function()
         assert.is_true(exists(L("lock")))
     end)
 
+    it("a legacy holder of another host or with no start time is neither stopped nor reported", function()
+        local cmd = require("loomworks.daemon.command")
+        local lb = require("loomworks.lock_break")
+        local saved = lb.break_holder
+        identity._process_probe = function() return identity.identity() end
+        for _, extra in ipairs({ { host = "some-other-host" }, { start_time = vim.NIL } }) do
+            write(L("lock"), lock_rec(proc.self_start_time(), extra))
+            local broke
+            lb.break_holder = function() broke = true; return false, "refused" end
+            local host, out = cmd_host()
+            local ok, code = pcall(cmd.stop, root, host, {})
+            lb.break_holder = saved
+            assert.is_true(ok, tostring(code))
+            assert.equals(0, code)
+            assert.is_nil(broke)
+            local text = table.concat(out, "\n")
+            assert.is_falsy(text:find("earlier lw", 1, true), text)
+            assert.is_truthy(text:find("no workspace daemon is running", 1, true), text)
+            local host2, out2 = cmd_host()
+            cmd.status(root, host2)
+            local stext = table.concat(out2, "\n")
+            assert.is_falsy(stext:find("Legacy", 1, true), stext)
+            assert.is_true(exists(L("lock")))
+        end
+    end)
+
+    it("lw daemon restart stops a live legacy daemon before launching, and does not launch when that fails",
+        function()
+        local cmd = require("loomworks.daemon.command")
+        local lb = require("loomworks.lock_break")
+        local launch = require("loomworks.daemon.launch")
+        local saved, saved_launch = lb.break_holder, launch.launch
+        identity._process_probe = function() return identity.identity() end
+        write(L("lock"), lock_rec(proc.self_start_time()))
+        local seq = {}
+        lb.break_holder = function() seq[#seq + 1] = "stop"; return true end
+        launch.launch = function()
+            seq[#seq + 1] = "launch"
+            return true, { handle = { pid = 1234 } }
+        end
+        local host = cmd_host()
+        local ok, err = pcall(cmd.restart, root, host, {})
+        assert.is_true(ok, tostring(err))
+        assert.same({ "stop", "launch" }, seq)
+        seq = {}
+        lb.break_holder = function() seq[#seq + 1] = "stop"; return false, "it would not go" end
+        local ok2, err2 = pcall(cmd.restart, root, cmd_host(), {})
+        lb.break_holder, launch.launch = saved, saved_launch
+        assert.is_false(ok2)
+        assert.is_truthy(tostring(err2):find("it would not go", 1, true))
+        assert.same({ "stop" }, seq)
+    end)
+
     it("lw daemon status reports a live legacy daemon of this slot without connecting", function()
         local cmd = require("loomworks.daemon.command")
         write(L("lock"), lock_rec(proc.self_start_time()))

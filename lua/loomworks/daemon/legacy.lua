@@ -197,9 +197,11 @@ function M.logs(root)
 end
 
 --- The legacy runtime lock's record when its holder is a live daemon of
---- this slot (§19.7.1, §19.5 identity rules: the slot is read from the
---- process itself) — a daemon of an earlier lw; nil otherwise (none, dead,
---- hung, foreign, an attached run, another slot's). Never raises.
+--- this slot (§19.7.1, §19.5 identity rules: a process of this host alive
+--- with the record's start time, its slot read from the process itself) — a
+--- daemon of an earlier lw; nil otherwise (none, dead, hung, another host's,
+--- no or uncheckable start time, an attached run, another slot's). Never
+--- raises.
 --- @param root string
 --- @return table|nil info
 function M.live_daemon(root)
@@ -207,7 +209,13 @@ function M.live_daemon(root)
         local _, info = M.read_lock(root)
         if not info or info.state ~= "live" then return nil end
         if not (info.kind == "daemon" or info.mode == "daemon") then return nil end
-        if type(info.pid) ~= "number" or not require("loomworks.daemon.identity").same_slot(info.pid) then
+        -- classify also calls a record of another host, or one whose start
+        -- time is missing or cannot be checked, "live": only a process of
+        -- this host proven alive with that start time is this holder.
+        if not require("loomworks.lock_record").same_host(info) then return nil end
+        if type(info.pid) ~= "number" or type(info.start_time) ~= "string" then return nil end
+        if require("loomworks.proc").alive(info.pid, info.start_time) ~= true then return nil end
+        if not require("loomworks.daemon.identity").same_slot(info.pid) then
             return nil
         end
         return info
