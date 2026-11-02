@@ -41,7 +41,7 @@ end
 local function build_case(name)
     local function step(seq, index, state)
         return { expect = { kind = "signal", object = "/tasks", name = "step", seq = seq,
-            args = { task_id = { ["$var"] = "task" }, seq = seq, index = index, state = state } }, timeout_ms = 120000 }
+            args = { task_id = { ["$var"] = "task" }, index = index, state = state } }, timeout_ms = 120000 }
     end
     return {
         name = name,

@@ -1448,7 +1448,7 @@ generation) are implemented; records
 of further interfaces land with the steps that land them, §19.19.)* Ids are
 the only entity handles on the wire; the ids of this registry are those of
 the interface records and references ([API.md](../protocol/API.md) §1). `model_change` becomes the
-`changed { seq, session_generation, scopes? }` signal of
+`changed { revision, scopes? }` signal of
 `loomworks.Workspace/1` ([API.md](../protocol/API.md) §6), delivered to its subscribers under the same
 generation rule. An interface signal's `seq` is counted as [PROTOCOL.md](../protocol/PROTOCOL.md) §12.3
 specifies (per object and connection, gapless); the `model_change`

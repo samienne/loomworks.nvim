@@ -66,8 +66,7 @@
 --- method declares; a `signal` against its interface's signal schema, and a
 --- subscribed signal's `seq` is the previous one of its object on this
 --- connection + 1 (from the baseline `subscribe` returned); a signal of a
---- subscription the connection dropped (`unsubscribe` answered) fails, and
---- a signal's `session_generation` must be welcome's. The reply to a
+--- subscription the connection dropped (`unsubscribe` answered) fails. The reply to a
 --- protocol-10 request is validated against its v0 shape where
 --- transport.json has one (`v0.replies.<request kind>`; an `error` reply's
 --- `error` is a string); other protocol-10 frames (`model_change`, ...) are
@@ -491,12 +490,6 @@ function Session:check_received(frame)
         end
         local oks, serr = self.set:validate(rel, "/signals/" .. frame.name .. "/args", frame.args)
         if not oks then return false, string.format("%s/%d signal %s: %s", frame.iface, frame.v, frame.name, tostring(serr)) end
-        local gen = type(frame.args) == "table" and frame.args.session_generation or nil
-        local welcome_gen = M.lookup(self.vars, "welcome.header.session_generation")
-        if gen ~= nil and welcome_gen ~= nil and not schema.equal(gen, welcome_gen) then
-            return false, string.format("signal %s of session generation %s, but welcome's is %s", frame.name,
-                encode(gen), encode(welcome_gen))
-        end
         if frame.sub_id ~= nil then
             if self.dropped[frame.sub_id] then
                 return false, "signal for sub_id " .. tostring(frame.sub_id) .. " after its unsubscribe"

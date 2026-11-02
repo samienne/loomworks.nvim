@@ -66,17 +66,7 @@
     "changed": {
       "description": "The state changed: sent when the state the daemon computes with its own environment differs from the one at its last changed (checked after each model segment and committed write, and when the active profile's databases settle), and whenever an owned database was written (a raised db_rev). Carries no state and has no initial: a client reads get after subscribing and again, with its own environment, on each changed and on Workspace/1 changed.",
       "args": {
-        "type": "object",
-        "required": [
-          "seq"
-        ],
-        "properties": {
-          "seq": {
-            "description": "Increases with each changed this daemon session sends.",
-            "type": "integer",
-            "minimum": 1
-          }
-        }
+        "type": "object"
       }
     }
   },

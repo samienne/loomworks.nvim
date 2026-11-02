@@ -2206,7 +2206,7 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   differs per client). `set_option` is a command like `set_adapter`
   (`Workspace:set_lsp_option` now returns ok/err and puts the options back
   when the save is refused or fails; a nil value removes the key).
-  `core_interfaces.lsp_check` sends `changed { seq }` when the state built
+  `core_interfaces.lsp_check` sends `changed {}` when the state built
   with the daemon's own environment (`lsp_config.signature`) differs from
   the one at the last `changed` — from `header_check` (after each segment and
   committed write; inside a segment it defers to the check after it) and on

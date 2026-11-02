@@ -113,7 +113,7 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
 
     local function signal(obs, seq)
         obs:_on_message({ kind = "signal", object = "/lsp", iface = "loomworks.LspConfig", v = 1,
-            name = "changed", args = { seq = seq } })
+            name = "changed", seq = seq, args = {} })
     end
 
     describe("reads and the source", function()

@@ -183,17 +183,7 @@
     "changed": {
       "description": "The registry's records changed (a scan, a device appearing or going away, a profile choosing a device); carries no state and has no initial: a client reads list after subscribing and again on each changed.",
       "args": {
-        "type": "object",
-        "required": [
-          "seq"
-        ],
-        "properties": {
-          "seq": {
-            "description": "Increases with each changed this daemon session sends.",
-            "type": "integer",
-            "minimum": 1
-          }
-        }
+        "type": "object"
       }
     }
   },

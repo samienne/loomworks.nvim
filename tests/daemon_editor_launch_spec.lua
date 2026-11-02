@@ -1155,7 +1155,7 @@ describe("debug adapters section on DebugConfig/1 (§19.20, step 5k C2)", functi
         assert.same({ REC }, editor_ops.debug_adapters(nil))
         -- Workspace/1 `changed`: read again.
         obs:_on_message({ kind = "signal", object = "/workspace", iface = "loomworks.Workspace", name = "changed",
-            args = { seq = 5, session_generation = 1 } })
+            args = { revision = 5 } })
         assert.equals(2, #sent)
         assert.equals("adapters", sent[2].method)
     end)

@@ -133,7 +133,6 @@ M.LOAD_WAIT_MS = 45000
 ---   workspace this daemon loads shares (`_adopt`, §19.16 "Devices")
 --- @field _lsp_sig string|nil LspConfig/1 (§19.20): the state (the daemon's own environment) at the last
 ---   `changed`, the baseline the next check compares with; nil while /lsp has no subscriber
---- @field _lsp_seq integer|nil the `seq` of the last `changed` sent
 --- @field _lsp_force boolean|nil an owned database was written during a model segment: the deferred check
 ---   sends `changed` even when the state is unchanged (a raised `db_rev`)
 --- @field _lsp_listeners table<string, function> the `lsp_database_written` / `lsp_ready` / `tools_detected`
@@ -169,14 +168,11 @@ function M.attach(server, host)
         end
         self:_profile_task_moved(t)
     end
-    -- A target-scoped task's step changed state (§19.15 "Steps of a task"):
-    -- its `seq` is each frame's own envelope `seq`.
+    -- A target-scoped task's step changed state (§19.15 "Steps of a task").
     self.tasks.on_step = function(t, index, state, err)
         if server.interfaces then
-            core_ifaces.task_signal(server.interfaces, t, "step", function(_, seq)
-                return { task_id = t.id, seq = seq, index = index, state = state,
-                    error = type(err) == "string" and err or nil }
-            end)
+            core_ifaces.task_signal(server.interfaces, t, "step", { task_id = t.id, index = index,
+                state = state, error = type(err) == "string" and err or nil })
         end
     end
     envscope.install()

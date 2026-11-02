@@ -48,7 +48,7 @@
         { "expect": {
             "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "changed",
             "sub_id": { "$var": "sub" }, "seq": 1,
-            "args": { "seq": { "$type": "integer" }, "session_generation": { "$var": "welcome.header.session_generation" } }
+            "args": { "revision": { "$type": "integer" }, "session_generation": { "$absent": true } }
         } }
       ]
     },

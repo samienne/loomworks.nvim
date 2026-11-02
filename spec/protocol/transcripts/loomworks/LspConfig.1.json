@@ -310,11 +310,7 @@
             "sub_id": {
               "$var": "sub"
             },
-            "args": {
-              "seq": {
-                "$type": "integer"
-              }
-            }
+            "args": {}
           },
           "timeout_ms": 60000
         },
@@ -502,11 +498,7 @@
             "sub_id": {
               "$var": "sub"
             },
-            "args": {
-              "seq": {
-                "$type": "integer"
-              }
-            }
+            "args": {}
           },
           "timeout_ms": 60000
         },
@@ -574,11 +566,7 @@
             "sub_id": {
               "$var": "sub"
             },
-            "args": {
-              "seq": {
-                "$type": "integer"
-              }
-            }
+            "args": {}
           },
           "timeout_ms": 60000
         },

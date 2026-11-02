@@ -8,7 +8,7 @@
 ---                                                 `{ debug, prepared }`
 ---   collect { prepared }                          the results a debugged program wrote
 ---   result { id }                                 a node's last result with its output
----   signal results { seq, task_id?, cases }       per-case progress, a collect's cases
+---   signal results { task_id?, cases }            per-case progress, a collect's cases
 ---
 --- Nodes are named by their `view.Tests/1` ids (loomworks.daemon.test_store:
 --- unit-scoped, opaque); an id that names no node of the active profile's
@@ -105,8 +105,7 @@ local function case_result(id, r)
     return { id = id, status = r.status, duration = millis(r.duration), message = r.message }
 end
 
---- Send `Tests/1.results` (to the subscribers of /tests). `seq` is the
---- frame's own: gapless per object and connection (§19.12).
+--- Send `Tests/1.results` (to the subscribers of /tests).
 --- @param service table
 --- @param task_id string|nil
 --- @param cases table[]
@@ -115,9 +114,7 @@ function M.emit(service, task_id, cases)
     if not reg or #cases == 0 then return end
     local w = core_ifaces.TESTS
     if not reg:has_subscribers(w.path, w.iface, w.v, "results") then return end
-    reg:emit(w.path, w.iface, w.v, "results", function(_, seq)
-        return { seq = seq, task_id = task_id, cases = cases }
-    end)
+    reg:emit(w.path, w.iface, w.v, "results", { task_id = task_id, cases = cases })
 end
 
 --- The batcher of a run's `results`: `add(id, r)` queues a case's current
