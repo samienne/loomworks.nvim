@@ -16,8 +16,8 @@
 --- @field _signal? fun() a manual tracker's watch: called (scheduled) when a watched file's stat changes
 --- @field _hold? fun(path: string, content: string|nil): boolean screens each change before delivery
 --- @field _held table<string, true> paths whose last change `_hold` held back
---- @field _saves boolean a file missing beside its `.bak` is a save in progress (see `_read`)
---- @field _missing table<string, number> per path: when it was first read missing beside its `.bak` (ms)
+--- @field _saves boolean a file missing beside its staged copy is a save in progress (see `_read`)
+--- @field _staged fun(path: string): boolean whether a staged copy of `path` exists
 --- @field _recheck_timer? uv_timer_t the pending re-check of a save in progress
 local FileTracker = {}
 FileTracker.__index = FileTracker
@@ -25,9 +25,32 @@ FileTracker.__index = FileTracker
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
 
---- How long a file may be missing beside its `.bak` (a save between its two
---- renames, spec §19.4) before it is checked again, in ms.
-FileTracker.SAVE_GRACE_MS = 500
+--- How soon a file missing beside its staged copy (a save between its two
+--- renames, spec §19.4) is checked again, in ms.
+FileTracker.SAVE_RECHECK_MS = 500
+
+--- Whether a save of `path` is staged: `<path>.tmp` (io.write_file_atomic)
+--- or a transaction's `<path>.txn-<id>` (loomworks.txn `staged_path`) exists.
+--- The transaction name is matched by its prefix, `staged_path(path, "")`,
+--- against the directory's entries (ids are not parsed).
+--- @param path string
+--- @return boolean
+function FileTracker.staged_copy(path)
+    if uv.fs_stat(path .. ".tmp") then return true end
+    local prefix = require("loomworks.txn").staged_path(path, "")
+    local dir, pbase = prefix:match("^(.*)[/\\]([^/\\]+)$")
+    if not dir then dir, pbase = ".", prefix end
+    -- (Windows names are case-insensitive, and watched paths may be lowercased.)
+    local fold = vim.fn.has("win32") == 1 and string.lower or function(s) return s end
+    pbase = fold(pbase)
+    local req = uv.fs_scandir(dir == "" and "/" or dir)
+    while req do
+        local name = uv.fs_scandir_next(req)
+        if not name then break end
+        if #name > #pbase and fold(name:sub(1, #pbase)) == pbase then return true end
+    end
+    return false
+end
 
 --- @class loomworks.FileTrackerOpts
 --- @field callback fun(path: string, content: string|nil) called on file change
@@ -49,11 +72,13 @@ FileTracker.SAVE_GRACE_MS = 500
 ---   holds it back, and the sync then delivers nothing (every last known
 ---   content kept), so the next sync retries (the daemon: a file that cannot
 ---   be parsed, §19.13)
---- @field saves? boolean a file read missing while `<file>.bak` exists may be
----   a save in progress (spec §19.4): it reads as its last known content for
----   `SAVE_GRACE_MS` (a re-check is signalled then); afterwards, still
----   missing, it stays unchanged only while the `.bak` holds its last known
----   content (a save cut short), otherwise it reads as missing (a deletion)
+--- @field saves? boolean a file read missing while its staged copy exists
+---   (`<file>.tmp`, or a transaction's `<file>.txn-<id>`) is a save in
+---   progress (spec §19.4): it reads as its last known content, and a re-check
+---   is signalled after `SAVE_RECHECK_MS`; with no staged copy it reads as
+---   missing at once (a deletion)
+--- @field staged? fun(path: string): boolean injectable for testing (default
+---   `FileTracker.staged_copy`)
 
 --- Create a new FileTracker.
 --- @param opts loomworks.FileTrackerOpts
@@ -71,7 +96,7 @@ function FileTracker.new(opts)
     self._hold = opts.hold
     self._held = {}
     self._saves = opts.saves or false
-    self._missing = {}
+    self._staged = opts.staged or FileTracker.staged_copy
     self._batch = opts.batch
     self._order = {}
     self._paused = false
@@ -119,45 +144,33 @@ function FileTracker:watch(path, opts)
     end)
 end
 
---- Read a watched file. With `saves`, a file missing while `<file>.bak`
---- exists may be a save in progress (spec §19.4: the target is absent between
---- the save's two renames): it reads as its last known content, and a
---- re-check is scheduled. Once it has been missing for `SAVE_GRACE_MS` it
---- stays unchanged only if the `.bak` holds its last known content (the save
---- was cut short); otherwise it reads as missing, as a deleted file does (the
---- `.bak` of a completed save holds the content before it).
+--- Read a watched file. With `saves`, a file missing while its staged copy
+--- exists (`<file>.tmp`, or a transaction's `<file>.txn-<id>`) is a save in
+--- progress (spec §19.4: the target is absent between the save's two
+--- renames): it reads as its last known content, and a re-check is
+--- scheduled (again on every such read, while the staged copy remains). A
+--- missing file with no staged copy reads as missing at once, as a deleted
+--- file does. (A save always leaves a staged copy until its last rename; a
+--- deletion leaves none. The `.bak` says nothing: a save of identical bytes
+--- leaves it equal to the content last applied.)
 --- @param path string
 --- @return string|nil
 function FileTracker:_read(path)
     local content = self._read_file(path)
-    if content ~= nil or not self._saves then
-        self._missing[path] = nil
-        return content
-    end
-    local bak = self._read_file(path .. ".bak")
-    if bak == nil then
-        self._missing[path] = nil
-        return nil
-    end
-    local now = uv.hrtime() / 1e6
-    local since = self._missing[path]
-    if not since then
-        self._missing[path] = now
-        self:_recheck()
-    end
-    if now - (since or now) < FileTracker.SAVE_GRACE_MS then return self._content[path] end
-    if bak == self._content[path] then return bak end
-    return nil
+    if content ~= nil or not self._saves then return content end
+    if not self._staged(path) then return nil end
+    self:_recheck()
+    return self._content[path]
 end
 
---- Signal the owner again once a save in progress's grace has passed (a
---- polling tracker syncs itself then).
+--- Signal the owner again `SAVE_RECHECK_MS` after a save in progress was seen
+--- (a polling tracker syncs itself then).
 function FileTracker:_recheck()
     if self._recheck_timer or (self._manual and not self._signal) then return end
     local timer = uv.new_timer()
     if not timer then return end
     self._recheck_timer = timer
-    timer:start(FileTracker.SAVE_GRACE_MS + 50, 0, function()
+    timer:start(FileTracker.SAVE_RECHECK_MS, 0, function()
         self._schedule(function()
             if self._recheck_timer == timer then
                 self._recheck_timer = nil

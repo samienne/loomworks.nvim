@@ -9690,7 +9690,7 @@ function Workspace:_start_tracking(paths)
         -- The workspace daemon applies external changes itself (spec §19.13
         -- "Freshness of views", §19.15): its tracker watches the files and
         -- signals it (`file_signal`); a file that cannot be parsed is held
-        -- back, and one missing beside its `.bak` is a save in progress.
+        -- back, and one missing beside its staged copy is a save in progress.
         manual = manual or nil,
         signal = manual and self._core._deps.file_signal or nil,
         hold = manual and function(path, content) return self:_hold_file_change(path, content) end or nil,

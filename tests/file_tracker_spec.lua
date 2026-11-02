@@ -276,42 +276,92 @@ describe("FileTracker", function()
             assert.same({ "bad", "a1" }, screened)
         end)
 
-        it("a file missing beside its .bak reads as unchanged; past the grace, kept only if the .bak is its last content", function()
-            local grace = FileTracker.SAVE_GRACE_MS
-            FileTracker.SAVE_GRACE_MS = 50
-            local disk = { ["/a"] = "a1" }
-            local seen = {}
-            local tracker = FileTracker.new({
+        --- A manual saves-tracker over the fake `disk`; `staged` answers from it
+        --- (a `.tmp` or any `.txn-` name of the exact path).
+        local function saves_tracker(disk, seen, signals)
+            return FileTracker.new({
                 callback = function(path, content) seen[#seen + 1] = { path, content } end,
                 read_file = function(path) return disk[path] end,
+                staged = function(path)
+                    if disk[path .. ".tmp"] then return true end
+                    for p in pairs(disk) do
+                        if p:sub(1, #path + 5) == path .. ".txn-" and #p > #path + 5 then return true end
+                    end
+                    return false
+                end,
                 manual = true, saves = true,
+                signal = signals and function() signals.n = signals.n + 1 end or nil,
             })
-            local function past_grace()
-                local t0 = vim.uv.hrtime()
-                vim.wait(2000, function() return (vim.uv.hrtime() - t0) / 1e6 > 100 end, 10)
-            end
+        end
+
+        it("a file deleted after a save that rewrote identical bytes reads as missing at once (its .bak is no save)", function()
+            local disk = { ["/a"] = "a1" }
+            local seen = {}
+            local tracker = saves_tracker(disk, seen)
             tracker:watch("/a")
-            -- A save cut short: the .bak holds the content last applied.
-            disk["/a"], disk["/a.bak"] = nil, "a1"
-            tracker:sync()
-            past_grace()
-            tracker:sync()
-            assert.same({}, seen)
-            assert.equals("a1", tracker:content("/a"))
-            -- After a save the .bak holds older content: a deletion then reads
-            -- as missing, never as the .bak.
-            disk["/a"], disk["/a.bak"] = "a2", "a1"
-            tracker:sync()
-            assert.same({ { "/a", "a2" } }, seen)
+            -- The save rewrote the same bytes: the .bak equals the content last applied.
+            disk["/a.bak"] = "a1"
             disk["/a"] = nil
             tracker:sync()
-            assert.equals(1, #seen) -- within the grace: unchanged
-            past_grace()
-            tracker:sync()
-            assert.equals(2, #seen)
-            assert.same({ "/a", nil }, seen[2])
+            assert.same({ { "/a", nil } }, seen)
             tracker:stop()
-            FileTracker.SAVE_GRACE_MS = grace
+        end)
+
+        for _, staged in ipairs({ "/a.tmp", "/a.txn-0123abcd" }) do
+            it("a file missing beside its staged copy " .. staged .. " is a save in progress: kept, re-checked, then applied", function()
+                local recheck = FileTracker.SAVE_RECHECK_MS
+                FileTracker.SAVE_RECHECK_MS = 20
+                local disk = { ["/a"] = "a1" }
+                local seen, signals = {}, { n = 0 }
+                local tracker = saves_tracker(disk, seen, signals)
+                tracker:watch("/a")
+                -- Between the save's two renames.
+                disk[staged], disk["/a"] = "a2", nil
+                tracker:sync()
+                assert.same({}, seen)
+                assert.equals("a1", tracker:content("/a"))
+                -- A re-check is signalled; still staged, still kept (and re-armed).
+                assert.is_true(vim.wait(5000, function() return signals.n >= 1 end, 10))
+                tracker:sync()
+                assert.same({}, seen)
+                assert.is_true(vim.wait(5000, function() return signals.n >= 2 end, 10))
+                -- The staged copy is renamed into place: applied.
+                disk["/a"], disk[staged] = "a2", nil
+                tracker:sync()
+                assert.same({ { "/a", "a2" } }, seen)
+                tracker:stop()
+                FileTracker.SAVE_RECHECK_MS = recheck
+            end)
+        end
+
+        it("a file deleted with no staged copy reads as missing", function()
+            local disk = { ["/a"] = "a1" }
+            local seen = {}
+            local tracker = saves_tracker(disk, seen)
+            tracker:watch("/a")
+            disk["/a"] = nil
+            tracker:sync()
+            assert.same({ { "/a", nil } }, seen)
+            tracker:stop()
+        end)
+
+        it("staged_copy matches only <file>.tmp and <file>.txn-<id> of that exact file", function()
+            local dir = vim.fn.tempname():gsub("\\", "/")
+            vim.fn.mkdir(dir, "p")
+            local function touch(name) local f = assert(io.open(dir .. "/" .. name, "wb")); f:write("x"); f:close() end
+            local target = dir .. "/w.json"
+            assert.is_false(FileTracker.staged_copy(target))
+            for _, name in ipairs({ "w.json.bak", "w.json.txn-", "xw.json.txn-1", "w.jsonx.txn-1", "w.json.tmpx", "w.json.txnx-1" }) do
+                touch(name)
+            end
+            assert.is_false(FileTracker.staged_copy(target))
+            touch("w.json.txn-0a1b")
+            assert.is_true(FileTracker.staged_copy(target))
+            os.remove(dir .. "/w.json.txn-0a1b")
+            assert.is_false(FileTracker.staged_copy(target))
+            touch("w.json.tmp")
+            assert.is_true(FileTracker.staged_copy(target))
+            vim.fn.delete(dir, "rf")
         end)
 
         it("a signal queued before stop_signals never calls the removed signal", function()
@@ -331,6 +381,31 @@ describe("FileTracker", function()
             assert.has_no.errors(function() for _, fn in ipairs(queued) do fn() end end)
             assert.equals(0, signals)
             tracker:stop()
+        end)
+
+        it("a re-check queued before stop_signals never calls the removed signal", function()
+            local recheck = FileTracker.SAVE_RECHECK_MS
+            FileTracker.SAVE_RECHECK_MS = 10
+            local queued = {}
+            local signals = 0
+            local disk = { ["/a"] = "a1" }
+            local tracker = FileTracker.new({
+                callback = function() end,
+                read_file = function(path) return disk[path] end,
+                staged = function() return true end,
+                schedule = function(fn) queued[#queued + 1] = fn end,
+                signal = function() signals = signals + 1 end,
+                manual = true, saves = true,
+            })
+            tracker:watch("/a")
+            disk["/a"] = nil
+            tracker:sync() -- a save in progress: a re-check is armed
+            assert.is_true(vim.wait(5000, function() return #queued >= 1 end, 5))
+            tracker:stop_signals()
+            assert.has_no.errors(function() for _, fn in ipairs(queued) do fn() end end)
+            assert.equals(0, signals)
+            tracker:stop()
+            FileTracker.SAVE_RECHECK_MS = recheck
         end)
     end)
 end)

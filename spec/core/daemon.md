@@ -1667,7 +1667,7 @@ whose `update`s precede their replies.
 
 A file that cannot be parsed (not JSON, or a working copy whose signature envelope cannot be read) never unloads or replaces the model. The last good model stays, a load warning names the file (`source = "load"`, severity `warn`, "Load warnings" below), and the next change retries. A well-formed working copy that fails its signature is still the refusal of §17.4.
 
-A file that is missing while its `<file>.bak` exists may be a save in progress (§19.4: the target is briefly absent between its two renames). It is checked again shortly. If it is still missing and the `.bak` holds the content last applied, the save was cut short: the model is kept. Otherwise the file is missing, as a deleted file is.
+A file that is missing while its staged copy exists (`<file>.tmp`, or a transaction's `<file>.txn-<id>`, §19.4) is a save in progress: the target is briefly absent between its two renames. It is checked again shortly; while the staged copy remains, the model is kept. A missing file with no staged copy is missing, as a deleted file is.
 
 **Load warnings.** *(Step 6b-α.)* What a workspace load reports
 besides the structural diagnostics — a declared project directory not

@@ -93,7 +93,13 @@ end
 
 local function abs(root, rel) return root_of(root) .. "/" .. rel end
 
+--- The staged copy of `target` in transaction `id`: `<target>.txn-<id>`.
+--- (`staged_path(target, "")` is the prefix every staged copy of it begins with.)
+--- @param target string
+--- @param id string
+--- @return string
 local function staged_path(target, id) return target .. ".txn-" .. id end
+M.staged_path = staged_path
 
 --- The active transaction of this process (one at a time), or nil.
 local _active

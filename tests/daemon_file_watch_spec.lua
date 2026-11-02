@@ -2,9 +2,9 @@
 --- (spec/core/daemon.md §19.13 "Freshness of views", §19.15 "Live
 --- workspace"): another process's change is applied when it is seen, with no
 --- request; a file that cannot be parsed never unloads or replaces the model
---- (a load warning names it); a file missing while its `.bak` exists may be a
---- save in progress (§19.4): kept while the `.bak` holds the content last
---- applied, otherwise read as missing (a deletion).
+--- (a load warning names it); a file missing while its staged copy exists
+--- (`<file>.tmp`, or a transaction's `<file>.txn-<id>`, §19.4) is a save in
+--- progress and keeps the model; with no staged copy it is missing.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
@@ -14,7 +14,6 @@ local client = require("loomworks.daemon.client")
 local envscope = require("loomworks.daemon.envscope")
 local trust = require("loomworks.trust")
 local view_state = require("loomworks.view_state")
-local FileTracker = require("loomworks.file_tracker")
 local H = require("tests.daemon_helpers")
 
 client.TIMEOUT_MS = 30000
@@ -79,9 +78,7 @@ end
 
 describe("the workspace daemon watches its files (§19.13 Freshness of views)", function()
     local root, srv, svc, ws
-    local grace
     before_each(function()
-        grace = FileTracker.SAVE_GRACE_MS
         trust._set_key_path(H.tmp() .. "/trust.key")
         root = H.shell_workspace({ profile = true })
         srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000 })
@@ -93,7 +90,6 @@ describe("the workspace daemon watches its files (§19.13 Freshness of views)", 
         assert.is_not_nil(profile(ws, "dev"))
     end)
     after_each(function()
-        FileTracker.SAVE_GRACE_MS = grace
         if not srv.stopped then srv:stop("test end", 0) end
         pcall(function() require("loomworks")._core():shutdown() end)
         trust._set_key_path(nil)
@@ -145,54 +141,51 @@ describe("the workspace daemon watches its files (§19.13 Freshness of views)", 
         assert.are_not.equals(ws, svc.host.current())
     end)
 
-    it("a working copy missing while its .bak holds the content last applied is a save cut short, never defaults", function()
-        FileTracker.SAVE_GRACE_MS = 200
-        local path = root .. USER
-        local next_text = signed_user(root, function(u) u.configuration_sets = { extra = { app = "Debug" } } end)
-        assert(os.rename(path, path .. ".bak"))
-        local t0 = vim.uv.now()
-        ws._tracker:sync()
-        assert.equals(ws, svc.host.current())
-        assert.is_not_nil(profile(ws, "dev"), "the working copy was read as defaults")
-        -- Still missing past the grace with the .bak holding the content last
-        -- applied (a save cut short): still not defaults, and nothing written
-        -- in its place.
-        vim.wait(5000, function() return vim.uv.now() - t0 > 400 end, 20)
-        ws._tracker:sync()
-        assert.equals(ws, svc.host.current())
-        assert.is_not_nil(profile(ws, "dev"), "the working copy was read as defaults after the grace")
-        assert.is_nil(read(path))
-        -- The save completes: its content is applied.
-        write(path, next_text)
-        ws._tracker:sync()
-        assert.is_not_nil(config_set(ws, "extra"))
-    end)
-
-    it("a working copy deleted after a save reads as missing, never as the .bak's older content", function()
-        FileTracker.SAVE_GRACE_MS = 200
+    it("a working copy deleted right after a save that rewrote identical bytes reads as missing (its .bak is no save)", function()
         local io_mod = require("loomworks.io")
         local path = root .. USER
-        -- Two saves by another process: the .bak keeps the content before the
-        -- last one (the "old" set), which the model no longer holds.
-        assert(io_mod.write_file_atomic(path,
-            signed_user(root, function(u) u.configuration_sets = { old = { app = "Debug" } } end)))
+        -- Another save of the same bytes: the .bak now equals the content last applied.
+        assert(io_mod.write_file_atomic(path, read(path)))
         ws._tracker:sync()
-        assert.is_not_nil(config_set(ws, "old"))
-        assert(io_mod.write_file_atomic(path,
-            signed_user(root, function(u) u.configuration_sets = { extra = { app = "Debug" } } end)))
-        ws._tracker:sync()
-        assert.is_nil(config_set(ws, "old"))
-        assert.is_not_nil(read(path .. ".bak"))
-        -- The user deletes the working copy.
+        assert.equals(read(path), read(path .. ".bak"))
+        assert.is_not_nil(profile(ws, "dev"))
+        -- The user deletes the working copy: applied at once, as missing.
         assert(os.remove(path))
-        -- Once the grace has passed (however loaded the machine) the deletion
-        -- is applied: the model changes, to defaults.
-        local function cur() return svc.host.current() or svc.ws end
-        vim.wait(15000, function()
+        ws._tracker:sync()
+        local cur = svc.host.current() or svc.ws
+        assert.is_nil(profile(cur, "dev"), "the deleted working copy was kept as its .bak")
+    end)
+
+    for _, case in ipairs({
+        { "<file>.tmp", function(path) return path .. ".tmp" end },
+        { "a transaction's <file>.txn-<id>", function(path) return require("loomworks.txn").staged_path(path, "0123abcd") end },
+    }) do
+        it("a working copy missing while its staged copy (" .. case[1] .. ") exists is a save in progress: kept, then applied", function()
+            local path = root .. USER
+            local staged = case[2](path)
+            local next_text = signed_user(root, function(u) u.configuration_sets = { extra = { app = "Debug" } } end)
+            -- Between the save's two renames: staged written, target moved to .bak.
+            write(staged, next_text)
+            assert(os.rename(path, path .. ".bak"))
             ws._tracker:sync()
-            return config_set(cur(), "extra") == nil
-        end, 50)
-        assert.is_nil(config_set(cur(), "old"), "the deleted working copy was read as the .bak")
-        assert.is_nil(config_set(cur(), "extra"), "the deleted working copy was not read as missing")
+            assert.equals(ws, svc.host.current())
+            assert.is_not_nil(profile(ws, "dev"), "the working copy was read as defaults")
+            ws._tracker:sync()
+            assert.equals(ws, svc.host.current())
+            assert.is_not_nil(profile(ws, "dev"), "the working copy was read as defaults on the re-check")
+            assert.is_nil(read(path), "something was written in its place")
+            -- The staged copy is renamed into place: its content is applied.
+            assert(os.rename(staged, path))
+            ws._tracker:sync()
+            assert.is_not_nil(config_set(ws, "extra"))
+        end)
+    end
+
+    it("a working copy deleted with no staged copy reads as missing", function()
+        local path = root .. USER
+        assert(os.remove(path))
+        ws._tracker:sync()
+        local cur = svc.host.current() or svc.ws
+        assert.is_nil(profile(cur, "dev"), "the deleted working copy was not read as missing")
     end)
 end)

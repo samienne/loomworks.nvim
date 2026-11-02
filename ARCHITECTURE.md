@@ -897,11 +897,13 @@ re-cut onto master step by step; this section is expanded as each step lands.
   change that is not a JSON object, or a working copy whose signature
   envelope cannot be read (`trust.envelope_unreadable`), holds the whole sync
   and adds one load note naming the file (`_held_notes`), removed when the
-  file parses again; `saves`: a file read missing beside its `.bak` reads as
-  its last known content for `SAVE_GRACE_MS`; still missing after it, it
-  stays unchanged only while the `.bak` equals that last known content (a
-  save cut short), else it reads as missing (a deletion; a completed save's
-  `.bak` holds the older content) (`_read`, `_recheck` signals again). `Service:on_stopping` ends the watch
+  file parses again; `saves`: a file read missing while its staged copy exists
+  (`<file>.tmp`, or `txn.staged_path(file, "")`-prefixed `<file>.txn-<id>`;
+  `FileTracker.staged_copy`) reads as its last known content and `_recheck`
+  signals again after `SAVE_RECHECK_MS`, for as long as the staged copy
+  remains; with no staged copy it reads as missing at once (a deletion; the
+  `.bak` is not consulted, as a save of identical bytes leaves it equal to
+  the content last applied) (`_read`). `Service:on_stopping` ends the watch
   (`stop_signals`); the workspace's teardown stops the tracker.
 - `shim/init.lua` `vim.system` — `stdout` / `stderr` callbacks (nvim
   semantics; a streamed run finishes after both pipes' EOF, at most
