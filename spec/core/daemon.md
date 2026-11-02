@@ -3011,12 +3011,15 @@ terminal). It runs none of the editor's own operations; where those run is
   the probe's timeout and goes on as for *unknown*. Verdicts:
   - **compatible** — the binary is used;
   - **incompatible** (a definite failure: no transport overlap, schemas
-    older or newer than the plugin's, a missing root interface) — a
+    older or newer than the plugin's, a missing root interface, or an `lw`
+    older than §16.41 — `version --json` succeeds but prints no descriptor:
+    it predates the plugin's schemas, and a release before the daemon cannot
+    run one) — a
     search-path `lw` is skipped with
     a status note naming the problems ("too old/incompatible: …") and the
     search goes on to the managed `lw`; an explicit binary is never
     replaced (rule 1), the verdict is only noted;
-  - **unknown** (no descriptor — an `lw` older than §16.41, or one with no
+  - **unknown** (`version --json` exits non-zero — e.g. a host with no
     system Lua — a descriptor with no `schemas`, or a timeout) — the binary
     is used and the handshake decides.
 
