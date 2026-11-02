@@ -1253,6 +1253,15 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
     if not (type(conn.welcome) == "table" and conn.welcome.via == "relay") then
         return decline("not connected through the relay", "update the pin or the plugin")
     end
+    -- A stale daemon is weighed against the relay's own identity (§19.9
+    -- "Editor retirement"): on it already, nothing would change — decline
+    -- before the selection, whose probe would be wasted.
+    if inc.stale then
+        local relay_id = R.relay_identity(conn)
+        if not relay_id or R.same_version(relay_id, ch.lw_version) then
+            return decline("the relay runs the same code", "")
+        end
+    end
     -- The selection: the same as a launch would make (over cached verdicts).
     local binsel = require("loomworks.provision.select")
     local resolve = self.opts.resolve or binsel.resolve
@@ -1294,12 +1303,10 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
     -- What would start in its place: for a stale daemon the relay's own
     -- identity (§19.9 "Editor retirement"; the caller weighs one only with
     -- `welcome.relay`), else the selected binary's.
+    -- (A stale daemon on the relay's identity was declined above.)
     local successor = b.version
     if inc.stale then
         successor = R.relay_identity(conn)
-        if not successor or R.same_version(successor, ch.lw_version) then
-            return decline("the relay runs the same code", "")
-        end
     elseif R.same_version(b.version, ch.lw_version) then
         return decline("the selected lw is the same version", "update the plugin, or pin or install a matching lw")
     end

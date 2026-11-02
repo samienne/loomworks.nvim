@@ -626,6 +626,56 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.equals(1, probes)
     end)
 
+    -- An incompatible daemon is weighed against the selected binary, never
+    -- the relay's identity (§19.16 "Retiring an incompatible daemon").
+    it("(d'1) an incompatible daemon is weighed against the selected lw, not welcome.relay", function()
+        -- Selected lw (9.9.9) == the daemon's: not retired though the relay differs.
+        local g = fake({ relay_lw_version = "0.5.0" })
+        g.daemons.old.lw_version = "9.9.9"
+        obs = attach(g.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        vim.wait(200)
+        assert.same({}, g.sent)
+        assert.truthy(obs:runtime_line():find("same version", 1, true), obs:runtime_line())
+        obs:stop(); obs = nil
+        -- Selected differs, relay matches the daemon: retired; the notice
+        -- names the selected lw's version.
+        local f = fake({ relay_lw_version = "0.0.1" })
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        assert.equals(1, #f.notes)
+        assert.truthy(f.notes[1]:find("9.9.9", 1, true), f.notes[1])
+    end)
+
+    it("(d'2) a stale daemon on the relay's identity starts no retirement probe of the selected lw", function()
+        -- The selected lw's verdict is never cached: the pre-launch probe
+        -- (§19.16 "Pre-launch probe") runs once; weighing the daemon must
+        -- not probe it again.
+        local probes = 0
+        local f = compatible(fake({
+            relay_lw_version = "0.2.0",
+            probe_cached = function() return nil end,
+            run_probe = function(_, _, cb)
+                probes = probes + 1
+                cb({ verdict = "compatible", problems = {}, degraded = {}, version = "9.9.9" })
+            end,
+            resolve = function(r, o)
+                return require("loomworks.provision.select").resolve(r, vim.tbl_extend("force", o, { win = false,
+                    getenv = function(n) return n == "LOOMWORKS_LW" and "/e/lw" or nil end,
+                    exists = function() return true end,
+                    on_path = function() return nil, "none" end,
+                    managed = function() return nil, "none" end }))
+            end }), "0.2.0")
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        vim.wait(300)
+        assert.equals(1, probes)
+        assert.is_false(sent(f, "old:retire"))
+        assert.is_nil(obs._retire)
+    end)
+
     it("(e) a daemon of a version already retired this session is not retired again (a pin loop)", function()
         local f = fake()
         obs = attach(f.opts)
