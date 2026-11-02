@@ -62,7 +62,7 @@ local M = {}
 --- @field note? string why there is none (the Runtime line)
 --- @field warning? string an ignored setup value
 --- @field probe? string the chosen binary still to be probed (no cached verdict yet, step 5h.5)
---- @field probe_note? string the pre-launch probe's lasting note: an incompatible lw on PATH that was skipped, or an incompatible explicit one used as named
+--- @field probe_note? string the pre-launch probe's lasting note: an incompatible lw on PATH that was skipped, or an incompatible explicit one used anyway
 --- @field channel_note? string `binary.channel` is set but has no effect: an lw on PATH or an explicit one was selected (step 5h.5)
 
 M.LABELS = {
@@ -289,7 +289,7 @@ function M.resolve(root, opts)
                 sel.candidates[#sel.candidates].probe = v
                 if pending then sel.probe = p end
                 if v and v.verdict == "incompatible" then
-                    sel.probe_note = string.format("%s %s is incompatible (%s) — used anyway: an explicit lw is never replaced, so the daemon will likely not start; name a compatible lw or unset it",
+                    sel.probe_note = string.format("%s %s is incompatible (%s) — used anyway: an explicit lw is never replaced, so the daemon will likely fail or be refused; name a compatible lw or unset it",
                         M.LABELS[source], p, problems(v))
                 end
             else
