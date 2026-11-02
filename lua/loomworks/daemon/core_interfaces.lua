@@ -1653,11 +1653,11 @@ function M.mount(registry, service)
 end
 
 --- The `Tasks.started` / `Tasks.ended` / `Tasks.step` signals of a task (the
---- stream's hooks); `args` may be a function of the frame's `seq` (Registry:emit).
+--- stream's hooks).
 --- @param registry loomworks.daemon.Registry
 --- @param task loomworks.daemon.Task
 --- @param name "started"|"ended"|"step"
---- @param args table|fun(sub: table, seq: integer): table
+--- @param args table
 function M.task_signal(registry, task, name, args)
     registry:emit(M.TASKS.path, M.TASKS.iface, M.TASKS.v, name, args, function(sub_args)
         return sub_args.task_id == nil or sub_args.task_id == task.id
