@@ -405,6 +405,8 @@ function M.run(svc, ctx)
                 if parse and stream == "stdout" and type(text) == "string" then pcall(scan, text) end
             end,
             done = function(code, signal)
+                -- Its output ended: held bytes are this process's (§14.2).
+                task:end_output()
                 svc:with_model(ctx, function() on_exit(code, signal) end)
             end,
         })

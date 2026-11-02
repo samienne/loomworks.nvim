@@ -86,7 +86,8 @@ M._queued = queued
 --- @field started_at integer|nil wall-clock seconds (os.time) it started
 --- @field on_profile loomworks.Profile|nil the profile it runs on (Task:start)
 --- @field last_pct integer last progress percent sent (-1 before the first tick)
---- @field _carry table<string, string>|nil per output stream, the incomplete trailing UTF-8 sequence held back (Task:output)
+--- @field _carry table<string, { [1]: string, [2]: integer }>|nil per output stream, the incomplete trailing UTF-8 sequence held back (Task:output) with its sequence number (`_carry_n`): flushed in the order they were produced
+--- @field _carry_n integer|nil the last held-back sequence's number
 --- @field call loomworks.daemon.TaskCall|nil the interface method it runs for (§19.20): `{ object, iface, v, method, result = fun(exit_code, err, fields, extra): table }`
 --- @field steps table[]|nil a target-scoped task's steps with their current states (§19.15 "Steps of a task"): `{ id, kind, label, project?, configuration?, target?, phase?, state }` each, in run order
 local Task = {}
@@ -381,25 +382,36 @@ function Task:output(stream, chunk)
     local carry = self._carry and self._carry[stream]
     if carry then
         self._carry[stream] = nil
-        chunk = carry .. chunk
+        if next(self._carry) == nil then self._carry = nil end
+        chunk = carry[1] .. chunk
     end
     local head, tail = bytes.split_tail(chunk)
     if tail ~= "" then
         self._carry = self._carry or {}
-        self._carry[stream] = tail
+        self._carry_n = (self._carry_n or 0) + 1
+        self._carry[stream] = { tail, self._carry_n }
     end
     if head ~= "" then self:_send_output(stream, head) end
 end
 
---- Send the output held back (an incomplete UTF-8 sequence: as `data`).
+--- Send the output held back (an incomplete UTF-8 sequence: as `data`),
+--- the streams' held bytes in the order they were produced.
 function Task:_flush_output()
     local carry = self._carry
     if not carry then return end
     self._carry = nil
-    local streams = {}
-    for stream in pairs(carry) do streams[#streams + 1] = stream end
-    table.sort(streams)
-    for _, stream in ipairs(streams) do self:_send_output(stream, carry[stream]) end
+    local held = {}
+    for stream, c in pairs(carry) do held[#held + 1] = { stream, c[1], c[2] } end
+    table.sort(held, function(a, b) return a[3] < b[3] end)
+    for _, h in ipairs(held) do self:_send_output(h[1], h[2]) end
+end
+
+--- A process of the task ended: its output ends with it. Bytes held back
+--- (a UTF-8 sequence cut at its end) go out now, never joined with the next
+--- process's (PROTOCOL.md §14.2) — also in a task without step states.
+function Task:end_output()
+    if self.finished then return end
+    self:_flush_output()
 end
 
 --- One `output` frame of `chunk`: `text` or `data` (bytes.output_fields).

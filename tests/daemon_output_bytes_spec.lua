@@ -112,6 +112,18 @@ describe("task output frames (daemon/tasks.lua, §14.2)", function()
         assert.equals("done", sent[#sent].phase)
     end)
 
+    it("flushes held tails of several streams in the order they were produced", function()
+        task:output("stdout", "o\226")
+        task:output("stderr", "e\226")
+        task:end_output()
+        local o = outputs()
+        assert.same({ "o", "e", "\226", "\226" }, vim.tbl_map(function(m)
+            return m.text or bytes.b64decode(m.data)
+        end, o))
+        -- (stdout's held byte first: produced first, though "stderr" sorts first)
+        assert.same({ "stdout", "stderr", "stdout", "stderr" }, vim.tbl_map(function(m) return m.stream end, o))
+    end)
+
     it("flushes a held tail when the step ends", function()
         task.steps = { { state = "running" } }
         task:output("stdout", "\226\130")
@@ -151,5 +163,63 @@ describe("conformance engine: output frames (§14.2)", function()
         assert.is_false((check({ kind = "task", phase = "output", stream = "stdout", text = "a", data = "YQ==" })))
         assert.is_false((check({ kind = "task", phase = "output", stream = "stdout" })))
         assert.is_true((check({ kind = "task", phase = "line", stream = "out", text = "x" })))
+    end)
+end)
+
+describe("a process's end ends its output (§14.2, a task without step states)", function()
+    _G.LOOMWORKS_CLI_NO_AUTORUN = true
+    local cli = require("loomworks.cli")
+    local server_mod = require("loomworks.daemon.server")
+    local service = require("loomworks.daemon.service")
+    local client = require("loomworks.daemon.client")
+    local envscope = require("loomworks.daemon.envscope")
+    local build_run = require("loomworks.build_run")
+    local trust = require("loomworks.trust")
+    local H = require("tests.daemon_helpers")
+
+    local srv, root, step_lines
+    before_each(function()
+        trust._set_key_path(H.tmp() .. "/trust.key")
+        root = H.shell_workspace({ profile = true })
+        srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000 })
+        service.attach(srv, cli._daemon_build_host())
+        assert(srv:start())
+        step_lines = build_run.step_lines
+    end)
+    after_each(function()
+        build_run.step_lines = step_lines
+        if not srv.stopped then srv:stop("test end", 0) end
+        pcall(function() require("loomworks")._core():shutdown() end)
+        trust._set_key_path(nil)
+    end)
+
+    it("a sequence cut at the end of one process is not completed by the next one's bytes", function()
+        -- No line between the two processes (a line flushes held bytes
+        -- itself): only the first process's end can end its output.
+        build_run.step_lines = function() return {}, {} end
+        local events, reply = {}, nil
+        local conn = client.session(srv.address, {
+            on_message = function(m) if m.kind == "task" then events[#events + 1] = m end end,
+        })
+        local env = envscope.capture()
+        env.LW_TEST_STDOUT_TAIL = "configure:e2"     -- configure ends with E2
+        env.LW_TEST_STDOUT_HEAD = "build:82ac"       -- build starts with 82 AC
+        conn:request({ kind = "build", args = { profile = "dev" }, interactive = false, env = env,
+            command = "lw build" }, function(r, e) reply = r or { error = e } end)
+        assert.is_true(vim.wait(60000, function()
+            for _, m in ipairs(events) do if m.phase == "done" then return true end end
+        end, 10))
+        assert.equals("accepted", reply.outcome)
+        local out = {}
+        for _, m in ipairs(events) do
+            if m.phase == "output" and m.stream == "stdout" then
+                assert.is_true(bytes.check_output(m))
+                out[#out + 1] = m.text or bytes.b64decode(m.data)
+                assert.is_nil(m.text and m.text:find("€", 1, true), "bytes of two processes joined: " .. tostring(m.text))
+            end
+        end
+        local all = table.concat(out)
+        assert.truthy(all:find("\226\130\172step build", 1, true), vim.inspect(out))
+        conn:close()
     end)
 end)

@@ -2161,7 +2161,7 @@ function Observer:_on_task(msg)
         task:append(output_bytes(msg))
     elseif msg.phase == "line" then
         task:append(tostring(msg.text or ""))
-        local owned = msg.phase == "line" and self._owned[id] or nil
+        local owned = self._owned[id]
         if owned and owned.on_line then pcall(owned.on_line, tostring(msg.text or "")) end
     elseif msg.phase == "progress" then
         task.pct = tonumber(msg.pct)
