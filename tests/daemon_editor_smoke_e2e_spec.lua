@@ -50,11 +50,11 @@ end
 
 --- Edit the signed working copy (the trust key is this spec file's data
 --- dir's, which the spawned daemon shares). Replaced in one rename, as
---- loomworks' own writers do: written in place, the daemon's poll could read
+--- loomworks' own writers do: written in place, a daemon check could read
 --- it truncated or half-written, refuse the working copy as untrusted
 --- (§17.4) and unload the model, which then waits for the next
---- state-changing request (§19.13 "Freshness of views") — so the views kept
---- the stale diagnostic of step 6 (#350, seen on loaded Windows runners).
+--- state-changing request. The edit by itself causes no check (§19.13
+--- "Freshness of views"): a waiter reads the view again (`until_fresh`).
 local function edit_user(root, fn)
     local path = root .. "/.nvim/loomworks.user.json"
     local status, body = trust.verify("user", assert(read(path)))
@@ -353,11 +353,27 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
     it("6. a user.json edit introduces a stale mapping, then fixes it: the views' diagnostic comes and goes (#350)", function()
         local STALE = "references unknown configuration"
         assert.equals(0, diag_count(STALE), vim.inspect(view().diagnostics))
+        -- Another process's write causes no daemon check by itself (§19.13
+        -- "Freshness of views"); the checks the editor's own requests happen
+        -- to cause may all run before the edit lands (#350, loaded Windows
+        -- runners). A view `get` runs the check: read the view again until
+        -- the edit shows.
+        local function until_fresh(pred)
+            local last = 0
+            return vim.wait(60000, function()
+                if pred() then return true end
+                if vim.uv.now() - last >= 250 then
+                    last = vim.uv.now()
+                    obs:_refetch_views(observer.VIEW_WORKSPACE)
+                end
+                return false
+            end, 50)
+        end
         edit_user(root, function(u) u.configuration_sets = { bad = { app = "Nope" } } end)
-        assert.is_true(vim.wait(60000, function() return diag_count("Nope") > 0 end, 50),
+        assert.is_true(until_fresh(function() return diag_count("Nope") > 0 end),
             vim.inspect(view().diagnostics))
         edit_user(root, function(u) u.configuration_sets = nil end)
-        assert.is_true(vim.wait(60000, function() return diag_count("Nope") == 0 end, 50),
+        assert.is_true(until_fresh(function() return diag_count("Nope") == 0 end),
             vim.inspect(view().diagnostics))
         -- The profile row is still the same and still active.
         assert.is_true(row().active)
