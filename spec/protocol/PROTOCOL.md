@@ -401,6 +401,12 @@ session numbered alike.
 A `task_id` (§14) and a `sub_id` (§13) are opaque strings scoped to the
 session generation in the same way.
 
+A record that describes an entity always carries that entity's id: the
+schema makes it required. A field holding the id of a *related* entity is
+optional only where that entity may not exist, and its schema says when it
+is absent. Whether a producer other than the server (an in-process
+implementation) has ids is outside this contract.
+
 ### 12.2 Session generation
 
 The server announces its `session_generation` in `challenge`, in `welcome`'s

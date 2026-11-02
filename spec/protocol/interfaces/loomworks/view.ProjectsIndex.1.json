@@ -33,9 +33,9 @@
     },
     "Project": {
       "type": "object",
-      "required": ["key", "label", "type", "path", "abs_path"],
+      "required": ["id", "key", "label", "type", "path", "abs_path"],
       "properties": {
-        "id": { "description": "The project's opaque id (PROTOCOL.md §12.1): always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "The project's opaque id (PROTOCOL.md §12.1).", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "label": { "description": "The project's display text: its key (a project has no display name of its own). Clients show it, never derive it.", "type": "string" },
         "type": { "description": "The project's module type (cmake, meson, ...); a project of an unknown or rejected type is listed with its declared type and without active.", "type": "string" },
@@ -47,7 +47,7 @@
           "required": ["configuration", "state"],
           "properties": {
             "configuration": { "description": "The name of the project's configuration in the active profile.", "type": "string" },
-            "unit_id": { "description": "The opaque id of the configuration unit for that configuration and tool; absent when the profile has no unit for the project yet, and always in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+            "unit_id": { "description": "The opaque id of the configuration unit for that configuration and tool; absent when the profile has no unit for the project yet.", "$ref": "loomworks.Common/1#/$defs/Id" },
             "tool_key": { "description": "The key of that configuration's tool; absent for a module whose single toolchain has none.", "type": "string" },
             "state": {
               "description": "The configuration unit's state (state-lifecycle 3.4); unconfigured when the profile has no unit for the project yet. Includes a task another client runs in the daemon. Clients show an unknown state as neutral.",

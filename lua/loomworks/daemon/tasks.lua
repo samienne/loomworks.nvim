@@ -288,7 +288,7 @@ end
 function Task:info(conn, with_steps)
     local m = self.meta or {}
     return { task_id = M.wire_id(self, conn), name = m.name, kind = m.kind, profile = m.profile,
-        scope = m.scope, units = m.units, origin = m.origin, started_at = self.started_at,
+        profile_id = m.profile_id, scope = m.scope, units = m.units, origin = m.origin, started_at = self.started_at,
         percent = (self.last_pct or -1) >= 0 and self.last_pct or nil,
         steps = (with_steps and self.steps) and vim.deepcopy(self.steps) or nil }
 end
