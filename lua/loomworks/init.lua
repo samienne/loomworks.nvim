@@ -80,7 +80,9 @@ local function load(root)
     end
     -- A model left from an earlier `in-process` load goes (tests switch
     -- modes; a session does not), as does another root's pending state.
-    core:shutdown()
+    -- A successor follows: no `workspace_closed` (§9.7), so buffers the
+    -- gate holds for this root stay held until the daemon's configuration.
+    core:shutdown({ successor = true })
     core:set_pending_root(root)
     observer.attach(M.workspace_root(), attach_opts)
 end

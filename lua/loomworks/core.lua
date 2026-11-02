@@ -1275,7 +1275,12 @@ function Core:view_projects_index()
 end
 
 --- Detach the active workspace fully. Called on VimLeave-style shutdown.
-function Core:shutdown()
+--- `workspace_closed` is emitted only for a shutdown with no successor
+--- (§9.7): a caller that loads another workspace right after passes
+--- `{ successor = true }`, so the deferred-LSP gate keeps holding its
+--- buffers instead of draining them to the stock server in between.
+--- @param opts? { successor?: boolean }
+function Core:shutdown(opts)
     local had = self._workspace ~= nil or self._pending_root ~= nil
     self:_stop_refused_watch()
     if self._workspace then
@@ -1286,7 +1291,9 @@ function Core:shutdown()
     -- must not keep holding buffers under the old root.
     self._pending_root = nil
     self._state = "uninitialized"
-    if had then self._deps.events.emit("workspace_closed") end
+    if had and not (opts and opts.successor) then
+        self._deps.events.emit("workspace_closed")
+    end
 end
 
 -- ===========================================================================

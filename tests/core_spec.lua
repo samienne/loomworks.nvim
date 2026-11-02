@@ -687,6 +687,17 @@ describe("Core", function()
             end
             assert.equals(1, closed)
         end)
+
+        it("with a successor clears the same state but emits no workspace_closed (§9.7 gate)", function()
+            local core = make_core()
+            core:setup({ root = "/root" })
+            core:shutdown({ successor = true })
+            assert.is_nil(core._workspace)
+            assert.is_nil(core:workspace_root())
+            for _, e in ipairs(core._deps._events_log) do
+                assert.is_not.equals("workspace_closed", e.event)
+            end
+        end)
     end)
 
     describe("_on_file_changed", function()
