@@ -1,7 +1,8 @@
 -- The editor's pre-launch probe of a search-path or explicit lw (spec §19.16
 -- "Pre-launch probe", step 5h.5): `lw version --json` weighed with the plugin
 -- pin's check — compatible / incompatible (no transport overlap, schemas ours
--- cannot use, no root interface) / unknown (no descriptor, a timeout); a
+-- cannot use, no root interface, an lw older than the descriptor) / unknown
+-- (a failed command, a descriptor with no schemas, a timeout); a
 -- missing feature interface only degrades; the verdict cached per binary
 -- (realpath, size, mtime); the selection falls through from an incompatible
 -- lw on PATH to the managed lw, never from an explicit one.
@@ -101,9 +102,22 @@ describe("probe verdicts (§19.16 Pre-launch probe)", function()
         assert.is_false(ok); assert.equals(1, #problems)
     end)
 
-    it("no descriptor, a failed command or a timeout is unknown", function()
+    it("an lw older than the descriptor (version --json succeeds, prints none) is incompatible", function()
+        -- What a release before §16.41 (0.1.43 and older, a master build)
+        -- prints: --json is ignored, one line of text, status 0. It cannot
+        -- run this plugin's daemon (a master build has no `daemon` command).
+        for _, out in ipairs({
+            "lw - host: dev build (v1) | source: fused | bundle: bundled (fused) | channel: stable\n",
+            "lw 0.1.20\n", "", "[1, 2]",
+        }) do
+            local v = probe.classify({ code = 0, stdout = out })
+            assert.equals("incompatible", v.verdict, probe.describe(v))
+            assert.truthy(v.problems[1]:find("older than the binary descriptor", 1, true), probe.describe(v))
+        end
+    end)
+
+    it("a failed command, a descriptor with no schemas or a timeout is unknown", function()
         assert.equals("unknown", probe.classify({ code = 2, stdout = "", stderr = "lw: unknown option --json\n" }).verdict)
-        assert.equals("unknown", probe.classify({ code = 0, stdout = "lw 0.1.20\n" }).verdict)
         assert.equals("unknown", probe.classify({ code = 0, stdout = vim.json.encode({ hello = 1 }) }).verdict)
         local v = probe.classify({ code = 124, timed_out = true })
         assert.equals("unknown", v.verdict)
@@ -160,7 +174,7 @@ describe("probe.run (async, bounded, cached per binary)", function()
 
     it("a changed binary (size/mtime) is probed again", function()
         local v = wait_run(bin, { argv = script({ "io.write('not json')" }) })
-        assert.equals("unknown", v.verdict)
+        assert.equals("incompatible", v.verdict)
         vim.fn.writefile({ "fake, but longer now" }, bin)
         assert.is_nil(probe.cached(bin))
     end)
@@ -218,6 +232,18 @@ describe("selection over probe verdicts (§19.16)", function()
         assert.truthy(sel.candidates[3].reason:find("too old/incompatible: transport", 1, true))
         assert.truthy(sel.probe_note:find("lw on PATH (/p/lw) is too old/incompatible", 1, true), sel.probe_note)
         assert.is_nil(sel.probe)
+    end)
+
+    it("an lw on PATH older than the descriptor (no daemon) falls through to the managed lw", function()
+        local old = probe.classify({ code = 0, stdout = "lw - host: dev build (v1) | source: fused | channel: stable\n" })
+        local bin, src, sel = run({ path = "/p/lw", managed = "/m/lw", verdicts = { ["/p/lw"] = old } })
+        assert.equals("/m/lw", bin); assert.equals("managed", src)
+        assert.equals("LOOMWORKS_LW=absent setting=absent PATH=refused managed=chosen", verdicts(sel))
+        assert.truthy(sel.probe_note:find("older than the binary descriptor", 1, true), sel.probe_note)
+        -- named explicitly, it is used as named and the note says why
+        bin, src, sel = run({ env = { LOOMWORKS_LW = "/e/lw" }, managed = "/m/lw", verdicts = { ["/e/lw"] = old } })
+        assert.equals("/e/lw", bin); assert.equals("LOOMWORKS_LW", src)
+        assert.truthy(sel.probe_note:find("older than the binary descriptor", 1, true), sel.probe_note)
     end)
 
     it("with no managed lw either, nothing is chosen and the note says why", function()

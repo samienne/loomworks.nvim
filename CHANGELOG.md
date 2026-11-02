@@ -1029,6 +1029,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- The editor no longer launches its workspace daemon from an `lw` on the
+  search path that predates the binary descriptor (0.1.43 and older, or a
+  build of master), which has no `daemon` command and left the status page
+  at "internal error (usage) (lw: unknown command 'daemon')". The pre-launch
+  probe now reads a `version --json` that succeeds without printing a
+  descriptor as too old/incompatible, so selection falls through to the
+  plugin-managed `lw`; one named explicitly is still used, with a note
+  saying why it will fail. (#PR)
 - With a CMake multi-config generator (Ninja Multi-Config, Visual Studio),
   Debug and Release are separate configurations again, each with its own
   state, artifacts and status line, although they share one build directory.
