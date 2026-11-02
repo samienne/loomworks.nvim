@@ -156,9 +156,9 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _channel_timer userdata|nil the `binary.channel` check's weighing timer (unref'd; stopped on stop)
 --- @field _channel_undecided boolean|nil the last weighing found the selection undecided (CHANNEL_RETRY_S)
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
---- @field _retire loomworks.daemon.RetireWait|nil a daemon weighed for a retirement (step 5h.5): an incompatible one — its connection is the observed one (older schemas only) or held, unobserved, while the selected binary is probed or while the daemon is busy — or a stale (compatible) one, observed, whose code identity may differ from the selected binary's (§19.9 "Editor retirement")
+--- @field _retire loomworks.daemon.RetireWait|nil a daemon weighed for a retirement (step 5h.5): an incompatible one — its connection is the observed one (older schemas only) or held, unobserved, while the selected binary is probed or while the daemon is busy — or a stale (compatible) one, observed, whose code identity may differ from the relay's (`welcome.relay`, §19.9 "Editor retirement")
 --- @field incompat_note string|nil the observed daemon is incompatible (older schemas): what the editor does about it, on the Runtime line
---- @field stale_note string|nil the observed daemon is compatible but runs other code than the selected binary and retiring it failed or stopped (no reply): on the Runtime line; never blocks a feature
+--- @field stale_note string|nil the observed daemon is compatible but runs other code than its relay reports (`welcome.relay`) and retiring it failed or stopped (no reply): on the Runtime line; never blocks a feature
 --- @field retire_check_ms integer how often a busy incompatible daemon is re-checked through `status` (spec §19.16: about every 30 s)
 --- @field retired_note string|nil the last retirement this observer made (why), shown on the Runtime line until it observes the successor
 --- @field channel_note string|nil the `binary.channel` check's note (step 5h.5: an accepted, rejected or failed check, or why the channel has no effect), shown on the Runtime line
@@ -1074,13 +1074,16 @@ function Observer:_on_relay(token, conn, err, info)
         self:_connected_note()
         self:_join_late(conn)
         -- Older schemas only: observed, and weighed for a retirement. A
-        -- compatible daemon through the relay is weighed too, for its code
-        -- identity (§19.9 "Editor retirement"): observed throughout, retired
-        -- only when idle and other than the selected binary's.
+        -- compatible daemon through a relay that reports its own identity
+        -- (`welcome.relay`) is weighed too, for its code identity (§19.9
+        -- "Editor retirement"): observed throughout, retired only when idle
+        -- and other than the relay's. Without `welcome.relay` there is no
+        -- identity to weigh it against: it is simply observed.
+        local R = require("loomworks.daemon.editor_retire")
         if inc then
             self:_weigh_retire(target, conn, ch, inc)
-        elseif via then
-            self:_weigh_retire(target, conn, ch, require("loomworks.daemon.editor_retire").stale())
+        elseif via and R.relay_identity(conn) then
+            self:_weigh_retire(target, conn, ch, R.stale())
         end
     end)
 end
@@ -1161,14 +1164,14 @@ function Observer:_skip(target, note)
     return self:_spawn({ form = "skip", instance = id, prefix = note })
 end
 
---- @class loomworks.daemon.RetireWait  a daemon being weighed for a retirement (step 5h.5): incompatible, or stale (`inc.stale`: compatible, other code than the selected binary)
+--- @class loomworks.daemon.RetireWait  a daemon being weighed for a retirement (step 5h.5): incompatible, or stale (`inc.stale`: compatible, other code than the relay reports)
 --- @field conn loomworks.daemon.Conn the connection to it: the observed one (`observed`), or held and not observed through
 --- @field observed boolean|nil only its schemas are older, or it is stale: it is observed meanwhile (spec §19.16 "Connect")
 --- @field target table the daemon { pid, start_time, exe }
 --- @field ch table its challenge
 --- @field inc loomworks.daemon.Incompatibility why it is incompatible (or stale)
 --- @field probed boolean|nil the selected binary was probed for this weighing (never twice)
---- @field version string|nil the selected binary's lw_version, its code identity (once weighed eligible)
+--- @field version string|nil the code identity (`lw_version`) that would start in its place, once weighed eligible: the selected binary's for an incompatible daemon, the relay's (`welcome.relay`) for a stale one
 --- @field asking boolean|nil a `status` is in flight (still unanswered at the next re-check tick, it ends the wait)
 --- @field retiring boolean|nil `retire` was sent (at most once)
 --- @field settled boolean|nil the `retire` outcome was handled (its reply, or no reply within a re-check tick)
@@ -1181,9 +1184,12 @@ end
 --- identity: the host version, or a development build's source fingerprint)
 --- differs from the daemon's, and no daemon of that identity was retired for
 --- this workspace in this editor session. A compatible daemon reached through
---- the relay is weighed the same way as a stale one (`inc.stale`, §19.9
---- "Editor retirement"): observed throughout, with no note unless retiring
---- it fails; busy, it is re-checked and retired once idle. A daemon whose only problem is older
+--- a relay that reports its own identity (`welcome.relay`) is weighed the
+--- same way as a stale one (`inc.stale`, §19.9 "Editor retirement"), against
+--- the relay's identity instead of the selected binary's (a relay redirected
+--- to a repository pin launches the pinned release): observed throughout,
+--- with no note unless retiring it fails; busy, it is re-checked and retired
+--- once idle. A daemon whose only problem is older
 --- schemas is observed meanwhile, and for the whole session when the editor
 --- declines to retire it (a note on the Runtime line); any other is noted
 --- and not observed — its connection is held while the selected binary is
@@ -1285,7 +1291,16 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
         return decline("the selected lw cannot replace it: " .. tostring(b.why or "not probed"),
             "update the plugin, or pin or install a matching lw")
     end
-    if R.same_version(b.version, ch.lw_version) then
+    -- What would start in its place: for a stale daemon the relay's own
+    -- identity (§19.9 "Editor retirement"; the caller weighs one only with
+    -- `welcome.relay`), else the selected binary's.
+    local successor = b.version
+    if inc.stale then
+        successor = R.relay_identity(conn)
+        if not successor or R.same_version(successor, ch.lw_version) then
+            return decline("the relay runs the same code", "")
+        end
+    elseif R.same_version(b.version, ch.lw_version) then
         return decline("the selected lw is the same version", "update the plugin, or pin or install a matching lw")
     end
     if R.retire_failed(self.root, ch.lw_version) then
@@ -1304,8 +1319,8 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
         self:_drop_retire()
         return self:_after_retire(R.note(ch, inc, binary, "it is retiring"))
     end
-    wait.version = b.version
-    if inc.stale then inc.reasons = { R.stale_reason(b.version) } end
+    wait.version = successor
+    if inc.stale then inc.reasons = { R.stale_reason(successor) } end
     self:_check_retire()
 end
 

@@ -554,9 +554,12 @@ function Relay:_wait_for_daemon()
     end
 end
 
---- The `welcome` the client gets: the daemon's, with `daemon` and `via`
---- added (§19.8 step 4) — spliced into its raw payload, so every field the
---- daemon sent reaches the client byte for byte.
+--- The `welcome` the client gets: the daemon's, with `daemon`, `via` and
+--- `relay` added (§19.8 step 4) — spliced into its raw payload, so every
+--- field the daemon sent reaches the client byte for byte. `relay` is this
+--- relay's own code identity (§19.9), the identity of the daemon it would
+--- launch: a relay redirected to a repository pin (main.lua) runs the pinned
+--- release, so it names that release.
 --- @param payload string the daemon's `welcome` payload
 --- @param challenge table the verified challenge
 --- @param h table|nil the handle connected through
@@ -568,7 +571,8 @@ function M.welcome_frame(payload, challenge, h)
         session_generation = challenge.session_generation, pid = h.pid,
         start_time = type(h.start_time) == "string" and h.start_time or nil,
         exe = type(h.exe) == "string" and h.exe or nil }
-    local extra = '"daemon":' .. vim.json.encode(daemon) .. ',"via":"relay"'
+    local relay = { lw_version = require("loomworks.daemon.version").identity() }
+    local extra = '"daemon":' .. vim.json.encode(daemon) .. ',"via":"relay","relay":' .. vim.json.encode(relay)
     local body = payload:gsub("%s+$", "")
     local head = body:sub(1, -2):gsub("%s+$", "")
     local joined

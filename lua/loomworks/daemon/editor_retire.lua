@@ -1,6 +1,6 @@
 --- loomworks/daemon/editor_retire.lua — the editor's retirement of an
 --- incompatible idle daemon, or of a compatible idle one running another
---- code identity than the binary the editor would launch (spec §19.16
+--- code identity than the daemon its relay would launch (spec §19.16
 --- "Retiring an incompatible daemon", §19.9 "Editor retirement", step 5h.5):
 --- the pure decisions. The observer
 --- (loomworks.daemon.observer) does the I/O: it asks the daemon's `status`,
@@ -19,7 +19,9 @@
 ---   `exact_schemas`). A missing feature interface only degrades that
 ---   feature and is never a reason to retire.
 --- * `stale` — a compatible daemon weighed for a retirement because its code
----   identity may differ from the selected binary's.
+---   identity may differ from the one its relay reports (`relay_identity`:
+---   `welcome.relay`, the identity of the daemon the relay would launch — a
+---   relay redirected to a repository pin names the pinned release).
 --- * `selected` — did the binary the editor selected pass the interface check
 ---   (the probe's *compatible* verdict, or the plugin-managed lw), and which
 ---   code identity (`lw_version`: the host version, or a development build's
@@ -34,7 +36,7 @@ local M = {}
 --- @field reasons string[] one line each (transport, schemas, root interface)
 --- @field newer boolean its schemas are newer than ours: refused, never retired (§19.9)
 --- @field observable boolean only its schemas are older (transports overlap, root interface present): observed while it is weighed for a retirement, and when the editor declines to retire it (§19.16)
---- @field stale boolean|nil not incompatible: a compatible daemon weighed only for its code identity (§19.9 "Editor retirement"); observed throughout, retired only when idle and its identity differs from the selected binary's
+--- @field stale boolean|nil not incompatible: a compatible daemon weighed only for its code identity (§19.9 "Editor retirement"); observed throughout, retired only when idle and its identity differs from the relay's (`relay_identity`)
 
 --- Is the daemon behind `conn` incompatible with the editor (spec §19.16
 --- "Retiring an incompatible daemon")? nil when it is compatible. The root
@@ -71,11 +73,26 @@ function M.incompatibility(ch, conn)
 end
 
 --- A compatible daemon, weighed for a retirement only because its code
---- identity may differ from the binary the editor would launch (§19.9
---- "Editor retirement"). Its reason is filled in once that binary is known
+--- identity may differ from the one its relay reports (§19.9 "Editor
+--- retirement"). Its reason is filled in once it is weighed eligible
 --- (`stale_reason`).
 --- @return loomworks.daemon.Incompatibility
 function M.stale() return { reasons = {}, newer = false, observable = true, stale = true } end
+
+--- The code identity the relay of `conn` reports for itself (`welcome.relay`,
+--- §19.8 step 4): the identity of the daemon it would launch. nil when the
+--- connection is not through a relay or its `welcome` carries no `relay` (an
+--- older relay): the editor then weighs no stale daemon (§19.9 "Editor
+--- retirement").
+--- @param conn loomworks.daemon.Conn|table|nil
+--- @return string|nil
+function M.relay_identity(conn)
+    local w = type(conn) == "table" and conn.welcome or nil
+    if type(w) ~= "table" or w.via ~= "relay" or type(w.relay) ~= "table" then return nil end
+    local v = w.relay.lw_version
+    if type(v) ~= "string" or v == "" then return nil end
+    return v
+end
 
 --- @class loomworks.daemon.SelectedBinary  the editor's selected binary, weighed for a retirement
 --- @field ok boolean it passed the interface check (compatible verdict, or the managed lw)
@@ -140,10 +157,10 @@ local function bare(v) return (tostring(v or ""):gsub("^v", "")) end
 --- @return boolean
 function M.same_version(a, b) return bare(a) == bare(b) end
 
---- The reason a stale daemon is retired: the selected binary's identity.
---- @param version string|nil the selected binary's `lw_version`
+--- The reason a stale daemon is retired: the relay's identity.
+--- @param version string|nil the relay's `lw_version` (`relay_identity`)
 --- @return string
-function M.stale_reason(version) return "other code than the selected lw v" .. bare(version) end
+function M.stale_reason(version) return "other code than the relay's lw v" .. bare(version) end
 
 -- The session guard: workspace root -> code identity (`lw_version`) -> { failed? }. Module
 -- state, so it outlives a workspace reload (a new observer) for this editor
