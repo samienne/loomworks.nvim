@@ -2398,8 +2398,8 @@ degraded ("End state").
   judges the daemon from `welcome.daemon` exactly as it judges a `challenge`
   today, by the **editor's** compatibility rule (§19.9 "Editor retirement",
   "Retiring an incompatible daemon" below), never the CLI's `lw_version`
-  equality: the relay itself applies no version policy, so a relay the editor
-  starts never restarts a compatible daemon. The editor's `retire` goes over
+  equality: the relay itself applies no version policy and never restarts a
+  daemon on its own; only the editor's retirement does. The editor's `retire` goes over
   the relay connection, and only when `welcome.via = "relay"`. A `welcome`
   without `via` comes from an attached runtime of an older pin (§19.10
   "Compatibility"): the editor observes it **without the version check**
@@ -3234,8 +3234,10 @@ terminal). It runs none of the editor's own operations; where those run is
      hash-checked against the hash from the query. It is recorded as accepted
      only once that download succeeded; a failed download is one note and
      the current wanted binary stays. A running daemon is not
-     switched — a compatible daemon is never retired for being older; the
-     next launch uses the new binary, and the Runtime note says so.
+     switched while it is busy: its code identity now differs from the
+     wanted binary's, so the editor retires it once it is idle (§19.9
+     "Editor retirement") and the next launch uses the new binary; the
+     Runtime note says so.
   4. A result that fails the check is one note ("<channel> offers lw <v>,
      which this plugin cannot use (…); staying on <v'>") and is recorded so
      the same release is not checked again.
@@ -3702,8 +3704,8 @@ protocol 10 and the optional parts 5k D and 5m D; 6b-α next, then 6, 6b-β,
      `LOOMWORKS_TEST_PRIVATE_STDIO=1`, or a temporary root. A relay the
      editor starts applies the **editor's** compatibility rule (§19.9
      "Editor retirement", §19.16 "Retiring an incompatible daemon"), not the
-     CLI's `lw_version` equality, so it never restarts a compatible daemon;
-     the editor's retirement then goes through the relay connection.
+     CLI's `lw_version` equality, and never restarts a daemon on its own;
+     the editor's retirement goes through the relay connection.
      In parts: the spec *(done)*; B — connection code extracted from the
      CLI into `daemon/connect.lua` *(done)*; C — the relay and `--private`
      *(done)*; D — `lw daemon list` / `kill` classification of relays
