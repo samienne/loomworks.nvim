@@ -7,7 +7,7 @@
     {
       "name": "detect lists the providers; an unknown provider is refused",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "allow": [ { "kind": "signal" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "detect", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "providers": { "$type": "array" } } } },
@@ -18,7 +18,7 @@
     {
       "name": "add of an unknown provider, remove of a stale id or an unknown key are refused; a missing argument is invalid",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "allow": [ { "kind": "signal" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Sdks", "v": 1, "method": "add", "args": { "provider": "nope", "path": "/nowhere" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": "no provider for SDK type 'nope'", "exit_code": 1 } } },

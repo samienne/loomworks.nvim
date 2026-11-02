@@ -52,6 +52,12 @@
         "client_proof": { "type": "string" }
       }
     },
+    "ping": { "description": "Control request (PROTOCOL.md §7); the reply is v0.replies.ping.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ping" }, "req_id": { "type": "integer" } } },
+    "status": { "description": "Control request (PROTOCOL.md §7); the reply is v0.replies.status.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "status" }, "req_id": { "type": "integer" } } },
+    "stop": { "description": "Control request (PROTOCOL.md §7): the server exits after the reply (v0.replies.stop).", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "stop" }, "req_id": { "type": "integer" } } },
+    "retire": { "description": "Control request (PROTOCOL.md §7): the server accepts no new operation and exits once idle; the reply is v0.replies.retire.", "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "retire" }, "req_id": { "type": "integer" } } },
+    "retiring": { "description": "Transport 10 only (PROTOCOL.md Annex A): sent to a transport-10 observer when the server retires. From transport 11 the root's retiring signal (PROTOCOL.md §10) replaces it.", "type": "object", "required": ["kind"], "properties": { "kind": { "const": "retiring" } } },
+    "model_change": { "description": "Transport 10 only (PROTOCOL.md Annex A): a committed write of a state file. Never sent on a connection of transport 11; Workspace/1 changed replaces it.", "type": "object", "required": ["kind", "seq", "session_generation"], "properties": { "kind": { "const": "model_change" }, "seq": { "type": "integer", "minimum": 1 }, "session_generation": { "type": "integer" } } },
     "welcome": {
       "type": "object",
       "required": ["kind", "header"],
@@ -143,16 +149,21 @@
         "phase": { "enum": ["start", "line", "output", "progress", "done"] },
         "meta": { "description": "start: the task's meta (loomworks.Common/1 TaskMeta); for an interface method's task it names the object, iface, v and method.", "type": "object" },
         "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (PROTOCOL.md §14.1).", "type": "object" },
-        "stream": { "description": "line: the line's stream (out, note, err); output: stdout or stderr. An open string.", "type": "string" },
+        "stream": { "description": "line: out, note or err (a client shows an unknown one as err); output: stdout or stderr. An open string.", "type": "string" },
         "text": { "description": "line: the line's text, without terminal escape sequences (API.md §4.2); output: the step's raw bytes.", "type": "string" },
-        "role": { "description": "line: the line's presentation role (API.md §4.2); absent = plain. An open string: the interface defines the values.", "type": "string" }
+        "role": { "description": "line: the line's presentation role (API.md §4.2); absent = plain. An open string: the interface defines the values.", "type": "string" },
+        "pct": { "description": "progress: the task's integer percent; sent only when it changes.", "type": "integer", "minimum": 0, "maximum": 100 },
+        "exit_code": { "description": "done: the task's exit code, 0 for success. Present on every done.", "type": "integer" },
+        "error": { "description": "done: the refusal or failure a client prints as lw: <error>; absent on success.", "type": "string" }
       }
     }
   },
   "v0": {
-    "description": "The protocol-10 (v0) replies (PROTOCOL.md Annex A): the shape a protocol-10 request's ok reply keeps, so the v0 aliases stay unchanged for older clients. Minimal: the fields clients read. A v0 error reply carries error as a string. task_id is an integer on a connection of protocol 10 and the opaque string from transport 11 (the conformance engine checks which).",
+    "description": "The replies keyed by request kind: the frozen control requests' (PROTOCOL.md §7, every transport) and the protocol-10 (v0) requests' (PROTOCOL.md Annex A), the shape each request's ok reply keeps, so the v0 aliases stay unchanged for older clients. Minimal: the fields clients read. A v0 error reply carries error as a string. task_id is an integer on a connection of protocol 10 and the opaque string from transport 11 (the conformance engine checks which).",
     "replies": {
       "ping": { "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ok" }, "req_id": { "type": "integer" } } },
+      "stop": { "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ok" }, "req_id": { "type": "integer" } } },
+      "retire": { "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ok" }, "req_id": { "type": "integer" } } },
       "status": {
         "type": "object",
         "required": ["kind", "req_id", "pid", "root"],
@@ -163,6 +174,16 @@
           "root": { "type": "string" },
           "retiring": { "type": "boolean" },
           "observers": { "type": "integer" },
+          "lw_version": { "type": "string" },
+          "protocol": { "type": "integer" },
+          "session_generation": { "type": "integer" },
+          "endpoint": { "type": "string" },
+          "key_id": { "type": "string" },
+          "clients": { "type": "integer" },
+          "busy": { "type": "boolean" },
+          "busy_clients": { "description": "Connections besides the asking one that own a running task or have a request in flight.", "type": "integer" },
+          "idle_timeout": { "description": "Seconds.", "type": "integer" },
+          "idle_deadline": { "description": "Wall-clock seconds; absent when something besides the asker keeps the server up.", "type": "integer" },
           "tasks": { "type": "array", "items": { "type": "object", "required": ["task_id"], "properties": { "task_id": { "type": ["integer", "string"] } } } }
         }
       },

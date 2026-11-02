@@ -16,7 +16,7 @@
     {
       "name": "subscribing returns the full state as initial; a load sends update with every project, and a build that changes no record sends none",
       "fixture": "shell",
-      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "allow": [ { "kind": "task" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/views", "iface": "loomworks.view.ProjectsIndex", "v": 1, "signals": ["update"] } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0, "initial": { "projects": [] } } } },

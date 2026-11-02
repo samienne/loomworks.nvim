@@ -21,8 +21,7 @@
       "name": "a subscriber sees a task start and end; a task_id filter for another task sees neither",
       "fixture": "shell",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1 } } },
@@ -48,8 +47,7 @@
       "name": "the owner lists its running task and cancels it",
       "fixture": "shell",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1 } } },
@@ -68,8 +66,7 @@
       "name": "a subscriber sees each step of a launch target's build between its started and its ended, each step's seq its frame's",
       "fixture": "shell",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1 } } },
@@ -96,8 +93,7 @@
       "name": "a late listener catches up on a running task's steps through list; a cancel ends the running step cancelled, the others skipped",
       "fixture": "shell",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/launch", "iface": "loomworks.Launch", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "target": "staged", "kind": "launch" }, "env": { "$var": "env", "$with": { "LW_TEST_SLEEP": "60000" } } } },

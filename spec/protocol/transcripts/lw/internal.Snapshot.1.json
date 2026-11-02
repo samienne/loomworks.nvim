@@ -7,7 +7,6 @@
     {
       "name": "get returns the scope's tables, the tools, the index, seq and the session generation",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": {}, "env": { "$var": "env" } } },
         { "expect": {

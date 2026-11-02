@@ -213,7 +213,8 @@ can also discover each other.
 server's state; `stop` asks the server to exit; `retire` asks it to accept no
 new operations, finish the running ones and exit once idle. The meaning of
 `status` fields, and of "busy" and "idle", is defined by the server's
-specification, not by the transport.
+specification, not by the transport. Each control request is `{ kind, req_id }`;
+`transport.json` gives their frames and, under `v0.replies`, their replies.
 
 **`welcome`.** `welcome { header, seq, clients, busy, retiring, objects? }`:
 
@@ -457,14 +458,20 @@ Each frame is `task { task_id, phase, ... }`, with `phase` one of:
   also names the `object`, `iface`, `v` and `method` that started it; its
   other fields are typed by the method's task meta schema.
 - `line` — one of the server's own text lines (a status line, a note):
-  `stream` (`out`, `note`, `err`), `text`, and optionally `role`, a
+  `stream` (`out`, `note`, `err`) (an unknown stream is shown as `err`),
+  `text`, and optionally `role`, a
   presentation hint for the line whose values the interface defines. A client
   that does not render roles ignores it. An absent or unknown `role` is
   rendered as a line with no role.
 - `output` — a step's raw output bytes, `stdout` or `stderr`.
-- `progress` — coalesced: a tick only when the integer percent advances.
-- `done` — last; carries `exit_code`, the refusal or failure when there is
-  one, and, for an interface method's task, `result`, validated against the method's task result schema.
+- `progress` — `pct`, the task's integer percent (0–100); sent only when it
+  changes.
+- `done` — last; carries `exit_code` (an integer, 0 for success) and
+  `error`, the refusal or failure line, when there is one. These are the
+  task's end for every client, whatever the task's interface. For an
+  interface method's task `done` also carries `result`, validated against
+  the method's task result schema; a `result` that has `exit_code` or
+  `error` (`TaskEnd`, API.md §4.2) has the frame's values.
 
 A task's frames arrive in order: `start` first, nothing after `done`.
 
@@ -719,6 +726,9 @@ after which this annex no longer applies.
   same session generation is ignored, a new generation is always applied.
 - **Task ids.** A transport-10 connection keeps integer task ids in its task
   frames, its accepted replies and `status.tasks`.
+- **Run results.** On a transport-10 connection a `prepare_run` task's
+  `done` also carries the run's `launch` and `device` at the top level; a
+  connection of transport 11 reads them from `done.result`.
 
 ## Annex B (reserved): providers
 

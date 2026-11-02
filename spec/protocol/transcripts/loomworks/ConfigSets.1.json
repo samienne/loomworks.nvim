@@ -7,7 +7,7 @@
     {
       "name": "candidates names the declared set by id; add → update (rename, id kept) → remove",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "allow": [ { "kind": "signal" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "candidates", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "sets": { "$contains": [ { "config_set": { "$type": "string" }, "name": "dev", "auto": false } ] } } } },
@@ -26,7 +26,7 @@
     {
       "name": "a stale id, an unknown set, project or configuration is refused; a missing argument is invalid",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "allow": [ { "kind": "signal" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/projects", "iface": "loomworks.ConfigSets", "v": 1, "method": "remove", "args": { "config_set": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },

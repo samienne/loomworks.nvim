@@ -103,11 +103,11 @@ describe("conformance engine", function()
         assert.is_false(ok)
         assert.truthy(err:find("gap", 1, true), err)
         -- An unconsumed frame that no `allow` pattern covers fails the case.
-        ok, err = run({}, { J('{"kind":"model_change","seq":1}') })
+        ok, err = run({}, { J('{"kind":"model_change","seq":1,"session_generation":1}') })
         assert.is_false(ok)
         assert.truthy(err:find("unexpected frame", 1, true), err)
         ok = engine.run_case({ name = "t", handshake = false, steps = {}, allow = { { kind = "model_change" } } },
-            canned({ J('{"kind":"model_change","seq":1}') }), { timeout_ms = 10, settle_ms = 0 })
+            canned({ J('{"kind":"model_change","seq":1,"session_generation":1}') }), { timeout_ms = 10, settle_ms = 0 })
         assert.is_true(ok)
     end)
 

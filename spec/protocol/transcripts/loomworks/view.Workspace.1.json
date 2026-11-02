@@ -18,7 +18,6 @@
     },
     {
       "name": "subscribing returns the full state as initial; a load of an empty workspace sends one update, an unchanged state none",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/views", "iface": "loomworks.view.Workspace", "v": 1, "signals": ["update"] } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0, "initial": { "published": false, "profiles": [], "projects": [] } } } },
@@ -38,7 +37,7 @@
     {
       "name": "a load sends every profile, set and project with the daemon's ids; a build ends with the profile's last result and no progress in the view",
       "fixture": "shell",
-      "allow": [ { "kind": "task" }, { "kind": "model_change" },
+      "allow": [ { "kind": "task" },
         { "kind": "signal", "object": "/views", "iface": "loomworks.view.Workspace", "name": "update" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/views", "iface": "loomworks.view.Workspace", "v": 1, "signals": ["update"] } } },

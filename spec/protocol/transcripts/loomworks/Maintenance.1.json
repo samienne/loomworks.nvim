@@ -10,9 +10,6 @@
       "allow": [
         {
           "kind": "task"
-        },
-        {
-          "kind": "model_change"
         }
       ],
       "steps": [
@@ -211,9 +208,6 @@
       "allow": [
         {
           "kind": "task"
-        },
-        {
-          "kind": "model_change"
         }
       ],
       "steps": [
@@ -286,9 +280,6 @@
       "allow": [
         {
           "kind": "task"
-        },
-        {
-          "kind": "model_change"
         }
       ],
       "steps": [
@@ -362,9 +353,6 @@
       "allow": [
         {
           "kind": "task"
-        },
-        {
-          "kind": "model_change"
         }
       ],
       "steps": [

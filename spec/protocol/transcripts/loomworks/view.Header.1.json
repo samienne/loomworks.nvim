@@ -28,7 +28,6 @@
     },
     {
       "name": "subscribing returns the full state as initial; a load sends update with the full state, an unchanged state none",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/views", "iface": "loomworks.view.Header", "v": 1 } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": {

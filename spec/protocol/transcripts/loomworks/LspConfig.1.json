@@ -108,11 +108,6 @@
     {
       "name": "a loaded workspace with no active profile: the clangd entry is unconfigured with no db_dir; options carry the defaults",
       "fixture": "shell",
-      "allow": [
-        {
-          "kind": "model_change"
-        }
-      ],
       "steps": [
         {
           "send": {
@@ -203,9 +198,6 @@
       "allow": [
         {
           "kind": "task"
-        },
-        {
-          "kind": "model_change"
         },
         {
           "kind": "signal",
@@ -370,9 +362,6 @@
       "name": "set_option writes the working copy with changed after it; without a value the default applies again; malformed arguments, an unknown server or key and a mistyped value are errors and write nothing",
       "fixture": "shell",
       "allow": [
-        {
-          "kind": "model_change"
-        },
         {
           "kind": "task"
         }
