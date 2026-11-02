@@ -1545,6 +1545,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   when it lies inside the workspace (no link on the way). A destination
   outside the workspace is left in place with a warning, and a malformed
   deploy record in the cache is dropped without touching disk. (#359)
+- `lw status` no longer asks a busy daemon for its running tasks at an
+  endpoint that fails the handle check (for example a planted handle naming a
+  remote pipe, which would leak your NTLM hash); it connects to nothing and
+  shows the refusal on the running-tasks line instead. (#TBD)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or

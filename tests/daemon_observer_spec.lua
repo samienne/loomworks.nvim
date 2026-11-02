@@ -1542,7 +1542,9 @@ end)
 
 describe("lw status running-task lines (§19.6)", function()
     local running = require("loomworks.daemon.running")
-    local live = { kind = "live", handle = { valid = true, busy = true, endpoint = "x", key_id = "k",
+    -- The endpoint a daemon of "/r" binds, so the handle check passes.
+    local ep = require("loomworks.daemon.endpoint").address("/r")
+    local live = { kind = "live", handle = { valid = true, busy = true, endpoint = ep, key_id = "k",
         lw_version = "0.1.44" } }
 
     it("asks only a live, busy daemon with this lw's key", function()
@@ -1579,6 +1581,20 @@ describe("lw status running-task lines (§19.6)", function()
             running.lines("/r", { state = live, own_key_id = "k", query = function() return nil, "timeout" end }))
         assert.same({}, running.lines("/r", { state = live, own_key_id = "k", query = function()
             return { tasks = {} } end }))
+    end)
+
+    it("never queries a daemon whose handle names an endpoint that fails the check", function()
+        -- A planted handle: live, busy, our key_id, but a remote pipe (an SMB
+        -- connection that would leak the NTLM hash) - refused on every platform.
+        local forged = { kind = "live", handle = { valid = true, busy = true,
+            endpoint = [[\\evil\pipe\x]], key_id = "k", lw_version = "0.1.44" } }
+        local asked = 0
+        local lines, reply = running.lines("/r", { state = forged, own_key_id = "k",
+            query = function() asked = asked + 1; return { tasks = {} } end })
+        assert.equals(0, asked)
+        assert.is_nil(reply)
+        assert.equals(1, #lines)
+        assert.truthy(lines[1]:find("running tasks: unavailable (untrusted handle", 1, true))
     end)
 
     it("queries a real daemon's status", function()

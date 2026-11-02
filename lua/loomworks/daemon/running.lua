@@ -118,6 +118,10 @@ function M.lines(root, opts)
         own = ok and k or false
     end
     if not M.should_query(st, own) then return {} end
+    -- The handle is forgeable: connect only to an endpoint a daemon of this
+    -- workspace binds (spec §19.7), never a remote pipe or another's socket.
+    local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
+    if not eok then return { "  running tasks: unavailable (" .. tostring(ewhy) .. ")" } end
     local query = opts.query or M.query
     local ok, reply, why = pcall(query, st.handle.endpoint)
     if not ok then reply, why = nil, tostring(reply) end
