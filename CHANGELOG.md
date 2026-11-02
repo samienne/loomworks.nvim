@@ -1548,7 +1548,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - `lw status` no longer asks a busy daemon for its running tasks at an
   endpoint that fails the handle check (for example a planted handle naming a
   remote pipe, which would leak your NTLM hash); it connects to nothing and
-  shows the refusal on the running-tasks line instead. (#TBD)
+  shows the refusal on the running-tasks line instead. (#367)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
