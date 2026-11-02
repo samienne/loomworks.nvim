@@ -1116,8 +1116,11 @@ with newer file formats, or one already retired in this Neovim session for
 the same version (say, a repository pin keeps starting it), is left alone
 with a note. One whose only problem is older file formats stays observed
 (its tasks show as usual) until it is retired, and for the session when the
-editor will not retire it. Any other daemon it leaves alone (or cannot
-use at all) is not connected to again: the editor runs degraded and picks
+editor will not retire it. A daemon the plugin can use but that runs other
+code than the `lw` the editor selected (another version, or another build of
+a development tree) is observed as usual and, once idle, retired the same way,
+so updating the plugin or `lw` takes effect without a terminal command. Any
+other daemon it leaves alone (or cannot use at all) is not connected to again: the editor runs degraded and picks
 up the next daemon that is started for the workspace (say, after
 you stop the old one with `lw daemon stop` and a terminal `lw` starts a new
 one), without starting one itself. When the plugin wants

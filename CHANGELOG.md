@@ -619,6 +619,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   for the first. The editor starts using them in a later step. (#223)
 
 ### Changed
+- In `daemon` mode the editor now restarts an idle workspace daemon that runs
+  other code than the `lw` it would launch: another version, or for a
+  development build another source fingerprint. Before, after the plugin or
+  `lw` was updated the editor kept observing the old daemon until a CLI
+  command restarted it. A busy daemon is observed as before and restarted once
+  it is idle. A daemon of a given version is still restarted at most once per
+  workspace per editor session. (#PR)
 - A profile build, configure, clean or test no longer runs a project whose
   configuration the profile's tool cannot honor (a tool compat error). The
   other projects still run; the skipped one is named with its reason in the

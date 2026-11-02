@@ -4326,8 +4326,12 @@ versions left behind:
 | Leftover | Removed |
 |---|---|
 | `<data>/daemon/logs/<16 hex digits>.log`, `<data>/daemon/logs/<16 hex digits>.log.1` | by housekeeping when unmodified for 30 days; by `lw cleanup` at any age |
+| `<root>/.nvim/loomworks.daemon.lock`, `<root>/.nvim/loomworks.daemon.json` | as a reclaimer would (§19.5): the lock once its holder is dead, the handle once it names a gone process of this host and no live holder has the lock (§19.6 "Legacy files") |
+| `<root>/.nvim/loomworks.daemon.log`, `<root>/.nvim/loomworks.daemon.log.1` | while the legacy lock is absent or its holder is dead: by housekeeping when unmodified for 30 days; by `lw cleanup` at any age |
 | `<tmp>/lw-test-<hex>.xml` | when older than 24 hours |
 | `<tmp>/lw-describe-<hex>.txt` | when older than 7 days |
+
+These are exact regular files directly in a `.nvim` that is a real directory of the root; another slot's `loomworks.daemon-<S>.*` files are never among them.
 
 **Inside the workspace.** The runtime log is `<root>/.nvim/loomworks.daemon-<S>.log`,
 with one rotated predecessor (§19.10). The results file of a named test
