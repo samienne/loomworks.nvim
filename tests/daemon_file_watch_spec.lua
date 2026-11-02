@@ -2,8 +2,9 @@
 --- (spec/core/daemon.md §19.13 "Freshness of views", §19.15 "Live
 --- workspace"): another process's change is applied when it is seen, with no
 --- request; a file that cannot be parsed never unloads or replaces the model
---- (a load warning names it); a file missing while its `.bak` exists is a save
---- in progress (§19.4), never read as defaults.
+--- (a load warning names it); a file missing while its `.bak` exists may be a
+--- save in progress (§19.4): kept while the `.bak` holds the content last
+--- applied, otherwise read as missing (a deletion).
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
@@ -144,7 +145,7 @@ describe("the workspace daemon watches its files (§19.13 Freshness of views)", 
         assert.are_not.equals(ws, svc.host.current())
     end)
 
-    it("a working copy missing while its .bak exists is a save in progress, never defaults", function()
+    it("a working copy missing while its .bak holds the content last applied is a save cut short, never defaults", function()
         FileTracker.SAVE_GRACE_MS = 200
         local path = root .. USER
         local next_text = signed_user(root, function(u) u.configuration_sets = { extra = { app = "Debug" } } end)
@@ -153,8 +154,9 @@ describe("the workspace daemon watches its files (§19.13 Freshness of views)", 
         ws._tracker:sync()
         assert.equals(ws, svc.host.current())
         assert.is_not_nil(profile(ws, "dev"), "the working copy was read as defaults")
-        -- Still missing past the grace: the old content (as recovery does),
-        -- still not defaults, and nothing written in its place.
+        -- Still missing past the grace with the .bak holding the content last
+        -- applied (a save cut short): still not defaults, and nothing written
+        -- in its place.
         vim.wait(5000, function() return vim.uv.now() - t0 > 400 end, 20)
         ws._tracker:sync()
         assert.equals(ws, svc.host.current())
@@ -164,5 +166,33 @@ describe("the workspace daemon watches its files (§19.13 Freshness of views)", 
         write(path, next_text)
         ws._tracker:sync()
         assert.is_not_nil(config_set(ws, "extra"))
+    end)
+
+    it("a working copy deleted after a save reads as missing, never as the .bak's older content", function()
+        FileTracker.SAVE_GRACE_MS = 200
+        local io_mod = require("loomworks.io")
+        local path = root .. USER
+        -- Two saves by another process: the .bak keeps the content before the
+        -- last one (the "old" set), which the model no longer holds.
+        assert(io_mod.write_file_atomic(path,
+            signed_user(root, function(u) u.configuration_sets = { old = { app = "Debug" } } end)))
+        ws._tracker:sync()
+        assert.is_not_nil(config_set(ws, "old"))
+        assert(io_mod.write_file_atomic(path,
+            signed_user(root, function(u) u.configuration_sets = { extra = { app = "Debug" } } end)))
+        ws._tracker:sync()
+        assert.is_nil(config_set(ws, "old"))
+        assert.is_not_nil(read(path .. ".bak"))
+        -- The user deletes the working copy.
+        assert(os.remove(path))
+        -- Once the grace has passed (however loaded the machine) the deletion
+        -- is applied: the model changes, to defaults.
+        local function cur() return svc.host.current() or svc.ws end
+        vim.wait(15000, function()
+            ws._tracker:sync()
+            return config_set(cur(), "extra") == nil
+        end, 50)
+        assert.is_nil(config_set(cur(), "old"), "the deleted working copy was read as the .bak")
+        assert.is_nil(config_set(cur(), "extra"), "the deleted working copy was not read as missing")
     end)
 end)

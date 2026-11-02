@@ -276,7 +276,7 @@ describe("FileTracker", function()
             assert.same({ "bad", "a1" }, screened)
         end)
 
-        it("a file missing beside its .bak reads as unchanged, then as the .bak past the grace", function()
+        it("a file missing beside its .bak reads as unchanged; past the grace, kept only if the .bak is its last content", function()
             local grace = FileTracker.SAVE_GRACE_MS
             FileTracker.SAVE_GRACE_MS = 50
             local disk = { ["/a"] = "a1" }
@@ -286,20 +286,51 @@ describe("FileTracker", function()
                 read_file = function(path) return disk[path] end,
                 manual = true, saves = true,
             })
+            local function past_grace()
+                local t0 = vim.uv.hrtime()
+                vim.wait(2000, function() return (vim.uv.hrtime() - t0) / 1e6 > 100 end, 10)
+            end
             tracker:watch("/a")
-            disk["/a"], disk["/a.bak"] = nil, "a0"
+            -- A save cut short: the .bak holds the content last applied.
+            disk["/a"], disk["/a.bak"] = nil, "a1"
+            tracker:sync()
+            past_grace()
             tracker:sync()
             assert.same({}, seen)
-            local t0 = vim.uv.hrtime()
-            vim.wait(2000, function() return (vim.uv.hrtime() - t0) / 1e6 > 100 end, 10)
+            assert.equals("a1", tracker:content("/a"))
+            -- After a save the .bak holds older content: a deletion then reads
+            -- as missing, never as the .bak.
+            disk["/a"], disk["/a.bak"] = "a2", "a1"
             tracker:sync()
-            assert.same({ { "/a", "a0" } }, seen)
-            -- Without a .bak a missing file is a deletion.
-            disk["/a.bak"] = nil
+            assert.same({ { "/a", "a2" } }, seen)
+            disk["/a"] = nil
             tracker:sync()
+            assert.equals(1, #seen) -- within the grace: unchanged
+            past_grace()
+            tracker:sync()
+            assert.equals(2, #seen)
             assert.same({ "/a", nil }, seen[2])
             tracker:stop()
             FileTracker.SAVE_GRACE_MS = grace
+        end)
+
+        it("a signal queued before stop_signals never calls the removed signal", function()
+            local queued = {}
+            local signals = 0
+            local tracker = FileTracker.new({
+                callback = function() end,
+                read_file = function() return "x" end,
+                schedule = function(fn) queued[#queued + 1] = fn end,
+                signal = function() signals = signals + 1 end,
+                manual = true,
+            })
+            tracker:watch(vim.fn.tempname())
+            tracker:pause(); tracker:resume()
+            assert.equals(1, #queued)
+            tracker:stop_signals()
+            assert.has_no.errors(function() for _, fn in ipairs(queued) do fn() end end)
+            assert.equals(0, signals)
+            tracker:stop()
         end)
     end)
 end)

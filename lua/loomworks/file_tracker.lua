@@ -26,7 +26,7 @@ local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
 
 --- How long a file may be missing beside its `.bak` (a save between its two
---- renames, spec §19.4) before it is read as the `.bak`'s content, in ms.
+--- renames, spec §19.4) before it is checked again, in ms.
 FileTracker.SAVE_GRACE_MS = 500
 
 --- @class loomworks.FileTrackerOpts
@@ -49,10 +49,11 @@ FileTracker.SAVE_GRACE_MS = 500
 ---   holds it back, and the sync then delivers nothing (every last known
 ---   content kept), so the next sync retries (the daemon: a file that cannot
 ---   be parsed, §19.13)
---- @field saves? boolean a file read missing while `<file>.bak` exists is a
----   save in progress (spec §19.4): it reads as its last known content for
----   `SAVE_GRACE_MS` (a re-check is signalled then), and afterwards, still
----   missing, as the `.bak`'s content (as recovery treats it)
+--- @field saves? boolean a file read missing while `<file>.bak` exists may be
+---   a save in progress (spec §19.4): it reads as its last known content for
+---   `SAVE_GRACE_MS` (a re-check is signalled then); afterwards, still
+---   missing, it stays unchanged only while the `.bak` holds its last known
+---   content (a save cut short), otherwise it reads as missing (a deletion)
 
 --- Create a new FileTracker.
 --- @param opts loomworks.FileTrackerOpts
@@ -108,17 +109,23 @@ function FileTracker:watch(path, opts)
         -- manual tracker tells its owner, which syncs when it may.
         self._schedule(function()
             if self._watches[path] == nil then return end
-            if self._manual then return self._signal() end
+            -- (`stop_signals` may have run since this was queued.)
+            if self._manual then
+                if self._signal then self._signal() end
+                return
+            end
             self:sync()
         end)
     end)
 end
 
 --- Read a watched file. With `saves`, a file missing while `<file>.bak`
---- exists is a save in progress (spec §19.4: the target is absent between
---- the save's two renames), not a deletion: it reads as its last known
---- content, and a re-check is scheduled; once it has been missing for
---- `SAVE_GRACE_MS` it reads as the `.bak`'s content, as recovery treats it.
+--- exists may be a save in progress (spec §19.4: the target is absent between
+--- the save's two renames): it reads as its last known content, and a
+--- re-check is scheduled. Once it has been missing for `SAVE_GRACE_MS` it
+--- stays unchanged only if the `.bak` holds its last known content (the save
+--- was cut short); otherwise it reads as missing, as a deleted file does (the
+--- `.bak` of a completed save holds the content before it).
 --- @param path string
 --- @return string|nil
 function FileTracker:_read(path)
@@ -139,7 +146,8 @@ function FileTracker:_read(path)
         self:_recheck()
     end
     if now - (since or now) < FileTracker.SAVE_GRACE_MS then return self._content[path] end
-    return bak
+    if bak == self._content[path] then return bak end
+    return nil
 end
 
 --- Signal the owner again once a save in progress's grace has passed (a
@@ -156,7 +164,10 @@ function FileTracker:_recheck()
                 if not timer:is_closing() then timer:close() end
             end
             if next(self._watches) == nil or self._paused then return end
-            if self._manual then return self._signal() end
+            if self._manual then
+                if self._signal then self._signal() end
+                return
+            end
             self:sync()
         end)
     end)
@@ -323,7 +334,7 @@ function FileTracker:resume()
         -- paused is pending.
         if self._signal then
             self._schedule(function()
-                if not self._paused and next(self._watches) ~= nil then self._signal() end
+                if self._signal and not self._paused and next(self._watches) ~= nil then self._signal() end
             end)
         end
         return
