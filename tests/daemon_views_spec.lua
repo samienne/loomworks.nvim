@@ -484,8 +484,9 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         local exec = ws._execute_deletion_unlocked
         ws._execute_deletion_unlocked = function(...)
             local a = { ... }
-            return future.create(function(resolve)
-                vim.defer_fn(function() exec(unpack(a)):next(resolve) end, 300)
+            return future.create(function(resolve, reject)
+                -- A failed deletion rejects at once (not a 120 s wait).
+                vim.defer_fn(function() exec(unpack(a)):next(resolve, reject) end, 300)
             end)
         end
         local ok, err = pcall(function()
