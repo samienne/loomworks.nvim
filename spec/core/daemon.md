@@ -826,11 +826,11 @@ clients of 10 and 11); the rest of the broadcasts #88.*
 and the private bindings that skip authentication are specified in
 [PROTOCOL.md](../protocol/PROTOCOL.md) §3–§5, §7.
 
-**Authentication key.** The shared secret *K* of the handshake is
-HMAC-SHA256(machine key §17.2, `"loomworks-daemon-v1"`), and the endpoint
-address *E* is the address from the handle (§19.6). The `hello.client` and
-`role` values are [API.md](../protocol/API.md) §2 (an observer is §19.16). The
-`welcome` fields are `{ header, seq, clients, busy, retiring }` (§19.13) plus
+**Authentication key.** The shared secret *K* of the handshake and the
+endpoint address *E* are [API.md](../protocol/API.md) §2: *K* derived from
+the machine key (§17.2), *E* the handle's `endpoint` (§19.6) verbatim. The
+`hello.client` and `role` values are [API.md](../protocol/API.md) §2 (an
+observer is §19.16). The `welcome` fields are `{ header, seq, clients, busy, retiring }` (§19.13) plus
 the transport's `objects` (§19.20). New `welcome` fields go inside `header`
 if they are model fields, and beside it if they are transport fields (such as
 `objects`, or the relay's `daemon` and `via` below).

@@ -104,9 +104,22 @@ and a newline:
 <len>\n<json>
 ```
 
-Every request carries a `req_id` that its reply echoes; signals and task
-frames carry none. An unknown kind, a malformed frame or a handler error
-yields a typed error reply (§11), never a crash of the server.
+Frames are UTF-8 JSON (RFC 8259). Every request carries a `req_id` that its
+reply echoes; signals and task frames carry none. A `req_id` is an integer
+the client chooses, unique among the connection's requests not yet answered
+(counting up from 1 is enough); the server does not check this.
+
+A client may send a request before earlier ones are answered. The server
+starts requests in the order they arrive and answers each exactly once, in
+any order: a client matches a reply to its request by `req_id` alone. A
+method may wait for earlier work before it runs (its description says when),
+so a slow call can delay later ones. A call cannot be cancelled: a client
+that gives up on one closes the connection. A call the server has started
+then still runs to completion — a `mutates` method's effect stays — and its
+reply is dropped; the tasks the connection owns are cancelled (§14.3).
+
+An unknown kind, a malformed frame or a handler error yields a typed error
+reply (§11), never a crash of the server.
 
 Before `welcome` (§5) a server caps a frame at 64 KiB: a longer length prefix
 closes the connection before the payload is read.
@@ -114,24 +127,35 @@ closes the connection before the payload is read.
 ## 5. Handshake and authentication
 
 Authentication is mutual and happens before anything else. Let *K* be a
-secret shared by server and client and *E* the endpoint address the client
-connects to; both are obtained out of band (how is outside this document).
+secret byte string shared by server and client, and *E* the endpoint address
+the client connects to, a string. Both are obtained out of band (the
+interface suite says how, API.md §2). *E* is used exactly as that source
+gives it — the address the server bound — with no normalisation of case,
+separators or trailing characters.
 
 1. client → `hello { protocol, protocol_min?, lw_version, schemas, client,
    role?, nonce = Nc }`
 2. server → `challenge { protocol, protocol_min?, lw_version, schemas,
    session_generation, server_nonce = Ns, server_proof }` with
-   `server_proof = HMAC(K, "server\n" .. E .. "\n" .. Nc .. "\n" .. Ns)`
+   `server_proof = H(K, "server" ‖ LF ‖ E ‖ LF ‖ Nc ‖ LF ‖ Ns)`
 3. The client verifies `server_proof`. On failure it closes the connection
    without sending anything else and treats the endpoint as untrusted.
    Otherwise → `auth { client_proof }` with
-   `client_proof = HMAC(K, "client\n" .. E .. "\n" .. Ns .. "\n" .. Nc)`
+   `client_proof = H(K, "client" ‖ LF ‖ E ‖ LF ‖ Ns ‖ LF ‖ Nc)`
 4. The server verifies `client_proof` → `welcome` (§7).
 
-Nonces are 32 random bytes, hex-encoded. Proofs are compared in constant
-time. A failed proof closes the connection with no detail. Because the server
-proves knowledge of *K* first, a process squatting the endpoint cannot
-impersonate the server to a client.
+`H(k, m)` is HMAC-SHA256 (RFC 2104 with SHA-256) keyed with *k* over the
+message *m*, written as its 64 lowercase hexadecimal digits. ‖ is byte
+concatenation and LF the single byte 0x0A. Each part of *m* is its UTF-8
+bytes: the literal `server` or `client`, *E*, and each nonce exactly as it
+was sent (its hexadecimal text, not the decoded bytes).
+
+A nonce is 32 bytes from a cryptographically secure random source, sent as
+64 lowercase hexadecimal digits. A server closes a connection whose
+`hello.nonce` is not 64 hexadecimal digits. Proofs are compared as strings,
+in constant time. A failed proof closes the connection with no detail.
+Because the server proves knowledge of *K* first, a process squatting the
+endpoint cannot impersonate the server to a client.
 
 Before `welcome` a server accepts only `hello` and `auth`, applies the frame
 cap of §4, closes a connection that has not authenticated within about 5 s,

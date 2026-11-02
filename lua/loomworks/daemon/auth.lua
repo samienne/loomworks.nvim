@@ -1,8 +1,8 @@
 --- loomworks/daemon/auth.lua — the mutual handshake proofs (spec §19.8).
 ---
 ---   K = HMAC-SHA256(machine key §17.2, "loomworks-daemon-v1")
----   server_proof = HMAC(K, "server\n" .. E .. "\n" .. Nc .. "\n" .. Ns)
----   client_proof = HMAC(K, "client\n" .. E .. "\n" .. Ns .. "\n" .. Nc)
+---   server_proof = HMAC(K, "server" ‖ LF ‖ E ‖ LF ‖ Nc ‖ LF ‖ Ns)
+---   client_proof = HMAC(K, "client" ‖ LF ‖ E ‖ LF ‖ Ns ‖ LF ‖ Nc)
 ---
 --- E is the endpoint address (from the handle, or the one the daemon bound),
 --- Nc / Ns 32 random bytes as hex. The server proves knowledge of K first, so

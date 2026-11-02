@@ -86,6 +86,43 @@ describe("handshake proofs (§19.8)", function()
         assert.is_false(auth.equal(p, p:sub(1, -2)))
         trust._set_key_path(nil)
     end)
+
+    -- Known-answer vectors (PROTOCOL.md §5, API.md §2), computed with an
+    -- independent HMAC-SHA256 (Python hmac/hashlib), so a second
+    -- implementation of the handshake can check itself against the same values.
+    it("match a known-answer vector for K and both proofs (lowercase hex)", function()
+        local function bytes(from, to)
+            local t = {}
+            for b = from, to do t[#t + 1] = string.char(b) end
+            return table.concat(t)
+        end
+        local function hex(s)
+            return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+        end
+
+        -- K from a machine key of bytes 0x20..0x3f (trust.key holds its hex).
+        local d = with_key()
+        local fh = assert(io.open(d .. "/trust.key", "wb"))
+        fh:write(hex(bytes(0x20, 0x3f)) .. "\n")
+        fh:close()
+        local K = assert(auth.key())
+        assert.equals(32, #K)
+        assert.equals("d0c344b81ded27db0a56fb52a01fc402c6bedbff7dea7e04980fbbff72efc293", hex(K))
+        trust._set_key_path(nil)
+
+        -- Proofs over a fixed K of bytes 0x00..0x1f: the nonces' hex text is
+        -- hashed, not their decoded bytes.
+        local k = bytes(0x00, 0x1f)
+        local E = "/tmp/lw-kat/daemon.sock"
+        local Nc = string.rep("a", 32) .. string.rep("0123456789abcdef", 2)
+        local Ns = string.rep("f", 32) .. string.rep("fedcba9876543210", 2)
+        assert.is_true(auth.valid_nonce(Nc))
+        assert.is_true(auth.valid_nonce(Ns))
+        assert.equals("21c644917c3287ab247d4f76b167a0a7abd4c8192572d129911b2691456c8aae",
+            auth.server_proof(k, E, Nc, Ns))
+        assert.equals("bdfe1d743ea7ae45beb2c4a5954843e9d6c9647a0ddefb5c188f4607d9874c35",
+            auth.client_proof(k, E, Nc, Ns))
+    end)
 end)
 
 describe("daemon server (in-process)", function()
