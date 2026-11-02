@@ -1045,7 +1045,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Fixed
 - In daemon mode, a profile's row in the status page is busy while the daemon
-  deletes that profile, as it is when the editor deletes it itself. (#NNN)
+  deletes that profile, as it is when the editor deletes it itself. (#378)
 - In daemon mode, a C/C++ file open before the workspace loads (a restored
   session, or `nvim file.cpp`) no longer gets a stock clangd with no
   compilation database, followed by a second, managed clangd once the
