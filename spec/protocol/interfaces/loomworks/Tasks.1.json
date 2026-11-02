@@ -92,16 +92,11 @@
         "name": { "type": "string" },
         "kind": { "description": "The operation (build, test, run, clean, reset, ...). Clients show an unknown kind as neutral.", "type": "string" },
         "profile": { "description": "The profile's key.", "type": "string" },
+        "profile_id": { "description": "The profile's id: present exactly when profile is (TaskMeta.profile_id).", "$ref": "loomworks.Common/1#/$defs/Id" },
         "scope": { "type": "string" },
         "units": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "project": { "type": "string" },
-              "configuration": { "type": "string" }
-            }
-          }
+          "description": "As TaskMeta.units: a client matches a task to its records by the ids; the keys are for display.",
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta/properties/units"
         },
         "origin": { "description": "The owner's hello.client. Clients show an unknown origin as neutral.", "enum": ["cli", "editor"] },
         "started_at": { "description": "Wall-clock seconds.", "type": "integer" },

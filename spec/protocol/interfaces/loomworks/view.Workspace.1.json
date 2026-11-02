@@ -68,14 +68,14 @@
     },
     "Profile": {
       "type": "object",
-      "required": ["key", "label", "active", "modified", "orphaned_set", "status", "incomplete", "busy", "running", "tools", "artifact_conflict", "units"],
+      "required": ["id", "key", "label", "active", "modified", "orphaned_set", "status", "incomplete", "busy", "running", "tools", "artifact_conflict", "units"],
       "properties": {
-        "id": { "description": "The profile's opaque id (PROTOCOL.md §12.1): always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "The profile's opaque id (PROTOCOL.md §12.1).", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "label": { "description": "The profile's display text (API.md §1.1). Clients show it, never derive it.", "type": "string" },
         "description": { "description": "The profile's description (spec/ui.md 1.16).", "type": "string" },
         "config_set": { "description": "The name of the profile's configuration set (the missing set's name when orphaned_set).", "type": "string" },
-        "config_set_id": { "description": "The opaque id of the profile's configuration set: sent by the daemon when the set exists (not orphaned_set), absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "config_set_id": { "description": "The opaque id of the profile's configuration set; absent when the set no longer exists (orphaned_set).", "$ref": "loomworks.Common/1#/$defs/Id" },
         "active": { "type": "boolean" },
         "modified": { "description": "Whether the profile differs from the published baseline.", "type": "boolean" },
         "intent": { "$ref": "#/$defs/Intent" },
@@ -139,7 +139,7 @@
           "type": "object",
           "required": ["key", "label", "state"],
           "properties": {
-            "id": { "description": "The device's opaque id: always sent by the daemon for an online device, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+            "id": { "description": "The device's opaque id; present exactly when state is online.", "$ref": "loomworks.Common/1#/$defs/Id" },
             "key": { "description": "The device's serial.", "type": "string" },
             "label": { "description": "The device's name; its serial when it has none.", "type": "string" },
             "state": { "description": "As in Devices/1 list. Clients show an unknown state as neutral.", "type": "string" },
@@ -163,7 +163,7 @@
         "project": { "description": "The project's key.", "type": "string" },
         "type": { "description": "The project's module type.", "type": "string" },
         "configuration": { "description": "The configuration's name.", "type": "string" },
-        "unit_id": { "description": "The configuration unit's opaque id; absent when the profile has no unit for the project yet, and always in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "unit_id": { "description": "The configuration unit's opaque id; absent when the profile has no unit for the project yet.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "state": {
           "description": "As view.ProjectsIndex/1's active.state. Clients show an unknown state as neutral.",
           "enum": ["unconfigured", "configured", "built", "configure_failed", "build_failed", "unknown", "configuring", "building", "deleting"]
@@ -210,7 +210,7 @@
             "type": "object",
             "required": ["key"],
             "properties": {
-              "id": { "description": "Its build directory's id (daemon only): what Maintenance/1.execute_deletion takes as build_dir.", "$ref": "loomworks.Common/1#/$defs/Id" },
+              "id": { "description": "Its build directory's id: what Maintenance/1.execute_deletion takes as build_dir; absent when the entry has no build directory.", "$ref": "loomworks.Common/1#/$defs/Id" },
               "key": { "description": "Its cache key.", "type": "string" },
               "build_dir": { "description": "Its cached build directory.", "type": "string" }
             }
@@ -221,9 +221,9 @@
     },
     "ConfigSet": {
       "type": "object",
-      "required": ["name", "active", "modified", "mappings"],
+      "required": ["id", "name", "active", "modified", "mappings"],
       "properties": {
-        "id": { "description": "The configuration set's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "The configuration set's opaque id.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "name": { "type": "string" },
         "description": { "description": "Its description (spec/ui.md 1.16).", "type": "string" },
         "active": { "description": "Whether it is the active profile's configuration set.", "type": "boolean" },
@@ -236,12 +236,12 @@
             "missing": { "description": "The configuration was removed or has no source.", "type": "boolean" } } } }
       }
     },
-    "EntityRef": { "type": "object", "required": ["key"], "properties": { "id": { "$ref": "loomworks.Common/1#/$defs/Id" }, "key": { "type": "string" } } },
+    "EntityRef": { "type": "object", "required": ["id", "key"], "properties": { "id": { "$ref": "loomworks.Common/1#/$defs/Id" }, "key": { "type": "string" } } },
     "Project": {
       "type": "object",
-      "required": ["key", "type", "path", "modified", "orphaned", "running", "needs_refresh", "launches", "deploy", "variables", "type_config"],
+      "required": ["id", "key", "type", "path", "modified", "orphaned", "running", "needs_refresh", "launches", "deploy", "variables", "type_config"],
       "properties": {
-        "id": { "description": "The project's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "The project's opaque id.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "type": { "description": "The project's module type.", "type": "string" },
         "path": { "description": "As in view.ProjectsIndex/1.", "type": "string" },
@@ -267,7 +267,7 @@
             "type": "object",
             "required": ["name"],
             "properties": {
-              "id": { "description": "The preset configuration's opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+              "id": { "description": "The preset configuration's opaque id; absent when the project has no configuration of that name.", "$ref": "loomworks.Common/1#/$defs/Id" },
               "name": { "type": "string" },
               "generator": { "type": "string" },
               "toolchain_locked": { "type": "boolean" }
@@ -364,9 +364,9 @@
     "Configuration": {
       "description": "A project's configuration with its publish state (spec 2.4).",
       "type": "object",
-      "required": ["key", "label", "modified", "abstract", "options"],
+      "required": ["id", "key", "label", "modified", "abstract", "options"],
       "properties": {
-        "id": { "description": "Its opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "Its opaque id.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "description": "Its name.", "type": "string" },
         "label": { "description": "Its name.", "type": "string" },
         "modified": { "description": "Whether it differs from the published baseline.", "type": "boolean" },
@@ -422,9 +422,9 @@
     "Launch": {
       "description": "A launch configuration of a project. It carries no publish state (API.md 14.4).",
       "type": "object",
-      "required": ["key", "label"],
+      "required": ["id", "key", "label"],
       "properties": {
-        "id": { "description": "Its opaque id: always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "Its opaque id.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "description": "Its name.", "type": "string" },
         "label": { "description": "Its name.", "type": "string" },
         "description": { "type": "string" },
@@ -435,9 +435,9 @@
     },
     "Sdk": {
       "type": "object",
-      "required": ["key", "label", "resolved", "kits"],
+      "required": ["id", "key", "label", "resolved", "kits"],
       "properties": {
-        "id": { "description": "The SDK's opaque id: what Sdks/1.remove takes as sdk. Always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "id": { "description": "The SDK's opaque id: what Sdks/1.remove takes as sdk.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "key": { "type": "string" },
         "label": { "type": "string" },
         "path": { "description": "The SDK's path.", "type": "string" },

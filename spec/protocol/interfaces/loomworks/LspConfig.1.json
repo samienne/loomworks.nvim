@@ -138,6 +138,7 @@
     "Project": {
       "type": "object",
       "required": [
+        "id",
         "project",
         "path",
         "entries"
@@ -148,7 +149,7 @@
           "type": "string"
         },
         "id": {
-          "description": "The project's opaque id (PROTOCOL.md §12.1), only from the daemon.",
+          "description": "The project's opaque id (PROTOCOL.md §12.1).",
           "$ref": "loomworks.Common/1#/$defs/Id"
         },
         "path": {

@@ -180,8 +180,9 @@ and `method` PROTOCOL.md §14.2 adds:
   carries `scope = "all"`);
 - `units` — one `{ project, configuration, id }` per project of the profile
   (or of the task's scope): the project key, its configuration unit's key and
-  the unit's id (§1.1; absent for a unit the server has no id for). A client
-  matches a task to its records by the ids; the keys are for display.
+  the unit's id (§1.1; absent when the configuration unit does not exist yet
+  or was removed). A client matches a task to its records by the ids; the
+  keys are for display.
 - `origin` — the owner's `hello.client`, `cli` or `editor`, set by the
   server, never taken from the request.
 
@@ -1175,8 +1176,7 @@ The always-warm header. Its state is `Workspace/1.header`'s fields with the
 same meaning (`root` string, `state` one of `loaded` / `unloaded` / `error`
 / `refused`; optional `name` string, `active_profile` string (the active
 profile's key), `error` string, §2; and `pid` integer, `lw_version` string,
-`session_generation` integer, required in `Workspace/1.header` but optional
-here), plus:
+`session_generation` integer, required, as in `Workspace/1.header`), plus:
 
 - `active_profile_id` (string, optional) — the active profile's opaque id;
   present exactly when `active_profile` is. It is what a client puts in an
@@ -1258,7 +1258,7 @@ discovering?, units }`:
   `loaded`.
 - `profile` (string, optional) — the active profile's key; the view covers
   the active profile only, and is empty (`units` = `[]`) with none.
-  `profile_id` (optional) — its opaque id.
+  `profile_id` — its opaque id, present exactly when `profile` is.
 - `stale` (boolean) — the tree may no longer match the build: no discovery
   has run for the active profile in this session yet, or since then a
   configure, build, clean or reset of one of its units ended (by any client),
@@ -1324,8 +1324,8 @@ the status page reads to render these sections is listed here, and the page
 reads nothing else from the model. Its state is `{ published, modified,
 diagnostics, suggestions, profiles, orphaned, config_sets, projects, sdks,
 sdk_providers }`; its arrays are empty when the workspace is not loaded.
-Each `id` is an opaque id a client puts in an `{ id }` reference (§1.2),
-optional because the in-process builder leaves it out:
+Each `id` is an opaque id a client puts in an `{ id }` reference (§1.2);
+an entity's own `id` is always present (PROTOCOL.md §12.1):
 
 - `published` (boolean) — whether the workspace has a published
   `loomworks.json` (spec §2.4).

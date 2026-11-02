@@ -22,7 +22,7 @@
   "$defs": {
     "Header": {
       "type": "object",
-      "required": ["root", "state"],
+      "required": ["root", "state", "pid", "lw_version", "session_generation"],
       "properties": {
         "root": { "type": "string" },
         "state": {
@@ -31,9 +31,9 @@
         },
         "name": { "description": "The workspace's name (state loaded).", "type": "string" },
         "active_profile": { "description": "The active profile's key (state loaded; absent when none).", "type": "string" },
-        "active_profile_id": { "description": "The active profile's opaque id (PROTOCOL.md §12.1): present exactly when active_profile is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "active_profile_id": { "description": "The active profile's opaque id (PROTOCOL.md §12.1): present exactly when active_profile is.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "config_set": { "description": "The name of the active profile's configuration set (state loaded, a profile active).", "type": "string" },
-        "config_set_id": { "description": "That configuration set's opaque id: present exactly when config_set is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "config_set_id": { "description": "That configuration set's opaque id: present exactly when config_set is.", "$ref": "loomworks.Common/1#/$defs/Id" },
         "error": { "description": "The load failure (state error or refused).", "type": "string" },
         "diagnostics": {
           "description": "The highest severity among the workspace's structural diagnostics; absent when there are none or the workspace is not loaded.",
@@ -43,9 +43,9 @@
           "description": "Present only when state is refused by a trust refusal (spec 17.4): the refused file, the working copy (user) or the cache (cache).",
           "enum": ["user", "cache"]
         },
-        "pid": { "description": "The daemon's process id (absent in-process).", "type": "integer" },
-        "lw_version": { "description": "The daemon's lw_version (absent in-process).", "type": "string" },
-        "session_generation": { "description": "The daemon's session generation (absent in-process).", "type": "integer" },
+        "pid": { "description": "The daemon's process id.", "type": "integer" },
+        "lw_version": { "description": "The daemon's lw_version.", "type": "string" },
+        "session_generation": { "description": "The daemon's session generation.", "type": "integer" },
         "version": { "description": "The running loomworks version of the lw that built the view (the daemon's, or the editor's in-process), resolved like _meta.written_by (spec 2); absent when unknown. The status page's header shows it.", "type": "string" }
       }
     }

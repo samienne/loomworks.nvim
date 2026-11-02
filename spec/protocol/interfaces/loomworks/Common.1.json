@@ -168,11 +168,11 @@
         "kind": { "type": "string" },
         "profile": { "type": "string" },
         "profile_id": {
-          "description": "The profile's id (API.md §4.2, §1.1; step 5o C2d): present with profile.",
+          "description": "The profile's id (API.md §4.2, §1.1): present exactly when profile is.",
           "$ref": "#/$defs/Id"
         },
         "units": {
-          "description": "One entry per project of the profile or of the task's scope (API.md §4.2): the project key, its configuration unit's key and the unit's id (absent for a unit the server has no id for). A client matches a task to its records by the ids; the keys are for display.",
+          "description": "One entry per project of the profile or of the task's scope (API.md §4.2): the project key, its configuration unit's key and the unit's id (absent when the unit does not exist yet or was removed). A client matches a task to its records by the ids; the keys are for display.",
           "type": "array",
           "items": {
             "type": "object",
