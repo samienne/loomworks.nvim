@@ -24,12 +24,16 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
---- The re-check tick for the tests against a real (in-process) daemon. It
---- also bounds a `status` reply (an unanswered status at the next tick ends
---- the wait, §19.16), and the daemon shares this test's event loop: a loop
---- stall longer than the tick (seen on Windows CI past 100 ms) reads as a
---- daemon that stopped answering. The fake-daemon tests keep 100 ms.
-local REAL_RETIRE_CHECK_MS = 1000
+--- The re-check tick for the tests against a real (in-process) daemon: far
+--- past any test's length, so it never fires. The tick also bounds a
+--- `status` (and `retire`) reply (an unanswered one at the next tick ends the
+--- wait, §19.16), and the daemon shares this test's event loop: after a loop
+--- stall longer than the tick, libuv runs the due timer before it reads the
+--- reply, so any short tick reads as a daemon that stopped answering (seen on
+--- Windows CI at 100 ms and at 1 s). These tests drive each re-check
+--- themselves (`recheck`), once the previous `status` was answered; the
+--- fake-daemon tests cover the tick itself.
+local REAL_RETIRE_CHECK_MS = 10 * 60 * 1000
 
 local function older_schemas()
     local s = version.schemas()
@@ -317,17 +321,30 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_true(vim.wait(10000, function()
             return obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true) ~= nil
         end, 10), obs:runtime_line())
+        -- One re-check (the tick, fired by the test): a new `status`, sent
+        -- only once the previous one was answered.
+        local function recheck()
+            local wait = assert(obs._retire, obs:runtime_line())
+            assert.is_nil(wait.asking)
+            local before = statuses
+            obs:_check_retire()
+            assert.equals(before + 1, statuses)
+        end
+        local function answered()
+            return vim.wait(10000, function() return not (obs._retire and obs._retire.asking) end, 10)
+        end
         -- Two more re-checks: still busy, never retired.
-        local first = statuses
-        assert.is_true(vim.wait(10 * REAL_RETIRE_CHECK_MS, function() return statuses >= first + 2 end, 10),
-            obs:runtime_line())
-        assert.truthy(obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true),
-            obs:runtime_line())
+        for _ = 1, 2 do
+            recheck()
+            assert.is_true(answered(), obs:runtime_line())
+            assert.truthy(obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true),
+                obs:runtime_line())
+        end
         assert.is_false(s.srv.retiring)
         assert.is_false(R.was_retired(root, "0.0.1"))
         busy.in_flight = {}
-        assert.is_true(vim.wait(10 * REAL_RETIRE_CHECK_MS, function() return s.srv.retiring end, 10),
-            obs:runtime_line())
+        recheck()
+        assert.is_true(vim.wait(10000, function() return s.srv.retiring end, 10), obs:runtime_line())
         cli:close()
         -- Idle now: it exits once the queued writes drained (at most
         -- RETIRE_DRAIN_MS); room for a stalled loop on a loaded machine.
