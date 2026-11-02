@@ -1036,7 +1036,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   probe now reads a `version --json` that succeeds without printing a
   descriptor as too old/incompatible, so selection falls through to the
   plugin-managed `lw`; one named explicitly is still used, with a note
-  saying why it will fail. (#365)
+  saying why it will fail. (#365, #366)
 - With a CMake multi-config generator (Ninja Multi-Config, Visual Studio),
   Debug and Release are separate configurations again, each with its own
   state, artifacts and status line, although they share one build directory.
