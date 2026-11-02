@@ -1029,6 +1029,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- In daemon mode, a C/C++ file open before the workspace loads (a restored
+  session, or `nvim file.cpp`) no longer gets a stock clangd with no
+  compilation database, followed by a second, managed clangd once the
+  daemon's configuration arrives. Loading the workspace no longer reports it
+  closed on the way, which released the held buffer to the stock server; the
+  buffer now waits for the daemon's configuration and starts one managed
+  clangd. (#N)
 - In daemon mode, a running build, configure, run or test shows its spinner,
   percentage and timer on its profile row again, not only in the Tasks
   section: the workspace view now marks a profile `busy` while the daemon
