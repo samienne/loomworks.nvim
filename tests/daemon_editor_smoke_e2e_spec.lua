@@ -49,7 +49,12 @@ local function read(path)
 end
 
 --- Edit the signed working copy (the trust key is this spec file's data
---- dir's, which the spawned daemon shares).
+--- dir's, which the spawned daemon shares). Replaced in one rename, as
+--- loomworks' own writers do: written in place, the daemon's poll could read
+--- it truncated or half-written, refuse the working copy as untrusted
+--- (§17.4) and unload the model, which then waits for the next
+--- state-changing request (§19.13 "Freshness of views") — so the views kept
+--- the stale diagnostic of step 6 (#350, seen on loaded Windows runners).
 local function edit_user(root, fn)
     local path = root .. "/.nvim/loomworks.user.json"
     local status, body = trust.verify("user", assert(read(path)))
@@ -58,7 +63,14 @@ local function edit_user(root, fn)
     fn(user)
     local signed, serr = trust.sign("user", trust.encode(user))
     if not signed then error(serr) end
-    local f = assert(io.open(path, "wb")); f:write(signed); f:close()
+    local tmp = path .. ".edit"
+    local f = assert(io.open(tmp, "wb")); f:write(signed); f:close()
+    -- The daemon may hold the file open for a read: retry the replace.
+    local renamed, rerr
+    assert.is_true(vim.wait(15000, function()
+        renamed, rerr = vim.uv.fs_rename(tmp, path)
+        return renamed == true
+    end, 50), tostring(rerr))
 end
 
 --- The launch program: writes its working directory and LW_TEST_FOO to the

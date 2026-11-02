@@ -146,7 +146,16 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.truthy(obs:runtime_line():find("disconnected", 1, true), obs:runtime_line())
         assert.truthy(obs:runtime_line():find("none is launched", 1, true), obs:runtime_line())
         vim.wait(3000)
-        assert.same({ "ordinary", "no-launch" }, t.forms)
+        -- Followed through one no-launch relay — plus, on a loaded machine,
+        -- its one answer relay when that relay met the stopping daemon not
+        -- yet gone and no longer answering (status 10 / 11, §19.16 "Exit
+        -- before `welcome`"). Never an ordinary (launching) one.
+        local function followed()
+            assert.equals("ordinary", t.forms[1])
+            assert.is_true(#t.forms == 2 or #t.forms == 3, vim.inspect(t.forms))
+            for i = 2, #t.forms do assert.equals("no-launch", t.forms[i], vim.inspect(t.forms)) end
+        end
+        followed()
         assert.equals("none", inspect.state(root).kind)
         -- The first relay ended with its connection.
         assert.is_true(vim.wait(10000, function() return relay.code ~= nil end, 20))
@@ -157,7 +166,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.equals(0, r.code, r.stderr)
         H.track_root(root)
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
-        assert.same({ "ordinary", "no-launch" }, t.forms)
+        followed()
     end)
 
     -- The exit criterion of step 5g.3 (§19.9 "Busy", §19.16 "Interface
@@ -183,9 +192,16 @@ describe("the editor observes the workspace daemon (§19.16)", function()
 
         -- `lw build` from a terminal: its version differs, the daemon is idle
         -- (only the editor observes it) -> stopped and replaced, then the
-        -- build is routed to the new daemon.
-        local b = H.lw_start({ "build", "dev" }, { env = env, cwd = root })
-        assert.is_true(vim.wait(60000, function() return seen.started == 1 end, 20), b.stderr())
+        -- build is routed to the new daemon. Its steps are held until the
+        -- editor shows the task: the editor reconnects to the new daemon on
+        -- its own schedule (through a no-launch relay), and a build over
+        -- before that would never reach it (a loaded runner's race).
+        local gate = root .. "/gate"
+        local benv = vim.deepcopy(env)
+        benv.vars.LW_TEST_GATE = gate
+        local b = H.lw_start({ "build", "dev" }, { env = benv, cwd = root })
+        assert.is_true(vim.wait(120000, function() return seen.started == 1 end, 20), b.stderr())
+        local gf = assert(io.open(gate, "w")); gf:close()
         assert.is_true(b.wait(120000))
         assert.equals(0, b.code, b.stderr())
         assert.falsy(b.stderr():find("is busy", 1, true), b.stderr())

@@ -219,12 +219,14 @@ describe("daemon server (in-process)", function()
         local st = assert(client.request(conn, { kind = "status" }))
         assert.equals(1, st.clients)
         assert.equals(srv.pid, st.pid)
-        assert.is_true(vim.wait(5000, function() return handle.read(root).clients == 1 end, 10))
+        assert.is_true(vim.wait(15000, function() return handle.read(root).clients == 1 end, 10))
         local _, err = client.request(conn, { kind = "build" })
         assert.truthy(tostring(err):find("unknown request kind", 1, true))
         conn:close()
-        assert.is_true(vim.wait(2000, function() return srv:client_count() == 0 end, 10))
-        assert.is_true(vim.wait(5000, function() return handle.read(root).clients == 0 end, 10))
+        -- (Generous: on a loaded Windows runner the named pipe's EOF can take
+        -- seconds to reach the server's read.)
+        assert.is_true(vim.wait(15000, function() return srv:client_count() == 0 end, 10))
+        assert.is_true(vim.wait(15000, function() return handle.read(root).clients == 0 end, 10))
     end)
 
     it("a client with another key is refused; a squatter cannot impersonate the daemon", function()
@@ -361,7 +363,7 @@ describe("daemon server (in-process)", function()
 
     it("rewrites a removed handle on its heartbeat", function()
         handle.remove(root)
-        assert.is_true(vim.wait(2000, function() return handle.read(root) ~= nil end, 10))
+        assert.is_true(vim.wait(15000, function() return handle.read(root) ~= nil end, 10))
     end)
 
     if H.is_win then
