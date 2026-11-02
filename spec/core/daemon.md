@@ -883,7 +883,7 @@ the machine key (§17.2), *E* the handle's `endpoint` (§19.6) verbatim. The
 observer is §19.16). The `welcome` fields are `{ header, seq, clients, busy, retiring }` (§19.13) plus
 the transport's `objects` (§19.20). New `welcome` fields go inside `header`
 if they are model fields, and beside it if they are transport fields (such as
-`objects`, or the relay's `daemon` and `via` below).
+`objects`, or the relay's `daemon`, `via` and `relay` below).
 
 **Private bindings.** The loopback transport (§19.1) is the in-process
 private binding of PROTOCOL.md §3; it never leaves the process. The private
@@ -921,7 +921,7 @@ relay runs the socket handshake on its behalf:
 3. It verifies `server_proof` before forwarding anything; on failure it
    sends nothing more on either side and exits (status 12). It then sends
    `auth`. `challenge` and `auth` never reach its client.
-4. It forwards the daemon's `welcome`, adding two fields, and from then on
+4. It forwards the daemon's `welcome`, adding three fields, and from then on
    copies frames both ways unchanged:
    - `daemon = { protocol, protocol_min, lw_version, schemas,
      session_generation, pid, start_time, exe? }` — the daemon's side of the
@@ -937,9 +937,12 @@ relay runs the socket handshake on its behalf:
    - `via = "relay"`. A client that gets a `welcome` without `via` is
      talking to an attached runtime (a repository pinned before 5i): the
      editor treats it as such and never sends `retire` over it.
+   - `relay = { lw_version }`: the relay's own code identity (§19.9), which
+     is the identity of the daemon it would launch. A client weighs a
+     daemon's identity against it (§19.9 "Editor retirement").
 
-   Both are optional fields added to `welcome`, as the frozen-subset rule
-   ([PROTOCOL.md](../protocol/PROTOCOL.md) §7) allows; an attached runtime omits both.
+   All three are optional fields added to `welcome`, as the frozen-subset rule
+   ([PROTOCOL.md](../protocol/PROTOCOL.md) §7) allows; an attached runtime omits them.
 5. When the `welcome` says `retiring`, the relay does not forward it: it
    closes that connection, waits for the retiring daemon's runtime lock to
    be released — at most `RELAY_RETIRE_WAIT` (60 s) — launches the
@@ -953,7 +956,7 @@ relay runs the socket handshake on its behalf:
 change shape, and what the `protocol` number versions from protocol 11 — the
 transport only, with each side stating a range `[protocol_min, protocol]` —
 are specified in [PROTOCOL.md](../protocol/PROTOCOL.md) §6–§7. *(Planned, step 5i.)* The relay's
-`welcome.daemon` and `welcome.via` (above) are such additions: optional,
+`welcome.daemon`, `welcome.via` and `welcome.relay` (above) are such additions: optional,
 they change no existing field and do not move `protocol`. A daemon of
 protocol 11 accepts clients of 10 through the v0 aliases ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A) until
 `protocol_min` is raised to 11 (§19.19, retirement of protocol 10).
@@ -1039,8 +1042,10 @@ into a protocol rule and a client policy:
   incompatible daemon"), and only when that binary is itself compatible.
   The code identity is the host version, or a
   development build's source fingerprint, as above. A daemon computes its
-  identity once, at start. A client computes it for the binary it would
-  launch. An idle daemon whose identity differs from that binary's is
+  identity once, at start. The editor takes the identity of the binary it
+  would launch from its relay's `welcome.relay` (§19.8); a `welcome`
+  without it gives no such identity, and the editor then retires a daemon
+  only when it is incompatible. An idle daemon whose identity differs from that binary's is
   retired by the editor too, and the binary is launched in its place. A busy
   one is never retired by the editor: it is observed if compatible and
   checked again when idle. The CLI's busy-retire and bypass are unchanged.
@@ -3272,8 +3277,8 @@ terminal). It runs none of the editor's own operations; where those run is
   feature interface only degrades that feature ("Interface client") and is
   never a reason to retire. The
   editor sends `retire` (never `stop`) to an incompatible daemon, or to a
-  compatible one whose code identity differs from the selected binary's
-  (§19.9 "Editor retirement"), only when all of these hold:
+  compatible one whose code identity differs from the relay's
+  (`welcome.relay`) (§19.9 "Editor retirement"), only when all of these hold:
   - the daemon is idle (no busy client, §19.9 "Busy") — the editor's own
     connection included: from step 5k a task the editor owns makes it busy,
     so the editor never retires a daemon under its own running tasks (and it
@@ -3282,8 +3287,8 @@ terminal). It runs none of the editor's own operations; where those run is
   - its schemas are not newer than the editor's;
   - the binary the editor selected passed the interface check (the probe's
     *compatible* verdict, or the managed `lw`);
-  - that binary's code identity (its `lw_version`, §19.9) differs from the
-    daemon's;
+  - when the daemon is compatible, the relay's `welcome` carries `relay` and
+    its identity differs from the daemon's;
   - the editor has not already retired a daemon of that identity for this
     workspace in this editor session.
 

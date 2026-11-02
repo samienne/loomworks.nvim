@@ -1298,8 +1298,14 @@ re-cut onto master step by step; this section is expanded as each step lands.
   as a **stale** one (`editor_retire.stale()`, `inc.stale`; spec §19.9
   "Editor retirement"): the same selection, guard and idle check, keyed by
   code identity (`lw_version` — the host version, or a development build's
-  source fingerprint, `version.identity`), so an idle daemon running other
-  code than the selected binary is retired and that binary launched. It
+  source fingerprint, `version.identity`), but weighed against the identity
+  the relay reports for itself (`welcome.relay.lw_version`, added by
+  `relay.welcome_frame`; read by `editor_retire.relay_identity`) rather than
+  the selected binary's: the relay runs in the process `main.lua` redirected
+  to a repository pin, so it names the release a launch would start, and the
+  plugin needs no pin logic. An idle daemon running other code is retired and
+  the relay launches its own release; a `welcome` without `relay` (an older
+  relay) weighs no stale daemon. It
   stays observed throughout: declines and a busy status are silent, a
   failed retirement goes to `stale_note` (never `incompat_note`), and
   `_retire_blocks()` keeps the features available until `retire` is sent.

@@ -207,6 +207,13 @@ describe("relay welcome (§19.8 \"Relay handshake\" step 4)", function()
             session_generation = 5, pid = 42, start_time = "win:7", exe = "C:/lw.exe" }, w.daemon)
     end)
 
+    it("adds `relay` with the relay's own code identity (the daemon it would launch)", function()
+        local frame = relay.welcome_frame('{"kind":"welcome"}', ch, { pid = 42 })
+        local w = vim.json.decode(frame:match("\n(.*)$"))
+        assert.same({ lw_version = require("loomworks.daemon.version").identity() }, w.relay)
+        assert.is_string(w.relay.lw_version)
+    end)
+
     it("leaves start_time and exe out when the handle has none", function()
         local frame = relay.welcome_frame('{"kind":"welcome"}', ch, { pid = 42 })
         local w = vim.json.decode(frame:match("\n(.*)$"))

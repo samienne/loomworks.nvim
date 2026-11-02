@@ -621,7 +621,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 ### Changed
 - In `daemon` mode the editor now restarts an idle workspace daemon that runs
   other code than the `lw` it would launch: another version, or for a
-  development build another source fingerprint. Before, after the plugin or
+  development build another source fingerprint. In a repository with an
+  `lw.pin` that is the pinned release, which the relay now reports in its
+  `welcome`. Before, after the plugin or
   `lw` was updated the editor kept observing the old daemon until a CLI
   command restarted it. A busy daemon is observed as before and restarted once
   it is idle. A daemon of a given version is still restarted at most once per
