@@ -182,7 +182,7 @@
         {"expect": {"kind": "task", "task_id": {"$var": "b"}, "phase": "done", "exit_code": 0}, "timeout_ms": 120000},
         {"send": {"kind": "call", "req_id": 3, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {}, "env": {"$var": "env"}}},
         {"expect": {"kind": "ok", "req_id": 3, "result": {"outcome": "accepted", "task_id": {"$bind": "r"}}}},
-        {"expect": {"kind": "signal", "object": "/tests", "iface": "loomworks.Tests", "v": 1, "name": "results", "sub_id": {"$var": "sub"}, "args": {"seq": {"$type": "integer"}, "task_id": {"$var": "r"}, "cases": {"$type": "array"}}}, "timeout_ms": 120000},
+        {"expect": {"kind": "signal", "object": "/tests", "iface": "loomworks.Tests", "v": 1, "name": "results", "sub_id": {"$var": "sub"}, "args": {"task_id": {"$var": "r"}, "cases": {"$type": "array"}}}, "timeout_ms": 120000},
         {"expect": {"kind": "task", "task_id": {"$var": "r"}, "phase": "done", "exit_code": 1, "result": {"cases": {"$contains": [{"id": {"$type": "string"}, "status": "failed"}]}}}, "timeout_ms": 120000}
       ]
     }

@@ -685,7 +685,7 @@ function Server:model_changed()
     end
     if self.interfaces then
         local core_ifaces = require("loomworks.daemon.core_interfaces")
-        core_ifaces.changed(self.interfaces, self.seq, self.generation)
+        core_ifaces.changed(self.interfaces, self.seq)
         -- (A write may change the header: the active profile, the name.)
         if self.service then pcall(core_ifaces.header_check, self.service) end
     end

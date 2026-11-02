@@ -141,7 +141,7 @@ function M.lsp_state(service, env_key)
         id_of = function(project) return service.ids:id(project) end })
 end
 
---- Send `LspConfig.changed { seq }` when the LSP state the daemon computes
+--- Send `LspConfig.changed {}` when the LSP state the daemon computes
 --- with its own environment differs from the one at the last `changed`, or
 --- always with `force` (an owned database was written: a raised `db_rev`).
 --- Built only while someone subscribes; without subscribers the baseline is
@@ -172,8 +172,7 @@ function M.lsp_check(service, force)
     local last = service._lsp_sig
     service._lsp_sig = sig
     if force or (last ~= nil and last ~= sig) then
-        service._lsp_seq = (service._lsp_seq or 0) + 1
-        reg:emit(M.LSP.path, M.LSP.iface, M.LSP.v, "changed", { seq = service._lsp_seq })
+        reg:emit(M.LSP.path, M.LSP.iface, M.LSP.v, "changed", {})
     end
 end
 
@@ -1667,11 +1666,10 @@ end
 
 --- The `Workspace.changed` signal of a model change (§19.12).
 --- @param registry loomworks.daemon.Registry
---- @param seq integer
---- @param generation integer
-function M.changed(registry, seq, generation)
+--- @param revision integer the model revision after the write (API.md §6)
+function M.changed(registry, revision)
     registry:emit(M.WORKSPACE.path, M.WORKSPACE.iface, M.WORKSPACE.v, "changed",
-        { seq = seq, session_generation = generation })
+        { revision = revision })
 end
 
 return M

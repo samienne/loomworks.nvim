@@ -81,11 +81,11 @@
               { "kind": "build", "project": "app", "state": "pending" }
             ] } }
         } },
-        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 2, "args": { "task_id": { "$var": "task" }, "seq": 2, "index": 1, "state": "running", "error": { "$absent": true } } }, "timeout_ms": 60000 },
-        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 3, "args": { "task_id": { "$var": "task" }, "seq": 3, "index": 1, "state": "ok" } }, "timeout_ms": 120000 },
-        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 4, "args": { "task_id": { "$var": "task" }, "seq": 4, "index": 2, "state": "running" } }, "timeout_ms": 60000 },
-        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 5, "args": { "task_id": { "$var": "task" }, "seq": 5, "index": 2, "state": "failed", "error": { "$pattern": "^deploy failed: " } } }, "timeout_ms": 60000 },
-        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 6, "args": { "task_id": { "$var": "task" }, "seq": 6, "index": 3, "state": "skipped" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 2, "args": { "task_id": { "$var": "task" }, "index": 1, "state": "running", "error": { "$absent": true } } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 3, "args": { "task_id": { "$var": "task" }, "index": 1, "state": "ok" } }, "timeout_ms": 120000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 4, "args": { "task_id": { "$var": "task" }, "index": 2, "state": "running" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 5, "args": { "task_id": { "$var": "task" }, "index": 2, "state": "failed", "error": { "$pattern": "^deploy failed: " } } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 6, "args": { "task_id": { "$var": "task" }, "index": 3, "state": "skipped" } }, "timeout_ms": 60000 },
         { "expect": { "kind": "signal", "object": "/tasks", "name": "ended", "seq": 7, "args": { "task_id": { "$var": "task" }, "exit_code": 1, "error": { "$pattern": "^deploy failed: " } } }, "timeout_ms": 60000 }
       ]
     },
@@ -110,7 +110,7 @@
         ] } ] } } },
         { "send": { "kind": "call", "req_id": 4, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": { "$var": "task" } } } },
         { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "ok" } } },
-        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "sub_id": { "$var": "sub" }, "seq": 1, "args": { "task_id": { "$var": "task" }, "seq": 1, "index": 1, "state": "cancelled" } }, "timeout_ms": 60000 },
+        { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "sub_id": { "$var": "sub" }, "seq": 1, "args": { "task_id": { "$var": "task" }, "index": 1, "state": "cancelled" } }, "timeout_ms": 60000 },
         { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 2, "args": { "index": 2, "state": "skipped" } } },
         { "expect": { "kind": "signal", "object": "/tasks", "name": "step", "seq": 3, "args": { "index": 3, "state": "skipped" } } },
         { "expect": { "kind": "signal", "object": "/tasks", "name": "ended", "seq": 4, "args": { "task_id": { "$var": "task" }, "exit_code": 130 } }, "timeout_ms": 60000 },

@@ -263,7 +263,7 @@ describe("server: observers, retirement and model_change (§19.11, §19.12)", fu
         assert.equals(1, #c)
         assert.equals("signal", c[1].kind)
         assert.equals("changed", c[1].name)
-        assert.equals(2, c[1].args.seq)
+        assert.same({ revision = 2 }, c[1].args)
         c4:close()
         -- (c1 busy: a retiring daemon with only idle clients exits at once.
         -- Picked by its transport: c4's server side may not be closed yet.)

@@ -184,7 +184,7 @@ describe("conformance engine", function()
         assert.truthy(err:find("after its done", 1, true), err)
     end)
 
-    it("fails a signal after its unsubscribe and a signal of another session generation", function()
+    it("fails a signal after its unsubscribe", function()
         local sub = { send = J('{"kind":"call","req_id":1,"object":"/","iface":"loomworks.Root","v":1,"method":"subscribe","args":{"object":"/tasks","iface":"loomworks.Tasks","v":1}}') }
         local unsub = { send = J('{"kind":"call","req_id":2,"object":"/","iface":"loomworks.Root","v":1,"method":"unsubscribe","args":{"sub_id":"g.1"}}') }
         local ok, err = engine.run_case({ name = "t", handshake = false, steps = { sub, { expect = { kind = "ok", req_id = 1 } },
@@ -195,14 +195,6 @@ describe("conformance engine", function()
             }), { timeout_ms = 10, settle_ms = 0 })
         assert.is_false(ok)
         assert.truthy(err:find("after its unsubscribe", 1, true), err)
-        local wsub = { send = J('{"kind":"call","req_id":1,"object":"/","iface":"loomworks.Root","v":1,"method":"subscribe","args":{"object":"/workspace","iface":"loomworks.Workspace","v":1}}') }
-        ok, err = engine.run_case({ name = "t", handshake = false, steps = { wsub, { expect = { kind = "ok", req_id = 1 } },
-            { expect = { kind = "signal" } } } }, canned({
-                J('{"kind":"ok","req_id":1,"result":{"sub_id":"g.1","seq":0}}'),
-                J('{"kind":"signal","object":"/workspace","iface":"loomworks.Workspace","v":1,"name":"changed","sub_id":"g.1","seq":1,"args":{"seq":1,"session_generation":99}}'),
-            }), { timeout_ms = 10, settle_ms = 0, vars = { welcome = { header = { session_generation = 42 } } } })
-        assert.is_false(ok)
-        assert.truthy(err:find("session generation", 1, true), err)
     end)
 
     it("an explicit null is present: $absent fails on it, $any accepts it; {} and [] never match each other", function()

@@ -26,7 +26,7 @@ local function lsp(req_id, method, args) return call(req_id, LSP.object, LSP.ifa
 local function ok(req_id, result) return { expect = { kind = "ok", req_id = req_id, result = result } } end
 local function changed()
     return { expect = { kind = "signal", object = LSP.object, iface = LSP.iface, v = 1, name = "changed",
-        sub_id = { ["$var"] = "sub" }, args = { seq = { ["$type"] = "integer" } } }, timeout_ms = 60000 }
+        sub_id = { ["$var"] = "sub" }, args = vim.empty_dict() }, timeout_ms = 60000 }
 end
 local SUBSCRIBE = {
     call(1, "/", "loomworks.Root", "subscribe", { object = LSP.object, iface = LSP.iface, v = 1,

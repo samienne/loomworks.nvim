@@ -135,8 +135,7 @@ function M.check(service)
     service._devices_sig = sig
     local reg = service.server and service.server.interfaces
     if reg and last ~= nil and last ~= sig then
-        service._devices_seq = (service._devices_seq or 0) + 1
-        reg:emit(M.WHERE.path, M.WHERE.iface, M.WHERE.v, "changed", { seq = service._devices_seq })
+        reg:emit(M.WHERE.path, M.WHERE.iface, M.WHERE.v, "changed", {})
     end
 end
 

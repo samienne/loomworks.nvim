@@ -1748,19 +1748,21 @@ end
 --- per-case progress — any client's — or the cases a `collect` recorded, as
 --- a delta on top of the tests view. The cases are written into the held
 --- view (so a re-render shows them) and passed on as `daemon_test_results`
---- for the explorer, signs and inline marks; a `seq` gap re-gets the tests
---- view (its state includes every change a lost `results` carried).
---- @param args table `{ seq, task_id?, cases }`
-function Observer:_test_results(args)
+--- for the explorer, signs and inline marks; a signal `seq` gap (PROTOCOL.md
+--- §12.3) re-gets the tests view (its state includes every change a lost
+--- `results` carried).
+--- @param msg table the signal: its envelope `seq` and `args` `{ task_id?, cases }`
+function Observer:_test_results(msg)
     local st = self._feat and self._feat[M.TESTS.feature]
     if st ~= "subscribed" and st ~= "pending" then return end
     -- Before the subscription's baseline is known: held until it is.
     if st == "pending" then
         self._tests_early = self._tests_early or {}
-        self._tests_early[#self._tests_early + 1] = args
+        self._tests_early[#self._tests_early + 1] = msg
         return
     end
-    local seq = tonumber(args.seq)
+    local args = type(msg.args) == "table" and msg.args or {}
+    local seq = tonumber(msg.seq)
     -- At or below the baseline: already in the state the view was read at.
     if seq and self._tests_seq and seq <= self._tests_seq then return end
     local gap = seq ~= nil and self._tests_seq ~= nil and seq > self._tests_seq + 1
@@ -1794,7 +1796,7 @@ function Observer:_tests_subscribed(result)
     self._tests_seq = type(result) == "table" and tonumber(result.seq) or nil
     local early = self._tests_early
     self._tests_early = nil
-    for _, args in ipairs(early or {}) do self:_test_results(args) end
+    for _, msg in ipairs(early or {}) do self:_test_results(msg) end
 end
 
 --- The `/tasks` subscription answered (step 5t): its `seq` is the baseline of
@@ -2006,7 +2008,8 @@ function Observer:_on_message(msg)
         elseif msg.object == M.ROOT.object and msg.name == "objects_changed" then
             return self:_on_objects_changed(args)
         elseif msg.object == M.WORKSPACE.object and msg.iface == M.WORKSPACE.iface and msg.name == "changed" then
-            return self:_model_change(args.seq, args.session_generation)
+            -- The connection's generation never changes (PROTOCOL.md §12.2).
+            return self:_model_change(args.revision, self.generation)
         elseif msg.object == M.LSP.object and msg.iface == M.LSP.iface and msg.name == "changed" then
             -- Thin (§19.20): read the state again with the editor's environment.
             return self:_fetch_lsp()
@@ -2014,7 +2017,7 @@ function Observer:_on_message(msg)
             -- Thin (API.md §15): read the registry again.
             return self:_fetch_devices()
         elseif msg.object == M.TESTS.object and msg.iface == M.TESTS.iface and msg.name == "results" then
-            return self:_test_results(args)
+            return self:_test_results(msg)
         elseif msg.object == M.LAUNCH.object and msg.iface == M.LAUNCH.iface and msg.name == "log" then
             return self:_log_signal(args)
         elseif msg.object == M.TASKS.object and msg.iface == M.TASKS.iface then
@@ -2042,10 +2045,11 @@ function Observer:_on_message(msg)
     end
 end
 
---- A model change (`model_change`, or `Workspace.changed`, which carries the
---- same `seq` and `session_generation`): apply the files' pending changes,
---- once per `seq` (a daemon of step 5g.2 sends both forms).
---- @param seq any
+--- A model change (`model_change`, or `Workspace.changed`, whose `revision`
+--- is the broadcast's `seq`, in the connection's generation): apply the
+--- files' pending changes, once per revision (a daemon of step 5g.2 sends
+--- both forms).
+--- @param seq any the model revision
 --- @param generation any
 function Observer:_model_change(seq, generation)
     if generation ~= self.generation then

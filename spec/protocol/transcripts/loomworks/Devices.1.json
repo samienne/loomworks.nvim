@@ -18,7 +18,7 @@
         { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "start", "meta": { "kind": "scan", "object": "/devices", "iface": "loomworks.Devices", "method": "scan" } } },
         { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "line", "text": "SCAN OK: 2 devices (1 online)", "role": "ok" } },
         { "expect": { "kind": "task", "task_id": { "$var": "scan" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0, "devices": 2 } }, "timeout_ms": 60000 },
-        { "expect": { "kind": "signal", "object": "/devices", "iface": "loomworks.Devices", "v": 1, "name": "changed", "sub_id": { "$var": "sub" }, "args": { "seq": 1 } } },
+        { "expect": { "kind": "signal", "object": "/devices", "iface": "loomworks.Devices", "v": 1, "name": "changed", "sub_id": { "$var": "sub" }, "args": {} } },
         { "send": { "kind": "call", "req_id": 4, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "list", "args": {} } },
         { "expect": { "kind": "ok", "req_id": 4, "result": { "devices": [
           { "id": { "$type": "string" }, "key": "SER1", "label": "Stub Phone", "state": "online", "provider": "devstub", "profiles": { "$absent": true } },

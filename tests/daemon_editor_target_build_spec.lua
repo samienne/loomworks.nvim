@@ -99,7 +99,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
     end
     local function step_signal(id, seq, index, state, err)
         obs:_on_message({ kind = "signal", object = "/tasks", iface = "loomworks.Tasks", v = 1, name = "step",
-            seq = seq, args = { task_id = id, seq = seq, index = index, state = state, error = err } })
+            seq = seq, args = { task_id = id, index = index, state = state, error = err } })
     end
 
     local function noted(text)

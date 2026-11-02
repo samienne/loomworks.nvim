@@ -413,7 +413,9 @@ implementation) has ids is outside this contract.
 The server announces its `session_generation` in `challenge`, in `welcome`'s
 header and in `describe()`. Ids of an earlier generation are stale (§12.1),
 and a new generation forces a full re-fetch of the client's state (§12.3,
-§13).
+§13). A connection's session generation never changes: a server whose
+generation changes has restarted, and a restart ends every connection, so a
+client learns a new generation only by connecting again.
 
 ### 12.3 Signal sequence numbers
 
@@ -425,6 +427,11 @@ so a client with several subscriptions on one object sees gaps in each and
 must check gaps across all of them together. `subscribe` returns the
 baseline: the last `seq` of that object sent to this connection (0: none), so
 the subscription's first signal is `seq + 1`.
+
+The envelope's `seq` is the only sequence number a signal has: a signal's
+`args` never repeat an envelope field (`seq`, `sub_id`) or the session
+generation. A counter of the interface's own (such as a model revision) has
+its own name and meaning, defined by its interface.
 
 ## 13. Signals and subscriptions
 
@@ -540,7 +547,7 @@ earlier is replayed.
 A task may announce its **steps**: its listing entry and its `start.meta`
 carry `steps`, one record per step in run order, each with an opaque `id`
 stable within the task, a `kind`, a `label` and a `state`, every step in
-the initial state at start. Each transition is a `step { task_id, seq, index, state,
+the initial state at start. Each transition is a `step { task_id, index, state,
 error? }` signal of the task interface, its `seq` the signal envelope's `seq`
 (§12.3); a task's `step` signals follow its started signal and precede its
 `done`. `step` is a delta on top of the announced steps: on a `seq` gap a
@@ -730,6 +737,7 @@ after which this annex no longer applies.
   session_generation }` broadcast. That broadcast's `seq` advances by one per
   broadcast per server session; a broadcast at or below the last `seq` of the
   same session generation is ignored, a new generation is always applied.
+  That `seq` is the model revision of API.md §6 (`changed.revision`).
 - **Task ids.** A transport-10 connection keeps integer task ids in its task
   frames, its accepted replies and `status.tasks`.
 - **Run results.** On a transport-10 connection a `prepare_run` task's

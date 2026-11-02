@@ -566,7 +566,7 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
 
         local function results(obs, seq, task_id, cases)
             obs:_on_message({ kind = "signal", object = "/tests", iface = "loomworks.Tests", v = 1,
-                name = "results", args = { seq = seq, task_id = task_id, cases = cases } })
+                name = "results", seq = seq, args = { task_id = task_id, cases = cases } })
         end
 
         it("a run is one owned run_cases; its results move the nodes; nothing runs in-process", function()

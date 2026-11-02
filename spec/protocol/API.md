@@ -101,6 +101,8 @@ PROTOCOL.md §5 and §7 leave these values to the suite:
   with the load failure's `error` message; or `unloaded` before the server
   loaded the workspace. Sending `welcome` never loads the workspace. The same
   record is `Workspace/1.header` (§6).
+- `welcome.seq` is the model revision (`Workspace/1` `changed.revision`,
+  §6) when the connection was welcomed.
 
 ## 3. Objects and the root
 
@@ -217,7 +219,7 @@ project?, configuration?, target?, phase?, state }` per phase in run order
 the target's own unit, `deploy` for a deploy phase with `phase` `pre_build`
 or `post_build`, `probe` for the artifact probe), each `pending` at start. A
 preparation with `no_build` has no steps (`steps` absent). Each transition
-is a `Tasks/1` `step { task_id, seq, index, state, error? }` signal
+is a `Tasks/1` `step { task_id, index, state, error? }` signal
 (`running`, `ok`, `failed` with its failure line, `cancelled`; `skipped` for
 a step a failure, a cancel or a `device = true` outcome left unrun). A unit's
 own tool steps (configure, build) are not steps here; they stay its lines,
@@ -290,11 +292,13 @@ own absolute directory (the step's, or the root).
 On `/workspace`:
 
 - `header {}` — the header of §2. It never loads the workspace.
-- Signal `changed { seq, session_generation, scopes? }` — the model changed
-  (a committed write of a state file); a client fetches the state it holds
-  again. `seq` is the signal's sequence number, counted as PROTOCOL.md §12.3
-  specifies; `scopes` names the files that changed (`config`, `user`,
-  `cache`) when known. The session generation is PROTOCOL.md §12.2.
+- Signal `changed { revision, scopes? }` — the model changed (a committed
+  write of a state file); a client fetches the state it holds again.
+  `revision` is the model revision: it rises by one per committed write in a
+  server session, and `welcome.seq` (§2) is its value when the client
+  connected, so a client ignores a `changed` at or below the revision its
+  state was read at. `scopes` names the files that changed (`config`,
+  `user`, `cache`) when known.
 - Signal `header_changed { header }` — the header's state, name, active
   profile or load error changed (a load, a reload, a failed load, a write
   that changed the active profile).
@@ -959,13 +963,13 @@ reference (§1.2), with the message `no such test`, before acceptance.
   `/`-separated paths) as the TestUnit's parser gives them. A node with no
   last result answers only `id` and an empty `errors`; a stale id is
   `refused`.
-- **Signal `results { seq, task_id?, cases }`** — the per-case progress of a
+- **Signal `results { task_id?, cases }`** — the per-case progress of a
   running `run_cases` (any client's) and the cases a `collect` recorded
   (`task_id` then absent): `cases` an array of `TestCaseResult`, each with
   its current `status`. Sent to every subscriber of `/tests`, batched (at
   most about 4 per second per run), never `initial`. It is a delta on top of
   `view.Tests/1`: a client applies it to its copy of the view, and on a
-  `seq` gap or a new session generation it calls `view.Tests/1.get`, whose
+  signal `seq` gap (PROTOCOL.md §12.3) or a new session generation it calls `view.Tests/1.get`, whose
   state already includes every change `results` carried. A run's last
   `results` precedes the view `update` that ends it.
 
@@ -1144,7 +1148,7 @@ What the workspace's language servers are configured with (spec §9), on
   accept, is `invalid_args`, before anything is loaded or written. (Unlike
   `DebugConfig/1.set_adapter`, whose adapter name is stored as given: an
   option's schema is core's, so a client cannot know better.)
-- Signal `changed { seq }` — carries no state. It is sent when the state the
+- Signal `changed {}` — carries no state. It is sent when the state the
   server computes with its own environment differs from the one at its last
   `changed` (checked where the views' `update` is, §14: after each model
   segment and committed write), and when an owned database is written (a

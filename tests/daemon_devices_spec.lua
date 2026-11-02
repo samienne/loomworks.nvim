@@ -169,7 +169,7 @@ describe("Devices/1 in the workspace daemon (§19.16 Devices)", function()
         local sig = s.wait(function(m) return m.kind == "signal" and m.object == "/devices" end)
         assert.equals(sub.sub_id, sig.sub_id)
         assert.equals("changed", sig.name)
-        assert.equals(1, sig.args.seq)
+        assert.same({}, sig.args)
         local list = s.list()
         assert.equals(2, #list)
         assert.same({ "X1", "Env Phone", "online", "devstub" },
