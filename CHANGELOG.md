@@ -1035,7 +1035,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   daemon's configuration arrives. Loading the workspace no longer reports it
   closed on the way, which released the held buffer to the stock server; the
   buffer now waits for the daemon's configuration and starts one managed
-  clangd. (#N)
+  clangd. (#376)
 - In daemon mode, a running build, configure, run or test shows its spinner,
   percentage and timer on its profile row again, not only in the Tasks
   section: the workspace view now marks a profile `busy` while the daemon
