@@ -27,14 +27,14 @@ jobs:
           $dest = "$env:LOCALAPPDATA\nvim-data\lazy\plenary.nvim"
           git clone --depth 1 https://github.com/nvim-lua/plenary.nvim $dest
 
-      # Every spec file runs concurrently, as under PlenaryBustedDirectory,
-      # under ONE whole-suite budget sized for a loaded 4-core runner (see
+      # Spec files run at most 8 at a time (--jobs 8; unbounded overloads the
+      # 4-core runner and flakes timing specs), under ONE whole-suite budget (see
       # Makefile). scripts/run_specs.lua ends with a table naming each file
       # that exited non-zero (also after a clean summary, with its nvim log),
       # printed no summary, or was still running at the deadline.
       - name: Run test suite
         shell: pwsh
-        run: nvim -l scripts/run_specs.lua --timeout 600000 --init tests/minimal_init.lua tests
+        run: nvim -l scripts/run_specs.lua --timeout 600000 --jobs 8 --init tests/minimal_init.lua tests
 
   standalone:
     name: Standalone bootstrap tests (Linux)
