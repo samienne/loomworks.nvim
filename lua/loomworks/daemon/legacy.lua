@@ -170,6 +170,18 @@ function M.reclaim(root)
     return removed
 end
 
+--- May the legacy runtime logs be removed? Only when nothing is at the
+--- legacy lock name, or it is a lock whose holder is dead: a live, hung,
+--- foreign or unreadable holder (an older lw's daemon writing them) keeps
+--- them.
+--- @param root string
+--- @return boolean
+function M.logs_removable(root)
+    if not present(root, "lock") then return true end
+    local _, info = M.read_lock(root)
+    return info ~= nil and info.state == "dead"
+end
+
 --- The legacy runtime logs present (`.log`, `.log.1`): regular files in a
 --- verified `.nvim`, as `{ path, st }`.
 --- @param root string

@@ -292,10 +292,13 @@ end
 --- POSIX per-user socket directories (spec §19.7).
 local function default_run_dirs()
     if IS_WIN then return {} end
-    local id = (require("loomworks.daemon.identity").euid() or 0)
     local out = {}
     local xdg = os.getenv("XDG_RUNTIME_DIR")
     if xdg and xdg ~= "" then out[#out + 1] = norm(xdg) .. "/loomworks" end
+    -- The `-<euid>` directories only for a readable euid: never another
+    -- user's (no fallback uid).
+    local id = require("loomworks.daemon.identity").euid()
+    if type(id) ~= "number" then return out end
     local t = os.getenv("TMPDIR")
     if t and t ~= "" then out[#out + 1] = norm(t) .. "/loomworks-" .. id end
     out[#out + 1] = "/tmp/loomworks-" .. id
@@ -709,9 +712,17 @@ local function scan_workspace_legacy(items, ctx, root)
             remove = function() return legacy.remove_handle(root, hp, rec), "the handle changed meanwhile" end,
         })
     end
+    -- The logs only while no live (or unreadable) holder has the legacy
+    -- lock: an older lw's daemon may be writing them. Re-checked at removal.
+    if not legacy.logs_removable(root) then return end
     local min = ctx.legacy_any and 0 or M.AGE.legacy_log
     for _, l in ipairs(legacy.logs(root)) do
-        consider(items, ctx, dir, l.path:match("[^/]+$"), "file", "runtime log", min, { remove = unlink_file })
+        consider(items, ctx, dir, l.path:match("[^/]+$"), "file", "runtime log", min, {
+            remove = function(it)
+                if not legacy.logs_removable(root) then return false, "the legacy daemon lock is held" end
+                return unlink_file(it)
+            end,
+        })
     end
 end
 

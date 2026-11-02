@@ -66,7 +66,7 @@ local function win()
     end
     local okl, adv = pcall(ffi.load, "advapi32")
     if not okl then return nil end
-    _w = { ffi = ffi, adv = adv }
+    _w = { ffi = ffi, adv = adv, close = function(h) ffi.C.CloseHandle(h) end }
     return _w
 end
 
@@ -74,19 +74,15 @@ local TOKEN_QUERY = 0x0008
 local TOKEN_USER, TOKEN_ELEVATION = 1, 20
 local PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
---- I of an open process handle, or nil + error.
-local function win_token_identity(w, process)
+--- I of an open token handle, or nil + error.
+local function token_identity(w, token)
     local ffi, adv = w.ffi, w.adv
-    local tok = ffi.new("void*[1]")
-    if adv.OpenProcessToken(process, TOKEN_QUERY, tok) == 0 then
-        return nil, "cannot open the process token"
-    end
     local sid, elevated
     local len = ffi.new("uint32_t[1]")
-    adv.GetTokenInformation(tok[0], TOKEN_USER, nil, 0, len)
+    adv.GetTokenInformation(token, TOKEN_USER, nil, 0, len)
     if len[0] > 0 then
         local buf = ffi.new("uint8_t[?]", len[0])
-        if adv.GetTokenInformation(tok[0], TOKEN_USER, buf, len[0], len) ~= 0 then
+        if adv.GetTokenInformation(token, TOKEN_USER, buf, len[0], len) ~= 0 then
             local str = ffi.new("char*[1]")
             if adv.ConvertSidToStringSidA(ffi.cast("void**", buf)[0], str) ~= 0 then
                 sid = ffi.string(str[0])
@@ -96,14 +92,29 @@ local function win_token_identity(w, process)
     end
     local e = ffi.new("uint32_t[1]")
     local rl = ffi.new("uint32_t[1]")
-    if adv.GetTokenInformation(tok[0], TOKEN_ELEVATION, e, 4, rl) ~= 0 then
+    if adv.GetTokenInformation(token, TOKEN_ELEVATION, e, 4, rl) ~= 0 then
         elevated = e[0] ~= 0
     end
-    ffi.C.CloseHandle(tok[0])
     if not sid then return nil, "cannot read the token's user SID" end
     if elevated == nil then return nil, "cannot read the token's elevation" end
     return sid .. " " .. (elevated and "elevated" or "standard")
 end
+
+--- I of an open process handle, or nil + error. The token handle is closed
+--- on every path, an FFI error included (it is then reported, not raised).
+--- @param w table the FFI bindings (`ffi`, `adv`; tests may pass fakes)
+local function win_token_identity(w, process)
+    local ffi, adv = w.ffi, w.adv
+    local tok = ffi.new("void*[1]")
+    if adv.OpenProcessToken(process, TOKEN_QUERY, tok) == 0 then
+        return nil, "cannot open the process token"
+    end
+    local ok, id, err = pcall(token_identity, w, tok[0])
+    w.close(tok[0])
+    if not ok then return nil, "cannot read the process token: " .. tostring(id) end
+    return id, err
+end
+M._win_token_identity = win_token_identity
 
 -- ---------------------------------------------------------------------------
 -- POSIX

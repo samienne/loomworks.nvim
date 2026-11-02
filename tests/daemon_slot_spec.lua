@@ -111,6 +111,28 @@ describe("runtime slot", function()
         assert.is_false(identity.same_slot(3))
     end)
 
+    it("closes the token handle when reading the token raises", function()
+        local ok, ffi = pcall(require, "ffi")
+        if not ok then return end
+        local closed = {}
+        local w = {
+            ffi = ffi,
+            adv = {
+                OpenProcessToken = function(_, _, tok) tok[0] = ffi.cast("void*", 1234); return 1 end,
+                GetTokenInformation = function() error("ffi boom") end,
+            },
+            close = function(h) closed[#closed + 1] = tonumber(ffi.cast("intptr_t", h)) end,
+        }
+        local I, err = identity._win_token_identity(w, nil)
+        assert.is_nil(I)
+        assert.truthy(tostring(err):find("ffi boom", 1, true))
+        assert.same({ 1234 }, closed)
+        -- A failed open has no handle to close.
+        w.adv.OpenProcessToken = function() return 0 end
+        assert.is_nil((identity._win_token_identity(w, nil)))
+        assert.equals(1, #closed)
+    end)
+
     it("reads this process's own identity through the process reader", function()
         assert.equals(identity.identity(), identity.process_identity(uv.os_getpid()))
         assert.is_true(identity.same_slot(uv.os_getpid()))
@@ -209,6 +231,26 @@ describe("legacy daemon files", function()
         write(L("lock"), lock_rec(proc.self_start_time()))
         items = hk_collect(root)
         assert.equals(0, #items)
+    end)
+
+    it("lw cleanup keeps the legacy logs while a live holder has the legacy lock", function()
+        local hk = require("loomworks.housekeeping")
+        write(L("log"), "live\n")
+        write(L("log1"), "live older\n")
+        write(L("lock"), lock_rec(proc.self_start_time()))
+        assert.equals(0, #hk_collect(root))
+        -- Unreadable lock state: kept too.
+        write(L("lock"), "not a lock record")
+        assert.equals(0, #hk_collect(root))
+        -- Listed while the holder was dead; a holder appearing before the
+        -- removal keeps them.
+        write(L("lock"), lock_rec(gone_start()))
+        local items = hk_collect(root)
+        write(L("lock"), lock_rec(proc.self_start_time()))
+        for _, it in ipairs(items) do
+            if it.kind == "runtime log" then assert.is_false((hk.remove(it))) end
+        end
+        assert.is_true(exists(L("log"))); assert.is_true(exists(L("log1")))
     end)
 
     it("another slot's files are never touched", function()
