@@ -212,6 +212,81 @@ describe("legacy daemon files", function()
         assert.is_nil(broke)
     end)
 
+    local function cmd_host()
+        local out = {}
+        return { out = function(l) out[#out + 1] = l end, note = function() end,
+            die = function(m) error("die: " .. m, 0) end }, out
+    end
+
+    it("lw daemon stop / kill / --force stop a live legacy daemon of this slot", function()
+        local cmd = require("loomworks.daemon.command")
+        local lb = require("loomworks.lock_break")
+        local saved = lb.break_holder
+        identity._process_probe = function() return identity.identity() end
+        for _, opts in ipairs({ {}, { force = true }, { kill = true } }) do
+            write(L("lock"), lock_rec(proc.self_start_time()))
+            local broke
+            lb.break_holder = function(info) broke = info.pid; return true end
+            local host, out = cmd_host()
+            local ok, code = pcall(cmd.stop, root, host, opts)
+            lb.break_holder = saved
+            assert.is_true(ok, tostring(code))
+            assert.equals(0, code)
+            assert.equals(uv.os_getpid(), broke)
+            local text = table.concat(out, "\n")
+            assert.is_truthy(text:find("stopped the workspace daemon of an earlier lw (pid "
+                .. uv.os_getpid() .. ")", 1, true), text)
+            assert.is_falsy(text:find("no workspace daemon is running", 1, true), text)
+        end
+    end)
+
+    it("lw daemon stop reports a legacy daemon it could not stop, and leaves another slot's alone", function()
+        local cmd = require("loomworks.daemon.command")
+        local lb = require("loomworks.lock_break")
+        local saved = lb.break_holder
+        write(L("lock"), lock_rec(proc.self_start_time()))
+        identity._process_probe = function() return identity.identity() end
+        lb.break_holder = function() return false, "it would not go" end
+        local host = cmd_host()
+        local ok, err = pcall(cmd.stop, root, host, {})
+        lb.break_holder = saved
+        assert.is_false(ok)
+        assert.is_truthy(tostring(err):find("it would not go", 1, true))
+        -- Another slot's legacy daemon: not stopped, nothing to do here.
+        identity._process_probe = function() return "another user" end
+        local broke
+        lb.break_holder = function() broke = true; return true end
+        local host2, out2 = cmd_host()
+        local code = cmd.stop(root, host2, {})
+        lb.break_holder = saved
+        assert.equals(0, code)
+        assert.is_nil(broke)
+        assert.is_truthy(table.concat(out2, "\n"):find("no workspace daemon is running", 1, true))
+        assert.is_true(exists(L("lock")))
+    end)
+
+    it("lw daemon status reports a live legacy daemon of this slot without connecting", function()
+        local cmd = require("loomworks.daemon.command")
+        write(L("lock"), lock_rec(proc.self_start_time()))
+        write(L("handle"), handle_rec(proc.self_start_time()))
+        identity._process_probe = function() return identity.identity() end
+        local saved = cmd.request
+        local asked
+        cmd.request = function() asked = true end
+        local host, out = cmd_host()
+        cmd.status(root, host)
+        cmd.request = saved
+        assert.is_nil(asked)
+        local text = table.concat(out, "\n")
+        assert.is_truthy(text:find("daemon of an earlier lw (pid " .. uv.os_getpid()
+            .. ", legacy runtime lock) — stop it with: lw daemon stop", 1, true), text)
+        -- Another slot's: not reported.
+        identity._process_probe = function() return "another user" end
+        local host2, out2 = cmd_host()
+        cmd.status(root, host2)
+        assert.is_falsy(table.concat(out2, "\n"):find("earlier lw", 1, true))
+    end)
+
     it("housekeeping / lw cleanup: legacy logs as leftovers, the lock only of a dead holder", function()
         local hk = require("loomworks.housekeeping")
         write(L("log"), "old\n")

@@ -2,11 +2,12 @@
 --- (spec §19.6 "Legacy files", §19.7.1).
 ---
 --- `<root>/.nvim/loomworks.daemon.json`, `.lock` and `.log` (+ `.log.1`) are
---- never read to find or connect to a daemon. This module only:
+--- never read to connect to a daemon. This module only:
 ---
 ---   * stops a live daemon of THIS slot that holds the legacy runtime lock
 ---     (a daemon of another version, §19.9) before this slot's daemon starts
----     (`stop_live`, from loomworks.daemon.server);
+---     (`stop_live`, from loomworks.daemon.server) and from `lw daemon stop`
+---     / `kill` / `restart`; `lw daemon status` reports it (`live_daemon`);
 ---   * removes the legacy lock and handle as a reclaimer would (§19.5:
 ---     holder dead) — `lw daemon stop`, housekeeping and `lw cleanup`;
 ---   * lists the legacy logs as leftovers for housekeeping / `lw cleanup`.
@@ -195,7 +196,27 @@ function M.logs(root)
     return out
 end
 
---- Before this slot's daemon starts (§19.6 "Legacy files"): a live daemon of
+--- The legacy runtime lock's record when its holder is a live daemon of
+--- this slot (§19.7.1, §19.5 identity rules: the slot is read from the
+--- process itself) — a daemon of an earlier lw; nil otherwise (none, dead,
+--- hung, foreign, an attached run, another slot's). Never raises.
+--- @param root string
+--- @return table|nil info
+function M.live_daemon(root)
+    local ok, info = pcall(function()
+        local _, info = M.read_lock(root)
+        if not info or info.state ~= "live" then return nil end
+        if not (info.kind == "daemon" or info.mode == "daemon") then return nil end
+        if type(info.pid) ~= "number" or not require("loomworks.daemon.identity").same_slot(info.pid) then
+            return nil
+        end
+        return info
+    end)
+    return ok and info or nil
+end
+
+--- Before this slot's daemon starts, and from `lw daemon stop` / `kill` /
+--- `restart` (§19.6 "Legacy files"): a live daemon of
 --- this slot (§19.7.1) holding the legacy runtime lock is a daemon of
 --- another version (§19.9) — stop it (asked first, then its tree killed and
 --- verified gone, loomworks.lock_break; the §19.5 identity rules: `lw …
@@ -204,15 +225,12 @@ end
 --- alone. Never raises.
 --- @param root string
 --- @param log? fun(line: string)
---- @return "none"|"stopped"|"failed" outcome, string|nil detail
+--- @return "none"|"stopped"|"failed" outcome, string|nil detail, table|nil info the stopped holder
 function M.stop_live(root, log)
+    local info
     local ok, outcome, detail = pcall(function()
-        local _, info = M.read_lock(root)
-        if not info or info.state ~= "live" then return "none" end
-        if not (info.kind == "daemon" or info.mode == "daemon") then return "none" end
-        if type(info.pid) ~= "number" or not require("loomworks.daemon.identity").same_slot(info.pid) then
-            return "none"
-        end
+        info = M.live_daemon(root)
+        if not info then return "none" end
         local lines = {}
         local bok, berr = require("loomworks.lock_break").break_holder(info, {
             what = "the runtime lock of an earlier lw (" .. paths.LEGACY.lock .. ")",
@@ -223,9 +241,9 @@ function M.stop_live(root, log)
         if not bok then return "failed", berr end
         return "stopped"
     end)
-    if not ok then return "failed", tostring(outcome) end
+    if not ok then return "failed", tostring(outcome), info end
     if outcome == "failed" and log then pcall(log, "could not stop the daemon of an earlier lw: " .. tostring(detail)) end
-    return outcome, detail
+    return outcome, detail, info
 end
 
 return M

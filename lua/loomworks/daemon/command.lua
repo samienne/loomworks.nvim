@@ -159,6 +159,13 @@ function M.status(root, host)
     else
         out("Daemon         " .. inspect.row(st, mode, own))
     end
+    -- A live daemon of an earlier lw holding the legacy (unslotted) runtime
+    -- lock (§19.6 "Legacy files"): reported, never connected to.
+    local linfo = require("loomworks.daemon.legacy").live_daemon(root)
+    if linfo then
+        out(string.format("Legacy         daemon of an earlier lw (pid %s, legacy runtime lock) — stop it with: "
+            .. "lw daemon stop", tostring(linfo.pid)))
+    end
     local lk, h = st.lock, st.handle
     if lk and st.kind ~= "stale" then
         out(string.format("  holder       pid %s on %s, %s", tostring(lk.pid or "?"), tostring(lk.host or "?"),
@@ -318,11 +325,26 @@ end
 --- @param opts { force?: boolean, kill?: boolean }
 --- @return integer
 function M.stop(root, host, opts)
-    -- The legacy (unslotted) lock and handle of an earlier lw's daemon that
-    -- is gone, removed as a reclaimer would (§19.6 "Legacy files"). Never
-    -- used to find or stop a daemon.
+    -- A live daemon of this slot holding the legacy (unslotted) runtime lock
+    -- is an earlier lw's: stopped the way a starting daemon stops it (asked,
+    -- then its tree killed and verified gone — `stop_live`), whether or not
+    -- --force / kill was given; then the legacy lock and handle of one that is
+    -- gone are removed as a reclaimer would (§19.6 "Legacy files"). The
+    -- legacy files are never used to connect to a daemon.
+    local stopped_legacy = false
     if not opts._again then
-        local lok, removed = pcall(require("loomworks.daemon.legacy").reclaim, root)
+        local legacy = require("loomworks.daemon.legacy")
+        local outcome, detail, info = legacy.stop_live(root, function(l) M.record(root, "lw daemon stop: " .. l) end)
+        if outcome == "failed" then
+            host.die("could not stop the workspace daemon of an earlier lw"
+                .. (info and info.pid and (" (pid " .. tostring(info.pid) .. ")") or "") .. ": " .. tostring(detail), 1)
+        elseif outcome == "stopped" then
+            stopped_legacy = true
+            local line = "stopped the workspace daemon of an earlier lw (pid " .. tostring(info and info.pid) .. ")"
+            M.record(root, "lw daemon stop: " .. line)
+            host.out(line)
+        end
+        local lok, removed = pcall(legacy.reclaim, root)
         if lok and #removed > 0 then
             M.record(root, "lw daemon stop: removed the files of an earlier lw's daemon that is gone: "
                 .. table.concat(removed, ", "))
@@ -331,7 +353,7 @@ function M.stop(root, host, opts)
     local st = inspect.state(root)
     local lk = st.lock or {}
     if st.kind == "none" then
-        host.out("no workspace daemon is running")
+        if not stopped_legacy then host.out("no workspace daemon is running") end
         return 0
     end
     if st.kind == "foreign" then
@@ -511,7 +533,9 @@ end
 --- @return integer
 function M.restart(root, host, args)
     local st = inspect.state(root)
-    if st.kind ~= "none" then M.stop(root, host, { force = has(args, "--force") }) end
+    if st.kind ~= "none" or require("loomworks.daemon.legacy").live_daemon(root) then
+        M.stop(root, host, { force = has(args, "--force") })
+    end
     local ok, res = require("loomworks.daemon.launch").launch(root)
     if not ok then
         M.record(root, "lw daemon restart: could not start the workspace daemon: " .. tostring(res))

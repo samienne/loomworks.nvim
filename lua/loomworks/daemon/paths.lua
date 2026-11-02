@@ -84,7 +84,7 @@ function M.handle_path(root)
 end
 
 --- The legacy (unslotted) file names in `<root>/.nvim/` (§19.6 "Legacy
---- files"): never read to find or connect to a daemon.
+--- files"): never read to connect to a daemon.
 M.LEGACY = {
     lock = "loomworks.daemon.lock",
     handle = "loomworks.daemon.json",
