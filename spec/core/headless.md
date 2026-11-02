@@ -4329,7 +4329,7 @@ versions left behind:
 | `<tmp>/lw-test-<hex>.xml` | when older than 24 hours |
 | `<tmp>/lw-describe-<hex>.txt` | when older than 7 days |
 
-**Inside the workspace.** The runtime log is `<root>/.nvim/loomworks.daemon.log`,
+**Inside the workspace.** The runtime log is `<root>/.nvim/loomworks.daemon-<S>.log`,
 with one rotated predecessor (§19.10). The results file of a named test
 executable (§16.16) is `<root>/.nvim/tmp/lw-test-<hex>.xml`, and the editor
 buffer of a description (§16.35) is `<root>/.nvim/tmp/lw-describe-<hex>.txt`.

@@ -769,7 +769,7 @@ re-cut onto master step by step; this section is expanded as each step lands.
   after the workspace-required guard in `main()` (so `status`, `health`,
   `pull`, `worktree`, `settings`, `help`, `daemon …` never launch); `main()`
   strips the global `--no-daemon` into `M._no_daemon`.
-- `rlog.lua` — the runtime log `<root>/.nvim/loomworks.daemon.log` (2 MB +
+- `rlog.lua` — the runtime log `<root>/.nvim/loomworks.daemon-<S>.log` (2 MB +
   one `.1`; spec §16.40 moved it out of `<state>/logs/`), written with libuv
   only so the daemon can log from libuv callbacks (`writer(root)` resolves the
   path up front). Each line is one libuv O_APPEND write (on Windows

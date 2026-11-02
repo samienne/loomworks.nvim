@@ -131,7 +131,9 @@ secret byte string shared by server and client, and *E* the endpoint address
 the client connects to, a string. Both are obtained out of band (the
 interface suite says how, API.md §2). *E* is used exactly as that source
 gives it — the address the server bound — with no normalisation of case,
-separators or trailing characters.
+separators or trailing characters. Bindings are local to one host; *K*
+authenticates the peer but does not replace the operating system's
+restriction of who may reach the endpoint.
 
 1. client → `hello { protocol, protocol_min?, lw_version, schemas, client,
    role?, nonce = Nc }`
