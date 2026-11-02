@@ -1033,7 +1033,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   percentage and timer on its profile row again, not only in the Tasks
   section: the workspace view now marks a profile `busy` while the daemon
   runs a task on it, for any client, and sends an update when the task
-  starts and ends. (#PR)
+  starts and ends. (#374)
 - A workspace daemon run by the standalone `lw` no longer fails every status
   page section with "loomworks.view.Workspace/1 refused (internal error)":
   the standalone host's `vim` shim lacked `vim.list_slice`, which the
