@@ -1034,9 +1034,10 @@ into a protocol rule and a client policy:
   re-describes and re-subscribes (§19.16). The CLI still never stops a busy
   daemon.
 - **Editor retirement** (step 5h.5). The editor retires a daemon only when it
-  is idle **and incompatible** with the editor (§19.16 "Retiring an
-  incompatible daemon"), and only when the binary the editor selected is
-  itself compatible. The code identity is the host version, or a
+  is idle **and** either incompatible with the editor or of another code
+  identity than the binary the editor selected (§19.16 "Retiring an
+  incompatible daemon"), and only when that binary is itself compatible.
+  The code identity is the host version, or a
   development build's source fingerprint, as above. A daemon computes its
   identity once, at start. A client computes it for the binary it would
   launch. An idle daemon whose identity differs from that binary's is
