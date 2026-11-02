@@ -46,8 +46,27 @@ unset LOOMWORKS_RUNTIME LOOMWORKS_NO_DAEMON CI LW_ROOT || true
 WS="$TMP/ws"
 mkdir -p "$WS"
 printf '{"projects":{}}\n' > "$WS/loomworks.json"
-LOCK="$WS/.nvim/loomworks.daemon.lock"
-HANDLE="$WS/.nvim/loomworks.daemon.json"
+# The runtime files are per slot (spec 19.7.1): `.nvim/loomworks.daemon-<S>.*`,
+# S 16 hex digits derived from the OS user (Windows: also the elevation). The
+# runner has one user, so one slot: S is learned from the first daemon's lock
+# (`learn_slot`) and every path below uses it.
+SLOT=
+LOCK=; HANDLE=
+lockf() { printf '%s/.nvim/loomworks.daemon-%s.lock' "$1" "$SLOT"; }
+learn_slot() {
+  local found
+  found=$(ls -1 "$WS/.nvim" 2>/dev/null | sed -n 's/^loomworks\.daemon-\([0-9a-f]\{16\}\)\.lock$/\1/p')
+  if [ "$(printf '%s\n' "$found" | grep -c .)" = 1 ]; then
+    SLOT=$found; ok "one slot's runtime lock (slot $SLOT)"
+  else
+    bad "expected one slot's runtime lock in $WS/.nvim, found: $(ls -1 "$WS/.nvim" 2>/dev/null | tr '\n' ' ')"
+    SLOT=unknown
+  fi
+  LOCK=$(lockf "$WS"); HANDLE="$WS/.nvim/loomworks.daemon-$SLOT.json"
+  # Never the legacy unslotted names (spec 19.6 "Legacy files").
+  [ ! -e "$WS/.nvim/loomworks.daemon.lock" ] && [ ! -e "$WS/.nvim/loomworks.daemon.json" ] \
+    && ok "no legacy unslotted runtime files" || bad "legacy unslotted runtime files written"
+}
 
 lw() { (cd "$WS" && "$LW" "$@"); }
 pid_of() { sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
@@ -98,6 +117,7 @@ say "restart starts a detached daemon; a pipeline returns at once"
 t0=$(now_ms)
 out=$(lw daemon restart | cat)
 t1=$(now_ms)
+learn_slot
 pid=$(pid_of "$LOCK"); track "$pid"
 if [ -n "$pid" ] && alive "$pid"; then ok "daemon pid $pid running ($out)"; else bad "no daemon after restart: $out"; fi
 if [ $((t1 - t0)) -lt 15000 ]; then ok "lw daemon restart | cat returned in $((t1 - t0)) ms"; else bad "restart | cat took $((t1 - t0)) ms (inherited std handles?)"; fi
@@ -171,14 +191,14 @@ if [ -n "$mpid" ] && alive "$mpid"; then ok "started daemon pid $mpid"; else bad
 if [ $((t1 - t0)) -lt 15000 ]; then ok "lw profiles | cat returned in $((t1 - t0)) ms"; else bad "lw profiles | cat took $((t1 - t0)) ms"; fi
 t0=$(now_ms); lw profiles | cat >/dev/null; t1=$(now_ms)
 [ "$(pid_of "$LOCK")" = "$mpid" ] && ok "next command reused it ($((t1 - t0)) ms)" || bad "next command started another daemon"
-logf="$WS/.nvim/loomworks.daemon.log"
+logf="$WS/.nvim/loomworks.daemon-$SLOT.log"
 [ -d "$TMP/data/daemon/logs" ] && bad "a runtime log outside the workspace ($TMP/data/daemon/logs)" || ok "no runtime log outside the workspace"
 grep -q "launched the workspace daemon" "$logf" 2>/dev/null && ok "runtime log records the launch" || bad "no launch in the runtime log ($logf)"
 
 say "the daemon exits when its workspace is removed"
 WS2="$TMP/ws2"; mkdir -p "$WS2"; printf '{"projects":{}}\n' > "$WS2/loomworks.json"
 (cd "$WS2" && "$LW" profiles >/dev/null)
-rpid=$(pid_of "$WS2/.nvim/loomworks.daemon.lock"); track "$rpid"
+rpid=$(pid_of "$(lockf "$WS2")"); track "$rpid"
 rm -rf "$WS2"
 i=0; while alive "$rpid" && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
 if ! alive "$rpid"; then ok "pid $rpid exited after its root was removed"; else bad "pid $rpid outlived its workspace"; fi
@@ -201,8 +221,8 @@ LS="$TMP/list"; mkdir -p "$LS/a" "$LS/b"
 printf '{"projects":{}}\n' > "$LS/a/loomworks.json"; printf '{"projects":{}}\n' > "$LS/b/loomworks.json"
 (cd "$LS/a" && "$LW" daemon restart >/dev/null) || bad "restart a"
 (cd "$LS/b" && "$LW" daemon restart >/dev/null) || bad "restart b"
-apid=$(pid_of "$LS/a/.nvim/loomworks.daemon.lock"); track "$apid"
-bpid=$(pid_of "$LS/b/.nvim/loomworks.daemon.lock"); track "$bpid"
+apid=$(pid_of "$(lockf "$LS/a")"); track "$apid"
+bpid=$(pid_of "$(lockf "$LS/b")"); track "$bpid"
 under=$(native "$LS")
 out=$(cd "$TMP" && "$LW" daemon list --under "$under")
 printf '%s\n' "$out"
@@ -240,7 +260,7 @@ JSON
   i=0
   while { [ ! -s "$STEP_PID" ] || ! grep -q "building through the workspace daemon" "$CTRLC_WS/err" 2>/dev/null; } \
     && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-  cpid=$(pid_of "$CTRLC_WS/.nvim/loomworks.daemon.lock"); [ -n "$cpid" ] && track "$cpid"
+  cpid=$(pid_of "$(lockf "$CTRLC_WS")"); [ -n "$cpid" ] && track "$cpid"
   spid=$(cat "$STEP_PID" 2>/dev/null)
   if [ -n "$spid" ] && grep -q "building through the workspace daemon" "$CTRLC_WS/err"; then
     kill -INT "$bpid"

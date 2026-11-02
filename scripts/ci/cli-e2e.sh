@@ -155,6 +155,13 @@ kill_tree() {
     done
     kill -9 "$pid" 2>/dev/null
 }
+# The runtime lock of a workspace's daemon: per slot (spec 19.7.1),
+# `.nvim/loomworks.daemon-<S>.lock`, S 16 hex digits of the OS user. The runner
+# has one user, so the one such file (empty when there is none or several).
+slot_lock() {
+  local m; m=$(ls -1 "$1/.nvim" 2>/dev/null | grep -E '^loomworks\.daemon-[0-9a-f]{16}\.lock$')
+  [ "$(printf '%s\n' "$m" | grep -c .)" = 1 ] && printf '%s/.nvim/%s' "$1" "$m"
+}
 # The pid field of a lockfile.
 lock_pid() { sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
 # Wait (up to ~20 s) until the workspace's build-dir lockfile records the
@@ -410,7 +417,7 @@ JSON
         ok "daemon: the next build runs"
     else note_fail "daemon: build after cancellation" $rc; fi
 
-    local dpid; dpid=$(lock_pid "$sh/.nvim/loomworks.daemon.lock")
+    local dpid; dpid=$(lock_pid "$(slot_lock "$sh")")
     daemon_lw daemon stop > "$out" 2>&1 || note_fail "daemon: stop" $?
     sleep 1
     if [ -n "$dpid" ] && { if is_windows_host; then tasklist //FI "PID eq $dpid" 2>/dev/null | grep -q " $dpid "; \

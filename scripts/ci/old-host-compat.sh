@@ -58,6 +58,13 @@ sha_of() {
 }
 # Native path for env vars read by a Windows exe.
 native() { if [ "$os" = windows ]; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+# The runtime lock of a workspace's daemon: per slot (spec 19.7.1),
+# `.nvim/loomworks.daemon-<S>.lock`, S 16 hex digits of the OS user. The runner
+# has one user, so the one such file (empty when there is none or several).
+slot_lock() {
+  local m; m=$(ls -1 "$1/.nvim" 2>/dev/null | grep -E '^loomworks\.daemon-[0-9a-f]{16}\.lock$')
+  [ "$(printf '%s\n' "$m" | grep -c .)" = 1 ] && printf '%s/.nvim/%s' "$1" "$m"
+}
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -160,7 +167,7 @@ for v in $hosts; do
   # `daemon run` with LOOMWORKS_LUA forwarded, so even the oldest host runs
   # the same bundle as the daemon; stop then ends that process.
   check "$lw" "v$v" "0" daemon restart
-  dpid="$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$T/proj/.nvim/loomworks.daemon.lock" 2>/dev/null)"
+  dpid="$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$(slot_lock "$T/proj")" 2>/dev/null)"
   check "$lw" "v$v" "0" daemon status
   case "$LAST_OUT" in *"answers      1 client"*) ok "v$v: the daemon answers" ;;
     *) bad "v$v: daemon status: $LAST_OUT" ;; esac
