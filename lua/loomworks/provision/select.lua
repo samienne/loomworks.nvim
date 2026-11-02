@@ -289,7 +289,7 @@ function M.resolve(root, opts)
                 sel.candidates[#sel.candidates].probe = v
                 if pending then sel.probe = p end
                 if v and v.verdict == "incompatible" then
-                    sel.probe_note = string.format("%s %s is incompatible (%s) — used as named; the handshake decides",
+                    sel.probe_note = string.format("%s %s is incompatible (%s) — used anyway: an explicit lw is never replaced, so the daemon will likely not start; name a compatible lw or unset it",
                         M.LABELS[source], p, problems(v))
                 end
             else
