@@ -447,7 +447,7 @@ function M.run(svc, ctx)
         meta_units[#meta_units + 1] = tasks_mod.meta_unit(svc.ids, u.project, u.configuration, u.unit)
     end
     task:start({ name = profile.key, kind = "discover", profile = profile.key, profile_id = svc.ids:id(profile),
-        units = meta_units })
+        units = meta_units }, profile)
     step()
     return run
 end

@@ -160,12 +160,14 @@ function M.attach(server, host)
     local core_ifaces = require("loomworks.daemon.core_interfaces")
     self.tasks.on_started = function(t, info)
         if server.interfaces then core_ifaces.task_signal(server.interfaces, t, "started", { task = info }) end
+        self:_profile_task_moved(t)
     end
     self.tasks.on_ended = function(t, exit_code, err)
         if server.interfaces then
             core_ifaces.task_signal(server.interfaces, t, "ended",
                 { task_id = t.id, exit_code = exit_code, error = type(err) == "string" and err or nil })
         end
+        self:_profile_task_moved(t)
     end
     -- A target-scoped task's step changed state (§19.15 "Steps of a task"):
     -- its `seq` is each frame's own envelope `seq`.
@@ -200,6 +202,23 @@ function M.attach(server, host)
     -- The header `header_changed` compares with (unloaded: never loads).
     core_ifaces.header_check(self)
     return self
+end
+
+--- A task on a profile started or ended: its row's `busy` in the workspace
+--- view flipped (view.Workspace/1, API.md §14.4), so the views' `update`
+--- follows. Inside a model segment its end's check sends it; otherwise a
+--- check runs once the current callbacks are done (after the run's end has
+--- recorded the profile's `last_result`: one update carries both).
+--- @param t loomworks.daemon.Task
+function Service:_profile_task_moved(t)
+    if not t.on_profile or self._busy_check then return end
+    self._busy_check = true
+    vim.schedule(function()
+        self._busy_check = nil
+        if self.current or self.server.stopped then return end
+        local ok, err = pcall(require("loomworks.daemon.views").check, self)
+        if not ok then self.server:log("view update failed: %s", tostring(err)) end
+    end)
 end
 
 --- The run a task belongs to (nil: none, or it already ended).

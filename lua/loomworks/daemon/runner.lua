@@ -951,7 +951,7 @@ function M.run(svc, ctx)
         plan_steps[#plan_steps + 1] = ph.step
     end
     task:start({ name = label, kind = cases and cases.kind or op, profile = profile and profile.key or nil,
-        profile_id = profile and svc.ids:id(profile) or nil, units = units, steps = plan_steps })
+        profile_id = profile and svc.ids:id(profile) or nil, units = units, steps = plan_steps }, profile)
     -- A test run's pre-build plan: the service's (its notes and refusal were
     -- the reply's, before acceptance), else checked here.
     if testing and not ctx.test_pre then
@@ -1134,7 +1134,7 @@ function M.reset(svc, ctx)
     local pkey = plan.profile and plan.profile.key or nil
     task:start({ name = pkey or "--all", kind = "reset", profile = pkey,
         profile_id = plan.profile and svc.ids:id(plan.profile) or nil,
-        scope = plan.scope == "all" and "all" or nil, units = units })
+        scope = plan.scope == "all" and "all" or nil, units = units }, plan.profile)
     if ctx.listing then
         for _, line in ipairs(reset_plan.listing(plan)) do task:line("out", line, "plain") end
     end

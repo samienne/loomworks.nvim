@@ -3231,7 +3231,9 @@ end
 --- workspace view"; loomworks.view_state.workspace) with this host's file
 --- checks (`published`, the stray build directories) and the caller's `id` /
 --- `bind`.
---- @param opts? { id?: fun(obj: table): string, bind?: fun(row: table, obj: table) }
+--- `busy`: whether the caller runs an operation on a profile itself (the
+--- daemon's own tasks, API.md §14.4), beside the profile's own operations.
+--- @param opts? { id?: fun(obj: table): string, bind?: fun(row: table, obj: table), busy?: fun(profile: loomworks.Profile): boolean }
 --- @return table
 function Workspace:view_workspace(opts)
     opts = opts or {}
@@ -3239,7 +3241,7 @@ function Workspace:view_workspace(opts)
     return require("loomworks.view_state").workspace(self, {
         published = uv.fs_stat(self.root .. "/loomworks.json") ~= nil,
         stray_dirs = self:_view_stray_build_dirs(),
-        id = opts.id, bind = opts.bind,
+        id = opts.id, bind = opts.bind, busy = opts.busy,
     })
 end
 

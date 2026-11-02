@@ -435,7 +435,7 @@ local function accept(service, ctx, kind)
             meta_units[#meta_units + 1] = tasks_mod.meta_unit(service.ids, u.project, u.configuration, u.unit)
         end
         task:start({ name = profile.key, kind = kind, profile = profile.key, profile_id = service.ids:id(profile),
-            units = meta_units })
+            units = meta_units }, profile)
         task:done(1, "internal error: " .. tostring(phase))
         return
     end
