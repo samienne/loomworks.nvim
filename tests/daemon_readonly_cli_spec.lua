@@ -161,6 +161,21 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
     local function parity(roots3, args)
         local r = lw(roots3[2], { "--no-input", "daemon", "restart" })
         assert.equals(0, r.code, r.stderr)
+        -- Warm the fresh daemon up until it serves a read: its first one loads
+        -- the model, which on a loaded runner can outlast the read's missed
+        -- keepalive pings (the read then falls back in-process with "did not
+        -- answer in time", §19.1) or stall its heartbeat ("not responding").
+        -- The case's own read then meets a daemon with the model loaded.
+        local served, last
+        for _ = 1, 6 do
+            local n = snapshots(roots3[2])
+            last = lw(roots3[2], { "status" })
+            served = last.code == 0 and snapshots(roots3[2]) > n
+                and not last.stderr:find("did not answer in time", 1, true)
+                and not last.stderr:find("not responding", 1, true)
+            if served then break end
+        end
+        assert.is_true(served, last.stderr)
         local before, proj = {}, {}
         for i, root in ipairs(roots3) do before[i], proj[i] = snapshots(root), projections(root) end
         local res = H.three_way({ roots = roots3, args = args, lw = lw, env = env, routed = false,

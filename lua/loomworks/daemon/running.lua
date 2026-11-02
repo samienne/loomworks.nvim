@@ -11,7 +11,10 @@
 local M = {}
 
 --- The bound of the whole query (connect + `status`), milliseconds.
-M.TIMEOUT_MS = 1000
+--- `LW_TEST_DAEMON_STEP_MS` lengthens it, as it does an ensure step
+--- (loomworks.daemon.ensure), for test suites that run real `lw` processes
+--- on a heavily loaded machine.
+M.TIMEOUT_MS = tonumber(os.getenv("LW_TEST_DAEMON_STEP_MS") or "") or 1000
 
 --- Should `lw status` ask the daemon of `st` (from loomworks.daemon.inspect)?
 --- @param st table

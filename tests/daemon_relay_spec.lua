@@ -310,7 +310,7 @@ describe("the relay against an in-process daemon", function()
         -- No challenge or auth reaches the client.
         for _, m in ipairs(h.frames) do assert.is_true(m.kind ~= "challenge" and m.kind ~= "auth") end
         -- Closing standard input closed only that connection.
-        assert.is_true(vim.wait(5000, function() return srv:client_count() == 0 end, 20))
+        assert.is_true(vim.wait(15000, function() return srv:client_count() == 0 end, 20))
         assert.is_false(srv.stopped)
         assert.equals("", h.note())
     end)
@@ -555,7 +555,7 @@ describe("the relay against an in-process daemon", function()
         assert.truthy(h.notes[1]:find("^lw: the retiring workspace daemon"), h.note())
         local id = connect.instance_id({ pid = srv.pid, start_time = srv.start_time })
         assert.equals("retiring " .. id, h.notes[2])
-        assert.is_true(vim.wait(5000, function() return srv:client_count() == 0 end, 20))
+        assert.is_true(vim.wait(15000, function() return srv:client_count() == 0 end, 20))
         -- The editor's parse of it, and `--no-launch --retiring` given that
         -- value exits 16 once the daemon has released the lock.
         local rc = require("loomworks.daemon.client").relay

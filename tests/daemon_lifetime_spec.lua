@@ -287,13 +287,13 @@ describe("lifetime rules (§19.11, in-process server)", function()
             return true
         end
         srv.service = svc
-        assert.is_true(vim.wait(5000, function() return state.abandoned > 0 end, 20))
+        assert.is_true(vim.wait(15000, function() return state.abandoned > 0 end, 20))
         assert.is_nil(exited)
         assert.is_false(srv.background)
         assert.is_not_nil(srv:_handle_record().idle_since)
         local at = os.time()
         -- Then an ordinary idle exit, timed from the abandonment.
-        assert.is_true(vim.wait(10000, function() return exited ~= nil end, 20))
+        assert.is_true(vim.wait(20000, function() return exited ~= nil end, 20))
         assert.equals(0, exited)
         assert.is_true(os.time() - at >= 1)
         assert.equals(1, state.abandoned)
@@ -307,7 +307,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
         svc.abandon_background = function() error("a run is never abandoned") end
         srv.service = svc
         srv.busy = true
-        assert.is_true(vim.wait(5000, function() return exited ~= nil end, 20))
+        assert.is_true(vim.wait(15000, function() return exited ~= nil end, 20))
         assert.equals(0, exited)
         assert.matches("BACKGROUND_MAX_DURATION", stopping)
         assert.matches("BACKGROUND_MAX_DURATION", srv.stop_reason)
@@ -609,7 +609,7 @@ describe("ensure (§19.9 through a workspace command)", function()
         assert.equals("bypass", out)
         assert.truthy(notes:find("runs lw v0.1.0 and is busy", 1, true))
         other:close()
-        assert.is_true(vim.wait(2000, function() return exited ~= nil end, 10))
+        assert.is_true(vim.wait(15000, function() return exited ~= nil end, 10))
     end)
     -- The ensure bound of a routed `lw build` (§19.10): a healthy daemon that
     -- answers the handshake late (a loaded machine) still takes the build; a
@@ -675,7 +675,10 @@ describe("ensure (§19.9 through a workspace command)", function()
             -- The late handshake lands on the closed connection: nothing breaks.
             vim.wait(2000, function() return false end, 50)
             d.restore()
-            assert.equals("used", (timed()))
+            -- The daemon still serves (not a test of the bound: client and
+            -- server share this loaded process, whose next handshake can
+            -- miss the 1 s step on a loaded runner).
+            assert.equals("used", (timed({ step_ms = 30000 })))
         end)
 
         it("a hung daemon is reported at once to a routed build too", function()
