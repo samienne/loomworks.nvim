@@ -8,8 +8,7 @@
       "name": "run builds, finds no tests and ends with the structured results",
       "fixture": "shell",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "command": "lw test" }, "env": { "$var": "env" } } },
@@ -27,7 +26,6 @@
     {
       "name": "an unknown profile is refused and unknown arguments are invalid",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "nope" } }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
@@ -39,8 +37,7 @@
       "name": "run accepts no_build (a profile without tests ends as without it; the CLI parity is tests/daemon_test_cli_spec.lua); a non-boolean no_build is invalid",
       "fixture": "shell",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "no_build": true, "command": "lw test" }, "env": { "$var": "env" } } },
@@ -57,8 +54,7 @@
       "name": "discover runs as a task: a line per probed unit, the summary and its result; a current tree is probed again only with force",
       "fixture": "tests",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
@@ -93,8 +89,7 @@
       "name": "a cancel stops discover at its probe, which ran in the caller's environment; the view stays stale",
       "fixture": "tests",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env", "$with": { "LW_TEST_DISCOVER_SLEEP": "60000" } } } },
@@ -116,7 +111,6 @@
     {
       "name": "discover without an active profile is refused; unknown arguments are invalid",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "discover", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$pattern": "^no active profile" }, "exit_code": 1 } } },
@@ -127,7 +121,6 @@
     {
       "name": "run_cases and prepare_debug refuse a node id that names no test before acceptance",
       "fixture": "shell",
-      "allow": [{"kind": "model_change"}],
       "steps": [
         {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {"select": [{"id": "nope"}]}, "env": {"$var": "env"}}},
         {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$pattern": "^no such test"}, "exit_code": 1}}},
@@ -140,7 +133,6 @@
     {
       "name": "run-all without an active profile is refused",
       "fixture": "shell",
-      "allow": [{"kind": "model_change"}],
       "steps": [
         {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run_cases", "args": {}, "env": {"$var": "env"}}},
         {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$pattern": "^no active profile"}, "exit_code": 1}}}
@@ -149,7 +141,6 @@
     {
       "name": "collect refuses a token this connection does not hold",
       "fixture": "shell",
-      "allow": [{"kind": "model_change"}],
       "steps": [
         {"send": {"kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "collect", "args": {"prepared": "pd-0-1"}, "env": {"$var": "env"}}},
         {"expect": {"kind": "ok", "req_id": 1, "result": {"outcome": "refused", "message": {"$type": "string"}, "exit_code": 1}}}
@@ -182,7 +173,7 @@
     {
       "name": "a subscriber receives a run's per-case results, with its task, before the run ends",
       "fixture": "tests",
-      "allow": [{"kind": "task"}, {"kind": "model_change"}, {"kind": "signal", "object": "/tests", "name": "results"}],
+      "allow": [{"kind": "task"}, {"kind": "signal", "object": "/tests", "name": "results"}],
       "steps": [
         {"send": {"kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": {"object": "/tests", "iface": "loomworks.Tests", "v": 1}}},
         {"expect": {"kind": "ok", "req_id": 1, "result": {"sub_id": {"$bind": "sub"}, "seq": {"$type": "integer"}}}},

@@ -7,7 +7,6 @@
     {
       "name": "list returns the detected toolchains per module type",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "tools": { "$type": "object" } } } },
@@ -20,7 +19,7 @@
     {
       "name": "rescan detects the toolchains again and replies once the model took them in",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal" } ],
+      "allow": [ { "kind": "signal" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "rescan", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },

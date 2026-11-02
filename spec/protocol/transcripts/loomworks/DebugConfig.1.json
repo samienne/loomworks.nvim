@@ -7,7 +7,6 @@
     {
       "name": "adapters reports the mapping of the modules' languages only; known_languages every declared language",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/debug", "iface": "loomworks.DebugConfig", "v": 1, "method": "known_languages", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "languages": { "$contains": ["c++", "typescript"] } } } },
@@ -23,7 +22,6 @@
       "name": "set_adapter writes the override with changed before its reply; without an adapter the default applies again",
       "fixture": "shell",
       "allow": [
-        { "kind": "model_change" },
         { "kind": "signal", "object": "/workspace", "name": "header_changed" }
       ],
       "steps": [

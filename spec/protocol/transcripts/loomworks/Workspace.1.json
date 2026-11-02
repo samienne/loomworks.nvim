@@ -37,7 +37,6 @@
       "fixture": "shell",
       "allow": [
         { "kind": "task" },
-        { "kind": "model_change" },
         { "kind": "signal", "object": "/workspace", "name": "changed" }
       ],
       "steps": [
@@ -56,7 +55,6 @@
     {
       "name": "a subscriber receives header_changed when a call loads the workspace, and none when the header stays the same",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["header_changed"] } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0 } } },
@@ -79,7 +77,7 @@
     {
       "name": "set_intent makes a profile shared and publish writes it, each with changed before its reply (step 5o)",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" }, { "kind": "signal", "object": "/workspace", "name": "changed" } ],
+      "allow": [ { "kind": "signal", "object": "/workspace", "name": "changed" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "index": { "profiles": { "dev": { "$bind": "dev_id" } } } } } },
@@ -98,7 +96,6 @@
     {
       "name": "revert_to_baseline after an unpublished edit is ok (step 5o C2a)",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "index": { "profiles": { "dev": { "$bind": "dev_id" } } } } } },
@@ -111,7 +108,6 @@
     {
       "name": "set_description takes a launch id; publish_one, revert_one and set_intent refuse one, naming its project (step 5o)",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },
@@ -132,7 +128,6 @@
     {
       "name": "a stale id is refused; a key reference, an unknown intent and a missing item are invalid (step 5o)",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "set_intent", "args": { "item": { "id": "no-such-id" }, "intent": "local" }, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": "no item with id no-such-id (a stale reference)", "exit_code": 1 } } },
@@ -147,7 +142,6 @@
     {
       "name": "trust_accept of a trusted working copy is ok at once; delete_user_prefs confirms with a plan and refuses another (step 5o)",
       "fixture": "shell",
-      "allow": [ { "kind": "model_change" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "trust_accept", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },

@@ -18,8 +18,7 @@
       "name": "subscribing returns the full state as initial; discoveries and a build send update with the full state",
       "fixture": "tests",
       "allow": [
-        { "kind": "task" },
-        { "kind": "model_change" }
+        { "kind": "task" }
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/views", "iface": "loomworks.view.Tests", "v": 1 } } },

@@ -7,7 +7,7 @@
     {
       "name": "list never probes; a scan fills the registry and signals changed",
       "fixture": "devices",
-      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "allow": [ { "kind": "task" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "list", "args": {} } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "devices": [] } } },
@@ -29,7 +29,7 @@
     {
       "name": "a device target is installed and launched on the profile's device, and its program stopped",
       "fixture": "devices",
-      "allow": [ { "kind": "task" }, { "kind": "model_change" } ],
+      "allow": [ { "kind": "task" } ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/devices", "iface": "loomworks.Devices", "v": 1, "method": "scan", "args": {}, "env": { "$var": "env" } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "scan" } } } },
