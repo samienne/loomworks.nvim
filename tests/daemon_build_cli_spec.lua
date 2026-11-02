@@ -119,6 +119,9 @@ describe("lw build through the workspace daemon (real processes)", function()
             { { "build", "dev" }, { LW_TEST_FAIL = "build" } },
             { { "build", "dev" }, { LW_TEST_KILL = "build:sigkill" } },
             { { "build", "dev" }, { LW_TEST_FOO = "bar" } },
+            -- Output that is not valid UTF-8 (a code-page byte, a cut-short
+            -- sequence): written byte-exact (PROTOCOL.md §14.2 `data`).
+            { { "build", "dev" }, { LW_TEST_STDERR = "ff41e282ac0ae282" } },
         }
         for _, c in ipairs(cases) do
             local args = { "--no-input" }

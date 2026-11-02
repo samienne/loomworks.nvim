@@ -88,6 +88,7 @@
 
 local schema = require("loomworks.proto.schema")
 local documents = require("loomworks.proto.documents")
+local bytes = require("loomworks.proto.bytes")
 
 local M = {}
 
@@ -99,7 +100,9 @@ M.FORMAT = 1
 ---   empty  a root with `loomworks.json` = `{"projects": {}}` and `.nvim/`
 ---   shell  a `shell` project `app` (path `app`, configuration `Debug`,
 ---          build directory `${workspace_root}/out/${variant}`, configure
----          and build commands that print a line and exit 0, slept
+---          and build commands that print a line (when the client
+---          environment sets `LW_TEST_STDERR`: write to stderr instead the
+---          bytes it gives in hex) and exit 0, slept
 ---          `LW_TEST_SLEEP` ms when the client environment sets it), the
 ---          configuration set `dev` (`app` = `Debug`) and a trusted working
 ---          copy with the profile `dev` and, on `app`, the launch
@@ -400,9 +403,21 @@ end
 --- @param frame table
 --- @return boolean ok, string|nil err
 function Session:check_transport(frame)
+    local ok, err = M.check_output_frame(frame)
+    if not ok then return false, err end
     local frames = self.transport and self.transport.frames or {}
     if not frames[frame.kind] then return true end
     return self.set:validate("transport.json", "/frames/" .. frame.kind, frame)
+end
+
+--- A task `output` frame carries exactly one of `text` (valid UTF-8) and
+--- `data` (base64) — PROTOCOL.md §14.2, a rule the schema vocabulary cannot
+--- state; any other frame passes.
+--- @param frame table
+--- @return boolean ok, string|nil err
+function M.check_output_frame(frame)
+    if frame.kind ~= "task" or frame.phase ~= "output" then return true end
+    return bytes.check_output(frame)
 end
 
 --- The interface document of a call or signal.

@@ -167,6 +167,13 @@ end
 io.write("step " .. kind .. " FOO=" .. tostring(os.getenv("LW_TEST_FOO")) .. " ONLY="
     .. tostring(os.getenv("LW_TEST_ONLY")) .. " ARGS=" .. table.concat(arg, ",", 2) .. string.char(10))
 io.stderr:write("stderr of " .. kind .. string.char(10))
+-- Raw bytes on the build step's stderr, given as hex (LW_TEST_STDERR=ff41):
+-- output that is not valid UTF-8 (PROTOCOL.md §14.2 `data`).
+local hex = os.getenv("LW_TEST_STDERR")
+if hex and kind == "build" then
+    io.stderr:write((hex:gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end)))
+    io.stderr:flush()
+end
 -- A ninja-style `[N/M]` progress line from the build step (LW_TEST_PROGRESS=N/M).
 local prog = os.getenv("LW_TEST_PROGRESS")
 if prog and kind == "build" then io.write("[" .. prog .. "] Building CXX object src/x.cpp.o" .. string.char(10)) end
