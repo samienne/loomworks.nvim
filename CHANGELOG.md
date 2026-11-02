@@ -1057,7 +1057,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   code page, a character split between two reads) now reaches `lw` and the
   editor byte-exact through the workspace daemon, and the daemon's frames
   stay valid JSON for clients in any language: such a chunk travels as
-  base64 `data`, every other one as `text`. (#TBD)
+  base64 `data`, every other one as `text`. (#385)
 - `lw daemon stop` (also `--force`, `kill` and `restart`) now stops a
   workspace daemon started by an earlier lw that still holds the old
   unslotted runtime lock, instead of saying no daemon is running.
