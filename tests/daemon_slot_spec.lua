@@ -288,3 +288,246 @@ describe("process scan", function()
         assert.equals(4242001, found[1].pid)
     end)
 end)
+
+describe("peer check (§19.7, Windows)", function()
+    local endpoint = require("loomworks.daemon.endpoint")
+    local server_mod = require("loomworks.daemon.server")
+    local client = require("loomworks.daemon.client")
+    local trust = require("loomworks.trust")
+    local H = require("tests.daemon_helpers")
+    local CLIENT_PID, SERVER_PID = 7700001, 7700002
+    local root, srv, logs
+
+    --- Peer pids per side (the daemon reads its client's, a client its
+    --- server's), identities per pid.
+    local function stub(ids)
+        endpoint._force_peer_check = true
+        endpoint._peer_pid_probe = function(_, side)
+            return side == "client" and CLIENT_PID or SERVER_PID
+        end
+        identity._process_probe = function(pid) return ids[pid] end
+    end
+
+    before_each(function()
+        trust._set_key_path(H.tmp() .. "/trust.key")
+        root = H.workspace()
+        logs = {}
+        srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000,
+            log = function(l) logs[#logs + 1] = l end })
+        assert(srv:start())
+    end)
+    after_each(function()
+        if not srv.stopped then srv:stop("test end", 0) end
+        endpoint._force_peer_check, endpoint._peer_pid_probe = nil, nil
+        identity._process_probe = nil
+        trust._set_key_path(nil)
+    end)
+
+    local function connect()
+        local res
+        client.connect(srv.address, { timeout_ms = 30000 }, function(c, e, d) res = { c, e, d } end)
+        vim.wait(30000, function() return res ~= nil end, 5)
+        assert.truthy(res, "connect did not finish")
+        if res[1] then res[1]:close() end
+        return res
+    end
+
+    local function others(me)
+        -- Another user; this user elevated or not (whichever this is not);
+        -- an unreadable token.
+        local flip = me:find(" elevated$") and me:gsub(" elevated$", " standard") or (me .. "-elevated")
+        return { "S-1-5-21-9-9-9-1002 standard", flip, false }
+    end
+
+    it("peer_check refuses another SID, another elevation, an unreadable token or pid", function()
+        local me = identity.identity()
+        local function check(theirs, pid_ok)
+            endpoint._force_peer_check = true
+            endpoint._peer_pid_probe = function()
+                if pid_ok ~= false then return 42 end
+                return nil, "no pid"
+            end
+            identity._process_probe = function() return theirs end
+            return endpoint.peer_check({}, "client")
+        end
+        assert.is_true((check(me)))
+        local ok, why = check("S-1-5-21-9-9-9-1002 standard")
+        assert.is_false(ok)
+        assert.truthy(why:find("another user or elevation", 1, true), why)
+        assert.is_false((check(others(me)[2])))
+        ok, why = check(nil)
+        assert.is_false(ok)
+        assert.truthy(why:find("cannot read the token", 1, true), why)
+        assert.is_false((check(me, false)))
+    end)
+
+    it("the daemon refuses a client of another SID, elevation or with an unreadable token before reading", function()
+        local handshakes = 0
+        local real = srv._handshake
+        srv._handshake = function(...) handshakes = handshakes + 1; return real(...) end
+        local me = identity.identity()
+        for _, other in ipairs(others(me)) do
+            stub({ [CLIENT_PID] = other or nil, [SERVER_PID] = me })
+            local res = connect()
+            assert.is_nil(res[1])
+            assert.are_not.equals(client.ERR_UNTRUSTED, res[2]) -- the client's own check passed
+        end
+        assert.equals(0, handshakes)
+        local refused = 0
+        for _, l in ipairs(logs) do
+            if l:find("refused a connection", 1, true) then refused = refused + 1 end
+        end
+        assert.equals(3, refused, vim.inspect(logs))
+        -- A peer of this slot is served.
+        stub({ [CLIENT_PID] = me, [SERVER_PID] = me })
+        local res = connect()
+        assert.truthy(res[1], vim.inspect(res))
+    end)
+
+    it("a client refuses a daemon of another SID, elevation or with an unreadable token before hello", function()
+        local handshakes = 0
+        local real = srv._handshake
+        srv._handshake = function(...) handshakes = handshakes + 1; return real(...) end
+        local me = identity.identity()
+        for _, other in ipairs(others(me)) do
+            stub({ [CLIENT_PID] = me, [SERVER_PID] = other or nil })
+            local res = connect()
+            assert.is_nil(res[1])
+            assert.equals(client.ERR_UNTRUSTED, res[2])
+            assert.truthy(tostring(res[3]):find("server process", 1, true), tostring(res[3]))
+        end
+        assert.equals(0, handshakes)
+    end)
+
+    if IS_WIN then
+        it("reads the real peer process ids of both ends of the pipe", function()
+            local seen = {}
+            identity._process_probe = function(pid)
+                seen[#seen + 1] = pid
+                return identity.identity()
+            end
+            local res = connect()
+            assert.truthy(res[1], vim.inspect(res))
+            -- The daemon read its client's pid and the client its server's:
+            -- both are this process.
+            assert.equals(2, #seen, vim.inspect(seen))
+            assert.equals(uv.os_getpid(), seen[1])
+            assert.equals(uv.os_getpid(), seen[2])
+        end)
+
+        it("starting the daemon opens no connection to its own pipe", function()
+            -- A stat of the pipe's name opens (connects) an instance: the
+            -- daemon used to accept two phantom clients of its own at start.
+            vim.wait(300)
+            assert.equals(0, vim.tbl_count(srv.conns))
+        end)
+
+        it("every pipe instance, not only the first, carries the restricted DACL (audit 1b)", function()
+            local first = assert(endpoint.read_dacl(srv.listener))
+            assert.truthy(first:find("^D:P"), first)
+            -- libuv creates the first instance at bind and the others later,
+            -- one per pending accept (4 at first, a new one after each
+            -- accept): more connections than that reach later instances.
+            local peers = {}
+            for i = 1, 6 do
+                local p = uv.new_pipe(false)
+                local done
+                p:connect(srv.address, function(err) done = err or true end)
+                vim.wait(5000, function() return done ~= nil end, 5)
+                assert.is_true(done, tostring(done))
+                peers[i] = p
+            end
+            vim.wait(5000, function() return vim.tbl_count(srv.conns) >= 6 end, 5)
+            local n = 0
+            for conn in pairs(srv.conns) do
+                assert.equals(first, endpoint.read_dacl(conn.sock))
+                n = n + 1
+            end
+            assert.truthy(n >= 6, tostring(n))
+            for _, p in ipairs(peers) do pcall(function() p:close() end) end
+        end)
+    end
+end)
+
+describe("trust key ownership (formats.md §2.1, POSIX)", function()
+    local trust = require("loomworks.trust")
+    local saved = {}
+    local dir = "/home/u/.local/share/loomworks"
+    local key = dir .. "/trust.key"
+    local fs
+    before_each(function()
+        saved.lstat, saved.euid = trust._lstat, trust._euid
+        fs = {
+            [dir] = { type = "directory", uid = 1000, mode = tonumber("40700", 8) },
+            [key] = { type = "file", uid = 1000, mode = tonumber("100600", 8) },
+        }
+        trust._force_posix_owner_check = true
+        trust._lstat = function(p) return fs[p] end
+        trust._euid = function() return 1000 end
+        trust._set_key_path(key)
+    end)
+    after_each(function()
+        trust._lstat, trust._euid = saved.lstat, saved.euid
+        trust._force_posix_owner_check = nil
+        trust._set_key_path(nil)
+    end)
+
+    it("accepts the euid's key in its private directory", function()
+        assert.is_true(trust._check_owner(dir, "directory"))
+        assert.is_true(trust._check_owner(key, "file"))
+    end)
+
+    it("refuses a key or directory of another owner (root with the user's $HOME)", function()
+        trust._euid = function() return 0 end
+        local k, err = trust.key()
+        assert.is_nil(k)
+        assert.truthy(err:find(dir, 1, true) and err:find("not this process's effective uid", 1, true), err)
+        trust._euid = function() return 1000 end
+        fs[key].uid = 1001
+        k, err = trust.key()
+        assert.is_nil(k)
+        assert.truthy(err:find(key, 1, true), err)
+    end)
+
+    it("refuses a group- or other-writable key or directory", function()
+        fs[key].mode = tonumber("100620", 8)
+        local k, err = trust.key()
+        assert.is_nil(k)
+        assert.truthy(err:find(key, 1, true) and err:find("writable by group or others", 1, true), err)
+        fs[key].mode = tonumber("100602", 8)
+        assert.is_nil((trust.key()))
+        fs[key].mode = tonumber("100644", 8) -- only writability is checked
+        assert.is_true(trust._check_owner(key, "file"))
+        fs[dir].mode = tonumber("40770", 8)
+        k, err = trust.key()
+        assert.is_nil(k)
+        assert.truthy(err:find(dir, 1, true), err)
+    end)
+
+    it("refuses a link at the key or the directory", function()
+        fs[key] = { type = "link", uid = 1000, mode = tonumber("120777", 8) }
+        local k, err = trust.key()
+        assert.is_nil(k)
+        assert.truthy(err:find("not a real file", 1, true), err)
+        fs[key] = nil
+        fs[dir] = { type = "link", uid = 1000, mode = tonumber("120777", 8) }
+        k, err = trust.key()
+        assert.is_nil(k)
+        assert.truthy(err:find("not a real directory", 1, true), err)
+    end)
+end)
+
+describe("POSIX effective uid (§19.7)", function()
+    after_each(function() identity._euid_override = nil end)
+    if not IS_WIN then
+        it("names the socket directory by the effective uid", function()
+            identity._euid_override = 4321
+            local c = require("loomworks.daemon.endpoint")._posix_candidates("/home/u/ws")
+            assert.truthy(c[#c].dir:find("loomworks%-4321$"), c[#c].dir)
+        end)
+    end
+    it("identity.euid reads the effective uid on POSIX and has none on Windows", function()
+        local e = identity.euid()
+        if IS_WIN then assert.is_nil(e) else assert.equals("number", type(e)) end
+    end)
+end)

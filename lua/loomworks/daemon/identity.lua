@@ -127,6 +127,19 @@ local function own_euid()
     return nil, "cannot read the effective uid"
 end
 
+--- The effective uid of this process (POSIX; spec §19.7: the socket
+--- directory, the process filter and the trust key's owner are checked
+--- against it, never the real uid), or nil + error. Windows has none.
+--- @return integer|nil euid, string|nil err
+function M.euid()
+    if M._euid_override then return M._euid_override end
+    if is_win() then return nil, "no effective uid on Windows" end
+    return own_euid()
+end
+
+--- Test seam: a fixed effective uid (nil reads it from the OS again).
+M._euid_override = nil
+
 -- ---------------------------------------------------------------------------
 -- The slot
 -- ---------------------------------------------------------------------------

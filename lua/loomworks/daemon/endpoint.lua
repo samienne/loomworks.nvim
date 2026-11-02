@@ -7,8 +7,8 @@
 ---
 ---   * POSIX — a Unix-domain socket `<dir>/<root hash>.sock` in a short
 ---     per-user directory created 0700 and verified to be a real directory
----     owned by this user: `$XDG_RUNTIME_DIR/loomworks`, else `$TMPDIR` /
----     `/tmp` + `loomworks-<uid>`. The hashed name keeps the path inside the
+---     owned by this process's effective uid: `$XDG_RUNTIME_DIR/loomworks`,
+---     else `$TMPDIR` / `/tmp` + `loomworks-<euid>`. The hashed name keeps the path inside the
 ---     `sun_path` limit (~104 bytes on macOS, 108 on Linux) for any repository
 ---     depth; a base whose path would not fit falls back to `/tmp`.
 ---   * Windows — a named pipe `\\.\pipe\loomworks-<hash of S and root>`,
@@ -19,7 +19,13 @@
 ---     only, network logons denied. A pipe whose DACL cannot be applied is
 ---     never served (the daemon exits with an error). The default DACL lets
 ---     Everyone and Anonymous READ, which leaked another client's traffic in
----     the 2026-09 spike (DAEMON.md §6).
+---     the 2026-09 spike (DAEMON.md §6). The descriptor belongs to the pipe,
+---     not to an instance: the instances libuv creates later (one per
+---     pending accept) carry the same DACL (tests read it back).
+---     Peer check: the daemon checks each accepted instance, and a client the
+---     pipe it connected to, before any frame (M.peer_check): the other end's
+---     process must have this process's identity (§19.7.1: user SID and
+---     elevation); one whose token cannot be read is refused.
 ---
 --- Deletion safety: the only file this module removes is a stale socket at
 --- exactly `<verified dir>/<root hash>.sock` whose `lstat` type is `socket`
@@ -37,7 +43,15 @@ local function is_win() return package.config:sub(1, 1) == "\\" end
 --- Conservative `sun_path` budget (the kernel limit includes the NUL).
 M.SUN_PATH_MAX = 100
 
-local function uid() return (uv().getuid and uv().getuid()) or 0 end
+--- The effective uid (spec §19.7: the socket directory is named by and
+--- verified against it, never the real uid). POSIX only; a process whose
+--- effective uid cannot be read has no endpoint (no fallback).
+local function uid()
+    if is_win() then return 0 end
+    local e, err = require("loomworks.daemon.identity").euid()
+    if not e then error("cannot determine the effective uid (spec §19.7): " .. tostring(err), 0) end
+    return e
+end
 
 
 --- POSIX candidates: { dir, path } in preference order.
@@ -235,6 +249,82 @@ function M.read_dacl(pipe)
     end
     ffi.C.LocalFree(sd[0])
     return s
+end
+
+-- ---------------------------------------------------------------------------
+-- Windows: the peer check (spec §19.7 "Peer check")
+-- ---------------------------------------------------------------------------
+
+local _k
+local function kernel()
+    if _k ~= nil then return _k or nil end
+    _k = false
+    local w = win()
+    if not w then return nil end
+    for _, d in ipairs({
+        "int GetNamedPipeClientProcessId(void* pipe, unsigned long* pid);",
+        "int GetNamedPipeServerProcessId(void* pipe, unsigned long* pid);",
+    }) do
+        pcall(w.ffi.cdef, d)
+    end
+    _k = w
+    return _k
+end
+
+--- Test seam: `fn(pipe, side) -> pid|nil` replaces the read of the peer's
+--- process id (the identity of that pid is read through
+--- `identity.process_identity`, whose own seam stubs the token reader).
+M._peer_pid_probe = nil
+
+--- Test seam: run the peer check on POSIX too (with the probes stubbed).
+M._force_peer_check = nil
+
+--- The process id at the other end of a connected pipe instance: its client
+--- (`side` "client", the daemon's view) or its server ("server", a client's
+--- view). nil + error when it cannot be read.
+--- @param pipe userdata a connected uv pipe
+--- @param side "client"|"server"
+--- @return integer|nil pid, string|nil err
+function M.peer_pid(pipe, side)
+    if M._peer_pid_probe then return M._peer_pid_probe(pipe, side) end
+    local w = kernel()
+    if not w then return nil, "no FFI access to the pipe" end
+    local h = os_handle(pipe)
+    if not h then return nil, "no OS handle for the pipe" end
+    local out = w.ffi.new("unsigned long[1]")
+    local fn = side == "client" and "GetNamedPipeClientProcessId" or "GetNamedPipeServerProcessId"
+    local ok, rc = pcall(function() return w.ffi.C[fn](h, out) end)
+    if not ok or rc == 0 or out[0] == 0 then return nil, "cannot read the " .. side .. " process id of the pipe" end
+    return tonumber(out[0])
+end
+
+--- The peer check of a connected pipe (spec §19.7 "Peer check (Windows)"),
+--- run before any frame is read or written: the process at the other end
+--- (`side`: "client" for the daemon, "server" for a client) must have this
+--- process's identity I (§19.7.1: user SID and elevation). A peer whose
+--- process id or token cannot be read is refused, and so is any peer when
+--- this process's own identity cannot be read. POSIX: always true (the
+--- euid-owned 0700 directory and the socket owner check do this, §19.7).
+--- Only FFI calls: safe in a libuv callback of the editor host.
+--- @param pipe userdata
+--- @param side "client"|"server"
+--- @return boolean ok, string|nil why
+function M.peer_check(pipe, side)
+    if not is_win() and not M._force_peer_check then return true end
+    local identity = require("loomworks.daemon.identity")
+    local okm, mine = pcall(identity.identity)
+    if not okm then return false, "cannot read this process's identity: " .. tostring(mine) end
+    local pid, perr = M.peer_pid(pipe, side)
+    if not pid then return false, perr end
+    local theirs = identity.process_identity(pid)
+    if not theirs then
+        return false, "cannot read the token of the pipe's " .. side .. " process " .. tostring(pid)
+    end
+    if theirs ~= mine then
+        return false, "the pipe's " .. side .. " process " .. tostring(pid)
+            .. " runs as another user or elevation (another daemon slot, spec §19.7.1)"
+    end
+    return true
 end
 
 -- Indirections the POSIX ownership checks go through (tests stub them).

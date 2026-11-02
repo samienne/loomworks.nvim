@@ -224,16 +224,72 @@ local function mkdir_p(dir)
     return uv().fs_stat(dir) ~= nil
 end
 
+-- Indirections of the POSIX ownership check (tests stub them).
+M._lstat = function(p) return uv().fs_lstat(p) end
+M._euid = function() return require("loomworks.daemon.identity").euid() end
+--- Test seam: run the POSIX ownership check on Windows too.
+M._force_posix_owner_check = nil
+
+--- POSIX: is `path` (a `kind` "directory" or "file") owned by this
+--- process's effective uid and not writable by group or others, by lstat (a
+--- link is refused)? (spec formats.md §2.1). A missing path passes only with
+--- `may_miss`. Returns true, or nil + an error naming the path. Windows: true
+--- (the per-user local application-data directory is already private).
+--- @param path string
+--- @param kind "directory"|"file"
+--- @param may_miss? boolean
+--- @return boolean|nil ok, string|nil err
+function M._check_owner(path, kind, may_miss)
+    if package.config:sub(1, 1) == "\\" and not M._force_posix_owner_check then return true end
+    local st = M._lstat(path)
+    if not st then
+        if may_miss then return true end
+        return nil, "the trust key's " .. kind .. " " .. path .. " is missing"
+    end
+    if st.type ~= kind then
+        return nil, "refusing the trust key: " .. path .. " is not a real " .. kind .. " (a link is not followed)"
+    end
+    local me, err = M._euid()
+    if type(me) ~= "number" then
+        return nil, "refusing the trust key: cannot determine the effective uid (" .. tostring(err) .. ")"
+    end
+    if type(st.uid) ~= "number" or st.uid ~= me then
+        return nil, "refusing the trust key: " .. path .. " is owned by uid " .. tostring(st.uid)
+            .. ", not this process's effective uid " .. me .. " (spec formats.md §2.1)"
+    end
+    local perm = (st.mode or 0) % 512
+    -- group-write 0020, other-write 0002
+    if not st.mode or math.floor(perm / 16) % 2 == 1 or math.floor(perm / 2) % 2 == 1 then
+        return nil, "refusing the trust key: " .. path .. " is writable by group or others (mode "
+            .. string.format("%03o", perm) .. "; spec formats.md §2.1)"
+    end
+    return true
+end
+
 --- Load the machine key (raw bytes), creating it on first use.
 --- @param create? boolean default true
 --- @return string|nil key, string|nil err
 function M.key(create)
     local path = M.key_path()
     if _key_cache and _key_cache.path == path then return _key_cache.key end
+    -- POSIX (formats.md §2.1): the key and its directory are owned by the
+    -- effective uid and not group/other-writable — else an error naming the
+    -- file; a root process with the user's $HOME neither uses nor creates
+    -- the user's key.
+    local dir = path:match("^(.+)[/\\][^/\\]+$")
+    if dir then
+        local okd, derr = M._check_owner(dir, "directory", true)
+        if not okd then return nil, derr end
+    end
+    local okf, ferr = M._check_owner(path, "file", true)
+    if not okf then return nil, ferr end
     local text = read_all(path)
     if not text and create ~= false then
-        local dir = path:match("^(.+)[/\\][^/\\]+$")
-        if dir then mkdir_p(dir) end
+        if dir then
+            mkdir_p(dir)
+            local okc, cerr = M._check_owner(dir, "directory")
+            if not okc then return nil, cerr end
+        end
         local rnd = uv().random and uv().random(32) or nil
         if type(rnd) ~= "string" or #rnd ~= 32 then
             return nil, "no secure random source to create the trust key"
@@ -246,6 +302,8 @@ function M.key(create)
             uv().fs_fsync(fd)
             uv().fs_close(fd)
         end
+        local okn, nerr = M._check_owner(path, "file")
+        if not okn then return nil, nerr end
         text = read_all(path)
     end
     if not text then return nil, "cannot read the trust key at " .. path end

@@ -337,7 +337,7 @@ may import from its own layer or any layer below it, never above.
 | `lock_break.lua` | `--break-locks[=now]` (spec §19.5 steps 1–3): `parse_flag`, `can_break(info, ctx)` (never another host, an editor holder, this process, or a holder whose start time cannot be checked), `break_holder(info, ctx, opts)` (ask → wait `ASK_MS` → `proc.kill_tree` → verify; every line to `report` and `log`). Process-wide `requested` / `command` / `report` / `log` set by the CLI | Reclaim (the caller's next acquisition does, nonce-checked) |
 | `op_lock.lua` | Workspace operation lock O (spec §19.3): `<root>/.nvim/loomworks.op.lock` on `build_lock`'s path API, acquired through `lock_break.acquire` (fail-fast, `--break-locks`). `acquire(root, op)` → token (re-entrant per process: nested tokens share the lockfile, released with the outermost), `release`, `release_all` (CLI exit hook), `held`, `read`, `ctx()` (the `workspace busy: …` message style), `guard(class, method, op, ws_of)` wraps a method so it runs holding O via `ws:_op_lock` / `ws:_op_unlock` | Take B/D/F locks |
 | `txn.lua` | Crash-consistent multi-file commits (spec §19.4): `begin(root, op)` (re-entrant; takes the three files' save locks in §19.3 order and marks them held — `save_guard._hold` — so the saves inside re-enter them; installs `io._txn_hook`), the hook stages `write_file_atomic` of a workspace file to `<file>.txn-<id>` (flushed) and serves `read_file` the staged bytes; `finish(t)` (one file: rename; several: journal `.nvim/loomworks.txn.json` → per entry `.bak` + rename → dir flush → remove journal), `abort` / `abandon` (remove staged copies), `read_journal` (validation), `recover_locked(root)` (roll forward / refuse), `strays`, `discard_locked`; `_crash_at` test seam | Take O (callers hold it) |
-| `trust.lua` | Workspace trust crypto (spec §17.2–§17.3): the per-machine key (`<data dir>/trust.key`, created `O_EXCL` + `0600`), pure-Lua SHA-256/HMAC-SHA256 over LuaJIT `bit` (the content digest is the host's `vim.fn.sha256`), `sign(kind, text)` / `verify(kind, text) → valid|unsigned|invalid, signed_bytes` with the signature as the first member line, `sign_file` (the explicit trust decision, refuses if the file changed since review) | Decide policy (callers decide what refusal means) |
+| `trust.lua` | Workspace trust crypto (spec §17.2–§17.3): the per-machine key (`<data dir>/trust.key`, created `O_EXCL` + `0600`), pure-Lua SHA-256/HMAC-SHA256 over LuaJIT `bit` (the content digest is the host's `vim.fn.sha256`), `sign(kind, text)` / `verify(kind, text) → valid|unsigned|invalid, signed_bytes` with the signature as the first member line, `sign_file` (the explicit trust decision, refuses if the file changed since review); on POSIX the key and its directory must be owned by the effective uid and not group/other-writable (lstat, `_check_owner`; formats.md §2.1), else `key()` errors naming the file and creates nothing | Decide policy (callers decide what refusal means) |
 | `program_fields.lua` | Program-bearing fields (spec §17.6): `strip(config, modules)` removes them from the parsed shared config before any merge (generic: configuration/override `env`, launches naming command/args/env/working_dir, non-local deploy destinations, shared SDK paths; plus each module's `trust_fields.type_config`), `regraft(raw, ignored)` restores them on publish, `active(ignored, merged)` (the ones the working copy does not supply: `Workspace:ignored_program_settings()`, counted by the `lw status` Trust row and `build_run.trust_notice`, which both build hosts print, §17.10), `diagnostics(ignored, merged)`, `review(user_data, modules)` for the trust prompt | Know module names |
 | `env_policy.lua` | Environment denylist (spec §17.9): `is_denied(name)` (case-insensitive, prefix entries), `filter(env, opts)` with one-time warnings (silent for a captured tool env that repeats the process's own value) | Touch the process environment |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication; `watch_signal(path, cb)` adds a stat-change watch (no content read) for directories — used for the cmake file-api reply dir (owned-DB regen trigger) | Domain logic; know about merge or profiles |
@@ -645,8 +645,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   LF I) (pure-Lua `trust._sha256_raw`, safe in libuv callbacks), cached per
   process, an error (no shared fallback) when I cannot be read.
   `process_identity(pid)` / `same_slot(pid)` read another process's I
-  (Windows `OpenProcess` + token; POSIX `proc.euid`). Seams `_set_identity`,
-  `_process_probe`.
+  (Windows `OpenProcess` + token; POSIX `proc.euid`). `euid()` is this
+  process's effective uid (POSIX; the socket directory, the process filter
+  and the trust key's owner use it, never the real uid). Seams
+  `_set_identity`, `_process_probe`, `_euid_override`.
 - `legacy.lua` — the unslotted files of lw before slots (§19.6 "Legacy
   files"), never read for discovery: `stop_live` (from `Server:start`, before
   R) stops a live daemon of this slot holding the legacy lock via
@@ -731,10 +733,21 @@ re-cut onto master step by step; this section is expanded as each step lands.
   bind → `apply_dacl` via FFI `SetSecurityInfo` on `pipe:fileno()` → listen,
   refusing on failure; POSIX: verified directory, stale socket unlinked
   only if `lstat` says socket), `cleanup` (only a socket at one of the
-  candidate paths), `read_dacl` / `user_sid` for tests.
+  candidate paths), `read_dacl` / `user_sid` for tests. The DACL is the
+  pipe's, not an instance's: the instances libuv creates later carry it too
+  (tests read it back from a later accepted instance). `peer_check(pipe,
+  side)` (§19.7 "Peer check", Windows): `GetNamedPipeClientProcessId` (the
+  daemon, `side` "client") / `GetNamedPipeServerProcessId` (a client,
+  "server") on `pipe:fileno()` → `identity.process_identity(pid)`
+  (`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + token user SID and
+  elevation) must equal this process's I; an unreadable pid or token is
+  refused. FFI only, safe in libuv callbacks. POSIX: true (the euid-owned
+  0700 directory does it). Seams `_peer_pid_probe`, `_force_peer_check`.
 - `server.lua` — `Server:start()` (a live legacy daemon of this slot stopped,
   `legacy.stop_live` → R → stale handle removed → K → endpoint →
-  handle → tick timer), per-connection handshake state machine
+  handle → tick timer; the pipe's name is never stat'ed — that would connect
+  an instance), `endpoint.peer_check` on each accepted connection before it
+  is read (a refusal is logged and closed), per-connection handshake state machine
   (`new` → `challenged` → `authed`, auth timer), `_dispatch` through `M.DISPATCH` of
   `ping`/`status`/`stop`/`retire`, `_tick` (R still ours, else `_lost_lock`:
   exit 1 touching nothing; handle mtime or rewrite), `stop` (close all,
@@ -756,8 +769,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   file or link; `Server:_guard` / `_on_read` / `_dispatch` pcall every loop
   callback (a handler error is an error reply; a loop error still takes the
   stop path).
-- `client.lua` — `connect` (hello built before going async, server proof
-  verified before anything else is sent), `session` / `request` / `call`
+- `client.lua` — `connect` (hello built before going async; on connect
+  `endpoint.peer_check(pipe, "server")` before `hello` — a refusal is
+  `ERR_UNTRUSTED` with nothing sent; server proof verified before anything
+  else is sent), `session` / `request` / `call`
   synchronous wrappers over `vim.wait`.
 - `launch.lua` — `self_argv` (fused `lw`, `luvi <app> --`, or `nvim -l
   cli.lua`), `env` (de-duplicated; `LW_ROOT`, `LOOMWORKS_LUA` = the running

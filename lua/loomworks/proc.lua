@@ -336,7 +336,7 @@ M._processes_probe = nil
 
 --- The processes of this host with their executable base names, for the
 --- daemon scan (spec §19.6.1): `{ pid, name }[]`. Windows: one Toolhelp
---- snapshot (`szExeFile`); Linux: the `/proc` entries owned by this uid
+--- snapshot (`szExeFile`); Linux: the `/proc` entries owned by this euid
 --- (`comm`, at most 15 characters); macOS: `proc_listallpids` + `proc_name`
 --- (fallback `ps -x -o pid=,comm=`). Names are as the OS reports them (a path
 --- on the `ps` fallback); callers take the base name.
@@ -362,14 +362,17 @@ function M.processes()
     if OS == "Linux" then
         local req = uv().fs_scandir("/proc")
         if req then
-            local me = uv().getuid and uv().getuid() or nil
+            -- This process's effective uid (§19.7; /proc/<pid> is owned by
+            -- the process's effective uid). Unreadable: nothing is listed.
+            local me = require("loomworks.daemon.identity").euid()
+            if not me then return list end
             while true do
                 local name = uv().fs_scandir_next(req)
                 if not name then break end
                 local pid = tonumber(name)
                 if pid then
                     local st = uv().fs_stat("/proc/" .. name)
-                    if st and (me == nil or st.uid == me) then
+                    if st and st.uid == me then
                         local f = io.open("/proc/" .. name .. "/comm", "r")
                         if f then
                             local comm = (f:read("*l") or ""):gsub("%s+$", "")

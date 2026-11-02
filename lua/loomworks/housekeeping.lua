@@ -292,7 +292,7 @@ end
 --- POSIX per-user socket directories (spec §19.7).
 local function default_run_dirs()
     if IS_WIN then return {} end
-    local id = (uv().getuid and uv().getuid()) or 0
+    local id = (require("loomworks.daemon.identity").euid() or 0)
     local out = {}
     local xdg = os.getenv("XDG_RUNTIME_DIR")
     if xdg and xdg ~= "" then out[#out + 1] = norm(xdg) .. "/loomworks" end
@@ -619,7 +619,7 @@ end
 local function scan_run_dir(items, ctx, dir)
     local st = uv().fs_lstat(dir)
     if not st or st.type ~= "directory" then return end
-    local me = (uv().getuid and uv().getuid()) or -1
+    local me = (require("loomworks.daemon.identity").euid() or -1)
     if type(st.uid) ~= "number" or st.uid ~= me then return end
     if not st.mode or (st.mode % 512) ~= tonumber("700", 8) then return end
     for _, n in ipairs(names(dir)) do
@@ -734,7 +734,7 @@ function M.collect(opts)
         live_hashes = opts.live_daemon_hashes,
     }
     if ctx.is_windows == nil then ctx.is_windows = IS_WIN end
-    if ctx.uid == nil then ctx.uid = (uv().getuid and uv().getuid()) or -1 end
+    if ctx.uid == nil then ctx.uid = (require("loomworks.daemon.identity").euid() or -1) end
     local items = {}
     local function guarded(fn, ...)
         local ok, err = pcall(fn, ...)
