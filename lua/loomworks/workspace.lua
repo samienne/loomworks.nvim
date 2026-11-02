@@ -632,6 +632,7 @@ end
 --- @field _merged_config table|nil last merged config (internal shape) — supplies-check for _shared_ignored diagnostics
 --- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
 --- @field _file_batch? { save_user: boolean } set while one tracker sync's changes are applied (spec §2.7)
+--- @field _held_notes? table<string, loomworks.LoadNote> per tracked path: the load warning of a change held back because the file cannot be parsed (the workspace daemon, core daemon.md §19.13)
 --- @field _disk_baseline table<"user"|"cache", { text: string|nil }> per guarded
 ---     file, the exact bytes this process last read from or wrote to disk
 ---     (`text` nil = absent). A save whose file no longer matches is stale
@@ -9677,6 +9678,7 @@ function Workspace:_start_tracking(paths)
     if self._tracker then
         self._tracker:stop()
     end
+    local manual = self._core._deps.manual_file_tracking and true or false
     self._tracker = self._core._deps.FileTracker.new({
         callback = function(path, content)
             self:_on_file_changed(path, content)
@@ -9685,13 +9687,20 @@ function Workspace:_start_tracking(paths)
         batch = function(deliver) self:_apply_file_changes(deliver) end,
         schedule = self._core._deps.schedule,
         read_file = self._core._deps.io.read_file,
-        -- The workspace daemon applies external changes itself, right before
-        -- each operation and in that client's environment (spec §19.15).
-        manual = self._core._deps.manual_file_tracking or nil,
+        -- The workspace daemon applies external changes itself (spec §19.13
+        -- "Freshness of views", §19.15): its tracker watches the files and
+        -- signals it (`file_signal`); a file that cannot be parsed is held
+        -- back, and one missing beside its staged copy is a save in progress.
+        manual = manual or nil,
+        signal = manual and self._core._deps.file_signal or nil,
+        hold = manual and function(path, content) return self:_hold_file_change(path, content) end or nil,
+        saves = manual or nil,
     })
     self._tracker:watch(paths.config)
     self._tracker:watch(paths.user)
-    self._tracker:watch(paths.cache)
+    -- (The daemon watches loomworks.json and the working copy; the cache,
+    -- which it writes itself, reaches it at each check, §19.13.)
+    self._tracker:watch(paths.cache, { passive = true })
 end
 
 --- Stop file tracking.
@@ -9993,6 +10002,54 @@ function Workspace:_on_file_changed(path, content)
         self:remerge(nil, cache_data)
         self:_adopt_disk("cache", raw)
     end
+end
+
+--- Hold back a tracked file change that cannot be parsed (the workspace
+--- daemon's tracker `hold`, core daemon.md §19.13 "Freshness of views"): a
+--- file that is not a JSON object, or a working copy whose signature envelope
+--- cannot be read (a save caught half-written), never unloads or replaces the
+--- model. The last good model stays, a load warning names the file — once,
+--- however often it is seen — and the next change retries; the warning goes
+--- when the file can be parsed again. A well-formed working copy that fails
+--- its signature is not held: `_on_file_changed` refuses it (§17.4).
+--- @param path string
+--- @param content string|nil
+--- @return boolean hold
+function Workspace:_hold_file_change(path, content)
+    local paths = M.paths(self.root)
+    local why
+    if content ~= nil then
+        local ok, decoded = pcall(vim.json.decode, content)
+        if not ok or type(decoded) ~= "table" then
+            why = "it is not JSON"
+        elseif path == paths.user and require("loomworks.trust").envelope_unreadable(content) then
+            why = "its signature envelope cannot be read"
+        end
+    end
+    local held = self._held_notes or {}
+    self._held_notes = held
+    local note = held[path]
+    if not why then
+        if note then
+            held[path] = nil
+            for i, n in ipairs(self._load_notes or {}) do
+                if n == note then
+                    table.remove(self._load_notes, i)
+                    break
+                end
+            end
+        end
+        return false
+    end
+    if not note then
+        local rel = path:sub(1, #self.root + 1) == self.root .. "/" and path:sub(#self.root + 2) or path
+        note = { severity = "warn", text = string.format(
+            "loomworks: %s cannot be parsed (%s): the last good state is kept until it changes", rel, why) }
+        held[path] = note
+        self._load_notes = self._load_notes or {}
+        table.insert(self._load_notes, note)
+    end
+    return true
 end
 
 --- Would applying this tracked file change reload the workspace or run a

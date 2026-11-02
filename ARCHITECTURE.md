@@ -885,9 +885,26 @@ re-cut onto master step by step; this section is expanded as each step lands.
   (Windows case-insensitive);
   `install()` makes `os.getenv` read through libuv on Windows (the CRT copy
   is not updated by `SetEnvironmentVariableW`).
-- `file_tracker.lua` — `manual` (no `fs_poll`; `watch_signal` a no-op) and
-  `sync()` (deliver every pending change now, in watch order);
-  `Workspace:_start_tracking` passes `deps.manual_file_tracking`.
+- `file_tracker.lua` — `manual` (never syncs on its own; `watch_signal` a
+  no-op) and `sync()` (deliver every pending change now, in watch order);
+  `Workspace:_start_tracking` passes `deps.manual_file_tracking`. In the
+  daemon also *(spec §19.13 "Freshness of views")* `signal`
+  (`deps.file_signal`, the service's `files_changed` handler →
+  `Service:on_files_changed`): `fs_poll` on loomworks.json and the working
+  copy (the cache is `watch(path, { passive = true })`) calls it, and it runs
+  `header_check` outside a model segment (inside one, the check after the
+  segment applies the change); `hold` (`Workspace:_hold_file_change`): a
+  change that is not a JSON object, or a working copy whose signature
+  envelope cannot be read (`trust.envelope_unreadable`), holds the whole sync
+  and adds one load note naming the file (`_held_notes`), removed when the
+  file parses again; `saves`: a file read missing while its staged copy exists
+  (`<file>.tmp`, or `txn.staged_path(file, "")`-prefixed `<file>.txn-<id>`;
+  `FileTracker.staged_copy`) reads as its last known content and `_recheck`
+  signals again after `SAVE_RECHECK_MS`, for as long as the staged copy
+  remains; with no staged copy it reads as missing at once (a deletion; the
+  `.bak` is not consulted, as a save of identical bytes leaves it equal to
+  the content last applied) (`_read`). `Service:on_stopping` ends the watch
+  (`stop_signals`); the workspace's teardown stops the tracker.
 - `shim/init.lua` `vim.system` — `stdout` / `stderr` callbacks (nvim
   semantics; a streamed run finishes after both pipes' EOF, at most
   `STREAM_GRACE_MS` after the exit) and `:kill()`.
@@ -2000,8 +2017,10 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   `accept` (`Workspace:_change_needs_reload`) leaves a loomworks.json change
   (it rescans tools) and a refused file (it reloads) pending for the next
   request's `live` sync — outside model segments and never reentrant; a
-  view's `get` runs `header_check` before building, so another process's
-  write (the in-process CLI's) reaches the views at the next check. From 5o
+  view's `get` runs `header_check` before building, and the tracker's
+  watch (`file_tracker.lua` `signal` above) runs it when a watched file
+  changes, so another process's write (the in-process CLI's) reaches the
+  views with no request. From 5o
   the editor in daemon mode writes only through command methods, whose
   model segments send the `update`s before the reply.
 - `views.lua` (plugin side; step 5j part C) — the editor's view store: one

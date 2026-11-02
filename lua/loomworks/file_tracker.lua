@@ -12,11 +12,49 @@
 --- @field _schedule fun(fn: function)
 --- @field _batch? fun(deliver: fun())
 --- @field _paused boolean while true, `sync` (and so every poll) delivers nothing
+--- @field _manual boolean no sync of its own: changes are delivered only by `sync()`
+--- @field _signal? fun() a manual tracker's watch: called (scheduled) when a watched file's stat changes
+--- @field _hold? fun(path: string, content: string|nil): boolean screens each change before delivery
+--- @field _held table<string, true> paths whose last change `_hold` held back
+--- @field _saves boolean a file missing beside its staged copy is a save in progress (see `_read`)
+--- @field _staged fun(path: string): boolean whether a staged copy of `path` exists
+--- @field _recheck_timer? uv_timer_t the pending re-check of a save in progress
 local FileTracker = {}
 FileTracker.__index = FileTracker
 
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
+
+--- How soon a file missing beside its staged copy (a save between its two
+--- renames, spec §19.4) is checked again, in ms.
+FileTracker.SAVE_RECHECK_MS = 500
+
+--- Whether a save of `path` is staged: `<path>.tmp` (io.write_file_atomic)
+--- or a transaction's `<path>.txn-<id>` (loomworks.txn `staged_path`) exists.
+--- The transaction name is matched by its prefix, `staged_path(path, "")`,
+--- followed by a hex id, as txn recovery's `strays` matches it (the id is
+--- only format-checked, not used).
+--- @param path string
+--- @return boolean
+function FileTracker.staged_copy(path)
+    if uv.fs_stat(path .. ".tmp") then return true end
+    local prefix = require("loomworks.txn").staged_path(path, "")
+    local dir, pbase = prefix:match("^(.*)[/\\]([^/\\]+)$")
+    if not dir then dir, pbase = ".", prefix end
+    -- (Windows names are case-insensitive, and watched paths may be lowercased.)
+    local fold = vim.fn.has("win32") == 1 and string.lower or function(s) return s end
+    pbase = fold(pbase)
+    local req = uv.fs_scandir(dir == "" and "/" or dir)
+    while req do
+        local name = uv.fs_scandir_next(req)
+        if not name then break end
+        if #name > #pbase and fold(name:sub(1, #pbase)) == pbase
+            and name:sub(#pbase + 1):match("^%x+$") then
+            return true
+        end
+    end
+    return false
+end
 
 --- @class loomworks.FileTrackerOpts
 --- @field callback fun(path: string, content: string|nil) called on file change
@@ -27,9 +65,24 @@ local io_mod = require("loomworks.io")
 ---   called once per sync that found changes; it must call `deliver()`, which
 ---   fires `callback` for each changed path. Lets the owner act once after all
 ---   of them are applied (spec §2.7).
---- @field manual? boolean no polling: changes are delivered only by `sync()`
----   (the workspace daemon, which applies external changes right before each
----   operation, spec §19.15)
+--- @field manual? boolean no sync of its own: changes are delivered only by
+---   `sync()` (the workspace daemon, which applies external changes itself,
+---   spec §19.13 "Freshness of views", §19.15)
+--- @field signal? fun() with `manual`: watch the content-watched files anyway
+---   and call this (scheduled) when one's stat changes, so the owner can sync
+---   (the daemon's watch, §19.13); also after the grace of a save in progress
+--- @field hold? fun(path: string, content: string|nil): boolean screens every
+---   change a sync read (and a path it held before, until it passes): true
+---   holds it back, and the sync then delivers nothing (every last known
+---   content kept), so the next sync retries (the daemon: a file that cannot
+---   be parsed, §19.13)
+--- @field saves? boolean a file read missing while its staged copy exists
+---   (`<file>.tmp`, or a transaction's `<file>.txn-<id>`) is a save in
+---   progress (spec §19.4): it reads as its last known content, and a re-check
+---   is signalled after `SAVE_RECHECK_MS`; with no staged copy it reads as
+---   missing at once (a deletion)
+--- @field staged? fun(path: string): boolean injectable for testing (default
+---   `FileTracker.staged_copy`)
 
 --- Create a new FileTracker.
 --- @param opts loomworks.FileTrackerOpts
@@ -43,6 +96,11 @@ function FileTracker.new(opts)
     self._read_file = opts.read_file or io_mod.read_file
     self._schedule = opts.schedule or vim.schedule
     self._manual = opts.manual or false
+    self._signal = opts.signal
+    self._hold = opts.hold
+    self._held = {}
+    self._saves = opts.saves or false
+    self._staged = opts.staged or FileTracker.staged_copy
     self._batch = opts.batch
     self._order = {}
     self._paused = false
@@ -52,28 +110,83 @@ end
 --- Read current content and start polling a file.
 --- If the file doesn't exist, content is stored as nil.
 --- @param path string absolute file path
-function FileTracker:watch(path)
+--- @param opts? { passive?: boolean } `passive`: a manual tracker does not
+---   watch it for its `signal` (its changes are delivered by `sync()` only)
+function FileTracker:watch(path, opts)
     if self._watches[path] ~= nil then return end
 
     -- Seed with current content
-    self._content[path] = self._read_file(path)
+    self._content[path] = self:_read(path)
     self._order[#self._order + 1] = path
-    if self._manual then
+    if self._manual and (not self._signal or (opts and opts.passive)) then
         self._watches[path] = false
         return
     end
 
     local poll = uv.new_fs_poll()
-    if not poll then return end
+    if not poll then
+        if self._manual then self._watches[path] = false end
+        return
+    end
 
     self._watches[path] = poll
 
     poll:start(path, self._interval, function(err, prev, curr)
         -- fs_poll callback runs in the libuv thread; schedule to main thread
         -- A change to one file delivers every pending change together (two
-        -- files written back to back are applied as one, see `sync`).
+        -- files written back to back are applied as one, see `sync`). A
+        -- manual tracker tells its owner, which syncs when it may.
         self._schedule(function()
             if self._watches[path] == nil then return end
+            -- (`stop_signals` may have run since this was queued.)
+            if self._manual then
+                if self._signal then self._signal() end
+                return
+            end
+            self:sync()
+        end)
+    end)
+end
+
+--- Read a watched file. With `saves`, a file missing while its staged copy
+--- exists (`<file>.tmp`, or a transaction's `<file>.txn-<id>`) is a save in
+--- progress (spec §19.4: the target is absent between the save's two
+--- renames): it reads as its last known content, and a re-check is
+--- scheduled (again on every such read, while the staged copy remains). A
+--- missing file with no staged copy reads as missing at once, as a deleted
+--- file does. (A save always leaves a staged copy until its last rename; a
+--- deletion leaves none. The `.bak` says nothing: a save of identical bytes
+--- leaves it equal to the content last applied.) A save's last rename can
+--- land between the missing read and the staged check, leaving no staged
+--- copy: the target is then read once more before it counts as missing.
+--- @param path string
+--- @return string|nil
+function FileTracker:_read(path)
+    local content = self._read_file(path)
+    if content ~= nil or not self._saves then return content end
+    if not self._staged(path) then return self._read_file(path) end
+    self:_recheck()
+    return self._content[path]
+end
+
+--- Signal the owner again `SAVE_RECHECK_MS` after a save in progress was seen
+--- (a polling tracker syncs itself then).
+function FileTracker:_recheck()
+    if self._recheck_timer or (self._manual and not self._signal) then return end
+    local timer = uv.new_timer()
+    if not timer then return end
+    self._recheck_timer = timer
+    timer:start(FileTracker.SAVE_RECHECK_MS, 0, function()
+        self._schedule(function()
+            if self._recheck_timer == timer then
+                self._recheck_timer = nil
+                if not timer:is_closing() then timer:close() end
+            end
+            if next(self._watches) == nil or self._paused then return end
+            if self._manual then
+                if self._signal then self._signal() end
+                return
+            end
             self:sync()
         end)
     end)
@@ -149,11 +262,35 @@ function FileTracker:sync(opts)
     local changed = {}
     for _, path in ipairs(vim.list_extend({}, self._order)) do
         if self._watches[path] ~= nil then
-            local new_content = self._read_file(path)
+            local new_content = self:_read(path)
             if new_content ~= self._content[path] then
                 changed[#changed + 1] = { path = path, content = new_content, prev = self._content[path] }
             end
         end
+    end
+    if self._hold then
+        -- Every change is screened, and a path held before that is back to
+        -- its last known content (its hold is released then); one change
+        -- held holds the whole sync.
+        local held, seen = false, {}
+        for _, c in ipairs(changed) do
+            seen[c.path] = true
+            if self._hold(c.path, c.content) then
+                self._held[c.path] = true
+                held = true
+            else
+                self._held[c.path] = nil
+            end
+        end
+        for _, path in ipairs(vim.list_extend({}, self._order)) do
+            if self._held[path] and not seen[path] then
+                self._held[path] = nil
+                if self._watches[path] ~= nil and self._hold(path, self._content[path]) then
+                    self._held[path] = true
+                end
+            end
+        end
+        if held then return end
     end
     if #changed == 0 then return end
     if accept then
@@ -211,7 +348,16 @@ end
 function FileTracker:resume()
     if not self._paused then return end
     self._paused = false
-    if self._manual then return end
+    if self._manual then
+        -- A watching manual tracker tells its owner: a change seen while
+        -- paused is pending.
+        if self._signal then
+            self._schedule(function()
+                if self._signal and not self._paused and next(self._watches) ~= nil then self._signal() end
+            end)
+        end
+        return
+    end
     self._schedule(function()
         -- Paused again, or stopped, before this ran: nothing to deliver now.
         if self._paused or next(self._watches) == nil then return end
@@ -223,6 +369,32 @@ end
 function FileTracker:stop()
     for path in pairs(self._watches) do
         self:unwatch(path)
+    end
+    local timer = self._recheck_timer
+    self._recheck_timer = nil
+    if timer and not timer:is_closing() then
+        timer:stop()
+        timer:close()
+    end
+end
+
+--- Stop a manual tracker's watch (its `signal`): the polls and a pending
+--- re-check end, and `sync()` still delivers. Nothing for a polling tracker.
+function FileTracker:stop_signals()
+    if not self._manual then return end
+    self._signal = nil
+    for path, poll in pairs(self._watches) do
+        if poll then
+            poll:stop()
+            if not poll:is_closing() then poll:close() end
+            self._watches[path] = false
+        end
+    end
+    local timer = self._recheck_timer
+    self._recheck_timer = nil
+    if timer and not timer:is_closing() then
+        timer:stop()
+        timer:close()
     end
 end
 

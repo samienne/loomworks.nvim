@@ -1044,6 +1044,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   downloaded, including on a first run through `lw.sh` / `lw.cmd`. (#262)
 
 ### Fixed
+- The workspace daemon applies another process's change to `loomworks.json`
+  or `.nvim/loomworks.user.json` when it sees it, without waiting for a
+  request. A working copy caught half-written no longer unloads the
+  workspace: the last good state is kept and a load warning names the file
+  until it parses again. A file missing while a save replaces it (its
+  staged `<file>.tmp` or `<file>.txn-<id>` still present) is no longer read
+  as defaults; a deleted file reads as missing at once. (#380)
 - In daemon mode, a profile's row in the status page is busy while the daemon
   deletes that profile, as it is when the editor deletes it itself. (#378)
 - In daemon mode, a C/C++ file open before the workspace loads (a restored

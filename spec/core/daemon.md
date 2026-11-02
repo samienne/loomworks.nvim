@@ -1660,10 +1660,14 @@ never loads a workspace and never runs a tool detection: a change to
 `loomworks.json` (which can need a tool detection) or one that needs a
 reload, and the files changed with it, are not applied at a view check;
 they wait for the next state-changing request's sync.
-A write by another process does not by itself cause a check: the CLI's
-in-process writes reach the views at the next check. The editor in `daemon`
+The daemon watches `loomworks.json` and `loomworks.user.json`. Another process's change is applied when it is seen, as a check would apply it, with no request needed. It is applied after the current model segment, if one runs. A change that needs a load or a tool detection waits as above.
+The editor in `daemon`
 mode writes only through command methods (step 5o, §19.16 "Model writes"),
 whose `update`s precede their replies.
+
+A file that cannot be parsed (not JSON, or a working copy whose signature envelope cannot be read) never unloads or replaces the model. The last good model stays, a load warning names the file (`source = "load"`, severity `warn`, "Load warnings" below), and the next change retries. A well-formed working copy that fails its signature is still the refusal of §17.4.
+
+A file that is missing while its staged copy exists (`<file>.tmp`, or a transaction's `<file>.txn-<id>`, §19.4) is a save in progress: the target is briefly absent between its two renames. It is checked again shortly; while the staged copy remains, the model is kept. A missing file with no staged copy is missing, as a deleted file is.
 
 **Load warnings.** *(Step 6b-α.)* What a workspace load reports
 besides the structural diagnostics — a declared project directory not
@@ -2027,8 +2031,7 @@ of the same user, is held in memory for the request only, and is never
 written to the runtime log, the handle or any workspace file.
 
 **Live workspace.** The daemon loads its workspace on its first operation,
-or when an editor attaches (§19.16 "Loaded on attach") (the same load as the in-process path) and keeps it. Its file tracker does
-not poll: before accepting each operation the daemon applies every pending
+or when an editor attaches (§19.16 "Loaded on attach") (the same load as the in-process path) and keeps it. Besides watching (§19.13), before accepting each operation the daemon applies every pending
 external change to its files exactly as its file watcher would — including a
 trust refusal (§17.4), which unloads the workspace and is returned as
 `refused` — completes or refuses a commit journal by reloading (§19.4), and

@@ -771,9 +771,11 @@ function M._load_workspace_soft(root, wait_tools, opts)
   core._deps.on_lock_refused = handlers and handlers.refused or function(msg) die(msg) end
   -- The daemon broadcasts each committed state-file write (spec §19.12).
   core._deps.on_written = handlers and handlers.written or nil
-  -- The daemon applies external file changes itself, before each operation
-  -- (spec §19.15): its tracker never polls.
+  -- The daemon applies external file changes itself (spec §19.13 "Freshness
+  -- of views", §19.15): its tracker never syncs on its own; it watches the
+  -- files and signals the daemon (`files_changed`), which applies them.
   core._deps.manual_file_tracking = handlers and true or nil
+  core._deps.file_signal = handlers and handlers.files_changed or nil
   -- Skip the automatic background target scan — it can spawn a per-build-dir
   -- meson/python subprocess (~2s) on every load. Commands that need targets
   -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
