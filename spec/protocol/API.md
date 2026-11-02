@@ -85,6 +85,13 @@ the entry by its name, and the command edits that field of the project. A
 
 PROTOCOL.md §5 and §7 leave these values to the suite:
 
+- *K* is the 32-byte HMAC-SHA256 digest (raw bytes, not hexadecimal) keyed
+  with the machine key — the 32 bytes the 64 hexadecimal digits of
+  `trust.key` decode to (formats.md §2.1) — over the 19 ASCII bytes
+  `loomworks-daemon-v1`.
+- *E* is the `endpoint` string of the workspace's daemon handle
+  (formats.md, the handle record; spec §19.6), byte for byte: the address
+  the server bound and published.
 - `hello.client` is `cli` or `editor`; `role = "observer"` is a client that
   only watches.
 - `welcome.header` carries `root`, `pid`, `lw_version` and
@@ -982,9 +989,9 @@ commands (§6).
   the client's environment and takes them into the model, as the status
   page's `L` does in-process; a command (§6), with a `changed` when the
   model's toolchains changed. It replies only once detection settled or 45 s
-  (the daemon's load wait) passed, and other model requests queue behind it
-  meanwhile: a client calls it with a timeout of at least 45 s (the client's
-  default of 5 s is too short). A detection that outruns the wait does not
+  (the daemon's load wait) passed, and other model requests wait behind it
+  meanwhile (PROTOCOL.md §4): a client that times calls out allows it at
+  least 45 s. A detection that outruns the wait does not
   refuse it (the model may already have changed, §6): the reply is `ok` with
   the warn note `toolchain detection did not finish in time; it goes on in the
   background`, and the daemon signals `changed` when that detection finishes,
