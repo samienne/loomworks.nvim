@@ -237,4 +237,69 @@ describe("FileTracker", function()
             assert.is_nil(tracker:content("/b"))
         end)
     end)
+
+    -- The workspace daemon's tracker (spec/core/daemon.md §19.13).
+    describe("hold and saves (the daemon's watch)", function()
+        it("a held change holds the whole sync until it passes; then everything is delivered", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1" }
+            local seen, holds = {}, 0
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                hold = function(_, content) if content == "bad" then holds = holds + 1; return true end end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b")
+            disk["/a"], disk["/b"] = "bad", "b2"
+            tracker:sync()
+            assert.same({}, seen)
+            assert.equals("b1", tracker:content("/b"))
+            disk["/a"] = "a2"
+            tracker:sync()
+            assert.same({ { "/a", "a2" }, { "/b", "b2" } }, seen)
+        end)
+
+        it("a held path back to its last known content is screened again (its hold released)", function()
+            local disk = { ["/a"] = "a1" }
+            local screened = {}
+            local tracker = FileTracker.new({
+                callback = function() end,
+                read_file = function(path) return disk[path] end,
+                hold = function(_, content) screened[#screened + 1] = content; return content == "bad" end,
+                manual = true,
+            })
+            tracker:watch("/a")
+            disk["/a"] = "bad"; tracker:sync()
+            disk["/a"] = "a1"; tracker:sync()
+            assert.same({ "bad", "a1" }, screened)
+            tracker:sync()
+            assert.same({ "bad", "a1" }, screened)
+        end)
+
+        it("a file missing beside its .bak reads as unchanged, then as the .bak past the grace", function()
+            local grace = FileTracker.SAVE_GRACE_MS
+            FileTracker.SAVE_GRACE_MS = 50
+            local disk = { ["/a"] = "a1" }
+            local seen = {}
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                manual = true, saves = true,
+            })
+            tracker:watch("/a")
+            disk["/a"], disk["/a.bak"] = nil, "a0"
+            tracker:sync()
+            assert.same({}, seen)
+            local t0 = vim.uv.hrtime()
+            vim.wait(2000, function() return (vim.uv.hrtime() - t0) / 1e6 > 100 end, 10)
+            tracker:sync()
+            assert.same({ { "/a", "a0" } }, seen)
+            -- Without a .bak a missing file is a deletion.
+            disk["/a.bak"] = nil
+            tracker:sync()
+            assert.same({ "/a", nil }, seen[2])
+            tracker:stop()
+            FileTracker.SAVE_GRACE_MS = grace
+        end)
+    end)
 end)

@@ -348,6 +348,15 @@ function M.split(text)
     return sig:lower(), "{\n" .. text:sub(member_len + 1)
 end
 
+--- Does `text` begin a signature member that cannot be read (a file cut off
+--- or garbled inside its envelope)? A text without one is not: it is
+--- unsigned, which `verify` reports.
+--- @param text string
+--- @return boolean
+function M.envelope_unreadable(text)
+    return type(text) == "string" and text:sub(1, #SIG_PREFIX) == SIG_PREFIX and M.split(text) == nil
+end
+
 --- Sign `content` (a JSON object text starting with `{`) for `kind`.
 --- @param kind string
 --- @param content string

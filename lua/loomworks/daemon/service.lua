@@ -379,6 +379,10 @@ function Service:handlers()
         end,
         -- A committed write of a state file: tell the clients (§19.12).
         written = function() self.server:model_changed() end,
+        -- The watched files changed (§19.13 "Freshness of views"): another
+        -- process's change is applied as a check applies it, with the views'
+        -- `update`s; inside a model segment, by the check after it.
+        files_changed = function() self:on_files_changed() end,
     }
 end
 
@@ -575,6 +579,15 @@ function Service:check_files()
     local ok, err = pcall(ws.sync_light, ws)
     self._checking_files = false
     if not ok then self.server:log("file check before the views failed: %s", tostring(err)) end
+end
+
+--- The workspace's files changed on disk (its tracker's watch, §19.13
+--- "Freshness of views"): run the header check, which applies the change
+--- (`check_files`) and sends the views' `update`s. A model segment that runs
+--- is followed by that check already.
+function Service:on_files_changed()
+    if self.stopping or self.server.stopped or self.current then return end
+    pcall(require("loomworks.daemon.core_interfaces").header_check, self)
 end
 
 --- The model the header and the views (§19.13) report: the live workspace,
@@ -1294,6 +1307,10 @@ function Service:on_stopping(reason)
             run.task:done(run.cancel_code or 1, (run.op or "build") .. " stopped: the workspace daemon stopped")
         end
     end
+    -- The files' watch ends with the daemon (§19.13); the workspace's
+    -- teardown stops its tracker.
+    local tr = self.ws and self.ws._tracker
+    if tr and tr.stop_signals then pcall(tr.stop_signals, tr) end
 end
 
 M.Service = Service
