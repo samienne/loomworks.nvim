@@ -1,4 +1,4 @@
---- loomworks/daemon/handle.lua — the daemon handle `<root>/.nvim/loomworks.daemon.json`
+--- loomworks/daemon/handle.lua — the daemon handle `<root>/.nvim/loomworks.daemon-<S>.json`
 --- (spec §19.6).
 ---
 --- Discovery only: the runtime lock (§19.2, loomworks.daemon.rlock) decides
@@ -45,7 +45,14 @@ end
 --- @param root string
 --- @return table|nil
 function M.read(root)
-    local path = paths.handle_path(root)
+    return M.read_path(paths.handle_path(root))
+end
+
+--- `read` of a handle file at `path` (this slot's, or — only for deciding
+--- whether a reclaimer may remove it — the legacy one, loomworks.daemon.legacy).
+--- @param path string
+--- @return table|nil
+function M.read_path(path)
     -- Windows: one open, as short as it can be (while a reader holds the
     -- file open, the daemon's rename over it fails — `write` retries).
     -- POSIX: never opened unless it is a regular file (a FIFO planted in a

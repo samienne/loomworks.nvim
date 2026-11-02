@@ -413,6 +413,38 @@ function M.processes()
     return list
 end
 
+--- The effective uid of process `pid` (POSIX), or nil when it cannot be read
+--- (gone, no reader; always nil on Windows). Linux: the second `Uid:` field
+--- of `/proc/<pid>/status`; macOS: `pbi_uid` of `proc_pidinfo`
+--- (PROC_PIDTBSDINFO); else `ps -o uid=`.
+--- @param pid integer
+--- @return integer|nil
+function M.euid(pid)
+    if OS == "Windows" or type(pid) ~= "number" or pid <= 0 then return nil end
+    if OS == "Linux" then
+        local f = io.open("/proc/" .. tostring(pid) .. "/status", "r")
+        if f then
+            local s = f:read("*a") or ""
+            f:close()
+            local e = s:match("\nUid:%s+%d+%s+(%d+)")
+            return e and tonumber(e) or nil
+        end
+    end
+    local ffi = mac()
+    if ffi then
+        local buf = ffi.new("uint8_t[?]", MAC_BSDINFO_SIZE)
+        local n = ffi.C.proc_pidinfo(pid, MAC_BSDINFO, 0, buf, MAC_BSDINFO_SIZE)
+        if n < MAC_BSDINFO_SIZE then return nil end
+        return tonumber(ffi.cast("uint32_t*", buf)[5]) -- pbi_uid (effective)
+    end
+    if OS == "Linux" then return nil end
+    local p = io.popen("ps -o uid= -p " .. tostring(math.floor(pid)) .. " 2>/dev/null")
+    if not p then return nil end
+    local out = p:read("*a") or ""
+    p:close()
+    return tonumber(out:match("^%s*(%d+)"))
+end
+
 local _clk_tck
 --- The wall-clock time (seconds since the epoch) a start-time value of this
 --- OS's method denotes, or nil (another method, or not computable).

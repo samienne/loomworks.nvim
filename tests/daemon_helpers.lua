@@ -402,7 +402,7 @@ function M.three_way(o)
     local rc = o.lw(c, { "--no-daemon", unpack(o.args) }, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
     if o.routed ~= false then
         assert(rb.stderr:find("through the workspace daemon", 1, true), what .. ": not routed\n" .. rb.stderr)
-        local f = io.open(c .. "/.nvim/loomworks.daemon.log", "rb")
+        local f = io.open(require("loomworks.daemon.paths").log_path(c), "rb")
         local log = f and f:read("*a") or ""
         if f then f:close() end
         local op
@@ -425,7 +425,7 @@ function M.three_way(o)
         assert.equals(fa, M.parity_text(o.norm(r.stderr, root)), how)
         assert.same(o.state(a), o.state(root), how)
     end
-    assert.is_nil(uv.fs_stat(c .. "/.nvim/loomworks.daemon.lock"), what .. ": R not released")
+    assert.is_nil(uv.fs_stat(require("loomworks.daemon.paths").lock_path(c)), what .. ": R not released")
     return ra, rb, rc
 end
 

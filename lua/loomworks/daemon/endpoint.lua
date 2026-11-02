@@ -11,7 +11,8 @@
 ---     `/tmp` + `loomworks-<uid>`. The hashed name keeps the path inside the
 ---     `sun_path` limit (~104 bytes on macOS, 108 on Linux) for any repository
 ---     depth; a base whose path would not fit falls back to `/tmp`.
----   * Windows — a named pipe `\\.\pipe\loomworks-<hash of user and root>`.
+---   * Windows — a named pipe `\\.\pipe\loomworks-<hash of S and root>`,
+---     S the slot token (§19.7.1, loomworks.daemon.identity).
 ---     Right after binding (before listening) its security descriptor is
 ---     replaced, through LuaJIT FFI `SetSecurityInfo`, with the protected DACL
 ---     `D:P(D;;GA;;;NU)(A;;GA;;;<user SID>)(A;;GA;;;SY)`: owner and SYSTEM
@@ -38,11 +39,6 @@ M.SUN_PATH_MAX = 100
 
 local function uid() return (uv().getuid and uv().getuid()) or 0 end
 
-local function user_name()
-    local ok, pw = pcall(function() return uv().os_get_passwd() end)
-    if ok and type(pw) == "table" and pw.username then return pw.username end
-    return os.getenv("USERNAME") or os.getenv("USER") or "?"
-end
 
 --- POSIX candidates: { dir, path } in preference order.
 local function posix_candidates(root)
@@ -71,7 +67,10 @@ M._posix_candidates = posix_candidates
 --- @return string
 function M.address(root)
     if is_win() then
-        return [[\\.\pipe\loomworks-]] .. paths.short_hash(user_name() .. "\n" .. paths._hash_key(root))
+        -- Keyed by the slot token S (§19.7.1): the slots of one user
+        -- (elevated / standard) never share a pipe name.
+        return [[\\.\pipe\loomworks-]] .. paths.short_hash(require("loomworks.daemon.identity").slot() .. "\n"
+            .. paths._hash_key(root))
     end
     local c = posix_candidates(root)[1]
     return c and c.path or ("/tmp/loomworks-" .. uid() .. "/" .. paths.root_hash(root) .. ".sock")

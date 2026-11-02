@@ -65,13 +65,14 @@ local function cache_of(root, key_path)
     return walk(vim.json.decode(body))
 end
 
-local function lock_path(root) return root .. "/.nvim/loomworks.daemon.lock" end
+local function lock_path(root) return require("loomworks.daemon.paths").lock_path(root) end
 local function count(s, pat) local _, n = s:gsub(vim.pesc(pat), ""); return n end
 
---- The program of `lw run go`: prints whether the runtime lock exists.
+--- The program of `lw run go`: prints whether the runtime lock (of this
+--- slot, §19.7.1: the program runs as the same user) exists.
 local PROG = [[
 local root = arg[1]
-local held = vim.uv.fs_stat(root .. "/.nvim/loomworks.daemon.lock") ~= nil
+local held = vim.uv.fs_stat(root .. "/.nvim/]] .. require("loomworks.daemon.paths").slot_base() .. [[.lock") ~= nil
 io.write("prog LOCK=" .. (held and "held" or "free") .. string.char(10))
 ]]
 
@@ -114,7 +115,7 @@ describe("lw attached runs in runtime-mode daemon (real processes)", function()
     local function lw(root, args, extra, stdin)
         return H.lw(args, { env = with_vars(extra), cwd = root, stdin = stdin })
     end
-    local function rlog(root) return read(root .. "/.nvim/loomworks.daemon.log") or "" end
+    local function rlog(root) return read(require("loomworks.daemon.paths").log_path(root)) or "" end
     before_each(function()
         env = H.env({ LOOMWORKS_RUNTIME = "daemon" })
     end)
@@ -150,7 +151,7 @@ describe("lw attached runs in runtime-mode daemon (real processes)", function()
                 assert.same(cache_of(a, env.data .. "/trust.key"), cache_of(root, env.data .. "/trust.key"), what)
                 -- R released, and no daemon was launched.
                 assert.is_nil(uv.fs_stat(lock_path(root)), what)
-                assert.is_nil(uv.fs_stat(root .. "/.nvim/loomworks.daemon.json"), what)
+                assert.is_nil(uv.fs_stat(require("loomworks.daemon.paths").handle_path(root)), what)
             end
         end
         -- Ran attached (the daemon's code in the lw process), not in-process.

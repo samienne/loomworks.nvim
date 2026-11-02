@@ -23,6 +23,11 @@
 ---     replaced), pinned releases never the current pin's / the running
 ---     exe's / the running bundle's / recently used (renamed to `.trash-*`
 ---     before the tree is removed).
+---   * in the workspace, the legacy (unslotted) daemon files of lw before
+---     slots (spec §19.6 "Legacy files"), through loomworks.daemon.legacy:
+---     exact names in a verified `<root>/.nvim`, regular files, the lock and
+---     handle only of a dead holder (nonce-checked reclaim / re-checked
+---     unlink), the logs past the legacy-log age; never another slot's files.
 --- Bundle-side on purpose: every host (old ones included, §16.14) runs it;
 --- it needs no boot module (`boot.pin`, 0.1.6, only through pcall).
 
@@ -682,6 +687,34 @@ local function scan_workspace_tmp(items, ctx, root)
     end
 end
 
+--- The workspace's legacy (unslotted) daemon files (spec §19.6 "Legacy
+--- files", loomworks.daemon.legacy): the runtime lock and handle only as a
+--- reclaimer would remove them (holder dead), the runtime log (`.log`,
+--- `.log.1`) as a leftover of the legacy-log age. Exact names, regular files
+--- in a verified `<root>/.nvim`; each removal re-checks through the module.
+local function scan_workspace_legacy(items, ctx, root)
+    local legacy = require("loomworks.daemon.legacy")
+    root = norm(root)
+    local dir = legacy.nvim_dir(root)
+    if not dir then return end
+    local lp, info = legacy.lock_reclaimable(root)
+    if lp then
+        consider(items, ctx, dir, lp:match("[^/]+$"), "file", "daemon lock", 0, {
+            remove = function() return legacy.reclaim_lock(root, lp, info), "the lock changed meanwhile" end,
+        })
+    end
+    local hp, rec = legacy.handle_removable(root)
+    if hp then
+        consider(items, ctx, dir, hp:match("[^/]+$"), "file", "daemon handle", 0, {
+            remove = function() return legacy.remove_handle(root, hp, rec), "the handle changed meanwhile" end,
+        })
+    end
+    local min = ctx.legacy_any and 0 or M.AGE.legacy_log
+    for _, l in ipairs(legacy.logs(root)) do
+        consider(items, ctx, dir, l.path:match("[^/]+$"), "file", "runtime log", min, { remove = unlink_file })
+    end
+end
+
 --- Find what housekeeping (or `lw cleanup`) would remove (spec §16.40).
 --- Never raises for a missing or odd directory: it is just skipped.
 --- @param opts? loomworks.HousekeepingOpts
@@ -760,7 +793,10 @@ function M.collect(opts)
     local exe = opts.exe
     if exe == nil then exe = M.lw_host_exe() end
     if exe then guarded(scan_exe, items, ctx, exe) end
-    if opts.root then guarded(scan_workspace_tmp, items, ctx, opts.root) end
+    if opts.root then
+        guarded(scan_workspace_tmp, items, ctx, opts.root)
+        guarded(scan_workspace_legacy, items, ctx, opts.root)
+    end
 
     -- One entry per path (a temp dir listed twice, …).
     local seen, out = {}, {}

@@ -634,9 +634,27 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `daemon` by default, setup `runtime.mode = "in-process"` the deprecated
   in-process editor with `deprecated = true`, nothing from the environment
   or lw's setting); never launches anything.
-- `paths.lua` — the runtime lock / handle paths under `.nvim/`, the per-user
-  state directory (`<data dir>/daemon`) and the root hash naming per-user
-  files.
+- `paths.lua` — the runtime lock / handle / log paths under `.nvim/`
+  (`loomworks.daemon-<S>.{lock,json,log}`, S this process's slot token), the
+  legacy unslotted names (`LEGACY`), the per-user state directory
+  (`<data dir>/daemon`) and the root hash naming per-user files.
+- `identity.lua` — the runtime slot (§19.7.1): I = Windows token user SID +
+  `elevated`/`standard` (FFI `OpenProcessToken` + `GetTokenInformation`
+  TokenUser / TokenElevation), POSIX decimal euid (FFI `geteuid`, else
+  `/proc/self/status`); S = first 16 hex of SHA-256(`loomworks-daemon-slot-v1`
+  LF I) (pure-Lua `trust._sha256_raw`, safe in libuv callbacks), cached per
+  process, an error (no shared fallback) when I cannot be read.
+  `process_identity(pid)` / `same_slot(pid)` read another process's I
+  (Windows `OpenProcess` + token; POSIX `proc.euid`). Seams `_set_identity`,
+  `_process_probe`.
+- `legacy.lua` — the unslotted files of lw before slots (§19.6 "Legacy
+  files"), never read for discovery: `stop_live` (from `Server:start`, before
+  R) stops a live daemon of this slot holding the legacy lock via
+  `lock_break.break_holder` (ask, then kill + verify); `reclaim` (`lw daemon
+  stop`) and housekeeping / `lw cleanup` remove the legacy lock (dead holder,
+  nonce-checked `lock_record.reclaim`) and handle (names a gone process, no
+  live holder) and list `.log` / `.log.1` as leftovers — exact names, regular
+  files (lstat), in a `.nvim` that is a real directory at the root's real path.
 - `version.lua` — what the handshake compares: `PROTOCOL` (with `PROTOCOL_MIN` and `negotiate`, the transport range), the host identity
   (release version, or `<version>+dev.<fingerprint>` over the source files'
   paths/sizes/mtimes for a development build — the on-disk root `lua_root()`,
@@ -672,7 +690,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   dead record by nonce — remove the handle naming that pid/start time and its
   socket, release) and, when a journal exists, `op_lock.acquire` to roll it
   forward.
-- `discover.lua` — every daemon of this user on this host (§19.6.1) by a
+- `discover.lua` — every daemon of this slot on this host (§19.6.1; other
+  slots' processes skipped by `identity.same_slot`) by a
   process scan, no registry: `proc.processes()` (Windows Toolhelp names,
   Linux own-uid `/proc/<pid>/comm`, macOS `proc_listallpids` + `proc_name`,
   `ps` fallback) → exe-name candidates (`lw`, `lw-*`, `luvi`, `nvim`) →
@@ -707,13 +726,14 @@ re-cut onto master step by step; this section is expanded as each step lands.
   non-secret `key_id` (16 hex of HMAC(K, `loomworks-daemon-key-id-v1`)), nonces, the two
   endpoint-bound proofs, constant-time compare (pure-Lua HMAC from
   `trust.lua`).
-- `endpoint.lua` — the address (Windows pipe name hashed from user + root;
+- `endpoint.lua` — the address (Windows pipe name hashed from slot token S + root;
   POSIX socket `<per-user 0700 dir>/<root hash>.sock`), `listen` (Windows:
   bind → `apply_dacl` via FFI `SetSecurityInfo` on `pipe:fileno()` → listen,
   refusing on failure; POSIX: verified directory, stale socket unlinked
   only if `lstat` says socket), `cleanup` (only a socket at one of the
   candidate paths), `read_dacl` / `user_sid` for tests.
-- `server.lua` — `Server:start()` (R → stale handle removed → K → endpoint →
+- `server.lua` — `Server:start()` (a live legacy daemon of this slot stopped,
+  `legacy.stop_live` → R → stale handle removed → K → endpoint →
   handle → tick timer), per-connection handshake state machine
   (`new` → `challenged` → `authed`, auth timer), `_dispatch` through `M.DISPATCH` of
   `ping`/`status`/`stop`/`retire`, `_tick` (R still ours, else `_lost_lock`:

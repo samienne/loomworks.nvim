@@ -290,6 +290,13 @@ end
 --- @return boolean|nil ok, string|nil err, integer|nil code
 function Server:start()
     lock_record.set_holder_kind("daemon")
+    -- A live daemon of this slot that holds the legacy (unslotted) runtime
+    -- lock is an earlier lw's: stopped before this one starts (§19.6
+    -- "Legacy files"). Its files are never read to find or connect to it.
+    if uv.fs_stat(self.root) then
+        local lout = require("loomworks.daemon.legacy").stop_live(self.root, function(l) self:log("%s", l) end)
+        if lout == "stopped" then self:log("stopped the workspace daemon of an earlier lw (legacy runtime lock)") end
+    end
     local aok, aerr, acode = self:_acquire({ mode = "daemon" })
     if not aok then return nil, aerr, acode end
     local R = self.R

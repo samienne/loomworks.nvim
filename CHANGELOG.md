@@ -67,6 +67,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   environment variables, are now a load error. (#358)
 
 ### Upgrade notes
+- The workspace daemon is now per user and, on Windows, per elevation: its
+  files are `.nvim/loomworks.daemon-<slot>.lock`, `.json` and `.log`, and an
+  elevated and a normal `lw` (or two users) each run their own daemon and never
+  connect to each other's. A daemon started by an earlier `lw` is stopped once
+  when the new one starts (a build it was running is interrupted); `lw daemon
+  stop`, housekeeping and `lw cleanup` remove its old `loomworks.daemon.lock`
+  and `.json` once it is gone, and the old `loomworks.daemon.log` as a
+  leftover. An older `lw` no longer finds a daemon started by this one. (#369)
 - The cache (`.nvim/loomworks.cache.json`) is now version 9. A version 8
   cache is migrated when it loads and written as version 9 by the next save;
   after that an older `lw` or editor (including a pinned one) refuses the

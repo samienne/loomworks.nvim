@@ -12437,7 +12437,9 @@ lw's own directories are touched, never through a link, never while in use.
 lw also does this by itself: once a day, at the start of a command, it
 silently removes the same leftovers (pinned releases excepted, and old runtime
 logs only once unmodified for 30 days), and notes it in the workspace's
-.nvim/loomworks.daemon.log.
+runtime log (.nvim/loomworks.daemon-<slot>.log). In the workspace it also
+removes the daemon files of lw before slots (.nvim/loomworks.daemon.lock and
+.json once their daemon is gone, .log and .log.1 as old runtime logs).
 
 What lw keeps outside the workspace on purpose: its settings (config.json),
 the machine key (trust.key), the tool scan cache (tools.json), the newest three
@@ -12557,12 +12559,17 @@ three 30 s keepalive intervals is dropped) and exits after
 such as 90s, 2m, 30m, 1h; default 45s),
 when the workspace directory is removed, or when its lock is taken over.
 
-Files: .nvim/loomworks.daemon.lock (the runtime lock: one runtime per
-workspace), .nvim/loomworks.daemon.json (the handle a client finds the daemon
-by), and the runtime log .nvim/loomworks.daemon.log (2 MB + one rotated .1):
-the daemon's starts, stops and refusals, every launch, and every kill and
-forced unlock (`lw daemon kill`, `--break-locks`, `lw unlock --force`).
-`lw daemon status` names the log.]],
+Files: .nvim/loomworks.daemon-<slot>.lock (the runtime lock: one runtime per
+workspace and slot), .nvim/loomworks.daemon-<slot>.json (the handle a client
+finds the daemon by), and the runtime log .nvim/loomworks.daemon-<slot>.log
+(2 MB + one rotated .1): the daemon's starts, stops and refusals, every
+launch, and every kill and forced unlock (`lw daemon kill`, `--break-locks`,
+`lw unlock --force`). `lw daemon status` names the log. <slot> is a short
+hash of the OS user and, on Windows, whether the process is elevated: an
+elevated and a normal lw, or two users, each have their own daemon and never
+connect to each other's. A daemon of an lw before slots (files without
+<slot>) is stopped once when this lw starts its daemon; `lw daemon stop`
+removes its lock and handle once it is gone.]],
   unlock = [[lw unlock <profile> | <build dir> | --workspace | --journal | --all [--force] | --device <serial>
 
 Clear build-directory locks. loomworks serializes configure/build/clean on a

@@ -1,13 +1,20 @@
 --- loomworks/daemon/paths.lua — where the workspace runtime's files live
 --- (spec §19.2, §19.6, §19.10).
 ---
----   <root>/.nvim/loomworks.daemon.lock   the runtime lock R (§19.2)
----   <root>/.nvim/loomworks.daemon.json   the handle: discovery only (§19.6)
----   <root>/.nvim/loomworks.daemon.log    the runtime log (§19.10)
+---   <root>/.nvim/loomworks.daemon-<S>.lock   the runtime lock R (§19.2)
+---   <root>/.nvim/loomworks.daemon-<S>.json   the handle: discovery only (§19.6)
+---   <root>/.nvim/loomworks.daemon-<S>.log    the runtime log (§19.10)
+---   <root>/.nvim/loomworks.daemon.{lock,json,log}  the legacy (unslotted)
+---                                        names of lw before slots (§19.6
+---                                        "Legacy files", daemon.legacy)
 ---   <state>/                             the per-user state directory: the
 ---                                        daemon's working directory (§19.10)
 ---   <state>/logs/                        where earlier versions kept the
 ---                                        runtime logs (legacy, §16.40)
+---
+--- `<S>` is this process's slot token (§19.7.1, loomworks.daemon.identity):
+--- the slot's files only; another slot's are never named here. A process
+--- whose slot cannot be determined gets an error, never a shared name.
 ---
 --- `<state>` is `<data dir>/daemon`, the per-user data directory of the `lw`
 --- host (boot.paths: %LOCALAPPDATA%\loomworks, $XDG_DATA_HOME/loomworks or
@@ -56,17 +63,34 @@ function M.root_hash(root)
     return M.short_hash(hash_key(root))
 end
 
+--- The base name of this slot's runtime files: `loomworks.daemon-<S>`.
+--- @return string
+function M.slot_base()
+    return "loomworks.daemon-" .. require("loomworks.daemon.identity").slot()
+end
+
+--- The runtime lock of this process's slot (§19.2).
 --- @param root string
 --- @return string
 function M.lock_path(root)
-    return M.norm_root(root) .. "/.nvim/loomworks.daemon.lock"
+    return M.norm_root(root) .. "/.nvim/" .. M.slot_base() .. ".lock"
 end
 
+--- The handle of this process's slot (§19.6).
 --- @param root string
 --- @return string
 function M.handle_path(root)
-    return M.norm_root(root) .. "/.nvim/loomworks.daemon.json"
+    return M.norm_root(root) .. "/.nvim/" .. M.slot_base() .. ".json"
 end
+
+--- The legacy (unslotted) file names in `<root>/.nvim/` (§19.6 "Legacy
+--- files"): never read to find or connect to a daemon.
+M.LEGACY = {
+    lock = "loomworks.daemon.lock",
+    handle = "loomworks.daemon.json",
+    log = "loomworks.daemon.log",
+    log1 = "loomworks.daemon.log.1",
+}
 
 --- The per-user data directory (shared with the trust key, §17.2).
 --- @return string
@@ -80,12 +104,12 @@ function M.state_dir()
     return M.data_dir() .. "/daemon"
 end
 
---- The runtime log of a workspace (§19.10): inside the workspace, beside the
---- runtime lock and the handle.
+--- The runtime log of a workspace for this process's slot (§19.10): inside
+--- the workspace, beside the runtime lock and the handle.
 --- @param root string
 --- @return string
 function M.log_path(root)
-    return M.norm_root(root) .. "/.nvim/loomworks.daemon.log"
+    return M.norm_root(root) .. "/.nvim/" .. M.slot_base() .. ".log"
 end
 
 --- Where versions before §16.40 kept the runtime logs (`<hash>.log`), now
