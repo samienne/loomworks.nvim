@@ -33,11 +33,14 @@ M.ERR_TIMEOUT = "timeout"       -- no answer in time
 M.ERR_CLOSED = "closed"         -- the daemon closed the connection
 M.ERR_TRANSPORT = "transport"   -- the negotiated transport has no interface calls (protocol 10)
 
+--- @class loomworks.daemon.WelcomeRelay  a relay's `welcome.relay` (§19.8 step 4)
+--- @field lw_version string the relay's own code identity (§19.9): that of the daemon it would launch
+
 --- @class loomworks.daemon.Conn
 --- @field pipe userdata the libuv pipe, or a loomworks.daemon.LoopbackEnd
 --- @field loopback boolean|nil an attached run's in-memory connection (§19.1)
 --- @field challenge table the daemon's announced versions (protocol, lw_version, schemas, session_generation)
---- @field welcome table
+--- @field welcome table the daemon's `welcome`; through a relay with its additions (§19.8 step 4): `daemon`, `via = "relay"` and `relay` (loomworks.daemon.WelcomeRelay, absent from an older relay)
 --- @field transport integer|nil the transport both sides agreed on (§19.9 "From protocol 11"), from the challenge
 --- @field closed boolean|nil
 --- @field on_close fun(conn: loomworks.daemon.Conn)|nil called once when the connection closes

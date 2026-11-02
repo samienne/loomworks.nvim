@@ -1,6 +1,8 @@
 --- loomworks/daemon/editor_retire.lua — the editor's retirement of an
---- incompatible idle daemon (spec §19.16 "Retiring an incompatible daemon",
---- §19.9 "Editor retirement", step 5h.5): the pure decisions. The observer
+--- incompatible idle daemon, or of a compatible idle one running another
+--- code identity than the daemon its relay would launch (spec §19.16
+--- "Retiring an incompatible daemon", §19.9 "Editor retirement", step 5h.5):
+--- the pure decisions. The observer
 --- (loomworks.daemon.observer) does the I/O: it asks the daemon's `status`,
 --- sends `retire` (never `stop`) and relaunches once through its "Retiring"
 --- path — only over a relay connection (`welcome.via = "relay"`). A daemon
@@ -16,12 +18,17 @@
 ---   the pre-launch probe (loomworks.provision.needs `problems`, with
 ---   `exact_schemas`). A missing feature interface only degrades that
 ---   feature and is never a reason to retire.
+--- * `stale` — a compatible daemon weighed for a retirement because its code
+---   identity may differ from the one its relay reports (`relay_identity`:
+---   `welcome.relay`, the identity of the daemon the relay would launch — a
+---   relay redirected to a repository pin names the pinned release).
 --- * `selected` — did the binary the editor selected pass the interface check
 ---   (the probe's *compatible* verdict, or the plugin-managed lw), and which
----   `lw_version` is it?
---- * the session guard — a daemon of a given `lw_version` is retired at most
----   once per workspace per editor session (a repository pin that redirects
----   every launch to the same incompatible release would otherwise loop).
+---   code identity (`lw_version`: the host version, or a development build's
+---   source fingerprint, loomworks.daemon.version `identity`) is it?
+--- * the session guard — a daemon of a given code identity is retired at
+---   most once per workspace per editor session (a repository pin that
+---   redirects every launch to the same release would otherwise loop).
 
 local M = {}
 
@@ -29,6 +36,7 @@ local M = {}
 --- @field reasons string[] one line each (transport, schemas, root interface)
 --- @field newer boolean its schemas are newer than ours: refused, never retired (§19.9)
 --- @field observable boolean only its schemas are older (transports overlap, root interface present): observed while it is weighed for a retirement, and when the editor declines to retire it (§19.16)
+--- @field stale boolean|nil not incompatible: a compatible daemon weighed only for its code identity (§19.9 "Editor retirement"); observed throughout, retired only when idle and its identity differs from the relay's (`relay_identity`)
 
 --- Is the daemon behind `conn` incompatible with the editor (spec §19.16
 --- "Retiring an incompatible daemon")? nil when it is compatible. The root
@@ -64,9 +72,31 @@ function M.incompatibility(ch, conn)
         observable = root_ok and (version.observer_compatible(ch)) == true }
 end
 
+--- A compatible daemon, weighed for a retirement only because its code
+--- identity may differ from the one its relay reports (§19.9 "Editor
+--- retirement"). Its reason is filled in once it is weighed eligible
+--- (`stale_reason`).
+--- @return loomworks.daemon.Incompatibility
+function M.stale() return { reasons = {}, newer = false, observable = true, stale = true } end
+
+--- The code identity the relay of `conn` reports for itself (`welcome.relay`,
+--- §19.8 step 4): the identity of the daemon it would launch. nil when the
+--- connection is not through a relay or its `welcome` carries no `relay` (an
+--- older relay): the editor then weighs no stale daemon (§19.9 "Editor
+--- retirement").
+--- @param conn loomworks.daemon.Conn|table|nil
+--- @return string|nil
+function M.relay_identity(conn)
+    local w = type(conn) == "table" and conn.welcome or nil
+    if type(w) ~= "table" or w.via ~= "relay" or type(w.relay) ~= "table" then return nil end
+    local v = w.relay.lw_version
+    if type(v) ~= "string" or v == "" then return nil end
+    return v
+end
+
 --- @class loomworks.daemon.SelectedBinary  the editor's selected binary, weighed for a retirement
 --- @field ok boolean it passed the interface check (compatible verdict, or the managed lw)
---- @field version string|nil its `lw_version` (when ok)
+--- @field version string|nil its `lw_version`, its code identity (when ok)
 --- @field path string|nil the binary
 --- @field pending string|nil a PATH or explicit lw still to be probed (no cached verdict yet)
 --- @field why string|nil why it is not usable for a retirement
@@ -120,13 +150,19 @@ end
 --- A version without a leading `v`.
 local function bare(v) return (tostring(v or ""):gsub("^v", "")) end
 
---- Do two `lw_version`s name the same release?
+--- Do two `lw_version`s name the same code identity (the same release, or
+--- the same development build's source fingerprint)?
 --- @param a string|nil
 --- @param b string|nil
 --- @return boolean
 function M.same_version(a, b) return bare(a) == bare(b) end
 
--- The session guard: workspace root -> lw_version -> { failed? }. Module
+--- The reason a stale daemon is retired: the relay's identity.
+--- @param version string|nil the relay's `lw_version` (`relay_identity`)
+--- @return string
+function M.stale_reason(version) return "other code than the relay's lw v" .. bare(version) end
+
+-- The session guard: workspace root -> code identity (`lw_version`) -> { failed? }. Module
 -- state, so it outlives a workspace reload (a new observer) for this editor
 -- session. `failed`: the retirement was attempted and did not happen (an
 -- error reply, or no reply); it is still never retried.
@@ -142,14 +178,14 @@ local function root_key(root)
     return r
 end
 
---- The guard's key for `root` and `lw_version`: "<normalized realpath of the root>\n<version>".
+--- The guard's key for `root` and the code identity `lw_version`: "<normalized realpath of the root>\n<version>".
 --- @param root string
 --- @param lw_version string|nil
 --- @return string
 function M.key(root, lw_version) return root_key(root) .. "\n" .. bare(lw_version) end
 
---- Has the editor already retired (or tried to retire) a daemon of
---- `lw_version` for `root` in this session?
+--- Has the editor already retired (or tried to retire) a daemon of the code
+--- identity `lw_version` for `root` in this session?
 --- @param root string
 --- @param lw_version string|nil
 --- @return boolean
@@ -186,14 +222,18 @@ function M.reset() retired = {} end
 --- @return boolean
 function M.busy(st) return require("loomworks.daemon.protocol").status_busy(st, { asker_observer = true }) end
 
---- The Runtime note for an incompatible daemon: what the daemon runs, why,
---- and the tail (what the editor does about it).
+--- The Runtime note for an incompatible (or stale) daemon: what the daemon
+--- runs, why, and the tail (what the editor does about it).
 --- @param ch table the daemon's challenge
 --- @param inc loomworks.daemon.Incompatibility
 --- @param binary string|nil the daemon's binary (its handle's `exe`)
 --- @param tail string
 --- @return string
 function M.note(ch, inc, binary, tail)
+    if inc.stale then
+        return string.format("the workspace daemon runs lw v%s%s (%s) — %s", bare(ch and ch.lw_version),
+            binary and (" at " .. binary) or "", table.concat(inc.reasons, "; "), tail)
+    end
     return string.format("the workspace daemon runs lw v%s%s, which is incompatible with this plugin (%s) — %s",
         bare(ch and ch.lw_version), binary and (" at " .. binary) or "", table.concat(inc.reasons, "; "), tail)
 end

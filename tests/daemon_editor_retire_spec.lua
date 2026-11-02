@@ -2,10 +2,15 @@
 -- "Retiring an incompatible daemon", §19.9 "Editor retirement", step 5h.5):
 -- an idle incompatible daemon is retired once and the editor's selected
 -- binary launches in its place; a busy one is retired only once it is idle;
--- a daemon with newer schemas, a compatible one (whatever its version), one
--- of the selected binary's own version, and any daemon while the selected
--- binary is not known compatible are never retired; and a daemon of a given
--- lw_version is retired at most once per workspace per editor session.
+-- an idle compatible daemon whose code identity (lw_version, or a dev
+-- build's source fingerprint) differs from the one its relay reports
+-- (`welcome.relay`: a pinned repo's relay names the pin) is retired too, a
+-- busy one observed and retired once idle, none weighed without
+-- `welcome.relay` (§19.9); a daemon with
+-- newer schemas, one of the selected binary's own identity, and any daemon
+-- while the selected binary is not known compatible are never retired; and
+-- a daemon of a given identity is retired at most once per workspace per
+-- editor session.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local server_mod = require("loomworks.daemon.server")
@@ -90,6 +95,14 @@ describe("editor_retire (pure decisions, §19.16)", function()
         assert.equals("3.0.0", R.selected({ download = { version = "3.0.0" }, candidates = {} }).version)
     end)
 
+    it("relay_identity: welcome.relay.lw_version over a relay, nil without it", function()
+        assert.equals("0.2.0", R.relay_identity({ welcome = { via = "relay", relay = { lw_version = "0.2.0" } } }))
+        assert.is_nil(R.relay_identity({ welcome = { via = "relay" } }))
+        assert.is_nil(R.relay_identity({ welcome = { relay = { lw_version = "0.2.0" } } }))
+        assert.is_nil(R.relay_identity({ welcome = { via = "relay", relay = { lw_version = "" } } }))
+        assert.is_nil(R.relay_identity(nil))
+    end)
+
     it("busy without busy_clients: the editor (an observer) asking is not subtracted twice", function()
         local P = require("loomworks.daemon.protocol")
         -- The editor plus one CLI client, from a daemon before 5g.3.
@@ -167,11 +180,12 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
     local fr
     local function attach(extra)
         extra = extra or {}
-        fr = FR.new({ inspect = extra.inspect, connect = extra.connect, launch = extra.launch })
+        fr = FR.new({ inspect = extra.inspect, connect = extra.connect, launch = extra.launch,
+            relay_lw_version = extra.relay_lw_version })
         local o = { getenv = daemon_mode, keepalive_ms = 100, retire_check_ms = 100,
             resolve = function() return nil end, notify = function() end, relay = fr.relay }
         for k, v in pairs(extra) do
-            if k ~= "connect" and k ~= "launch" then o[k] = v end
+            if k ~= "connect" and k ~= "launch" and k ~= "relay_lw_version" then o[k] = v end
         end
         return observer.attach(ws.root, o)
     end
@@ -188,6 +202,9 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         f.next = { kind = "live", handle = { pid = 5151, start_time = "win:n", endpoint = "new" } }
         f.daemons.new = { protocol = version.PROTOCOL, lw_version = "9.9.9", schemas = version.schemas() }
         f.opts = vim.tbl_extend("force", managed_selection("9.9.9"), {
+            -- The relay's own code identity (`welcome.relay`, §19.8 step 4):
+            -- the identity a launch would start, here the selected binary's.
+            relay_lw_version = "9.9.9",
             inspect = function() return f.st end,
             notify = function(m) f.notes[#f.notes + 1] = m end,
             launch = function() f.spawned = f.spawned + 1; f.st = { kind = "starting" } end,
@@ -414,13 +431,151 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.truthy(obs:runtime_line():find("not observing it", 1, true), obs:runtime_line())
     end)
 
-    it("(c') a compatible daemon of another version is observed, never retired", function()
-        local f = fake()
-        f.daemons.old = { protocol = version.PROTOCOL, lw_version = "0.0.1", schemas = version.schemas() }
+    --- The fake's daemon is compatible and runs code identity `id`.
+    local function compatible(f, id)
+        f.daemons.old = { protocol = version.PROTOCOL, lw_version = id, schemas = version.schemas() }
+        return f
+    end
+
+    it("(c') an idle compatible daemon of another code identity than the relay's is retired and relaunched", function()
+        local f = compatible(fake(), "0.0.1")
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        assert.is_true(sent(f, "old:status"))
+        f.st = { kind = "none" } -- it exited
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        f.st = f.next
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" and obs.daemon.pid == 5151 end, 10),
+            obs:runtime_line())
+        assert.equals(1, #f.notes)
+        assert.truthy(f.notes[1]:find("retired the workspace daemon (lw v0.0.1", 1, true), f.notes[1])
+        assert.truthy(f.notes[1]:find("starting lw v9.9.9", 1, true), f.notes[1])
+        assert.is_nil(f.notes[1]:find("incompatible", 1, true), f.notes[1])
+        assert.is_true(R.was_retired(ws.root, "0.0.1"))
+        vim.wait(300)
+        assert.is_false(sent(f, "new:retire"))
+        assert.equals(1, f.spawned)
+    end)
+
+    it("(c'1) a development build differing only in its source fingerprint is retired; the same identity is not", function()
+        local f = compatible(fake({ relay_lw_version = "0.1.0+dev.bbbb" }), "0.1.0+dev.aaaa")
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        obs:stop(); obs = nil
+        R.reset()
+        local g = compatible(fake({ relay_lw_version = "0.1.0+dev.aaaa" }), "0.1.0+dev.aaaa")
+        obs = attach(g.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        vim.wait(300)
+        assert.is_false(sent(g, "old:retire"))
+        assert.is_nil(obs:runtime_line():find("incompatible", 1, true), obs:runtime_line())
+    end)
+
+    it("(c'2) a busy compatible daemon of another identity is observed, re-checked, and retired once idle", function()
+        local f = compatible(fake(), "0.0.1")
+        f.busy = true
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return count(f, "old:status") >= 2 end, 10), obs:runtime_line())
+        assert.equals("connected", obs.state)
+        assert.is_false(sent(f, "old:retire"))
+        assert.is_nil(obs.incompat_note)
+        assert.is_nil(obs:runtime_line():find("incompatible", 1, true), obs:runtime_line())
+        -- The pending stale retirement does not block the features (the gate
+        -- of `can_call`; an incompatible one would block them).
+        assert.is_true(obs._retire ~= nil and obs._retire.inc.stale == true)
+        assert.is_false(obs:_retire_blocks())
+        assert.equals(1, f.connects)
+        f.busy = false
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        assert.equals(1, count(f, "old:retire"))
+    end)
+
+    it("(c'3) a compatible daemon of an identity already retired this session is observed, not retired again", function()
+        local f = compatible(fake(), "0.0.1")
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        -- The successor runs the same identity again (a repository pin).
+        f.daemons.new = vim.deepcopy(f.daemons.old)
+        f.st = f.next
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" and obs.daemon.pid == 5151 end, 10),
+            obs:runtime_line())
+        vim.wait(300)
+        assert.is_false(sent(f, "new:retire"))
+        assert.equals(1, f.spawned)
+        assert.equals(1, #f.notes)
+        -- A new observer (a workspace reload) in the same session: still once.
+        obs:stop(); obs = nil
+        local g = compatible(fake(), "0.0.1")
+        obs = attach(g.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        vim.wait(300)
+        assert.is_false(sent(g, "old:retire"))
+    end)
+
+    it("(c'4) a failed retirement of a stale daemon is its stale note; it stays observed", function()
+        local f = compatible(fake(), "0.0.1")
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "retire" then rcb(nil, "retire refused: test"); return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs.stale_note ~= nil and obs.stale_note:find("retiring it failed (retire refused: test)", 1, true)
+                ~= nil
+        end, 10), obs:runtime_line())
+        assert.truthy(obs.stale_note:find("other code than the relay's lw v9.9.9", 1, true), obs.stale_note)
+        assert.is_nil(obs.incompat_note)
+        assert.equals("connected", obs.state)
+        assert.equals(f.conn, obs.conn)
+        assert.is_true(R.retire_failed(ws.root, "0.0.1"))
+        vim.wait(200)
+        assert.equals(0, f.spawned)
+        assert.same({}, f.notes)
+    end)
+
+    -- The relay is redirected to a repository pin (§16.21), so it, not the
+    -- selected lw, names the identity a launch would start (`welcome.relay`).
+    it("(c'5) a daemon on the relay's (pinned) identity is not retired though the selected lw differs", function()
+        local f = compatible(fake({ relay_lw_version = "0.2.0" }), "0.2.0")
         obs = attach(f.opts)
         assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        vim.wait(200)
+        vim.wait(300)
         assert.is_false(sent(f, "old:retire"))
+        assert.is_nil(obs._retire)
+        assert.is_nil(obs.stale_note)
+        assert.same({}, f.notes)
+        assert.is_false(R.was_retired(ws.root, "0.2.0"))
+    end)
+
+    it("(c'6) a daemon on another identity than the relay's is retired; the notice names the relay's", function()
+        local f = compatible(fake({ relay_lw_version = "0.2.0" }), "0.1.99")
+        f.daemons.new = { protocol = version.PROTOCOL, lw_version = "0.2.0", schemas = version.schemas() }
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        f.st = f.next
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" and obs.daemon.pid == 5151 end, 10),
+            obs:runtime_line())
+        assert.equals(1, #f.notes)
+        assert.truthy(f.notes[1]:find("starting lw v0.2.0", 1, true), f.notes[1])
+        assert.truthy(f.notes[1]:find("other code than the relay's lw v0.2.0", 1, true), f.notes[1])
+        assert.is_nil(f.notes[1]:find("9.9.9", 1, true), f.notes[1])
+        vim.wait(300)
+        assert.is_false(sent(f, "new:retire"))
+    end)
+
+    it("(c'7) a welcome without `relay` gives no identity: a compatible daemon of another version is observed", function()
+        local f = compatible(fake({ relay_lw_version = false }), "0.0.1")
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        vim.wait(300)
+        assert.is_nil(obs.conn.welcome.relay)
+        assert.is_false(sent(f, "old:retire"))
+        assert.is_nil(obs._retire)
+        assert.is_nil(obs.stale_note)
+        assert.same({}, f.notes)
     end)
 
     it("(c'') an incompatible daemon of the selected binary's own version is not retired", function()

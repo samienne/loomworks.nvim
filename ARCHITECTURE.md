@@ -1311,6 +1311,21 @@ re-cut onto master step by step; this section is expanded as each step lands.
   notifies once and relaunches through the existing launch-once-after-exit
   path (`_relaunch`; an observed connection is closed as a `retiring` drop,
   so `_on_closed` ends its tasks). `stop` drops the held connection.
+  A compatible daemon reached through the relay goes to `_weigh_retire` too,
+  as a **stale** one (`editor_retire.stale()`, `inc.stale`; spec §19.9
+  "Editor retirement"): the same selection, guard and idle check, keyed by
+  code identity (`lw_version` — the host version, or a development build's
+  source fingerprint, `version.identity`), but weighed against the identity
+  the relay reports for itself (`welcome.relay.lw_version`, added by
+  `relay.welcome_frame`; read by `editor_retire.relay_identity`) rather than
+  the selected binary's: the relay runs in the process `main.lua` redirected
+  to a repository pin, so it names the release a launch would start, and the
+  plugin needs no pin logic. An idle daemon running other code is retired and
+  the relay launches its own release; a `welcome` without `relay` (an older
+  relay) weighs no stale daemon. It
+  stays observed throughout: declines and a busy status are silent, a
+  failed retirement goes to `stale_note` (never `incompat_note`), and
+  `_retire_blocks()` keeps the features available until `retire` is sent.
 - `provision/fetch.lua` (step 5h.3) — `ensure(wanted, opts, cb)`: async
   download of a `Wanted` record (`{ sha256, version, asset }`) into
   `<dir>/<sha256>.<pid>.<n>.dl` (`uv.fs_copyfile` with `excl` for a local

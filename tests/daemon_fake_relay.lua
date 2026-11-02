@@ -6,8 +6,9 @@
 --     inspect.state) and connects (`o.connect`, default client.connect) to a
 --     live daemon; the connection gets the relay's `welcome` additions
 --     (`daemon` = its challenge + the handle's pid, start time and exe;
---     `via = "relay"`), and `conn.challenge` = `welcome.daemon`, as
---     client.relay gives it;
+--     `via = "relay"`; `relay = { lw_version = o.relay_lw_version }` when
+--     that option is a string — the relay's own code identity, §19.8 step 4),
+--     and `conn.challenge` = `welcome.daemon`, as client.relay gives it;
 --   * an ordinary relay that finds no live (or starting) daemon calls
 --     `o.launch(ropts)` once (counted in `f.launched`);
 --   * a `welcome` that says `retiring` is never forwarded: the relay closes
@@ -89,6 +90,9 @@ function M.new(o)
                     conn.welcome = conn.welcome or {}
                     conn.welcome.via = "relay"
                     conn.welcome.daemon = daemon
+                    if type(o.relay_lw_version) == "string" then
+                        conn.welcome.relay = { lw_version = o.relay_lw_version }
+                    end
                     conn.challenge = daemon
                     conn.transport = conn.transport or client._agreed(daemon, {})
                     conn.relay = r

@@ -810,6 +810,13 @@ system **and** gated by authentication (§19.8).
   client from a daemon (or a squatter) of the standard slot. (POSIX needs no
   extra check: the euid-owned `0700` directory admits only that euid and
   root, and a client accepts only a socket owned by its own euid.)
+  It is the only barrier between the two slots of one user: both have the
+  same owner SID, so the DACL admits both. The check names the peer by its
+  process id, and an id can be reused between the connect and the check. If
+  the peer exits in that window and another process of the same user gets
+  its id, the check judges the new process. The window is accepted: the
+  endpoint is local and owner-only, and a reused id must also belong to this
+  user.
 - **Local only.** An endpoint is a local pipe or Unix-domain socket of the
   caller's slot on this host. The protocol is never served or connected to
   over a network, nor across users or elevation.
@@ -876,7 +883,7 @@ the machine key (§17.2), *E* the handle's `endpoint` (§19.6) verbatim. The
 observer is §19.16). The `welcome` fields are `{ header, seq, clients, busy, retiring }` (§19.13) plus
 the transport's `objects` (§19.20). New `welcome` fields go inside `header`
 if they are model fields, and beside it if they are transport fields (such as
-`objects`, or the relay's `daemon` and `via` below).
+`objects`, or the relay's `daemon`, `via` and `relay` below).
 
 **Private bindings.** The loopback transport (§19.1) is the in-process
 private binding of PROTOCOL.md §3; it never leaves the process. The private
@@ -914,7 +921,7 @@ relay runs the socket handshake on its behalf:
 3. It verifies `server_proof` before forwarding anything; on failure it
    sends nothing more on either side and exits (status 12). It then sends
    `auth`. `challenge` and `auth` never reach its client.
-4. It forwards the daemon's `welcome`, adding two fields, and from then on
+4. It forwards the daemon's `welcome`, adding three fields, and from then on
    copies frames both ways unchanged:
    - `daemon = { protocol, protocol_min, lw_version, schemas,
      session_generation, pid, start_time, exe? }` — the daemon's side of the
@@ -930,9 +937,12 @@ relay runs the socket handshake on its behalf:
    - `via = "relay"`. A client that gets a `welcome` without `via` is
      talking to an attached runtime (a repository pinned before 5i): the
      editor treats it as such and never sends `retire` over it.
+   - `relay = { lw_version }`: the relay's own code identity (§19.9), which
+     is the identity of the daemon it would launch. A client weighs a
+     daemon's identity against it (§19.9 "Editor retirement").
 
-   Both are optional fields added to `welcome`, as the frozen-subset rule
-   ([PROTOCOL.md](../protocol/PROTOCOL.md) §7) allows; an attached runtime omits both.
+   All three are optional fields added to `welcome`, as the frozen-subset rule
+   ([PROTOCOL.md](../protocol/PROTOCOL.md) §7) allows; an attached runtime omits them.
 5. When the `welcome` says `retiring`, the relay does not forward it: it
    closes that connection, waits for the retiring daemon's runtime lock to
    be released — at most `RELAY_RETIRE_WAIT` (60 s) — launches the
@@ -946,7 +956,7 @@ relay runs the socket handshake on its behalf:
 change shape, and what the `protocol` number versions from protocol 11 — the
 transport only, with each side stating a range `[protocol_min, protocol]` —
 are specified in [PROTOCOL.md](../protocol/PROTOCOL.md) §6–§7. *(Planned, step 5i.)* The relay's
-`welcome.daemon` and `welcome.via` (above) are such additions: optional,
+`welcome.daemon`, `welcome.via` and `welcome.relay` (above) are such additions: optional,
 they change no existing field and do not move `protocol`. A daemon of
 protocol 11 accepts clients of 10 through the v0 aliases ([PROTOCOL.md](../protocol/PROTOCOL.md) Annex A) until
 `protocol_min` is raised to 11 (§19.19, retirement of protocol 10).
@@ -972,7 +982,8 @@ in the handshake. A CLI client **matches** a daemon when all of them are equal
 paths, sizes and modification times of its Lua sources whenever they are on
 disk — a development source tree or a directory bundle — so editing a source
 is a mismatch; only a fused executable, whose sources cannot change, uses the
-executable itself, identified by its resolved path, so every spelling of it
+executable itself, identified by its resolved path, size and modification
+time, so every spelling of it
 (a link, a differently cased name) is the same executable). An editor
 client **observing** a daemon (§19.16) needs less: an equal protocol and schemas
 no newer than its own — the daemon's host version may differ (the editor's
@@ -1026,16 +1037,23 @@ into a protocol rule and a client policy:
   re-describes and re-subscribes (§19.16). The CLI still never stops a busy
   daemon.
 - **Editor retirement** (step 5h.5). The editor retires a daemon only when it
-  is idle **and incompatible** with the editor (§19.16 "Retiring an
-  incompatible daemon"), and only when the binary the editor selected is
-  itself compatible. A daemon that is merely older than that binary is never
-  retired by the editor, nor is one whose schemas are newer than the editor's;
-  the editor retires a daemon of a given `lw_version` at most once per
-  workspace per editor session. Retiring for "older" would make the editor
-  and the CLI, which requires an equal `lw_version`, restart each other's
-  daemon in turn. A daemon whose only incompatibility is older schemas stays
-  observed while the editor waits for it to go idle, and for the whole
-  session when the editor declines to retire it.
+  is idle **and** either incompatible with the editor or of another code
+  identity than the binary the editor selected (§19.16 "Retiring an
+  incompatible daemon"), and only when that binary is itself compatible.
+  The code identity is the host version, or a
+  development build's source fingerprint, as above. A daemon computes its
+  identity once, at start. The editor takes the identity of the binary it
+  would launch from its relay's `welcome.relay` (§19.8); a `welcome`
+  without it gives no such identity, and the editor then retires a daemon
+  only when it is incompatible. An idle daemon whose identity differs from that binary's is
+  retired by the editor too, and the binary is launched in its place. A busy
+  one is never retired by the editor: it is observed if compatible and
+  checked again when idle. The CLI's busy-retire and bypass are unchanged.
+  The once-per-version rule, now keyed by identity, bounds the editor and a
+  CLI of another binary restarting each other's daemon. A daemon whose only
+  incompatibility is older schemas stays observed while the editor waits for
+  it to go idle, and for the whole session when the editor declines to retire
+  it.
 
 ### 19.10 Launch
 
@@ -2388,8 +2406,8 @@ degraded ("End state").
   judges the daemon from `welcome.daemon` exactly as it judges a `challenge`
   today, by the **editor's** compatibility rule (§19.9 "Editor retirement",
   "Retiring an incompatible daemon" below), never the CLI's `lw_version`
-  equality: the relay itself applies no version policy, so a relay the editor
-  starts never restarts a compatible daemon. The editor's `retire` goes over
+  equality: the relay itself applies no version policy and never restarts a
+  daemon on its own; only the editor's retirement does. The editor's `retire` goes over
   the relay connection, and only when `welcome.via = "relay"`. A `welcome`
   without `via` comes from an attached runtime of an older pin (§19.10
   "Compatibility"): the editor observes it **without the version check**
@@ -3224,8 +3242,10 @@ terminal). It runs none of the editor's own operations; where those run is
      hash-checked against the hash from the query. It is recorded as accepted
      only once that download succeeded; a failed download is one note and
      the current wanted binary stays. A running daemon is not
-     switched — a compatible daemon is never retired for being older; the
-     next launch uses the new binary, and the Runtime note says so.
+     switched while it is busy: its code identity now differs from the
+     wanted binary's, so the editor retires it once it is idle (§19.9
+     "Editor retirement") and the next launch uses the new binary; the
+     Runtime note says so.
   4. A result that fails the check is one note ("<channel> offers lw <v>,
      which this plugin cannot use (…); staying on <v'>") and is recorded so
      the same release is not checked again.
@@ -3259,7 +3279,9 @@ terminal). It runs none of the editor's own operations; where those run is
   interfaces and is judged by its version and schemas only. A missing
   feature interface only degrades that feature ("Interface client") and is
   never a reason to retire. The
-  editor sends `retire` (never `stop`) only when all of these hold:
+  editor sends `retire` (never `stop`) to an incompatible daemon, or to a
+  compatible one whose code identity differs from the relay's
+  (`welcome.relay`) (§19.9 "Editor retirement"), only when all of these hold:
   - the daemon is idle (no busy client, §19.9 "Busy") — the editor's own
     connection included: from step 5k a task the editor owns makes it busy,
     so the editor never retires a daemon under its own running tasks (and it
@@ -3268,20 +3290,25 @@ terminal). It runs none of the editor's own operations; where those run is
   - its schemas are not newer than the editor's;
   - the binary the editor selected passed the interface check (the probe's
     *compatible* verdict, or the managed `lw`);
-  - that binary's `lw_version` differs from the daemon's;
-  - the editor has not already retired a daemon of that `lw_version` for
-    this workspace in this editor session.
+  - the binary that would start in its place has another code
+    identity (`lw_version`, §19.9) than the daemon: for a compatible
+    daemon the relay's (`welcome.relay`, which must be present), for
+    an incompatible one the selected binary's;
+  - the editor has not already retired a daemon of that identity for this
+    workspace in this editor session.
 
   Then the "Retiring" path below relaunches once. A busy incompatible daemon
   is a note ("incompatible daemon is busy; retiring when idle") and is
   re-checked through `status` about every 30 s. When the once-per-version
-  rule stops a retirement — the successor runs the same version again,
-  typically because a repository pin redirects to it — the note says so
-  (the daemon runs lw <v> again, likely a repository pin; update the pin or
-  the plugin); when that earlier retirement failed (below), the note says
+  rule stops the retirement of an incompatible daemon — the successor runs
+  the same version again, typically because a repository pin redirects to
+  it — the note says so (the daemon runs lw <v> again, likely a repository
+  pin; update the pin or the plugin); when that earlier retirement failed (below), the note says
   instead that retiring a daemon of that version failed earlier this
-  session, and it is not tried again. A compatible daemon is never retired by the editor, whatever
-  its version.
+  session, and it is not tried again. A compatible daemon stays observed
+  throughout, with no note: busy, it is re-checked the same way and retired
+  once idle; declined, it stays observed. Only a failed retirement of it is
+  noted on the Runtime line.
 
   A daemon whose only incompatibility is older schemas (transports overlap,
   root interface present) is observed as usual ("Connect" below) while the
@@ -3687,8 +3714,8 @@ protocol 10 and the optional parts 5k D and 5m D; 6b-α next, then 6, 6b-β,
      `LOOMWORKS_TEST_PRIVATE_STDIO=1`, or a temporary root. A relay the
      editor starts applies the **editor's** compatibility rule (§19.9
      "Editor retirement", §19.16 "Retiring an incompatible daemon"), not the
-     CLI's `lw_version` equality, so it never restarts a compatible daemon;
-     the editor's retirement then goes through the relay connection.
+     CLI's `lw_version` equality, and never restarts a daemon on its own;
+     the editor's retirement goes through the relay connection.
      In parts: the spec *(done)*; B — connection code extracted from the
      CLI into `daemon/connect.lua` *(done)*; C — the relay and `--private`
      *(done)*; D — `lw daemon list` / `kill` classification of relays
