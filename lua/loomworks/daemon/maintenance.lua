@@ -152,7 +152,9 @@ function M.run(svc, ctx)
         svc:with_model(ctx, function() finish(run.cancel_code, "delete stopped: " .. run.cancel_reason) end)
     end
 
-    task:start({ name = deletion.label, kind = "delete" })
+    -- A profile's deletion runs on that profile: its row is busy (API.md §14.4).
+    task:start({ name = deletion.label, kind = "delete" },
+        deletion.kind == "profile" and deletion.target.profile or nil)
     for _, line in ipairs(ctx.listing or {}) do task:line("out", line, "plain") end
 
     run.deleting = true

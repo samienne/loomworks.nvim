@@ -469,6 +469,47 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         assert.is_false(profile(s.view(), "dev").busy)
     end)
 
+    it("marks the profile row busy while the daemon deletes the profile, as an in-process deletion does", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.build()
+        s.drain(200)
+        s.updates()
+        assert.is_false(profile(s.view(), "dev").busy)
+        -- The deletion's removal waits a moment, so its task's start and its
+        -- end are separate updates (the fixture's removal is immediate).
+        local ws = assert(s.d.server.service.ws)
+        local future = require("loomworks.future")
+        local exec = ws._execute_deletion_unlocked
+        ws._execute_deletion_unlocked = function(...)
+            local a = { ... }
+            return future.create(function(resolve)
+                vim.defer_fn(function() exec(unpack(a)):next(resolve) end, 300)
+            end)
+        end
+        local ok, err = pcall(function()
+            local r = s.call("/maintenance", "loomworks.Maintenance", "execute_deletion",
+                { target = { profile = { key = "dev" } }, yes = true }, s.env)
+            assert.equals("accepted", r.outcome, vim.inspect(r))
+            local f = s.wait(function(m) return m.kind == "task" and m.task_id == r.task_id and m.phase == "done" end,
+                120000)
+            assert.equals(0, f.exit_code)
+        end)
+        ws._execute_deletion_unlocked = exec
+        assert(ok, err)
+        s.drain(300)
+        local u = s.updates()
+        local busy_at
+        for i, v in ipairs(u) do
+            local p = profile(v, "dev")
+            if p and p.busy then busy_at = busy_at or i end
+        end
+        assert.truthy(busy_at, "an update with the profile row busy during its deletion (" .. #u .. " updates)")
+        local last = profile(u[#u], "dev")
+        if last then assert.is_false(last.busy) end
+    end)
+
     it("reports a unit's artifact-conflict block on its row, from the daemon's gate without force (5o C2d)", function()
         s = session()
         s.load()

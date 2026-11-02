@@ -141,6 +141,8 @@ M.LOAD_WAIT_MS = 45000
 ---   within its wait (`tools_late`): the model and its toolchain rows before the write
 --- @field _attach_load boolean|nil an editor's attach queued a load (`on_editor_attached`) not yet run
 ---   (removed again when the service stops)
+--- @field _busy_check boolean|nil a view check for a profile task's start or end is scheduled
+---   (`_profile_task_moved`; one check covers every task that moved before it runs)
 --- @field _carried table|nil the ids an environment reload took from the model it dropped
 ---   (`snapshot.ids_by_key`), kept until a load succeeds and they carry over (`_carry_ids`, API.md §1.2)
 local Service = {}

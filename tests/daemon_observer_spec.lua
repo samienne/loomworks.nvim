@@ -1459,6 +1459,27 @@ describe("the observer (§19.16)", function()
         assert.is_nil(obs._retired_note)
     end)
 
+    it("ignores a `Workspace.changed` whose revision is at or below the current one", function()
+        obs = attach({ inspect = function() return { kind = "hung", lock = { pid = 5 } } end, manual = true })
+        local fetched = 0
+        obs._lsp_read = true
+        obs._fetch_lsp = function() fetched = fetched + 1 end
+        local function changed(revision)
+            obs:_on_message({ kind = "signal", object = "/workspace", iface = "loomworks.Workspace", v = 1,
+                name = "changed", args = { revision = revision } })
+        end
+        changed(5)
+        assert.equals(1, fetched)
+        assert.equals(5, obs.seq)
+        changed(5) -- the same revision again
+        changed(3) -- an older one
+        assert.equals(1, fetched)
+        assert.equals(5, obs.seq)
+        changed(6)
+        assert.equals(2, fetched)
+        assert.equals(6, obs.seq)
+    end)
+
     it("shutdown stops the observer and closes its connection", function()
         s = new_server(root)
         obs = attach()

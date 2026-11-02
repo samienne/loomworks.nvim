@@ -711,8 +711,7 @@ pattern never matches an array nor an array pattern an object.
 - an interface call's `ok` against its result schema, and its `error` code
   against the transport's and the method's codes;
 - a signal against its schema, with a gapless `seq` per object, none for a
-  subscription after its `unsubscribe`, and its `session_generation` (if any)
-  the `welcome`'s;
+  subscription after its `unsubscribe`;
 - every task's frames in order (`start` first, nothing after `done`; integer
   ids at transport 10, strings from 11), and the task frames of a
   task-streamed call (the start meta naming the method; `done.result` against
