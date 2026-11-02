@@ -80,6 +80,7 @@ M._queued = queued
 --- @field obs table<table, { bytes: integer, truncated: boolean }> per observer
 --- @field meta table|nil the `start` meta (with `origin`), once started
 --- @field started_at integer|nil wall-clock seconds (os.time) it started
+--- @field on_profile loomworks.Profile|nil the profile it runs on (Task:start)
 --- @field last_pct integer last progress percent sent (-1 before the first tick)
 --- @field call loomworks.daemon.TaskCall|nil the interface method it runs for (§19.20): `{ object, iface, v, method, result = fun(exit_code, err, fields, extra): table }`
 --- @field steps table[]|nil a target-scoped task's steps with their current states (§19.15 "Steps of a task"): `{ id, kind, label, project?, configuration?, target?, phase?, state }` each, in run order
@@ -127,6 +128,16 @@ end
 --- Any task running?
 --- @return boolean
 function Stream:busy() return self.count > 0 end
+
+--- Does a started task still run on `profile` (Task:start's `profile`)?
+--- @param profile loomworks.Profile
+--- @return boolean
+function Stream:runs_on(profile)
+    for _, t in pairs(self.tasks) do
+        if t.meta and not t.finished and t.on_profile == profile then return true end
+    end
+    return false
+end
 
 --- The running (started, not finished) tasks as the `status` reply's `tasks`
 --- (spec §19.11): `{ task_id, name, kind, profile, scope?, units, origin,
@@ -300,9 +311,14 @@ end
 --- `started` signal) runs after the `start` frame. A target-scoped task's
 --- `meta.steps` (§19.15 "Steps of a task", each `pending`) is its step plan:
 --- the task keeps a copy whose states `step` advances.
+--- `profile`: the Profile it runs on (none for a task scoped to units or
+--- to the whole workspace): the workspace view's `busy` on that profile's
+--- row while it runs, for any client (API.md §14.4; Stream:runs_on).
 --- @param meta table
-function Task:start(meta)
+--- @param profile? loomworks.Profile
+function Task:start(meta, profile)
     meta = meta or {}
+    self.on_profile = profile
     if meta.steps then self.steps = vim.deepcopy(meta.steps) end
     meta.origin = M.origin_of(self.owner)
     local call = self.call

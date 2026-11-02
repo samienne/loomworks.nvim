@@ -412,6 +412,9 @@ end
 --- @field bind? fun(row: table, obj: table) in-process only: called with each row
 ---        and the domain object it describes, so the editor's actions reach the
 ---        object without a key lookup. Never part of the state.
+--- @field busy? fun(profile: table): boolean the host runs an operation on the
+---        profile itself (the daemon's own tasks, for any client): a profile
+---        row's `busy` beside its own operations.
 
 --- `obj.description` when it is a string (a normalised description).
 local function desc_of(obj)
@@ -452,7 +455,7 @@ local function profile_row(ws, profile, active, opts)
         orphaned_set = profile.orphaned_set and true or false,
         incomplete = not profile:is_complete(),
         running = profile:is_running() and true or false,
-        busy = profile:has_active_operation() and true or false,
+        busy = (profile:has_active_operation() or (opts.busy ~= nil and opts.busy(profile))) and true or false,
     }
     if opts.id then row.id = opts.id(profile) end
     if row.orphaned_set then

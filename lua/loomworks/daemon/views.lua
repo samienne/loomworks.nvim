@@ -82,7 +82,10 @@ end
 function M.workspace(service)
     local ws = service:header_model()
     if not ws then return view_state.workspace(nil) end
-    return ws:view_workspace({ id = function(obj) return service.ids:id(obj) end })
+    -- A profile row is `busy` while the daemon runs a task on it, for any
+    -- client (view.Workspace/1 `busy`).
+    return ws:view_workspace({ id = function(obj) return service.ids:id(obj) end,
+        busy = function(profile) return service.tasks:runs_on(profile) end })
 end
 
 --- The signature `check` compares for the tests view: its committed state's.

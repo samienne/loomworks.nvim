@@ -445,6 +445,30 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
         assert.same(p.last_result, profile(s.view(), "dev").last_result)
     end)
 
+    it("marks the profile row busy while the daemon runs its task, with an update at its start and end", function()
+        s = session()
+        s.load()
+        s.drain(200)
+        s.updates()
+        assert.is_false(profile(s.view(), "dev").busy)
+        s.build()
+        s.drain(300)
+        local u = s.updates()
+        local first_busy, last_busy
+        for i, v in ipairs(u) do
+            if profile(v, "dev").busy then
+                first_busy = first_busy or i
+                last_busy = i
+            end
+        end
+        assert.truthy(first_busy, "an update with the profile row busy (" .. #u .. " updates)")
+        assert.is_true(last_busy < #u, "an update clearing busy after the task")
+        local p = profile(u[#u], "dev")
+        assert.is_false(p.busy)
+        assert.equals("ok", p.last_result.status)
+        assert.is_false(profile(s.view(), "dev").busy)
+    end)
+
     it("reports a unit's artifact-conflict block on its row, from the daemon's gate without force (5o C2d)", function()
         s = session()
         s.load()
