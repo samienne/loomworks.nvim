@@ -1113,7 +1113,7 @@ install hint), never the server's.
 What the workspace's language servers are configured with (spec §9), on
 `/lsp`:
 
-- `get {}` → `{ state, ready, projects: [{ project, id?, path, entries }],
+- `get {}` → `{ state, ready, projects: [{ project, id, path, entries }],
   options }`, computed with the caller's environment (§5). `state` is the
   workspace's, as in `view.Header/1` (`loaded`, `unloaded`, `error`,
   `refused`); `ready` is whether the active profile's owned databases have
@@ -1212,7 +1212,7 @@ is `{ projects }`: `projects` (array, required) holds one record per project
 of the workspace, ordered by key; it is empty when the workspace is not
 loaded. A record:
 
-- `id` (string, optional) — the project's opaque id.
+- `id` (string) — the project's opaque id.
 - `key` (string) — the project's key.
 - `label` (string) — the project's display text (§1.1). A project has no
   display name of its own (spec §1.2), so its `label` is its key; a client
@@ -1273,7 +1273,7 @@ discovering?, units }`:
   running for this profile, of whichever client.
 - `units` (array) — one record per configuration unit of the active profile,
   in project-key order:
-  - `id` (string, optional) — the configuration unit's opaque id.
+  - `id` (string) — the configuration unit's opaque id.
   - `project` (string), `configuration` (string) — the keys, as in
     `meta.units`.
   - `state` — `ok` (discovered; `nodes` holds its tree), `pending` (not
@@ -1344,7 +1344,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
 - `suggestions` (integer) — the number of actionable suggestions (spec/ui.md
   §1.1); the suggestions themselves are `lw health`'s.
 - `profiles` (array) — one record per profile, ordered by key:
-  - `id` (string, optional), `key` (string), `label` (string, §1.1),
+  - `id` (string), `key` (string), `label` (string, §1.1),
     `description` (string, optional), `config_set` (string, optional; the
     configuration set's name, the missing set's name when `orphaned_set`),
     `config_set_id` (string, optional; that set's id, absent when
@@ -1430,20 +1430,21 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
 - `orphaned` (object) — `{ configurations, stray_dirs }` (spec/ui.md §1.6):
   `configurations` one `{ id?, key, build_dir? }` per orphaned cached
   configuration, `id` its build directory's (what
-  `Maintenance/1.execute_deletion` takes, §22), `key` its cache key,
+  `Maintenance/1.execute_deletion` takes, §22; absent when it has no build
+  directory), `key` its cache key,
   `build_dir` its cached build directory; `stray_dirs` the stray build
   directories, as strings (a stray directory is no entity; §22 names it by
   this string).
 - `config_sets` (array) — one record per configuration set, ordered by
-  name: `{ id?, name, description?, active, modified, intent?,
+  name: `{ id, name, description?, active, modified, intent?,
   removed_upstream?, mappings }`; `active` whether it is the active
   profile's set; `mappings` an array, ordered by project key, one
-  `{ project, configuration, missing }` per mapped project: `project` `{ id?,
-  key }` the project, `configuration` `{ id?, key }` the configuration (`key`
+  `{ project, configuration, missing }` per mapped project: `project` `{ id,
+  key }` the project, `configuration` `{ id, key }` the configuration (`key`
   its name), `missing` whether it was removed or has no source.
 - `projects` (array) — the project's declaration as the status page shows
   it (spec/ui.md §1.8), ordered by key with orphaned projects last:
-  - `id` (string, optional), `key` (string), `type` (string), `path`
+  - `id` (string), `key` (string), `type` (string), `path`
     (string, as in §14.2), `description` (string, optional) and
     `description_from_module` (boolean, optional; `true` when the module
     supplied the description, spec/ui.md §1.16);
@@ -1466,8 +1467,9 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     none) — ordered by name (below);
   - `presets` (array, optional) — the module's preset configurations
     (`CMakePresets.json`), ordered by name, each `{ id?, name, generator?,
-    toolchain_locked? }`, `id` the configuration's;
-  - `launches` (array) — the launch configurations, ordered by name: `{ id?,
+    toolchain_locked? }`, `id` the configuration's, absent when the
+    project has no configuration of that name;
+  - `launches` (array) — the launch configurations, ordered by name: `{ id,
     key, label, description?, target?, command?, args? }`, `id` the launch
     configuration's (§1.1), `key` and `label` the launch's name, `target` /
     `command` / `args` as declared. A launch carries **no publish state** of
@@ -1484,7 +1486,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     `type_config` fields **in the module's order**, each `{ name, label?,
     kind?, placeholder?, value? }`, `value` the project's current value.
 - A configuration (`projects[].configurations[]`):
-  - `id` (string, optional), `key` and `label` (strings, its name);
+  - `id` (string), `key` and `label` (strings, its name);
   - `modified`, `intent?`, `removed_upstream?` — its publish state (below);
   - declared fields, as the files and the module give them: `abstract`
     (boolean; it has no variant, so it is only inherited), `inherits`
@@ -1520,7 +1522,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     that sets it, `own` whether the configuration sets it itself, `value`
     absent for an unfilled blank; present when the project declares
     variables.
-- `sdks` (array) — `{ id?, key, label, path?, resolved, kits }`: `id` the
+- `sdks` (array) — `{ id, key, label, path?, resolved, kits }`: `id` the
   SDK's (what `Sdks/1.remove` takes, §21), `path` the SDK's
   path, `resolved` whether the SDK resolves on this machine, `kits` the
   display labels of its kits (empty unless `resolved`).
