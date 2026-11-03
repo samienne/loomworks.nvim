@@ -1473,6 +1473,19 @@ do
   eq(launcher.classify("sh", launcher.LW_SH, verify.sha256_hex).status, "current", "classify: current")
   local c1 = launcher.classify("cmd", "x", verify.sha256_hex)
   eq(c1.status, "unknown", "classify: unknown content")
+  -- refreshing classifies against the pin: the legacy-origin defect only breaks
+  -- a pin of 0.2 or later
+  local old_sh = "#!/bin/sh\n# an old launcher\n"
+  launcher.GENERATIONS.sh[verify.sha256_hex(launcher.normalize(old_sh))] =
+    { gen = 0, releases = "9.9-test", defects = { launcher.LEGACY_ORIGIN_DEFECT } }
+  for _, c in ipairs({ { "0.1.49", false }, { "0.2.0-beta.1", true } }) do
+    put(repo .. "/lw.sh", old_sh)
+    local st, info = bootstrap.write_launcher(repo, "sh", false, c[1])
+    eq(st, "refreshed", "write_launcher refreshes a known generation (pin " .. c[1] .. ")")
+    eq(info and info.breaks, c[2], "the legacy-origin defect breaks only a 0.2+ pin (pin " .. c[1] .. ")")
+    eq(info and #info.defects, c[2] and 1 or 0,
+      "the legacy-origin defect is listed only for a 0.2+ pin (pin " .. c[1] .. ")")
+  end
 
   -- ---- exec bit on a TRACKED lw.sh committed without it ---------------------
   do
