@@ -2538,10 +2538,11 @@ File checks (local reads, no process spawned):
   (local edits?)", remedy: if the edits are not intended, `lw bootstrap install
   --force` restores the generated launcher), since other contributors and CI run
   whatever it does. A generation newer than the running host is reported as not
-  recognized, never as defective. A defect may apply only to some pins: every launcher generation before the
-  version-dependent origin fetches every version from samienne/loomworks.nvim,
-  which breaks only a pin of 0.2 or later. For a pin below 0.2 that defect is not
-  reported, and a generation with no other defect yields no finding.
+  recognized, never as defective. A defect may apply only to some pins: every
+  launcher generation before the version-dependent origin fetches every version
+  from samienne/loomworks.nvim, which breaks only a pin of 0.2 or later. For a
+  pin below 0.2 that defect is not reported, and a generation with no other
+  defect yields no finding.
 
 Version-control checks, only when the pin root is inside a git working tree
 and `git` is available (else silently skipped). A few local queries, each under
