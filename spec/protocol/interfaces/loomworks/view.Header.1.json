@@ -2,7 +2,7 @@
   "interface": "loomworks.view.Header",
   "version": 1,
   "status": "draft",
-  "description": "Object /views (API.md §14.1): the always-warm header the statusline and the status page's header show. get returns the full state; update, declared initial, carries the full state again whenever it changed, never a delta. The editor builds the same shape in-process without the daemon-only fields (pid, lw_version, session_generation, the ids).",
+  "description": "Object /views (API.md §14.1): the always-warm header the statusline and the status page's header show. get returns the full state; update, declared initial, carries the full state again whenever it changed, never a delta.",
   "methods": {
     "get": {
       "description": "The view's full state. Never loads the workspace.",
@@ -46,7 +46,7 @@
         "pid": { "description": "The daemon's process id.", "type": "integer" },
         "lw_version": { "description": "The daemon's lw_version.", "type": "string" },
         "session_generation": { "description": "The daemon's session generation.", "type": "integer" },
-        "version": { "description": "The running loomworks version of the lw that built the view (the daemon's, or the editor's in-process), resolved like _meta.written_by (spec 2); absent when unknown. The status page's header shows it.", "type": "string" }
+        "version": { "description": "The running loomworks version of the lw that built the view (the daemon's), resolved like _meta.written_by (spec 2); absent when unknown. The status page's header shows it.", "type": "string" }
       }
     }
   }

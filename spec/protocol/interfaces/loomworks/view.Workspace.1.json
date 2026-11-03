@@ -2,7 +2,7 @@
   "interface": "loomworks.view.Workspace",
   "version": 1,
   "status": "draft",
-  "description": "Object /views (API.md §14.4; step 5n): what the status page's body shows - Diagnostics, Suggestions, Profiles, Orphaned Build Dirs, Configuration Sets, Projects and SDKs; the header, LSP, Debug Adapters and Tasks sections have their own sources. It lists every field the status page reads for these sections. It carries no build progress (percent, elapsed time, progress or last-operation messages): a client overlays those from loomworks.Tasks/1. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
+  "description": "Object /views (API.md §14.4; step 5n): what the status page's body shows - Diagnostics, Suggestions, Profiles, Orphaned Build Dirs, Configuration Sets, Projects and SDKs; the header, LSP, Debug Adapters and Tasks sections have their own sources. It lists every field the status page reads for these sections. It carries no build progress (percent, elapsed time, progress or last-operation messages): a client overlays those from loomworks.Tasks/1. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta.",
   "methods": {
     "get": {
       "description": "The view's full state. Never loads the workspace: an unloaded one has empty arrays.",
@@ -174,7 +174,7 @@
         "overwritten": { "description": "Another unit has since overwritten its output artifact (spec 5.9).", "type": "boolean" },
         "launcher_changed": { "description": "Its compiler launcher changed since it was configured.", "type": "boolean" },
         "artifact_block": {
-          "description": "A build of the unit now would overwrite the output artifact of the built unit of that profile (spec 5.9 gate, without force; API.md §14.4); the client asks before a build and sends its Yes as force (API.md §8.6). Absent when nothing blocks, and always in-process.",
+          "description": "A build of the unit now would overwrite the output artifact of the built unit of that profile (spec 5.9 gate, without force; API.md §14.4); the client asks before a build and sends its Yes as force (API.md §8.6). Absent when nothing blocks.",
           "type": "object",
           "required": ["profile"],
           "properties": {

@@ -1615,7 +1615,8 @@ statusline (spec/ui.md §3) and the buffer → project lookup:
 `loomworks.view.Header/1` and `loomworks.view.ProjectsIndex/1`, specified with
 the rules every view follows in [API.md](../protocol/API.md) §14. What only the daemon knows — the
 header's `pid`, `lw_version` and `session_generation`, and every opaque id
-— the in-process builder leaves out ("Two sources, one shape" below).
+— the daemon's views carry as their schemas require ([PROTOCOL.md](../protocol/PROTOCOL.md)
+§12.1); the in-process builder leaves it out ("Two sources, one shape" below).
 `view.Header/1`'s `version` is the daemon's in the daemon's view and the
 editor's in one built in-process (also `daemon` mode's `unloaded` header
 before the daemon's arrives); the status page's header shows it (spec/ui.md
@@ -1717,8 +1718,10 @@ the host's notification seam (core's `_deps.notify`), never through
 **Two sources, one shape.** The editor renders each view from one table of
 the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
 while it holds a subscription to the view, otherwise one it builds from its
-in-process model with the same builder the daemon uses. The shape is shared;
-what only the daemon knows is optional in it and left out in-process: the
+in-process model with the same builder the daemon uses. The shape is shared,
+except for what only the daemon knows: the daemon's view carries it as the
+schemas require ([PROTOCOL.md](../protocol/PROTOCOL.md) §12.1), and a view
+built in-process, outside that contract, leaves it out: the
 header's `pid`, `lw_version` and `session_generation`, and every opaque id
 (`active_profile_id`, `config_set_id`, a project record's `id` and
 `active.unit_id`, the tests view's `profile_id` and unit `id`; its node ids
