@@ -478,7 +478,14 @@ Each frame is `task { task_id, phase, ... }`, with `phase` one of:
   presentation hint for the line whose values the interface defines. A client
   that does not render roles ignores it. An absent or unknown `role` is
   rendered as a line with no role.
-- `output` — a step's raw output bytes, `stdout` or `stderr`.
+- `output` — a chunk of a step's raw output: `stream` (`stdout` or
+  `stderr`) and either `text`, when the chunk is valid UTF-8, or `data`, the
+  chunk's bytes in base64 (RFC 4648 §4) — exactly one of the two. A server
+  never splits a UTF-8 sequence between two `text` chunks of one stream: it
+  holds back an incomplete trailing sequence until the stream's next chunk
+  or the end of the process that wrote it (never joining two processes'
+  bytes); held bytes of several streams go out in the order they were
+  produced. A client writes the bytes as they are.
 - `progress` — `pct`, the task's integer percent (0–100); sent only when it
   changes.
 - `done` — last; carries `exit_code` (an integer, 0 for success) and

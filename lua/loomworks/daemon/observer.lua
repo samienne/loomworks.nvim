@@ -66,6 +66,7 @@
 
 local uv = vim.uv or vim.loop
 local remote_task = require("loomworks.daemon.remote_task")
+local output_bytes = require("loomworks.proto.bytes").output_bytes
 local views = require("loomworks.views")
 
 local M = {}
@@ -2162,9 +2163,12 @@ function Observer:_on_task(msg)
         end
         return
     end
-    if msg.phase == "line" or msg.phase == "output" then
+    if msg.phase == "output" then
+        -- The chunk's bytes as they are: `text`, or `data` decoded (§14.2).
+        task:append(output_bytes(msg))
+    elseif msg.phase == "line" then
         task:append(tostring(msg.text or ""))
-        local owned = msg.phase == "line" and self._owned[id] or nil
+        local owned = self._owned[id]
         if owned and owned.on_line then pcall(owned.on_line, tostring(msg.text or "")) end
     elseif msg.phase == "progress" then
         task.pct = tonumber(msg.pct)

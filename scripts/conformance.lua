@@ -92,8 +92,14 @@ end
 --- The build/configure step of the `shell` fixture (run by nvim -l).
 M.STEP = [[
 local kind = arg[1]
-io.write("step " .. kind .. string.char(10))
-io.stdout:flush()
+local hex = os.getenv("LW_TEST_STDERR")
+if hex then
+    io.stderr:write((hex:gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end)))
+    io.stderr:flush()
+else
+    io.write("step " .. kind .. string.char(10))
+    io.stdout:flush()
+end
 local ms = tonumber(os.getenv("LW_TEST_SLEEP") or "")
 if ms then vim.uv.sleep(ms) end
 ]]

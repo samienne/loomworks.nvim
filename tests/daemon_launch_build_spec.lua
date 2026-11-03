@@ -84,7 +84,7 @@ describe("daemon launch-target build (§19.15 Build of a launch target)", functi
         local task = {
             start = function(_, meta) rec.meta = meta end,
             step = function(_, index, state, err) rec.steps[#rec.steps + 1] = { index, state, err } end,
-            progress = function() end, output = function() end, set_flow = function() end,
+            progress = function() end, output = function() end, end_output = function() end, set_flow = function() end,
             line = function(_, _, text) rec.lines[#rec.lines + 1] = text end,
             done = function(_, code, err, fields) rec.done = { code = code, err = err, fields = fields } end,
         }

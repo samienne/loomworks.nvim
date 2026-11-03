@@ -44,6 +44,7 @@ local M = {}
 -- Terminal-safe rendering of everything the CLI prints (control characters in
 -- data escaped; only our own palette markers become escape sequences).
 local term = require("loomworks.term")
+local output_bytes = require("loomworks.proto.bytes").output_bytes
 
 -- Cleanups run before any os.exit() (both finish() and die()), so a build-dir
 -- lock is always released even when a step fails and we bail out.
@@ -9160,7 +9161,8 @@ function M._delegate(op, root, args, ensured, opts)
       -- inherited terminal: written to the file descriptor directly, never
       -- through the C runtime's text mode (which would turn the tool's CRLF
       -- into CR CR LF on Windows).
-      M._raw_write((m.stream == "stderr" or quiet) and 2 or 1, tostring(m.text or ""))
+      -- Its bytes: `text`, or `data` decoded (PROTOCOL.md §14.2).
+      M._raw_write((m.stream == "stderr" or quiet) and 2 or 1, output_bytes(m))
     elseif m.phase == "done" then
       -- An interface method's task carries its task result (§19.20); a
       -- protocol-10 task the same fields on the frame itself.

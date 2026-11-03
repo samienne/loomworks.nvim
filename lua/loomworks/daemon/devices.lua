@@ -224,6 +224,8 @@ local function run_command(service, ctx, run, command, task, k, o)
     spawn(ctx, run, argv, { cwd = command.cwd, env = command.env, timeout = timeout,
         output = task and function(stream, text) task:output(stream, text) end or nil },
         function(code, stdout, stderr, timed_out)
+            -- Its output ended: held bytes are this command's (§14.2).
+            if task then task:end_output() end
             service:with_model(ctx, function()
                 if run.finished then return end
                 if run.cancelled then return run.finish(run.cancel_code, run.stopped()) end

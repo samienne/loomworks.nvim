@@ -1672,7 +1672,10 @@ takes a portable regex subset translated to Lua patterns), `documents.lua`
 `loomworks/protocol/` in a release or dev bundle, added by
 `scripts/release/build_bundle.sh` / `scripts/dev-install.sh` — and a
 `DocumentSet` that loads them and resolves `<name>/<v>#…` and relative-path
-references) and `schema_check.lua` (`lint`, `ratchet`). The client stub is
+references), `schema_check.lua` (`lint`, `ratchet`) and `bytes.lua` (a task
+`output` frame's `text`/`data` choice, the UTF-8 hold-back's `split_tail`,
+U+FFFD `sanitize`, a pure-Lua base64 codec: the daemon's `Task:output`
+encodes, `cli.lua` and the editor observer decode). The client stub is
 `daemon/client.lua`'s `Conn:call` / `call_sync`. The documents live in
 `spec/protocol/`: `transport.json`, `meta/interface.schema.json` and
 `meta/transport.schema.json`, `interfaces/loomworks/Root.1.json` and

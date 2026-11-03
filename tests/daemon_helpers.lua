@@ -164,9 +164,26 @@ if pf then
     local f = io.open(pf .. "." .. kind .. ".tmp", "w"); f:write(tostring(vim.uv.os_getpid())); f:close()
     vim.uv.fs_rename(pf .. "." .. kind .. ".tmp", pf .. "." .. kind)
 end
+-- Raw bytes first / last on a step's stdout, given as `<kind>:<hex>`
+-- (LW_TEST_STDOUT_HEAD / LW_TEST_STDOUT_TAIL): a UTF-8 sequence cut at a
+-- process's end (PROTOCOL.md §14.2).
+local function raw(var)
+    local v = os.getenv(var)
+    if not v or v:sub(1, #kind + 1) ~= kind .. ":" then return "" end
+    return (v:sub(#kind + 2):gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end))
+end
+io.write(raw("LW_TEST_STDOUT_HEAD"))
 io.write("step " .. kind .. " FOO=" .. tostring(os.getenv("LW_TEST_FOO")) .. " ONLY="
     .. tostring(os.getenv("LW_TEST_ONLY")) .. " ARGS=" .. table.concat(arg, ",", 2) .. string.char(10))
 io.stderr:write("stderr of " .. kind .. string.char(10))
+io.write(raw("LW_TEST_STDOUT_TAIL"))
+-- Raw bytes on the build step's stderr, given as hex (LW_TEST_STDERR=ff41):
+-- output that is not valid UTF-8 (PROTOCOL.md §14.2 `data`).
+local hex = os.getenv("LW_TEST_STDERR")
+if hex and kind == "build" then
+    io.stderr:write((hex:gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end)))
+    io.stderr:flush()
+end
 -- A ninja-style `[N/M]` progress line from the build step (LW_TEST_PROGRESS=N/M).
 local prog = os.getenv("LW_TEST_PROGRESS")
 if prog and kind == "build" then io.write("[" .. prog .. "] Building CXX object src/x.cpp.o" .. string.char(10)) end

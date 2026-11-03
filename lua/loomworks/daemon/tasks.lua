@@ -11,8 +11,11 @@
 ---       line, stderr text); `role` is the line's highlighting role
 ---       (Common/1 LineRole, spec §16.7) — for a line the CLI also prints
 ---       in-process, the role it prints it with
----   { kind = "task", task_id, phase = "output", stream = "stdout"|"stderr", text }
----       raw bytes of a build step
+---   { kind = "task", task_id, phase = "output", stream = "stdout"|"stderr", text | data }
+---       a chunk of a build step's raw output (PROTOCOL.md §14.2): `text` when
+---       it is valid UTF-8, else `data`, its bytes in base64; an incomplete
+---       trailing UTF-8 sequence is held back per stream until the stream's
+---       next chunk, the step's end, a line or the task's end
 ---   { kind = "task", task_id, phase = "progress", pct }
 ---       coalesced: only when the integer percent advances
 ---   { kind = "task", task_id, phase = "done", exit_code, error?, result? }
@@ -40,6 +43,7 @@
 --- observes. Model changes never travel here.
 
 local protocol = require("loomworks.daemon.protocol")
+local bytes = require("loomworks.proto.bytes")
 
 local M = {}
 
@@ -82,6 +86,8 @@ M._queued = queued
 --- @field started_at integer|nil wall-clock seconds (os.time) it started
 --- @field on_profile loomworks.Profile|nil the profile it runs on (Task:start)
 --- @field last_pct integer last progress percent sent (-1 before the first tick)
+--- @field _carry table<string, { [1]: string, [2]: integer }>|nil per output stream, the incomplete trailing UTF-8 sequence held back (Task:output) with its sequence number (`_carry_n`): flushed in the order they were produced
+--- @field _carry_n integer|nil the last held-back sequence's number
 --- @field call loomworks.daemon.TaskCall|nil the interface method it runs for (§19.20): `{ object, iface, v, method, result = fun(exit_code, err, fields, extra): table }`
 --- @field steps table[]|nil a target-scoped task's steps with their current states (§19.15 "Steps of a task"): `{ id, kind, label, project?, configuration?, target?, phase?, state }` each, in run order
 local Task = {}
@@ -342,6 +348,8 @@ end
 function Task:step(index, state, err)
     local st = self.steps and self.steps[index]
     if self.finished or not st or st.state == state then return end
+    -- A step's end (or the next one's start) ends its output.
+    self:_flush_output()
     st.state = state
     local s = self.stream
     if s.on_step then pcall(s.on_step, self, index, state, err) end
@@ -357,28 +365,75 @@ end
 --- @param role? "lead"|"phase"|"reason"|"command"|"ok"|"fail"|"warn"|"plain"
 function Task:line(stream, text, role)
     if self.finished then return end
+    -- Output held back comes first, in the order it was produced; every
+    -- string the daemon sends is valid UTF-8 (PROTOCOL.md §4).
+    self:_flush_output()
+    if type(text) == "string" then text = bytes.sanitize(text) end
     self:_emit({ phase = "line", stream = stream, text = text, role = role })
 end
 
---- Raw output of a step. Each observer sees at most OBSERVER_CAP_BYTES of it.
+--- Raw output of a step (a pipe read: any bytes). An incomplete trailing
+--- UTF-8 sequence waits for the stream's next chunk (`_flush_output`), so a
+--- character split between two reads still travels as `text` (§14.2).
 --- @param stream "stdout"|"stderr"
---- @param text string
-function Task:output(stream, text)
+--- @param chunk string
+function Task:output(stream, chunk)
+    if self.finished or type(chunk) ~= "string" then return end
+    local carry = self._carry and self._carry[stream]
+    if carry then
+        self._carry[stream] = nil
+        if next(self._carry) == nil then self._carry = nil end
+        chunk = carry[1] .. chunk
+    end
+    local head, tail = bytes.split_tail(chunk)
+    if tail ~= "" then
+        self._carry = self._carry or {}
+        self._carry_n = (self._carry_n or 0) + 1
+        self._carry[stream] = { tail, self._carry_n }
+    end
+    if head ~= "" then self:_send_output(stream, head) end
+end
+
+--- Send the output held back (an incomplete UTF-8 sequence: as `data`),
+--- the streams' held bytes in the order they were produced.
+function Task:_flush_output()
+    local carry = self._carry
+    if not carry then return end
+    self._carry = nil
+    local held = {}
+    for stream, c in pairs(carry) do held[#held + 1] = { stream, c[1], c[2] } end
+    table.sort(held, function(a, b) return a[3] < b[3] end)
+    for _, h in ipairs(held) do self:_send_output(h[1], h[2]) end
+end
+
+--- A process of the task ended: its output ends with it. Bytes held back
+--- (a UTF-8 sequence cut at its end) go out now, never joined with the next
+--- process's (PROTOCOL.md §14.2) — also in a task without step states.
+function Task:end_output()
     if self.finished then return end
-    local msg = { kind = protocol.KIND.task, task_id = self.id, phase = "output", stream = stream, text = text }
+    self:_flush_output()
+end
+
+--- One `output` frame of `chunk`: `text` or `data` (bytes.output_fields).
+--- Each observer sees at most OBSERVER_CAP_BYTES of a task's output.
+--- @param stream "stdout"|"stderr"
+--- @param chunk string
+function Task:_send_output(stream, chunk)
+    local msg = bytes.output_fields(chunk)
+    msg.kind, msg.task_id, msg.phase, msg.stream = protocol.KIND.task, self.id, "output", stream
     self:_to_owner(msg)
     local srv = self.stream.server
     for _, conn in ipairs(self:_observers()) do
         local st = self.obs[conn]
         if not st then st = { bytes = 0, truncated = false }; self.obs[conn] = st end
         if not st.truncated and self:_observer_ok(conn) then
-            if st.bytes + #text > M.OBSERVER_CAP_BYTES then
+            if st.bytes + #chunk > M.OBSERVER_CAP_BYTES then
                 st.truncated = true
                 srv:_send(conn, { kind = protocol.KIND.task, task_id = M.wire_id(self, conn), phase = "output",
                     stream = "stderr", text = "[loomworks: task output truncated after "
                         .. math.floor(st.bytes / 1024) .. " KiB]\n" })
             else
-                st.bytes = st.bytes + #text
+                st.bytes = st.bytes + #chunk
                 srv:_send(conn, for_conn(self, msg, conn))
             end
         end
@@ -404,6 +459,7 @@ end
 ---   an interface method's task only
 function Task:done(exit_code, err, fields)
     if self.finished then return end
+    self:_flush_output()
     self.finished = true
     self.exit_code, self.error, self.ended_at = exit_code, err, os.time()
     local msg = { phase = "done", exit_code = exit_code, error = err }

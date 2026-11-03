@@ -221,7 +221,7 @@ describe("daemon run preparation (§19.15 Run)", function()
                 if opts.steps then opts.steps[#opts.steps + 1] = { index, state, err } end
             end,
             progress = function(_, f) if opts.progress then opts.progress[#opts.progress + 1] = f end end,
-            output = function() end, set_flow = function() end,
+            output = function() end, end_output = function() end, set_flow = function() end,
             line = function(_, _, text) lines[#lines + 1] = text end,
             done = function(_, code, err, fields) done = { code = code, err = err, fields = fields } end,
         }

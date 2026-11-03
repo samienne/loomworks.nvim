@@ -21,6 +21,20 @@
       ]
     },
     {
+      "name": "output that is not valid UTF-8 arrives as data, its bytes in base64",
+      "description": "PROTOCOL.md §14.2: a chunk that is valid UTF-8 travels as text, any other as data (RFC 4648 §4) - exactly one of the two. The fixture's steps write the byte 0xFF to stderr.",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "command": "lw build" }, "env": { "$var": "env", "$with": { "LW_TEST_STDERR": "ff" } } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task", "$type": "string" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "output", "stream": "stderr", "data": "/w==", "text": { "$absent": true } }, "timeout_ms": 120000 },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 }
+      ]
+    },
+    {
       "name": "a profile named by its id from the snapshot index builds; clean then runs as a task",
       "fixture": "shell",
       "allow": [
