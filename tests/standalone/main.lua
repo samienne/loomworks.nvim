@@ -1085,11 +1085,14 @@ end
 print("boot.update — versioned_base URL shapes")
 do
   eq(update.versioned_base("1.2.3", { url = update.DEFAULT_RELEASE_URL }),
-    "https://github.com/samienne/loomworks/releases/download/v1.2.3",
+    "https://github.com/samienne/loomworks.nvim/releases/download/v1.2.3",
     "GitHub latest-shaped override -> its versioned download path")
   eq(update.versioned_base("0.1.40", { url = update.DEFAULT_RELEASE_URL }),
-    "https://github.com/samienne/loomworks/releases/download/v0.1.40",
-    "an override is one mirror for all versions, legacy ones included")
+    "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.40",
+    "an override is one mirror for all versions")
+  eq(update.versioned_base("0.2.0", { url = update.DEFAULT_RELEASE_URL }),
+    "https://github.com/samienne/loomworks.nvim/releases/download/v0.2.0",
+    "an override is one mirror for all versions, current ones included")
   -- No override (sandboxed config, env cleared): the version picks the origin.
   local sb = root .. "/tests/.tmp-origin"; paths.rm_rf(sb); paths.mkdirp(sb)
   uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
@@ -1111,10 +1114,10 @@ do
   else
     print("  skip: a LOOMWORKS_RELEASE_URL from the real environment is in effect")
   end
-  eq(update.DEFAULT_RELEASE_URL, "https://github.com/samienne/loomworks/releases/latest/download",
-    "the latest release is only ever looked up in loomworks")
-  eq(update.RELEASES_API_URL, "https://api.github.com/repos/samienne/loomworks/releases",
-    "the releases API is loomworks'")
+  eq(update.DEFAULT_RELEASE_URL, "https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    "the latest release is only ever looked up in loomworks.nvim")
+  eq(update.RELEASES_API_URL, "https://api.github.com/repos/samienne/loomworks.nvim/releases",
+    "the releases API is loomworks.nvim's")
   paths.rm_rf(sb)
   eq(update.versioned_base("1.2.3", { url = "/tmp/mirror" }), "/tmp/mirror",
     "local mirror stays flat")

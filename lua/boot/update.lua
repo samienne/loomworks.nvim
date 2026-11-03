@@ -27,7 +27,7 @@ end
 -- the `release-url` config key; a local directory works as an offline mirror.
 -- `/releases/latest/download` already resolves to the newest NON-prerelease on
 -- GitHub, so this base IS the `stable` channel (§16.29). Latest queries go to
--- the current repository only; a SPECIFIC version's assets come from the
+-- the legacy repository only; a SPECIFIC version's assets come from the
 -- repository that version was published in (boot.origin, see versioned_base).
 M.DEFAULT_RELEASE_URL = origin.LATEST_DOWNLOAD
 

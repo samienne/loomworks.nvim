@@ -46,10 +46,10 @@ describe("boot.origin", function()
         end
     end)
 
-    it("looks up the latest release in the current repository only", function()
-        assert.equals("https://github.com/samienne/loomworks/releases/latest/download",
+    it("looks up the latest release in the legacy repository only", function()
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
             origin.LATEST_DOWNLOAD)
-        assert.equals("https://api.github.com/repos/samienne/loomworks/releases", origin.RELEASES_API)
+        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases", origin.RELEASES_API)
     end)
 end)
 
@@ -85,10 +85,11 @@ describe("boot.update fetches a version from the repository it was published in"
         end
     end)
 
-    it("looks up the latest release and the releases API in the current repository only", function()
-        assert.equals(origin.LATEST_DOWNLOAD, update.DEFAULT_RELEASE_URL)
-        assert.equals(origin.RELEASES_API, update.RELEASES_API_URL)
-        assert.equals(origin.LATEST_DOWNLOAD, update.release_base())
+    it("looks up the latest release and the releases API in the legacy repository only", function()
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/latest/download",
+            update.DEFAULT_RELEASE_URL)
+        assert.equals("https://api.github.com/repos/samienne/loomworks.nvim/releases", update.RELEASES_API_URL)
+        assert.equals(update.DEFAULT_RELEASE_URL, update.release_base())
     end)
 
     it("treats an override as one mirror for all versions", function()

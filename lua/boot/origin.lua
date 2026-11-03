@@ -8,8 +8,9 @@
 -- in sh/cmd, by the same prefix test: a version starting `0.0.` or `0.1.` is
 -- legacy, anything else is current.
 --
--- Queries for the LATEST release only ever go to the current repository. A
--- release-url override (LOOMWORKS_RELEASE_URL / `release-url`) is one mirror for
+-- Queries for the LATEST release only ever go to the legacy repository: this
+-- line's hosts stay within 0.1.x on their own, and moving to 0.2 or later is
+-- always an explicit version or pin. A release-url override (LOOMWORKS_RELEASE_URL / `release-url`) is one mirror for
 -- all versions; boot.update applies it before consulting this module.
 --
 -- Pure and dependency-free.
@@ -53,10 +54,10 @@ function M.download_base(version)
 end
 
 -- The newest non-prerelease's assets (GitHub resolves `latest`): the `stable`
--- channel. Only the current repository.
-M.LATEST_DOWNLOAD = M.GITHUB .. "/" .. M.REPO .. "/releases/latest/download"
+-- channel. Only the legacy repository.
+M.LATEST_DOWNLOAD = M.GITHUB .. "/" .. M.LEGACY_REPO .. "/releases/latest/download"
 
--- The releases API of the current repository (the `unstable` channel's query).
-M.RELEASES_API = "https://api.github.com/repos/" .. M.REPO .. "/releases"
+-- The releases API of the legacy repository (the `unstable` channel's query).
+M.RELEASES_API = "https://api.github.com/repos/" .. M.LEGACY_REPO .. "/releases"
 
 return M
