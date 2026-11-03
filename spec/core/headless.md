@@ -1257,14 +1257,15 @@ parseable key/value list (not JSON) so a launcher can read it with a system
 shell alone — one `version` entry, one hashed entry per host binary keyed by the
 binary's asset identity, and one hashed entry for the bundle. The pin carries a
 version and hashes **only, never a location**: the download origin is fixed by
-the host and overridable solely by the user's environment or host configuration,
-never by repository content (§16.23).
+the host, chosen by the pinned version alone, and overridable solely by the
+user's environment or host configuration, never by repository content (§16.23).
 
 ### 16.22 Launcher behavior and pinned-release provisioning
 
 A launcher selects the host-binary asset for the current operating system and
 architecture, reads the pinned version and that asset's hash, and — unless the
-binary is already cached — downloads it from the fixed origin, verifies its hash
+binary is already cached — downloads it from the fixed origin for the pinned
+version (§16.23), verifies its hash
 against the pin, and executes it, forwarding all arguments unchanged. A platform
 for which the pin names no binary is an error, never a fetch of a different
 platform's asset. Hash verification against the pinned hash is **mandatory and
@@ -1403,7 +1404,12 @@ The following invariants are normative:
 
 - **Fixed origin.** The download origin is fixed in the host, overridable only
   by a user-set environment value or host configuration, never by repository
-  content.
+  content. A specific version's default origin is chosen by the version alone:
+  a version beginning `0.0.` or `0.1.` (pre-releases included) is fetched from
+  samienne/loomworks.nvim, every other version from samienne/loomworks. A
+  version is never retried at the other repository. A user override is one
+  mirror for all versions. Releases in both repositories are signed with the
+  same release key; the rule selects a location, never a trust anchor.
 - **Version-and-hash pin, never a location.** A repository cannot redirect the
   fetch; it can only name a version and the hashes the fetched artifacts must
   match.
@@ -1667,6 +1673,11 @@ as refreshed; a known earlier generation → replaced; **not a known generation*
 completes the rest of its work, reports the launcher as kept, and names
 `--force`, which replaces it. A missing launcher (outside `--pin-only`) is
 written.
+
+A defect may apply only to some pins: every launcher generation before the
+version-dependent origin fetches every version from samienne/loomworks.nvim,
+which breaks only a pin of 0.2 or later. For a pin below 0.2 that defect is not
+reported, and a generation with no other defect yields no finding.
 
 **Repository metadata.** Install, on every run, makes sure the repository will
 carry the files correctly, each step idempotent and append-only toward files the
@@ -2024,7 +2035,10 @@ command) saves it. A pin (§16.21) is
 independent of and takes precedence over channel resolution: a pinned
 invocation acquires exactly the pinned version+hash and consults no channel. An
 explicit release-source location override (a mirror) likewise supersedes
-channel resolution, which applies only to the default origin. When such an
+channel resolution, which applies only to the default origin. On this release
+line both channels resolve the newest release in samienne/loomworks.nvim, so
+channel resolution never leaves 0.1.x; a release of 0.2 or later is reached
+only through an explicit version or a pin (§16.21, §16.23). When such an
 override supersedes an explicitly-requested **non-default** channel, self-update
 MUST warn that the channel was ignored — the supersede is by design, but it MUST
 NOT be silent, or a user who selected a channel will believe it took effect. (A
@@ -2524,7 +2538,10 @@ File checks (local reads, no process spawned):
   (local edits?)", remedy: if the edits are not intended, `lw bootstrap install
   --force` restores the generated launcher), since other contributors and CI run
   whatever it does. A generation newer than the running host is reported as not
-  recognized, never as defective.
+  recognized, never as defective. A defect may apply only to some pins: every launcher generation before the
+  version-dependent origin fetches every version from samienne/loomworks.nvim,
+  which breaks only a pin of 0.2 or later. For a pin below 0.2 that defect is not
+  reported, and a generation with no other defect yields no finding.
 
 Version-control checks, only when the pin root is inside a git working tree
 and `git` is available (else silently skipped). A few local queries, each under
