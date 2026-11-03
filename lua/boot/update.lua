@@ -13,6 +13,7 @@ local paths = require("boot.paths")
 local verify = require("boot.verify")
 local download = require("boot.download")
 local pin = require("boot.pin")
+local origin = require("boot.origin")
 local json = require("boot.json")
 
 local M = {}
@@ -25,14 +26,16 @@ end
 -- Where releases are fetched from. Overridable via LOOMWORKS_RELEASE_URL or
 -- the `release-url` config key; a local directory works as an offline mirror.
 -- `/releases/latest/download` already resolves to the newest NON-prerelease on
--- GitHub, so this base IS the `stable` channel (§16.29).
-M.DEFAULT_RELEASE_URL = "https://github.com/samienne/loomworks.nvim/releases/latest/download"
+-- GitHub, so this base IS the `stable` channel (§16.29). Latest queries go to
+-- the current repository only; a SPECIFIC version's assets come from the
+-- repository that version was published in (boot.origin, see versioned_base).
+M.DEFAULT_RELEASE_URL = origin.LATEST_DOWNLOAD
 
 -- The releases API for the default origin. Consulted ONLY to resolve the
 -- `unstable` channel (§16.29): the newest release INCLUDING pre-releases. Never
 -- queried for `stable`, nor when a release-source override / mirror is set —
 -- the channel governs only the default origin.
-M.RELEASES_API_URL = "https://api.github.com/repos/samienne/loomworks.nvim/releases"
+M.RELEASES_API_URL = origin.RELEASES_API
 
 -- The update channels this host knows (§16.29). `stable` (default) is unchanged
 -- behavior; `unstable` follows pre-releases too. Both verify identically.
@@ -213,21 +216,25 @@ local function is_local_base(base)
   return false
 end
 
---- The base URL holding a SPECIFIC version's assets. The default GitHub origin
---- serves them under a versioned path (…/releases/download/v<ver>/); a local or
---- overridden mirror is flat — the version's assets sit at the base directly, as
---- self_update already assumes. So the pin's per-version fetches resolve on
---- GitHub and against an offline mirror alike.
+--- The base URL holding a SPECIFIC version's assets. Without a release-url
+--- override they come from the repository that version was published in
+--- (boot.origin: below 0.2 the legacy one, never retried at the other) under
+--- its versioned path (…/releases/download/v<ver>/). An override is one mirror
+--- for all versions: a GitHub-shaped `…/releases/latest/download` one maps to
+--- its own versioned path, any other (or a local base) is flat — the version's
+--- assets sit at the base directly, as self_update already assumes. So the
+--- pin's per-version fetches resolve on GitHub and against an offline mirror
+--- alike.
 function M.versioned_base(version, opts)
   -- Defense in depth: never interpolate an unvalidated version into a URL.
   if not pin.valid_version(version) then
     error("unsafe release version: " .. tostring(version))
   end
   local base = release_base(opts)
-  if not is_local_base(base) then
-    local root = base:match("^(.-)/releases/latest/download$")
-    if root then return root .. "/releases/download/v" .. version end
-  end
+  if is_local_base(base) then return base end
+  if not url_override(opts) then return origin.download_base(version) end
+  local root = base:match("^(.-)/releases/latest/download$")
+  if root then return root .. "/releases/download/v" .. version end
   return base
 end
 
