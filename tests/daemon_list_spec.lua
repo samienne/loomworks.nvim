@@ -29,6 +29,23 @@ local function ws(dir, name)
     return root
 end
 
+--- An lw environment whose daemons never exit for idleness while a test
+--- runs. The default idle timeout (45 s, runtime.IDLE_GRACE_SECONDS) is
+--- shorter than one of these tests can take on a loaded machine (the whole
+--- suite at once: each `lw` spawn can take many seconds), and a daemon
+--- stopping on its idle timer is caught between removing its handle and
+--- releasing R — listed `starting` — or gone. Each test stops or kills its
+--- daemons itself (and `H.cleanup` kills any it left).
+local function denv(extra)
+    local e = H.env(extra)
+    local dir = e.config .. "/loomworks"
+    vim.fn.mkdir(dir, "p")
+    local f = assert(io.open(dir .. "/config.json", "w"))
+    f:write(vim.json.encode({ ["daemon-idle-timeout"] = "1h" }))
+    f:close()
+    return e
+end
+
 --- Start a daemon for `root` (`lw daemon restart`) and track it.
 local function start(root, env)
     local r = H.lw({ "daemon", "restart" }, { env = env, cwd = root })
@@ -309,7 +326,7 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
     after_each(function() H.cleanup() end)
 
     it("lists two daemons with their roots; json shape; a stopped one disappears", function()
-        local env, dir = H.env(), parent()
+        local env, dir = denv(), parent()
         local a, b = ws(dir, "alpha"), ws(dir, "beta")
         local ia, ib = start(a, env), start(b, env)
         local r = H.lw({ "daemon", "list", "--under", dir }, { env = env, cwd = H.tmp() })
@@ -345,7 +362,7 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
     end)
 
     it("a killed daemon is absent; its leftover files list nothing", function()
-        local env, dir = H.env(), parent()
+        local env, dir = denv(), parent()
         local a = ws(dir, "alpha")
         local ia = start(a, env)
         assert.is_true(proc.kill_tree(ia.pid, ia.start_time))
@@ -354,7 +371,7 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
     end)
 
     it("a handle and lock naming a live non-daemon process (reused pid) list nothing", function()
-        local env, dir = H.env(), parent()
+        local env, dir = denv(), parent()
         local a = ws(dir, "alpha")
         -- A live process that is not a daemon: a sleeping nvim.
         local child = uv.spawn(vim.v.progpath, { args = { "--headless", "-u", "NONE", "--cmd", "sleep 20" } },
@@ -378,7 +395,7 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
 
     it("a daemon whose handle names another process is a stray; stop --all skips it, kill --all --strays kills it",
         function()
-            local env, dir = H.env(), parent()
+            local env, dir = denv(), parent()
             local a, b = ws(dir, "alpha"), ws(dir, "beta")
             local ia, ib = start(a, env), start(b, env)
             local h = handle.read(b)
@@ -410,7 +427,7 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
         end)
 
     it("stop --all stops both; kill --all kills", function()
-        local env, dir = H.env(), parent()
+        local env, dir = denv(), parent()
         local a, b = ws(dir, "alpha"), ws(dir, "beta")
         local ia, ib = start(a, env), start(b, env)
         local r = H.lw({ "daemon", "stop", "--all", "--under", dir }, { env = env, cwd = H.tmp() })
@@ -428,7 +445,7 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
     end)
 
     it("a daemon run without --root is listed with root unknown, never under --under", function()
-        local env, dir = H.env(), parent()
+        local env, dir = denv(), parent()
         local a = ws(dir, "alpha")
         local d = H.lw_start({ "daemon", "run" }, { env = env, cwd = a })
         H.track(d.pid, d.start)
@@ -570,7 +587,7 @@ describe("lw daemon list display (field findings, §19.6.1)", function()
 
     it("a daemon of another data dir: list marks it, stop --all skips it calmly, its own data dir stops it",
         function()
-            local env_a, env_b, dir = H.env(), H.env(), parent()
+            local env_a, env_b, dir = denv(), denv(), parent()
             local a = ws(dir, "alpha")
             local ia = start(a, env_a)
             -- The handle carries the non-secret key id of A's data dir.
@@ -630,7 +647,7 @@ describe("relays as real processes (§19.6.1 step 3)", function()
     end
 
     it("a relay is listed under its daemon, never as a row; kill_stray refuses it", function()
-        local env, dir = H.env(), parent()
+        local env, dir = denv(), parent()
         local a = ws(dir, "alpha")
         local ia = start(a, env)
         local p = relay(a, env)
@@ -657,7 +674,7 @@ describe("relays as real processes (§19.6.1 step 3)", function()
     end)
 
     it("a --no-launch relay with no daemon is not listed, and kill --all --strays never touches it", function()
-        local env, dir = H.env(), parent()
+        local env, dir = denv(), parent()
         local a = ws(dir, "alpha")
         local p = relay(a, env, { "--no-launch" })
         -- Past its hello check (about 5 s): it waits for a daemon.
@@ -706,7 +723,7 @@ describe("standard-I/O runtimes that hold R (§19.6.1 step 3)", function()
     end
 
     it("a private runtime named by R lists as a daemon, and kill_stray kills it", function()
-        local env, dir = H.env({ LOOMWORKS_TEST_PRIVATE_STDIO = "1" }), parent()
+        local env, dir = denv({ LOOMWORKS_TEST_PRIVATE_STDIO = "1" }), parent()
         local a = ws(dir, "alpha")
         local p = private_runtime(a, env)
         local doc = list_json(dir, env)
@@ -721,7 +738,7 @@ describe("standard-I/O runtimes that hold R (§19.6.1 step 3)", function()
     end)
 
     it("R changing between list and kill: kill_stray decides on R read again", function()
-        local env, dir = H.env({ LOOMWORKS_TEST_PRIVATE_STDIO = "1" }), parent()
+        local env, dir = denv({ LOOMWORKS_TEST_PRIVATE_STDIO = "1" }), parent()
         local a = ws(dir, "alpha")
         local p = private_runtime(a, env)
         local e = by_pid(list_json(dir, env), p.pid)
