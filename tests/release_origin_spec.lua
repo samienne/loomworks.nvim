@@ -153,7 +153,7 @@ describe("launcher templates choose the origin from lw.pin's version", function(
         vim.fn.delete(dir, "rf")
     end)
 
-    it("the previous launchers are a known generation that works for every 0.1 pin", function()
+    it("the previous launchers are a known generation that breaks on a 0.2 pin", function()
         local prev = {
             sh = "e320286c13d612f12424ff36e0219f18bb29b4924b997e5177b7ca23ed0c0b44",
             cmd = "2561fcb70a8ffa46f96577cb2105cf43ff875b7b9ba8d1f73fe04be619d366a5",
@@ -161,10 +161,94 @@ describe("launcher templates choose the origin from lw.pin's version", function(
         for kind, hash in pairs(prev) do
             local g = launcher.GENERATIONS[kind][hash]
             assert.truthy(g, kind)
-            assert.same({}, g.defects, kind)
+            local breaks = false
+            for _, d in ipairs(g.defects) do
+                if d.severity == "breaks" and d.text:find("loomworks.nvim", 1, true) then breaks = true end
+            end
+            assert.is_true(breaks, kind)
             -- the current template is never catalogued as an older generation
             local cur = vim.fn.sha256(launcher.normalize(kind == "sh" and launcher.LW_SH or launcher.LW_CMD))
             assert.is_nil(launcher.GENERATIONS[kind][cur], kind)
+        end
+    end)
+end)
+
+describe("the legacy-origin launcher defect depends on the pin", function()
+    local uv = vim.uv or vim.loop
+    local pin = require("boot.pin")
+    local lh = require("loomworks.launcher_health")
+    local LEGACY = launcher.LEGACY_ORIGIN_DEFECT
+    local MINOR = { severity = "minor", text = "no download retry" }
+    local old_sh = "#!/bin/sh\n# an older launcher\n"
+    local old_cmd = "@echo off\r\nrem an older launcher\r\n"
+    local ksh = vim.fn.sha256(launcher.normalize(old_sh))
+    local kcmd = vim.fn.sha256(launcher.normalize(old_cmd))
+
+    before_each(function()
+        launcher.GENERATIONS.sh[ksh] = { gen = 0, releases = "0.1.0-0.1.1", defects = { LEGACY } }
+        launcher.GENERATIONS.cmd[kcmd] = { gen = 0, releases = "0.1.0-0.1.1", defects = { MINOR, LEGACY } }
+    end)
+    after_each(function()
+        launcher.GENERATIONS.sh[ksh] = nil
+        launcher.GENERATIONS.cmd[kcmd] = nil
+    end)
+
+    it("classify drops it for a legacy pin only", function()
+        local sha = vim.fn.sha256
+        for _, v in ipairs({ "0.1.50", "0.1.50-beta.1", "0.0.0-dev" }) do
+            local c = launcher.classify("sh", old_sh, sha, v)
+            assert.same({}, c.defects, v)
+            assert.is_false(c.breaks, v)
+            local m = launcher.classify("cmd", old_cmd, sha, v)
+            assert.same({ MINOR }, m.defects, v)
+            assert.is_false(m.breaks, v)
+        end
+        for _, v in ipairs({ "0.2.0-beta.1", "0.2.0", "1.0.0" }) do
+            local c = launcher.classify("sh", old_sh, sha, v)
+            assert.same({ LEGACY }, c.defects, v)
+            assert.is_true(c.breaks, v)
+        end
+        -- no pin known: every defect stays
+        assert.is_true(launcher.classify("sh", old_sh, sha).breaks)
+    end)
+
+    --- The health findings about launcher generations, for a pin of `version`
+    --- next to the older launchers (no git repository: file checks only).
+    local function findings(version)
+        local d = uv.fs_mkdtemp((vim.fn.tempname():gsub("[^/\\]*$", "")) .. "lwroXXXXXX")
+        d = ((uv.fs_realpath(d) or d):gsub("\\", "/"))
+        local hashes = {}
+        for _, a in pairs(pin.HOST_ASSETS) do hashes[a] = string.rep("a", 64) end
+        hashes[pin.bundle_asset(version)] = string.rep("b", 64)
+        local function put(name, text)
+            local f = assert(io.open(d .. "/" .. name, "wb")); f:write(text); f:close()
+        end
+        put("lw.pin", pin.serialize(version, hashes))
+        put("lw.sh", old_sh)
+        put("lw.cmd", old_cmd)
+        local items = lh.provider({ root = d })
+        vim.fn.delete(d, "rf")
+        local out = {}
+        for _, i in ipairs(items) do
+            if i.title:find("launcher written by lw", 1, true) then out[#out + 1] = i end
+        end
+        return out
+    end
+
+    it("health: a legacy pin reports no new defect", function()
+        local items = findings("0.1.50")
+        assert.equals(1, #items)  -- lw.cmd's earlier minor defect only
+        assert.equals("info", items[1].kind)
+        assert.truthy(items[1].title:find("lw.cmd", 1, true))
+        assert.is_nil(items[1].title:find("loomworks.nvim", 1, true))
+    end)
+
+    it("health: a 0.2 pin reports it as breaking", function()
+        local items = findings("0.2.0")
+        assert.equals(2, #items)
+        for _, i in ipairs(items) do
+            assert.equals("suggestion", i.kind, i.title)
+            assert.truthy(i.title:find("samienne/loomworks.nvim", 1, true), i.title)
         end
     end)
 end)

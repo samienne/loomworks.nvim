@@ -6,6 +6,8 @@
 -- (loomworks.launcher_health, nvim or luvi) can require it. Callers pass the
 -- SHA-256 function they have (boot.verify.sha256_hex / vim.fn.sha256).
 
+local origin = require("boot.origin")
+
 local M = {}
 
 -- ---------------------------------------------------------------------------
@@ -361,17 +363,28 @@ end
 -- current generation and are NOT listed here (they are recognized by content).
 -- When a template changes, add the OLD content's hash here with what the new
 -- one fixes.
+
+-- Every generation before the move to samienne/loomworks fetches all versions
+-- from samienne/loomworks.nvim (boot.origin). That only matters for a pin of
+-- 0.2 or later: classify drops it for a legacy pin, where those launchers work.
+local LEGACY_ORIGIN = { severity = "breaks", text = "downloads every lw version from " ..
+  "samienne/loomworks.nvim, so a pin of 0.2.0 or later (published in samienne/loomworks) cannot be fetched" }
+M.LEGACY_ORIGIN_DEFECT = LEGACY_ORIGIN
+
 M.GENERATIONS = {
   sh = {
     -- v0.1.37-beta.2 .. v0.1.50-beta.1
     ["e320286c13d612f12424ff36e0219f18bb29b4924b997e5177b7ca23ed0c0b44"] = {
       gen = 3, releases = "0.1.37-beta.2-0.1.50-beta.1",
-      defects = {},
+      defects = {
+        LEGACY_ORIGIN,
+      },
     },
     -- v0.1.36-beta.1 .. v0.1.37-beta.1
     ["1fe5b9caafc2872e26eb971b4cea89411a08b8f9a3bc0f09db3ac7292c91b696"] = {
       gen = 2, releases = "0.1.36-beta.1-0.1.37-beta.1",
       defects = {
+        LEGACY_ORIGIN,
         { severity = "minor", text = "does not tell lw which launcher ran it; names the removed `lw update`" },
       },
     },
@@ -379,6 +392,7 @@ M.GENERATIONS = {
     ["c457cda8832d502450951c5f9756a05929bf01aa679426e14c9719319217e635"] = {
       gen = 1, releases = "0.1.6-0.1.35",
       defects = {
+        LEGACY_ORIGIN,
         { severity = "minor", text = "no download retry; shows a progress meter" },
       },
     },
@@ -387,12 +401,15 @@ M.GENERATIONS = {
     -- v0.1.40 .. v0.1.50-beta.1
     ["2561fcb70a8ffa46f96577cb2105cf43ff875b7b9ba8d1f73fe04be619d366a5"] = {
       gen = 6, releases = "0.1.40-0.1.50-beta.1",
-      defects = {},
+      defects = {
+        LEGACY_ORIGIN,
+      },
     },
     -- v0.1.6 .. v0.1.34
     ["f52183ec829018f3352a60b60411410400cffe76fd4e899fb3aeb9f7b8791b35"] = {
       gen = 1, releases = "0.1.6-0.1.34",
       defects = {
+        LEGACY_ORIGIN,
         { severity = "breaks", text = "calls find/findstr/certutil by bare name, " ..
           "so a same-named tool on PATH (Git Bash, CI) breaks it" },
         { severity = "minor", text = "no download retry; shows a progress meter" },
@@ -402,6 +419,7 @@ M.GENERATIONS = {
     ["8fa140032b7fd103af7e401c90a1f2d40cae98f12eeab029e776ab81abde08f8"] = {
       gen = 3, releases = "0.1.36-beta.1",
       defects = {
+        LEGACY_ORIGIN,
         { severity = "minor", text = "messages end in a trailing space" },
       },
     },
@@ -409,6 +427,7 @@ M.GENERATIONS = {
     ["bb21d2287961a73e5946474b02ab24dd2378466b1531c568e3a4599370e577e3"] = {
       gen = 4, releases = "0.1.36-beta.2-0.1.37-beta.1",
       defects = {
+        LEGACY_ORIGIN,
         { severity = "minor", text = "does not tell lw which launcher ran it (lw then prints ./lw.sh commands);" ..
           " names the removed `lw update`" },
       },
@@ -417,6 +436,7 @@ M.GENERATIONS = {
     ["b1880aae46c5d5920e181b537939c94f362cb881becc668c91a9ca82b2af05fc"] = {
       gen = 5, releases = "0.1.37-beta.2-0.1.39",
       defects = {
+        LEGACY_ORIGIN,
         { severity = "minor", text = "after Ctrl-C / Ctrl-Break, cmd.exe asks \"Terminate batch job (Y/N)?\"" ..
           " and waits, although lw already stopped" },
       },
@@ -425,6 +445,7 @@ M.GENERATIONS = {
     ["fb3ee139018cc1a514daf77bcd418cda9e92b04c92c77a90f6b0fc63d46e57a6"] = {
       gen = 2, releases = "0.1.35",
       defects = {
+        LEGACY_ORIGIN,
         { severity = "minor", text = "no download retry; shows a progress meter" },
       },
     },
@@ -436,20 +457,26 @@ M.GENERATIONS = {
 --- @param kind "sh"|"cmd"
 --- @param bytes string the file's content
 --- @param sha256 fun(s: string): string lowercase hex SHA-256
+--- @param pinned_version? string lw.pin's version: a legacy one (below 0.2,
+---   boot.origin) drops the legacy-origin defect, which only breaks a 0.2+ pin
 --- @return { status: "current"|"known"|"unknown", gen?: integer, releases?: string, defects?: table[], breaks?: boolean }
-function M.classify(kind, bytes, sha256)
+function M.classify(kind, bytes, sha256, pinned_version)
   local norm = M.normalize(bytes)
   if norm == M.normalize(kind == "sh" and M.LW_SH or M.LW_CMD) then
     return { status = "current" }
   end
   local g = (M.GENERATIONS[kind] or {})[sha256(norm):lower()]
   if not g then return { status = "unknown" } end
-  local breaks = false
+  local legacy_pin = pinned_version ~= nil and origin.is_legacy(pinned_version)
+  local defects, breaks = {}, false
   for _, d in ipairs(g.defects or {}) do
-    if d.severity == "breaks" then breaks = true end
+    if not (legacy_pin and d == LEGACY_ORIGIN) then
+      defects[#defects + 1] = d
+      if d.severity == "breaks" then breaks = true end
+    end
   end
   return { status = "known", gen = g.gen, releases = g.releases,
-    defects = g.defects or {}, breaks = breaks }
+    defects = defects, breaks = breaks }
 end
 
 -- ---------------------------------------------------------------------------
