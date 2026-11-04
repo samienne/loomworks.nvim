@@ -25,7 +25,7 @@ client.TIMEOUT_MS = 30000
 local STEP = 30000
 
 local function hello(extra)
-    return vim.tbl_extend("force", { kind = "hello", protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+    return vim.tbl_extend("force", { kind = "hello", protocol = require("loomworks.daemon.version").PROTOCOL, protocol_min = require("loomworks.daemon.version").PROTOCOL_MIN,
         lw_version = version.identity(), schemas = version.schemas(), client = "editor", role = "observer",
         nonce = string.rep("ab", 16) }, extra or {})
 end

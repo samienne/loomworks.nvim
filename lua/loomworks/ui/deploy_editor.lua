@@ -191,7 +191,10 @@ local function resolve_source_preview(profiles, project_key, config_name, source
         if unit.targets and unit.targets[source_target] then
             local artifact = unit.targets[source_target].artifact
             if artifact then
-                return require("loomworks.paths").artifact_path(build_dir, artifact)
+                -- The view's artifact is relative to the build dir, or absolute
+                -- (an output directory elsewhere): never prefix an absolute one.
+                if vim.fn.isabsolutepath(artifact) == 1 then return artifact end
+                return build_dir .. "/" .. artifact
             end
         end
         return build_dir .. "/" .. source_target .. " (?)"

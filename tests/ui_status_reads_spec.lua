@@ -506,7 +506,8 @@ describe("status page actions in daemon mode with no model (A1a)", function()
             saved_new = View.new
             View.new = function(vopts)
                 tree = vopts.widget
-                return { open = function() end, close = function() end, refresh = function() end }
+                return { open = function() end, close = function() end, refresh = function() end,
+                    is_open = function() return true end }
             end
         end)
         after_each(function()
@@ -522,10 +523,20 @@ describe("status page actions in daemon mode with no model (A1a)", function()
             error(table.concat(lines, "\n"))
         end
 
+        it("shows a directory's types as Projects/1.candidates detects them", function()
+            obs.view = { projects = {} }
+            obs.answer = { outcome = "ok", key = "app", path = ".", types = { { type = "cmake", marker = "CMakeLists.txt" } } }
+            require("loomworks.ui.project_browser").open(root)
+            assert.same({ "Projects/1.candidates" }, methods())
+            assert.equals(root, obs.requests[1].args.path)
+            assert.truthy(table.concat(tree:render(), "|"):find("[cmake: CMakeLists.txt]", 1, true))
+        end)
+
         it("adds a project through Projects/1.candidates and Projects/1.add", function()
             obs.view = { projects = {} }
             obs.answer = { outcome = "ok", key = "app", path = "." }
             require("loomworks.ui.project_browser").open(root)
+            obs.requests = {} -- (the root's detection)
             vim.ui.select = function(items, _, cb)
                 for _, it in ipairs(items) do
                     if it.label == "Add as shell (custom)" then return cb(it) end
@@ -539,6 +550,7 @@ describe("status page actions in daemon mode with no model (A1a)", function()
         it("removes a project by its view row (Maintenance/1.execute_deletion)", function()
             obs.view = { projects = { { id = "pr:1", key = "app", type = "shell", path = "." } } }
             require("loomworks.ui.project_browser").open(root)
+            obs.requests = {} -- (the root's detection)
             local meta = root_meta()
             assert.is_function(meta.on_delete)
             meta.on_delete()

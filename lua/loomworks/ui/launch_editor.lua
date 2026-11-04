@@ -382,7 +382,7 @@ function M.open(opts)
 
         t:blank()
 
-        local deploy_mod = require("loomworks.deploy")
+        local deploy_sources = require("loomworks.ui.helpers").deploy_sources
         local deploy_keys = {}
         for k in pairs(deploy) do deploy_keys[#deploy_keys + 1] = k end
         table.sort(deploy_keys)
@@ -399,7 +399,7 @@ function M.open(opts)
         if #deploy_keys > 0 then
             t:leaf("Deploy:", "Comment")
             for _, dest in ipairs(deploy_keys) do
-                local sources = deploy_mod.normalize_sources(deploy[dest])
+                local sources = deploy_sources(deploy[dest])
                 local captured_dest = dest
 
                 t:leaf("  " .. dest, "Comment")
@@ -421,7 +421,7 @@ function M.open(opts)
                                 existing_destinations = deploy_keys,
                                 current_destination = captured_dest,
                                 on_accept = function(new_dest, new_source)
-                                    local cur = deploy_mod.normalize_sources(deploy[captured_dest])
+                                    local cur = deploy_sources(deploy[captured_dest])
                                     cur[captured_si] = new_source
                                     if new_dest ~= captured_dest then
                                         table.remove(cur, captured_si)
@@ -434,7 +434,7 @@ function M.open(opts)
                                         end
                                         local new_existing = deploy[new_dest]
                                         if new_existing then
-                                            local new_arr = deploy_mod.normalize_sources(new_existing)
+                                            local new_arr = deploy_sources(new_existing)
                                             new_arr[#new_arr + 1] = new_source
                                             deploy[new_dest] = new_arr
                                         else
@@ -453,7 +453,7 @@ function M.open(opts)
                             })
                         end,
                         on_delete = function()
-                            local cur = deploy_mod.normalize_sources(deploy[captured_dest])
+                            local cur = deploy_sources(deploy[captured_dest])
                             table.remove(cur, captured_si)
                             if #cur == 0 then
                                 deploy[captured_dest] = nil
@@ -488,7 +488,7 @@ function M.open(opts)
                     on_accept = function(new_dest, new_source)
                         local existing = deploy[new_dest]
                         if existing then
-                            local arr = deploy_mod.normalize_sources(existing)
+                            local arr = deploy_sources(existing)
                             arr[#arr + 1] = new_source
                             deploy[new_dest] = arr
                         else

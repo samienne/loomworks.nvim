@@ -33,6 +33,9 @@ M.plugin = {
     "^loomworks%.fidget$",
     "^loomworks%.reload$",
     "^loomworks%.auto_load$",
+    -- A bare language-server program resolved from absolute PATH entries
+    -- only (the LSP integrations' `rpc.start`).
+    "^loomworks%.lsp_server_cmd$",
     "^loomworks%.device_log$",       -- nvim buffer view of a device log stream
     "^loomworks%.overseer$",         -- adapter part stays; planning half moves out later
     "^loomworks%.workspace_view$",   -- view-model part stays; orchestration moves out later
@@ -56,10 +59,10 @@ M.plugin = {
 M.shared = {
     "^loomworks%.proto$",
     "^loomworks%.proto%.",
-    -- Today's sources of the future loomworks.proto: framing/message kinds and
-    -- the version-range negotiation.
+    -- Today's source of the future loomworks.proto: framing and message kinds.
+    -- (loomworks.daemon.version is the binary's: its host identity and
+    -- schemas; the editor announces its own, loomworks.daemon.client.version.)
     "^loomworks%.daemon%.protocol$",
-    "^loomworks%.daemon%.version$",
     -- The debug-adapter tables (defaults, known adapters, user.json override):
     -- the editor's debug path reads them, the daemon serves them (step 5k).
     "^loomworks%.debug_config$",
@@ -75,6 +78,12 @@ M.shared = {
     -- editor's in-process device-log view and the daemon's
     -- `Launch/1.device_log` (step 5n B3) read the stream with the same code.
     "^loomworks%.device_log_records$",
+    -- The upward workspace-root search (spec §1.1/§13.2): the editor's
+    -- auto-load and `lw` bind to the same workspace from the same directory.
+    "^loomworks%.root_finder$",
+    -- Descriptions (spec §1.10, §17.11): normalisation and the inert display
+    -- helpers (`inert`, `fit`, `width`) for the text the views carry; pure.
+    "^loomworks%.description$",
 }
 
 local binary_toplevel = {
@@ -82,13 +91,13 @@ local binary_toplevel = {
     "cli_options", "cmake_kits", "compiler_cache", "config", "config_editor",
     "config_env", "config_transfer", "config_unit", "configuration",
     "configuration_set", "core", "cpp_compilers", "data_model", "deletion_plan", "dependency",
-    "deploy", "description", "device", "dir_identity", "env_policy", "events",
+    "deploy", "device", "dir_identity", "env_policy", "events",
     "exe", "expand", "file_tracker", "future", "gtest", "health_cache",
     "housekeeping", "inventory", "io", "languages", "launch_configuration", "launch_target",
     "launcher_health", "lock_break", "lock_record", "log", "lsp_db_cleanup", "merge", "migrate",
-    "model_commands", "module", "msvc", "nice", "notify", "op_lock", "operation", "paths", "plugin_loader",
+    "model_commands", "module", "msvc", "notify", "op_lock", "operation", "paths", "plugin_loader",
     "proc", "profile", "program_fields", "project", "release_notes",
-    "release_notice", "reserved_compiler", "reset_plan", "root_finder",
+    "release_notice", "reserved_compiler", "reset_plan",
     "run_prep", "runenv", "save_guard", "sdk", "submodules", "suggestions",
     "target", "term", "test_plan", "test_targets", "test_unit", "tool", "tool_cache", "trust", "txn", "types", "user",
     "variables", "view_state", "workspace",
@@ -99,7 +108,7 @@ local binary_daemon = {
     "ensure",
     "envscope", "handle", "identity", "inspect", "interfaces", "launch", "legacy", "loopback", "maintenance", "paths", "relay", "rlock", "rlog",
     "runner", "running", "runtime", "server", "service", "snapshot", "stdio", "tasks", "test_discover",
-    "test_runs", "test_store", "tests_view", "views",
+    "test_runs", "test_store", "tests_view", "version", "views",
 }
 
 M.binary = {

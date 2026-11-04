@@ -432,7 +432,8 @@ function View:_setup_cursor_lock()
 end
 
 function View:_setup_events()
-    local events = require("loomworks.events")
+    -- The editor's event bus, through the facade (`lw.on` / `lw.off`).
+    local events = require("loomworks")
     self._event_handlers = {}
     for _, event_name in ipairs(self._events) do
         local handler = function()
@@ -464,7 +465,7 @@ function View:_cleanup()
         pcall(vim.api.nvim_del_autocmd, self._resize_autocmd)
         self._resize_autocmd = nil
     end
-    local events = require("loomworks.events")
+    local events = require("loomworks")
     for _, entry in ipairs(self._event_handlers) do
         events.off(entry[1], entry[2])
     end

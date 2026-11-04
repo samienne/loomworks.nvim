@@ -154,7 +154,7 @@ function Server:_handle_record()
         os = (jit and jit.os) or "?",
         start_time = self.start_time,
         endpoint = self.address,
-        protocol = protocol.VERSION,
+        protocol = version.PROTOCOL,
         lw_version = self.identity or version.identity(),
         schemas = self.schemas or version.schemas(),
         session_generation = self.generation,
@@ -327,7 +327,7 @@ function Server:start()
         end)
     end
     self:log("daemon pid %d serving %s on %s (lw %s, protocol %d)", self.pid, self.root, addr,
-        self.identity, protocol.VERSION)
+        self.identity, version.PROTOCOL)
     return true
 end
 
@@ -352,7 +352,7 @@ function Server:start_attached(opts)
     if not aok then return nil, aerr, acode end
     self:_start_tick()
     self:log("attached run of %s (pid %d) on %s (lw %s, protocol %d)", tostring(opts.command), self.pid,
-        self.root, self.identity, protocol.VERSION)
+        self.root, self.identity, version.PROTOCOL)
     return true
 end
 
@@ -805,7 +805,7 @@ function Server:_handshake(conn, msg)
         -- An observer (§19.16) never holds off a retirement.
         conn.observer = msg.role == "observer"
         self:_send(conn, {
-            kind = K.challenge, protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+            kind = K.challenge, protocol = version.PROTOCOL, protocol_min = version.PROTOCOL_MIN,
             lw_version = self.identity,
             schemas = self.schemas, session_generation = self.generation,
             server_nonce = ns, server_proof = auth.server_proof(self.key, self.address, conn.nc, ns),

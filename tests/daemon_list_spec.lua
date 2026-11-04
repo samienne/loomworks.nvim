@@ -632,7 +632,7 @@ describe("relays as real processes (§19.6.1 step 3)", function()
     local protocol = require("loomworks.daemon.protocol")
     local version = require("loomworks.daemon.version")
     local function hello()
-        return { kind = "hello", protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+        return { kind = "hello", protocol = require("loomworks.daemon.version").PROTOCOL, protocol_min = require("loomworks.daemon.version").PROTOCOL_MIN,
             lw_version = version.identity(), schemas = version.schemas(), client = "editor", role = "observer",
             nonce = string.rep("ab", 16) }
     end
@@ -707,7 +707,7 @@ describe("standard-I/O runtimes that hold R (§19.6.1 step 3)", function()
         local p = H.lw_start({ "daemon", "run", "--root", root, "--stdio", "--private" },
             { env = env, cwd = root, stdin = true })
         H.track(p.pid, p.start)
-        p.write(protocol.encode({ kind = "hello", protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+        p.write(protocol.encode({ kind = "hello", protocol = require("loomworks.daemon.version").PROTOCOL, protocol_min = require("loomworks.daemon.version").PROTOCOL_MIN,
             lw_version = version.identity(), schemas = version.schemas(), client = "editor", role = "observer",
             nonce = string.rep("ab", 16) }))
         local first

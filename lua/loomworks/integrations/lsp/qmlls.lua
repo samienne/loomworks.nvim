@@ -166,7 +166,7 @@ function M.cmd_factory(base_cmd)
 
         -- A bare binary name (the default `qmlls`) is resolved from absolute
         -- PATH entries only — never the current directory (libuv on Windows).
-        require("loomworks.exe").resolve_server_cmd(args, config.cmd_env, "loomworks.qmlls")
+        require("loomworks.lsp_server_cmd").resolve_cmd(args, config.cmd_env, "loomworks.qmlls")
 
         if config.root_dir then
             _resolved_cmd[normalize(config.root_dir)] = vim.list_extend({}, args)
@@ -362,11 +362,6 @@ function M.on_active_set_changed()
     _client_state = new_state
 end
 
---- Environment-inventory declaration (qmlls §10, core §9.3 / §16.33).
---- Lives in the host-neutral companion so the standalone host can load it
---- without this file's editor-only dependencies; re-exported here so the
---- integration table carries the hook the contract names.
-M.health_inventory = require("loomworks.integrations.inventory.qmlls").health_inventory
 
 -- Self-register with the core LSP registry.
 require("loomworks.lsp").register("qmlls", M)

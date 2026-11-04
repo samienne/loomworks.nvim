@@ -14,10 +14,8 @@
 
 local M = {}
 
---- The wire protocol version (loomworks.daemon.version.PROTOCOL).
-M.VERSION = require("loomworks.daemon.version").PROTOCOL
---- The oldest transport still spoken (loomworks.daemon.version.PROTOCOL_MIN).
-M.VERSION_MIN = require("loomworks.daemon.version").PROTOCOL_MIN
+-- (The transport version a side speaks is its own: the daemon's in
+-- loomworks.daemon.version, the editor's in loomworks.daemon.client.version.)
 
 --- Frame cap before authentication (spec §19.8).
 M.PREAUTH_MAX = 64 * 1024

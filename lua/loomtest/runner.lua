@@ -240,7 +240,7 @@ function M._execute_task(adapter, spec, test_ids, loomtest, explorer, on_done)
     local test_program = spec.cmd[1] or "test"
     local task_name = "loomtest: "
         .. (test_program:match("[/\\]([^/\\]+)$") or test_program)
-    local wrapped_cmd = require("loomworks.nice").wrap_cmd(spec.cmd)
+    local wrapped_cmd = require("loomtest.nice").wrap_cmd(spec.cmd)
     local task = overseer.new_task({
         name = task_name,
         cmd = wrapped_cmd,

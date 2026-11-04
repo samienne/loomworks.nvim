@@ -3,8 +3,8 @@
 --- explicitly and stub vim.fn.has / vim.fn.executable to simulate
 --- each scenario without depending on what's actually on PATH.
 
-package.loaded["loomworks.nice"] = nil
-local nice = require("loomworks.nice")
+package.loaded["loomtest.nice"] = nil
+local nice = require("loomtest.nice")
 
 --- Capture the originals so each test can restore them.
 local orig_has = vim.fn.has
@@ -22,7 +22,7 @@ local function restore()
     nice._reset_cache()
 end
 
-describe("loomworks.nice", function()
+describe("loomtest.nice", function()
     after_each(restore)
 
     describe("on Linux with both binaries available", function()

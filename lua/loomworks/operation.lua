@@ -320,9 +320,9 @@ local TASK_VERBS = {
 }
 
 --- The end message of a task of the workspace daemon (`built in 12s`,
---- `build failed in 3s: <error>`), as a local operation's: the one wording
---- of a task observed in the editor (loomworks.daemon.remote_task) and of
---- the daemon's own run (a profile's `last_result`, API.md §14.4).
+--- `build failed in 3s: <error>`), as a local operation's: the daemon's own
+--- run (a profile's `last_result`, API.md §14.4). The editor words a task's
+--- end the same way itself (loomworks.daemon.remote_task).
 --- @param kind string the task's `meta.kind`
 --- @param exit_code integer|nil
 --- @param duration number|nil seconds it ran

@@ -275,7 +275,7 @@ function M.cmd_factory(base_cmd)
         -- A bare binary name (the default `clangd`) is resolved from absolute
         -- PATH entries only: rpc.start spawns via libuv, which on Windows would
         -- otherwise try the current directory (the workspace) first.
-        require("loomworks.exe").resolve_server_cmd(args, config.cmd_env, "loomworks.clangd")
+        require("loomworks.lsp_server_cmd").resolve_cmd(args, config.cmd_env, "loomworks.clangd")
 
         if config.root_dir then
             _resolved_cmd[normalize(config.root_dir)] = vim.list_extend({}, args)
@@ -682,12 +682,6 @@ end
 
 --- UI label for the reset action.
 M.reset_label = "Reset clangd -j"
-
---- Environment-inventory declaration (clangd §14, core §9.3 / §16.33).
---- Lives in the host-neutral companion so the standalone host can load it
---- without this file's editor-only dependencies; re-exported here so the
---- integration table carries the hook the contract names.
-M.health_inventory = require("loomworks.integrations.inventory.clangd").health_inventory
 
 -- Self-register with the core LSP registry.
 require("loomworks.lsp").register("clangd", M)

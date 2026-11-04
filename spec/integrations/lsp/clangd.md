@@ -366,8 +366,8 @@ user.json synchronously and restarts clients.
 ## 14. Environment inventory (`health_inventory`)
 
 Declares `lsp:clangd` (category *language servers*) in its inventory companion
-(`integrations/inventory/clangd.lua`, core §9.3), which this integration
-re-exports as its `health_inventory`. The probe reports every clangd it finds,
+(`integrations/inventory/clangd.lua`, core §9.3); the editor integration does
+not carry it. The probe reports every clangd it finds,
 one result each:
 
 - on the executable search path, with the version from `clangd --version`;

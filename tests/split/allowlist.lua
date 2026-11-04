@@ -33,24 +33,19 @@
 --- today's state in this format. Never use it to add entries without review.
 return {
     edges = {
-        ["lua/loomtest/runner.lua"] = {
-            "loomworks.nice",
-        },
-        ["lua/loomworks/auto_load.lua"] = {
-            "loomworks.root_finder",
-        },
+        -- Commit 7 cut the plugin's last small edges: auto_load (root_finder
+        -- is shared), loomtest/runner (loomtest.nice), remote_task (its own
+        -- end wording), clangd/qmlls (lsp_server_cmd; the inventory hook is
+        -- the binary's), ui/status + ui/view (the facade's lw.on/off),
+        -- deploy_editor (the view's artifact joined in place), the
+        -- description users (description is shared), launch_editor and
+        -- sections/projects (helpers.deploy_sources; name checks are the
+        -- daemon's), project_browser (Projects/1.candidates detects), and
+        -- daemon/version (binary-side; protocol.lua no longer requires it).
+        -- What is left is the halves commit 9 removes with the binary.
         -- (daemon/observer.lua: loomworks.daemon.client and
         -- loomworks.daemon.inspect dropped: the plugin owns its relay client,
         -- loomworks.daemon.client.relay, and reads no daemon handle.)
-        ["lua/loomworks/daemon/remote_task.lua"] = {
-            "loomworks.operation",
-        },
-        ["lua/loomworks/daemon/version.lua"] = {
-            "loomworks.cache",
-            "loomworks.release_notice",
-            "loomworks.save_guard",
-            "loomworks.user",
-        },
         ["lua/loomworks/init.lua"] = {
             "loomworks.core",
             "loomworks.events",
@@ -58,14 +53,6 @@ return {
             "loomworks.modules",
             "loomworks.program_fields",
             "loomworks.workspace",
-        },
-        ["lua/loomworks/integrations/lsp/clangd.lua"] = {
-            "loomworks.exe",
-            "loomworks.integrations.inventory.clangd",
-        },
-        ["lua/loomworks/integrations/lsp/qmlls.lua"] = {
-            "loomworks.exe",
-            "loomworks.integrations.inventory.qmlls",
         },
         ["lua/loomworks/overseer.lua"] = {
             "loomworks.compiler_cache",
@@ -79,39 +66,10 @@ return {
         },
         -- (session_tracker.lua: loomworks.exe and loomworks.future dropped with
         -- its in-process launch chain.)
-        ["lua/loomworks/ui/deploy_editor.lua"] = {
-            "loomworks.paths",
-        },
         -- (configuration, configuration_set, launch_configuration, profile,
         -- project dropped: the UI reads the daemon only — its items are row
         -- items, never domain objects.)
-        ["lua/loomworks/ui/description_editor.lua"] = {
-            "loomworks.description",
-        },
-        ["lua/loomworks/ui/helpers.lua"] = {
-            "loomworks.description",
-        },
-        ["lua/loomworks/ui/launch_editor.lua"] = {
-            "loomworks.deploy",
-        },
-        ["lua/loomworks/ui/project_browser.lua"] = {
-            "loomworks.modules",
-        },
-        ["lua/loomworks/ui/sections/projects.lua"] = {
-            "loomworks.deploy",
-            "loomworks.project",
-            "loomworks.variables",
-        },
-        ["lua/loomworks/ui/status.lua"] = {
-            "loomworks.events",
-        },
         -- (loomworks.workspace dropped: `N` is refused, `lw init` creates.)
-        ["lua/loomworks/ui/tree.lua"] = {
-            "loomworks.description",
-        },
-        ["lua/loomworks/ui/view.lua"] = {
-            "loomworks.events",
-        },
         -- loomworks.project -> loomworks.model_commands: step 5o A1 moves the
         -- view's model writes into the host-neutral command layer (the
         -- daemon's interfaces call it too); the view keeps only the editor's

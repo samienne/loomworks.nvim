@@ -2,23 +2,64 @@
 ---
 --- Snacks.win float with Tree widget. Scans workspace directories
 --- asynchronously and shows detected project types. Users can add or
---- remove projects from here. Adding is `Projects/1.candidates` (the key and
---- path the directory gets) then `Projects/1.add` through
+--- remove projects from here. A directory's types (each with its marker) are
+--- the daemon's (`Projects/1.candidates`, which detects them); adding is
+--- `Projects/1.candidates` (the key and path the directory gets) then
+--- `Projects/1.add` through
 --- loomworks.ui.model_calls (the daemon's; step 5o C2b); the projects
 --- already added are the workspace view's rows. Removing names the
 --- project's view row (step 5o C2c-2).
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
-local modules = require("loomworks.modules")
 local model = require("loomworks.ui.model_calls")
 
 local M = {}
 
+--- Directory names the browser does not list (besides dot-directories).
+local SKIP = {
+    node_modules = true, build = true, out = true, __pycache__ = true,
+}
+
+--- The subdirectories of `abs_path`, sorted (none when unreadable).
+--- @param abs_path string
+--- @param cb fun(names: string[])
+local function list_dirs(abs_path, cb)
+    local uv = vim.uv or vim.loop
+    uv.fs_scandir(abs_path, function(err, handle)
+        local dirs = {}
+        if not err and handle then
+            while true do
+                local name, ftype = uv.fs_scandir_next(handle)
+                if not name then break end
+                if ftype == "directory" and not SKIP[name] and name:sub(1, 1) ~= "." then
+                    dirs[#dirs + 1] = name
+                end
+            end
+            table.sort(dirs)
+        end
+        vim.schedule(function() cb(dirs) end)
+    end)
+end
+
+--- The module types that detect `abs_path` (`Projects/1.candidates`); none
+--- when it is refused.
+--- @param abs_path string
+--- @param cb fun(types: { type: string, marker: string }[])
+local function detect_types(abs_path, cb)
+    model.call(nil, "Projects/1.candidates", { path = abs_path }, function(c)
+        local types = {}
+        for _, ti in ipairs(c.outcome == "ok" and type(c.types) == "table" and c.types or {}) do
+            types[#types + 1] = { type = ti.type, marker = ti.marker or "" }
+        end
+        cb(types)
+    end)
+end
+
 --- @class loomworks.BrowserEntry
 --- @field name string directory basename
 --- @field abs_path string absolute path
---- @field types { type: string, marker: string }[]
+--- @field types { type: string, marker: string }[]|nil nil until the daemon answers
 
 --- Build the set of the workspace's projects, keyed by (relative_path,
 --- type) for checking "already added": from the workspace view's project
@@ -45,19 +86,35 @@ function M.open(root)
 
     local tree, view
 
-    --- Trigger an async scan for a directory and refresh on completion.
+    local function refresh()
+        if view and view:is_open() then view:refresh() end
+    end
+
+    --- Trigger an async scan for a directory and refresh on completion: its
+    --- subdirectories at once, each one's types as the daemon answers.
     --- @param abs_path string
     local function scan_dir(abs_path)
         if scan_cache[abs_path] or scanning[abs_path] then return end
         scanning[abs_path] = true
-        modules.scan_directory_async(abs_path, nil, function(entries)
+        list_dirs(abs_path, function(names)
             scanning[abs_path] = nil
-            scan_cache[abs_path] = entries
-            if view and view:is_open() then
-                view:refresh()
+            local entries = {}
+            for _, name in ipairs(names) do
+                local entry = { name = name, abs_path = abs_path .. "/" .. name }
+                entries[#entries + 1] = entry
+                detect_types(entry.abs_path, function(types)
+                    entry.types = types
+                    refresh()
+                end)
             end
+            scan_cache[abs_path] = entries
+            refresh()
         end)
     end
+
+    --- The root's entry (its types as the daemon answers).
+    --- @type loomworks.BrowserEntry
+    local root_entry = { name = root:match("([^/]+)$") or root, abs_path = root }
 
     --- Check if a type is already added for a relative path.
     --- @param added table
@@ -289,7 +346,6 @@ function M.open(root)
         t:blank()
 
         local added = build_added_set()
-        local root_name = root:match("([^/]+)$") or root
 
         -- Root is the single top-level foldable node, open by default on first render
         local root_fold_key = "browser:" .. root
@@ -297,11 +353,6 @@ function M.open(root)
             t._folds[root_fold_key] = true
         end
 
-        local root_entry = {
-            name = root_name,
-            abs_path = root,
-            types = modules.detect_all_types(root),
-        }
         render_entry(t, root_entry, added, root)
 
         t:blank()
@@ -332,7 +383,7 @@ function M.open(root)
             ["r"]       = "refresh_browser",
         },
         events = {
-            "active_set_changed",
+            "daemon_view_changed", -- the projects already added are the view's
         },
         on_close = function()
             if parent_win and vim.api.nvim_win_is_valid(parent_win) then
@@ -346,6 +397,8 @@ function M.open(root)
         if action == "refresh_browser" then
             scan_cache = {}
             scanning = {}
+            root_entry.types = nil
+            detect_types(root, function(types) root_entry.types = types; refresh() end)
             scan_dir(root)
             return { refresh = true }
         end
@@ -364,6 +417,7 @@ function M.open(root)
 
     view:open()
 
+    detect_types(root, function(types) root_entry.types = types; refresh() end)
     scan_dir(root)
 end
 

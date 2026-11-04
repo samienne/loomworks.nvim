@@ -127,9 +127,8 @@ local function open_launch_editor(ctx, prow, lrow, decl)
                 if taken[result.name] then
                     return false, "launch config '" .. result.name .. "' already exists"
                 end
-                -- A new name must be valid (spec §8.7).
-                local vok, verr = require("loomworks.project").validate_launch_name(result.name)
-                if not vok then return false, verr end
+                -- (A new name's validity, spec §8.7, is the daemon's:
+                -- `Projects/1.launch_save` refuses an invalid one.)
             end
             return true
         end,
@@ -232,10 +231,8 @@ local function open_variable_editor(prow, var_name, variables)
             if result.name ~= (var_name or "") and variables[result.name] then
                 return false, "variable '" .. result.name .. "' already exists"
             end
-            local vars_mod = require("loomworks.variables")
-            if vars_mod.RESERVED_NAMES[result.name] then
-                return false, "'" .. result.name .. "' is a reserved name"
-            end
+            -- (A reserved name is the daemon's to refuse:
+            -- `Projects/1.variable_save`.)
             return true
         end,
         on_accept = function(result)
@@ -629,7 +626,7 @@ end
 local function add_source(deploy, dest, source)
     local existing = deploy[dest]
     if existing then
-        local arr = require("loomworks.deploy").normalize_sources(existing)
+        local arr = helpers.deploy_sources(existing)
         arr[#arr + 1] = source
         deploy[dest] = arr
     else
@@ -685,12 +682,11 @@ end
 --- there by its content; one no longer there is refused, never guessed.
 local function deploy_step_actions(ctx, prow, dest_keys, dest, si, src)
     if not helpers.actionable(ctx, prow) then return {} end
-    local deploy_mod = require("loomworks.deploy")
     --- `edit(editable, cur, i)` on the re-read sources of `dest`, `i` the
     --- shown source's index there; false when it is gone.
     local function on_source(edit)
         update_deploy(prow, function(editable)
-            local cur = editable[dest] and deploy_mod.normalize_sources(editable[dest]) or {}
+            local cur = editable[dest] and helpers.deploy_sources(editable[dest]) or {}
             local i = locate_source(cur, si, src)
             if not i then
                 vim.notify("loomworks: the deploy step '" .. dest .. "' changed since shown; reopen it",

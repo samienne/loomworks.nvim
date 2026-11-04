@@ -545,4 +545,13 @@ function M.test_targets_chunks(view, width)
     return chunks
 end
 
+--- A deploy destination's sources as an array: the declaration holds one
+--- source descriptor or an array of them (spec §8.7).
+--- @param v table
+--- @return table[]
+function M.deploy_sources(v)
+    if v[1] then return v end
+    return { v }
+end
+
 return M

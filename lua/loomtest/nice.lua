@@ -1,4 +1,4 @@
---- loomworks/nice.lua — Linux nice/ionice wrapper for build commands.
+--- loomtest/nice.lua — Linux nice/ionice wrapper for test runs.
 ---
 --- Keeps the editor and OS responsive when long-running builds and
 --- tests hog the box. Wraps a cmd array so the child runs at a lower

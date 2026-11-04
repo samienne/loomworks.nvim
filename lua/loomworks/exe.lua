@@ -224,25 +224,6 @@ function M.editor_exepath(name)
     return M.exepath(name)
 end
 
---- Resolve argv[1] of a language-server command in place when it is a BARE
---- name (e.g. the default `clangd`), so `vim.lsp.rpc.start` never lets libuv
---- search the current directory for it. A value with a path separator (a
---- configured binary) is left as is. Raises a clear error when a bare name is
---- not on PATH — `vim.lsp.rpc.start` would fail on it anyway.
---- @param args string[]
---- @param env? table<string,string>
---- @param who string label for the error ("loomworks.clangd")
---- @return string[] args
-function M.resolve_server_cmd(args, env, who)
-    local name = args[1]
-    if type(name) == "string" and name ~= "" and not name:find("[/\\]") then
-        local p, err = M.resolve(name, env)
-        if not p then error(who .. ": " .. tostring(err), 0) end
-        args[1] = p
-    end
-    return args
-end
-
 --- A copy of argv with argv[1] resolved (see `M.resolve`; `cwd` = the child's
 --- working directory, for an explicit relative path), or nil + err.
 --- @param cmd string[]

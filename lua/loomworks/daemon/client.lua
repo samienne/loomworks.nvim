@@ -249,8 +249,8 @@ function M.connect(endpoint, opts, cb)
     local fh = opts.hello
     local hello = protocol.encode(fh and { kind = protocol.KIND.hello, protocol = fh.protocol,
         protocol_min = fh.protocol_min, lw_version = fh.lw_version, schemas = fh.schemas, client = fh.client,
-        role = fh.role, nonce = nc } or { kind = protocol.KIND.hello, protocol = opts.protocol or protocol.VERSION,
-        protocol_min = opts.protocol_min or protocol.VERSION_MIN, lw_version = version.identity(),
+        role = fh.role, nonce = nc } or { kind = protocol.KIND.hello, protocol = opts.protocol or version.PROTOCOL,
+        protocol_min = opts.protocol_min or version.PROTOCOL_MIN, lw_version = version.identity(),
         schemas = version.schemas(), client = opts.client or "cli", role = opts.role, nonce = nc })
     local pipe = uv.new_pipe(false)
     local conn = setmetatable({ pipe = pipe, _pending = {}, endpoint = endpoint }, Conn)
@@ -298,14 +298,14 @@ function M.loopback_connect(server, opts, cb)
     opts = opts or {}
     local mine, theirs = require("loomworks.daemon.loopback").pair()
     local conn = setmetatable({ pipe = mine, _pending = {}, loopback = true }, Conn)
-    conn.challenge = { kind = protocol.KIND.challenge, protocol = protocol.VERSION,
-        protocol_min = protocol.VERSION_MIN, lw_version = server.identity, schemas = server.schemas, session_generation = server.generation }
+    conn.challenge = { kind = protocol.KIND.challenge, protocol = version.PROTOCOL,
+        protocol_min = version.PROTOCOL_MIN, lw_version = server.identity, schemas = server.schemas, session_generation = server.generation }
     conn.transport = M._agreed(conn.challenge, opts)
     local finish, is_done = handshake_guard(conn, opts, cb)
     conn._reader = frame_reader(conn, opts, "auth", finish, is_done)
     mine:read_start(conn._reader)
-    local ok, err = server:adopt(theirs, { protocol = opts.protocol or protocol.VERSION,
-        protocol_min = opts.protocol_min or protocol.VERSION_MIN,
+    local ok, err = server:adopt(theirs, { protocol = opts.protocol or version.PROTOCOL,
+        protocol_min = opts.protocol_min or version.PROTOCOL_MIN,
         lw_version = version.identity(),
         schemas = version.schemas(), client = opts.client or "cli", role = opts.role })
     if not ok then
@@ -627,8 +627,8 @@ function RC.connect(opts, cb)
     if not uv.fs_stat(cwd) then return nil, "cannot create " .. cwd end
     -- Built here, on the main loop (the version fingerprint uses vim.fn).
     local nonce = auth.nonce() or string.rep("0", 64)
-    local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = protocol.VERSION,
-        protocol_min = protocol.VERSION_MIN, lw_version = version.identity(), schemas = version.schemas(),
+    local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = version.PROTOCOL,
+        protocol_min = version.PROTOCOL_MIN, lw_version = version.identity(), schemas = version.schemas(),
         client = opts.client or "editor", role = opts.role, nonce = nonce })
     local env = launch.env(opts.root, opts.env)
 
