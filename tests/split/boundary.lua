@@ -37,6 +37,8 @@ M.plugin = {
     "^loomworks%.overseer$",         -- adapter part stays; planning half moves out later
     "^loomworks%.workspace_view$",   -- view-model part stays; orchestration moves out later
     "^loomworks%.views$",            -- the editor view store (spec §19.13 "Two sources, one shape")
+    "^loomworks%.version$",          -- the plugin's own version (its CHANGELOG)
+    "^loomworks%.daemon%.client%.",  -- the editor's daemon client: relay, version range, settings
     "^loomworks%.daemon%.observer$", -- becomes loomworks.client.session
     "^loomworks%.daemon%.editor_retire$", -- the observer's retirement decisions (spec §19.16)
     "^loomworks%.daemon%.remote_task$",

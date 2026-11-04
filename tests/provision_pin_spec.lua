@@ -98,7 +98,7 @@ describe("needs.check (the interfaces the plugin needs)", function()
         assert.same({}, problems); assert.is_true(ok)
     end)
 
-    it("names a missing interface, a too-old version, a disjoint transport, newer schemas", function()
+    it("names a missing interface, a too-old version, a disjoint transport; never schemas", function()
         local d = release_descriptor("9.9.9")
         for i = #d.objects, 1, -1 do
             if d.objects[i].path == "/tasks" then table.remove(d.objects, i) end
@@ -123,8 +123,7 @@ describe("needs.check (the interfaces the plugin needs)", function()
 
         d = release_descriptor("9.9.9")
         d.schemas = { user = d.schemas.user + 1, cache = d.schemas.cache }
-        _, problems = needs.check(d)
-        assert.truthy(table.concat(problems, "\n"):find("schemas", 1, true))
+        assert.same({ true, {} }, { needs.check(d) })
 
         ok, problems = needs.check(nil)
         assert.is_false(ok); assert.same({ "no descriptor" }, problems)

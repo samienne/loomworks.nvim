@@ -298,16 +298,25 @@ describe("Task:_observes matches the subscription's interface version (§19.15)"
     end)
 end)
 
-describe("version.observer_compatible (§19.9)", function()
-    it("needs an equal protocol and schemas no newer; the host version may differ", function()
-        local me = version.schemas()
-        assert.is_true((version.observer_compatible({ protocol = version.PROTOCOL, lw_version = "9.9.9", schemas = me })))
-        assert.is_true((version.observer_compatible({ protocol = version.PROTOCOL,
-            schemas = { user = me.user - 1, cache = me.cache } })))
-        local ok, what = version.observer_compatible({ protocol = version.PROTOCOL + 1, schemas = me })
+describe("the editor client's version check (§19.9)", function()
+    local cv = require("loomworks.daemon.client.version")
+    it("needs overlapping transport ranges only; the host version and file formats may differ", function()
+        assert.is_true((cv.compatible({ protocol = cv.PROTOCOL, lw_version = "9.9.9" })))
+        assert.is_true((cv.compatible({ protocol = cv.PROTOCOL + 3, protocol_min = cv.PROTOCOL })))
+        assert.is_true((cv.compatible({ protocol = cv.PROTOCOL, schemas = { user = 999, cache = 0 } })))
+        local ok, what = cv.compatible({ protocol = cv.PROTOCOL + 1 })
         assert.is_false(ok); assert.equals("protocol", what)
-        ok, what = version.observer_compatible({ protocol = version.PROTOCOL, schemas = { user = me.user + 1, cache = me.cache } })
-        assert.is_false(ok); assert.equals("schemas", what)
+        assert.is_false((cv.compatible({ protocol = cv.PROTOCOL_MIN - 1 })))
+        assert.is_false((cv.compatible(nil)))
+    end)
+
+    it("announces the plugin's own version, from its CHANGELOG", function()
+        local pv = require("loomworks.version")
+        assert.equals("0.2.0+dev", pv.parse("# Changelog\n\n## Unreleased\n\n## 0.2.0 - 2026-01-01\n"))
+        assert.equals("0.1.9", pv.parse("## v0.1.9\n## 0.1.8\n"))
+        assert.is_nil(pv.parse("# nothing\n"))
+        assert.equals(pv.get(), cv.identity())
+        assert.truthy(pv.lua_root():match("/lua$"), pv.lua_root())
     end)
 end)
 
@@ -1259,9 +1268,14 @@ describe("the observer (§19.16)", function()
         end)
     end)
 
-    it("downloads a wanted plugin-managed lw first, then spawns the relay from it (step 5h.3)", function()
+    it("downloads a wanted plugin-managed lw first, then spawns the relay from it, pruning nothing (step 5h.3)", function()
         local want = { sha256 = string.rep("ab", 32), version = "0.1.50", asset = "lw-linux-x86_64" }
         local installed, fetches, pending, spawned, pruned = false, 0, nil, nil, nil
+        -- Pruning the other managed binaries is paused (samienne/loomworks#101):
+        -- the protocol does not name the binaries live daemons run.
+        local cache = require("loomworks.provision.cache")
+        local real_prune = cache.prune
+        cache.prune = function(o) pruned = o end
         obs = attach({ binary = { release_url = "/mirror" },
             resolve = function()
                 if installed then
@@ -1277,7 +1291,7 @@ describe("the observer (§19.16)", function()
                 pending = cb
                 return { url = "/mirror/lw-linux-x86_64" }
             end,
-            prune = function(o) pruned = o end, inspect = function() return { kind = "none" } end,
+            inspect = function() return { kind = "none" } end,
             relay = function(o) spawned = o; return { close = function() end } end })
         assert.equals("downloading", obs.state)
         assert.truthy(obs:runtime_line():find("downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from "
@@ -1289,7 +1303,8 @@ describe("the observer (§19.16)", function()
         pending("/m/lw")
         assert.equals("connecting", obs.state)
         assert.same({ "/m/lw" }, spawned.argv)
-        assert.equals(want.sha256, pruned.keep[1]) -- (and the pin's hash: both wanted ones are kept)
+        cache.prune = real_prune
+        assert.is_nil(pruned)
     end)
 
     it("connect aborts a download in flight and starts over; a stop aborts it; a late callback is ignored", function()
@@ -1433,7 +1448,6 @@ describe("the observer (§19.16)", function()
         end })
         assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         assert.is_nil(obs._retire)
-        assert.is_nil(obs.incompat_note)
     end)
 
     it("a `retiring` with no connection does not mark the next drop as a retirement", function()

@@ -39,10 +39,9 @@ return {
         ["lua/loomworks/auto_load.lua"] = {
             "loomworks.root_finder",
         },
-        ["lua/loomworks/daemon/observer.lua"] = {
-            "loomworks.daemon.client",
-            "loomworks.daemon.inspect",
-        },
+        -- (daemon/observer.lua: loomworks.daemon.client and
+        -- loomworks.daemon.inspect dropped: the plugin owns its relay client,
+        -- loomworks.daemon.client.relay, and reads no daemon handle.)
         ["lua/loomworks/daemon/remote_task.lua"] = {
             "loomworks.operation",
         },

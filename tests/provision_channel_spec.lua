@@ -1,6 +1,6 @@
 -- binary.channel (spec §19.16 "Channel upgrades", step 5h.5): the pinned
 -- managed lw resolves the channel with `lw release query` (§16.42); a newer
--- release whose descriptor passes the pin's check (schemas equal to ours) is
+-- release whose descriptor passes the pin's check (transport and interfaces) is
 -- accepted, downloaded and recorded in channel.json; the wanted managed lw is
 -- the newer of the pin and the accepted release; failures (offline, an lw
 -- older than the query, an incompatible release) are one note each and keep
@@ -55,20 +55,13 @@ describe("binary.channel: weighing a query (§19.16 Channel upgrades)", function
         assert.is_nil(older.note)
     end)
 
-    it("a newer release without transport overlap or with other schemas is rejected with one note", function()
+    it("a newer release without transport overlap or without the root interface is rejected with one note", function()
         local d = descriptor()
         d.transport = { min = version.PROTOCOL + 5, max = version.PROTOCOL + 6 }
         local out = channel.classify(query_res("0.2.0", nil, d), ctx())
         assert.equals("rejected", out.kind)
         assert.truthy(out.note:find("unstable offers lw v0.2.0, which this plugin cannot use (", 1, true), out.note)
         assert.truthy(out.note:find("staying on lw v0.1.44", 1, true), out.note)
-        -- Schemas in either direction (the managed lw must match the plugin).
-        for _, delta in ipairs({ 1, -1 }) do
-            local s = version.schemas()
-            local d2 = descriptor()
-            d2.schemas = { user = s.user + delta, cache = s.cache }
-            assert.equals("rejected", channel.classify(query_res("0.2.0", nil, d2), ctx()).kind)
-        end
         -- No loomworks.Root/1.
         local d3 = descriptor()
         d3.objects = {}
@@ -222,11 +215,17 @@ describe("binary.channel: the observer's background check", function()
     local obs, data
     local fetched, queries, pruned
     local Q -- the pending query callback
+    -- Pruning the managed binaries is paused (samienne/loomworks#101): a
+    -- prune would record its options here, and none must happen.
+    local cache = require("loomworks.provision.cache")
+    local real_prune = cache.prune
     before_each(function()
         data = tmpdata()
         fetched, queries, pruned, Q = {}, {}, nil, nil
+        cache.prune = function(o2) pruned = o2 end
     end)
     after_each(function()
+        cache.prune = real_prune
         if obs then obs:stop() end
         obs = nil
         vim.fn.delete(data, "rf")
@@ -244,13 +243,12 @@ describe("binary.channel: the observer's background check", function()
             pinned_wanted = function() return pin end,
             fetch = function(w, _, cb) fetched[#fetched + 1] = w; cb("/m/" .. w.sha256 .. "/lw") end,
             channel_query = function(p, ch, o2, cb) queries[#queries + 1] = { p, ch, o2 }; Q = cb end,
-            prune = function(o2) pruned = o2 end,
         }
         for k, v in pairs(extra or {}) do o[k] = v end
         return observer.attach("/r", o)
     end
 
-    it("makes the pinned lw present, queries, downloads an accepted release, records it and keeps both", function()
+    it("makes the pinned lw present, queries, downloads an accepted release, records it and prunes nothing", function()
         obs = attach()
         assert.equals(1, #queries)
         assert.same(pin, fetched[1])
@@ -263,10 +261,7 @@ describe("binary.channel: the observer's background check", function()
         assert.equals("9.9.9-beta.1", rec.accepted.version)
         assert.truthy(obs.channel_note:find("lw v9.9.9-beta.1 from unstable is installed", 1, true), obs.channel_note)
         assert.truthy(obs:runtime_line():find("is installed", 1, true))
-        assert.truthy(vim.tbl_contains(pruned.keep, sha("9")) and vim.tbl_contains(pruned.keep, pin.sha256),
-            vim.inspect(pruned.keep))
-        -- Prunes the same data dir its keep-list was built from (never the real stdpath).
-        assert.equals(data, pruned.data)
+        assert.is_nil(pruned)
         -- Not due again for a day; an explicit connect checks again.
         obs:start(false)
         assert.equals(1, #queries)

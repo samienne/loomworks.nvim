@@ -1,8 +1,8 @@
 -- The editor's pre-launch probe of a search-path or explicit lw (spec §19.16
 -- "Pre-launch probe", step 5h.5): `lw version --json` weighed with the plugin
--- pin's check — compatible / incompatible (no transport overlap, schemas ours
--- cannot use, no root interface, an lw older than the descriptor) / unknown
--- (a failed command, a descriptor with no schemas, a timeout); a
+-- pin's check — compatible / incompatible (no transport overlap, no root
+-- interface, an lw older than the descriptor) / unknown (a failed command, a
+-- malformed descriptor, a timeout); file formats are not judged; a
 -- missing feature interface only degrades; the verdict cached per binary
 -- (realpath, size, mtime); the selection falls through from an incompatible
 -- lw on PATH to the managed lw, never from an explicit one.
@@ -51,36 +51,14 @@ describe("probe verdicts (§19.16 Pre-launch probe)", function()
         assert.truthy(v.problems[1]:find("does not overlap", 1, true), v.problems[1])
     end)
 
-    it("newer schemas are incompatible", function()
-        local d = descriptor()
-        local s = version.schemas()
-        d.schemas = { user = s.user + 1, cache = s.cache }
-        local v = probe.classify(ok_res(d))
-        assert.equals("incompatible", v.verdict)
-        assert.truthy(v.problems[1]:find("schemas", 1, true), v.problems[1])
-    end)
-
-    it("older schemas are incompatible too (the probe needs them equal); the pin gate only refuses newer", function()
-        local s = version.schemas()
-        for _, older in ipairs({ { user = s.user - 1, cache = s.cache }, { user = s.user, cache = s.cache - 1 } }) do
+    it("schemas are not judged: other, missing or malformed ones leave a binary compatible", function()
+        for _, sch in ipairs({ { user = 999, cache = 0 }, vim.NIL, { user = "x" } }) do
             local d = descriptor()
-            d.schemas = older
+            d.schemas = sch ~= vim.NIL and sch or nil
             local v = probe.classify(ok_res(d))
-            assert.equals("incompatible", v.verdict, probe.describe(v))
-            assert.truthy(v.problems[1]:find("differ from ours", 1, true), v.problems[1])
+            assert.equals("compatible", v.verdict, probe.describe(v))
             assert.is_true((needs.check(d)))
         end
-    end)
-
-    it("a descriptor with no schemas is unknown, not incompatible", function()
-        local d = descriptor()
-        d.schemas = nil
-        local v = probe.classify(ok_res(d))
-        assert.equals("unknown", v.verdict, probe.describe(v))
-        assert.truthy(v.problems[1]:find("no schemas", 1, true), v.problems[1])
-        d.schemas = { user = "x" }
-        assert.equals("unknown", probe.classify(ok_res(d)).verdict)
-        assert.is_false((needs.check(d)))
     end)
 
     it("a missing root interface is incompatible, a missing feature interface only degrades", function()
@@ -116,7 +94,7 @@ describe("probe verdicts (§19.16 Pre-launch probe)", function()
         end
     end)
 
-    it("a failed command, a descriptor with no schemas or a timeout is unknown", function()
+    it("a failed command, a malformed descriptor or a timeout is unknown", function()
         assert.equals("unknown", probe.classify({ code = 2, stdout = "", stderr = "lw: unknown option --json\n" }).verdict)
         assert.equals("unknown", probe.classify({ code = 0, stdout = vim.json.encode({ hello = 1 }) }).verdict)
         local v = probe.classify({ code = 124, timed_out = true })

@@ -10,13 +10,12 @@
 ---
 ---   compatible    no structural or fatal problem (a missing feature
 ---                 interface only degrades that feature: listed in `degraded`)
----   incompatible  a definite failure: no transport overlap, schemas that
----                 differ from ours (older or newer), the root interface not
----                 offered, or an lw older than §16.41 (`version --json`
----                 succeeds but prints no descriptor: it predates our
----                 schemas, and a release before the daemon cannot run one)
+---   incompatible  a definite failure: no transport overlap, the root
+---                 interface not offered, or an lw older than §16.41
+---                 (`version --json` succeeds but prints no descriptor: a
+---                 release before the daemon cannot run one)
 ---   unknown       `version --json` exits non-zero (e.g. a host with no
----                 system Lua), a descriptor with no `schemas`, or a timeout:
+---                 system Lua), a malformed descriptor, or a timeout:
 ---                 the binary is used and the handshake decides
 ---
 --- The verdict is cached for the editor session by the binary's realpath,
@@ -93,14 +92,13 @@ function M.classify(res)
     end
     local ok, d = pcall(vim.json.decode, res.stdout or "")
     -- Status 0 with no descriptor: a host older than §16.41, which ignores
-    -- --json and prints its one-line version. It predates the plugin's
-    -- schemas, and a release before the daemon cannot run one: a definite
-    -- failure, like other schemas.
+    -- --json and prints its one-line version. A release before the daemon
+    -- cannot run one: a definite failure.
     if not ok or type(d) ~= "table" or vim.islist(d) then
         return { verdict = "incompatible", degraded = {},
             problems = { "lw version --json printed no descriptor — an lw older than the binary descriptor (§16.41), which cannot run this plugin's daemon" } }
     end
-    local p = require("loomworks.provision.needs").problems(d, { exact_schemas = true })
+    local p = require("loomworks.provision.needs").problems(d)
     if #p.structure > 0 then return unknown(table.concat(p.structure, "; ")) end
     local version = type(d.binary) == "table" and d.binary.lw_version or nil
     return {

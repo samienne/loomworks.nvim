@@ -23,11 +23,10 @@
 ---     that named the retiring daemon; `--no-launch --skip-instance <id>`
 ---     after an incompatible daemon it does not observe (never together with
 ---     `--retiring`). It reads none of lw's internal files to
----     connect, launch or follow a daemon (only `_prune`'s in-use check reads
----     the handle, read-only). With no host binary it spawns nothing and
----     runs degraded;
----   * judges `welcome.daemon` (transport range overlapping ours, schemas not
----     newer; the host version may differ) as `client = "editor"`, `role =
+---     connect, launch or follow a daemon. With no host binary it spawns
+---     nothing and runs degraded;
+---   * judges `welcome.daemon` (transport range overlapping ours; the host
+---     version may differ) as `client = "editor"`, `role =
 ---     "observer"`, and pings it every KEEPALIVE_MS (§19.11); a `welcome`
 ---     without `via` (an older pin's attached `--stdio`) is observed without
 ---     that check and never retired. An incompatible daemon it does not
@@ -154,8 +153,7 @@ M.LOST_NOTE = "the workspace daemon disconnected — workspace unloaded, waiting
 --- @field _channel_timer userdata|nil the `binary.channel` check's weighing timer (unref'd; stopped on stop)
 --- @field _channel_undecided boolean|nil the last weighing found the selection undecided (CHANNEL_RETRY_S)
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
---- @field _retire loomworks.daemon.RetireWait|nil a daemon weighed for a retirement (step 5h.5): an incompatible one — its connection is the observed one (older schemas only) or held, unobserved, while the selected binary is probed or while the daemon is busy — or a stale (compatible) one, observed, whose code identity may differ from the relay's (`welcome.relay`, §19.9 "Editor retirement")
---- @field incompat_note string|nil the observed daemon is incompatible (older schemas): what the editor does about it, on the Runtime line
+--- @field _retire loomworks.daemon.RetireWait|nil a daemon weighed for a retirement (step 5h.5): an incompatible one — its connection held, unobserved, while the selected binary is probed or while the daemon is busy — or a stale (compatible) one, observed, whose code identity may differ from the relay's (`welcome.relay`, §19.9 "Editor retirement")
 --- @field stale_note string|nil the observed daemon is compatible but runs other code than its relay reports (`welcome.relay`) and retiring it failed or stopped (no reply): on the Runtime line; never blocks a feature
 --- @field retire_check_ms integer how often a busy incompatible daemon is re-checked through `status` (spec §19.16: about every 30 s)
 --- @field retired_note string|nil the last retirement this observer made (why), shown on the Runtime line until it observes the successor
@@ -398,8 +396,6 @@ end
 ---   fetch       fun(wanted, opts, cb(path|nil, err)) (loomworks.provision.fetch.ensure)
 ---   cancel_fetch fun(sha256, why) (loomworks.provision.fetch.cancel)
 ---   touch       fun(path) (loomworks.provision.managed.touch)
----   prune       fun(opts) (loomworks.provision.cache.prune)
----   inspect     fun(root) → state (loomworks.daemon.inspect.state; only `_prune`'s read-only in-use check)
 ---   wanted      fun() → loomworks.provision.Wanted|nil (loomworks.provision.managed.wanted: the managed lw's version, for a retirement)
 ---   data        the editor's data directory (the managed lw, channel.json; default stdpath("data"))
 ---   pinned_wanted fun() → loomworks.provision.Wanted|nil (loomworks.provision.managed.pinned_wanted)
@@ -561,31 +557,6 @@ function M.form_note(form, what)
     return "waiting for a workspace daemon, none is launched (:LoomworksDaemon connect starts one)"
 end
 
---- The note for a daemon this plugin cannot observe (spec §19.16 "version
---- mismatch"): both sides' protocol (or file formats) and versions, the
---- binary's path when known (the daemon's handle names it; else the binary
---- this observer launched), and the remedy.
---- @param ch table the daemon's challenge { protocol, lw_version, schemas }
---- @param what "protocol"|"schemas" what differs (version.observer_compatible)
---- @param binary string|nil the host binary the daemon was launched from
---- @return string
-function M.mismatch_note(ch, what, binary)
-    local version = require("loomworks.daemon.version")
-    local theirs, ours
-    if what == "protocol" then
-        theirs = "protocol " .. tostring(ch.protocol)
-        ours = "protocol " .. version.PROTOCOL
-    else
-        local ps, s = type(ch.schemas) == "table" and ch.schemas or {}, version.schemas()
-        theirs = string.format("file formats user %s, cache %s", tostring(ps.user), tostring(ps.cache))
-        ours = string.format("file formats user %d, cache %d", s.user, s.cache)
-    end
-    local lw = "lw v" .. tostring(ch.lw_version) .. (binary and (" at " .. binary) or "")
-    return string.format("the workspace daemon runs %s (%s), which does not match this plugin (v%s, %s): "
-        .. "update the plugin, or pin or install a matching lw — not observing it; running degraded",
-        lw, theirs, version.identity(), ours)
-end
-
 --- Select the host binary and spawn a relay of `want.form` from it (spec
 --- §19.16 "Through the relay"). A search-path or explicit lw with no cached
 --- probe verdict is probed first (spec §19.16 "Pre-launch probe", step 5h.5:
@@ -616,7 +587,7 @@ function Observer:_spawn(want, probed)
     end
     self._want = nil
     local token = { form = want.form, answer = want.answer, instance = want.instance }
-    local connect = self.opts.relay or require("loomworks.daemon.client").relay.connect
+    local connect = self.opts.relay or require("loomworks.daemon.client.relay").connect
     local r, err = connect({
         argv = { bin }, root = self.root, env = sel.env, form = want.form, instance = want.instance,
         client = "editor", role = "observer", kill_ms = self.opts.kill_ms,
@@ -712,7 +683,10 @@ function Observer:_download(sel)
             self._download_note = "could not install " .. what .. ": " .. tostring(err) .. " — running degraded"
             return self:_set("no-binary", self._download_note)
         end
-        self:_prune(want)
+        -- No pruning of the other plugin-managed binaries (loomworks.provision.cache):
+        -- the protocol does not yet name the binaries live daemons run, so one
+        -- could be in use unseen (deletion-safety rule 11). Paused until the
+        -- daemon publishes it: samienne/loomworks#101.
         -- The selection now reaches the managed lw: weigh the channel again.
         self:_channel_recheck()
         if self.conn or self._relay or self._retire then return end
@@ -731,36 +705,6 @@ function Observer:_cancel_download(why)
     local sha = self._downloading
     self._downloading, self._dl_token = nil, nil
     if sha then pcall(self.opts.cancel_fetch or require("loomworks.provision.fetch").cancel, sha, why) end
-end
-
---- Remove the plugin-managed binaries other than the wanted ones — `want`,
---- the pin's and, with `binary.channel` set, the accepted channel release's
---- (spec §19.16 "Channel upgrades": both are kept) — never one in use: the
---- binary this observer's relays run from, the observed daemon's, the live
---- daemon's (loomworks.provision.cache, deletion-safety rule 11). Best effort.
---- (The live daemon's handle is read here, read-only, only for this in-use
---- check — never to decide whether, when or to what the editor connects.)
---- @param want loomworks.provision.Wanted
-function Observer:_prune(want)
-    local list = {}
-    local function use(p) if type(p) == "string" and p ~= "" then list[#list + 1] = p end end
-    use(self._binary)
-    use(self.daemon and self.daemon.exe)
-    local ok, st = pcall(self.opts.inspect or require("loomworks.daemon.inspect").state, self.root)
-    if ok and type(st) == "table" and type(st.handle) == "table" then use(st.handle.exe) end
-    local keep, seen = {}, {}
-    local function add(w)
-        local sha = type(w) == "table" and w.sha256 or nil
-        if type(sha) == "string" and not seen[sha] then seen[sha] = true; keep[#keep + 1] = sha end
-    end
-    add(want)
-    local managed = require("loomworks.provision.managed")
-    local pok, pin = pcall(self.opts.pinned_wanted or managed.pinned_wanted)
-    if pok then add(pin) end
-    local wok, cur = pcall(managed.wanted, { setting = self.opts.binary, data = self.opts.data })
-    if wok then add(cur) end
-    pcall(self.opts.prune or require("loomworks.provision.cache").prune,
-        { keep = keep, in_use = list, data = self.opts.data })
 end
 
 --- How long (s) before the observer weighs again a channel check it could
@@ -901,7 +845,8 @@ function Observer:_channel_check(explicit)
                     .. (running and ": the next daemon launch uses it (the running daemon is not switched)" or "")
                     .. extra
                 save(out)
-                self:_prune(out.wanted)
+                -- No pruning (loomworks.provision.cache) until the daemon names the
+                -- binaries in use: samienne/loomworks#101.
                 -- Not running a daemon for want of a binary: start over.
                 if not running and (self.state == "no-binary" or self.state == "idle") then self:start(false) end
             end)
@@ -992,20 +937,14 @@ function Observer:_on_relay(token, conn, err, info)
     local target = { pid = d.pid, start_time = d.start_time,
         exe = type(d.exe) == "string" and d.exe ~= "" and d.exe or nil }
     local ch = conn.challenge or {}
-    local inc
     if via then
         -- Judged by the EDITOR's compatibility rule from `welcome.daemon`
         -- (§19.16 "Through the relay"): the relay applies no version policy.
-        local version = require("loomworks.daemon.version")
-        local ok, what = version.observer_compatible(ch)
         -- Incompatible (§19.16 "Retiring an incompatible daemon", step 5h.5): no
-        -- transport overlap, schemas other than ours, or no loomworks.Root/1. A
-        -- daemon with newer schemas is only refused. One whose only problem is
-        -- older schemas is observed as usual and weighed for a retirement on the
-        -- observed connection; any other is weighed on a held connection it is
-        -- not observed through. Its relay is closed when the editor does not
-        -- observe it, and a successor is followed through a skip relay
-        -- (step 5i PR G2, `_skip`).
+        -- transport overlap, or no loomworks.Root/1. It is weighed for a
+        -- retirement on a held connection it is not observed through; its
+        -- relay is closed when the editor does not retire it, and a successor
+        -- is followed through a skip relay (step 5i PR G2, `_skip`).
         if token.form == "skip" and M.instance_id(target) == token.instance then
             -- A skip relay never connects to the daemon it skips (§19.10
             -- "Skip an instance"); one that did is not trusted, and nothing
@@ -1015,13 +954,8 @@ function Observer:_on_relay(token, conn, err, info)
             return self:_set("waiting", "internal error: the relay connected to the daemon it was told to skip "
                 .. "(pid " .. tostring(target.pid) .. ") — :LoomworksDaemon connect tries again")
         end
-        inc = require("loomworks.daemon.editor_retire").incompatibility(ch, conn)
-        if (not ok or inc) and not (inc and inc.observable) then
-            if inc and not inc.newer then return self:_weigh_retire(target, conn, ch, inc) end
-            conn.on_close = nil
-            conn:close()
-            return self:_skip(target, M.mismatch_note(ch, what or "schemas", target.exe or self._binary))
-        end
+        local inc = require("loomworks.daemon.editor_retire").incompatibility(ch, conn)
+        if inc then return self:_weigh_retire(target, conn, ch, inc) end
     end
     -- (A `welcome` without `via` is an older pin's attached `--stdio`: no
     -- `welcome.daemon` to judge, observed without the check, never retired.)
@@ -1042,21 +976,17 @@ function Observer:_on_relay(token, conn, err, info)
     self.seq = tonumber(w.seq) or 0
     self:_start_keepalive()
     self.feature_note = nil
-    self.incompat_note = nil
     self.stale_note = nil
     self:_subscribe(conn, function()
         self:_connected_note()
         self:_join_late(conn)
-        -- Older schemas only: observed, and weighed for a retirement. A
-        -- compatible daemon through a relay that reports its own identity
-        -- (`welcome.relay`) is weighed too, for its code identity (§19.9
-        -- "Editor retirement"): observed throughout, retired only when idle
-        -- and other than the relay's. Without `welcome.relay` there is no
-        -- identity to weigh it against: it is simply observed.
+        -- A compatible daemon through a relay that reports its own identity
+        -- (`welcome.relay`) is weighed for its code identity (§19.9 "Editor
+        -- retirement"): observed throughout, retired only when idle and other
+        -- than the relay's. Without `welcome.relay` there is no identity to
+        -- weigh it against: it is simply observed.
         local R = require("loomworks.daemon.editor_retire")
-        if inc then
-            self:_weigh_retire(target, conn, ch, inc)
-        elseif via and R.relay_identity(conn) then
+        if via and R.relay_identity(conn) then
             self:_weigh_retire(target, conn, ch, R.stale())
         end
     end)
@@ -1140,7 +1070,7 @@ end
 
 --- @class loomworks.daemon.RetireWait  a daemon being weighed for a retirement (step 5h.5): incompatible, or stale (`inc.stale`: compatible, other code than the relay reports)
 --- @field conn loomworks.daemon.Conn the connection to it: the observed one (`observed`), or held and not observed through
---- @field observed boolean|nil only its schemas are older, or it is stale: it is observed meanwhile (spec §19.16 "Connect")
+--- @field observed boolean|nil it is stale: it is observed meanwhile (spec §19.16 "Connect")
 --- @field target table the daemon { pid, start_time, exe }
 --- @field ch table its challenge
 --- @field inc loomworks.daemon.Incompatibility why it is incompatible (or stale)
@@ -1152,8 +1082,7 @@ end
 
 --- Weigh an incompatible daemon for a retirement (spec §19.16 "Retiring an
 --- incompatible daemon", §19.9 "Editor retirement", step 5h.5). The editor
---- sends `retire` (never `stop`) only when the daemon is idle, its schemas
---- are not newer (the caller refused those), the binary the editor selected
+--- sends `retire` (never `stop`) only when the daemon is idle, the binary the editor selected
 --- passed the interface check, that binary's `lw_version` (its code
 --- identity: the host version, or a development build's source fingerprint)
 --- differs from the daemon's, and no daemon of that identity was retired for
@@ -1163,10 +1092,8 @@ end
 --- the relay's identity instead of the selected binary's (a relay redirected
 --- to a repository pin launches the pinned release): observed throughout,
 --- with no note unless retiring it fails; busy, it is re-checked and retired
---- once idle. A daemon whose only problem is older
---- schemas is observed meanwhile, and for the whole session when the editor
---- declines to retire it (a note on the Runtime line); any other is noted
---- and not observed — its connection is held while the selected binary is
+--- once idle. An incompatible daemon is noted and not observed — its
+--- connection is held while the selected binary is
 --- probed and while the daemon is busy, then closed. A busy daemon is
 --- re-checked through `status` every `retire_check_ms`; nothing else
 --- connects meanwhile.
@@ -1211,11 +1138,6 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
             self:_stop_timer("_retire_timer")
             return
         end
-        if wait.observed then
-            self._retire = nil
-            self:_stop_timer("_retire_timer")
-            return self:_note_incompatible(wait, "observing it without retiring it (" .. why .. "); " .. advice)
-        end
         self:_drop_retire()
         return self:_skip(target, R.note(ch, inc, binary, "not observing it (" .. why .. "); " .. advice
             .. " — running degraded"))
@@ -1248,13 +1170,8 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
         wait.probed = true
         local what = "checking " .. b.pending .. " (lw version --json) before retiring an incompatible "
             .. "workspace daemon"
-        if inc.stale then
-            -- (Observed as usual: nothing to note while it is probed.)
-        elseif wait.observed then
-            self:_note_incompatible(wait, what)
-        else
-            self:_set("probing", what)
-        end
+        -- (A stale daemon is observed as usual: nothing to note while it is probed.)
+        if not inc.stale then self:_set("probing", what) end
         local probe = require("loomworks.provision.probe")
         local run = self.opts.run_probe or probe.run
         local done = false
@@ -1305,16 +1222,16 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
     self:_check_retire()
 end
 
---- Note an observed incompatible daemon (older schemas) on the connected
---- Runtime line: why it is incompatible and `tail`, what the editor does.
---- A stale daemon's note (a failed retirement) is `stale_note` instead.
+--- Note an observed stale daemon (a declined or failed retirement) on the
+--- connected Runtime line: why it is weighed and `tail`, what the editor
+--- does (`stale_note`; it never blocks the features). Only a stale daemon is
+--- observed while weighed: an incompatible one is held, never observed.
 --- @param wait loomworks.daemon.RetireWait
 --- @param tail string
 function Observer:_note_incompatible(wait, tail)
     if self.conn ~= wait.conn then return end
     local note = require("loomworks.daemon.editor_retire").note(wait.ch, wait.inc, nil, tail)
-    -- A stale daemon is compatible: its note never blocks the features.
-    if wait.inc.stale then self.stale_note = note else self.incompat_note = note end
+    self.stale_note = note
     self:_connected_note()
 end
 
@@ -1361,7 +1278,6 @@ function Observer:_check_retire()
                 -- A busy stale daemon is observed as usual: no note.
                 if wait.inc.stale then return end
                 local tail = "incompatible daemon is busy; retiring when idle"
-                if wait.observed then return self:_note_incompatible(wait, tail) end
                 return self:_set("waiting", R.note(wait.ch, wait.inc, binary, tail))
             end
             self:_retire_now()
@@ -1409,7 +1325,7 @@ function Observer:_retire_now()
     why = wait.inc.stale and ("which runs " .. why) or ("incompatible with this plugin (" .. why .. ")")
     local msg = string.format("retired the workspace daemon (lw v%s, pid %s), %s; starting lw v%s",
         tostring(ch.lw_version), tostring(target.pid), why, tostring(wait.version))
-    local closed_err = require("loomworks.daemon.client").ERR_CLOSED
+    local closed_err = require("loomworks.daemon.client.relay").ERR_CLOSED
     -- Not retired: no relaunch, no notice.
     local function failed(why)
         R.record_failed(self.root, ch.lw_version)
@@ -1528,7 +1444,6 @@ function Observer:_connected_note()
     self.feature_note = #notes > 0 and table.concat(notes, "; ") or nil
     local note = "observing the workspace daemon (pid " .. tostring(d.pid) .. ")"
     if self.feature_note then note = note .. " — " .. self.feature_note end
-    if self.incompat_note then note = note .. " — " .. self.incompat_note end
     if self.stale_note then note = note .. " — " .. self.stale_note end
     self:_set("connected", note)
     -- The device registry's first read on this connection (step 5n C2,
@@ -1995,7 +1910,6 @@ function Observer:_on_closed(c)
     self.daemon = nil
     self.mode = nil
     self.feature_note = nil
-    self.incompat_note = nil
     self.stale_note = nil
     -- The workspace is unloaded until a reconnect's daemon reports it
     -- `loaded` (§19.16 "Unloaded on disconnect"): its remote tasks end
@@ -2507,8 +2421,8 @@ function Observer:_icall(name, args, cb)
 end
 
 --- Can the editor carry `method` now (§19.16 "Availability")? Connected
---- through interfaces to a compatible daemon (never one it weighs for a
---- retirement: older schemas are only observed), offering the method's
+--- through interfaces to a compatible daemon (never while one is being
+--- retired), offering the method's
 --- interface (Build/1, Launch/1, DebugConfig/1) at our version, or
 --- subscribed to it (LspConfig/1, `callable`) — and, for a method that runs
 --- as a task, Tasks/1 (cancel) — and the method not found missing on this
@@ -2518,7 +2432,7 @@ end
 function Observer:can_call(method)
     if self.state ~= "connected" or not self.conn or self.conn.closed then return false end
     if self.mode ~= "interfaces" or not self._feat then return false end
-    if self.incompat_note or self:_retire_blocks() then return false end
+    if self:_retire_blocks() then return false end
     local want = METHOD_IFACE[method]
     if not want then return false end
     local st = self._feat[want.feature]
@@ -2543,7 +2457,6 @@ end
 --- @return string
 function Observer:refusal(method)
     if self.state == "connected" and self.conn and not self.conn.closed and not self._lost then
-        if self.incompat_note then return self.incompat_note end
         if self:_retire_blocks() then return "the workspace daemon is disconnecting (it is being retired)" end
         if self.mode ~= "interfaces" then
             return "the workspace daemon is too old to carry it (it offers no interfaces)"
@@ -3101,7 +3014,7 @@ function Observer:_lsp_unavailable()
     if self.mode ~= "interfaces" then
         return { kind = "daemon", note = "the workspace daemon offers no loomworks.LspConfig/1 (protocol 10)" }
     end
-    if self.incompat_note or self:_retire_blocks() then
+    if self:_retire_blocks() then
         return { kind = "daemon", note = "the workspace daemon is incompatible" }
     end
     local f = self._feat and self._feat[M.LSP.feature]
@@ -3185,7 +3098,7 @@ function Observer:workspace_view()
     if self.mode ~= "interfaces" then
         return nil, "the workspace daemon offers no loomworks.view.Workspace/1 (protocol 10)"
     end
-    if self.incompat_note or self:_retire_blocks() then return nil, "the workspace daemon is incompatible" end
+    if self:_retire_blocks() then return nil, "the workspace daemon is incompatible" end
     local want = M.VIEW_WORKSPACE
     local f = self._feat and self._feat[want.feature]
     local note = self._why and self._why[want.feature]
@@ -3209,7 +3122,7 @@ function Observer:tests_status()
     if self.mode ~= "interfaces" then
         return blocked("the workspace daemon offers no loomworks.view.Tests/1 (protocol 10)")
     end
-    if self.incompat_note or self:_retire_blocks() then return blocked("the workspace daemon is incompatible") end
+    if self:_retire_blocks() then return blocked("the workspace daemon is incompatible") end
     local feat, why = self._feat or {}, self._why or {}
     for _, want in ipairs({ M.VIEW_TESTS, M.TESTS }) do
         local f = feat[want.feature]

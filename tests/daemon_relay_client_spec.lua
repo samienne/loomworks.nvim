@@ -7,8 +7,7 @@
 -- (the EOF_GRACE_MS grace after the exit; the EXIT_WAIT_MS bound after the
 -- EOF, then an internal error and the relay is ended).
 
-local client = require("loomworks.daemon.client")
-local RC = client.relay
+local RC = require("loomworks.daemon.client.relay")
 local H = require("tests.daemon_helpers")
 local uv = vim.uv or vim.loop
 

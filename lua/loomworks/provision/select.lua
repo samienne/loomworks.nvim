@@ -210,7 +210,7 @@ end
 local function source_dir(src, opts)
     local dir
     if src == true then
-        dir = (opts.plugin_lua or require("loomworks.daemon.version").lua_root)()
+        dir = (opts.plugin_lua or require("loomworks.version").lua_root)()
         if not dir then return nil, "binary.source: this plugin's Lua tree is unknown" end
     else
         dir = (slash(vim.fs.normalize(src)):gsub("/+$", ""))

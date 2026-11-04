@@ -131,7 +131,7 @@ function M.get(name)
     local d = daemon[name]
     if d then return d.state end
     if not daemon_root or name ~= "header" then return nil end
-    return { root = daemon_root, state = "unloaded", version = require("loomworks.daemon.version").plugin_version() }
+    return { root = daemon_root, state = "unloaded", version = require("loomworks.version").get() }
 end
 
 --- @return loomworks.ViewHeader|nil

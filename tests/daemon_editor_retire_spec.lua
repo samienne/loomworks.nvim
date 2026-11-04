@@ -6,8 +6,8 @@
 -- build's source fingerprint) differs from the one its relay reports
 -- (`welcome.relay`: a pinned repo's relay names the pin) is retired too, a
 -- busy one observed and retired once idle, none weighed without
--- `welcome.relay` (§19.9); a daemon with
--- newer schemas, one of the selected binary's own identity, and any daemon
+-- `welcome.relay` (§19.9); a daemon of the selected binary's own
+-- identity, and any daemon
 -- while the selected binary is not known compatible are never retired; and
 -- a daemon of a given identity is retired at most once per workspace per
 -- editor session.
@@ -16,7 +16,7 @@ _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local server_mod = require("loomworks.daemon.server")
 local client = require("loomworks.daemon.client")
 local observer = require("loomworks.daemon.observer")
-local version = require("loomworks.daemon.version")
+local version = require("loomworks.daemon.client.version")
 local R = require("loomworks.daemon.editor_retire")
 local H = require("tests.daemon_helpers")
 local FR = require("tests.daemon_fake_relay")
@@ -40,11 +40,6 @@ end
 --- fake-daemon tests cover the tick itself.
 local REAL_RETIRE_CHECK_MS = 10 * 60 * 1000
 
-local function older_schemas()
-    local s = version.schemas()
-    return { user = s.user - 1, cache = s.cache }
-end
-
 --- The editor's selection: the plugin-managed lw, whose pin names `v`.
 local function managed_selection(v)
     return {
@@ -57,19 +52,16 @@ local function managed_selection(v)
 end
 
 describe("editor_retire (pure decisions, §19.16)", function()
-    it("incompatible: no transport overlap, other schemas, no Root/1 on transport 11; newer schemas flagged", function()
-        local s = version.schemas()
-        assert.is_nil(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10, schemas = s }, {}))
-        local inc = assert(R.incompatibility({ protocol = 99, protocol_min = 99, schemas = s }, {}))
+    it("incompatible: no transport overlap, or no Root/1 on transport 11; file formats are not judged", function()
+        assert.is_nil(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10 }, {}))
+        -- A daemon's schemas are its own business: never a reason.
+        assert.is_nil(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10,
+            schemas = { user = 999, cache = 0 } }, {}))
+        local inc = assert(R.incompatibility({ protocol = 99, protocol_min = 99 }, {}))
         assert.truthy(inc.reasons[1]:find("does not overlap", 1, true))
-        assert.is_false(inc.newer)
-        inc = assert(R.incompatibility({ protocol = version.PROTOCOL, schemas = older_schemas() }, {}))
-        assert.is_false(inc.newer)
-        inc = assert(R.incompatibility({ protocol = version.PROTOCOL, schemas = { user = s.user + 1, cache = s.cache } }, {}))
-        assert.is_true(inc.newer)
         -- Transport 11 with objects but no root: incompatible; a missing
         -- feature interface alone is not.
-        local ch = { protocol = version.PROTOCOL, protocol_min = 10, schemas = s }
+        local ch = { protocol = version.PROTOCOL, protocol_min = 10 }
         inc = assert(R.incompatibility(ch, { transport = 11, welcome = { objects = {} } }))
         assert.truthy(table.concat(inc.reasons, ";"):find("loomworks.Root/1", 1, true))
         assert.is_nil(R.incompatibility(ch, { transport = 11, welcome = { objects = {
@@ -117,18 +109,6 @@ describe("editor_retire (pure decisions, §19.16)", function()
         assert.is_true(P.status_busy({ busy = false, clients = 3, observers = 1 }))
         -- busy_clients, when reported, decides.
         assert.is_false(R.busy({ busy = false, busy_clients = 0, clients = 2, observers = 1 }))
-    end)
-
-    it("observable: only older schemas (transports overlap, root present)", function()
-        local s = version.schemas()
-        local older = { user = s.user - 1, cache = s.cache }
-        assert.is_true(assert(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10, schemas = older },
-            { transport = 10, welcome = {} })).observable)
-        assert.is_false(assert(R.incompatibility({ protocol = 99, protocol_min = 99, schemas = older }, {})).observable)
-        assert.is_false(assert(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10, schemas = older },
-            { transport = 11, welcome = { objects = {} } })).observable)
-        assert.is_false(assert(R.incompatibility({ protocol = version.PROTOCOL,
-            schemas = { user = s.user + 1, cache = s.cache } }, {})).observable)
     end)
 
     it("the skip relay's instance id: <pid>:<start_time> from welcome.daemon, nil when either is unknown", function()
@@ -197,10 +177,10 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
     --- makes it `starting` (the test then makes `f.next` live).
     local function fake(extra)
         local f = { sent = {}, spawned = 0, connects = 0, notes = {}, busy = false }
-        f.daemons = { old = { protocol = 99, protocol_min = 99, lw_version = "0.0.1", schemas = version.schemas() } }
+        f.daemons = { old = { protocol = 99, protocol_min = 99, lw_version = "0.0.1" } }
         f.st = { kind = "live", handle = { pid = 4242, start_time = "win:t", endpoint = "old" } }
         f.next = { kind = "live", handle = { pid = 5151, start_time = "win:n", endpoint = "new" } }
-        f.daemons.new = { protocol = version.PROTOCOL, lw_version = "9.9.9", schemas = version.schemas() }
+        f.daemons.new = { protocol = version.PROTOCOL, lw_version = "9.9.9" }
         f.opts = vim.tbl_extend("force", managed_selection("9.9.9"), {
             -- The relay's own code identity (`welcome.relay`, §19.8 step 4):
             -- the identity a launch would start, here the selected binary's.
@@ -261,10 +241,10 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
             units = { { project = pp:project_key(), configuration = pp:config_key() } } } })
     end
 
-    --- The fake's daemon presents older schemas only: observable.
+    --- The fake's daemon is compatible and runs another code identity than
+    --- the relay's: stale, observed while it is weighed for a retirement.
     local function observable(f)
-        f.daemons.old = { protocol = version.PROTOCOL, protocol_min = 10, lw_version = "0.0.1",
-            schemas = older_schemas() }
+        f.daemons.old = { protocol = version.PROTOCOL, protocol_min = 10, lw_version = "0.0.1" }
         return f
     end
 
@@ -276,13 +256,13 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         local inspect = require("loomworks.daemon.inspect").state
         local opts = vim.tbl_extend("force", managed_selection("9.9.9"), {
             notify = function(m) notes[#notes + 1] = m end,
-            -- The daemon presents older schemas (it cannot read the editor's
-            -- files) and another lw_version.
+            -- The daemon presents a transport the editor does not speak
+            -- and another lw_version.
             connect = function(ep, copts, cb)
                 client.connect(ep, copts, function(c, e)
                     if c then
                         c.challenge = vim.tbl_extend("force", c.challenge,
-                            { schemas = older_schemas(), lw_version = "0.0.1" })
+                            { protocol = 99, protocol_min = 99, lw_version = "0.0.1" })
                     end
                     cb(c, e)
                 end)
@@ -322,7 +302,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
             connect = function(ep, copts, cb)
                 client.connect(ep, copts, function(c, e)
                     if c then
-                        c.challenge = vim.tbl_extend("force", c.challenge, { schemas = older_schemas(),
+                        c.challenge = vim.tbl_extend("force", c.challenge, { protocol = 99, protocol_min = 99,
                             lw_version = "0.0.1" })
                         local request = c.request
                         c.request = function(cc, msg, rcb)
@@ -418,22 +398,9 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
     end)
 
-    it("(c) a daemon with newer schemas is never retired", function()
-        local f = fake()
-        local s0 = version.schemas()
-        f.daemons.old = { protocol = version.PROTOCOL, lw_version = "99.0.0",
-            schemas = { user = s0.user + 1, cache = s0.cache } }
-        obs = attach(f.opts)
-        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
-        vim.wait(300)
-        assert.same({}, f.sent)
-        assert.equals(0, f.spawned)
-        assert.truthy(obs:runtime_line():find("not observing it", 1, true), obs:runtime_line())
-    end)
-
     --- The fake's daemon is compatible and runs code identity `id`.
     local function compatible(f, id)
-        f.daemons.old = { protocol = version.PROTOCOL, lw_version = id, schemas = version.schemas() }
+        f.daemons.old = { protocol = version.PROTOCOL, lw_version = id }
         return f
     end
 
@@ -478,7 +445,6 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_true(vim.wait(5000, function() return count(f, "old:status") >= 2 end, 10), obs:runtime_line())
         assert.equals("connected", obs.state)
         assert.is_false(sent(f, "old:retire"))
-        assert.is_nil(obs.incompat_note)
         assert.is_nil(obs:runtime_line():find("incompatible", 1, true), obs:runtime_line())
         -- The pending stale retirement does not block the features (the gate
         -- of `can_call`; an incompatible one would block them).
@@ -525,7 +491,6 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
                 ~= nil
         end, 10), obs:runtime_line())
         assert.truthy(obs.stale_note:find("other code than the relay's lw v9.9.9", 1, true), obs.stale_note)
-        assert.is_nil(obs.incompat_note)
         assert.equals("connected", obs.state)
         assert.equals(f.conn, obs.conn)
         assert.is_true(R.retire_failed(ws.root, "0.0.1"))
@@ -550,7 +515,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
 
     it("(c'6) a daemon on another identity than the relay's is retired; the notice names the relay's", function()
         local f = compatible(fake({ relay_lw_version = "0.2.0" }), "0.1.99")
-        f.daemons.new = { protocol = version.PROTOCOL, lw_version = "0.2.0", schemas = version.schemas() }
+        f.daemons.new = { protocol = version.PROTOCOL, lw_version = "0.2.0" }
         obs = attach(f.opts)
         assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
         f.st = { kind = "none" }
@@ -722,46 +687,6 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_nil(obs._retire)
         assert.is_nil(obs._retire_timer)
         obs = nil
-    end)
-
-    it("an older-schema busy daemon is observed while its retirement is pending", function()
-        local f = observable(fake())
-        f.busy = true
-        obs = attach(f.opts)
-        assert.is_true(vim.wait(5000, function()
-            return obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true) ~= nil
-        end, 10), obs:runtime_line())
-        assert.equals("connected", obs.state)
-        assert.equals(f.conn, obs.conn)
-        assert.is_not_nil(obs._retire)
-        -- Observed: its task frames count, and end when it is retired.
-        start_task(f, 1)
-        assert.is_true(vim.wait(2000, function() return #obs:tasks() == 1 end, 10))
-        f.busy = false
-        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
-        assert.is_true(vim.wait(5000, function() return obs.conn == nil and #fr.spawns == 2 end, 10),
-            obs:runtime_line())
-        assert.equals("connecting", obs.state)
-        assert.same({}, obs:tasks())
-        assert.is_nil(obs._retire)
-        assert.equals(1, #f.notes)
-        f.st = { kind = "none" }
-        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
-    end)
-
-    it("an older-schema daemon the editor declines to retire stays observed", function()
-        local f = observable(fake())
-        f.daemons.old.lw_version = "9.9.9" -- the selected binary's own version
-        obs = attach(f.opts)
-        assert.is_true(vim.wait(5000, function()
-            return obs:runtime_line():find("observing it without retiring it", 1, true) ~= nil
-        end, 10), obs:runtime_line())
-        assert.equals("connected", obs.state)
-        assert.is_nil(obs._retire)
-        vim.wait(300)
-        assert.is_false(sent(f, "old:retire"))
-        assert.equals("connected", obs.state)
-        assert.equals(1, f.connects)
     end)
 
     it("an observed daemon dropping mid-task while its retirement is pending leaves no running task", function()
@@ -951,7 +876,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
             if msg.kind == "retire" then
                 f.st = { kind = "none" }
                 c:close()
-                rcb(nil, client.ERR_CLOSED)
+                rcb(nil, require("loomworks.daemon.client.relay").ERR_CLOSED)
                 return true
             end
         end
@@ -988,24 +913,6 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_false(sent(f, "old:status"), vim.inspect(f.sent))
         assert.is_false(sent(f, "old:retire"), vim.inspect(f.sent))
         assert.equals(2, #fr.spawns, vim.inspect(fr.spawns))
-    end)
-
-    it("(G2) a newer-schema daemon is skipped; an incompatible successor is judged afresh and skipped too", function()
-        local f = fake()
-        local s0 = version.schemas()
-        f.daemons.old = { protocol = version.PROTOCOL, lw_version = "99.0.0",
-            schemas = { user = s0.user + 1, cache = s0.cache } }
-        f.daemons.new = vim.deepcopy(f.daemons.old)
-        obs = attach(f.opts)
-        assert.is_true(spawned(2), vim.inspect(fr.spawns) .. " " .. obs:runtime_line())
-        assert.same({ "ordinary", "skip 4242:win:t" }, fr.spawns, vim.inspect(fr.spawns))
-        f.st = f.next
-        assert.is_true(spawned(3), vim.inspect(fr.spawns) .. " " .. obs:runtime_line())
-        assert.same({ "ordinary", "skip 4242:win:t", "skip 5151:win:n" }, fr.spawns, vim.inspect(fr.spawns))
-        assert.is_true(fr.relays[2].conn.closed, "the first skip relay connected to the successor, closed")
-        assert.same({}, f.sent, "never asked or retired")
-        assert.equals(0, f.spawned, "launches")
-        assert.equals("waiting", obs.state, obs:runtime_line())
     end)
 
     it("(G2) a daemon whose start time is unknown is not skipped: in-process until an explicit connect", function()

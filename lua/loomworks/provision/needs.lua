@@ -4,11 +4,10 @@
 --- Compares a release's binary descriptor (spec §16.41, the
 --- `lw-<version>-descriptor.json` it publishes, the document `lw version
 --- --json` prints) against the editor client: the transport ranges overlap
---- (loomworks.daemon.version.negotiate), the release's working-copy schemas
---- are no newer than ours (version.observer_compatible's rule — what the
---- observer itself checks at connect; the pre-launch probe instead requires
---- them equal to ours, `problems(d, { exact_schemas = true })`), and every interface the observer uses
---- (loomworks.daemon.observer ROOT and FEATURES) is offered at its version.
+--- (loomworks.daemon.client.version.negotiate — the editor checks nothing
+--- else of a binary's versions: its file formats are the binary's
+--- business), and every interface the observer uses (loomworks.daemon.observer
+--- ROOT and FEATURES) is offered at its version.
 ---
 --- One check, four uses: scripts/release/pin.lua refuses to pin (and the
 --- release workflow refuses to publish) a release that fails it; ordinary CI
@@ -20,8 +19,7 @@
 --- problems through `problems`: only a structural or fatal one makes that
 --- binary incompatible, a missing feature interface only degrades the feature;
 --- and a `binary.channel` release (loomworks.provision.channel, §19.16
---- "Channel upgrades") must pass `check` with exact schemas before the
---- editor downloads it.
+--- "Channel upgrades") must pass `check` before the editor downloads it.
 
 local M = {}
 
@@ -35,19 +33,16 @@ function M.needed()
 end
 
 --- @class loomworks.provision.NeedsProblems  a descriptor's problems, by weight
---- @field structure string[] not a binary descriptor at all ("no descriptor", a bad `descriptor` field, no `schemas`)
---- @field fatal string[] the binary is incompatible as a whole: no transport overlap, schemas ours cannot use (any difference, for the probe), the root interface not offered
+--- @field structure string[] not a binary descriptor at all ("no descriptor", a bad `descriptor` field)
+--- @field fatal string[] the binary is incompatible as a whole: no transport overlap, the root interface not offered
 --- @field degraded string[] a feature interface not offered: only that feature degrades
 
 --- Sort a descriptor's problems by weight (spec §19.16 "Pre-launch probe").
---- Schemas: by default (the pin gate, `check`) only schemas newer than ours
---- are fatal, the observer's connect rule (version.observer_compatible);
---- with `opts.exact_schemas` (the pre-launch probe) any difference is.
 --- `opts.interfaces == false` skips the interface checks: a daemon observed
 --- over transport 10 offers no interfaces at all (it is observed through the
 --- protocol-10 broadcasts), so it lacks none (loomworks.daemon.editor_retire).
 --- @param d any a decoded binary descriptor
---- @param opts? { exact_schemas?: boolean, interfaces?: boolean }
+--- @param opts? { interfaces?: boolean }
 --- @return loomworks.provision.NeedsProblems
 function M.problems(d, opts)
     local out = { structure = {}, fatal = {}, degraded = {} }
@@ -58,27 +53,11 @@ function M.problems(d, opts)
     if type(d.descriptor) ~= "number" or d.descriptor < 1 then
         out.structure[1] = "not a binary descriptor (descriptor = " .. tostring(d.descriptor) .. ")"
     end
-    local version = require("loomworks.daemon.version")
+    local version = require("loomworks.daemon.client.version")
     local t = type(d.transport) == "table" and d.transport or {}
     if not version.negotiate(t.max, t.min) then
         out.fatal[#out.fatal + 1] = string.format("transport %s..%s does not overlap ours %d..%d",
             tostring(t.min), tostring(t.max), version.PROTOCOL_MIN, version.PROTOCOL)
-    end
-    local s, ps = version.schemas(), d.schemas
-    if type(ps) ~= "table" or type(ps.user) ~= "number" or type(ps.cache) ~= "number" then
-        out.structure[#out.structure + 1] = "no schemas (user / cache) in the descriptor"
-    elseif opts and opts.exact_schemas then
-        -- The pre-launch probe: either direction is fatal. An older lw cannot
-        -- read the workspace files at our format, a newer one writes a format
-        -- the editor will not observe (and the managed lw, the fall-through,
-        -- matches ours exactly).
-        if ps.user ~= s.user or ps.cache ~= s.cache then
-            out.fatal[#out.fatal + 1] = string.format("schemas user %d / cache %d differ from ours (user %d / cache %d)",
-                ps.user, ps.cache, s.user, s.cache)
-        end
-    elseif version.peer_schemas_newer({ schemas = ps }) then
-        out.fatal[#out.fatal + 1] = string.format("schemas user %d / cache %d are newer than ours (user %d / cache %d)",
-            ps.user, ps.cache, s.user, s.cache)
     end
     if opts and opts.interfaces == false then return out end
     local offered = require("loomworks.daemon.observer").offered_versions
@@ -98,14 +77,11 @@ function M.problems(d, opts)
 end
 
 --- Check a descriptor (the pin and release gate: every problem counts).
---- Returns true, or false + the problems (one line each). `opts` as for
---- `problems`: a channel release (loomworks.provision.channel) is checked
---- with `exact_schemas`, since it becomes the managed lw.
+--- Returns true, or false + the problems (one line each).
 --- @param d any a decoded binary descriptor
---- @param opts? { exact_schemas?: boolean }
 --- @return boolean ok, string[] problems
-function M.check(d, opts)
-    local p = M.problems(d, opts)
+function M.check(d)
+    local p = M.problems(d)
     if type(d) ~= "table" then return false, p.structure end
     local problems = {}
     for _, list in ipairs({ p.structure, p.fatal, p.degraded }) do

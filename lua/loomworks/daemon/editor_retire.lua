@@ -10,14 +10,11 @@
 --- `--no-launch --skip-instance` relay (observer `_skip`, step 5i PR G2).
 ---
 --- * `incompatibility` — is a connected daemon incompatible with the editor?
----   No transport overlap, schemas that differ from ours (older: it cannot
----   read the editor's files; newer: refused, never retired), or, on a
----   transport-11 connection, no `loomworks.Root/1` (a protocol-10 daemon
----   offers no interfaces and is judged by version and schemas only); older
----   schemas alone leave it observable. The same problem sort as
----   the pre-launch probe (loomworks.provision.needs `problems`, with
----   `exact_schemas`). A missing feature interface only degrades that
----   feature and is never a reason to retire.
+---   No transport overlap or, on a transport-11 connection, no
+---   `loomworks.Root/1` (a protocol-10 daemon offers no interfaces and is
+---   judged by its transport only). The same problem sort as the pre-launch
+---   probe (loomworks.provision.needs `problems`). A missing feature
+---   interface only degrades that feature and is never a reason to retire.
 --- * `stale` — a compatible daemon weighed for a retirement because its code
 ---   identity may differ from the one its relay reports (`relay_identity`:
 ---   `welcome.relay`, the identity of the daemon the relay would launch — a
@@ -33,9 +30,7 @@
 local M = {}
 
 --- @class loomworks.daemon.Incompatibility  why a connected daemon is incompatible with the editor
---- @field reasons string[] one line each (transport, schemas, root interface)
---- @field newer boolean its schemas are newer than ours: refused, never retired (§19.9)
---- @field observable boolean only its schemas are older (transports overlap, root interface present): observed while it is weighed for a retirement, and when the editor declines to retire it (§19.16)
+--- @field reasons string[] one line each (transport, root interface)
 --- @field stale boolean|nil not incompatible: a compatible daemon weighed only for its code identity (§19.9 "Editor retirement"); observed throughout, retired only when idle and its identity differs from the relay's (`relay_identity`)
 
 --- Is the daemon behind `conn` incompatible with the editor (spec §19.16
@@ -44,7 +39,7 @@ local M = {}
 --- lists objects — the observer's own test for observing through
 --- interfaces; over transport 10 a daemon offers none and is observed
 --- through the protocol-10 broadcasts.
---- @param ch table the daemon's challenge { protocol, protocol_min, lw_version, schemas }
+--- @param ch table the daemon's challenge { protocol, protocol_min, lw_version }
 --- @param conn table the connection { transport, welcome = { objects } }
 --- @return loomworks.daemon.Incompatibility|nil
 function M.incompatibility(ch, conn)
@@ -53,23 +48,14 @@ function M.incompatibility(ch, conn)
     local objects = type(welcome) == "table" and welcome.objects or nil
     local interfaces = type(conn) == "table" and type(conn.transport) == "number" and conn.transport >= 11
         and type(objects) == "table"
-    local d = { descriptor = 1, transport = { min = ch.protocol_min, max = ch.protocol },
-        schemas = ch.schemas, objects = objects }
-    local p = require("loomworks.provision.needs").problems(d, { exact_schemas = true, interfaces = interfaces })
+    local d = { descriptor = 1, transport = { min = ch.protocol_min, max = ch.protocol }, objects = objects }
+    local p = require("loomworks.provision.needs").problems(d, { interfaces = interfaces })
     local reasons = {}
     for _, list in ipairs({ p.structure, p.fatal }) do
         for _, line in ipairs(list) do reasons[#reasons + 1] = line end
     end
     if #reasons == 0 then return nil end
-    local version = require("loomworks.daemon.version")
-    -- Observable: the transports overlap and the only problem is older
-    -- schemas (no missing root interface) — the editor observes it while
-    -- it waits to retire it, and for good when it declines to.
-    local without_root = interfaces
-        and require("loomworks.provision.needs").problems(d, { exact_schemas = true, interfaces = false }) or p
-    local root_ok = #without_root.structure + #without_root.fatal == #reasons
-    return { reasons = reasons, newer = version.peer_schemas_newer(ch),
-        observable = root_ok and (version.observer_compatible(ch)) == true }
+    return { reasons = reasons }
 end
 
 --- A compatible daemon, weighed for a retirement only because its code
@@ -77,7 +63,7 @@ end
 --- retirement"). Its reason is filled in once it is weighed eligible
 --- (`stale_reason`).
 --- @return loomworks.daemon.Incompatibility
-function M.stale() return { reasons = {}, newer = false, observable = true, stale = true } end
+function M.stale() return { reasons = {}, stale = true } end
 
 --- The code identity the relay of `conn` reports for itself (`welcome.relay`,
 --- §19.8 step 4): the identity of the daemon it would launch. nil when the

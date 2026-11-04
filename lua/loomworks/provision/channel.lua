@@ -7,10 +7,8 @@
 --- release query --channel <c> --json` (spec §16.42), which resolves the
 --- channel to a release verified against its signed SHA256SUMS and returns
 --- that release's host-asset hashes and descriptor. The descriptor must pass
---- the pin's interface check (loomworks.provision.needs) with the probe's
---- schema rule — schemas equal to ours, since the managed lw is what the
---- search falls through to and the editor retires a daemon with older
---- schemas (loomworks.daemon.editor_retire). A newer result that passes is
+--- the pin's interface check (loomworks.provision.needs: transport overlap
+--- and the interfaces the editor uses). A newer result that passes is
 --- **accepted**: it becomes the wanted managed binary
 --- (loomworks.provision.managed.wanted takes the newer of the pin and it),
 --- downloaded and hash-checked against the hash the query returned.
@@ -178,12 +176,12 @@ function M.due(rec, channel, now)
     return now - rec.checked >= M.INTERVAL_S or now < rec.checked
 end
 
---- The descriptor's problems for this plugin (the pin's interface check,
---- schemas exact as for the probe): an empty list when it may be used.
+--- The descriptor's problems for this plugin (the pin's interface check):
+--- an empty list when it may be used.
 --- @param descriptor any
 --- @return string[]
 function M.problems(descriptor)
-    local ok, problems = require("loomworks.provision.needs").check(descriptor, { exact_schemas = true })
+    local ok, problems = require("loomworks.provision.needs").check(descriptor)
     return ok and {} or problems
 end
 
