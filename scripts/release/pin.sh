@@ -9,7 +9,8 @@
 # SHA256SUMS.sig and lw-<version>-descriptor.json (gh CLI), verifies the
 # signature with keys/loomworks-release.pub.pem, checks the descriptor offers
 # the interfaces the plugin needs and writes
-# lua/loomworks/provision/pinned.lua (scripts/release/pin.lua).
+# lua/loomworks/provision/pinned.lua (scripts/release/pin.lua): the SHA-256 of
+# every host binary and of the release bundle loomworks-lua-<version>.zip.
 #
 #   --no-interface-check  skip the descriptor check (a release published
 #                         before descriptors existed).

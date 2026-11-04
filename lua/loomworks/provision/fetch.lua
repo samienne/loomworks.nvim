@@ -15,6 +15,14 @@
 --- again and renamed over. Requests for one hash share one download (single
 --- flight); `M.cancel` aborts it (`:LoomworksDaemon connect`, a stop).
 ---
+--- A wanted record with `bundle_sha256` is the managed pair (spec §19.16 "The
+--- managed bundle"): once the binary is present, the release bundle
+--- `loomworks-lua-<version>.zip` is fetched the same way (same source,
+--- transfer bounds, partial-file rule) into `loomworks/bundle/`, its SHA-256
+--- checked and installed by loomworks.provision.bundle; `ensure` succeeds
+--- only with both. Requests for one bundle hash share one provisioning. A
+--- bundle slot in any other state is never used, repaired or removed.
+---
 --- Source: `<base>/<asset>` for a release-source override (`binary.release_url`,
 --- else `LOOMWORKS_RELEASE_URL`: a local directory, `file://` or an http(s)
 --- mirror, flat like lw's own, spec §16.29), else the version's fixed origin
@@ -35,6 +43,7 @@ local M = {}
 --- @field sha256 string lowercase hex SHA-256 of the asset (the trust anchor)
 --- @field version string the release version (`0.1.44`)
 --- @field asset string the release asset name (`lw-linux-x86_64`, `lw-windows-x86_64.exe`)
+--- @field bundle_sha256? string lowercase hex SHA-256 of the release bundle `loomworks-lua-<version>.zip` (the managed pair; every wanted record the plugin builds has it)
 --- @field channel? string the `binary.channel` it was accepted from (loomworks.provision.channel); nil: the plugin pin
 
 --- @class loomworks.provision.FetchState  the download of one hash (status page, checkhealth)
@@ -48,6 +57,7 @@ local M = {}
 --- @field tmp string|nil its partial file
 --- @field ctl { cancel: fun() }|nil stops its transfer
 --- @field cancelled boolean|nil `M.cancel` ended it
+--- @field bundle_sha256 string|nil the bundle provisioned after the binary (the pair)
 
 --- lw's fixed release origins (lw's `boot.origin`): every release from 0.2.0
 --- on, and the legacy repository of every release below 0.2. A version's
@@ -85,6 +95,10 @@ M._seq = 0
 --- @type table<string, loomworks.provision.FetchState>
 M.states = {}
 
+--- Per bundle hash: its provisioning in flight, done or failed in this editor.
+--- @type table<string, loomworks.provision.FetchState>
+M.bundle_states = {}
+
 local function is_win() return package.config:sub(1, 1) == "\\" end
 local function slash(p) return (p:gsub("\\", "/")) end
 
@@ -115,7 +129,13 @@ function M.check_wanted(w)
     if not sha or #sha ~= 64 or not sha:match("^%x+$") then return nil, "invalid hash " .. tostring(w.sha256) end
     if not M.valid_version(w.version) then return nil, "invalid release version " .. tostring(w.version) end
     if not M.valid_asset(w.asset) then return nil, "invalid asset name " .. tostring(w.asset) end
-    return { sha256 = sha, version = w.version, asset = w.asset }
+    local out = { sha256 = sha, version = w.version, asset = w.asset }
+    if w.bundle_sha256 ~= nil then
+        local b = type(w.bundle_sha256) == "string" and w.bundle_sha256:lower() or nil
+        if not b or #b ~= 64 or not b:match("^%x+$") then return nil, "invalid bundle hash " .. tostring(w.bundle_sha256) end
+        out.bundle_sha256 = b
+    end
+    return out
 end
 
 --- A local source (a plain path or `file://`), or nil for a URL.
@@ -145,20 +165,35 @@ function M.override(opts)
     return (v:gsub("[/\\]+$", ""))
 end
 
---- Where `w` is fetched from.
---- @param w loomworks.provision.Wanted (checked)
+--- Where release asset `asset` of (checked) `version` is fetched from.
+--- @param version string
+--- @param asset string
 --- @param opts? { release_url?: string, getenv?: fun(n: string): string|nil }
 --- @return string
-function M.url(w, opts)
+function M.asset_url(version, asset, opts)
     local base = M.override(opts)
     if base then
         -- A mirror is flat — unless it is a GitHub-style `latest/download`
         -- base, which lw also resolves to the versioned path (§16.29).
         local root = not M.local_path(base) and base:match("^(.-)/releases/latest/download$")
-        if root then return root .. "/releases/download/v" .. w.version .. "/" .. w.asset end
-        return base .. "/" .. w.asset
+        if root then return root .. "/releases/download/v" .. version .. "/" .. asset end
+        return base .. "/" .. asset
     end
-    return M.origin(w.version) .. "/download/v" .. w.version .. "/" .. w.asset
+    return M.origin(version) .. "/download/v" .. version .. "/" .. asset
+end
+
+--- Where the host binary of `w` is fetched from.
+--- @param w loomworks.provision.Wanted (checked)
+--- @param opts? { release_url?: string, getenv?: fun(n: string): string|nil }
+--- @return string
+function M.url(w, opts) return M.asset_url(w.version, w.asset, opts) end
+
+--- Where the bundle of `w` (`loomworks-lua-<version>.zip`) is fetched from.
+--- @param w loomworks.provision.Wanted (checked)
+--- @param opts? { release_url?: string, getenv?: fun(n: string): string|nil }
+--- @return string
+function M.bundle_url(w, opts)
+    return M.asset_url(w.version, require("loomworks.provision.managed").bundle_asset(w.version), opts)
 end
 
 --- `curl` from the search path's absolute entries (never the current
@@ -331,6 +366,8 @@ local function rename_retry(from, to, win, rename, before, cb)
     try()
 end
 
+local ensure_binary
+
 local function finish(st, ok, path, err)
     st.state = ok and "ready" or "failed"
     st.error = err
@@ -340,9 +377,10 @@ local function finish(st, ok, path, err)
     for _, w in ipairs(waiters) do pcall(w, ok and path or nil, err) end
 end
 
---- Make sure the managed binary `wanted` is installed; `cb(path)` or
---- `cb(nil, err)` on the main loop. Concurrent calls for one hash share one
---- download. A present binary is re-hashed once per process
+--- Make sure the managed binary `wanted` is installed and, with
+--- `wanted.bundle_sha256`, its bundle (`ensure_bundle`); `cb(path)` (the
+--- binary) or `cb(nil, err)` on the main loop. Concurrent calls for one hash
+--- share one download. A present binary is re-hashed once per process
 --- (loomworks.provision.managed.verify); a corrupt one is downloaded again.
 --- opts (tests inject):
 ---   data         the editor's data directory (default stdpath("data"))
@@ -353,12 +391,131 @@ end
 ---   hash         fun(path) → sha256|nil, err — replaces the file hash
 ---   rename       fun(from, to) → ok, err, code — replaces uv.fs_rename
 ---   on_state     fun(state) — called when the state changes
+---   install      fun(zip, wanted, opts, cb) — replaces loomworks.provision.bundle.install
+---   rename_bundle fun(from, to) → ok, err, code — the bundle's rename (bundle.install)
 --- @param wanted loomworks.provision.Wanted
 --- @param opts? table
 --- @param cb fun(path: string|nil, err: string|nil)
 --- @return loomworks.provision.FetchState|nil state
 function M.ensure(wanted, opts, cb)
     opts = opts or {}
+    cb = cb or function() end
+    local w = M.check_wanted(wanted)
+    if not w or not w.bundle_sha256 then return ensure_binary(wanted, opts, cb) end
+    local st = ensure_binary(w, opts, function(path, err)
+        if not path then return cb(nil, err) end
+        M.ensure_bundle(w, opts, function(slot, berr)
+            if not slot then return cb(nil, berr) end
+            cb(path)
+        end)
+    end)
+    if st then st.bundle_sha256 = w.bundle_sha256 end
+    return st
+end
+
+--- Make sure the bundle of `w` (`w.bundle_sha256`, release `w.version`) is
+--- installed in its slot (loomworks.provision.bundle); `cb(slot)` or
+--- `cb(nil, err)` on the main loop. A present slot is used as it is; a slot
+--- in any other state is never used, repaired or removed (`cb(nil, why)`,
+--- nothing downloaded). Otherwise the zip is fetched into
+--- `loomworks/bundle/<sha256>.<pid>.<n>.dl` (whatever is at that path first
+--- is unlinked, never written through), hash-checked, installed, and the
+--- partial file removed. Concurrent calls for one hash share one
+--- provisioning. opts: as `ensure`.
+--- @param w loomworks.provision.Wanted (with bundle_sha256)
+--- @param opts? table
+--- @param cb fun(slot: string|nil, err: string|nil)
+--- @return loomworks.provision.FetchState|nil state
+function M.ensure_bundle(w, opts, cb)
+    opts = opts or {}
+    cb = cb or function() end
+    local managed = require("loomworks.provision.managed")
+    local bundle = require("loomworks.provision.bundle")
+    local chk, why = M.check_wanted(w)
+    if chk and not chk.bundle_sha256 then chk, why = nil, "no bundle hash" end
+    if not chk then
+        vim.schedule(function() cb(nil, why) end)
+        return nil
+    end
+    w = chk
+    local sha = w.bundle_sha256
+    local zip = managed.bundle_asset(w.version)
+    local st = M.bundle_states[sha]
+    if st and st.state == "downloading" then
+        table.insert(st.waiters, cb)
+        return st
+    end
+    local url = M.bundle_url(w, opts)
+    local state, slot, swhy = bundle.state(sha, w.version, { data = opts.data })
+    if state == "present" then
+        M.bundle_states[sha] = { state = "ready", url = url, version = w.version, asset = zip, path = slot }
+        vim.schedule(function() cb(slot) end)
+        return M.bundle_states[sha]
+    end
+    if state == "other" then
+        local err = "the bundle slot " .. tostring(slot) .. " is not used (" .. tostring(swhy)
+            .. "; never repaired or removed automatically)"
+        M.bundle_states[sha] = { state = "failed", url = url, version = w.version, asset = zip, path = slot, error = err }
+        vim.schedule(function() cb(nil, err) end)
+        return M.bundle_states[sha]
+    end
+    st = { state = "downloading", url = url, version = w.version, asset = zip, path = slot, waiters = { cb } }
+    M.bundle_states[sha] = st
+    if opts.on_state then table.insert(st.waiters, 1, function() opts.on_state(st) end) end
+    local root = managed.root(opts.data)
+    local bdir = managed.bundle_dir(opts.data)
+    -- The data directory and `loomworks/` may be links (followed);
+    -- `loomworks/bundle/` must be a real directory.
+    for _, d in ipairs({ { vim.fs.dirname(root), true }, { root, true }, { bdir, false } }) do
+        local ok, err = mkdir(d[1], d[2])
+        if not ok then
+            vim.schedule(function() finish(st, false, nil, err) end)
+            return st
+        end
+    end
+    M._seq = M._seq + 1
+    local tmp = M.partial_path(bdir, sha, M._seq)
+    st.tmp = tmp
+    local okc, cerr = clear(tmp)
+    if not okc then
+        vim.schedule(function() finish(st, false, nil, cerr) end)
+        return st
+    end
+    local function fail(err)
+        clear(tmp)
+        finish(st, false, nil, err)
+    end
+    local function step(fn)
+        return function(...)
+            if st.cancelled then clear(tmp); return end -- `M.cancel` already told the waiters
+            return fn(...)
+        end
+    end
+    local ctl = (opts.transfer or M.transfer)(url, tmp, vim.schedule_wrap(step(function(ok, err)
+        if not ok then return fail("download of " .. url .. " failed: " .. tostring(err)) end
+        local got, herr = (opts.hash or require("loomworks.provision.sha256").file)(tmp)
+        if not got then return fail(herr) end
+        if got:lower() ~= sha then
+            return fail(string.format("%s has SHA-256 %s, expected %s (not installed)", url, got, sha))
+        end
+        local install = opts.install or bundle.install
+        install(tmp, w, { data = opts.data, win = opts.win, rename = opts.rename_bundle },
+            step(function(islot, ierr)
+                clear(tmp)
+                if not islot then return finish(st, false, nil, ierr) end
+                finish(st, true, islot)
+            end))
+    end)), opts)
+    st.ctl = type(ctl) == "table" and ctl or nil
+    return st
+end
+
+--- The managed host binary alone (`ensure` without the bundle).
+--- @param wanted loomworks.provision.Wanted
+--- @param opts table
+--- @param cb fun(path: string|nil, err: string|nil)
+--- @return loomworks.provision.FetchState|nil state
+ensure_binary = function(wanted, opts, cb)
     cb = cb or function() end
     local managed = require("loomworks.provision.managed")
     local w, why = M.check_wanted(wanted)
@@ -463,15 +620,22 @@ end
 --- @param why? string
 --- @return boolean cancelled false when none was running
 function M.cancel(sha256, why)
-    local st = type(sha256) == "string" and M.states[sha256:lower()] or nil
-    if not st or st.state ~= "downloading" then return false end
-    st.cancelled = true
-    if st.ctl and st.ctl.cancel then pcall(st.ctl.cancel) end
-    -- On Windows curl may still hold it: the transfer's late callback
-    -- removes it then.
-    if st.tmp then clear(st.tmp) end
-    finish(st, false, nil, "cancelled" .. (why and (" (" .. why .. ")") or ""))
-    return true
+    local function stop(st)
+        if not st or st.state ~= "downloading" then return false end
+        st.cancelled = true
+        if st.ctl and st.ctl.cancel then pcall(st.ctl.cancel) end
+        -- On Windows curl may still hold it: the transfer's late callback
+        -- removes it then.
+        if st.tmp then clear(st.tmp) end
+        finish(st, false, nil, "cancelled" .. (why and (" (" .. why .. ")") or ""))
+        return true
+    end
+    if type(sha256) ~= "string" then return false end
+    local st = M.states[sha256:lower()]
+    -- The pair: the bundle provisioned after this binary, or a bundle hash.
+    local b = st and st.bundle_sha256 and M.bundle_states[st.bundle_sha256] or M.bundle_states[sha256:lower()]
+    local a = stop(st)
+    return stop(b) or a
 end
 
 --- One line for the status page and checkhealth: the state of the download
@@ -481,6 +645,12 @@ end
 function M.describe(sha256)
     local st = sha256 and M.states[sha256:lower()]
     if not st then return nil end
+    local b = st.state == "ready" and st.bundle_sha256 and M.bundle_states[st.bundle_sha256] or nil
+    if b and b.state ~= "ready" then
+        local what = "the lw v" .. b.version .. " bundle (" .. b.asset .. ")"
+        if b.state == "downloading" then return "downloading " .. what .. " from " .. b.url end
+        return "could not install " .. what .. ": " .. tostring(b.error)
+    end
     local what = "lw v" .. st.version .. " (" .. st.asset .. ")"
     if st.state == "downloading" then return "downloading " .. what .. " from " .. st.url end
     if st.state == "failed" then return "could not install " .. what .. ": " .. tostring(st.error) end

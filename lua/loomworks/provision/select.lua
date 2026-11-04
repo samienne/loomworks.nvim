@@ -57,7 +57,7 @@ local M = {}
 --- @field source? loomworks.provision.Source
 --- @field label? string
 --- @field candidates loomworks.provision.Candidate[] every step, in search order
---- @field env? table<string, string> extra environment for the daemon (`binary.source`)
+--- @field env? table<string, string> extra environment for every process started from the binary: the managed lw's `LOOMWORKS_INSTALL_DIR` (its bundle slot, §19.16 "The managed bundle"), `binary.source`'s `LOOMWORKS_LUA`
 --- @field download? loomworks.provision.Wanted the plugin-managed lw to download first (it decided the search)
 --- @field note? string why there is none (the Runtime line)
 --- @field warning? string an ignored setup value
@@ -301,10 +301,10 @@ function M.resolve(root, opts)
         if sel.path or sel.note or sel.download then
             add(source, "not tried", nil, "a source above decided")
         else
-            local p, why, missing
+            local p, why, missing, install
             if source == "PATH" then p, why = (opts.on_path or M.on_path)()
             else
-                p, why, missing = (opts.managed or require("loomworks.provision.managed").find)({ setting = setting,
+                p, why, missing, install = (opts.managed or require("loomworks.provision.managed").find)({ setting = setting,
                     data = opts.data, win = opts.win })
             end
             local v, pending
@@ -319,6 +319,10 @@ function M.resolve(root, opts)
                 choose(source, p)
                 sel.candidates[#sel.candidates].probe = v
                 if pending then sel.probe = p end
+                -- The managed lw runs its bundle as a release source (spec
+                -- §19.16 "The managed bundle"); a search-path lw gets no
+                -- install-folder override.
+                if source == "managed" and install then sel.env = { LOOMWORKS_INSTALL_DIR = install } end
             elseif missing and setting.download == false then
                 add(source, "absent", nil, tostring(why) .. "; downloads are off (binary.download = false)")
             elseif missing then
@@ -326,6 +330,7 @@ function M.resolve(root, opts)
                 add(source, "download", mp, "lw v" .. tostring(missing.version) .. " (" .. tostring(missing.asset)
                     .. (missing.unreadable and ") could not be read (" .. tostring(why) .. "): downloaded again in daemon mode"
                         or missing.corrupt and ") is corrupt (" .. tostring(why) .. "): downloaded again in daemon mode"
+                        or missing.bundle_missing and "): " .. tostring(why) .. ", downloaded in daemon mode"
                         or ") is not installed yet: downloaded in daemon mode"))
                 sel.download = missing
                 sel.source, sel.label = source, M.LABELS[source]
@@ -338,7 +343,8 @@ function M.resolve(root, opts)
     if sel.path and setting.source then
         local dir, why = source_dir(setting.source, opts)
         if dir then
-            sel.env = { LOOMWORKS_LUA = dir }
+            sel.env = sel.env or {}
+            sel.env.LOOMWORKS_LUA = dir
         else
             sel.warning = sel.warning and (sel.warning .. "; " .. why) or why
         end
@@ -364,7 +370,9 @@ function M.none_note(sel)
         local d = sel.download
         return "the plugin-managed lw v" .. tostring(d.version) .. " (" .. tostring(d.asset)
             .. (d.unreadable and ") could not be read — running degraded"
-                or d.corrupt and ") is corrupt — running degraded" or ") is not installed yet — running degraded")
+                or d.corrupt and ") is corrupt — running degraded"
+                or d.bundle_missing and "): its bundle is not installed yet — running degraded"
+                or ") is not installed yet — running degraded")
     end
     local parts = {}
     for _, c in ipairs(sel.candidates or {}) do

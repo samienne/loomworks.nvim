@@ -18,11 +18,13 @@ local function sha(c) return string.rep(c, 64) end
 
 local function descriptor() return require("loomworks.daemon.descriptor").describe() end
 
---- A `release query --json` result offering `v` (this host's asset -> `h`).
+--- A `release query --json` result offering `v` (this host's asset -> `h`,
+--- its bundle -> sha("e") unless `extra.no_bundle`).
 local function query_res(v, h, d, extra)
     local doc = { query = 1, channel = "unstable", channel_ignored = false, source = "origin", version = v,
         prerelease = v:find("-", 1, true) ~= nil, assets = { [ASSET] = h or sha("c") }, descriptor = d or descriptor() }
-    for k, x in pairs(extra or {}) do doc[k] = x end
+    if not (extra and extra.no_bundle) then doc.assets[managed.bundle_asset(v)] = sha("e") end
+    for k, x in pairs(extra or {}) do if k ~= "no_bundle" then doc[k] = x end end
     return { code = 0, stdout = vim.json.encode(doc), stderr = "" }
 end
 
@@ -43,7 +45,9 @@ describe("binary.channel: weighing a query (§19.16 Channel upgrades)", function
     it("a newer compatible release is accepted with the hash from the query", function()
         local out = channel.classify(query_res("0.1.45-beta.1", sha("d")), ctx())
         assert.equals("accepted", out.kind, out.note)
-        assert.same({ sha256 = sha("d"), version = "0.1.45-beta.1", asset = ASSET, channel = "unstable" }, out.wanted)
+        assert.same({ sha256 = sha("d"), bundle_sha256 = sha("e"), version = "0.1.45-beta.1", asset = ASSET,
+            channel = "unstable" }, out.wanted)
+        assert.equals(sha("e"), out.accepted.bundle_sha256)
         assert.equals("0.1.45-beta.1", out.accepted.version)
         assert.is_table(out.accepted.descriptor)
     end)
@@ -103,10 +107,26 @@ describe("binary.channel: weighing a query (§19.16 Channel upgrades)", function
     it("runs the query with the channel, JSON, a bound, and the overrides passed through", function()
         assert.same({ "release", "query", "--channel", "stable", "--json", "--timeout", tostring(channel.QUERY_TIMEOUT_S) },
             channel.args("stable"))
-        local env = channel.env({ release_url = "/mirror", data = "/d" })
+        -- The pinned managed lw runs its own bundle: its slot is the install
+        -- folder (spec §19.16 "The managed bundle").
+        local slot = "/d/loomworks/bundle/" .. sha("e")
+        local env = channel.env({ release_url = "/mirror", install_dir = slot })
         assert.equals("/mirror", env.LOOMWORKS_RELEASE_URL)
-        assert.equals("/d/loomworks", env.LOOMWORKS_INSTALL_DIR)
-        assert.is_nil(channel.env({ data = "/d" }).LOOMWORKS_RELEASE_URL)
+        assert.equals(slot, env.LOOMWORKS_INSTALL_DIR)
+        assert.is_nil(channel.env({ install_dir = slot }).LOOMWORKS_RELEASE_URL)
+        assert.is_nil(channel.env({}).LOOMWORKS_INSTALL_DIR)
+    end)
+
+    it("a release offered without its bundle's hash is one note and wants nothing new (samienne/loomworks#102)", function()
+        local out = channel.classify(query_res("0.1.45-beta.1", sha("d"), nil, { no_bundle = true }), ctx())
+        assert.equals("no_bundle", out.kind)
+        assert.is_nil(out.wanted)
+        assert.is_nil(out.accepted)
+        assert.truthy(out.note:find(managed.bundle_asset("0.1.45-beta.1"), 1, true), out.note)
+        assert.truthy(out.note:find("staying on lw v0.1.44", 1, true), out.note)
+        local rec = channel.record({ format = channel.FORMAT, channel = "unstable" }, out, 100)
+        assert.is_nil(rec.accepted)
+        assert.is_nil(rec.rejected)
     end)
 end)
 
@@ -148,12 +168,13 @@ describe("binary.channel: channel.json and the wanted managed lw", function()
     end)
 
     it("the wanted lw is the newer of the pin and the accepted release, never below the pin", function()
-        local pin = { version = "0.1.44", assets = { ["lw-linux-x86_64"] = sha("a") } }
+        local pin = { version = "0.1.44", assets = { ["lw-linux-x86_64"] = sha("a"), ["loomworks-lua-0.1.44.zip"] = sha("0") } }
         local function wanted(setting, acc)
             return managed.wanted({ pinned = pin, sysname = "Linux", machine = "x86_64", setting = setting,
                 channel = function() return acc end })
         end
-        local newer = { sha256 = sha("b"), version = "0.1.45-beta.1", asset = "lw-linux-x86_64", channel = "unstable" }
+        local newer = { sha256 = sha("b"), bundle_sha256 = sha("c"), version = "0.1.45-beta.1", asset = "lw-linux-x86_64",
+            channel = "unstable" }
         assert.equals(sha("b"), wanted({ channel = "unstable" }, newer).sha256)
         assert.equals(sha("a"), wanted({ channel = "unstable" },
             { sha256 = sha("b"), version = "0.1.44-beta.9", asset = "lw-linux-x86_64" }).sha256)
@@ -165,7 +186,7 @@ describe("binary.channel: channel.json and the wanted managed lw", function()
         local data = tmpdata()
         local d = descriptor()
         local rec = { format = 1, channel = "stable", checked = 1,
-            accepted = { version = "9.0.0", asset = ASSET, sha256 = sha("f"), descriptor = d } }
+            accepted = { version = "9.0.0", asset = ASSET, sha256 = sha("f"), bundle_sha256 = sha("e"), descriptor = d } }
         assert.is_true(channel.save(rec, { data = data }))
         assert.equals(sha("f"), channel.accepted({ channel = "stable" }, ASSET, { data = data }).sha256)
         assert.is_nil(channel.accepted({ channel = "stable", download = false }, ASSET, { data = data }))
@@ -231,7 +252,7 @@ describe("binary.channel: the observer's background check", function()
         vim.fn.delete(data, "rf")
     end)
 
-    local pin = { sha256 = sha("1"), version = "0.1.44-beta.2", asset = ASSET }
+    local pin = { sha256 = sha("1"), bundle_sha256 = sha("2"), version = "0.1.44-beta.2", asset = ASSET }
     local function attach(extra)
         local o = {
             getenv = function(n) if n == "LOOMWORKS_RUNTIME" then return "daemon" end end,
@@ -254,6 +275,9 @@ describe("binary.channel: the observer's background check", function()
         assert.same(pin, fetched[1])
         assert.equals("/m/" .. pin.sha256 .. "/lw", queries[1][1])
         assert.equals("unstable", queries[1][2])
+        -- The pinned lw runs its own bundle: its slot is the query's
+        -- install folder (spec §19.16 "The managed bundle").
+        assert.equals(managed.bundle_slot(pin.bundle_sha256, { data = data }), queries[1][3].install_dir)
         Q(query_res("9.9.9-beta.1", sha("9")))
         assert.equals(2, #fetched)
         assert.equals(sha("9"), fetched[2].sha256)

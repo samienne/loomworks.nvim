@@ -167,6 +167,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   options, so a description may start with `-` (#290).
 - `lw launch show --json <project> <name>` refused `--json` before the
   address (#290).
+- The editor's plugin-managed `lw` could not start: a release `lw` carries
+  no Lua of its own. The plugin now also downloads the release's Lua bundle
+  (`loomworks-lua-<version>.zip`, SHA-256 pinned like the binary), unpacks it
+  itself into `<data>/loomworks/bundle/<sha256>/` and starts every process
+  of the managed `lw` with that folder as `LOOMWORKS_INSTALL_DIR`.
 
 ## 0.1.49 - 2026-10-19
 

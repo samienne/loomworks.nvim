@@ -1028,7 +1028,7 @@ make test-file FILE=tests/core_spec.lua      # run a single test file
 The daemon specs run a real `lw`: the release the plugin pins
 (`lua/loomworks/provision/pinned.lua`), downloaded by the plugin's own
 provisioning code into `.lw-test/` (gitignored) by `scripts/test_lw.lua`, its
-release bundle beside it. `make test` and `make test-file` set `LOOMWORKS_LW`
+release bundle in the managed bundle slot beside it. `make test` and `make test-file` set `LOOMWORKS_LW`
 (and `LOOMWORKS_INSTALL_DIR`, where the bundle is) to it.
 `tests/daemon_helpers.lua` reaches that binary through its CLI and JSON output
 only; a spec that runs it fails when `LOOMWORKS_LW` is unset.

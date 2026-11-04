@@ -15,6 +15,15 @@
 --- (loomworks.provision.channel, §19.16 "Channel upgrades", step 5h.5). A
 --- wanted binary that is not installed is downloaded by
 --- loomworks.provision.fetch (daemon mode only).
+---
+--- The managed lw is a pair (spec §19.16 "The managed bundle"): the host
+--- binary and the release bundle `loomworks-lua-<version>.zip` of the same
+--- release, installed at
+---
+---     <stdpath("data")>/loomworks/bundle/<sha256>/lua-<version>/
+---
+--- (`<sha256>` the zip's). Every process started from the managed binary gets
+--- `LOOMWORKS_INSTALL_DIR=<that slot>` (`find`'s fourth result).
 
 local uv = vim.uv or vim.loop
 
@@ -24,7 +33,7 @@ local function is_win() return package.config:sub(1, 1) == "\\" end
 
 --- @class loomworks.provision.Pin  the plugin pin (loomworks.provision.pinned, generated)
 --- @field version string the pinned release version
---- @field assets table<string, string> host asset name -> lowercase hex SHA-256
+--- @field assets table<string, string> asset name (host assets and `loomworks-lua-<version>.zip`) -> lowercase hex SHA-256
 
 --- The reason shown when the plugin's pin names no binary at all.
 M.NOT_YET = "none wanted (the plugin carries no pin)"
@@ -88,6 +97,27 @@ end
 --- @return string
 function M.dir(data) return M.root(data) .. "/lw" end
 
+--- The directory holding the managed bundles (`loomworks/bundle`).
+--- @param data? string
+--- @return string
+function M.bundle_dir(data) return M.root(data) .. "/bundle" end
+
+--- The release bundle's asset name for `version`.
+--- @param version string
+--- @return string
+function M.bundle_asset(version) return "loomworks-lua-" .. tostring(version) .. ".zip" end
+
+--- The bundle slot of `sha256` (the install folder its `lw` runs with), or
+--- nil for a value that is not 64 hex digits.
+--- @param sha256 string
+--- @param opts? { data?: string }
+--- @return string|nil
+function M.bundle_slot(sha256, opts)
+    opts = opts or {}
+    if type(sha256) ~= "string" or not sha256:match("^%x+$") or #sha256 ~= 64 then return nil end
+    return M.bundle_dir(opts.data) .. "/" .. sha256:lower()
+end
+
 --- The file name of a host binary on this platform.
 --- @param win? boolean (tests inject)
 --- @return string
@@ -141,7 +171,13 @@ function M.pinned_wanted(opts)
     if not asset then return nil, why end
     local sha = pin.assets[asset]
     if sha == nil then return nil, "none wanted (the plugin pin has no " .. asset .. ")" end
-    local w, bad = require("loomworks.provision.fetch").check_wanted({ sha256 = sha, version = pin.version, asset = asset })
+    -- A pin without the bundle's hash wants no managed lw (§19.16 "Plugin
+    -- pin"): a release host has no Lua of its own.
+    local zip = M.bundle_asset(pin.version)
+    local bsha = pin.assets[zip]
+    if bsha == nil then return nil, "none wanted (the plugin pin has no " .. zip .. ")" end
+    local w, bad = require("loomworks.provision.fetch").check_wanted({ sha256 = sha, version = pin.version, asset = asset,
+        bundle_sha256 = bsha })
     if not w then return nil, "none wanted (invalid plugin pin: " .. tostring(bad) .. ")" end
     return w
 end
@@ -235,6 +271,25 @@ function M.touch(path, opts)
     return uv.fs_utime(slot, now, now) and true or false
 end
 
+--- Mark the bundle slot `slot` used now (its directory mtime, at most once
+--- an hour), as `touch` does for a binary slot: only a real directory
+--- `<bundle dir>/<64 lowercase hex>` of this editor.
+--- @param slot string|nil
+--- @param opts? { data?: string, now?: integer }
+--- @return boolean marked
+function M.touch_bundle(slot, opts)
+    opts = opts or {}
+    if type(slot) ~= "string" then return false end
+    local dir = M.bundle_dir(opts.data)
+    local sha = slot:sub(#dir + 2)
+    if slot:sub(1, #dir + 1) ~= dir .. "/" or #sha ~= 64 or not sha:match("^[0-9a-f]+$") then return false end
+    local st = uv.fs_lstat(slot)
+    if not st or st.type ~= "directory" then return false end
+    local now = opts.now or os.time()
+    if st.mtime and now - st.mtime.sec < M.TOUCH_EVERY_S and now >= st.mtime.sec then return true end
+    return uv.fs_utime(slot, now, now) and true or false
+end
+
 --- The managed host binary when it is already present, or nil + why (+ the
 --- wanted record when it is only not installed yet, or corrupt — `corrupt =
 --- true`: it can be downloaded; `unreadable = true` too when hashing it failed
@@ -246,7 +301,13 @@ end
 --- `opts.setting` (the setup option `binary`) lets the default `wanted`
 --- weigh `binary.channel`.
 --- @param opts? { data?: string, win?: boolean, setting?: loomworks.provision.BinarySetting, wanted?: fun(): (loomworks.provision.Wanted|string|nil), string|nil, exists?: fun(path: string): boolean, verify?: fun(path: string, sha256: string): boolean, string|nil, touch?: fun(path: string, opts: table) }
---- @return string|nil path, string|nil why, loomworks.provision.Wanted|nil missing
+--- A wanted record with `bundle_sha256` is present only with its bundle
+--- slot present too (loomworks.provision.bundle.state); then the fourth
+--- result is that slot, the install folder its processes get. A bundle slot
+--- in any other state is never used: the managed source is absent with
+--- that note and no `missing` record (nothing is downloaded or repaired).
+--- `opts.bundle_state` replaces loomworks.provision.bundle.state (tests).
+--- @return string|nil path, string|nil why, loomworks.provision.Wanted|nil missing, string|nil install_dir
 function M.find(opts)
     opts = opts or {}
     local want, why
@@ -257,6 +318,16 @@ function M.find(opts)
     local p = M.path(sha, opts)
     if not p then return nil, "invalid hash " .. tostring(sha) end
     local record = type(want) == "table" and want or nil
+    local slot, bundle_absent
+    if record and record.bundle_sha256 then
+        local state, bpath, bwhy = (opts.bundle_state or require("loomworks.provision.bundle").state)(
+            record.bundle_sha256, record.version, { data = opts.data })
+        if state == "other" then
+            return nil, "the bundle slot " .. tostring(bpath) .. " is not used (" .. tostring(bwhy)
+                .. "; never repaired or removed automatically)"
+        end
+        slot, bundle_absent = bpath, state ~= "present"
+    end
     if not (opts.exists or is_file)(p) then
         return nil, "not installed (" .. p .. ")", record
     end
@@ -272,9 +343,14 @@ function M.find(opts)
                 .. tostring(vwhy) .. ")", again
         end
     end
+    if bundle_absent then
+        return nil, "its bundle is not installed (" .. tostring(slot) .. ")",
+            vim.tbl_extend("force", record, { bundle_missing = true })
+    end
     local touch = opts.touch or (opts.exists == nil and M.touch) or nil
     if touch then pcall(touch, p, { data = opts.data, win = opts.win }) end
-    return p
+    if slot and opts.exists == nil then pcall(M.touch_bundle, slot, { data = opts.data }) end
+    return p, nil, nil, slot
 end
 
 return M

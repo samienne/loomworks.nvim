@@ -127,6 +127,8 @@ end
 ---   cwd         working directory (default: the editor's data directory)
 ---   timeout_ms  the bound (default TIMEOUT_MS)
 ---   argv        the command (default `{ path, "version", "--json" }`)
+---   env         extra environment (a selection's `env`: a managed lw's
+---               LOOMWORKS_INSTALL_DIR, spec §19.16 "The managed bundle")
 --- @param path string
 --- @param opts? table
 --- @param cb fun(v: loomworks.provision.Probe)
@@ -156,7 +158,7 @@ function M.run(path, opts, cb)
     local cwd = opts.cwd or vim.fn.stdpath("data")
     if not uv.fs_stat(cwd) then cwd = nil end
     local ok, err = pcall(vim.system, opts.argv or { path, "version", "--json" },
-        { cwd = cwd, text = true, timeout = timeout },
+        { cwd = cwd, text = true, timeout = timeout, env = opts.env },
         function(r)
             -- vim.system reports its own timeout as status 124 after
             -- killing the process.
