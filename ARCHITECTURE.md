@@ -1526,11 +1526,13 @@ channel — `update.resolve_channel(opts)` with precedence `opts.channel`
 config key > `"stable"` (unknown value → error). Only `stable` and `unstable`
 are valid.
 
-- **stable** keeps the existing base, `…/releases/latest/download`, which
-  GitHub already resolves to the newest *non-prerelease* — so stable is a
+- **stable** keeps the existing base, `…/releases/latest/download` of
+  samienne/loomworks.nvim (`boot.origin.LATEST_DOWNLOAD`), which GitHub already
+  resolves to the newest *non-prerelease* — so stable is a
   no-op change.
 - **unstable** queries the GitHub **releases API**
-  (`https://api.github.com/repos/samienne/loomworks.nvim/releases`, listed in
+  (`https://api.github.com/repos/samienne/loomworks.nvim/releases`,
+  `boot.origin.RELEASES_API`, listed in
   publish order) via `download.fetch` (which now takes an `Accept` +
   `User-Agent` header), parses it with `boot.json`, and takes the
   highest-versioned **non-draft** entry by `paths.version_gt` (pre-releases
@@ -1542,6 +1544,14 @@ are valid.
   `versioned_base(version)` (`…/releases/download/v<ver>/`) and verified by the
   identical manifest-signature + artifact-hash chain — the channel changes only
   *which* release, never *how* it is trusted.
+- A specific version's assets come from `update.versioned_base(version)`:
+  without a release-url override, `boot.origin.download_base(version)` — the
+  repository that version was published in (`0.0.*` / `0.1.*` →
+  samienne/loomworks.nvim, otherwise samienne/loomworks; no fallback). The
+  `lw.sh` / `lw.cmd` templates apply the same prefix test to the pinned version
+  for the download URL and `gh attestation verify --repo`. An override is one
+  mirror for all versions. Both channels' newest-release lookups stay on
+  samienne/loomworks.nvim, so moving to 0.2 is always an explicit version or pin.
 
 An explicit release-source override (`opts.url` / `LOOMWORKS_RELEASE_URL` /
 `release-url` config) **supersedes** the channel: the mirror is used as-is and

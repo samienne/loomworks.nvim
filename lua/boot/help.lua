@@ -118,8 +118,12 @@ pointer. Silence it with `lw settings set release-notes off` or
 LOOMWORKS_RELEASE_NOTES=off.
 
 Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` settings key,
-else the built-in default. A local directory works as an offline mirror and is
-used as-is (it supersedes the channel - no release-API query).
+else the built-in default: the latest release is looked up in
+samienne/loomworks.nvim, and a given version is fetched from the repository it was
+published in (below 0.2 samienne/loomworks.nvim, 0.2 and later
+samienne/loomworks). An override is one mirror for all versions. A local
+directory works as an offline mirror and is used as-is (it supersedes the
+channel - no release-API query).
 Not applicable to a development source. A host command (handled by lw itself).]],
 
   bootstrap = [==[lw bootstrap [--json] [--check]

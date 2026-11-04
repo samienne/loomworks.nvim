@@ -1086,7 +1086,39 @@ print("boot.update — versioned_base URL shapes")
 do
   eq(update.versioned_base("1.2.3", { url = update.DEFAULT_RELEASE_URL }),
     "https://github.com/samienne/loomworks.nvim/releases/download/v1.2.3",
-    "GitHub default -> versioned download path")
+    "GitHub latest-shaped override -> its versioned download path")
+  eq(update.versioned_base("0.1.40", { url = update.DEFAULT_RELEASE_URL }),
+    "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.40",
+    "an override is one mirror for all versions")
+  eq(update.versioned_base("0.2.0", { url = update.DEFAULT_RELEASE_URL }),
+    "https://github.com/samienne/loomworks.nvim/releases/download/v0.2.0",
+    "an override is one mirror for all versions, current ones included")
+  -- No override (sandboxed config, env cleared): the version picks the origin.
+  local sb = root .. "/tests/.tmp-origin"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
+  if not update.url_override() then
+    eq(update.versioned_base("0.1.50-beta.1"),
+      "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.50-beta.1",
+      "default: a 0.1 pre-release comes from loomworks.nvim")
+    eq(update.versioned_base("0.1.50"),
+      "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.50",
+      "default: a 0.1 release comes from loomworks.nvim")
+    eq(update.versioned_base("0.2.0-beta.1"),
+      "https://github.com/samienne/loomworks/releases/download/v0.2.0-beta.1",
+      "default: a 0.2 pre-release comes from loomworks")
+    eq(update.versioned_base("0.10.0"),
+      "https://github.com/samienne/loomworks/releases/download/v0.10.0",
+      "default: 0.10 comes from loomworks")
+  else
+    print("  skip: a LOOMWORKS_RELEASE_URL from the real environment is in effect")
+  end
+  eq(update.DEFAULT_RELEASE_URL, "https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    "the latest release is only ever looked up in loomworks.nvim")
+  eq(update.RELEASES_API_URL, "https://api.github.com/repos/samienne/loomworks.nvim/releases",
+    "the releases API is loomworks.nvim's")
+  paths.rm_rf(sb)
   eq(update.versioned_base("1.2.3", { url = "/tmp/mirror" }), "/tmp/mirror",
     "local mirror stays flat")
   eq(update.versioned_base("1.2.3", { url = "https://example.com/mirror" }),
@@ -1441,6 +1473,19 @@ do
   eq(launcher.classify("sh", launcher.LW_SH, verify.sha256_hex).status, "current", "classify: current")
   local c1 = launcher.classify("cmd", "x", verify.sha256_hex)
   eq(c1.status, "unknown", "classify: unknown content")
+  -- refreshing classifies against the pin: the legacy-origin defect only breaks
+  -- a pin of 0.2 or later
+  local old_sh = "#!/bin/sh\n# an old launcher\n"
+  launcher.GENERATIONS.sh[verify.sha256_hex(launcher.normalize(old_sh))] =
+    { gen = 0, releases = "9.9-test", defects = { launcher.LEGACY_ORIGIN_DEFECT } }
+  for _, c in ipairs({ { "0.1.49", false }, { "0.2.0-beta.1", true } }) do
+    put(repo .. "/lw.sh", old_sh)
+    local st, info = bootstrap.write_launcher(repo, "sh", false, c[1])
+    eq(st, "refreshed", "write_launcher refreshes a known generation (pin " .. c[1] .. ")")
+    eq(info and info.breaks, c[2], "the legacy-origin defect breaks only a 0.2+ pin (pin " .. c[1] .. ")")
+    eq(info and #info.defects, c[2] and 1 or 0,
+      "the legacy-origin defect is listed only for a 0.2+ pin (pin " .. c[1] .. ")")
+  end
 
   -- ---- exec bit on a TRACKED lw.sh committed without it ---------------------
   do

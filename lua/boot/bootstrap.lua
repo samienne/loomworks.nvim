@@ -121,8 +121,9 @@ end
 --- @param root string
 --- @param kind "sh"|"cmd"
 --- @param force boolean|nil
+--- @param pinned_version? string the pin's version (boot.launcher.classify)
 --- @return "written"|"refreshed"|"eol"|"replaced"|"kept"|"same"|nil status, table|string|nil info
-function M.write_launcher(root, kind, force)
+function M.write_launcher(root, kind, force, pinned_version)
   local name = launcher.KINDS[kind]
   local path = root .. "/" .. name
   local want = launcher.render(kind)
@@ -131,7 +132,7 @@ function M.write_launcher(root, kind, force)
   local status = "written"
   local info
   if have ~= nil then
-    local c = launcher.classify(kind, have, verify.sha256_hex)
+    local c = launcher.classify(kind, have, verify.sha256_hex, pinned_version)
     if c.status == "current" then
       status = "eol"                       -- same content, wrong line endings
     elseif c.status == "known" then
@@ -225,7 +226,7 @@ local function apply(root, version, hashes, opts)
     end
   else
     for _, kind in ipairs({ "sh", "cmd" }) do
-      local st, info = M.write_launcher(root, kind, opts.force)
+      local st, info = M.write_launcher(root, kind, opts.force, version)
       if st == nil then return nil, info end
       if st == "written" then created_launcher = true end
       if st ~= "same" and st ~= "kept" then touch(launcher.KINDS[kind]) end

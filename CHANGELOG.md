@@ -46,6 +46,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Changed
 
+- lw 0.2 and later is published in samienne/loomworks. `lw` now fetches a
+  release from the repository it was published in: 0.0.x/0.1.x from
+  samienne/loomworks.nvim, 0.2 and later from samienne/loomworks, in
+  `lw self-update`, `lw bootstrap install` / `upgrade`, pinned provisioning and
+  the `lw.sh` / `lw.cmd` launchers. The newest release (both channels) is still
+  looked up in samienne/loomworks.nvim, so `lw self-update` stays within 0.1.x;
+  moving to 0.2 takes an explicit version or pin. `LOOMWORKS_RELEASE_URL` /
+  `release-url` is still one mirror for all versions. `lw bootstrap` and
+  `lw health` report earlier launchers as broken only for a pin of 0.2 or
+  later (#389).
 - Every usage error now exits 2 (it was 1 for many of them): an unknown,
   repeated or misplaced option, a missing or malformed value (`--timeout 0`,
   an invalid launch name, an unknown `lw config set` parameter or health
