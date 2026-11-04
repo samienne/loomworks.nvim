@@ -3,7 +3,7 @@
 --- Shows installed SDKs with resolution status. Allows adding and
 --- removing SDKs from the workspace: the picker lists what `Sdks/1.detect`
 --- finds, the add and the removal are `Sdks/1.add` / `Sdks/1.remove`
---- (ui/model_calls: the workspace daemon's in `daemon` mode, step 5o C2c-1).
+--- (ui/model_calls: the workspace daemon's, step 5o C2c-1).
 
 local helpers = require("loomworks.ui.helpers")
 

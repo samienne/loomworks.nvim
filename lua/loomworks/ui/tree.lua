@@ -232,16 +232,15 @@ function Tree:on_key(action, line)
 
     elseif action == "load" then
         local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        -- (In `daemon` mode the editor holds no model, step 6b-α: a loaded
-        -- workspace is the root it observes the daemon of.)
-        if ws or (require("loomworks.daemon.facade").active() and lw.loaded_root()) then
-            -- In `daemon` mode the daemon's rescan (it waits for detection,
-            -- up to 45 s: announced at once); a refusal, or a detection that
-            -- outran the wait (a warn note), is notified.
+        -- (The editor holds no model, step 6b-α: a loaded workspace is the
+        -- root it observes the daemon of.)
+        if lw.loaded_root() then
+            -- The daemon's rescan (it waits for detection, up to 45 s:
+            -- announced at once); a refusal, or a detection that outran the
+            -- wait (a warn note), is notified.
             vim.notify("loomworks: Rescanning toolchains…", vim.log.levels.INFO)
             local model = require("loomworks.ui.model_calls")
-            model.call(ws, "Toolchains/1.rescan", {}, function(r)
+            model.call(nil, "Toolchains/1.rescan", {}, function(r)
                 local ok, err = model.result(r)
                 if ok then return end
                 vim.notify("loomworks: " .. tostring(err),
@@ -285,27 +284,10 @@ end
 -- Create workspace
 -- -----------------------------------------------------------------------
 
+--- `N` (spec §19.16 "Model writes", step 6b-α): refused, loaded or not,
+--- nothing written; the notification names `lw init`.
 function Tree:_create_workspace()
-    local lw = require("loomworks")
-    -- `daemon` mode (spec §19.16 "Model writes", step 6b-α): refused,
-    -- loaded or not, nothing written; the notification names `lw init`.
-    local facade = require("loomworks.daemon.facade")
-    if facade.active() then
-        vim.notify("loomworks: " .. facade.CREATE_REFUSAL, vim.log.levels.ERROR)
-        return
-    end
-    if lw.get_workspace() then
-        vim.notify("loomworks: workspace already exists", vim.log.levels.INFO)
-        return
-    end
-
-    local root = vim.fn.getcwd()
-    local ok, err = require("loomworks.workspace").init_workspace(root)
-    if ok then
-        lw.setup({ root = root })
-    else
-        vim.notify("loomworks: " .. (err or "failed to initialize workspace"), vim.log.levels.ERROR)
-    end
+    vim.notify("loomworks: " .. require("loomworks.daemon.facade").CREATE_REFUSAL, vim.log.levels.ERROR)
 end
 
 -- -----------------------------------------------------------------------
@@ -369,7 +351,7 @@ end
 
 --- `<C-n>`: `Maintenance/1.nuke` through ui/model_calls (step 5o C2c-2):
 --- its confirmation lists what it removes (or is refused — a lock another
---- process holds, in `daemon` mode a task of the daemon running); `y` sends
+--- process holds, a task of the daemon running); `y` sends
 --- the plan back. The workspace is the loaded one, also while its load is
 --- refused; no root is ever sent.
 function Tree:_confirm_nuke()
@@ -383,7 +365,7 @@ end
 function Tree:_confirm_delete_user_prefs()
     local dialog = require("loomworks.ui.dialog")
     local model = require("loomworks.ui.model_calls")
-    local ws = require("loomworks").get_workspace()
+    local ws = nil -- (the loaded workspace's, model_calls)
     -- `Workspace/1.delete_user_prefs` (step 5o C2a): its `confirm` shows what
     -- would be deleted; `y` sends its plan back, so a working copy changed
     -- since is refused, not deleted.
@@ -429,9 +411,8 @@ end
 -- Working copy trust (spec §17.4)
 -- -----------------------------------------------------------------------
 
---- `T`: review & trust the working copy (`Workspace/1.trust_accept`). In the
---- `in-process` mode its body asks its own question; a daemon's `confirm`
---- (step 5o C2a) is asked here — Trust sends its plan back (a working copy
+--- `T`: review & trust the working copy (`Workspace/1.trust_accept`): the
+--- daemon's `confirm` (step 5o C2a) is asked here — Trust sends its plan back (a working copy
 --- changed since is refused), Discard goes to the working copy's deletion
 --- (its own confirmation), Cancel does nothing.
 --- @param confirm? fun(msg: string, choices: string, default: integer): integer (tests; default vim.fn.confirm)

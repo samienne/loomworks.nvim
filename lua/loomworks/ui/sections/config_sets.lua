@@ -51,17 +51,12 @@ end
 --- names it — a project row's `configurations[]` / `presets[]` row, or a set
 --- row's mapping `configuration` (`{ id?, key }`, kept for a configuration
 --- the view lists no row of, a source-missing one) — shown by `name`. A
---- model call sends it by its id (daemon) or bound object (in-process),
---- never by name (ui/model_calls.lua).
+--- model call sends it by its id, never by name (ui/model_calls.lua).
 --- @param ref table the view entry
 --- @param name string
 --- @return loomworks.ConfigSetChoice
 local function config_choice(ref, name)
-    local ss = require("loomworks.status_source")
-    local choice = { name = name, id = ref.id }
-    local obj = ss.object_of(ref)
-    if obj then ss.bind(choice, obj) end
-    return choice
+    return { name = name, id = ref.id }
 end
 
 --- The set dialog's projects and the configurations each offers, from the
@@ -90,8 +85,8 @@ local function dialog_projects(view)
     return projects, available
 end
 
---- The notice of a set dialog opened while no workspace view is held (in
---- `daemon` mode the editor holds no model to fall back on).
+--- The notice of a set dialog opened while no workspace view is held (the
+--- editor holds no model to fall back on).
 local function no_view()
     vim.notify("loomworks: the workspace view is not available yet; try again when the status page shows it",
         vim.log.levels.WARN)
@@ -100,7 +95,7 @@ end
 --- Open the config set editor for an existing set: its projects and
 --- configurations are the view's rows, its mappings the set row's entries,
 --- joined to the rows of the same view by entity (helpers.same_entity: the
---- id in `daemon` mode, the bound object in-process); the update names the
+--- id); the update names the
 --- set by its row.
 --- @param ctx table the page context
 --- @param row table the set's view row

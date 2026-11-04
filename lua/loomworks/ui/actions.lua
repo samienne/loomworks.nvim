@@ -47,7 +47,7 @@ local function profile_op(ws, method, params, title, doing, done)
 end
 
 --- Build a profile (`b`): `Build/1.build { profile }` — step 5o C2d: named
---- by its row (in `daemon` mode its id).
+--- by its row (its id).
 --- @param row table the profile's `view.Workspace/1` row
 --- @param ws? loomworks.Workspace the page's workspace (default: the loaded one)
 function M.build(row, ws)
@@ -80,8 +80,8 @@ end
 --- The unit rows a clean of `rows` is shown to clean in its confirmation: a
 --- configured build directory (the row lists one, and a state other than
 --- `unconfigured`). Display only: whether there is anything to clean is
---- decided where the clean runs (the daemon refuses on stdout, the
---- in-process clean resolves at once), never here.
+--- decided where the clean runs (the daemon refuses on stdout), never
+--- here.
 --- @param rows table[] view unit rows
 --- @return table[]
 local function cleanable(rows)
@@ -94,10 +94,9 @@ end
 
 --- The confirmation of a clean or rebuild (step 5o C2d, spec/ui.md §1.10),
 --- built from the view rows, never the editor's model: the running tasks
---- the clean stops first — in `daemon` mode the editor's own calls on the
---- profile or its units (another client's are never stopped: the clean
---- meets their locks), in-process the rows' running builds and configures —
---- and the units it cleans (`cleanable`).
+--- the clean stops first — the editor's own calls on the profile or its
+--- units (another client's are never stopped: the clean meets their
+--- locks) — and the units it cleans (`cleanable`).
 --- @param ws loomworks.Workspace|nil
 --- @param title string
 --- @param profile_id string|nil the profile row's id (a profile's clean)
@@ -113,20 +112,10 @@ function M.clean_confirmation(ws, title, profile_id, rows, rebuild)
     add("  " .. title, "DiagnosticWarn")
     add("")
     local running = {}
-    local eo = require("loomworks.daemon.editor_ops")
-    if eo.daemon_of(ws) then
-        local ids = {}
-        for _, u in ipairs(rows) do if u.unit_id ~= nil then ids[#ids + 1] = u.unit_id end end
-        for _, call in ipairs(eo.owned_on_ids(ws, profile_id, ids)) do
-            running[#running + 1] = call.task and call.task.name or ("task " .. tostring(call.id))
-        end
-    else
-        for _, u in ipairs(rows) do
-            if u.state == "building" or u.state == "configuring" then
-                running[#running + 1] = tostring(u.project or "?") .. ": "
-                    .. (u.state == "building" and "build" or "configure") .. " " .. tostring(u.configuration or "?")
-            end
-        end
+    local ids = {}
+    for _, u in ipairs(rows) do if u.unit_id ~= nil then ids[#ids + 1] = u.unit_id end end
+    for _, call in ipairs(require("loomworks.daemon.editor_ops").owned_on_ids(ws, profile_id, ids)) do
+        running[#running + 1] = call.task and call.task.name or ("task " .. tostring(call.id))
     end
     if #running > 0 then
         table.sort(running)
@@ -147,11 +136,10 @@ end
 --- Rebuild a profile (`R`): confirmed, its clean (`Build/1.clean`), then —
 --- only once the clean ended successfully — its build (spec §19.16 "Editor
 --- operations"). Nothing to clean is the clean's own answer, never decided
---- from the rows (in `daemon` mode the daemon's refusal on stdout, INFO and
---- ok; in-process resolved at once): the build follows. So does a clean
---- whose only failure is the profile's invalid ProfileProjects (core §5.4),
---- as its refusal's `not_run` says (the daemon's clean task result, or the
---- in-process call's): the others are built and the rebuild fails naming
+--- from the rows (the daemon's refusal on stdout, INFO and ok): the build
+--- follows. So does a clean whose only failure is the profile's invalid
+--- ProfileProjects (core §5.4), as its refusal's `not_run` says (the
+--- daemon's clean task result): the others are built and the rebuild fails naming
 --- them.
 --- @param row table the profile's row
 --- @param ws? loomworks.Workspace
@@ -186,8 +174,8 @@ function M.rebuild(row, ws)
 end
 
 --- Clean a profile (`C`): confirmed, `Build/1.clean { profile }`. Nothing to
---- clean is the clean's own answer (in `daemon` mode the daemon's stdout
---- line, notified as INFO), never decided from the rows.
+--- clean is the clean's own answer (the daemon's stdout line, notified as
+--- INFO), never decided from the rows.
 --- @param row table the profile's row
 --- @param ws? loomworks.Workspace
 function M.clean(row, ws)
@@ -216,7 +204,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- A unit row's operation `method` (`Build/1` through ui/model_calls.lua,
---- the row as `units`; step 5o C2d — in `daemon` mode by its `unit_id`). Its
+--- the row as `units`; step 5o C2d — by its `unit_id`). Its
 --- failure was reported where it ran (the task, or the call's notification).
 --- @param ws loomworks.Workspace|nil
 --- @param method string
@@ -353,12 +341,6 @@ function M.nuke()
         done = "workspace cache reset" })
 end
 
---- Whether the page's workspace `ws` is in `daemon` mode (its rows' tasks
---- are then the ones observed through `Tasks/1`, matched by id).
-local function daemon_mode(ws)
-    return (require("loomworks.daemon.editor_ops").daemon_of(ws))
-end
-
 --- The unit ids of a profile row's unit rows (those that carry one).
 --- @param row table
 --- @return string[]
@@ -369,125 +351,70 @@ local function unit_ids_of(row)
 end
 
 --- The cancel of a profile row, or nil when there is nothing to cancel
---- (spec §19.16 "Editor operations"; step 5o C2d-2). In `daemon` mode,
---- while the row runs: the running tasks whose `start` meta names the row's
---- profile id or one of its units' ids (editor_ops.cancel_on_ids) — the
---- editor's own cancelled, another client's left to it (`started by … —
---- cancel it there`). In-process: the bound profile's local tasks.
+--- (spec §19.16 "Editor operations"; step 5o C2d-2). While the row runs: the
+--- running tasks whose `start` meta names the row's profile id or one of
+--- its units' ids (editor_ops.cancel_on_ids) — the editor's own cancelled,
+--- another client's left to it (`started by … — cancel it there`).
 --- @param row table the profile's `view.Workspace/1` row
 --- @param ws? loomworks.Workspace
 --- @return fun()|nil
 function M.cancel_profile(row, ws)
     if not row.running then return nil end
-    if daemon_mode(ws) then
-        local eo = require("loomworks.daemon.editor_ops")
-        local ids = unit_ids_of(row)
-        if #eo.tasks_on_ids(ws, row.id, ids) == 0 then return nil end
-        return function()
-            local n = #eo.cancel_on_ids(ws, row.id, ids)
-            if n > 0 then
-                vim.notify(string.format("loomworks: cancelled %d task(s) for profile '%s'", n, tostring(row.key)))
-            end
-        end
-    end
-    local profile = require("loomworks.status_source").object_of(row)
-    if not profile then return nil end
+    local eo = require("loomworks.daemon.editor_ops")
+    local ids = unit_ids_of(row)
+    if #eo.tasks_on_ids(ws, row.id, ids) == 0 then return nil end
     return function()
-        local n = require("loomworks").cancel_tasks_for_profile(profile)
-        vim.notify(string.format("loomworks: cancelled %d task(s) for profile '%s'", n, tostring(row.key)))
+        local n = #eo.cancel_on_ids(ws, row.id, ids)
+        if n > 0 then
+            vim.notify(string.format("loomworks: cancelled %d task(s) for profile '%s'", n, tostring(row.key)))
+        end
     end
 end
 
 --- The cancel of a profile's unit row `u` (of profile row `row`), or nil
---- when no task runs it (step 5o C2d-2). In `daemon` mode: the running tasks
---- whose `start` meta lists the unit's id — the whole task that runs it, even
---- the profile's build (editor_ops.cancel_on_ids; another client's is left to
+--- when no task runs it (step 5o C2d-2): the running tasks whose `start`
+--- meta lists the unit's id — the whole task that runs it, even the
+--- profile's build (editor_ops.cancel_on_ids; another client's is left to
 --- it). A task that names only the row's profile id (a device log, install
---- or launch, a test discovery) does not run the unit. In-process: the unit's live overseer task (chained tasks
---- behind it abort via the Future's cancel token).
+--- or launch, a test discovery) does not run the unit.
 --- @param row table the profile's view row
 --- @param u table the unit's view row
 --- @param ws? loomworks.Workspace
 --- @return fun()|nil
 function M.cancel_unit(row, u, ws)
-    if daemon_mode(ws) then
-        if u.unit_id == nil then return nil end
-        local eo = require("loomworks.daemon.editor_ops")
-        if #eo.tasks_on_ids(ws, nil, { u.unit_id }) == 0 then return nil end
-        return function()
-            local names = {}
-            for _, t in ipairs(eo.cancel_on_ids(ws, nil, { u.unit_id })) do names[#names + 1] = t.name end
-            if #names > 0 then vim.notify("loomworks: cancelled task " .. table.concat(names, ", ")) end
-        end
-    end
-    local pp = require("loomworks.status_source").object_of(u)
-    local unit = pp and pp._config_unit
-    if not (unit and unit._task_id) then return nil end
+    if u.unit_id == nil then return nil end
+    local eo = require("loomworks.daemon.editor_ops")
+    if #eo.tasks_on_ids(ws, nil, { u.unit_id }) == 0 then return nil end
     return function()
-        if require("loomworks").cancel_task(unit._task_id) then
-            vim.notify("loomworks: cancelled task " .. tostring(unit._task_id))
-        end
+        local names = {}
+        for _, t in ipairs(eo.cancel_on_ids(ws, nil, { u.unit_id })) do names[#names + 1] = t.name end
+        if #names > 0 then vim.notify("loomworks: cancelled task " .. table.concat(names, ", ")) end
     end
 end
 
 --- The task output of a profile's unit row `u` (of profile row `row`):
---- `<CR>` / `t` (step 5o C2d-2). In `daemon` mode the latest task observed
---- through `Tasks/1` whose `start` meta lists the unit's id (never one that
---- names only the row's profile id) — the running one, else the last that ended
---- (editor_ops.tasks_on_ids) — its kept output (ui/remote_output). In-process
---- the bound unit's last overseer task (M.open_task).
+--- `<CR>` / `t` (step 5o C2d-2): the latest task observed through `Tasks/1`
+--- whose `start` meta lists the unit's id (never one that names only the
+--- row's profile id) — the running one, else the last that ended
+--- (editor_ops.tasks_on_ids) — its kept output (ui/remote_output).
 --- @param row table the profile's view row
 --- @param u table the unit's view row
 --- @param ws? loomworks.Workspace
 --- @return fun()
 function M.open_unit_task(row, u, ws)
     return function()
-        if daemon_mode(ws) then
-            local tasks = u.unit_id ~= nil
-                and require("loomworks.daemon.editor_ops").tasks_on_ids(ws, nil, { u.unit_id }, true) or {}
-            local pick
-            for _, t in ipairs(tasks) do
-                if not t.finished then pick = t end
-            end
-            pick = pick or tasks[#tasks]
-            if not pick then
-                vim.notify("loomworks: no task output available", vim.log.levels.INFO)
-                return
-            end
-            return require("loomworks.ui.remote_output").show(pick)
+        local tasks = u.unit_id ~= nil
+            and require("loomworks.daemon.editor_ops").tasks_on_ids(ws, nil, { u.unit_id }, true) or {}
+        local pick
+        for _, t in ipairs(tasks) do
+            if not t.finished then pick = t end
         end
-        local pp = require("loomworks.status_source").object_of(u)
-        local unit = pp and pp._config_unit
-        if not unit then
+        pick = pick or tasks[#tasks]
+        if not pick then
             vim.notify("loomworks: no task output available", vim.log.levels.INFO)
             return
         end
-        M.open_task(unit)()
-    end
-end
-
---- Open the overseer task output for a ConfigUnit.
---- Closes the status page first (terminal buffers can't layer in floats),
---- reopens it with cursor restored when the task output is dismissed.
---- @param unit loomworks.ConfigUnit
-function M.open_task(unit)
-    return function()
-        if not unit:last_task_id() then
-            vim.notify("loomworks: no task output available", vim.log.levels.INFO)
-            return
-        end
-        local lw = require("loomworks")
-        local status = require("loomworks.ui.status")
-        local win_opts = lw.get_task_output_win()
-        status.close()
-        vim.schedule(function()
-            if not unit:open_task_output(win_opts, function()
-                status.open()
-            end) then
-                vim.notify("loomworks: task output buffer no longer available", vim.log.levels.INFO)
-                status.open()
-            end
-        end)
+        return require("loomworks.ui.remote_output").show(pick)
     end
 end
 
@@ -503,10 +430,10 @@ end
 --- @return fun() closure
 function M.create_profile(ctx)
     return function()
-        local ws = ctx.ws or require("loomworks").get_workspace()
-        -- (In `daemon` mode the editor holds no model, step 6b-alpha: the
-        -- calls go to the daemon with none.)
-        if not ws and not require("loomworks.daemon.editor_ops").daemon_of(nil) then return end
+        -- (The editor holds no model, step 6b-alpha: the calls go to the
+        -- daemon with none.)
+        local ws = ctx.ws
+        if not require("loomworks.daemon.editor_ops").daemon_of() then return end
         local model = require("loomworks.ui.model_calls")
         model.call(ws, "ConfigSets/1.candidates", {}, function(r)
             if r.outcome ~= "ok" then
@@ -588,8 +515,7 @@ end
 
 --- The options float of a profile's unit row `u` (`o`; step 5o C2d-2): its
 --- build options as `Projects/1.unit_options` answers them through
---- ui/model_calls.lua — in `daemon` mode by the row's `unit_id`, never the
---- editor's model; in-process from the bound unit, synchronously.
+--- ui/model_calls.lua — by the row's `unit_id`, never the editor's model.
 --- @param u table the unit's view row
 --- @param ws? loomworks.Workspace
 --- @return fun()

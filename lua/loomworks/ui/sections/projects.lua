@@ -46,15 +46,14 @@ local function deploy_context(view)
     return { projects = view.projects or {}, profiles = view.profiles or {}, preview_for = previewer }
 end
 
---- The declaration's entry of the launch row `lrow`: by its id (a daemon's
---- view and declaration share them), or by its name where neither carries
---- one (the in-process view and declaration).
+--- The declaration's entry of the launch row `lrow`: by its id (the
+--- daemon's view and declaration share them).
 --- @param decl table
 --- @param lrow table
 --- @return table|nil
 local function declared_launch(decl, lrow)
     for _, l in ipairs(decl.launches or {}) do
-        if (lrow.id ~= nil and l.id == lrow.id) or (lrow.id == nil and l.id == nil and l.key == lrow.key) then
+        if lrow.id ~= nil and l.id == lrow.id then
             return l
         end
     end
@@ -82,7 +81,6 @@ local function open_launch_editor(ctx, prow, lrow, decl)
     end
     local taken = {}
     for _, l in ipairs(decl.launches or {}) do taken[l.key] = true end
-    local ws = ctx.ws
     local dctx = deploy_context(ctx.view)
 
     require("loomworks.ui.launch_editor").open({
@@ -105,22 +103,22 @@ local function open_launch_editor(ctx, prow, lrow, decl)
         -- A target-backed launch resolves ${target_dir} (§8.7); a
         -- command-type (or new) one does not.
         target_context = fields.target ~= nil,
-        -- (No `ws` in `daemon` mode: the editor holds no model, step 6b-alpha.)
+        -- (No `ws`: the editor holds no model, step 6b-alpha.)
         debug_adapters = function()
             local ops = require("loomworks.daemon.editor_ops")
-            if not ws and not ops.daemon_of(nil) then return nil end
-            return (ops.debug_adapters(ws))
+            if not ops.daemon_of() then return nil end
+            return (ops.debug_adapters(nil))
         end,
         -- Every known language, for "Add debug language".
         debug_languages = function(cb)
             local ops = require("loomworks.daemon.editor_ops")
-            if not ws and not ops.daemon_of(nil) then return cb(nil, "no workspace") end
-            ops.debug_languages(ws, cb)
+            if not ops.daemon_of() then return cb(nil, "no workspace") end
+            ops.debug_languages(nil, cb)
         end,
         -- The daemon's records arrive after the dialog opens: it re-renders.
         on_debug_adapters = function(arrived)
-            local daemon, obs = require("loomworks.daemon.editor_ops").daemon_of(ws)
-            if daemon and obs and obs.state ~= "stopped" and obs:can_call("adapters") then
+            local _, obs = require("loomworks.daemon.editor_ops").daemon_of()
+            if obs and obs.state ~= "stopped" and obs:can_call("adapters") then
                 obs:with_debug_adapters(function() arrived() end)
             end
         end,
@@ -318,8 +316,8 @@ end
 --- The configuration-set mappings and the inheriting configurations a
 --- rename of the configuration `crow` (named `config_name`) to `new_name`
 --- also updates: the view's configuration sets whose mapping names that
---- configuration (helpers.same_entity: by id in `daemon` mode, the bound
---- object in-process) and the declaration's configurations' `inherits`.
+--- configuration (helpers.same_entity: by id) and the declaration's
+--- configurations' `inherits`.
 --- @param view table|nil the workspace view
 --- @param crow table the configuration's view row
 --- @param decl table the project's declaration (Projects/1.declaration)
@@ -347,15 +345,14 @@ local function config_rename_effects(view, crow, decl, config_name, new_name)
     return #effects > 0 and effects or nil
 end
 
---- The declaration's entry of the configuration row `crow`: by its id (a
---- daemon's view and declaration share them), or by its name where neither
---- carries one (the in-process view and declaration).
+--- The declaration's entry of the configuration row `crow`: by its id (the
+--- daemon's view and declaration share them).
 --- @param decl table
 --- @param crow table
 --- @return table|nil
 local function declared_configuration(decl, crow)
     for _, c in ipairs(decl.configurations or {}) do
-        if (crow.id ~= nil and c.id == crow.id) or (crow.id == nil and c.id == nil and c.key == crow.key) then
+        if crow.id ~= nil and c.id == crow.id then
             return c
         end
     end
@@ -519,8 +516,8 @@ local function delete_project_configuration(prow, crow)
 end
 
 --- Open the project browser for adding a project, at the loaded
---- workspace's root (in `daemon` mode the observed one: the editor holds
---- no model, step 6b-alpha).
+--- workspace's root (the observed one: the editor holds no model, step
+--- 6b-alpha).
 local function open_add_project()
     local root = require("loomworks").loaded_root()
     if root then
@@ -550,13 +547,13 @@ local function field_saver(prow, name, bound)
 end
 
 --- The publish / revert actions shared by project and configuration rows,
---- naming the item by its view row (step 5o C2a). In `daemon` mode (no
---- model, step 6b-alpha) a row with an id (helpers.actionable).
+--- naming the item by its view row (step 5o C2a): a row with an id (no
+--- model, step 6b-alpha; helpers.actionable).
 --- @param ctx table the section context
 --- @param row table the project's or configuration's view row
 local function publish_actions(ctx, row)
     local ws = ctx.ws
-    if not ws and not (ctx.mode == "daemon" and helpers.actionable(ctx, row)) then return {} end
+    if not helpers.actionable(ctx, row) then return {} end
     return {
         on_publish = function() helpers.cycle_intent(row, ws) end,
         on_publish_now = function() helpers.publish_one(row, ws) end,
@@ -578,7 +575,7 @@ local function project_actions(ctx, prow)
 end
 
 --- The actions of a configuration row: its editor and removal are routed
---- (by the rows, helpers.actionable — in `daemon` mode a row with an id,
+--- (by the rows, helpers.actionable — a row with an id,
 --- even of a project the editor's model does not have yet).
 --- @param ctx table the section context
 --- @param prow table the project's view row
@@ -1248,7 +1245,7 @@ end
 
 --- Render the projects section.
 --- @param tree loomworks.Tree
---- @param ctx table { lw, view, mode, ws }
+--- @param ctx table { lw, view, root, ws }
 return function(tree, ctx)
     local projects = ctx.view.projects
     if #projects == 0 then

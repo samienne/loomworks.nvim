@@ -1489,16 +1489,14 @@ describe("remote task output cap (§19.16)", function()
 end)
 
 describe("status page Tasks section: remote tasks (spec/ui.md §1.9)", function()
-    local function render(local_tasks, remote)
+    local function render(remote)
         local rows = {}
         local tree = {
             leaf = function() end, blank = function() end,
             item = function(_, label, opts) rows[#rows + 1] = { label = label, opts = opts } end,
         }
         require("loomworks.ui.sections.tasks")(tree, { lw = {
-            get_active_tasks = function() return local_tasks end,
             get_daemon_tasks = function() return remote end,
-            get_build_dir_locks_info = function() return {} end,
         } })
         return rows
     end
@@ -1510,35 +1508,31 @@ describe("status page Tasks section: remote tasks (spec/ui.md §1.9)", function(
     end
     local function now() return (vim.uv or vim.loop).hrtime() / 1e9 end
 
-    it("rows in a local task's format with the dim origin marker last; unresolved units by name", function()
-        local unit = { _project = { key = "app" }, config_key = function() return "Debug" end }
+    it("one row per unit by name, the dim origin marker last", function()
         local t = remote_task.new(7, { name = "dev", kind = "build", profile = "dev", origin = "cli" }, now())
-        t.units = { { unit = unit, project = "app", configuration = "Debug" },
+        t.units = { { project = "app", configuration = "Debug" },
             { project = "ghost", configuration = "Nope" } }
         t.pct = 40
-        local rows = render({}, { t })
-        -- rows[1] is the reset action.
-        assert.truthy(text(rows[2].label):find("^▸ app : Debug — build  40%%  %d+s  lw$"), text(rows[2].label))
-        assert.truthy(text(rows[3].label):find("^▸ ghost : Nope — build"), text(rows[3].label))
-        assert.same({ "  lw", "Comment" }, rows[2].label[#rows[2].label])
+        local rows = render({ t })
+        assert.truthy(text(rows[1].label):find("^▸ app : Debug — build  40%%  %d+s  lw$"), text(rows[1].label))
+        assert.truthy(text(rows[2].label):find("^▸ ghost : Nope — build"), text(rows[2].label))
+        assert.same({ "  lw", "Comment" }, rows[1].label[#rows[1].label])
         local e = remote_task.new(8, { name = "p", kind = "test", profile = "p", origin = "editor" }, now())
-        local erow = text(render({}, { e })[2].label)
+        local erow = text(render({ e })[1].label)
         assert.truthy(erow:find("^▸ p — test  %d+s  editor$"), erow)
     end)
 
-    it("orders local and remote tasks by start; Enter on a remote row offers Show output only", function()
+    it("orders tasks by start; Enter on another client's row offers Show output only", function()
         local n = now()
         local early = remote_task.new(1, { name = "dev", kind = "build", profile = "dev", origin = "cli" }, n - 100)
         local late = remote_task.new(2, { name = "rel", kind = "build", profile = "rel", origin = "cli" }, n - 1)
-        local loc = { task_id = 9, project_key = "app", config_key = "Debug", action = "build", start_time = n - 50 }
-        local rows = render({ loc }, { early, late })
-        assert.truthy(text(rows[2].label):find("dev", 1, true))
-        assert.truthy(text(rows[3].label):find("app : Debug", 1, true))
-        assert.truthy(text(rows[4].label):find("rel", 1, true))
+        local rows = render({ late, early })
+        assert.truthy(text(rows[1].label):find("dev", 1, true))
+        assert.truthy(text(rows[2].label):find("rel", 1, true))
         local offered
         local real = vim.ui.select
         vim.ui.select = function(items) offered = items end
-        rows[2].opts.on_enter()
+        rows[1].opts.on_enter()
         vim.ui.select = real
         assert.same({ "Show output" }, offered)
     end)

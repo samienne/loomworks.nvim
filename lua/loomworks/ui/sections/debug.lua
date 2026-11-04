@@ -5,10 +5,9 @@
 --- modules, API.md §12 `DebugConfig/1.adapters`), never read from the
 --- editor's model. Allows picking from known adapters via Enter action.
 ---
---- The mapping comes from loomworks.daemon.editor_ops: in `daemon` mode
---- `DebugConfig/1` (step 5k C2, spec §19.16 "Editor operations"), the
---- section unavailable while it is not carried (step 5s, "Availability");
---- in the `in-process` mode the working copy. Whether an adapter is
+--- The mapping comes from loomworks.daemon.editor_ops: `DebugConfig/1`
+--- (step 5k C2, spec §19.16 "Editor operations"), the section unavailable
+--- while it is not carried (step 5s, "Availability"). Whether an adapter is
 --- installed is always nvim-dap's answer, here.
 
 local debug_mod = require("loomworks.debug")
@@ -17,13 +16,11 @@ local debug_mod = require("loomworks.debug")
 --- @param tree loomworks.Tree
 --- @param ctx table { lw }
 return function(tree, ctx)
-    local lw = ctx.lw
-    local ws = lw.get_workspace()
     local ops = require("loomworks.daemon.editor_ops")
-    -- In `daemon` mode the editor holds no model (step 6b-alpha): the
-    -- section reads the daemon's records with no workspace.
-    if not ws and not ops.daemon_of(nil) then return end
-    local records, why = ops.debug_adapters(ws)
+    -- The editor holds no model (step 6b-alpha): the section reads the
+    -- daemon's records with no workspace.
+    if not ops.daemon_of() then return end
+    local records, why = ops.debug_adapters(nil)
     -- No language known: no section.
     if records and #records == 0 then return end
     local languages, by_lang = {}, {}
@@ -91,7 +88,7 @@ return function(tree, ctx)
                     -- The default removes the override from user.json.
                     local adapter = choice ~= default and choice or nil
                     if adapter == nil and not rec.overridden then return end
-                    ops.set_debug_adapter(ws, lang, adapter, function()
+                    ops.set_debug_adapter(nil, lang, adapter, function()
                         require("loomworks.ui.status").refresh()
                     end)
                 end)

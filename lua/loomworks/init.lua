@@ -460,41 +460,8 @@ function M.get_tools_by_type()
 end
 
 -- ---------------------------------------------------------------------------
--- Running task tracking
+-- LSP options
 -- ---------------------------------------------------------------------------
-
---- Snapshot every active task across the workspace.
---- @return loomworks.ActiveTaskInfo[]
-function M.get_active_tasks()
-    return core:get_active_tasks()
-end
-
---- Snapshot the build-dir lock table for diagnostics/UI.
---- @return loomworks.BuildDirLockInfo[]
-function M.get_build_dir_locks_info()
-    return core:get_build_dir_locks_info()
-end
-
---- Force-release a build-dir lock (status-page "reset" action).
---- @param dir string normalized build directory path
---- @return boolean released
-function M.force_release_build_dir_lock(dir)
-    return core:force_release_build_dir_lock(dir)
-end
-
---- Cancel a single active task by ID.
---- @param task_id number
---- @return boolean
-function M.cancel_task(task_id)
-    return core:cancel_task(task_id)
-end
-
---- Cancel every running task for a Profile's units (cascade-friendly).
---- @param profile loomworks.Profile
---- @return integer cancelled
-function M.cancel_tasks_for_profile(profile)
-    return core:cancel_tasks_for_profile(profile)
-end
 
 --- Get effective LSP options for a server (defaults applied): a copy of
 --- that server's options in the held `LspConfig/1` state (nil while it is

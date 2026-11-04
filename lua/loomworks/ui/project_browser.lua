@@ -4,9 +4,9 @@
 --- asynchronously and shows detected project types. Users can add or
 --- remove projects from here. Adding is `Projects/1.candidates` (the key and
 --- path the directory gets) then `Projects/1.add` through
---- loomworks.ui.model_calls (in `daemon` mode the daemon's; step 5o C2b);
---- the projects already added are the workspace view's rows in `daemon`
---- mode. Removing names the project's view row (step 5o C2c-2).
+--- loomworks.ui.model_calls (the daemon's; step 5o C2b); the projects
+--- already added are the workspace view's rows. Removing names the
+--- project's view row (step 5o C2c-2).
 
 local Tree = require("loomworks.ui.tree")
 local View = require("loomworks.ui.view")
@@ -21,27 +21,17 @@ local M = {}
 --- @field types { type: string, marker: string }[]
 
 --- Build the set of the workspace's projects, keyed by (relative_path,
---- type) for checking "already added": in `daemon` mode from the workspace
---- view's project rows (none while it is not held), else from the editor's
---- model.
+--- type) for checking "already added": from the workspace view's project
+--- rows (none while it is not held).
 --- @return table<string, table<string, true>>  path -> { type -> true }
 local function build_added_set()
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-
     local added = {}
-    local function add(rel, type_name)
-        if not added[rel] then added[rel] = {} end
-        added[rel][type_name] = true
+    local _, obs = require("loomworks.daemon.editor_ops").daemon_of()
+    local view = obs and obs:workspace_view() or nil
+    for _, row in ipairs(type(view) == "table" and view.projects or {}) do
+        if not added[row.path] then added[row.path] = {} end
+        added[row.path][row.type] = true
     end
-    local daemon, obs = require("loomworks.daemon.editor_ops").daemon_of(ws)
-    if daemon then
-        local view = obs and obs:workspace_view() or nil
-        for _, row in ipairs(type(view) == "table" and view.projects or {}) do add(row.path, row.type) end
-        return added
-    end
-    if not ws then return added end
-    for _, proj in pairs(ws._projects) do add(proj.path or proj.key, proj.type) end
     return added
 end
 
@@ -85,16 +75,14 @@ function M.open(root)
     --- @param entry loomworks.BrowserEntry
     --- @param type_info { type: string, marker: string }
     local function do_add(entry, type_info)
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
-        -- (In `daemon` mode the editor holds no model, step 6b-alpha.)
-        if not ws and not require("loomworks.daemon.editor_ops").daemon_of(nil) then return end
+        -- (The editor holds no model, step 6b-alpha: the calls name none.)
+        if not require("loomworks.daemon.editor_ops").daemon_of() then return end
         local function failed(err)
             vim.notify("loomworks: " .. (err or "failed to add project"), vim.log.levels.ERROR)
         end
-        model.call(ws, "Projects/1.candidates", { path = entry.abs_path, type = type_info.type }, function(c)
+        model.call(nil, "Projects/1.candidates", { path = entry.abs_path, type = type_info.type }, function(c)
             if c.outcome ~= "ok" then return failed(c.message) end
-            model.call(ws, "Projects/1.add", { key = c.key, type = type_info.type, path = c.path, mappings = {} },
+            model.call(nil, "Projects/1.add", { key = c.key, type = type_info.type, path = c.path, mappings = {} },
                 function(r)
                     local ok, err = model.result(r)
                     if not ok then failed(err) end
@@ -104,16 +92,14 @@ function M.open(root)
 
     --- Remove the project a browser entry shows as added: the workspace
     --- view's project row of its directory (the input boundary: the entry
-    --- names a directory, the row is what the call names — in `daemon` mode
-    --- by its id), then `Maintenance/1.execute_deletion { project }` with its
+    --- names a directory, the row is what the call names — by its id), then `Maintenance/1.execute_deletion { project }` with its
     --- confirmation (loomworks.ui.actions.delete_project; step 5o C2c-2).
     --- @param entry loomworks.BrowserEntry
     local function do_remove(entry)
         local rel = entry.abs_path:sub(#root + 2)
         if rel == "" then rel = "." end
-        local ws = require("loomworks").get_workspace()
-        if not ws and not require("loomworks.daemon.editor_ops").daemon_of(nil) then return end
-        local body = require("loomworks.status_source").read(ws)
+        if not require("loomworks.daemon.editor_ops").daemon_of() then return end
+        local body = require("loomworks.status_source").read()
         local prow
         for _, row in ipairs(type(body.view) == "table" and body.view.projects or {}) do
             local where = row.path or row.key
@@ -123,7 +109,7 @@ function M.open(root)
             vim.notify("loomworks: project not found in workspace", vim.log.levels.WARN)
             return
         end
-        require("loomworks.ui.actions").delete_project(prow, ws)()
+        require("loomworks.ui.actions").delete_project(prow)()
     end
 
     --- Render a single browser entry line.

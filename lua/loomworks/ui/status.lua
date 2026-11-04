@@ -10,19 +10,12 @@ local actions = require("loomworks.ui.actions")
 
 local M = {}
 
---- The editor's in-process workspace model (the page's one read of it: the
---- header's root and the workspace the actions' calls go to; no row is
---- resolved to its objects in `daemon` mode, step 5o C2d-2).
---- @return loomworks.Workspace|nil
-local function model()
-    return require("loomworks").get_workspace()
-end
-
---- Whether the editor is the `daemon`-mode editor with a root attached (it
---- then holds no model, step 6b-alpha; editor_ops.daemon_of).
+--- Whether the editor has a workspace root attached (it holds no model,
+--- step 6b-alpha: the page renders from the daemon's views alone;
+--- editor_ops.daemon_of).
 --- @return boolean
-local function daemon_editor()
-    return (require("loomworks.daemon.editor_ops").daemon_of(nil))
+local function attached()
+    return (require("loomworks.daemon.editor_ops").daemon_of())
 end
 
 -- ---------------------------------------------------------------------------
@@ -38,14 +31,10 @@ end
 
 local function render_fn(tree)
     local lw = require("loomworks")
-    local ws = model()
-    -- The header reads `loomworks.view.Header/1` (spec §19.13 "Two sources,
-    -- one shape"): the daemon's while the editor is subscribed to it,
-    -- otherwise built in-process.
+    -- The header reads `loomworks.view.Header/1` (spec §19.13): the
+    -- daemon's while the editor is subscribed to it.
     local hdr = lw.view_header() or { state = "unloaded" }
-    -- In `daemon` mode the editor holds no model (step 6b-alpha): the page
-    -- renders from the daemon's views alone.
-    if not ws and not daemon_editor() then
+    if not attached() then
         if hdr.state == "error" or hdr.state == "refused" then
             tree._level = 1
             tree:leaf(header_text(hdr), "Title")
@@ -90,14 +79,12 @@ local function render_fn(tree)
         tree:leaf("Workspace: the workspace daemon could not load it: " .. tostring(hdr.error or hdr.state),
             "DiagnosticWarn")
     end
-    tree:leaf("Root:      " .. tostring(hdr.root or (ws and ws.root)), "Comment")
+    tree:leaf("Root:      " .. tostring(hdr.root or lw.loaded_root()), "Comment")
 
     -- The body renders from `loomworks.view.Workspace/1` (spec §19.13 "The
-    -- workspace view"): in `daemon` mode only the daemon's (nil while it is
-    -- not held), otherwise built from the in-process model. `ref` gives the
-    -- sections' actions the model object of a row; progress is overlaid
-    -- (API.md §14.4 "Progress is not in the view").
-    local body = require("loomworks.status_source").read(ws)
+    -- workspace view"): only the daemon's (nil while it is not held);
+    -- progress is overlaid (API.md §14.4 "Progress is not in the view").
+    local body = require("loomworks.status_source").read()
     local view = body.view
 
     -- Banner when loomworks.json is missing on disk: the workspace still
@@ -119,19 +106,17 @@ local function render_fn(tree)
     local ctx = {
         lw = lw,
         view = view,
-        -- The body's mode: a routed action is offered on a row with an id in
-        -- `daemon` mode (helpers.actionable).
-        mode = body.mode,
+        -- The workspace root (the header view's): what the sections show
+        -- paths relative to.
+        root = hdr.root or lw.loaded_root(),
         profile_progress = body.profile_progress,
         unit_progress = body.unit_progress,
-        -- For the sections' actions only: the workspace their calls go to
-        -- (every status-page model write and operation is a ui/model_calls
-        -- call, in both modes; a row's cancel and task output are the tasks
-        -- naming its ids, step 5o C2d-2).
-        ws = ws,
+        -- The workspace the sections' ui/model_calls calls name: none (the
+        -- editor holds no model, step 6b-alpha; the calls go to the daemon).
+        ws = nil,
     }
 
-    -- A body section while the daemon's view is not held (`daemon` mode):
+    -- A body section while the daemon's view is not held:
     -- one line in the warning highlight, as the Debug Adapters section's.
     local function unavailable(title)
         tree:leaf(title, "Title")
@@ -186,23 +171,21 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Revert (`:e!`; `:e` on a buffer not marked modified — ui/view.lua
---- attach_revert): `Workspace/1.revert_to_baseline`, in `daemon` mode a call
---- to the workspace daemon (step 5o C2a), whose view `update` re-renders
---- the page. In `daemon` mode only `:e!` reverts: the buffer's flag can lag
+--- attach_revert): `Workspace/1.revert_to_baseline`, a call to the
+--- workspace daemon (step 5o C2a), whose view `update` re-renders the
+--- page. Only `:e!` reverts: the buffer's flag can lag
 --- the daemon's working copy (status_source.modified), so a plain `:e` Vim
 --- let through only re-renders — never a revert the user did not force.
 --- Test seam.
 --- @param force boolean `:e!`
 function M._on_revert(force)
-    local ws = model()
-    local daemon = not ws and daemon_editor()
-    if not ws and not daemon then
+    if not attached() then
         vim.notify("loomworks: no workspace", vim.log.levels.WARN)
         return
     end
-    if not force and daemon then return end
+    if not force then return end
     local calls = require("loomworks.ui.model_calls")
-    calls.call(ws, "Workspace/1.revert_to_baseline", {}, function(r)
+    calls.call(nil, "Workspace/1.revert_to_baseline", {}, function(r)
         local ok, err = calls.result(r)
         if not ok then
             vim.notify("loomworks: " .. (err or "revert failed: unknown"), vim.log.levels.ERROR)
@@ -214,6 +197,15 @@ end
 
 local tree = Tree.new(render_fn)
 
+--- The page's saved cursor row per attached observer (weak: forgotten with
+--- it, as a workspace swap or `:LoomworksReload` replaces it).
+local cursor_rows = setmetatable({}, { __mode = "k" })
+
+--- @return loomworks.daemon.Observer|nil
+local function observer()
+    return select(2, require("loomworks.daemon.editor_ops").daemon_of())
+end
+
 --- Test seam: the page's render function.
 M._render_fn = render_fn
 
@@ -221,12 +213,12 @@ local view = View.new({
     widget = tree,
     cursor_storage = {
         get = function()
-            local ws = model()
-            return ws and ws._status_cursor_row
+            local obs = observer()
+            return obs and cursor_rows[obs]
         end,
         set = function(row)
-            local ws = model()
-            if ws then ws._status_cursor_row = row end
+            local obs = observer()
+            if obs then cursor_rows[obs] = row end
         end,
     },
     win = {
@@ -261,23 +253,22 @@ local view = View.new({
         ["?"]     = "help",
         ["K"]     = "hover",
     },
-    -- Unpublished changes (loomworks.status_source.modified): in `daemon`
-    -- mode the daemon's view's `modified` (publish and revert run there, step
-    -- 5o C2a), else the editor's model's. Guards `:e` (E37).
+    -- Unpublished changes (loomworks.status_source.modified): the daemon's
+    -- view's `modified` (publish and revert run there, step 5o C2a). Guards
+    -- `:e` (E37).
     is_modified = function()
-        return require("loomworks.status_source").modified(model())
+        return require("loomworks.status_source").modified()
     end,
     -- Publish and revert (`:w`, `:e!`): `Workspace/1.publish` /
-    -- `revert_to_baseline`, in `daemon` mode calls to the workspace daemon
-    -- (step 5o C2a), whose view `update` re-renders the page.
+    -- `revert_to_baseline`, calls to the workspace daemon (step 5o C2a),
+    -- whose view `update` re-renders the page.
     on_write = function()
-        local ws = model()
-        if not ws and not daemon_editor() then
+        if not attached() then
             vim.notify("loomworks: no workspace", vim.log.levels.WARN)
             return
         end
         local calls = require("loomworks.ui.model_calls")
-        calls.call(ws, "Workspace/1.publish", {}, function(r)
+        calls.call(nil, "Workspace/1.publish", {}, function(r)
             local ok, err = calls.result(r)
             if not ok then
                 vim.notify("loomworks: " .. (err or "publish failed: unknown"), vim.log.levels.ERROR)

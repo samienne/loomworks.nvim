@@ -88,13 +88,11 @@ return {
         ["lua/loomworks/ui/deploy_editor.lua"] = {
             "loomworks.paths",
         },
+        -- (configuration, configuration_set, launch_configuration, profile,
+        -- project dropped: the UI reads the daemon only — its items are row
+        -- items, never domain objects.)
         ["lua/loomworks/ui/description_editor.lua"] = {
-            "loomworks.configuration",
-            "loomworks.configuration_set",
             "loomworks.description",
-            "loomworks.launch_configuration",
-            "loomworks.profile",
-            "loomworks.project",
         },
         ["lua/loomworks/ui/helpers.lua"] = {
             "loomworks.description",
@@ -113,9 +111,9 @@ return {
         ["lua/loomworks/ui/status.lua"] = {
             "loomworks.events",
         },
+        -- (loomworks.workspace dropped: `N` is refused, `lw init` creates.)
         ["lua/loomworks/ui/tree.lua"] = {
             "loomworks.description",
-            "loomworks.workspace",
         },
         ["lua/loomworks/ui/view.lua"] = {
             "loomworks.events",
@@ -150,8 +148,9 @@ return {
         -- step 6b-α A1a (`daemon` mode loads no model: the observer by root,
         -- `lw.loaded_root`, `lw.shutdown`); 57 -> 55: A1b (the facade);
         -- 55 -> 26: the plugin runs in daemon mode only (no in-process
-        -- branches, getters or pickers).
-        ["lua/loomworks/init.lua"] = 26,
+        -- branches, getters or pickers); 26 -> 21: the UI reads the daemon
+        -- only (its task, lock and cancel accessors removed).
+        ["lua/loomworks/init.lua"] = 21,
         -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
         -- routes the test adapters' reads through test_source.lua; its one
         -- site is the in-process source's model read (the daemon source
@@ -167,25 +166,19 @@ return {
         -- confirmations come from Maintenance/1).
         -- actions.lua 5 -> 1: step 5o C2d-1 (the builds, configures, cleans
         -- and rebuilds name their rows; their confirmations come from them).
-        ["lua/loomworks/ui/actions.lua"] = 1,
-        ["lua/loomworks/ui/project_browser.lua"] = 3,
+        -- actions.lua 1 -> 0, project_browser.lua 3 -> 0, debug.lua 1 -> 0,
+        -- status.lua 1 -> 0, tree.lua 3 -> 0: the UI reads the daemon only
+        -- (no in-process branch, row binding or model read left).
         -- config_sets.lua 4 -> 3, diagnostics.lua 1 -> 0, orphaned.lua 2 -> 1,
         -- profiles.lua 2 -> 0, projects.lua 6 -> 5, sdks.lua 1 -> 0: step 5n
         -- part A renders the body from `view.Workspace/1` (view_state.lua);
         -- what is left are the actions' own model reads (5o's commands).
-        ["lua/loomworks/ui/sections/debug.lua"] = 1,
         -- 5 -> 4: step 5o C2b2-1 (the configuration editor reads the declaration).
         -- 4 -> 1: step 5o C2b2-2 (the launch and deploy editors read the
         -- declaration, the view and expand_preview; the project's removal is left).
         -- 1 -> 0: step 6b-alpha A1a (the Add project row opens the browser at
         -- the loaded root, never the model's).
         ["lua/loomworks/ui/sections/projects.lua"] = 0,
-        -- 6 -> 1: step 5n C1 — the body and its `modified` read through
-        -- status_source.lua (in `daemon` mode only the daemon's
-        -- view.Workspace/1); the page's other model reads (the header's root,
-        -- the cursor, publish/revert until 5o) share one helper.
-        ["lua/loomworks/ui/status.lua"] = 1,
-        ["lua/loomworks/ui/tree.lua"] = 3,
         -- 2 -> 1: step 5o C2b2-1 (compute_edit_configuration_context removed).
         ["lua/loomworks/workspace_view.lua"] = 1,
     },

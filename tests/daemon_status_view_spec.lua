@@ -141,11 +141,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local prow = body.view.profiles[1]
         local u = prow.units[1]
         assert.is_string(u.unit_id)
-        -- A daemon row is never bound to an object of the editor's model.
-        for _, row in ipairs({ prow, u, body.view.config_sets[1], body.view.projects[1],
-            body.view.projects[1].configurations[1] }) do
-            assert.is_nil(status_source.object_of(row))
-        end
         require("loomworks.ui.actions").show_options(u, nil)()
         local sent
         for _, c in ipairs(calls) do
@@ -173,7 +168,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         local body = status_source.read(nil)
         local fresh = body.view.projects[#body.view.projects]
         assert.equals("fresh", fresh.key)
-        assert.is_nil(status_source.object_of(fresh))
         local tree = Tree.new(require("loomworks.ui.status")._render_fn)
         setmetatable(tree._folds, { __index = function() return true end })
         local lines = tree:render()
@@ -221,7 +215,6 @@ describe("the status page body in daemon mode (§19.13 The workspace view)", fun
         end))
         local body = status_source.read(nil)
         local fresh = body.view.projects[#body.view.projects]
-        assert.is_nil(status_source.object_of(fresh))
         local tree = Tree.new(require("loomworks.ui.status")._render_fn)
         setmetatable(tree._folds, { __index = function() return true end })
         local lines = tree:render()

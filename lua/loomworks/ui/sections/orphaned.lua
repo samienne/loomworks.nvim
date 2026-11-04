@@ -4,7 +4,7 @@
 --- Flat list of paths — no project grouping, no status labels.
 --- Actions: delete individual dirs, or clean all at once — each a
 --- `Maintenance/1.execute_deletion` through ui/model_calls naming the row
---- (an orphaned entry's id in `daemon` mode, a stray directory's path as
+--- (an orphaned entry's id, a stray directory's path as
 --- listed; step 5o C2c-2), confirmed with the listing it answers.
 
 local actions = require("loomworks.ui.actions")
@@ -47,7 +47,7 @@ return function(tree, ctx)
         return is_win and n:lower() or n
     end
 
-    local ws_root = ctx.ws and ctx.ws.root or ""
+    local ws_root = ctx.root or ""
     for _, orphan in ipairs(orphans) do
         local display = ".nvim/" .. orphan.key
         tree:item(display, {

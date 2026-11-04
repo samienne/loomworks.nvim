@@ -231,17 +231,13 @@ local function render_fixture_impl(name)
     function obs:workspace_view() return view end
     function obs:tasks() return {} end
     function obs:_clock() return 0 end
-    -- (Only the body reads it: every other section keeps its own source.)
-    local ss = require("loomworks.status_source")
-    local orig_read = ss.read
-    ss.read = function(...)
-        local saved_obs = { observer._current, observer._attached_root }
-        observer._current, observer._attached_root = obs, "/root"
-        local rok, body = pcall(orig_read, ...)
-        observer._current, observer._attached_root = saved_obs[1], saved_obs[2]
-        if not rok then error(body, 0) end
-        return body
+    -- The LSP configuration as `LspConfig/1` holds it (the daemon reads the
+    -- same working copy).
+    function obs:lsp_phase()
+        return "loaded", { state = "loaded", options = { clangd = core:get_lsp_options("clangd") } }
     end
+    -- (The editor is attached to it while the page renders.)
+    local saved_obs = { observer._current, observer._attached_root }
     views.set(obs, "header", lw.view_header())
     -- The debug adapter records as `DebugConfig/1.adapters` answers them
     -- (the daemon builds them from the same working copy).
@@ -251,14 +247,16 @@ local function render_fixture_impl(name)
         return require("loomworks.debug_config").adapter_records(core:get_workspace())
     end
 
+    observer._current, observer._attached_root = obs, "/root"
     local ok, text = pcall(function()
         local tree = Tree.new(require("loomworks.ui.status")._render_fn)
         tree.width = 100
         setmetatable(tree._folds, { __index = function() return true end })
         return render_text(tree)
     end)
+    observer._current, observer._attached_root = saved_obs[1], saved_obs[2]
     views.clear(obs)
-    ss.read, eo.debug_adapters = orig_read, orig_adapters
+    eo.debug_adapters = orig_adapters
     for k, v in pairs(saved) do lw[k] = v end
     assert(ok, text)
     return text

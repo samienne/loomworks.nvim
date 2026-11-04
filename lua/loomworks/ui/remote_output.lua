@@ -1,6 +1,6 @@
 --- loomworks/ui/remote_output.lua — a daemon task's kept output in a
 --- buffer: the Tasks section's `Show output` and a Profiles row's task
---- output in `daemon` mode (step 5o C2d-2).
+--- output (step 5o C2d-2).
 
 local M = {}
 

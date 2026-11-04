@@ -19,35 +19,6 @@
 
 local M = {}
 
---- The in-process view's rows, each bound to the domain object it describes
---- (`Workspace:view_workspace`'s `bind`; weak: a row lives as long as the
---- page that rendered it; all forgotten when a workspace is torn down,
---- M.forget). The status page's actions name an entity by its
---- row; in the `in-process` mode loomworks/ui/model_calls.lua finds the
---- object here (M.object_of).
-local bound = setmetatable({}, { __mode = "k" })
-
---- Bind a row of an in-process read to the domain object it describes.
---- @param row table
---- @param obj table|nil
-function M.bind(row, obj)
-    if row ~= nil then bound[row] = obj end
-end
-
---- Forget every row's binding (Workspace:teardown: a torn-down workspace's
---- objects are reached by no row of a page rendered before the swap).
-function M.forget()
-    for row in pairs(bound) do bound[row] = nil end
-end
-
---- The domain object an in-process row was bound to, or nil (a daemon row:
---- never bound).
---- @param row table|nil
---- @return table|nil
-function M.object_of(row)
-    return row ~= nil and bound[row] or nil
-end
-
 --- @class loomworks.StatusBody
 --- @field mode "daemon"
 --- @field view loomworks.ViewWorkspace|nil nil while the view is not held

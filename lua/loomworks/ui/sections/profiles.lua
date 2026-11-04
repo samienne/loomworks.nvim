@@ -6,12 +6,10 @@
 --- loomworks/ui/model_calls.lua naming the profile by its row (step 5o C2a);
 --- the deletions go through it too, naming the profile or unit by its row
 --- (step 5o C2c-2), and so do its builds, configures, cleans and rebuilds,
---- in `daemon` mode by the profile row's id or the unit row's `unit_id`
---- (step 5o C2d-1), its options read and device choice (C2d-2). A row's
---- cancel and task output are the tasks whose `start` meta names the row's
---- ids (C2d-2; ui/actions). No row reaches the editor's model in `daemon`
---- mode; in-process an action finds a row's object through
---- loomworks.status_source.object_of.
+--- by the profile row's id or the unit row's `unit_id` (step 5o C2d-1), its
+--- options read and device choice (C2d-2). A row's cancel and task output
+--- are the tasks whose `start` meta names the row's ids (C2d-2;
+--- ui/actions). No row reaches the editor's model.
 
 local helpers = require("loomworks.ui.helpers")
 local actions = require("loomworks.ui.actions")
@@ -70,8 +68,8 @@ end
 --- the profile's configuration set (its modules' host toolchains and its
 --- SDKs' kit toolchains) that the profile lacks (its toolchain as the view
 --- lists it; a toolchain key is a value, API.md §1.2). The set is named by
---- the row's `config_set_id` (in-process: the bound profile's set,
---- helpers.profile_set); none for a profile whose set is orphaned.
+--- the row's `config_set_id` (helpers.profile_set); none for a profile
+--- whose set is orphaned.
 --- @param ws loomworks.Workspace|nil
 --- @param row table the profile's view row
 local function add_tool_action(ws, row)
@@ -125,12 +123,12 @@ local function add_tool_action(ws, row)
 end
 
 --- "Pick device": scan, then choose one of the online devices (or clear).
---- Every device read goes through loomworks.device_source — in `daemon`
---- mode a `Devices/1.scan` task (step 5n C2); a refused or failed scan was
+--- Every device read goes through loomworks.device_source — a
+--- `Devices/1.scan` task (step 5n C2); a refused or failed scan was
 --- notified. The choice is `Profiles/1.set_device` / `clear_device` through
---- ui/model_calls.lua naming the profile row (step 5o C2d-2): in `daemon`
---- mode by its id and the device record's id, the current choice the row's
---- `device` (by its id); in-process the bound profile's.
+--- ui/model_calls.lua naming the profile row (step 5o C2d-2): by its id and
+--- the device record's id, the current choice the row's `device` (by its
+--- id).
 --- @param ws loomworks.Workspace|nil
 --- @param row table the profile's view row
 local function pick_device_action(ws, row)
@@ -149,20 +147,10 @@ local function pick_device_action(ws, row)
                 vim.notify("loomworks: no devices found", vim.log.levels.INFO)
                 return
             end
-            -- The current choice: the row's device (daemon mode, by id), or
-            -- the bound profile's serial (in-process).
-            local chosen, is_current
-            if require("loomworks.daemon.editor_ops").daemon_of(ws) then
-                local dev = row.device or {}
-                chosen = dev.key ~= nil
-                is_current = function(d) return dev.id ~= nil and d.id == dev.id end
-            else
-                local profile = require("loomworks.status_source").object_of(row)
-                if not profile then return end
-                local serial = profile:device_serial()
-                chosen = serial ~= nil
-                is_current = function(d) return d.key == serial end
-            end
+            -- The current choice: the row's device (by id).
+            local dev = row.device or {}
+            local chosen = dev.key ~= nil
+            local function is_current(d) return dev.id ~= nil and d.id == dev.id end
             local items = vim.list_extend({}, online)
             if chosen then
                 items[#items + 1] = { clear = true }
@@ -191,18 +179,12 @@ end
 
 --- The actions of a profile's project row (its configuration unit): `u`
 --- the view's unit row of profile row `row`. Its deletion, builds,
---- configure, clean, rebuild and options name the row (in `daemon` mode by
---- its `unit_id`; none while the profile has no unit there); its task output
+--- configure, clean, rebuild and options name the row (by its `unit_id`;
+--- none while the profile has no unit there); its task output
 --- and cancel are the tasks naming its ids (step 5o C2d-2).
 local function unit_actions(ctx, row, u)
     local ws = ctx.ws
-    local acting
-    if ctx.mode == "daemon" then
-        acting = u.unit_id ~= nil
-    else
-        local pp = require("loomworks.status_source").object_of(u)
-        acting = pp ~= nil and pp._config_unit ~= nil
-    end
+    local acting = u.unit_id ~= nil
     local open = actions.open_unit_task(row, u, ws)
     return {
         on_enter = open,
@@ -226,8 +208,8 @@ local function with(opts, acts)
 end
 
 --- The actions of a profile row: its model writes (always), its deletion
---- and operations by the row (on an actionable row: in `daemon` mode one with
---- an id; step 5o C2d-1), its cancel of the tasks naming its ids (only while
+--- and operations by the row (on an actionable row: one with an id; step 5o
+--- C2d-1), its cancel of the tasks naming its ids (only while
 --- one runs; C2d-2).
 local function profile_actions(ctx, row)
     local ws = ctx.ws

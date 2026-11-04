@@ -22,10 +22,8 @@ local function cycle(current, values)
 end
 
 --- Render the clangd-options block. Each row toggles or cycles on
---- Enter and writes through `lw.set_lsp_option`: in-process it persists
---- user.json and emits `lsp_options_changed` so the integration restarts
---- the client; in `daemon` mode only through the workspace daemon's
---- `LspConfig/1.set_option`, applied (and the page re-rendered,
+--- Enter and writes through `lw.set_lsp_option`: only through the
+--- workspace daemon's `LspConfig/1.set_option`, applied (and the page re-rendered,
 --- `daemon_lsp_config`) from the state read back (spec §19.16 "LSP
 --- configuration").
 --- @param tree loomworks.Tree

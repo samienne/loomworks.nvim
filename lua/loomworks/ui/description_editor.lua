@@ -13,40 +13,21 @@ local M = {}
 local ns = vim.api.nvim_create_namespace("loomworks_description_editor")
 
 --- Kind label for an item ("profile", "configuration set", "project",
---- "configuration") and its display name.
+--- "configuration", "launch configuration") and its display name: the row
+--- item's own (helpers.row_item; the editor holds no model, step 6b-alpha).
 --- @param item table
 --- @return string kind, string name
 function M.describe_item(item)
-    -- A handle for an item that is not a domain object names its own kind
-    -- and label.
-    if item._kind then return item._kind, item._label or "?" end
-    local mt = getmetatable(item)
-    if mt == require("loomworks.profile") then return "profile", tostring(item.key) end
-    if mt == require("loomworks.configuration_set") then return "configuration set", item.name end
-    if mt == require("loomworks.project") then return "project", item.key end
-    if mt == require("loomworks.configuration") then
-        return "configuration", (item._project and (item._project.key .. "/") or "") .. item.name
-    end
-    if mt == require("loomworks.launch_configuration") then
-        return "launch configuration", (item._project and (item._project.key .. ":") or "") .. item.name
-    end
-    return "item", tostring(item.key or item.name)
+    return item._kind or "item", item._label or "?"
 end
 
 --- Whether an item's description can be edited here. A generated
---- configuration's description comes from the project files (core §1.10).
+--- configuration's description comes from the project files (core §1.10):
+--- its row item says why (`_readonly`, helpers.row_item).
 --- @param item table
 --- @return boolean ok, string|nil reason
 function M.editable(item)
     if item._readonly then return false, item._readonly end
-    local Configuration = require("loomworks.configuration")
-    if getmetatable(item) == Configuration then
-        if item:is_auto_gen() or not item.is_user or item._source_missing then
-            return false, "configuration '" .. item.name .. "' is generated from the project files, "
-                .. "which also supply its description; declare a configuration that inherits "
-                .. "it to give it your own"
-        end
-    end
     return true, nil
 end
 

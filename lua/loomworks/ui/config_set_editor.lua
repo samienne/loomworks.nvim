@@ -13,11 +13,10 @@ local View = require("loomworks.ui.view")
 local M = {}
 
 --- A configuration the set dialog offers or maps, shown by its name: the
---- model call sends it by `id` (daemon) or the object bound to it
---- in-process (status_source), never by name (ui/model_calls.lua).
+--- model call sends it by `id`, never by name (ui/model_calls.lua).
 --- @class loomworks.ConfigSetChoice
 --- @field name string
---- @field id? string the configuration's id (daemon only)
+--- @field id? string the configuration's id
 
 --- Open the config set editor dialog.
 --- @param opts table

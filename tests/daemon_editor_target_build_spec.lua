@@ -326,9 +326,7 @@ describe("a launch target's build through the daemon (§19.16, step 5t C)", func
                 end,
             }
             require("loomworks.ui.sections.tasks")(tree, { lw = {
-                get_active_tasks = function() return {} end,
                 get_daemon_tasks = function() return { task } end,
-                get_build_dir_locks_info = function() return {} end,
             } })
             assert.equals(1, #lines)
             assert.matches("— build: deploy %(pre_build%) %(2/3%)", lines[1])

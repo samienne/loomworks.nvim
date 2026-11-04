@@ -597,11 +597,6 @@ describe("daemon view.Workspace/1 (§19.13 The workspace view)", function()
             v = s.view()
             assert.same({ profile = "rel", path = shared }, block(v, "dev"))
             assert.is_nil(block(v, "rel"))
-            -- The in-process status source's view has no artifact_block.
-            local inproc = ws:view_workspace({ bind = require("loomworks.status_source").bind })
-            for _, p in ipairs(inproc.profiles) do
-                for _, u in ipairs(p.units) do assert.is_nil(u.artifact_block) end
-            end
             -- dev builds again (forced): rel is overwritten now; an update
             -- carries dev's block cleared and rel's.
             s.updates()
