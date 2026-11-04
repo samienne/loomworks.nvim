@@ -1,13 +1,13 @@
 --- loomworks/test_state.lua — the one builder of the tests view's state
---- (`loomworks.view.Tests/1`, daemon.md §19.13 "The tests view"; step 5m
---- part A): the active profile's configuration units with their test-view
+--- (`loomworks.view.Tests/1`): the active profile's configuration units with
+--- their test-view
 --- state, each `ok` unit's test tree with **explicit** suite nodes, node ids
 --- scoped to their unit, `source`, and the per-node last results.
 ---
 --- Host-neutral (pure Lua, no `vim.*`, requires nothing): the editor builds
 --- the state in-process through loomworks/test_source.lua, and the workspace
---- daemon serves the same shape (step 5m part B1) with its session fields
---- and opaque ids (§19.12). Never discovers, loads, writes or reads files:
+--- daemon serves the same shape with its session fields
+--- and opaque ids. Never discovers, loads, writes or reads files:
 --- the trees come from what the units have discovered (or from `tree_of`).
 ---
 --- Node ids. Every node has a **local key** scoped to its unit — the unit's
@@ -145,7 +145,7 @@ end
 --- @param unit table a ConfigUnit
 --- @param project string
 --- @param configuration string
---- @param entries table[] the unit's merged test entries (§8.9.3)
+--- @param entries table[] the unit's merged test entries
 --- @param opts loomworks.TestsViewOpts
 --- @return loomworks.TestsViewNode[]
 function M.nodes(unit, project, configuration, entries, opts)

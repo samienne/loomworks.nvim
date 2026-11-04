@@ -20,18 +20,14 @@ where a document and this text disagree on a shape, the document wins. Only
 interface versions that have a document are specified here; the server's
 roadmap of further interfaces is not part of the contract.
 
-**Section numbers.** `§n` is a section of this document. `spec §n` is a
-section of the loomworks behavioural specification
-([specification.md](../../specification.md) and its topic files under
-[`spec/core/`](../core/)), which defines the workspace model, its files and
-the CLI's commands the operations below perform. `PROTOCOL.md §n` is a
-section of the protocol.
+**Section numbers.** `§n` is a section of this document.
+`PROTOCOL.md §n` is a section of the protocol and `formats.md §n` a section
+of the [file formats](../formats.md).
 
 **The CLI's behaviour.** Many operations below are the CLI's commands run by
 a server. Where this document says an operation prints, refuses or fails *as
-the CLI does* (its lines, messages and exit codes), it means what the
-behavioural specification gives for the same command run by the CLI on its
-own (spec §16).
+the CLI does* (its lines, messages and exit codes), it means what `lw` does
+for the same command run on its own, without a server.
 
 ## 1. Conventions
 
@@ -50,17 +46,17 @@ values of their owner (§1.2).
 
 A request names an entity by a reference (`loomworks.Common/1` `Ref`),
 either `{ id }` or `{ key }`. A client may send an id taken from a result or
-view, or a key; the server resolves a key as spec §16.9 specifies (its
+view, or a key; the server resolves a key as the CLI does (its
 messages and exit codes). Keys are the model's
-keys (spec §1). Each method states how it answers a reference that does not
+keys. Each method states how it answers a reference that does not
 resolve (§8.3, §10.2, §11, §6, §19–§22). An id resolves to its entity
 itself, never through the entity's key: an entity renamed since the id was
 issued is still the one named. An id issued before the server loaded the
 workspace again (a trust change, the removal of the working copy, a newer
 schema) or before a restart is stale; a command answers it `refused`, `no
 <kind> with id <id> (a stale reference)`, and changes nothing.
-A reload the server makes for a request's environment (spec §19.15
-"Environment") is not such a load: each entity of the reloaded model keeps
+A reload the server makes for a request's environment (§5) is not such a
+load: each entity of the reloaded model keeps
 the id of the entity it replaces, matched by kind and key as a refresh
 matches it (a profile, configuration set or project by its key; a
 configuration, launch configuration or configuration unit by its project's
@@ -69,8 +65,8 @@ keep their ids. An entity the reload no longer has leaves its id stale.
 
 An **item reference** (`ItemRef`) names a profile, configuration set,
 project, configuration or launch configuration without saying which: ids
-are unique across kinds, so `{ id }` alone resolves. In step 5o an
-`ItemRef` is an id only; it has no key form.
+are unique across kinds, so `{ id }` alone resolves. An `ItemRef` is an id
+only; it has no key form.
 
 A **launch configuration** or a **configuration** is named by a `Ref`: its
 id, or with `{ key }` (its name) the request's `project` reference as well.
@@ -90,7 +86,7 @@ PROTOCOL.md §5 and §7 leave these values to the suite:
   `trust.key` decode to (formats.md §2.1) — over the 19 ASCII bytes
   `loomworks-daemon-v1`.
 - *E* is the `endpoint` string of the workspace's daemon handle
-  (formats.md, the handle record; spec §19.6), byte for byte: the address
+  (formats.md §8), byte for byte: the address
   the server bound and published.
 - `hello.client` is `cli` or `editor`; `role = "observer"` is a client that
   only watches.
@@ -116,7 +112,7 @@ In `loomworks.Root/1` (PROTOCOL.md §10): `describe().binary` is
 The root's `objects_changed` reports a module's objects mounted or
 unmounted. A server may mount the core objects before it loads the
 workspace, loading it on the first call that needs it; then its object set
-does not change with the workspace (spec §19.20 "Object set"). A server that
+does not change with the workspace. A server that
 mounts an object only once the workspace is loaded lists until then the
 objects that need none, and reports the change with `objects_changed`.
 
@@ -142,10 +138,10 @@ errors (PROTOCOL.md §11.1):
 - `accepted` (`task_id`, `profile_key`, `pid`) — for a task-streamed method,
   the operation runs as a task owned by this connection (PROTOCOL.md §14.3);
 - `refused` (`message`, `exit_code`) — before any side effect: the workspace
-  is refused (spec §17.4, a journal it cannot complete, a newer schema
-  spec §2.7) or an argument does not resolve (§1.2). A non-interactive call
+  is refused (not trusted, a journal it cannot complete, a newer schema) or
+  an argument does not resolve (§1.2). A non-interactive call
   that omits a required operand (the profile) is refused too; `exit_code` is
-  the in-process code — 2 for a usage error (§16.7), 1 for a state refusal. A
+  the in-process code — 2 for a usage error, 1 for a state refusal. A
   client prints the message and ends with that code; with `stream = "out"` the
   message is the command's ordinary standard-output line, not an error;
 - `declined` (`reason`) — before any side effect: the server does not carry
@@ -198,9 +194,9 @@ A `line` frame may carry a `role` (`LineRole`), as a reply's notes may (§4.1):
 step header `==> [<kind>] <name>`), `reason` (a configure reason), `command`
 (a command line printed for `verbose`, below), `ok` (a success outcome),
 `fail` (a failure), `warn` (a warning) or `plain` (an informative line with no
-other role). These are the roles of spec §16.7 *Highlighting*, and the server
-gives each line the role the CLI gives it in-process. A line without `role` is
-`plain`, and so is a role a client does not know. The `text` never contains
+other role). The server gives each line the role the CLI gives it
+in-process. A line without `role` is `plain`, and so is a role a client does
+not know. The `text` never contains
 terminal escape sequences: whether and how a role is shown (colour, `--color`,
 `NO_COLOR`) is up to the client.
 
@@ -236,18 +232,18 @@ step.
 A `LaunchSpec` is `{ name, cmd, args, cwd, env }` — the resolved command, its
 arguments (a command configuration's declared arguments, then `extra`), the
 absolute working directory and, in `env`, only the launch's own contribution
-over the client's environment (the overrides spec §16.17 "Command
-inspection" reports), never a whole environment.
+over the client's environment (the overrides `lw run --print json`
+reports), never a whole environment.
 
 A `DebugSpec` is:
 
 - `name`, `program`, `args`, `cwd`, `env` — resolved exactly as the run's
   launch of the same target and arguments (`program` is the run's `cmd`;
-  `env` only the launch's own contribution, the spec §17.9 denylist applied,
-  never a whole environment). A run and a debug of one target differ only in
-  who starts the program (spec §8.9.6 "Launch target debugging");
+  `env` only the launch's own contribution, the environment denylist of
+  `lua/loomworks/env_policy.lua` applied, never a whole environment). A run and a debug of one target
+  differ only in who starts the program;
 - `language` — the launch's primary language: a launch configuration's first
-  `debug` entry (spec §8.9.6 "Multi-adapter debugging"), otherwise the
+  `debug` entry, otherwise the
   primary language of the target's module;
 - `adapters` — one `{ language, adapter }` per debug language in order (a
   launch configuration's `debug` array, otherwise `language` alone), each
@@ -275,7 +271,7 @@ it to the operation and to nothing else:
   on `PATH` and probes a module spawns see the client's values; two requests
   never see each other's environment;
 - each step is spawned with exactly the client's environment plus the step's
-  own variables (spec §8.1, on Windows replacing a name that differs only in
+  own variables (on Windows replacing a name that differs only in
   case) — never the server's own launch environment.
 
 The whole environment is sent because a subset cannot be chosen safely:
@@ -303,34 +299,34 @@ On `/workspace`:
   profile or load error changed (a load, a reload, a failed load, a write
   that changed the active profile).
 
-*(Step 5o.)* The model's **commands** — here and in §11, §19–§22 — are
+The model's **commands** — here and in §11, §19–§22 — are
 mutating methods, each run in a model segment of the client's environment
 (§5) against the model as the files hold it (another process's writes taken
 in first). A command answers `ok` (§4.1), `refused` or `declined`, and
 where it says so `confirm`. It is `refused`, with nothing written and the
 model unchanged, when a reference does not resolve or is stale (§1.2), when
-the working copy is stale (spec §2.7) or the workspace is not trusted (spec
-§17.4; except `trust_accept` and `delete_user_prefs`), when a lock it needs
-is held (the refusal names the holder, spec §19.3), or when the write
+the working copy is stale or the workspace is not trusted (except
+`trust_accept` and `delete_user_prefs`), when a lock it needs
+is held (the refusal names the holder), or when the write
 fails. Its `changed` and the views' `update`s (§14) precede its reply.
 Writes go to the working copy (`user.json`) unless a command says
 otherwise; a command that writes more than one workspace file, or removes a
 workspace file or a build tree, takes the workspace operation lock first
-(spec §19.3) — a publish, and a rename that propagates into the cache (a
+(formats.md §6.2) — a publish, and a rename that propagates into the cache (a
 profile's key derived again included), among them.
 
-- `publish {}` — regenerates `loomworks.json` from the working copy (spec
-  §2.4; the status page's `:w`), under the workspace operation lock;
+- `publish {}` — regenerates `loomworks.json` from the working copy, under
+  the workspace operation lock;
 - `publish_one { item }` / `revert_one { item }` — publishes one item, or
-  reverts it to the published baseline (spec §2.4);
+  reverts it to the published baseline;
   `item` an `ItemRef` (§1.2); `publish_one` under the workspace operation
   lock;
 - `revert_to_baseline {}` — the working copy's published items back to the
-  baseline, locally added items kept as `local` (spec §2.4; `:e!`);
+  baseline, locally added items kept as `local`;
 - `set_intent { item, intent }` — the item's intent, `local`, `shared` or
-  `local+shared`, recorded as the user's choice (spec §2.4, sticky);
-- `set_description { item, text? }` — the item's description (spec §1.10),
-  normalized as written there; no `text` removes it. `item` may also name a
+  `local+shared`, recorded as the user's choice (sticky);
+- `set_description { item, text? }` — the item's description, normalized
+  as formats.md §3.3 gives; no `text` removes it. `item` may also name a
   launch configuration.
 
 A launch configuration has no publish state (§14.4): `publish_one`,
@@ -338,7 +334,7 @@ A launch configuration has no publish state (§14.4): `publish_one`,
 is published with its project <project key>`, naming the project that owns
 it).
 
-- `trust_accept { plan? }` — the review & trust of spec §17.4. Without
+- `trust_accept { plan? }` — the review & trust of `lw trust`. Without
   `plan`: `confirm`, `lines` the review a client shows (what the working
   copy holds that needs trust, as `lw trust` lists it) and `plan` a token of
   exactly that content. With `plan`: the working copy is signed as shown, or
@@ -348,19 +344,16 @@ it).
   `user.json`) it is `refused`. It is served while the header's state is
   `refused`; the server then loads the workspace again (`header_changed`),
   so every id issued before is stale;
-- `delete_user_prefs { plan? }` — removes the working copy (spec §17.10,
-  `lw trust --discard`, its `.nvim` path checks), confirmed as
+- `delete_user_prefs { plan? }` — removes the working copy (`lw trust
+  --discard`, its `.nvim` path checks), confirmed as
   `trust_accept` is, under the workspace operation lock; the confirmed
   content is checked again under that lock, and a file that changed since is
   `refused` with nothing deleted. With no working copy it is `refused`.
   Also served while the header's state is `refused`; the server then loads
   the workspace again.
 
-*(Deferred, not in step 5o.)* Creating a workspace — writing a new
-`loomworks.json` at a root that has none (the status page's `N`) — is not a
-method in step 5o: a client creates one with `lw init`. A
-`Workspace/1.create { name? }` is deferred until a server serves a root
-with no `loomworks.json`.
+Creating a workspace — writing a new `loomworks.json` at a root that has
+none — is not a method: a client creates one with `lw init`.
 
 ## 7. `loomworks.Tasks/1`
 
@@ -416,9 +409,9 @@ configure. Each is task-streamed and replies with an outcome of §4.1.
 
 - `accepted` — the build runs as a task owned by this connection;
 - `refused` — before any side effect: the workspace is refused or the profile
-  argument does not resolve (spec §16.9);
+  argument does not resolve;
 - `declined` — before any side effect, for the interactive onboarding of a
-  profile from a configuration set (prompts, spec §16.9) and for a request
+  profile from a configuration set (prompts) and for a request
   in a different environment while another build runs in it.
 
 `configure`, `clean` and `reset` have the outcomes of `build`, with the
@@ -432,27 +425,26 @@ of `lw build [<profile>] [--target <name>]… [--force] [--reconfigure] [-v]
 [-- <args>]` — or the configuration units of `units` (§8.3). Its task's
 `meta.kind` is `build`.
 
-An accepted build performs the shared build-step sequence of spec §16.4 /
-§16.6 / §16.28 / §5.1 / §5.10 as the CLI does: the build-directory locks of
-spec §16.6 taken up front in canonical order, a dead holder's lock reclaimed
+An accepted build performs the shared build-step sequence as the CLI does:
+the build-directory locks (formats.md §6.2) taken up front in canonical order, a dead holder's lock reclaimed
 with the interrupted step's state recovered, the build gate, the
 artifact-conflict gate (`force`), the full-reconfigure reset
 (`reconfigure`), the configure record and the cache write-back under the
-save guard (spec §2.7 — a refused save ends the build with its message), the
+save guard (a refused save ends the build with its message), the
 failure line with the `--target` hint, and `BUILD OK: <profile>`.
 
 - **`jobs`** — an integer ≥ 1: the build tool's parallelism for this build
   only, passed to the module as its parallel-jobs option (`-- -j<jobs>`, or
   `-j<jobs>` right after a `--` the step's arguments already carry).
 - **`targets`** — items may be `{ project, target }` besides a string: that
-  target of that project only. A string keeps its meaning (`--target`,
-  spec §16.4); a bare name in the known target lists of several units of one
+  target of that project only. A string keeps its meaning (`--target`);
+  a bare name in the known target lists of several units of one
   project is that project's, not ambiguous. A project the scope does not
   build ends the task before any step with `target '<t>' names project
   '<p>', which <scope> does not build` (exit 1), as an ambiguous `--target`
   does.
 - **`verbose`** (`-v`) — the task also streams, under each step's header and
-  on its stream, the command lines of spec §16.4 *Verbose* as `line` frames of
+  on its stream, the command lines `lw build -v` prints as `line` frames of
   role `command`. It changes what is streamed, never what runs.
 
 ### 8.3 `configure` and unit scopes
@@ -462,13 +454,13 @@ failure line with the `--target` hint, and `BUILD OK: <profile>`.
 scope — also one already configured — with the gates of the build-step
 sequence that apply before a configure (the validity and tool/configuration
 compatibility gates refuse as the CLI does) and `reconfigure` meaning the
-full-reconfigure reset (spec §16.4). The build-directory locks of spec §16.6
+full-reconfigure reset. The build-directory locks (formats.md §6.2)
 are taken **exclusive** up front in canonical order (a dead holder's lock
 reclaimed as for a build). It prints `configuring <scope>`, one `==>
 [configure] <name>` line and step per unit, and `CONFIGURE OK: <scope>`; a
 failing step ends the task with its failure line and the step's exit code,
 the later steps not run. It writes the configure record and the cache as a
-configure does (spec §16.4), the write-back's `changed` before `done`. It
+configure does, the write-back's `changed` before `done`. It
 cancels as a build (`configure stopped: <reason>`).
 
 **`units`** on `build`, `configure` and `clean` — a non-empty array, each
@@ -495,32 +487,29 @@ as a profile's is, never skipping the unit.
 ### 8.4 `clean`
 
 `clean { profile | units, verbose?, interactive, command }` — `lw clean
-[<profile>] [-v]` (spec §16.1: each project's build-system clean on the
+[<profile>] [-v]` (each project's build-system clean on the
 profile's build directories; the configuration is kept). `verbose` as for
 `build` (§8.2): each clean command and each core-performed wipe
 (`    remove <dir>`). It is also `refused`, with the
 `nothing to clean for profile '<p>' …` line, its exit code (1) and
-`stream = "out"` (§4.1: an ordinary standard-output line, not an error — the
-editor reports it as information and a rebuild goes on to its build), when
+`stream = "out"` (§4.1: an ordinary standard-output line, not an error), when
 the profile has no configured build directory on disk to clean or no module
 clean for it — decided after resolution and before any lock. Its task's `meta.kind` is `clean`. An
 accepted clean does, and prints, what the CLI's clean does: the
-build-directory locks of spec §16.6 taken **exclusive** up front in
+build-directory locks taken **exclusive** up front in
 canonical order (a dead holder's lock reclaimed and its state recovered as
 for a build), `cleaning profile: <p>`, one `==> [clean] <name>` line and
 step per project, and `CLEAN OK: <profile>`; a failing step ends the task
 with its failure line and the step's exit code, the later steps not run.
-A profile's ProfileProjects invalid for the clean (spec core §5.4
-"Invalid ProfileProjects") are not cleaned and their directories are kept:
+A profile's ProfileProjects invalid for the clean are not cleaned and their directories are kept:
 the others are cleaned (with nothing else to clean, the clean is still
 accepted, a task with no steps), then the task ends with exit code 1, their
-result lines as its error and as the task result's `not_run` — the editor's
-rebuild then goes on to its build. A failing step's error names them too,
+result lines as its error and as the task result's `not_run`. A failing step's error names them too,
 without `not_run`.
 
-A **core-performed wipe** (spec §8.1 `wipe_build_dir`) is the build-directory
-deletion of spec §4.6 and §4.7: the path is validated first (spec §4.6:
-non-empty, within the workspace root and never the root itself, links not
+A **core-performed wipe** (a module's `wipe_build_dir`) is the build-directory
+deletion ([ARCHITECTURE.md](../../ARCHITECTURE.md), "Deletion safety"): the
+path is validated first (non-empty, within the workspace root and never the root itself, links not
 followed, no command interpreter) — a refused path ends the task with the
 `clean refused: unsafe build directory …` line; the clean's units sharing the
 directory are one deletion batch; the cache says `unknown` on disk before the
@@ -529,17 +518,17 @@ directory still used by a configuration outside the clean is kept (the
 `kept <dir> — still used by another configuration` line). Cancelling during
 a wipe stops it between entries (`clean stopped: <reason>`); what was
 removed stays removed and the cache stays `unknown` (never reset after a
-partial removal, spec §4.7). The clean writes the cache exactly when the
+partial removal). The clean writes the cache exactly when the
 CLI's clean does, and any write-back's `changed` precedes `done`.
 
 ### 8.5 `reset`
 
 `reset { profile?, all?, yes?, plan?, interactive, command }` — `lw reset
-[<profile> | --all] [-y]` (spec §16.30: the profile's build directories, or
+[<profile> | --all] [-y]` (the profile's build directories, or
 with `all` every build directory the workspace knows, orphaned ones
 included, removed from disk and their units returned to `unconfigured`; the
 profile is kept) — has the outcomes of `build`, plus `confirm`. The server
-plans the reset (spec §16.30: the directories to lock, the directories on
+plans the reset (the directories to lock, the directories on
 disk to remove, whether cached state is cleared without a directory), after
 resolution and before any lock or side effect, and then answers:
 
@@ -567,8 +556,8 @@ Its task's `meta.kind` is `reset`; `meta.profile` is the profile's key, or
 absent with `meta.scope = "all"` for `all`; `meta.units` are the planned
 units (for `all` every configuration unit with a build directory; an
 orphaned directory has no unit and is not listed). An accepted reset does,
-and prints, what the CLI's reset does: the workspace operation lock (spec
-§16.30) taken first, then the build-directory locks of spec §16.6 for every
+and prints, what the CLI's reset does: the workspace operation lock
+taken first, then the build-directory locks for every
 directory of the lock set, **exclusive**, in canonical order (a dead
 holder's lock reclaimed and its state recovered as for a build; a held one
 ends the task with the refusal naming the holder, nothing removed). With every lock held
@@ -576,8 +565,8 @@ and before anything is removed, the reset plans again and compares the token
 with the plan it listed: a directory that appeared or vanished in between
 ends the task with the same `the build directories to reset changed since
 they were listed — run lw reset again`, exit 1, the locks released and
-nothing removed. The removal is the build-directory deletion of spec §4.6
-and §4.7: each path validated first; units sharing a directory are one
+nothing removed. The removal is the build-directory deletion
+of §8.4: each path validated first; units sharing a directory are one
 deletion batch; the cache says `unknown` on disk before a tree is removed
 and the units are reset only after its removal succeeded; a directory still
 used by a configuration outside the reset is kept, its state cleared for the
@@ -589,7 +578,7 @@ could not be removed:` lines, a deletion that does not complete with `reset
 timed out — …`, both exit 1; success prints `RESET OK: <scope>`. Cancelling
 during the removal stops it between entries (`reset stopped: <reason>`);
 what was removed stays removed and the cache stays `unknown` (never reset
-after a partial removal, spec §4.7); the locks are held until the removal
+after a partial removal); the locks are held until the removal
 has stopped and are then released, the operation lock last. The reset writes
 the cache exactly when the CLI's reset does, and its write-back's `changed`
 precedes `done`.
@@ -617,7 +606,7 @@ long-running, attached to a terminal — so it never runs in the server.
 
 `prepare_run { profile?, target?, project?, kind?, cwd?, extra?, no_build?,
 quiet?, prefix?, force?, build_scope?, verbose?, interactive, command }` carries the
-parsed command line of `lw run` (spec §16.17): `profile` and `target` (the
+parsed command line of `lw run`: `profile` and `target` (the
 operands; no `target` for the default target), `project` (`--project`),
 `kind` (`--target` / `--launch`), `cwd` (`--cwd`, sent as given: the launch
 resolves it — variables expanded, relative to the workspace root), `extra`
@@ -629,21 +618,20 @@ preparation's dependency build and deploy steps (`    copy …` /
 client and do not change what is prepared; `prefix` only lets the server
 refuse a device target, after the validity gate and before deploy, with the
 `--prefix cannot wrap a device target …` line. Likewise a `cwd` for a device
-target (a module-declared one, spec §11.4) is refused there with the
+target (a module-declared one) is refused there with the
 `--cwd does not apply to a device run …` line and exit code 2. The outcomes
 are those of `Build/1.build`; it is also `declined` for a profile with a
-foreign kit (spec §18.1). An accepted request runs as a task
+foreign kit. An accepted request runs as a task
 (`meta.kind = run`) that does, and prints, what the CLI's run does before its
 `running …` line, in the same order:
 
 1. unless `no_build`, the profile's build: the build-directory locks taken as
    for a build, the build steps of §8.2 (every gate and line), then the locks
    **released** — they are held for the build only;
-2. the launch target resolved against the built tree (spec §16.17, "Launch
-   target selection": the named target, else the default target, else the
+2. the launch target resolved against the built tree (the named target, else the default target, else the
    sole launchable one; the same messages for none, ambiguous and unset) and
    its validity gate;
-3. unless `no_build`, the deploy steps (spec §8), after the locks were
+3. unless `no_build`, the deploy steps, after the locks were
    released;
 4. the launch spec resolved — variables and `${VAR}` expanded in the
    client's environment (§5).
@@ -651,12 +639,11 @@ foreign kit (spec §18.1). An accepted request runs as a task
 `done` then carries `exit_code` 0 and `launch` (§4.4) — or a nonzero exit
 code and the failure line (a failed build, no such target, a failed deploy,
 `cannot resolve launch: …`). A target found foreign only by probing its
-built artifact (spec §18.1, no kit platform) is known only after the server
+built artifact (no kit platform) is known only after the server
 built it: the task ends with `exit_code` 0, no `launch`, and `device =
 true`, before any deploy (of the `target` build scope: before its
-post-build deploy, §9.3); the CLI then continues the run itself from the
-deploy, while the editor refuses it, executing no foreign target (spec
-§18.11, §19.16 "Editor operations"). The task, and every lock, ends before the program starts; the server
+post-build deploy, §9.3); a client then continues the run itself from the
+deploy, or refuses it. The task, and every lock, ends before the program starts; the server
 keeps nothing of the run.
 
 ### 9.2 `prepare_debug`
@@ -670,13 +657,13 @@ except `quiet` and `prefix` (no report, no wrapper), has the outcomes of
 `exit_code` 0 and `debug` (§4.4).
 
 Whether an adapter is installed in the client's debugger, its install hint,
-and the adapter-specific request shape (spec §8.9.6, spec/integrations/debug/)
+and the adapter-specific request shape
 stay with the client, which checks the first before it sends the call.
-There is no device debug (spec §18; spec §11): a device target, or a target
-found foreign by its kit or by probing its artifact (spec §18.1, §18.11),
+There is no device debug: a device target, or a target
+found foreign by its kit or by probing its artifact,
 ends the task nonzero — before the build when the kit tells, otherwise once
 the build probed it — with the refusal of debugging a foreign target
-(spec §18.11) as its failure line (a device target, which has no artifact to
+as its failure line (a device target, which has no artifact to
 name: `'<target>' is a device target; this host cannot debug it. …`);
 `prepare_debug` is never `declined` for it. The kit-token check precedes
 everything (build and deploy alike). The artifact probe precedes every
@@ -689,7 +676,7 @@ not exist yet.
 
 `prepare_run` and `prepare_debug` take an optional `build_scope`: `profile`
 (the default: steps 1 and 3 of §9.1, as `lw run` builds) or `target` — in
-place of steps 1 and 3, the launch flow of spec §8.8.4 steps 3–6: the
+place of steps 1 and 3, the launch's own phases: the
 launch's dependencies (explicit `depends_on` and deploy-source projects, a
 deploy source in the configuration it names), the pre-build deploy steps,
 the launch target's own unit, the post-build deploy steps. Each build in it
@@ -703,14 +690,14 @@ deploy steps: a foreign one ends a debug as refused (§9.2) and a run with
 step ends the task with its failure line, the later steps not run. Its
 deploy steps run asynchronously, a cancel stopping between two copies, and
 its steps are reported as §4.3 describes; `force` is the answer to the
-artifact-conflict question (spec §5.9), which the client asks before the
+artifact-conflict question, which the client asks before the
 call as before a build. With `no_build` neither scope builds or deploys.
 
 ### 9.4 `build`
 
 `build { profile?, project?, target?, kind?, force?, interactive, command }`
-(addressed as `prepare_run` is, plus `force`) builds a launch target as the
-launch flow of spec §8.8.4 steps 3–5 does, as one task (`meta.kind = build`)
+(addressed as `prepare_run` is, plus `force`) builds a launch target, as one
+task (`meta.kind = build`)
 with the outcomes of `Build/1.build`: the launch target is resolved as
 `prepare_run` resolves it; a resolution or validity refusal (including the
 abstract-configuration gate), or an error while planning the steps, ends the
@@ -721,22 +708,21 @@ deploy steps, and the launch target's own unit (its one target where the
 module builds single targets) run in that order — the phases of the `target`
 build scope (§9.3) up to and including the target's own unit (without its
 artifact probe, post-build deploy steps or launch resolution), and for a
-device target (spec §11) then its post-build deploy steps. Each build
+device target then its post-build deploy steps. Each build
 takes the build-directory lock of the unit it builds, for that build only;
 the deploy steps run without locks and record their freshness in the
-workspace cache. `force` is the answer to the artifact-conflict question
-(spec §5.9), asked by the client before the call. The first failing step
+workspace cache. `force` is the answer to the artifact-conflict question,
+asked by the client before the call. The first failing step
 ends the task with its failure line, the later steps not run; when every
 step succeeded the task closes with the plain build's line `BUILD OK:
 <target>` (the launch target's display name) and `done` carries `exit_code`
 0. A cancel (`Tasks/1.cancel`) kills a running build step and stops a deploy
-between two copies; the steps not reached are not run. *(Step 5n, part
-B2.)* A device target is built like any other, its post-build deploy steps
+between two copies; the steps not reached are not run. A device target is built like any other, its post-build deploy steps
 included, and its install and launch are left to `Devices/1` (§15).
 
 ### 9.5 `device_log`
 
-*(Step 5n, part B3; the editor's use, part C3.)* `device_log { task }` — a
+`device_log { task }` — a
 task (`meta.kind = device_log`) that streams the device log of the program
 a finished `Devices/1.launch` task of the caller launched (`task` its id,
 §15), from what that launch recorded: its target, device, process id and
@@ -746,17 +732,17 @@ running, failed or already stopped, one whose process id was not found, or
 a module with no log command is the `refused` result.
 
 The task runs in the client's environment (§5). First the module's
-log-clear command, when it has one, runs under the device lock (spec §18.7,
+log-clear command, when it has one, runs under the device lock (formats.md §6.2,
 waited for as `install` waits; a failed clear is a `note` line, never a
 failure); then the module's log command, which takes no lock, with the
 process id passed to it when the module asks for strict-pid filtering. Each
-line of its output is parsed as the in-process device-log view parses it,
+line of its output is parsed as `lua/loomworks/device_log_records.lua` parses it,
 and kept only when it matches both the launch's process id and its bundle,
 or whichever of them the launch recorded (a line that does not parse is
 always kept); the level filter stays the client's. The task's `start` meta
 carries `level`, the module's default log level, when it has one; a client
-starts its level filter there. A kept line becomes a record of spec
-§19.18: `ts` (the line's time as printed), `level` (`verbose`, `debug`,
+starts its level filter there. A kept line becomes a record:
+`ts` (the line's time as printed), `level` (`verbose`, `debug`,
 `info`, `warn`, `error` or `fatal`; a client shows an unknown level as
 `info`), `tag`, `pid`, `message`, and `fields` with `tid`, `domain` and
 `proc`; a line that does not parse is a record with only `message` (the
@@ -772,26 +758,26 @@ records are dropped, and their number is `dropped` on the next `log`, which a
 client shows as a gap. Until a subscription names the task, its records stay in the queue (bounded as above; overflow counts toward `dropped`) and the first `log` signal to a subscription naming it carries them. The task ends on a cancel or its owner's disconnect
 (nonzero); when the log command exits (its exit code, the queue sent
 first); or when the program has exited: its process id is probed every 3 s,
-as in-process, and two misses in a row end the task with exit 0 and the
+and two misses in a row end the task with exit 0 and the
 line `the program exited — log stream closed`. A reload of the workspace
 does not end it.
 
 ### 9.6 `targets`
 
-*(Step 6b-α.)* `targets { profile }` → `{ outcome = "ok", targets,
+`targets { profile }` → `{ outcome = "ok", targets,
 incomplete, override }` lists the profile's launchable targets, as headless
-introspection lists them (spec §16.18): a query, read-only, that builds nothing and
+introspection lists them: a query, read-only, that builds nothing and
 runs in the client's environment as `Toolchains/1.list` does (§11).
 `targets` is one record per target, per project in the profile's order (its
 launch configurations, then its build targets, then its device targets): `{
 kind, project, name, label, description?, default }` — `kind` `launch` (a
 command launch configuration, §1.1), `target` (an executable build target
-of a configured unit) or `device` (a module's device target, spec §11);
+of a configured unit) or `device` (a module's device target);
 `project` the project's `{ id, key }`; `name` what a reference names
 (the launch configuration's name, the build target's id, the device
 target's id); `label` its display name; `description` a launch
-configuration's description; `default` true for the profile's default target
-(spec §8.6). `incomplete` lists the keys of the profile's projects whose build
+configuration's description; `default` true for the profile's default target.
+`incomplete` lists the keys of the profile's projects whose build
 targets are unknown because they are not configured (empty when the list is
 complete); `override` is true when the profile stores a default-target choice
 in the working copy. An unknown profile or a stale id is `refused`.
@@ -806,28 +792,28 @@ client's (§9.2). All methods carry the caller's environment (`needs_env`).
 ### 10.1 `run`
 
 `run { profile?, junit?, extra?, no_build?, verbose?, interactive, command }`
-— the plan form of `lw test` (spec §16.16: each unit's native runner, then its
+— the plan form of `lw test` (each unit's native runner, then its
 saved test targets) — has the outcomes of `Build/1.build`; `junit` is the
 `--junit` path, made absolute by the client against its working directory,
 `extra` the arguments after `--`, for the plan's steps, `no_build`
 `--no-build`, and `verbose`, as for `Build/1.build`: the task streams the
-command lines of spec §16.4 *Verbose*. The plan's pre-build checks are made before acceptance: their
+command lines `-v` prints. The plan's pre-build checks are made before acceptance: their
 notes travel with the reply (§4.1, role `plain`), and a refusal is `refused` with the CLI's
 message and exit code (a foreign kit's registered tests with no saved test
-target, spec §18.6, pointing at `lw test --target` and `lw test-target add`;
+target, pointing at `lw test --target` and `lw test-target add`;
 arguments after `--` for a plan of both kinds, exit 2). A plan with saved
 test targets on a unit a foreign kit builds runs them on a device, which
 stays with the client: `declined` (`profile '<p>' builds for <platform>;
 device test runs stay in this process`). Its task's `meta.kind` is `test`.
 
-An accepted run is the test plan of spec §16.16: the build-directory locks
+An accepted run is the CLI's test plan: the build-directory locks
 taken as for a build and held across the build AND the test steps (a native
 runner may rebuild), unless `no_build` the build steps of §8.2 in their
 for-test form (a unit whose runner rebuilds itself is not built separately
 unless it has saved test targets; no steps → no `building profile:` line),
 the units' targets parsed, every saved entry resolved before the first step
 (a missing one fails the test run with the CLI's message; under `no_build`
-also the spec §16.16 "Skipping the build" checks — an unconfigured unit, an
+also the checks for skipping the build — an unconfigured unit, an
 unbuilt executable, a self-rebuilding runner that cannot skip its rebuild —
 with the CLI's lines and exit 1, the locks held across those checks and the
 steps, and its stale-build notes), then each step with its `==> [test] …`
@@ -858,14 +844,14 @@ reference (§1.2), with the message `no such test`, before acceptance.
 
 - **`discover { force? }`** — task-streamed (`meta.kind = discover`), the
   outcomes of `Build/1.build`. In the caller's environment, for each unit of
-  the profile in project-key order, the discovery of spec §8.9.3
+  the profile in project-key order, the discovery
   (every TestUnit's entries merged, the saved test targets
   included, the configured-here and foreign-kit rules applied — such units
   get their view state, not a tree). A unit whose tree is current
   (discovered since its last configure or build ended and its saved list
   last changed) is not probed again unless `force`. Probing a unit runs its
   test programs from its build directory, so it takes that build directory's
-  lock (spec §16.6; within the server it waits behind a running build or
+  lock (within the server it waits behind a running build or
   test run of that directory; a holder in another process fails fast, and
   the unit's state is `error` with the busy line) for the probe only. Each
   probed unit's line is `==> [discover] <project>/<configuration>` followed
@@ -913,12 +899,12 @@ reference (§1.2), with the message `no such test`, before acceptance.
   Run-all runs **per top-level node**: one structured run of each runnable
   top-level node of every covered unit (the node's `test_command`, as a
   selected `target` node runs), never a TestUnit's `test_command_all`. A test
-  step runs one TestUnit's structured harness (spec §8.9.2 `test_command`
-  through the owning TestUnit, spec §8.9.4), selected nodes of one
+  step runs one TestUnit's structured harness (`test_command`
+  through the owning TestUnit), selected nodes of one
   executable combined into one invocation where the TestUnit can filter
   them so, each step announced `==> [test] <project>: <name>` and spawned as
   a build step is (streamed, cancellable). Each step writes its results file
-  to its **own** path (spec §16.40, removed once parsed; never a fixed path
+  to its **own** path (removed once parsed; never a fixed path
   in the build directory), so
   concurrent runs never share one. The server reads the harness's per-case
   progress from the step's output and sends it as `results` (batched, at
@@ -990,9 +976,8 @@ commands (§6).
   — the toolchains each module type detects in the client's environment,
   detected once per call: module type → list of `{ key, label, tool_data }`,
   `key` absent for a module whose single toolchain has none.
-- **`Toolchains/1.rescan {}`** *(step 5o)* — detects the toolchains again in
-  the client's environment and takes them into the model, as the status
-  page's `L` does in-process; a command (§6), with a `changed` when the
+- **`Toolchains/1.rescan {}`** — detects the toolchains again in
+  the client's environment and takes them into the model; a command (§6), with a `changed` when the
   model's toolchains changed. It replies only once detection settled or 45 s
   (the daemon's load wait) passed, and other model requests wait behind it
   meanwhile (PROTOCOL.md §4): a client that times calls out allows it at
@@ -1007,12 +992,12 @@ commands (§6).
   compiler cache that profile resolves for that project, as fields `{ policy,
   tool?, path?, present, stale, msvc_auto_off, applicable,
   not_applied_reason?, not_applied_hint? }` that a client formats as `lw
-  profile query … cache` prints it (spec §16); `cache` is absent when that
+  profile query … cache` prints it; `cache` is absent when that
   project's module does not cache C/C++. It probes the client's `PATH`. An
   unknown profile, a project the profile does not map, or a stale id is
   `refused`.
 
-*(Step 5n, part B2.)* A profile's device is chosen with two writes, not
+A profile's device is chosen with two writes, not
 queries, each in a model segment of the client's environment:
 
 - **`Profiles/1.set_device { profile, device }`** — sets the profile's
@@ -1023,14 +1008,14 @@ queries, each in a model segment of the client's environment:
 
 An unknown profile or device, or a stale id, is `refused`.
 
-*(Step 6b-α.)* A profile's default launch target (spec §8.6) is likewise a
+A profile's default launch target is likewise a
 write in a model segment of the client's environment:
 
 - **`Profiles/1.set_default_target { profile, target? }`** — `target` `{
   kind, project, name }` as a record of `Launch/1.targets` (§9.6) gives it,
   `project` a reference (§1.2), stores that target as the profile's default
   in the working copy; without `target` it removes the stored choice, so the
-  default target is resolved again as spec §16.17 resolves it. A target
+  default target is resolved again as §9.1 resolves it. A target
   that is not among the profile's launchable targets is `refused` with `no
   launch target '<project>:<name> (<kind>)' in profile '<key>'`.
 
@@ -1038,14 +1023,14 @@ Each reaches subscribers as `Workspace/1` `changed` and in
 `view.Workspace/1` (§14.4); a write that is refused or fails changes neither
 `user.json` nor the model and is the `refused` result with its message.
 
-*(Step 5o.)* The other profile commands (§6):
+The other profile commands (§6):
 
 - **`Profiles/1.set_active { profile }`** — makes it the active profile
-  (spec §4.2), with `header_changed`;
+  with `header_changed`;
 - **`Profiles/1.create { config_set, tool?, activate? }`** → `ok` with
   `profile { id, key }` (and `config_set { id, key }` when a `{ candidate }`
   set was added — also when the profile could not be saved, the `warn`
-  result without `profile`) — materializes a profile of the set (spec §4.1):
+  result without `profile`) — materializes a profile of the set:
   `config_set` a reference, or `{ candidate }`, a token
   `ConfigSets/1.candidates` (§20) gave for an automatic set, which is added
   first; `tool` one of `tool_choices`' toolchains, absent
@@ -1065,9 +1050,9 @@ Each reaches subscribers as `Workspace/1` `changed` and in
   and refused as `create` is while a toolchain detection is running;
 - **`Profiles/1.add_tool { profile, tool }`** / **`remove_tool { profile,
   tool }`** — adds or removes a toolchain, `tool` its key (§1.2). The
-  profile's key is derived again (spec §1.6); its id is kept, and the new
+  profile's key is derived again; its id is kept, and the new
   key propagates as a profile rename does, under the workspace operation
-  lock (spec §19.3). `add_tool` of a toolchain the model does not know is
+  lock. `add_tool` of a toolchain the model does not know is
   `refused` with `no toolchain '<key>'`; `remove_tool` of a toolchain the
   profile does not have, with `no toolchain '<key>' on profile '<key>'`.
 
@@ -1083,12 +1068,11 @@ A profile is deleted with `Maintenance/1.execute_deletion` (§22).
 
 ## 12. `loomworks.DebugConfig/1`
 
-The workspace's debug-adapter mapping (spec §8.9.6 "Adapter configuration"),
-on `/debug`:
+The workspace's debug-adapter mapping, on `/debug`:
 
 - `adapters {}` → `{ languages: [{ language, adapter, default, known,
   overridden }] }` — one record per language of the workspace's modules
-  (`Module.languages`, spec §8.9.6), sorted; none when no module declares a
+  (`Module.languages`), sorted; none when no module declares a
   language: the adapter in effect, the integration's default, the adapters
   known for the language (`known`, from the integrations' declarations,
   never from the client's debugger), and whether the working copy overrides
@@ -1097,11 +1081,11 @@ on `/debug`:
   working copy (`user.json` `debug.adapters`, never `loomworks.json`), or,
   with no `adapter`, removes the override so the default applies, with a
   `Workspace/1` `changed`. The adapter name is stored as given (a client
-  offers `known`). A write that is refused (a stale working copy, spec §2.7,
+  offers `known`). A write that is refused (a stale working copy,
   or one that is not trusted) or fails changes neither `user.json` nor the
   model, and is the `refused` result with its message;
 - `known_languages {}` → `{ languages: [..] }` — every language a module or
-  integration declares (spec §8.9.6 "Language-based adapter resolution").
+  integration declares.
 
 It has no signal of its own: a change reaches subscribers as `Workspace/1`
 `changed`, on which a client reads `adapters` again. Whether an adapter is
@@ -1110,38 +1094,37 @@ install hint), never the server's.
 
 ## 13. `loomworks.LspConfig/1`
 
-What the workspace's language servers are configured with (spec §9), on
-`/lsp`:
+What the workspace's language servers are configured with, on `/lsp`:
 
 - `get {}` → `{ state, ready, projects: [{ project, id, path, entries }],
   options }`, computed with the caller's environment (§5). `state` is the
   workspace's, as in `view.Header/1` (`loaded`, `unloaded`, `error`,
   `refused`); `ready` is whether the active profile's owned databases have
-  settled (spec §9.7; also true when there is no active profile or nothing to
-  generate). `projects` are in ascending key order (the workspace-entry rule
-  of spec §9.8 depends on it), each with its key, its opaque `id` (§1.1), its
+  settled (also true when there is no active profile or nothing to
+  generate). `projects` are in ascending key order (a client's
+  workspace-entry rule depends on it), each with its key, its opaque `id` (§1.1), its
   path relative to the root and the entries its module's `lsp_configs` gives
-  (spec §8.4). `options` are the working copy's per-server options (spec §2,
+  `options` are the working copy's per-server options (formats.md §4,
   `user.json` `lsp`) as `{ [server]: { [key]: value } }`. `get` never loads
   the workspace: in any state but `loaded` it answers with that `state`,
   `ready = false`, no projects and no options.
 - An **entry** carries the core fields `server`, `root_dir`, `db_state`
-  (`ready` or `unconfigured`, spec §9.1), `db_dir` and `db_rev`, and passes
+  (`ready` or `unconfigured`), `db_dir` and `db_rev`, and passes
   every other field of the module's entry through unread (a module's own
   `build_dir` among them): the schema requires the core fields and allows
   any others, which core never types. `db_dir` is the directory whose owned
   database the entry reads: the module's when it sets one (a redirect to
-  another unit's database, spec §8.4), else the project's active build
+  another unit's database), else the project's active build
   directory; absent when there is neither. `db_rev` is an integer, kept per
   `db_dir`, raised each time the server (re)writes that directory's owned
-  database (spec §8.4 `refresh_lsp_database`'s `done(true)`), so a database
+  database (the module's `refresh_lsp_database` reports `done(true)`), so a database
   that went from absent to present shows although no other field changed.
-  Withhold reasons (spec §9.8) are not in the state: deciding them from
+  Withhold reasons are not in the state: deciding them from
   `db_state` and the entry is the client's integrations' job.
 - `set_option { server, key, value? }` → `{}` — sets the server's option in
   the working copy (`user.json` `lsp`, never `loomworks.json`), or, with no
   `value`, removes it, with a `Workspace/1` `changed`. A write that is
-  refused (a stale working copy, spec §2.7, or one that is not trusted) or
+  refused (a stale working copy, or one that is not trusted) or
   fails changes neither `user.json` nor the model, and is the `refused`
   result with its message. An unknown server or key, or a value whose type
   (or enum value, or list element type) the server's option schema does not
@@ -1191,14 +1174,14 @@ profile's key), `error` string, §2; and `pid` integer, `lw_version` string,
 - `config_set_id` (string, optional) — that configuration set's opaque id;
   present exactly when `config_set` is.
 - `diagnostics` (`"error"` or `"warn"`, optional) — the highest severity
-  among the workspace's structural diagnostics (spec/ui.md §1); absent when
+  among the workspace's structural diagnostics; absent when
   there are none or the workspace is not loaded.
 - `trust` (`"user"` or `"cache"`, optional) — present only when `state` is
-  `refused` by a trust refusal (spec §17.4): the refused file, the working
+  `refused` by a trust refusal: the refused file, the working
   copy (`user`) or the cache (`cache`). Absent for a newer-schema or journal
   refusal.
 - `version` (string, optional) — the running loomworks version of the `lw`
-  that built the view, resolved like `_meta.written_by` (spec §2); absent
+  that built the view, resolved like `_meta.written_by` (formats.md §1.3); absent
   when unknown.
 
 `Workspace/1.header` is unchanged: `view.Header/1` is a separate interface
@@ -1215,16 +1198,16 @@ loaded. A record:
 - `id` (string) — the project's opaque id.
 - `key` (string) — the project's key.
 - `label` (string) — the project's display text (§1.1). A project has no
-  display name of its own (spec §1.2), so its `label` is its key; a client
+  display name of its own, so its `label` is its key; a client
   shows `label`, never derives it.
 - `type` (string) — the project's module type (`cmake`, `meson`, …); a
-  project of an unknown or rejected type (spec §8.0) is listed with its
+  project of an unknown or rejected type is listed with its
   declared type and without `active`.
 - `path` (string) — the project's directory relative to the workspace root,
   `/`-separated: its declared `path`, or its key when it declares none.
 - `abs_path` (string) — the workspace root joined with `path`, absolute and
   `/`-separated, as the server resolves it (not case-folded; a client
-  compares it with its own path normalization, spec §2.3 —
+  compares it with its own path normalization —
   case-insensitive on Windows).
 - `active` (object, optional) — present when the active profile maps the
   project; absent with no active profile:
@@ -1235,8 +1218,7 @@ loaded. A record:
     unit for the project yet.
   - `tool_key` (string, optional) — the key of that configuration's tool;
     absent for a module whose single toolchain has none.
-  - `state` (string) — the configuration unit's state as the right column of
-    spec §3.4 names it (`unconfigured`, `configured`, `built`,
+  - `state` (string) — the configuration unit's state (`unconfigured`, `configured`, `built`,
     `configure_failed`, `build_failed`, `unknown`, `configuring`,
     `building`, `deleting`); `unconfigured` when the profile has no unit for
     the project yet. It includes a task any client runs in the server. Only
@@ -1266,7 +1248,7 @@ discovering?, units }`:
 - `stale` (boolean) — the tree may no longer match the build: no discovery
   has run for the active profile in this session yet, or since then a
   configure, build, clean or reset of one of its units ended (by any client),
-  its saved test target list changed (spec §1.3.4), or the active profile
+  its saved test target list changed, or the active profile
   changed. Only `Tests/1.discover` clears it. The server never discovers by
   itself: discovery runs test programs and needs the client's environment.
 - `discovering` (TaskId, optional) — the task of a `Tests/1.discover` that is
@@ -1278,8 +1260,8 @@ discovering?, units }`:
     `meta.units`.
   - `state` — `ok` (discovered; `nodes` holds its tree), `pending` (not
     discovered yet in this session), `not_configured` (not configured on
-    this machine, spec §17.8: discovery runs programs from the build
-    directory), `foreign` (its kit builds for another platform, spec §18.1),
+    this machine: discovery runs programs from the build
+    directory), `foreign` (its kit builds for another platform),
     `no_tests` (its module has no TestUnit and it has no saved test targets),
     `error` (discovery failed).
   - `message` (string, optional) — why, for `error`, `not_configured` and
@@ -1297,15 +1279,15 @@ discovering?, units }`:
     - `parent` (string, optional) — the parent node's `id`; absent for a
       top-level node.
     - `name` (string) — the display text (the saved-entry name with its `#2`
-      suffix, spec §8.9.2; the case name without its suite).
+      suffix; the case name without its suite).
     - `file` (string, optional), `line` (integer, optional) — the source
       location, absolute and `/`-separated, as discovery maps it.
     - `runnable` (boolean) — whether `run_cases` and `prepare_debug` accept
       it; a missing saved entry is a non-runnable node with `status`
       `errored` and its `message`.
     - `source` (string, optional) — where discovery found it: `ctest`,
-      `meson`, `gtest` (probed cases), `saved` (a saved test target,
-      spec §1.3.4), or a module's own runner name; open-ended (a string, not
+      `meson`, `gtest` (probed cases), `saved` (a saved test target),
+      or a module's own runner name; open-ended (a string, not
       an enum) — a client shows an unknown source as neutral.
     - `status` (optional) — `queued` or `running` while a run that selected
       it is in progress, else its last result in this server session
@@ -1320,7 +1302,7 @@ Output and error locations are not in the view: a client reads them with
 
 ### 14.4 `loomworks.view.Workspace/1`
 
-*(Step 5n.)* What the status page's body shows (spec/ui.md §1.1):
+What the status page's body shows:
 Diagnostics, Suggestions, Profiles, Orphaned Build Dirs, Configuration
 Sets, Projects and SDKs. The header, LSP, Debug Adapters and Tasks sections
 have their own sources. The view is the body's whole contract: every field
@@ -1332,17 +1314,16 @@ Each `id` is an opaque id a client puts in an `{ id }` reference (§1.2);
 an entity's own `id` is always present (PROTOCOL.md §12.1):
 
 - `published` (boolean) — whether the workspace has a published
-  `loomworks.json` (spec §2.4).
+  `loomworks.json`.
 - `modified` (boolean) — whether the working copy differs from the published
-  baseline anywhere (spec §2.4).
+  baseline anywhere.
 - `diagnostics` (array) — the workspace's structural diagnostics, each
   `{ severity, message, source?, target_fold_key? }`: `severity` `error` or
   `warn`; `source` (string) what raised it; `target_fold_key` (string) the
   status page's fold key of the item it is about (the page opens that fold),
   absent for an informational diagnostic. A client never parses
   `target_fold_key`.
-- `suggestions` (integer) — the number of actionable suggestions (spec/ui.md
-  §1.1); the suggestions themselves are `lw health`'s.
+- `suggestions` (integer) — the number of actionable suggestions; the suggestions themselves are `lw health`'s.
 - `profiles` (array) — one record per profile, ordered by key:
   - `id` (string), `key` (string), `label` (string, §1.1),
     `description` (string, optional), `config_set` (string, optional; the
@@ -1358,32 +1339,31 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     `unconfigured`, `2 building, 1 failed`, `1/3 cleaning`, …; `empty` when
     it maps no project). A client shows it as it is, never parses it;
   - `incomplete` (boolean) — a module of the profile has no resolved tool
-    for a language its configurations need (spec/ui.md §1.5);
+    for a language its configurations need;
   - `busy` (boolean) — an operation runs on the profile: one the server
-    runs for any client, or a task observed in the server (spec/ui.md
-    §1.5);
+    runs for any client, or a task observed in the server;
   - `running` (boolean) — a unit of the profile has a configure or build of
     the server's own running;
   - `origin` (string, optional) — the origin label of the task that keeps
     the profile busy when it is only a task another client started
-    (spec/core/daemon.md §19.15 `meta.origin`);
+    (`meta.origin`, §4.2);
   - `tools` (array) — `{ module, key?, label }`, one per module type of its
     projects, ordered by module type;
-  - `toolchain` (array, optional) — the Toolchain row (spec/ui.md §1.5): one
+  - `toolchain` (array, optional) — the Toolchain row: one
     `{ key, label, resolved, languages }` per tool key the profile selects,
     `resolved` false for a key no module's registry knows, `languages` the
     languages the tool provides; present when a module of the profile needs
     a tool or the profile selects any, so an empty array is `(none —
     incomplete)`;
-  - `compiler_cache` (object, optional) — the Compiler cache row (spec/ui.md
-    §1.5): `{ text, stale }`, `text` the row's text, `stale` whether a
+  - `compiler_cache` (object, optional) — the Compiler cache row:
+    `{ text, stale }`, `text` the row's text, `stale` whether a
     configured unit was configured with another launcher than the one now
     resolved (it needs a reconfigure); absent when no
     project of the profile caches C/C++;
   - `compat_error` (string, optional) — why a tool cannot build a project
     of the profile;
   - `artifact_conflict` (boolean) — a unit's output artifact is claimed by
-    another profile's (spec §5.9);
+    another profile's;
   - `last_result` (object, optional) — the outcome of the last operation
     that finished on the profile: `{ status, message? }`, `status` the
     task's final status as in `Tasks/1` (§7), `message` its end message. It
@@ -1391,7 +1371,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     kept while the next operation runs, and survives a reconnect; absent
     before the first operation ends;
   - `device_capable` (boolean, optional) — `true` when a module of the
-    profile has devices (spec §11): the page shows the device row, `none
+    profile has devices: the page shows the device row, `none
     selected` without `device`; absent otherwise;
   - `device` (object, optional) — the profile's device, only with
     `device_capable`: `{ id?, key, label, state, provider? }`, `key` its
@@ -1414,12 +1394,12 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     - `compat_error` (string, optional) — why the profile's tool cannot
       build this project;
     - `overwritten` (boolean) — another unit has since overwritten its
-      output artifact (spec §5.9);
+      output artifact;
     - `launcher_changed` (boolean) — its compiler launcher changed since it
       was configured;
     - `artifact_block` (object, optional) — `{ profile, path? }`: a build of
       the unit now would overwrite the output artifact of the built unit of
-      that profile (spec §5.9 gate, without `force`); the client asks before
+      that profile (the artifact-conflict gate, without `force`); the client asks before
       a build and sends its Yes as `force` (§8.6);
     - `tools` (array of strings, optional) — the labels of the tools that
       build the configuration under the profile;
@@ -1427,7 +1407,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     - `targets` (object, optional) — its parsed build targets, by name, each
       `{ type, artifact?, dependencies? }`; absent before its first
       configure on this machine.
-- `orphaned` (object) — `{ configurations, stray_dirs }` (spec/ui.md §1.6):
+- `orphaned` (object) — `{ configurations, stray_dirs }`:
   `configurations` one `{ id?, key, build_dir? }` per orphaned cached
   configuration, `id` its build directory's (what
   `Maintenance/1.execute_deletion` takes, §22; absent when it has no build
@@ -1443,22 +1423,21 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
   key }` the project, `configuration` `{ id, key }` the configuration (`key`
   its name), `missing` whether it was removed or has no source.
 - `projects` (array) — the project's declaration as the status page shows
-  it (spec/ui.md §1.8), ordered by key with orphaned projects last:
+  it, ordered by key with orphaned projects last:
   - `id` (string), `key` (string), `type` (string), `path`
     (string, as in §14.2), `description` (string, optional) and
     `description_from_module` (boolean, optional; `true` when the module
-    supplied the description, spec/ui.md §1.16);
+    supplied the description);
   - `modified` (boolean), `intent` (string, optional), `removed_upstream`
     (boolean, optional) — its publish state (below);
-  - `orphaned` (boolean) — its module type is unknown or rejected (spec
-    §8.0);
+  - `orphaned` (boolean) — its module type is unknown or rejected;
   - `running` (boolean) — a unit of the project is shown configuring or
     building;
   - `needs_refresh` (boolean) and `refresh_reasons` (array of strings,
     optional) — the module reports that the project's declaration is out of
     date with its sources, and why;
-  - `tests` (object, optional) — the project-wide saved test targets line
-    (spec/ui.md "Saved test targets line", spec §1.3.4): `{ source?,
+  - `tests` (object, optional) — the project-wide saved test targets line:
+    `{ source?,
     invalid?, entries }`, `source` where an inherited list comes from (absent
     for the item's own), `invalid` when the declared list is malformed (then
     `entries` is empty), `entries` one `{ label, missing }` per entry;
@@ -1478,7 +1457,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     `{ destination, sources }`, `sources` the normalized source descriptors;
   - `variables` (object) — variable name → `{ type, default? }`, the
     project's declarations;
-  - `targets` (object, optional) *(step 6b-α)* — the build targets its
+  - `targets` (object, optional) — the build targets its
     configured units parsed, by name, each `{ type }`: the union over every
     configuration unit of the project in the cache, in a profile or not;
     absent when no unit of it has parsed targets;
@@ -1506,7 +1485,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
   - `compiler_overrides` (array of strings) — the reserved compiler option
     keys it sets, which are ignored (a non-blocking warning);
   - `running` (boolean) — a unit of it is shown configuring or building;
-    `overwritten` (boolean) — a unit of it was overwritten (spec §5.9);
+    `overwritten` (boolean) — a unit of it was overwritten;
     `tools_configured` (integer) — how many of its units are configured
     with a tool;
   - `tests` (object, optional) — its saved test targets line, shaped as the
@@ -1516,7 +1495,7 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
     value, source? }`, `source` the configuration it inherits the option from
     (absent for its own);
   - `variables` (array, optional) — the project's variables resolved for it
-    (spec §1.3.1) under the active profile and its compiler family (as
+    under the active profile and its compiler family (as
     `Projects/1.declaration`'s `compiler_family`), ordered by name, each `{ name, value?, source,
     own }`: `source` `profile`, `project` or the name of the configuration
     that sets it, `own` whether the configuration sets it itself, `value`
@@ -1529,15 +1508,15 @@ an entity's own `id` is always present (PROTOCOL.md §12.1):
 - `sdk_providers` (integer) — how many SDK providers are installed; the SDKs
   section offers adding an SDK only when there is one.
 
-The publish state of a profile, configuration set, project or configuration
-(spec §2.4): `modified` whether it differs from the published baseline;
+The publish state of a profile, configuration set, project or configuration:
+`modified` whether it differs from the published baseline;
 `intent` where it is published — `local` (`user.json` only), `shared`
 (`loomworks.json` only) or `local+shared` (both); `removed_upstream` whether
 it has effective intent `local+shared` and was removed from the published
 file since the baseline (absent means false). A client shows an unknown
 `intent` as neutral. A launch configuration or a variable declaration has
-no publish state in the model (spec §2.4 "Per-item granularity"): a change
-to it shows as its project's `modified` (spec §2.4 "Modified indicator"),
+no publish state in the model: a change
+to it shows as its project's `modified`,
 and it is published with its project.
 
 **Progress is not in the view.** The view carries no build progress — no
@@ -1545,10 +1524,8 @@ percent, elapsed time or progress message, for a profile or a unit. A
 client takes them from `Tasks/1` (§7): the task's `start` meta names the
 profile and units it runs on, its `progress` frames (PROTOCOL.md §14.2)
 give the percent, its `start` and `done` the elapsed time; `Tasks/1.list` gives a late joiner each running
-task's start time and last percent. The status page overlays these on the
-view's rows as the editor's remote and editor-owned tasks
-(spec/core/daemon.md §19.16 "Tasks in the task runner", "Running state",
-"UI"), so a profile row shows the same progress whichever client started
+task's start time and last percent. A client overlays these on the
+view's rows, so a profile row shows the same progress whichever client started
 the task. The outcome of the last finished operation is not progress but
 state: it is the profile's `last_result`, in the view.
 
@@ -1557,12 +1534,12 @@ state: it is the profile's `last_result`, in the view.
 
 ## 15. `loomworks.Devices/1`
 
-*(Step 5n, part B2.)* The workspace's devices (spec §11), on `/devices`. The server keeps a registry of the
+The workspace's devices, on `/devices`. The server keeps a registry of the
 devices its modules found; a client never lists or probes devices itself.
 
 A device target is reached only as its profile's default target (`target`
 omitted): a name never selects one, since `prepare_run`'s named targets are
-build targets and launch configurations (spec §16.17).
+build targets and launch configurations.
 
 - `list {}` → `{ devices: [{ id, key, label, state, provider, profiles? }] }`
   — the registry as it is; it never probes a device. Each device is an
@@ -1581,9 +1558,8 @@ build targets and launch configurations (spec §16.17).
   target, a profile with no device, or a module that cannot install it ends
   the task nonzero before anything runs. The module's command runs in the
   client's environment, its output on the task, under the target's
-  build-directory lock (fail-fast) and then the device lock (spec §18.7:
-  waiting for a live holder, announced once on the task) — the order of spec
-  §19.3.
+  build-directory lock (fail-fast) and then the device lock (waiting for a
+  live holder, announced once on the task).
 - `launch { profile?, project?, target?, kind? }` — a task that launches
   that target there, addressed and refused likewise, under the device lock
   only; its `done` carries `{ pid?, bundle? }` (the program's process id,
@@ -1611,13 +1587,13 @@ is a same-build facility, never a stable contract, and not specified here.
 A module provides an interface only for a feature core has no abstraction
 for (signing setup); a feature core abstracts (devices,
 toolchains, build steps) reaches clients through the core interface, which
-the module feeds through the module interface of spec §8. A module's
+the module feeds through the module interface. A module's
 interfaces live in its own namespace (its module id, PROTOCOL.md §9.1) on
 `/modules/<id>`, and their schemas ship with the module. Each declared
 interface version is mounted only if every method in its schema has a
 handler and every handler a method in its schema; a mismatch rejects that
 interface version, not the module. The wire version of a module interface is
-independent of the in-process module API version (spec §8.0).
+independent of the in-process module API version.
 
 ## 18. Conformance fixtures
 
@@ -1634,7 +1610,7 @@ The runner binds `lw_version`, `env` and `root` before the handshake.
 
 ## 19. `loomworks.Projects/1`
 
-*(Step 5o.)* A workspace's projects and what they declare, on `/projects`.
+A workspace's projects and what they declare, on `/projects`.
 `candidates`, `declaration`, `expand_preview` and `unit_options` are
 queries (as §11's); the others are commands (§6). A configuration is named
 by a reference (its id, or its key with the project); a launch
@@ -1664,18 +1640,17 @@ configuration as §1.2 says; a variable, deploy destination or
   not exist is a `warn` note naming it. An unknown `type` is refused (exit 2);
 - `declaration { project }` → `{ outcome = "ok", configurations, launches,
   deploy, variables, options, type_config, module, compiler_family? }` — the
-  project's declaration as the working copy holds it (merged as spec §2.4
-  merges it), for a client's editors: each configuration's and launch
+  project's declaration as the working copy holds it (merged with
+  `loomworks.json`), for a client's editors: each configuration's and launch
   configuration's declared fields with its `id` (`configurations[] { id,
   key, user?, fields, ... }`, `user` for a user configuration; `launches[]
   { id, key, fields }`, or `invalid` instead of `fields` when the
-  declaration is not a table). Beside what is declared, what the
-  configuration editor shows of it, derived and read-only, under the active
-  profile: the module's default `languages` and whether it `has_options`
+  declaration is not a table). Beside what is declared, values derived
+  from it, read-only, under the active profile: the module's default `languages` and whether it `has_options`
   (`module`); the `compiler_family` of the active profile's tool for the
-  project (spec §1.3.1), absent without one; and per configuration
+  project, absent without one; and per configuration
   `default` (generated by the module, its name fixed), `source_missing`
-  (cache only, spec §4.5: not offered as a base), its resolved `variant`
+  (cache only: not offered as a base), its resolved `variant`
   and the base that supplies it (`variant_from { id, key }`; absent when
   it declares its variant itself), the options
   it has from the project or a base and does not declare
@@ -1688,16 +1663,15 @@ configuration as §1.2 says; a variable, deploy destination or
 - `configuration_save { project, configuration?, name, fields }` → `ok`
   with `configuration { id, key }` — creates a user configuration (no
   `configuration`), or updates one; a `name` other than its key renames it,
-  propagated to configuration sets, profiles and the cache (spec §4.8) under
+  propagated to configuration sets, profiles and the cache under
   the workspace operation lock;
 - `configuration_remove { project, configuration }` — removes the
-  declaration; its build state stays, as an orphaned configuration (spec
-  §4.5);
+  declaration; its build state stays, as an orphaned configuration;
 - `options_save { project, options }` — the project's options;
 - `launch_save { project, launch?, name, data }` → `ok` with `launch { id,
   key }` — creates a launch configuration (no `launch`) or replaces one's
-  declared fields; a `name` other than its key renames it as spec §8.7
-  does (profiles' default targets, units' target entries and saved test
+  declared fields; a `name` other than its key renames it
+  (profiles' default targets, units' target entries and saved test
   entries follow), its id kept. The rename writes only the working copy
   (the units' target entries are not cached), so it takes no workspace
   operation lock; `launch_remove { project, launch }`;
@@ -1713,12 +1687,12 @@ configuration as §1.2 says; a variable, deploy destination or
   field is refused (exit 2);
 - `expand_preview { project, profile?, templates }` → `{ outcome = "ok",
   values }` — each template expanded as a launch of that project would
-  expand it (spec §1.3.1, §8.7), under `profile` or the active profile, in
+  expand it, under `profile` or the active profile, in
   the client's environment; an unresolved reference stays as written. No
   `profile` and no active profile is refused;
 - `unit_options { unit }` → `ok` with `options` — the build options of a
   configured configuration unit (`unit` `{ id }`, its id from a view), as the
-  module's `get_options` reads them from its build directory (spec §8):
+  module's `get_options` reads them from its build directory:
   an array of `OptionGroup` / `Option` nodes (`{ label, children }` /
   `{ key, value, value_type?, choices?, helpstring? }`). Read-only, no lock;
   `refused` when the unit is not configured, is being deleted or cleaned
@@ -1732,7 +1706,7 @@ A project is removed with `Maintenance/1.execute_deletion` (§22).
 
 ## 20. `loomworks.ConfigSets/1`
 
-*(Step 5o.)* The configuration sets (spec §1.4), on `/projects`.
+The configuration sets, on `/projects`.
 `candidates` is a query; the others are commands (§6).
 
 - `candidates {}` → `{ outcome = "ok", sets: [{ config_set?, name, auto,
@@ -1752,16 +1726,16 @@ A project is removed with `Maintenance/1.execute_deletion` (§22).
 - `update { config_set, name?, mappings }` — replaces the mappings
   (`mappings` as for `add`); a
   `name` other than its key renames it, propagated to profiles and the
-  cache (spec §4.10) under the workspace operation lock;
+  cache under the workspace operation lock;
 - `remove { config_set }` — removes the declaration; its profiles stay,
-  shown with a missing set (spec §4.4);
+  shown with a missing set;
 - `generate_defaults {}` — adds the sets the projects' configurations
   suggest (one per common configuration name) that do not exist yet; the
   `notes` name the sets added.
 
 ## 21. `loomworks.Sdks/1`
 
-*(Step 5o.)* The workspace's SDKs (spec §10), on `/toolchains`. `detect` is
+The workspace's SDKs, on `/toolchains`. `detect` is
 a query; the others are commands (§6).
 
 - `detect { provider? }` → `{ outcome = "ok", providers: [{ id, label,
@@ -1785,12 +1759,11 @@ detection that outruns the wait leaves the reply `ok`, with a warn note
 (`add`: `SDK '<key>' added; toolchain detection did not finish in time; it
 goes on in the background`; `remove`: `SDK '<key>' removed; toolchain
 detection did not finish in time; it goes on in the background`), and `changed` follows when it
-finishes. The in-process editor's add and remove start the same detection
-without waiting for it.
+finishes.
 
 ## 22. `loomworks.Maintenance/1`
 
-*(Step 5o.)* On `/maintenance`.
+On `/maintenance`.
 
 `execute_deletion { target, plan?, yes? }` — task-streamed, `meta.kind =
 "delete"` — removes build state and what it belongs to, with the outcomes
@@ -1827,7 +1800,7 @@ takes the workspace operation lock, then the build-directory lock of every
 directory of the plan (exclusive, canonical order; a held one ends the task
 with the refusal naming the holder, nothing removed), plans again under
 the locks and ends with the same changed-plan refusal on a difference, and
-then removes as spec §4.6–§4.7 specify: each path validated against the
+then removes as §8.4 describes: each path validated against the
 workspace root, the cache `unknown` on disk before a tree is removed, the
 units reset only after its removal succeeded, a directory still used
 outside the target kept. A `{ project }` whose build directories are not
@@ -1850,10 +1823,10 @@ confirmation's `unit_ids`, or for `{ profile }` the profile's id. It matches
 by these ids only, never by key or path; the deletion itself is decided by
 `target` and `plan` alone.
 
-*(Optional, part B6.)* `nuke { plan?, yes? }` — task-streamed, `meta.kind =
-"nuke"` — the editor's nuke and `lw nuke`: the workspace's build state
+*(Optional.)* `nuke { plan?, yes? }` — task-streamed, `meta.kind =
+"nuke"` — `lw nuke`: the workspace's build state
 (`.nvim/build/`, the build and health caches, the owned language-server
-database areas, spec §4.6). As spec §19.3 requires of a nuke, its locks are
+database areas). Its locks are
 checked before it lists, also without `yes`: a held workspace operation
 lock or build-directory lock is `refused` naming the holder. The server's
 own running tasks are neither passed over nor stopped: while any runs, the

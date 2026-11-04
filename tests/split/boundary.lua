@@ -4,8 +4,11 @@
 ---
 --- Sides:
 ---   plugin  the Neovim plugin: it talks to `lw` only through the daemon protocol.
----   shared  host-neutral protocol client code both sides may load (pure Lua, no
----           `vim.*` beyond `vim.json`).
+---   shared  code both sides load, vendored byte-identical from loomworks
+---           (samienne/loomworks): scripts/vendor.sh copies it and records it
+---           in VENDOR.MANIFEST. Never edited here; `M.vendored()` reads the
+---           manifest, and the guard test requires the shared side to be
+---           exactly the vendored modules.
 ---   binary  the `lw` CLI/daemon: core, workspace, domain objects, modules, ...
 ---
 --- Each entry is a Lua pattern matched against the module name (`lua/a/b.lua` ->
@@ -57,40 +60,52 @@ M.plugin = {
 }
 
 M.shared = {
-    "^loomworks%.proto$",
-    "^loomworks%.proto%.",
-    -- Today's source of the future loomworks.proto: framing and message kinds.
-    -- (loomworks.daemon.version is the binary's: its host identity and
-    -- schemas; the editor announces its own, loomworks.daemon.client.version.)
-    "^loomworks%.daemon%.protocol$",
-    -- The debug-adapter tables (defaults, known adapters, user.json override):
-    -- the editor's debug path reads them, the daemon serves them (step 5k).
-    "^loomworks%.debug_config$",
-    -- The LSP configuration state (entries, db_state, db_rev, options,
-    -- readiness): the editor's LSP layer reads it in-process, the daemon
-    -- serves the same shape (`LspConfig/1`, step 5l).
+    -- The wire protocol's helpers: the message envelope and a task output
+    -- frame's bytes (runtime); the schema reader, the document set, the
+    -- transcript lint and the conformance engine (tests).
+    "^loomworks%.proto%.bytes$",
+    "^loomworks%.proto%.envelope$",
+    "^loomworks%.proto%.schema$",
+    "^loomworks%.proto%.documents$",
+    "^loomworks%.proto%.schema_check$",
+    "^loomworks%.proto%.conformance$",
+    -- The LSP configuration state (`LspConfig/1`): the editor's LSP layer
+    -- reads it, the daemon serves it.
     "^loomworks%.lsp_config$",
-    -- The tests view's state (`view.Tests/1`, spec §19.13 "The tests view"):
-    -- the editor builds it in-process through test_source, the daemon serves
-    -- the same shape (step 5m).
+    -- Pure-Lua SHA-256 (lsp_config's environment digest; the editor's
+    -- provision/sha256 uses it when vim.fn.sha256 is not binary-safe).
+    "^loomworks%.sha256$",
+    -- The tests view's state (`view.Tests/1`).
     "^loomworks%.test_state$",
-    -- A device log's lines as records (parse, prefilter, normalize): the
-    -- editor's in-process device-log view and the daemon's
-    -- `Launch/1.device_log` (step 5n B3) read the stream with the same code.
+    -- A device log's lines as records (parse, prefilter, normalize).
     "^loomworks%.device_log_records$",
-    -- The upward workspace-root search (spec §1.1/§13.2): the editor's
-    -- auto-load and `lw` bind to the same workspace from the same directory.
+    -- The upward workspace-root search: the editor's auto-load and `lw` bind
+    -- to the same workspace from the same directory.
     "^loomworks%.root_finder$",
-    -- Descriptions (spec §1.10, §17.11): normalisation and the inert display
-    -- helpers (`inert`, `fit`, `width`) for the text the views carry; pure.
+    -- Descriptions: normalisation and the inert display helpers.
     "^loomworks%.description$",
 }
+
+--- The module names of the vendored Lua files (VENDOR.MANIFEST), sorted.
+--- @param root string the repository root
+--- @return string[]
+function M.vendored(root)
+    local out = {}
+    for line in io.lines(root .. "/VENDOR.MANIFEST") do
+        local path = line:match("^%x+  (lua/.+)%.lua$")
+        if path then
+            out[#out + 1] = path:gsub("^lua/", ""):gsub("/init$", ""):gsub("/", ".")
+        end
+    end
+    table.sort(out)
+    return out
+end
 
 local binary_toplevel = {
     "api_versions", "build_dir", "build_dir_claims", "build_lock", "build_run", "cache", "cli", "cli_color",
     "cli_options", "cmake_kits", "compiler_cache", "config", "config_editor",
     "config_env", "config_transfer", "config_unit", "configuration",
-    "configuration_set", "core", "cpp_compilers", "data_model", "deletion_plan", "dependency",
+    "configuration_set", "core", "cpp_compilers", "data_model", "debug_config", "deletion_plan", "dependency",
     "deploy", "device", "dir_identity", "env_policy", "events",
     "exe", "expand", "file_tracker", "future", "gtest", "health_cache",
     "housekeeping", "inventory", "io", "languages", "launch_configuration", "launch_target",
@@ -106,7 +121,7 @@ local binary_toplevel = {
 local binary_daemon = {
     "auth", "calls", "client", "command", "connect", "core_interfaces", "descriptor", "devices", "discover", "endpoint",
     "ensure",
-    "envscope", "handle", "identity", "inspect", "interfaces", "launch", "legacy", "loopback", "maintenance", "paths", "relay", "rlock", "rlog",
+    "envscope", "handle", "identity", "inspect", "interfaces", "launch", "legacy", "loopback", "maintenance", "paths", "protocol", "relay", "rlock", "rlog",
     "runner", "running", "runtime", "server", "service", "snapshot", "stdio", "tasks", "test_discover",
     "test_runs", "test_store", "tests_view", "version", "views",
 }

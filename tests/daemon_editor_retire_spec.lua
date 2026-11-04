@@ -96,17 +96,15 @@ describe("editor_retire (pure decisions, §19.16)", function()
     end)
 
     it("busy without busy_clients: the editor (an observer) asking is not subtracted twice", function()
-        local P = require("loomworks.daemon.protocol")
         -- The editor plus one CLI client, from a daemon before 5g.3.
         local st = { busy = false, clients = 2, observers = 1 }
         assert.is_true(R.busy(st))
-        assert.is_true(P.status_busy(st, { asker_observer = true }))
+        assert.is_true(R.busy({ busy = false, clients = 3, observers = 1 }))
         -- The editor alone is idle.
         assert.is_false(R.busy({ busy = false, clients = 1, observers = 1 }))
-        -- The CLI's reconcile (asking as a client) keeps its rule: itself and
-        -- the observing editor leave nobody.
-        assert.is_false(P.status_busy(st))
-        assert.is_true(P.status_busy({ busy = false, clients = 3, observers = 1 }))
+        -- No reply, or a running task, is busy.
+        assert.is_true(R.busy(nil))
+        assert.is_true(R.busy({ busy = true, busy_clients = 0 }))
         -- busy_clients, when reported, decides.
         assert.is_false(R.busy({ busy = false, busy_clients = 0, clients = 2, observers = 1 }))
     end)

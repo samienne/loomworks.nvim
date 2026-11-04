@@ -1,5 +1,5 @@
---- loomworks/proto/documents.lua — the protocol's schema documents (spec
---- §19.20 "Schemas and conformance"): where they are, how an interface
+--- loomworks/proto/documents.lua — the protocol's schema documents: where they
+--- are, how an interface
 --- version names its file, reading and decoding them, and resolving the
 --- cross-document references between them.
 ---

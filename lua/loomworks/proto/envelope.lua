@@ -1,13 +1,12 @@
---- loomworks/proto/envelope.lua — the message envelope of transport 11
---- (spec §19.8, §19.20 "Message envelope"):
+--- loomworks/proto/envelope.lua — the message envelope of transport 11:
 ---
 ---   call   { kind = "call",   req_id, object, iface, v, method, args, env? }
 ---   ok     { kind = "ok",     req_id, result }
 ---   error  { kind = "error",  req_id, error = { code, message, data? } }
 ---   signal { kind = "signal", object, iface, v, name, sub_id?, seq?, args }
----   task   { kind = "task",   task_id, phase, ... }     -- §19.15
+---   task   { kind = "task",   task_id, phase, ... }
 ---
---- The routing fields and the transport error codes are frozen (§19.8): new
+--- The routing fields and the transport error codes are frozen: new
 --- codes may be added; a client treats one it does not know as `internal`.
 --- Shared by the daemon and its clients; pure Lua (`vim.empty_dict` only, so
 --- an empty object encodes as `{}`).
@@ -16,7 +15,7 @@ local M = {}
 
 M.KIND = { call = "call", ok = "ok", error = "error", signal = "signal", task = "task" }
 
---- The transport's error codes (spec §19.20 "Errors and domain results").
+--- The transport's error codes.
 M.ERR = {
     unknown_object = "unknown_object",
     unknown_interface = "unknown_interface",
@@ -31,7 +30,7 @@ M.ERR = {
     internal = "internal",
 }
 
---- The root object and its interface (spec §19.20 "The root object").
+--- The root object and its interface.
 M.ROOT = "/"
 M.ROOT_IFACE = "loomworks.Root"
 M.ROOT_V = 1
@@ -127,8 +126,8 @@ end
 local KNOWN = {}
 for _, c in pairs(M.ERR) do KNOWN[c] = true end
 
---- The code a client acts on: a code it does not know is `internal`
---- (§19.8). `declared` is the set of codes the called interface version's
+--- The code a client acts on: a code it does not know is `internal`.
+--- `declared` is the set of codes the called interface version's
 --- schema declares (its `errors`).
 --- @param e any the reply's `error`
 --- @param declared? table<string, any>

@@ -1,5 +1,5 @@
 --- loomworks/proto/schema_check.lua — the contract checks over the protocol's
---- schema documents (spec §19.20 "Schemas and conformance"):
+--- schema documents:
 ---
 ---   * `lint(set, rel)` — the document is valid against its meta-schema
 ---     (`meta/interface.schema.json`, `meta/transport.schema.json` for

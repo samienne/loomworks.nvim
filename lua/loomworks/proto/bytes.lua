@@ -1,6 +1,6 @@
---- loomworks/proto/bytes.lua — the bytes of a task's `output` frame
---- (PROTOCOL.md §14.2) and the UTF-8 rule of every string a server sends
---- (§4: frames are UTF-8 JSON, RFC 8259).
+--- loomworks/proto/bytes.lua — the bytes of a task's `output` frame and the
+--- UTF-8 rule of every string a server sends (frames are UTF-8 JSON,
+--- RFC 8259).
 ---
 --- A chunk of raw output travels as `text` when it is valid UTF-8, else as
 --- `data`, its bytes in base64 (RFC 4648 §4) — exactly one of the two. A
@@ -174,7 +174,7 @@ function M.output_bytes(frame)
     return type(frame.text) == "string" and frame.text or ""
 end
 
---- Whether `frame` (a task `output` frame) carries its chunk as §14.2 says:
+--- Whether `frame` (a task `output` frame) carries its chunk correctly:
 --- exactly one of `text` (valid UTF-8) and `data` (base64).
 --- @param frame table
 --- @return boolean ok, string|nil err

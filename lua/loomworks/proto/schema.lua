@@ -1,5 +1,4 @@
---- loomworks/proto/schema.lua — the protocol's JSON Schema validator (spec
---- §19.20 "Schemas and conformance").
+--- loomworks/proto/schema.lua — the protocol's JSON Schema validator.
 ---
 --- Implements exactly the restricted keyword set every interface document may
 --- use — `type`, `properties`, `required`, `additionalProperties`, `items`,

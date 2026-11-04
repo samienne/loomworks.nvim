@@ -1,12 +1,11 @@
---- loomworks/lsp_config.lua — the LSP configuration state (spec §9.2 "Where
---- the entries come from", daemon.md §19.16 "LSP configuration", §19.20
---- `LspConfig/1`): per project its module's `lsp_configs` entries with
+--- loomworks/lsp_config.lua — the LSP configuration state (`LspConfig/1`):
+--- per project its module's `lsp_configs` entries with
 --- `db_state`, `db_dir` and `db_rev`, the working copy's per-server
 --- options, and whether the active profile's owned databases are ready.
 ---
 --- Host-neutral (pure Lua, no `vim.*`): the editor's LSP layer reads it
 --- in-process through loomworks/lsp_source.lua, and the workspace daemon
---- serves the same shape (`LspConfig/1.get`, step 5l part B). Starting and
+--- serves the same shape (`LspConfig/1.get`). Starting and
 --- stopping servers, the integrations and their withhold reasons stay the
 --- editor's (loomworks/lsp.lua, integrations/lsp/*).
 
@@ -18,19 +17,19 @@ local M = {}
 --- binary_required, compile_commands_dir, a module's own build_dir,
 --- import_paths, ...).
 --- @class loomworks.LspStateEntry : loomworks.LspConfigEntry
---- @field db_state "ready"|"unconfigured" the module's, else derived (§9.1)
+--- @field db_state "ready"|"unconfigured" the module's, else derived
 --- @field db_dir? string the directory whose owned database the entry reads: the module's when it sets one, else the project's active build dir (absent when none)
 --- @field db_rev integer raised each time the owned database of `db_dir` is (re)written
 
 --- @class loomworks.LspConfigProject
 --- @field project string the project key
---- @field id? string opaque id, only from the daemon (§19.13)
+--- @field id? string opaque id, only from the daemon
 --- @field path? string the project's path relative to the root
 --- @field entries loomworks.LspStateEntry[]
 
 --- @class loomworks.LspConfigState
 --- @field state "loaded"|"unloaded"|"error"|"refused" the workspace's, as `view.Header/1`
---- @field ready boolean the active profile's owned databases have settled (§9.7)
+--- @field ready boolean the active profile's owned databases have settled
 --- @field projects loomworks.LspConfigProject[] ascending key order
 --- @field options table<string, table<string, any>> per-server options (user.json `lsp`, defaults applied)
 
@@ -41,7 +40,7 @@ local M = {}
 local IS_WIN = package.config:sub(1, 1) == "\\"
 
 --- A path in comparable form: `/`-separated, no trailing separator,
---- lowercased on Windows (§2.3).
+--- lowercased on Windows.
 --- @param p string
 --- @return string
 function M.norm(p)
@@ -55,7 +54,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Raise the revision of `db_dir`'s owned database: called when a module
---- reports it (re)wrote it (§8.4 `refresh_lsp_database`'s `done(true)`).
+--- reports it (re)wrote it (`refresh_lsp_database`'s `done(true)`).
 --- @param ws loomworks.Workspace
 --- @param db_dir string
 function M.bump_db_rev(ws, db_dir)
@@ -103,7 +102,7 @@ end
 -- state is part of the key, so a configure/build that would change what the
 -- side effect emits also changes the key and forces a recompute.
 
--- Per environment (the daemon's callers each bring theirs, §19.15): a
+-- Per environment (the daemon's callers each bring theirs): a
 -- project keeps the entries of at most ENV_SLOTS environments, the least
 -- recently used dropped first, so a long-running daemon serving many clients
 -- (each `lw` invocation has its own environment) never grows the memo without
@@ -143,7 +142,7 @@ function M._env_digest(env_key)
             return d.digest
         end
     end
-    local digest = require("loomworks.provision.sha256").lua(env_key)
+    local digest = require("loomworks.sha256").lua(env_key)
     table.insert(_env_digests, 1, { sig = env_key, digest = digest })
     _env_digests[M.ENV_SLOTS + 1] = nil
     return digest
@@ -182,7 +181,7 @@ end
 --- has no workspace (uncacheable — recomputed every time). Every component is
 --- an identity/value read; none touch the filesystem.
 --- `env_key` names the environment the entries are computed in (the
---- daemon's callers each bring theirs, §19.15 "Environment": a server binary
+--- daemon's callers each bring theirs: a server binary
 --- found through PATH differs between them); nil in the editor, which has one.
 --- @param project loomworks.Project
 --- @param env_key? string
@@ -225,7 +224,7 @@ function M._memo_key(project, env_key)
     parts[#parts + 1] = "tdc"
     parts[#parts + 1] = (project.tool_data and project.tool_data.clangd_path) or ""
 
-    -- "Configured on this machine" of every unit of the project (spec §9.1):
+    -- "Configured on this machine" of every unit of the project:
     -- a module may redirect its database to a unit other than the active one,
     -- so any unit's configure/reset/delete must invalidate the memo.
     parts[#parts + 1] = "ch"
@@ -274,7 +273,7 @@ local function active_build_dir(ws, project)
     return bd
 end
 
---- Fill in `db_state` (spec §8.4) on entries whose module omitted it, derived
+--- Fill in `db_state` on entries whose module omitted it, derived
 --- from the project's active ConfigUnit: "ready" when it is configured on this
 --- machine, "unconfigured" otherwise (no active profile / no unit included).
 --- A project without a workspace (never the case at runtime) is left alone.
@@ -300,7 +299,7 @@ end
 --- a hit skips `lsp_configs` entirely) with the core fields filled in —
 --- `db_state` when the module omitted it (needs the project's workspace),
 --- `db_dir` when the module set none (the project's active build dir in
---- `ws`; a module that redirects its database to another unit sets it, §8.4),
+--- `ws`; a module that redirects its database to another unit sets it),
 --- and `db_rev` of `db_dir` (re-read every call: a written database changes
 --- no memo determinant). Every other field, a module's own `build_dir`
 --- included, is left as the module set it. The entry tables are the memo's,
@@ -412,7 +411,7 @@ function M.project_records(ws, projects, id_of, env_key)
     return out
 end
 
---- The per-server options with defaults applied (§2, user.json `lsp`).
+--- The per-server options with defaults applied (user.json `lsp`).
 --- @param ws table
 --- @return table<string, table<string, any>>
 function M.options(ws)
@@ -424,7 +423,7 @@ function M.options(ws)
     return out
 end
 
---- The whole state (§19.20 `LspConfig/1.get`). With no workspace it is
+--- The whole state (`LspConfig/1.get`). With no workspace it is
 --- `opts.state` (default "unloaded"), not ready, with no projects and no
 --- options — the state never loads a workspace.
 --- @param ws loomworks.Workspace|nil
@@ -445,7 +444,7 @@ end
 
 --- A stable signature of a state (sorted keys): equal states, equal
 --- signatures. The daemon sends `LspConfig/1.changed` when it differs from
---- the one at its last `changed` (§19.20).
+--- the one at its last `changed`.
 --- @param state loomworks.LspConfigState
 --- @return string
 function M.signature(state)

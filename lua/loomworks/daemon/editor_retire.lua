@@ -202,11 +202,23 @@ function M.record_failed(root, lw_version) retired[M.key(root, lw_version)] = { 
 function M.reset() retired = {} end
 
 --- Is a daemon whose `status` reply is `st` busy (§19.9 "Busy")? No reply
---- counts as busy. The editor asks over its observer connection, so a daemon
---- without `busy_clients` counts it among the observers, not twice.
+--- counts as busy. A running task, or another connection that owns a task or
+--- has a command in flight (`busy_clients`); a connection that only observes
+--- or subscribes never holds off a retirement. The editor asks over its
+--- observer connection, so a daemon without `busy_clients` counts it among
+--- the observers, not twice.
 --- @param st table|nil
 --- @return boolean
-function M.busy(st) return require("loomworks.daemon.protocol").status_busy(st, { asker_observer = true }) end
+function M.busy(st)
+    if type(st) ~= "table" then return true end
+    local others
+    if type(st.busy_clients) == "number" then
+        others = st.busy_clients
+    else
+        others = (tonumber(st.clients) or 1) - (tonumber(st.observers) or 0)
+    end
+    return st.busy == true or others > 0
+end
 
 --- The Runtime note for an incompatible (or stale) daemon: what the daemon
 --- runs, why, and the tail (what the editor does about it).

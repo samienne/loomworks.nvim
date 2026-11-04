@@ -34,6 +34,42 @@ describe("plugin/binary boundary", function()
         assert.is_true(current.counts.plugin > 0 and current.counts.binary > 0)
     end)
 
+    it("the shared side is exactly the code vendored from loomworks (VENDOR.MANIFEST)", function()
+        local vendored = scan.boundary.vendored(scan.root)
+        assert.is_true(#vendored > 0)
+        local shared = {}
+        for _, rel in ipairs(scan.files()) do
+            local mod = scan.module_name(rel)
+            if mod and scan.side_of_file(rel) == "shared" then shared[#shared + 1] = mod end
+        end
+        table.sort(shared)
+        assert.same(vendored, shared,
+            "A shared module is vendored from loomworks: add it to scripts/vendor.sh and re-vendor, "
+            .. "or move it to the plugin or binary side. " .. SEE)
+    end)
+
+    it("the vendored files are byte-identical to VENDOR.MANIFEST (scripts/vendor.sh --check)", function()
+        local bad = {}
+        for line in io.lines(scan.root .. "/VENDOR.MANIFEST") do
+            local sum, path = line:match("^(%x+)  (.+)$")
+            if sum then
+                local fh = io.open(scan.root .. "/" .. path, "rb")
+                local data = fh and fh:read("*a")
+                if fh then fh:close() end
+                if not data then
+                    bad[#bad + 1] = "missing: " .. path
+                elseif vim.fn.sha256(data) ~= sum then
+                    bad[#bad + 1] = "differs: " .. path
+                end
+            end
+        end
+        if #bad > 0 then
+            fail("Vendored files changed in place:", bad,
+                "Vendored code is never edited here: change it in loomworks, tag, and run "
+                .. "scripts/vendor.sh <loomworks checkout> <tag>. " .. SEE)
+        end
+    end)
+
     it("adds no plugin->binary or shared->binary require edges (ratchet 1)", function()
         local new, stale = {}, {}
         local allowed = allow.edges or {}

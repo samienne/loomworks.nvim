@@ -5,3 +5,20 @@
 # Windows batch launchers must be CRLF — a LF-only .cmd breaks cmd.exe
 # label/goto handling.
 *.cmd text eol=crlf
+
+# Vendored from loomworks (scripts/vendor.sh, VENDOR.MANIFEST): kept
+# byte-identical on every platform, so no line-ending conversion.
+VENDOR.MANIFEST -text
+/spec/protocol/** -text
+/lua/loomworks/proto/bytes.lua -text
+/lua/loomworks/proto/envelope.lua -text
+/lua/loomworks/proto/schema.lua -text
+/lua/loomworks/proto/documents.lua -text
+/lua/loomworks/proto/schema_check.lua -text
+/lua/loomworks/proto/conformance.lua -text
+/lua/loomworks/lsp_config.lua -text
+/lua/loomworks/sha256.lua -text
+/lua/loomworks/test_state.lua -text
+/lua/loomworks/device_log_records.lua -text
+/lua/loomworks/root_finder.lua -text
+/lua/loomworks/description.lua -text

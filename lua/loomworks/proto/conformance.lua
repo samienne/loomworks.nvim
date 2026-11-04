@@ -1,5 +1,5 @@
---- loomworks/proto/conformance.lua — the conformance engine (spec §19.20
---- "Schemas and conformance"): replays a golden transcript against a daemon
+--- loomworks/proto/conformance.lua — the conformance engine: replays a golden
+--- transcript against a daemon
 --- through a transport driver, validating every frame against the schemas.
 ---
 --- A transcript file (`transcripts/<namespace>/<Rest>.<v>.json` under the
@@ -61,7 +61,7 @@
 ---
 --- Every received frame is validated: a transport frame (transport.json)
 --- against its frame schema; the `ok` of an interface call against its
---- method's result schema, and its `note_roles` (API.md §4.1) only with
+--- method's result schema, and its `note_roles` only with
 --- `notes` and as long as them; an `error`'s code is a transport code or one the
 --- method declares; a `signal` against its interface's signal schema, and a
 --- subscribed signal's `seq` is the previous one of its object on this
@@ -115,11 +115,11 @@ M.FORMAT = 1
 ---          configuration set, and on `app` the launch configuration
 ---          `staged`, whose deploy makes `lib` its dependency (a post-build
 ---          source pinning `configuration` `Debug`) and has one pre-build
----          copy whose source never exists (step 5t)
+---          copy whose source never exists
 ---   tests  the `shell` fixture's project `app` (same commands, build
 ---          directory and configuration set `dev`) as a project of the
 ---          harness-only module `teststub` (tests/fixtures/teststub,
----          on the daemon's runtime path; step 5m) with the targets
+---          on the daemon's runtime path) with the targets
 ---          `unit_a` (`Math.Add`, `Math.Sub` — which fails when run —
 ---          at `app/math_test.cc` line 3) and `unit_b` (`Str.Upper`),
 ---          and a trusted working copy with the profile `dev` active;
@@ -128,7 +128,7 @@ M.FORMAT = 1
 ---   devices  the `shell` fixture's project `app` (same commands, build
 ---          directory and configuration set `dev`) as a project of the
 ---          harness-only module `devstub` (tests/fixtures/devstub, on the
----          daemon's runtime path; step 5n), whose devices are `SER1`
+---          daemon's runtime path), whose devices are `SER1`
 ---          ("Stub Phone", online) and `SER2` ("Stub Tablet", offline) unless
 ---          the client environment's `LW_TEST_DEVICES` names others, and a
 ---          trusted working copy with the profile `dev` active, its default
@@ -411,7 +411,7 @@ function Session:check_transport(frame)
 end
 
 --- A task `output` frame carries exactly one of `text` (valid UTF-8) and
---- `data` (base64) — PROTOCOL.md §14.2, a rule the schema vocabulary cannot
+--- `data` (base64) — a rule the schema vocabulary cannot
 --- state; any other frame passes.
 --- @param frame table
 --- @return boolean ok, string|nil err
@@ -447,7 +447,7 @@ function Session:check_received(frame)
                 if not okr then
                     return false, string.format("%s/%d.%s result: %s", call.iface, call.v, call.method, tostring(rerr))
                 end
-                -- note_roles is parallel to notes (API.md §4.1): the schema
+                -- note_roles is parallel to notes: the schema
                 -- types each, the engine their pairing.
                 local res = frame.result
                 if type(res) == "table" and res.note_roles ~= nil
@@ -564,7 +564,7 @@ function Session:check_task(frame)
         local ok, err = self.set:validate(t.rel, base .. "meta", frame.meta)
         if not ok then return false, what .. " meta: " .. tostring(err) end
     elseif frame.phase == "line" and frame.role ~= nil then
-        -- A line's role is its interface's LineRole (API.md §4.2): a client
+        -- A line's role is its interface's LineRole: a client
         -- tolerates an unknown one, but the server sends only declared values.
         local ns = tostring(t.iface):match("^([%w_]+)%.")
         local crel = ns and documents.interface_path(ns .. ".Common", 1)

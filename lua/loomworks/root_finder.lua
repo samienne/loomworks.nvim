@@ -1,8 +1,8 @@
---- loomworks/root_finder.lua — upward workspace-root search (spec §1.1).
+--- loomworks/root_finder.lua — upward workspace-root search.
 ---
 --- The ONE search every host uses to resolve the workspace from a directory:
 --- the headless `lw` (cli.lua) and the editor's auto-load (auto_load.lua), so
---- both bind to the same workspace from the same directory (§13).
+--- both bind to the same workspace from the same directory.
 ---
 --- Walk up from the start directory; the first directory holding
 --- `loomworks.json` or `.nvim/loomworks.user.json` is the root. A directory
@@ -89,7 +89,7 @@ local function read_gitdir(git_file)
     return resolve(dir, slashes(target))
 end
 
---- Classify a `.git` FILE by its `gitdir:` target (spec §1.1):
+--- Classify a `.git` FILE by its `gitdir:` target:
 ---   "worktree"  — a linked worktree (target holds `commondir`, which every
 ---                 linked-worktree admin dir has and a repository's own git
 ---                 dir never does; or a missing `…/worktrees/<name>` target);

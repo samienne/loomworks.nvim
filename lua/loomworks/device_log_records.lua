@@ -1,9 +1,9 @@
 --- loomworks/device_log_records.lua — a device log's lines as records,
 --- host-neutral (pure Lua): the editor's in-process device-log view
 --- (loomworks.device_log) and the workspace daemon's `Launch/1.device_log`
---- (API.md §9.5) parse and prefilter a module's log stream with this same
---- code, and the daemon sends the lines it keeps as the normalized records
---- of spec §19.18 (`normalize`).
+--- parse and prefilter a module's log stream with this same
+--- code, and the daemon sends the lines it keeps as normalized records
+--- (`normalize`).
 
 local M = {}
 
@@ -190,7 +190,7 @@ function M.make_prefilter(opts)
 end
 
 -- ---------------------------------------------------------------------------
--- Normalized records (spec §19.18)
+-- Normalized records
 -- ---------------------------------------------------------------------------
 
 --- A parsed line's level letter as a normalized record's level.
@@ -200,7 +200,7 @@ M.LEVELS = { V = "verbose", D = "debug", I = "info", W = "warn", E = "error", F 
 M.DEFAULT_LEVEL = "info"
 
 --- @class loomworks.DeviceLogRecord
---- A normalized device log record (spec §19.18, API.md §9.5).
+--- A normalized device log record.
 --- @field ts? string the line's time as printed
 --- @field level string verbose, debug, info, warn, error or fatal
 --- @field tag? string
@@ -239,10 +239,10 @@ function M.level_letter(name)
 end
 
 --- A normalized record (a `Launch/1.device_log` record of the workspace
---- daemon, API.md §9.5) as a record of `parse_line`, the shape the device-log
+--- daemon) as a record of `parse_line`, the shape the device-log
 --- view renders and filters — the inverse of M.normalize. A record without
 --- `ts` is an unparsed line (`{ raw = message }`); an unknown level shows as
---- `info` (§9.5).
+--- `info`.
 --- @param rec loomworks.DeviceLogRecord
 --- @return table
 function M.denormalize(rec)

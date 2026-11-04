@@ -42,7 +42,7 @@
 --- invoked from libuv callbacks and must only schedule.
 
 local uv = vim.uv or vim.loop
-local protocol = require("loomworks.daemon.protocol")
+local framing = require("loomworks.daemon.client.framing")
 local settings = require("loomworks.daemon.client.settings")
 local version = require("loomworks.daemon.client.version")
 
@@ -82,7 +82,7 @@ function Conn:request(msg, cb)
     self._next = (self._next or 0) + 1
     msg.req_id = self._next
     self._pending[msg.req_id] = cb
-    pcall(function() self.pipe:write(protocol.encode(msg)) end)
+    pcall(function() self.pipe:write(framing.encode(msg)) end)
 end
 
 --- Call an interface method (spec §19.20): sends a `call` frame stamped with
@@ -150,7 +150,7 @@ end
 --- @param is_done fun(): boolean has the handshake ended?
 --- @return fun(rerr: string|nil, chunk: string|nil)
 local function frame_reader(conn, opts, finish, is_done)
-    local decoder = protocol.new_decoder(protocol.MAX_FRAME)
+    local decoder = framing.new_decoder(framing.MAX_FRAME)
     local state = "welcome"
     return function(rerr, chunk)
         if rerr or not chunk then
@@ -164,7 +164,7 @@ local function frame_reader(conn, opts, finish, is_done)
         end
         for _, msg in ipairs(msgs) do
             if state == "welcome" then
-                if msg.kind ~= protocol.KIND.welcome then return finish(nil, M.ERR_CLOSED) end
+                if msg.kind ~= framing.KIND.welcome then return finish(nil, M.ERR_CLOSED) end
                 conn.welcome = msg
                 conn.on_close = opts.on_close
                 state = "ready"
@@ -173,7 +173,7 @@ local function frame_reader(conn, opts, finish, is_done)
                 local p = msg.req_id and conn._pending[msg.req_id]
                 if p then
                     conn._pending[msg.req_id] = nil
-                    if msg.kind == protocol.KIND.error then
+                    if msg.kind == framing.KIND.error then
                         -- An interface call's error is a structured object
                         -- (§19.20); a v0 request's a string.
                         p(nil, type(msg.error) == "table" and msg.error or tostring(msg.error))
@@ -354,7 +354,7 @@ function M.connect(opts, cb)
     pcall(vim.fn.mkdir, cwd, "p")
     if not uv.fs_stat(cwd) then return nil, "cannot create " .. cwd end
     -- Built here, on the main loop.
-    local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = version.PROTOCOL,
+    local hello = framing.encode({ kind = framing.KIND.hello, protocol = version.PROTOCOL,
         protocol_min = version.PROTOCOL_MIN, lw_version = version.identity(),
         client = opts.client or "editor", role = opts.role, nonce = nonce() or string.rep("0", 64) })
     local env = settings.env(opts.root, opts.env)
