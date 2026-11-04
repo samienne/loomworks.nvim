@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
+-- daemon in-process (loomworks.daemon.server) with its own trust key, which
+-- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- The editor's views end to end (spec §19.13 "Views", "Two sources, one
 -- shape"; step 5j): the daemon side is real — an in-process server with the
 -- real build service (cli._daemon_build_host, as the conformance specs use),
@@ -19,7 +23,7 @@ local client = require("loomworks.daemon.client")
 local observer = require("loomworks.daemon.observer")
 local trust = require("loomworks.trust")
 local Core = require("loomworks.core")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local FR = require("tests.daemon_fake_relay")
 
 client.TIMEOUT_MS = 30000

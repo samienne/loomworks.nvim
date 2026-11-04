@@ -12,7 +12,7 @@ local rlock = require("loomworks.daemon.rlock")
 local handle = require("loomworks.daemon.handle")
 local tasks_mod = require("loomworks.daemon.tasks")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 client.TIMEOUT_MS = 30000
 

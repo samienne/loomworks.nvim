@@ -1,3 +1,6 @@
 
 # Local release dry-run output (make dist)
 /dist/
+
+# The pinned lw the tests run (make lw)
+/.lw-test/

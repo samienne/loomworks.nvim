@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
+-- daemon in-process (loomworks.daemon.server) with its own trust key, which
+-- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- The bytes of a task's `output` frame (PROTOCOL.md §14.2): a chunk that is
 -- valid UTF-8 travels as `text`, any other as `data` (base64, RFC 4648 §4),
 -- exactly one of the two; an incomplete trailing UTF-8 sequence is held back
@@ -175,7 +179,7 @@ describe("a process's end ends its output (§14.2, a task without step states)",
     local envscope = require("loomworks.daemon.envscope")
     local build_run = require("loomworks.build_run")
     local trust = require("loomworks.trust")
-    local H = require("tests.daemon_helpers")
+    local H = require("tests.binary_helpers")
 
     local srv, root, step_lines
     before_each(function()

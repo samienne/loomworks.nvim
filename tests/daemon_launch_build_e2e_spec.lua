@@ -11,7 +11,7 @@ _G.LOOMWORKS_CLI_NO_AUTORUN = true
 _G.LW_CONFORMANCE_LIB = true
 local engine = require("loomworks.proto.conformance")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 local runner = dofile(H.REPO .. "/scripts/conformance.lua")
 

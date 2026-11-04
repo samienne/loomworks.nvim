@@ -16,7 +16,7 @@ _G.LW_CONFORMANCE_LIB = true
 local engine = require("loomworks.proto.conformance")
 local trust = require("loomworks.trust")
 local test_store = require("loomworks.daemon.test_store")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 local runner = dofile(H.REPO .. "/scripts/conformance.lua")

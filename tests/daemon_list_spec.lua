@@ -11,7 +11,7 @@ local command = require("loomworks.daemon.command")
 local handle = require("loomworks.daemon.handle")
 local rlock = require("loomworks.daemon.rlock")
 local proc = require("loomworks.proc")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 --- A parent directory holding this test's workspaces.

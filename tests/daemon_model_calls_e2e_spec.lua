@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
+-- daemon in-process (loomworks.daemon.server) with its own trust key, which
+-- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- The status page's Workspace/1, Profiles/1, ConfigSets/1 and Projects/1
 -- writes through a real daemon (step 5o parts C2a, C2b; daemon.md §19.16
 -- "Model writes", API.md §6, §11, §19, §20): the daemon side is real — an in-process server with the
@@ -19,7 +23,7 @@ local Core = require("loomworks.core")
 local views = require("loomworks.views")
 local model = require("loomworks.ui.model_calls")
 local status_source = require("loomworks.status_source")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local FR = require("tests.daemon_fake_relay")
 
 local runner = dofile(H.REPO .. "/scripts/conformance.lua")

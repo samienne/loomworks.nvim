@@ -14,7 +14,7 @@ local service = require("loomworks.daemon.service")
 local client = require("loomworks.daemon.client")
 local envscope = require("loomworks.daemon.envscope")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 client.TIMEOUT_MS = 30000

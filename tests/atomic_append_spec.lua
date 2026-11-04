@@ -6,7 +6,7 @@
 -- line overwrites the other) — seen in CI as a runtime log holding the
 -- daemon's "serving" line but not the launching client's "launched" one.
 
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 --- Start a writer process: for trial t = 1..n it waits for `<dir>/go<t>`,

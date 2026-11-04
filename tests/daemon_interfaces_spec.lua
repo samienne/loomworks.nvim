@@ -15,7 +15,7 @@ local documents = require("loomworks.proto.documents")
 local envelope = require("loomworks.proto.envelope")
 local auth = require("loomworks.daemon.auth")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 client.TIMEOUT_MS = 30000
 

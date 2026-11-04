@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs
+-- lw's CLI and Core in-process (loomworks.cli, loomworks.sdk) with its own
+-- trust key, which lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- The status page's tool picker: a profile made of an SDK's entry
 -- (Workspace:get_tool_entries → workspace_view.execute_create_profile) stores
 -- the SDK's kit toolchains as its tool keys (spec §1.6: tool keys carry the
@@ -7,7 +11,7 @@
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 local function read(path)
     local f = io.open(path, "rb")

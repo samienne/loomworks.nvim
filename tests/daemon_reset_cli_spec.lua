@@ -14,7 +14,7 @@
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local trust = require("loomworks.trust")
 local build_lock = require("loomworks.build_lock")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 local NOTICE = "lw: resetting through the workspace daemon (pid "

@@ -1,6 +1,6 @@
 -- The daemon-mode editor end to end, one smoke run (step 5k part D; spec
 -- §19.16 "Public API", "Editor operations", §19.13 "Load warnings"): a real
--- spawned daemon (through a real `--stdio` relay from this checkout) and the
+-- spawned daemon (the lw of LOOMWORKS_LW, through a real `--stdio` relay) and the
 -- editor's public paths, in order — attach (the status page from the views),
 -- pick_profile, build_profile, pick_target + build_target + launch_target (the
 -- launch configuration's working_dir honoured), an environment change then a
@@ -13,17 +13,11 @@
 -- The scenarios share one workspace and one daemon and run in order; each
 -- builds on the state the previous one left.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local observer = require("loomworks.daemon.observer")
-local inspect = require("loomworks.daemon.inspect")
-local client = require("loomworks.daemon.client")
-local relay_client = require("loomworks.daemon.client").relay
-local events = require("loomworks.events")
-local trust = require("loomworks.trust")
+local relay_client = require("loomworks.daemon.client.relay")
+local events = require("loomworks")
 local Tree = require("loomworks.ui.tree")
 local H = require("tests.daemon_helpers")
-
-client.TIMEOUT_MS = 30000
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -31,11 +25,10 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
---- Real relays from this checkout run by nvim (as the specs' `lw`).
+--- Real relays of the lw under test (LOOMWORKS_LW).
 local function real_relays()
     return function(ro, cb)
-        ro.argv = { vim.v.progpath, "--headless", "-u", "NONE", "--cmd",
-            "lua vim.opt.rtp:prepend(" .. string.format("%q", H.REPO) .. ")", "-l", H.CLI }
+        ro.argv = { H.lw_path() }
         return relay_client.connect(ro, cb)
     end
 end
@@ -49,7 +42,8 @@ local function read(path)
 end
 
 --- Edit the signed working copy (the trust key is this spec file's data
---- dir's, which the spawned daemon shares). Replaced in one rename, as
+--- dir's, which the spawned daemon shares; lw signs the edit,
+--- H.signed_user). Replaced in one rename, as
 --- loomworks' own writers do: written in place, a daemon check could read
 --- it truncated or half-written, refuse the working copy as untrusted
 --- (§17.4) and unload the model, which then waits for the next
@@ -57,12 +51,12 @@ end
 --- "Freshness of views"): a waiter reads the view again (`until_fresh`).
 local function edit_user(root, fn)
     local path = root .. "/.nvim/loomworks.user.json"
-    local status, body = trust.verify("user", assert(read(path)))
-    assert.equals("valid", status)
-    local user = vim.json.decode(body)
+    local text = read(path)
+    assert.is_not_nil(text)
+    local user = vim.json.decode(text)
+    user._sig = nil
     fn(user)
-    local signed, serr = trust.sign("user", trust.encode(user))
-    if not signed then error(serr) end
+    local signed = H.signed_user(root, user)
     local tmp = path .. ".edit"
     local f = assert(io.open(tmp, "wb")); f:write(signed); f:close()
     -- The daemon may hold the file open for a read: retry the replace.
@@ -152,8 +146,8 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         handlers = {}
         if observer.current() then pcall(lw.shutdown) end
         if root then
-            if inspect.state(root).kind == "live" then pcall(H.stop_daemon, root, env) end
-            H.track_root(root)
+            if H.daemon(root, env) then pcall(H.stop_daemon, root, env) end
+            H.track_root(root, env)
         end
         H.cleanup()
     end
@@ -397,7 +391,7 @@ describe("daemon-mode editor smoke run against a real daemon (step 5k D)", funct
         local gone = daemon ~= nil and vim.wait(90000, function()
             return not H.alive(daemon.pid, daemon.start_time)
         end, 200)
-        local stopped_by_test = not gone and root ~= nil and inspect.state(root).kind == "live"
+        local stopped_by_test = not gone and root ~= nil and H.daemon(root, env) ~= nil
         teardown()
         assert(ok_shutdown, shutdown_err)
         assert.is_not_nil(daemon)

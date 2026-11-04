@@ -17,7 +17,7 @@ local rlog = require("loomworks.daemon.rlog")
 local dpaths = require("loomworks.daemon.paths")
 local trust = require("loomworks.trust")
 local proc = require("loomworks.proc")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 -- The suite runs every spec file at once: an in-process handshake can take

@@ -9,7 +9,7 @@
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 local function read(path)

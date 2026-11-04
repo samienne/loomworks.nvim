@@ -12,7 +12,7 @@ local engine = require("loomworks.proto.conformance")
 local server_mod = require("loomworks.daemon.server")
 local client = require("loomworks.daemon.client")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 local runner = dofile(H.REPO .. "/scripts/conformance.lua")
 

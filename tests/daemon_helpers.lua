@@ -1,16 +1,22 @@
--- Shared helpers for the daemon specs (spec §19.2, §19.6–§19.11): a temp
--- workspace, an isolated environment (data dir = trust key + runtime state,
--- config dir = lw settings), real `lw` processes run through the nvim host
--- (`nvim --headless -u NONE -l lua/loomworks/cli.lua …`), and cleanup that
--- never leaves a daemon running.
+-- Shared helpers for the daemon specs (spec §19.2, §19.6–§19.11, §19.16): a
+-- temp workspace, an isolated environment (data dir = trust key + runtime
+-- state, config dir = lw settings), real `lw` processes and cleanup that never
+-- leaves a daemon running.
+--
+-- The `lw` is a real binary given by LOOMWORKS_LW (`make test` provisions the
+-- release the plugin pins into .lw-test/, scripts/test_lw.lua): a spec that
+-- runs lw fails when it is unset, never skips. Everything these helpers need
+-- from the binary side goes through lw's CLI and its JSON output: signing a
+-- working copy (`lw trust --yes`), a workspace's daemon (`lw daemon list
+-- --json --under <root>`), stopping and killing it (`lw daemon stop`, `lw
+-- daemon kill --all --strays --under <root>`). No binary-side module is loaded
+-- here.
 
-local proc = require("loomworks.proc")
 local uv = vim.uv or vim.loop
 
 local M = {}
 
 M.REPO = (uv.cwd():gsub("\\", "/"))
-M.CLI = M.REPO .. "/lua/loomworks/cli.lua"
 M.is_win = package.config:sub(1, 1) == "\\"
 
 local function tmp()
@@ -19,6 +25,29 @@ local function tmp()
     return d
 end
 M.tmp = tmp
+
+--- The lw under test: LOOMWORKS_LW, checked once (`lw version --json`
+--- answers only when the binary finds its release bundle). Errors when unset
+--- or unusable: these specs need a real lw.
+local checked
+--- @return string
+function M.lw_path()
+    local p = os.getenv("LOOMWORKS_LW")
+    if p == nil or p == "" then
+        error("LOOMWORKS_LW is not set: the daemon specs run a real lw. `make test` sets it "
+            .. "(`make lw` provisions the pinned release into .lw-test/); by hand, run "
+            .. "`eval \"$(nvim -l scripts/test_lw.lua .lw-test)\"` first.", 0)
+    end
+    if checked ~= p then
+        local r = vim.system({ p, "version", "--json" }, { text = true }):wait()
+        if r.code ~= 0 then
+            error("LOOMWORKS_LW=" .. p .. " does not run (it finds its release bundle through "
+                .. "LOOMWORKS_INSTALL_DIR; see `make lw`): " .. (r.stderr or "") .. (r.stdout or ""), 0)
+        end
+        checked = p
+    end
+    return p
+end
 
 --- A temp workspace (an empty loomworks.json).
 --- @return string root
@@ -33,6 +62,7 @@ end
 
 --- An isolated environment: its own data dir (trust key, runtime state) and
 --- config dir (lw settings). `extra` adds/overrides variables (false removes).
+--- LOOMWORKS_LW and LOOMWORKS_INSTALL_DIR (the release bundle) carry over.
 --- @param extra? table<string, string|false>
 --- @return table env { vars = dict, data = dir, config = dir }
 function M.env(extra)
@@ -50,15 +80,21 @@ function M.env(extra)
     -- The suite runs every spec file at once: give a daemon start, and a
     -- handshake, room on a loaded machine.
     vars.LW_TEST_DAEMON_READY_MS = "60000"
-    -- ... and each step of a command's ensure (connect + handshake, ping),
-    -- whose 1 s budget a healthy daemon can miss there: the command then
-    -- runs without it and prints a line the parity tests do not expect.
+    -- ... and each step of a command's ensure (connect + handshake, ping).
     vars.LW_TEST_DAEMON_STEP_MS = "30000"
     -- ... and a routed operation's own connect + handshake (5 s).
     vars.LW_TEST_DAEMON_CONNECT_MS = "30000"
     if M.is_win then vars.APPDATA = cfg else vars.XDG_CONFIG_HOME = cfg end
     for k, v in pairs(extra or {}) do vars[k] = v or nil end
     return { vars = vars, data = data, config = cfg }
+end
+
+--- An environment on this editor's own data dir (minimal_init's): the trust
+--- key the editor and the lw it starts share.
+--- @param extra? table<string, string|false>
+--- @return table env
+function M.editor_env(extra)
+    return M.env(vim.tbl_extend("force", { LOOMWORKS_DATA_DIR = vim.env.LOOMWORKS_DATA_DIR }, extra or {}))
 end
 
 --- The env as the `uv.spawn` list.
@@ -80,23 +116,21 @@ function M.settings(env, settings)
     f:close()
 end
 
+--- Started lw processes (`lw_start`), killed by `cleanup` if still running.
+local clients = {}
+
 --- Run `lw <args>` to completion as a real process. Returns
---- { code, stdout, stderr, ms }.
+--- { code, stdout, stderr, ms, pid }.
 --- @param args string[]
---- @param opts { env: table, cwd?: string, timeout?: integer }
+--- @param opts { env: table, cwd?: string, timeout?: integer, stdin?: string }
 function M.lw(args, opts)
     local out, err = uv.new_pipe(false), uv.new_pipe(false)
     -- `opts.stdin`: text the process reads on its standard input (then EOF).
     local inp = opts.stdin and uv.new_pipe(false) or nil
     local obuf, ebuf, code = {}, {}, nil
-    -- Modules resolve on the runtime path (plugin_loader): `-u NONE` needs
-    -- the checkout on it to build anything.
-    local argv = { "--headless", "-u", "NONE", "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")",
-        "-l", M.CLI }
-    for _, a in ipairs(args) do argv[#argv + 1] = a end
     local t0 = uv.hrtime()
-    local h, pid = uv.spawn(vim.v.progpath, {
-        args = argv, cwd = opts.cwd, env = env_list(opts.env.vars),
+    local h, pid = uv.spawn(M.lw_path(), {
+        args = args, cwd = opts.cwd, env = env_list(opts.env.vars),
         stdio = { inp, out, err },
     }, function(c) code = c end)
     assert(h, "spawn failed: " .. tostring(pid))
@@ -116,26 +150,24 @@ function M.lw(args, opts)
 end
 
 --- Start `lw <args>` without waiting (a build to interrupt). Returns
---- { pid, start, stdout(), stderr(), code (nil while running), kill(signal) };
+--- { pid, stdout(), stderr(), code (nil while running), kill(signal), wait(ms) };
 --- with `opts.stdin`, also `write(text)` / `close_stdin()` (its standard
---- input is a pipe: e.g. a prompt's answer).
+--- input is a pipe: e.g. a prompt's answer). `cleanup` kills it if it still
+--- runs.
 --- @param args string[]
 --- @param opts { env: table, cwd?: string, stdin?: boolean }
 function M.lw_start(args, opts)
     local out, err = uv.new_pipe(false), uv.new_pipe(false)
     local inp = opts.stdin and uv.new_pipe(false) or nil
     local obuf, ebuf = {}, {}
-    local argv = { "--headless", "-u", "NONE", "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")",
-        "-l", M.CLI }
-    for _, a in ipairs(args) do argv[#argv + 1] = a end
     local r = {}
-    local h, pid = uv.spawn(vim.v.progpath, {
-        args = argv, cwd = opts.cwd, env = env_list(opts.env.vars), stdio = { inp, out, err },
+    local h, pid = uv.spawn(M.lw_path(), {
+        args = args, cwd = opts.cwd, env = env_list(opts.env.vars), stdio = { inp, out, err },
     }, function(c) r.code = c end)
     assert(h, "spawn failed: " .. tostring(pid))
     out:read_start(function(_, d) if d then obuf[#obuf + 1] = d end end)
     err:read_start(function(_, d) if d then ebuf[#ebuf + 1] = d end end)
-    r.pid, r.start = pid, proc.start_time(pid)
+    r.pid = pid
     function r.stdout() return table.concat(obuf) end
     function r.stderr() return table.concat(ebuf) end
     function r.kill(sig) pcall(uv.process_kill, h, sig or "sigkill") end
@@ -146,7 +178,38 @@ function M.lw_start(args, opts)
         if ok then pcall(function() out:close(); err:close(); h:close() end) end
         return ok
     end
+    clients[#clients + 1] = r
     return r
+end
+
+--- Sign `root`'s working copy for the trust key of `env` (`lw trust --yes`:
+--- what a user does to accept a working copy written by hand).
+--- @param root string
+--- @param env? table from M.env (default: this editor's data dir)
+function M.trust(root, env)
+    local r = M.lw({ "--no-input", "trust", "--yes" }, { env = env or M.editor_env(), cwd = root })
+    if r.code ~= 0 then error("lw trust --yes in " .. root .. ": " .. r.stderr .. r.stdout) end
+end
+
+--- The text of a working copy `user` (a table, without `_sig`) signed by lw
+--- for the trust key of `env`: `lw trust --yes` in a scratch copy of the
+--- workspace (a signature does not bind the directory, `lw help trust`), so
+--- a live daemon never sees the unsigned file.
+--- @param root string the workspace (its loomworks.json is copied)
+--- @param user table
+--- @param env? table from M.env (default: this editor's data dir)
+--- @return string
+function M.signed_user(root, user, env)
+    local scratch = tmp()
+    vim.fn.mkdir(scratch .. "/.nvim", "p")
+    local src = assert(io.open(root .. "/loomworks.json", "rb"))
+    local cfg = src:read("*a"); src:close()
+    local f = assert(io.open(scratch .. "/loomworks.json", "wb")); f:write(cfg); f:close()
+    f = assert(io.open(scratch .. "/.nvim/loomworks.user.json", "wb")); f:write(vim.json.encode(user)); f:close()
+    M.trust(scratch, env)
+    f = assert(io.open(scratch .. "/.nvim/loomworks.user.json", "rb"))
+    local signed = f:read("*a"); f:close()
+    return signed
 end
 
 --- The step script of `shell_workspace` (run by nvim -l): prints
@@ -209,11 +272,12 @@ end
 
 --- A workspace with one `shell` project `app` (configure + build both run
 --- the STEP script through this nvim) and a configuration set `dev`
---- (app=Debug). `opts.profile`: also write a signed working copy with the
---- profile `dev` (the trust key must already be set, in-process tests);
---- `opts.launch`: with it, the project's launch configurations in that
---- working copy; `opts.tests`: app's saved test-target list there.
---- @param opts? { profile?: boolean, launch?: table, tests?: table }
+--- (app=Debug). `opts.profile`: also write a working copy with the profile
+--- `dev`, signed by lw (`M.trust`) for the trust key of `opts.env` (default:
+--- this editor's data dir); `opts.launch`: with it, the project's launch
+--- configurations in that working copy; `opts.tests`: app's saved
+--- test-target list there.
+--- @param opts? { profile?: boolean, launch?: table, tests?: table, env?: table }
 --- @return string root
 function M.shell_workspace(opts)
     local root = tmp()
@@ -233,7 +297,6 @@ function M.shell_workspace(opts)
     }
     f = io.open(root .. "/loomworks.json", "w"); f:write(vim.json.encode(cfg)); f:close()
     if opts and opts.profile then
-        local trust = require("loomworks.trust")
         local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
         -- Launch programs are honored only from the working copy (§17.10).
         -- `tests`: app's saved test targets (§1.3.4), with the launches.
@@ -243,12 +306,9 @@ function M.shell_workspace(opts)
             app.shell.tests = opts.tests
             user.projects = { app = app }
         end
-        -- (No `assert(x)` as a value: under busted it is luassert's, which
-        -- returns nothing.)
-        local signed, serr = trust.sign("user", trust.encode(user))
-        if not signed then error(serr) end
         f = io.open(root .. "/.nvim/loomworks.user.json", "wb")
-        f:write(signed); f:close()
+        f:write(vim.json.encode(user)); f:close()
+        M.trust(root, opts.env)
     end
     return root
 end
@@ -275,182 +335,111 @@ function M.load_warnings(root, opts)
     f:write('{ "_meta": { "version": 8 }, "build_dirs": {} }'); f:close()
 end
 
---- `lw daemon stop` in `root`, then wait until the stopped daemon's process
---- has exited. stop returns once the runtime lock is released, a moment
---- before the process is gone — on a loaded machine a while: a test that
---- ends (or lists processes) right there would find it still running.
+--- `lw daemon list --json [--under <root>]`: the daemons' entries (pid,
+--- start_time, state, relays, ...).
+--- @param root? string only the daemons of workspaces under it
+--- @param env? table from M.env (default: this editor's data dir)
+--- @return table[]
+local function list(root, env)
+    local args = { "daemon", "list", "--json" }
+    if root then vim.list_extend(args, { "--under", root }) end
+    local r = M.lw(args, { env = env or M.editor_env(), cwd = root })
+    if r.code ~= 0 then error("lw daemon list --json: " .. r.stderr) end
+    return vim.json.decode(r.stdout).daemons or {}
+end
+
+--- The daemons of `root` (`lw daemon list --json --under <root>` entries).
+--- @param root string
+--- @param env? table
+--- @return table[]
+function M.daemons(root, env) return list(root, env) end
+
+--- The daemon of `root` (its `lw daemon list --json` entry), or nil.
+--- @param root string
+--- @param env? table
+--- @return table|nil
+function M.daemon(root, env) return list(root, env)[1] end
+
+--- Is the daemon (pid + start time) still running? `root`: list only that
+--- workspace's daemons (default: every daemon on the machine).
+--- @param pid integer
+--- @param start string
+--- @param root? string
+--- @return boolean
+function M.alive(pid, start, root)
+    for _, d in ipairs(list(root)) do
+        if d.pid == pid and d.start_time == start then return true end
+    end
+    return false
+end
+
+--- Workspaces whose daemons `cleanup` kills: { root, env }.
+local tracked = {}
+
+--- Remember `root` for `cleanup` and return its daemon's entry (if any).
+--- @param root string
+--- @param env? table from M.env: the data dir its daemon belongs to (default: this editor's)
+--- @return table|nil the `lw daemon list --json` entry
+function M.track_root(root, env)
+    env = env or M.editor_env()
+    local seen = false
+    for _, t in ipairs(tracked) do if t.root == root then seen = true end end
+    if not seen then tracked[#tracked + 1] = { root = root, env = env } end
+    return M.daemon(root, env)
+end
+
+--- `lw daemon stop` in `root`, then wait until the stopped daemon is gone
+--- from `lw daemon list`. stop returns once the runtime lock is released, a
+--- moment before the process is gone — on a loaded machine a while: a test
+--- that ends (or lists processes) right there would find it still running.
 --- @param root string
 --- @param env table from M.env
 --- @return table result of M.lw
 function M.stop_daemon(root, env)
-    local lk = require("loomworks.daemon.rlock").read(root)
-    if lk and type(lk.pid) == "number" then M.track(lk.pid, lk.start_time) end
+    local d = M.track_root(root, env)
     local r = M.lw({ "daemon", "stop" }, { env = env, cwd = root })
-    if r.code == 0 and lk and type(lk.start_time) == "string" then
-        vim.wait(30000, function() return not M.alive(lk.pid, lk.start_time) end, 50)
+    if r.code == 0 and d then
+        vim.wait(30000, function() return not M.alive(d.pid, d.start_time, root) end, 100)
     end
     return r
-end
-
---- Daemon processes this spec started or found, killed by `cleanup`.
-local tracked = {}
-
---- Remember a process to be killed at cleanup (pid + start time).
---- @param pid integer
---- @param start? string
-function M.track(pid, start)
-    if type(pid) ~= "number" then return end
-    tracked[#tracked + 1] = { pid = pid, start = start or proc.start_time(pid) }
-end
-
---- Track the daemon a workspace's runtime lock names (if any).
---- @param root string
---- @return table|nil the lock info
-function M.track_root(root)
-    local info = require("loomworks.daemon.rlock").read(root)
-    if info and type(info.pid) == "number" then M.track(info.pid, info.start_time) end
-    return info
 end
 
 --- Processes found alive by `cleanup` over a whole spec file (asserted by a
 --- final test, so a failing test's leftovers do not mask its own failure).
 M.leftovers = 0
 
---- Processes still alive after `cleanup` tried to kill them: a real leak
+--- Daemons still running after `cleanup` tried to kill them: a real leak
 --- (asserted zero by each spec's final test).
 M.survivors = 0
 
---- Kill every tracked process still alive (identity-checked, the whole tree;
---- retried once), whatever the test's outcome — after_each runs it, so a
---- failed assertion never leaves a daemon running. Returns the number found
---- alive (also added to `M.leftovers`: a test that passed should have stopped
---- its daemon itself; one that failed has already been reported).
+--- Kill every started lw still running and every tracked workspace's daemon
+--- (`lw daemon kill --all --strays --under <root>`, retried once), whatever the
+--- test's outcome — after_each runs it, so a failed assertion never leaves a
+--- daemon running. Returns the number found alive (also added to
+--- `M.leftovers`: a test that passed should have stopped its daemon itself).
 function M.cleanup()
     local n = 0
+    for _, c in ipairs(clients) do
+        if c.code == nil then
+            n = n + 1
+            c.kill("sigkill")
+            c.wait(5000)
+        end
+    end
+    clients = {}
     for _, t in ipairs(tracked) do
-        pcall(proc._resume, t.pid)
-        if type(t.start) == "string" and proc.alive(t.pid, t.start) then
+        if #list(t.root, t.env) > 0 then
             n = n + 1
             for _ = 1, 2 do
-                pcall(proc.kill_tree, t.pid, t.start)
-                if vim.wait(5000, function() return proc.alive(t.pid, t.start) ~= true end, 20) then break end
+                M.lw({ "daemon", "kill", "--all", "--strays", "--under", t.root }, { env = t.env, cwd = t.root })
+                if vim.wait(5000, function() return #list(t.root, t.env) == 0 end, 100) then break end
             end
-            if proc.alive(t.pid, t.start) == true then M.survivors = M.survivors + 1 end
+            if #list(t.root, t.env) > 0 then M.survivors = M.survivors + 1 end
         end
     end
     tracked = {}
     M.leftovers = M.leftovers + n
     return n
-end
-
---- Is the process (pid + start time) alive?
-function M.alive(pid, start)
-    return type(start) == "string" and proc.alive(pid, start) == true
-end
-
---- The module environment of the `-v` parity cases (spec §16.4 *Verbose*,
---- §19.15 "Roles and verbose"): a new variable, PATH extended (shown as
---- `$PATH` plus the addition), LW_V_CLIENT equal to the client's (never
---- shown; each case sends another value) and, as on Windows the daemon's
---- scope adds it, NoDefaultCurrentDirectoryInExePath (shown: the client
---- does not set it).
-M.VERBOSE_ENV = {
-    LW_V_ADD = "added value",
-    PATH = (M.is_win and "C:/lw-verbose/bin;" or "/lw-verbose/bin:") .. "${PATH}",
-    LW_V_CLIENT = "${LW_V_CLIENT}",
-    NoDefaultCurrentDirectoryInExePath = "1",
-}
-
---- Give every project of `root` the module environment `vars` (`<module>.env`,
---- a working-copy-only field, spec §17.10): each project's definition (the
---- working copy's, else loomworks.json's) is written into the signed working
---- copy with it. The profile must exist (`lw profile create`).
---- @param root string
---- @param key_path string the environment's trust key (`env.data .. "/trust.key"`)
---- @param vars table<string, string>
-function M.add_module_env(root, key_path, vars)
-    local trust = require("loomworks.trust")
-    local function rd(path)
-        local f = assert(io.open(path, "rb")); local t = f:read("*a"); f:close(); return t
-    end
-    local upath = root .. "/.nvim/loomworks.user.json"
-    local cfg = vim.json.decode(rd(root .. "/loomworks.json"))
-    trust._set_key_path(key_path)
-    local status, body = trust.verify("user", rd(upath))
-    if status ~= "valid" then trust._set_key_path(nil); error("working copy: " .. tostring(status)) end
-    local user = vim.json.decode(body)
-    user.projects = user.projects or {}
-    for name, proj in pairs(cfg.projects or {}) do
-        local p = user.projects[name] or proj
-        for k, v in pairs(p) do
-            if type(v) == "table" and k ~= "launch" and k ~= "configurations" then v.env = vars end
-        end
-        user.projects[name] = p
-    end
-    local signed, serr = trust.sign("user", trust.encode(user))
-    trust._set_key_path(nil)
-    if not signed then error(serr) end
-    local f = assert(io.open(upath, "wb")); f:write(signed); f:close()
-end
-
---- `s` (stdout or stderr, root already replaced) comparable across the three
---- runtimes: CRLF as LF, the daemon's delegation line dropped, pids and
---- durations masked.
---- @param s string
---- @return string
-function M.parity_text(s)
-    s = s:gsub("\r\n", "\n")
-    s = s:gsub("[^\n]*through the workspace daemon[^\n]*\n", "")
-    s = s:gsub("pid %d+", "pid N"):gsub("%d+%.%d+ ?s%f[%W]", "<t>"):gsub("%d+ ?ms%f[%W]", "<t>")
-    return s
-end
-
---- Three-way parity (spec §19.1 "Loopback during the transition", §19.17):
---- `o.args` on three workspaces — `o.roots[1]` in-process
---- (LOOMWORKS_RUNTIME=in-process), `[2]` routed through a live daemon (daemon
---- mode: launched by the run itself), `[3]` attached (`--no-daemon` in daemon
---- mode, no daemon running) — with the same exit code, output
---- (`o.norm(s, root)` then `parity_text`) and state (`o.state(root)`). The
---- in-process run is the plain host, never the attached runtime: the daemon's
---- environment scope must not hide a divergence (§19.17). The daemon is
---- stopped afterwards unless `o.keep_daemon` (a loop of cases on the same
---- roots). Returns the in-process, daemon and attached results.
---- @param o { roots: string[], args: string[], lw: function, norm: function, state: function, env: table, extra?: table, stdin?: string, routed?: boolean, keep_daemon?: boolean }
---- @return table ra, table rb, table rc
-function M.three_way(o)
-    local function with(t) return vim.tbl_extend("force", o.extra or {}, t) end
-    local a, b, c = o.roots[1], o.roots[2], o.roots[3]
-    local what = table.concat(o.args, " ") .. " " .. vim.inspect(o.extra or {})
-    local ra = o.lw(a, o.args, with({ LOOMWORKS_RUNTIME = "in-process" }), o.stdin)
-    local rb = o.lw(b, o.args, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
-    local rc = o.lw(c, { "--no-daemon", unpack(o.args) }, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
-    if o.routed ~= false then
-        assert(rb.stderr:find("through the workspace daemon", 1, true), what .. ": not routed\n" .. rb.stderr)
-        local f = io.open(require("loomworks.daemon.paths").log_path(c), "rb")
-        local log = f and f:read("*a") or ""
-        if f then f:close() end
-        local op
-        for _, x in ipairs(o.args) do if x:sub(1, 1) ~= "-" then op = x; break end end
-        assert(log:find("attached run of " .. tostring(op), 1, true), what .. ": not attached\n" .. log)
-        -- Served by the attached runtime: its service accepted the request as
-        -- a task (not merely started, then fell back in-process) ...
-        assert(log:find("\n[^\n]*" .. vim.pesc(tostring(op)) .. " [^\n]*%(task [^)]+%) accepted"),
-            what .. ": no attached task\n" .. log)
-        -- ... and no daemon was involved (§19.1 rule c).
-        assert(not rc.stderr:find("through the workspace daemon", 1, true), what .. ": daemon line\n" .. rc.stderr)
-    end
-    if not o.keep_daemon then M.stop_daemon(b, o.env) end
-    local ea = M.parity_text(o.norm(ra.stdout, a))
-    local fa = M.parity_text(o.norm(ra.stderr, a))
-    for _, x in ipairs({ { rb, b, "daemon" }, { rc, c, "attached" } }) do
-        local r, root, how = x[1], x[2], what .. " (" .. x[3] .. ")"
-        assert.equals(ra.code, r.code, how .. "\n" .. r.stderr)
-        assert.equals(ea, M.parity_text(o.norm(r.stdout, root)), how)
-        assert.equals(fa, M.parity_text(o.norm(r.stderr, root)), how)
-        assert.same(o.state(a), o.state(root), how)
-    end
-    assert.is_nil(uv.fs_stat(require("loomworks.daemon.paths").lock_path(c)), what .. ": R not released")
-    return ra, rb, rc
 end
 
 --- A stub `loomworks.Workspace/1` handler table: `methods` (its `header`)

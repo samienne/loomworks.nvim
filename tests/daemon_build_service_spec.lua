@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
+-- daemon in-process (loomworks.daemon.server) with its own trust key, which
+-- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- The workspace daemon's build service in-process (spec §19.15, §19.19 step
 -- 3): an in-process server with the build service attached (the host is the
 -- CLI's own workspace load), a real authenticated client, a real workspace on
@@ -16,7 +20,7 @@ local build_run = require("loomworks.build_run")
 local build_lock = require("loomworks.build_lock")
 local trust = require("loomworks.trust")
 local proc = require("loomworks.proc")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 client.TIMEOUT_MS = 30000

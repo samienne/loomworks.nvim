@@ -8,17 +8,14 @@
 -- origin marker), and the operation ends on the task's `done`. A unit build
 -- is a `units` call the same way. Then the editor is unloaded
 -- in the middle of a slow build: closing its connection cancels the task it
--- owns. No daemon process is left behind.
+-- owns. No daemon process is left behind. The daemon is the real lw of
+-- LOOMWORKS_LW (tests/daemon_helpers.lua); what another client sees of it is
+-- read through `lw daemon list --json`.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local observer = require("loomworks.daemon.observer")
-local inspect = require("loomworks.daemon.inspect")
-local client = require("loomworks.daemon.client")
-local relay_client = require("loomworks.daemon.client").relay
-local events = require("loomworks.events")
+local relay_client = require("loomworks.daemon.client.relay")
+local events = require("loomworks")
 local H = require("tests.daemon_helpers")
-
-client.TIMEOUT_MS = 30000
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -26,13 +23,21 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
---- Real relays from this checkout run by nvim (as the specs' `lw`).
+--- Real relays of the lw under test (LOOMWORKS_LW).
 local function real_relays()
     return function(ro, cb)
-        ro.argv = { vim.v.progpath, "--headless", "-u", "NONE", "--cmd",
-            "lua vim.opt.rtp:prepend(" .. string.format("%q", H.REPO) .. ")", "-l", H.CLI }
+        ro.argv = { H.lw_path() }
         return relay_client.connect(ro, cb)
     end
+end
+
+--- Wait until the daemon of `root` runs no task (seen from another client:
+--- `lw daemon list --json`, its `busy` flag).
+local function daemon_idle(root, env, ms)
+    return vim.wait(ms, function()
+        local d = H.daemon(root, env)
+        return d ~= nil and d.busy == false
+    end, 200)
 end
 
 -- The `daemon`-mode editor holds no model (step 6b-alpha): its operations
@@ -107,8 +112,8 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         for _, h in ipairs(handlers) do events.off(h[1], h[2]) end
         handlers = {}
         observer.detach()
-        if inspect.state(root).kind == "live" then H.stop_daemon(root, env) end
-        H.track_root(root)
+        if H.daemon(root, env) then H.stop_daemon(root, env) end
+        H.track_root(root, env)
         H.cleanup()
     end)
 
@@ -152,15 +157,8 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
         obs:stop()
         assert.is_true(vim.wait(5000, function() return st3.err ~= nil end, 20))
         -- Seen from another client: the task is gone well before its sleep ends.
-        local cli = assert(client.session(inspect.state(root).handle.endpoint))
-        assert.is_true(vim.wait(15000, function()
-            local s = client.request(cli, { kind = "status" })
-            for _, t in ipairs(s and s.tasks or {}) do
-                if t.task_id == id then return false end
-            end
-            return s ~= nil
-        end, 100))
-        cli:close()
+        assert.is_not_nil(id)
+        assert.is_true(daemon_idle(root, env, 15000))
     end)
 
     -- The public API (§19.16 "Public API"): `lw.pick_profile()` activates a
@@ -286,22 +284,14 @@ describe("editor operations through a real daemon (§19.16, step 5k C1)", functi
             assert.equals("CANCELED", t.status)
             assert.is_true(vim.wait(15000, function() return st.err ~= nil end, 20))
             assert.equals("CANCELED", t.status)
-            local cli = assert(client.session(inspect.state(root).handle.endpoint))
-            assert.is_true(vim.wait(15000, function()
-                local s = client.request(cli, { kind = "status" })
-                for _, x in ipairs(s and s.tasks or {}) do
-                    if x.task_id == id then return false end
-                end
-                return s ~= nil
-            end, 100))
-            cli:close()
+            assert.is_not_nil(id)
+            assert.is_true(daemon_idle(root, env, 15000))
             vim.env.LW_TEST_SLEEP = nil
 
             -- Another client's build: read-only, its origin marker in its name.
             local vars = vim.deepcopy(env.vars)
             vars.LW_TEST_SLEEP, vars.LW_TEST_SLEEP_STEP = "3000", "build"
             local p = H.lw_start({ "--no-input", "build", row.key }, { env = { vars = vars }, cwd = root })
-            H.track(p.pid, p.start)
             assert.is_true(vim.wait(60000, function() return #created >= 2 end, 20), p.stderr())
             local c = created[2]
             assert.equals("[lw] " .. seen.started[#seen.started].name, c.name)

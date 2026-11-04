@@ -1,7 +1,7 @@
 TESTS_DIR := tests
 INIT_FILE := tests/minimal_init.lua
 
-.PHONY: test test-file test-standalone test-all install dist
+.PHONY: lw test test-file test-standalone test-all install dist
 
 ## Run all tests (nvim/busted suite)
 ## scripts/run_specs.lua runs every spec file as PlenaryBustedDirectory does
@@ -10,10 +10,21 @@ INIT_FILE := tests/minimal_init.lua
 ## file that exited non-zero, printed no summary, or was still running at the
 ## deadline -- PlenaryBustedDirectory only exits 1. The budget must cover the
 ## slowest file on a loaded machine. TEST_JOBS=N caps the concurrency.
+## The daemon specs run a real lw: the release the plugin pins, provisioned
+## into .lw-test/ (gitignored) by scripts/test_lw.lua with the plugin's own
+## download code, its bundle beside it. `make test` / `make test-file` set
+## LOOMWORKS_LW (and LOOMWORKS_INSTALL_DIR, where the bundle is) to it; to run
+## a spec by hand, `eval "$$(nvim -l scripts/test_lw.lua .lw-test)"` first.
+LW_TEST_DIR := .lw-test
+LW_ENV = lw_env="$$(nvim -l scripts/test_lw.lua $(LW_TEST_DIR))" && eval "$$lw_env"
+
+lw:
+	nvim -l scripts/test_lw.lua $(LW_TEST_DIR)
+
 TEST_TIMEOUT := 600000
 TEST_JOBS := 0
 test:
-	nvim -l scripts/run_specs.lua --timeout $(TEST_TIMEOUT) --jobs $(TEST_JOBS) --init $(INIT_FILE) $(TESTS_DIR)
+	$(LW_ENV) && nvim -l scripts/run_specs.lua --timeout $(TEST_TIMEOUT) --jobs $(TEST_JOBS) --init $(INIT_FILE) $(TESTS_DIR)
 
 ## Run a single test file: make test-file FILE=tests/config_spec.lua
 ## Run in this nvim, as each file of `make test` is: PlenaryBustedFile would
@@ -21,7 +32,7 @@ test:
 ## the run mid-test (on a loaded machine the daemon specs take longer,
 ## leaving the daemons they started running).
 test-file:
-	nvim --headless -u $(INIT_FILE) -c "lua require('plenary.busted').run('$(FILE)')"
+	$(LW_ENV) && nvim --headless -u $(INIT_FILE) -c "lua require('plenary.busted').run('$(FILE)')"
 
 ## Run the standalone bootstrap tests (boot.verify / boot.json) under luvi.
 ## These exercise luvi's OpenSSL and so cannot run under nvim/busted.

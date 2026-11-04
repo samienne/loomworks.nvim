@@ -8,7 +8,7 @@ local view_state = require("loomworks.view_state")
 local views = require("loomworks.daemon.views")
 local server_mod = require("loomworks.daemon.server")
 local service = require("loomworks.daemon.service")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 --- A model stand-in: projects `app` (cmake, mapped by the active profile,
 --- with a unit), `lib` (no declared path, mapped, no unit yet) and `odd`

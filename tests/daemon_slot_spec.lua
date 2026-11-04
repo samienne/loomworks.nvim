@@ -464,7 +464,7 @@ describe("peer check (§19.7, Windows)", function()
     local server_mod = require("loomworks.daemon.server")
     local client = require("loomworks.daemon.client")
     local trust = require("loomworks.trust")
-    local H = require("tests.daemon_helpers")
+    local H = require("tests.binary_helpers")
     local CLIENT_PID, SERVER_PID = 7700001, 7700002
     local root, srv, logs
 

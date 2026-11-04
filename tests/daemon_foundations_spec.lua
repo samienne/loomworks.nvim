@@ -12,7 +12,7 @@ local rlock = require("loomworks.daemon.rlock")
 local inspect = require("loomworks.daemon.inspect")
 local dpaths = require("loomworks.daemon.paths")
 local lock_record = require("loomworks.lock_record")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local LH = require("tests.lock_helpers")
 local uv = vim.uv or vim.loop
 

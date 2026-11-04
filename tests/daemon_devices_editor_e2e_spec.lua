@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
+-- daemon in-process (loomworks.daemon.server) with its own trust key, which
+-- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- The editor's devices end to end (step 5n part C2; daemon.md §19.16
 -- "Devices", API.md §11 `set_device`, §15 `Devices/1`): the daemon side is
 -- real — an in-process server with the real build service
@@ -26,7 +30,7 @@ local session_tracker = require("loomworks.session_tracker")
 local dl = require("loomworks.device_log")
 local devices_mod = require("loomworks.daemon.devices")
 local views = require("loomworks.views")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local FR = require("tests.daemon_fake_relay")
 
 local runner = dofile(H.REPO .. "/scripts/conformance.lua")

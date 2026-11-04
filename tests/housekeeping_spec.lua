@@ -564,7 +564,7 @@ describe("housekeeping review fixes (spec §16.40)", function()
     end)
 
     it("a spawned lw never runs the startup pass in the suite (no real temp / socket dirs touched)", function()
-        local H = require("tests.daemon_helpers")
+        local H = require("tests.binary_helpers")
         local env = H.env()
         write(env.data .. "/trust.key")
         local dl = write(env.data .. "/.dl-0.1.40.zip"); age(dl)

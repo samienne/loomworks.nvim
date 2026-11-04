@@ -8,7 +8,7 @@
 -- tool); anywhere else it is a pending() skip, never a failure.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local uv = vim.uv or vim.loop
 
 local function have(exe) return vim.fn.executable(exe) == 1 end

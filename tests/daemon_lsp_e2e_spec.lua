@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
+-- daemon in-process (loomworks.daemon.server) with its own trust key, which
+-- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- The editor's LSP configuration end to end (step 5l part C; daemon.md
 -- §19.16 "LSP configuration", §19.20 `LspConfig/1`): the daemon side is real
 -- — an in-process server with the real build service
@@ -21,7 +25,7 @@ local trust = require("loomworks.trust")
 local Core = require("loomworks.core")
 local source = require("loomworks.lsp_source")
 local lsp = require("loomworks.lsp")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 local FR = require("tests.daemon_fake_relay")
 
 client.TIMEOUT_MS = 30000

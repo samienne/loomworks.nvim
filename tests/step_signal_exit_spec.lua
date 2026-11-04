@@ -1,3 +1,7 @@
+-- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
+-- daemon in-process (loomworks.daemon.server) with its own trust key, which
+-- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
+-- with the binary side.
 -- A build/clean/test step that a signal ended is a FAILURE (spec §16.7): its
 -- exit status is 128 + the signal number, its failure line names the signal,
 -- and the step is never recorded as done. On POSIX libuv reports such a
@@ -22,7 +26,7 @@ local runner = require("loomworks.daemon.runner")
 local client = require("loomworks.daemon.client")
 local envscope = require("loomworks.daemon.envscope")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 client.TIMEOUT_MS = 30000
 

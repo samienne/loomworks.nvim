@@ -1,6 +1,7 @@
 -- The editor observes the workspace daemon (spec §19.16, §19.19 step 4),
--- end to end with real processes: the editor (this process: the plugin's core
--- with the workspace loaded, plus its Observer) connects through a real
+-- end to end with real processes (the lw of LOOMWORKS_LW,
+-- tests/daemon_helpers.lua): the editor (this process: its Observer) connects
+-- through a real
 -- `--stdio` relay (loomworks.daemon.client.relay, step 5i PR G1), which
 -- launches the shared daemon on load; a real `lw build` from a "terminal"
 -- (another process) is routed to it, and the editor shows that build — the
@@ -12,17 +13,11 @@
 -- none of the relay's pipes, and no relay is left (`lw daemon list`). No
 -- daemon process is left behind.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local observer = require("loomworks.daemon.observer")
-
-local inspect = require("loomworks.daemon.inspect")
-local client = require("loomworks.daemon.client")
-local relay_client = require("loomworks.daemon.client").relay
-local events = require("loomworks.events")
+local relay_client = require("loomworks.daemon.client.relay")
+local events = require("loomworks")
 local H = require("tests.daemon_helpers")
 local uv = vim.uv or vim.loop
-
-client.TIMEOUT_MS = 30000
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -30,16 +25,14 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
---- The relay seam with real relays: the host binary here is this checkout
---- run by nvim (as the specs' `lw`; launch.self_argv, with the checkout's
---- absolute path: the relay runs in the state directory).
+--- The relay seam with real relays: the host binary is the lw under test
+--- (LOOMWORKS_LW).
 --- Each relay's form goes to `t.forms`, the relay to `t.relays`.
 local function real_relays(t)
     t.forms, t.relays = {}, {}
     return function(ro, cb)
         assert.same({ "lw" }, ro.argv)
-        ro.argv = { vim.v.progpath, "--headless", "-u", "NONE", "--cmd",
-            "lua vim.opt.rtp:prepend(" .. string.format("%q", H.REPO) .. ")", "-l", H.CLI }
+        ro.argv = { H.lw_path() }
         t.forms[#t.forms + 1] = ro.form
         local r, err = relay_client.connect(ro, cb)
         if r then t.relays[#t.relays + 1] = r end
@@ -64,7 +57,7 @@ local function listed(root, env)
 end
 
 describe("the editor observes the workspace daemon (§19.16)", function()
-    local root, env, core, obs, seen
+    local root, env, obs, seen
     local handlers = {}
     local function on(ev, fn) events.on(ev, fn); handlers[#handlers + 1] = { ev, fn } end
 
@@ -77,9 +70,6 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         seen = { started = 0, stopped = 0 }
         on("daemon_task_started", function(d) seen.started = seen.started + 1; seen.task = d.task end)
         on("daemon_task_stopped", function(d) seen.stopped = seen.stopped + 1; seen.last = d.task end)
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
     end)
 
     after_each(function()
@@ -87,16 +77,14 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         obs = nil
         for _, h in ipairs(handlers) do events.off(h[1], h[2]) end
         handlers = {}
-        pcall(function() core:shutdown() end)
-        if inspect.state(root).kind == "live" then H.stop_daemon(root, env) end
-        H.track_root(root)
+        if H.daemon(root, env) then H.stop_daemon(root, env) end
+        H.track_root(root, env)
         H.cleanup()
     end)
 
     it("connects through a relay that launches on load, shows a terminal `lw build`; a stop is not relaunched", function()
-        local ws = core:get_workspace()
         local t = {}
-        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         assert.is_not_nil(obs)
         assert.same({ "ordinary" }, t.forms)
@@ -114,8 +102,6 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.equals(1, #l[1].relays)
         assert.equals(relay.pid, l[1].relays[1].pid)
 
-        local pp = ws:get_profiles()[1]:projects()[1]
-
         -- A build from a terminal, routed to the daemon (§19.15).
         local b = H.lw_start({ "build", "dev" }, { env = env, cwd = root })
         -- (The event, not a poll of the running tasks: a fast build can be
@@ -125,7 +111,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.equals("dev", task.profile_name)
         -- Display data and ids only: resolved to no model (step 6b-alpha).
         assert.is_nil(task.profile)
-        assert.equals(pp:project_key(), task.units[1].project)
+        assert.equals("app", task.units[1].project)
         assert.is_nil(task.units[1].unit)
 
         assert.is_true(b.wait(120000))
@@ -156,7 +142,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
             for i = 2, #t.forms do assert.equals("no-launch", t.forms[i], vim.inspect(t.forms)) end
         end
         followed()
-        assert.equals("none", inspect.state(root).kind)
+        assert.is_nil(H.daemon(root, env))
         -- The first relay ended with its connection.
         assert.is_true(vim.wait(10000, function() return relay.code ~= nil end, 20))
 
@@ -174,13 +160,16 @@ describe("the editor observes the workspace daemon (§19.16)", function()
     -- observes. The editor (an observer, subscribed) never makes it busy, so
     -- the CLI stops it and launches its own; the editor reconnects to the
     -- new daemon, re-subscribes and shows the CLI's build from it.
-    it("survives a CLI-driven restart of an idle daemon (step 5g.3)", function()
-        local ws = core:get_workspace()
+    -- TODO(step3) GAP: the daemon of "another release" was this checkout run
+    -- with LW_TEST_IDENTITY, a seam a release lw never honours (lw's
+    -- daemon/version.lua). Needs two real lw releases (or a CLI way to claim
+    -- another version) to run against LOOMWORKS_LW again.
+    pending("survives a CLI-driven restart of an idle daemon (step 5g.3)", function()
         local t = {}
         -- The daemon the editor's relay launches claims another release (the
         -- relay and the daemon it launches inherit the variable).
         vim.env.LW_TEST_IDENTITY = "0.0.1+test.old"
-        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         vim.env.LW_TEST_IDENTITY = nil
         assert.is_not_nil(obs)
@@ -229,9 +218,8 @@ describe("the editor observes the workspace daemon (§19.16)", function()
     -- its own pid — on Windows the daemon is the relay's child) never
     -- reaches the daemon; no relay is left behind.
     it("the daemon outlives its relay and holds none of its pipes; no relay is left", function()
-        local ws = core:get_workspace()
         local t = {}
-        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         local lk = H.track_root(root)
@@ -243,14 +231,14 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         obs:stop(); obs = nil
         assert.is_true(vim.wait(20000, function() return relay.code ~= nil and relay.eof end, 20))
         assert.equals(0, relay.code)
-        assert.equals("live", inspect.state(root).kind)
+        assert.is_not_nil(H.daemon(root, env))
         assert.is_true(H.alive(dpid, lk.start_time))
         assert.same({}, listed(root, env)[1].relays)
 
         -- A relay ended by a plain kill of its own pid (the editor's
         -- backstop): the daemon lives on, and the editor follows it again
         -- through a no-launch relay.
-        obs = observer.attach(ws.root, { getenv = daemon_mode, resolve = function() return "lw" end,
+        obs = observer.attach(root, { getenv = daemon_mode, resolve = function() return "lw" end,
             relay = real_relays(t), keepalive_ms = 500 })
         assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
         assert.equals(dpid, obs.daemon.pid)
@@ -275,18 +263,15 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         local script, out = dir .. "/editor.lua", dir .. "/editor.out"
         local f = assert(io.open(script, "w"))
         f:write([==[
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
 local root, out = os.getenv("LW_TEST_EDITOR_ROOT"), os.getenv("LW_TEST_EDITOR_OUT")
 local okr, err = pcall(function()
 -- (A `daemon`-mode editor loads no model, step 6b-alpha: it attaches by root.)
-local rc = require("loomworks.daemon.client").relay
+local rc = require("loomworks.daemon.client.relay")
 local relay
-local obs = require("loomworks.daemon.observer").attach(require("loomworks.workspace").resolve_root(root), {
+local obs = require("loomworks.daemon.observer").attach(root, {
     resolve = function() return "lw" end,
     relay = function(ro, cb)
-        local repo = os.getenv("LW_TEST_REPO")
-        ro.argv = { vim.v.progpath, "--headless", "-u", "NONE", "--cmd",
-            "lua vim.opt.rtp:prepend(" .. string.format("%q", repo) .. ")", "-l", repo .. "/lua/loomworks/cli.lua" }
+        ro.argv = { os.getenv("LOOMWORKS_LW") }
         local r, e = rc.connect(ro, cb)
         relay = r
         return r, e
@@ -309,7 +294,6 @@ vim.cmd("qa!")
         local e = vim.deepcopy(env)
         e.vars.LW_TEST_EDITOR_ROOT = root
         e.vars.LW_TEST_EDITOR_OUT = out
-        e.vars.LW_TEST_REPO = H.REPO
         local code
         local h, pid = uv.spawn(vim.v.progpath, {
             args = { "--headless", "-u", "NONE", "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", H.REPO) .. ")",
@@ -334,7 +318,7 @@ vim.cmd("qa!")
             local okk, rr = pcall(uv.kill, rpid, 0)
             return not (okk and rr == 0)
         end, 50), "the relay is still running")
-        assert.equals("live", inspect.state(root).kind)
+        assert.is_not_nil(H.daemon(root, env))
         assert.equals(dpid, lk.pid)
         assert.is_true(H.alive(dpid, lk.start_time))
         assert.same({}, listed(root, env)[1].relays)

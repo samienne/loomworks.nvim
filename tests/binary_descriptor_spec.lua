@@ -68,7 +68,7 @@ describe("binary descriptor", function()
         local server_mod = require("loomworks.daemon.server")
         local client = require("loomworks.daemon.client")
         local trust = require("loomworks.trust")
-        local H = require("tests.daemon_helpers")
+        local H = require("tests.binary_helpers")
         trust._set_key_path(H.tmp() .. "/trust.key")
         local srv = server_mod.new(H.workspace(), { exit = function() end, tick_ms = 100 })
         -- The build service a daemon runs mounts the core interfaces.

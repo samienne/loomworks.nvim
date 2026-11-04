@@ -12,7 +12,7 @@ local envscope = require("loomworks.daemon.envscope")
 local snapshot = require("loomworks.daemon.snapshot")
 local io_mod = require("loomworks.io")
 local trust = require("loomworks.trust")
-local H = require("tests.daemon_helpers")
+local H = require("tests.binary_helpers")
 
 client.TIMEOUT_MS = 60000
 

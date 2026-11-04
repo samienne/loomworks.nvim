@@ -333,7 +333,7 @@ end)
 describe("both hosts use the fingerprint check (§16.43 'Reuse')", function()
     local cli = require("loomworks.cli")
     local trust = require("loomworks.trust")
-    local H = require("tests.daemon_helpers")
+    local H = require("tests.binary_helpers")
     local saved = {}
     local root, cache_base
 
