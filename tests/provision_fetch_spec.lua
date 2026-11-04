@@ -98,6 +98,15 @@ describe("provision.fetch", function()
         local none = { getenv = function() return nil end }
         assert.equals("https://github.com/samienne/loomworks.nvim/releases/download/v0.1.50/lw-linux-x86_64",
             fetch.url(w, none))
+        -- lw moved repositories at 0.2: the version alone picks the origin.
+        assert.equals("https://github.com/samienne/loomworks.nvim/releases/download/v0.0.9/lw-linux-x86_64",
+            fetch.url(want({ version = "0.0.9" }), none))
+        assert.equals("https://github.com/samienne/loomworks/releases/download/v0.2.0-beta.1/lw-linux-x86_64",
+            fetch.url(want({ version = "0.2.0-beta.1" }), none))
+        assert.equals("https://github.com/samienne/loomworks/releases/download/v1.0.0/lw-linux-x86_64",
+            fetch.url(want({ version = "1.0.0" }), none))
+        assert.equals("https://github.com/samienne/loomworks/releases/download/v0.10.0/lw-linux-x86_64",
+            fetch.url(want({ version = "0.10.0" }), none))
         assert.equals("/m/lw-linux-x86_64", fetch.url(w, { getenv = function() return "/m/" end }))
         assert.equals("https://x/y/lw-linux-x86_64", fetch.url(w, { release_url = "https://x/y",
             getenv = function() return "/ignored" end }))

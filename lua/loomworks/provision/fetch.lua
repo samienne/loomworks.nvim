@@ -17,8 +17,11 @@
 ---
 --- Source: `<base>/<asset>` for a release-source override (`binary.release_url`,
 --- else `LOOMWORKS_RELEASE_URL`: a local directory, `file://` or an http(s)
---- mirror, flat like lw's own, spec §16.29), else lw's fixed origin
---- `https://github.com/samienne/loomworks.nvim/releases/download/v<version>/<asset>`.
+--- mirror, flat like lw's own, spec §16.29), else the version's fixed origin
+--- `https://github.com/<repo>/releases/download/v<version>/<asset>`: lw moved
+--- repositories at 0.2, so a version starting `0.0.` or `0.1.` is in
+--- samienne/loomworks.nvim and every later one in samienne/loomworks (lw's
+--- `boot.origin` rule; no fallback to the other repository).
 --- http(s) goes through `curl` (from the search path's absolute entries only),
 --- bounded by a connect timeout and a low-speed limit; from an https source a
 --- redirect may only lead to https. The hash, not the transport, is the trust
@@ -46,9 +49,18 @@ local M = {}
 --- @field ctl { cancel: fun() }|nil stops its transfer
 --- @field cancelled boolean|nil `M.cancel` ended it
 
---- lw's fixed release origin (lw's `boot.update.DEFAULT_RELEASE_URL` root):
---- a version's assets live under `/releases/download/v<version>/`.
-M.ORIGIN = "https://github.com/samienne/loomworks.nvim/releases"
+--- lw's fixed release origins (lw's `boot.origin`): every release from 0.2.0
+--- on, and the legacy repository of every release below 0.2. A version's
+--- assets live under `/releases/download/v<version>/`.
+M.ORIGIN = "https://github.com/samienne/loomworks/releases"
+M.LEGACY_ORIGIN = "https://github.com/samienne/loomworks.nvim/releases"
+
+--- The release origin of a (checked) version: legacy below 0.2.
+--- @param version string
+--- @return string
+function M.origin(version)
+    return version:match("^0%.[01]%.") and M.LEGACY_ORIGIN or M.ORIGIN
+end
 
 --- Transfer limits and attempts for http(s): a connection must come up
 --- within CONNECT_TIMEOUT s, a transfer slower than LOW_SPEED_BPS bytes/s for
@@ -146,7 +158,7 @@ function M.url(w, opts)
         if root then return root .. "/releases/download/v" .. w.version .. "/" .. w.asset end
         return base .. "/" .. w.asset
     end
-    return M.ORIGIN .. "/download/v" .. w.version .. "/" .. w.asset
+    return M.origin(w.version) .. "/download/v" .. w.version .. "/" .. w.asset
 end
 
 --- `curl` from the search path's absolute entries (never the current

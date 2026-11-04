@@ -24,7 +24,6 @@ local function run(o)
         on_path = function() if o.path then return o.path end return nil, "no lw on the search path" end,
         managed = function() if o.managed then return o.managed end return nil, managed.NOT_YET end,
         is_dir = function(d) return o.dirs and o.dirs[d] or false end,
-        plugin_lua = function() return o.plugin_lua end,
     })
 end
 
@@ -89,9 +88,10 @@ describe("host binary order (§19.16)", function()
         assert.equals("/p/lw", bin)
         assert.same({ LOOMWORKS_LUA = "/src/lua" }, sel.env)
         assert.truthy(binsel.describe(sel):find("with the Lua source /src/lua", 1, true))
-        _, _, sel = run({ setting = { source = true }, path = "/p/lw", plugin_lua = "/plug/lua",
-            dirs = { ["/plug/lua"] = true } })
-        assert.same({ LOOMWORKS_LUA = "/plug/lua" }, sel.env)
+        -- An explicit path only: the plugin carries no lw Lua tree of its own.
+        _, _, sel = run({ setting = { source = true }, path = "/p/lw" })
+        assert.is_nil(sel.env)
+        assert.truthy(sel.warning:find("binary.source: expected a directory, ignored", 1, true), sel.warning)
         _, _, sel = run({ setting = { source = "/nope" }, path = "/p/lw" })
         assert.is_nil(sel.env)
         assert.truthy(sel.warning:find("is not a directory", 1, true), sel.warning)

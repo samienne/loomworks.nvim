@@ -39,7 +39,7 @@ local M = {}
 --- @class loomworks.provision.BinarySetting  the setup option `binary`
 --- @field path? string an lw host binary to use as is
 --- @field prefer? "system"|"managed" which of `lw` on PATH and the plugin-managed lw comes first (default "system")
---- @field source? string|boolean development only: run the binary with this Lua tree (`true`: this plugin's)
+--- @field source? string development only: run the binary with the Lua tree at this explicit path
 --- @field download? boolean false: never download the plugin-managed lw (default true; daemon mode only)
 --- @field release_url? string release-source override for that download (else LOOMWORKS_RELEASE_URL, else lw's origin)
 --- @field channel? "stable"|"unstable" let the managed lw move ahead of the pin to this channel's newest compatible release (default unset: the pin only; step 5h.5)
@@ -185,8 +185,8 @@ function M.check_setting(v)
         else warns[#warns + 1] = "binary.prefer: expected \"system\" or \"managed\", ignored" end
     end
     if v.source ~= nil and v.source ~= false then
-        if v.source == true or (type(v.source) == "string" and v.source ~= "") then out.source = v.source
-        else warns[#warns + 1] = "binary.source: expected a directory or true, ignored" end
+        if type(v.source) == "string" and v.source ~= "" then out.source = v.source
+        else warns[#warns + 1] = "binary.source: expected a directory, ignored" end
     end
     if v.download ~= nil then
         if type(v.download) == "boolean" then out.download = v.download
@@ -204,17 +204,11 @@ function M.check_setting(v)
 end
 
 --- The development source tree of `binary.source`, or nil + why.
---- @param src string|boolean
+--- @param src string an explicit directory (the plugin carries no lw Lua tree)
 --- @param opts table
 --- @return string|nil dir, string|nil why
 local function source_dir(src, opts)
-    local dir
-    if src == true then
-        dir = (opts.plugin_lua or require("loomworks.version").lua_root)()
-        if not dir then return nil, "binary.source: this plugin's Lua tree is unknown" end
-    else
-        dir = (slash(vim.fs.normalize(src)):gsub("/+$", ""))
-    end
+    local dir = (slash(vim.fs.normalize(src)):gsub("/+$", ""))
     if not (opts.is_dir or is_dir)(dir) then return nil, "binary.source: " .. dir .. " is not a directory" end
     return dir
 end
@@ -230,7 +224,7 @@ end
 ---   managed   fun(opts) → path|nil, why, missing (loomworks.provision.managed.find;
 ---             opts.setting carries `binary.channel`)
 ---   data      the editor's data directory (the managed lw; default stdpath)
----   is_dir, plugin_lua  for `binary.source`
+---   is_dir    for `binary.source`
 ---   probe     fun(path) → loomworks.provision.Probe|nil, the cached pre-launch
 ---             verdict (loomworks.provision.probe.cached); false: no probe
 --- @param root string

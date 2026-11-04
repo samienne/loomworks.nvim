@@ -116,7 +116,7 @@ describe("binary.channel: channel.json and the wanted managed lw", function()
         assert.is_true(channel.applies({ channel = "stable" }))
         assert.is_false(channel.applies({ channel = "nightly" }))
         assert.is_false(channel.applies({ channel = "stable", download = false }))
-        assert.is_false(channel.applies({ channel = "stable", source = true }))
+        assert.is_false(channel.applies({ channel = "stable", source = "/src/lua" }))
     end)
 
     it("round-trips the record; a changed channel keeps the accepted release and is due at once", function()
