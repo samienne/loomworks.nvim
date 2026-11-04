@@ -1,0 +1,505 @@
+{
+  "interface": "loomworks.Launch",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /launch (API.md §9): the preparation of lw run and of a debug launch as task-streamed methods; the protocol-10 prepare_run request stays as prepare_run's v0 alias. The client runs the program of the launch spec in its own process, or hands the debug spec to its debugger. Step 5n part B3 (API.md §9.5) adds device_log, the log stream of a program Devices/1.launch launched, its records sent as the log signal. Step 5t (API.md §9.4, §4.3) adds the task-streamed build of a launch target and force on prepare_run / prepare_debug with their handlers (part B): the registry refuses a schema method without a handler. Step 6b-alpha (API.md §9.6) adds targets, a read of the profile's launchable targets.",
+  "methods": {
+    "prepare_run": {
+      "description": "Build (unless no_build), deploy and resolve the launch of the profile's target or launch configuration; the task result carries the launch spec, or device for a program that runs on a device in the client.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote (lw build, ...).",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target or launch configuration name.",
+            "type": "string"
+          },
+          "project": {
+            "description": "The project the target belongs to.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "kind": {
+            "description": "Which kind of name target is (--target / --launch); absent: either.",
+            "enum": [
+              "target",
+              "launch"
+            ]
+          },
+          "cwd": {
+            "description": "Overrides the launch's working directory.",
+            "type": "string"
+          },
+          "extra": {
+            "description": "The program's arguments (after --).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_build": {
+            "type": "boolean"
+          },
+          "quiet": {
+            "description": "--print / --dry-run: the build's lines go to stderr.",
+            "type": "boolean"
+          },
+          "prefix": {
+            "description": "The client wraps the program (--prefix): a device target is refused.",
+            "type": "boolean"
+          },
+          "verbose": {
+            "description": "-v, as for loomworks.Build/1 build (API.md §9.1): for the preparation's dependency build and deploy steps (    copy ... /     up to date ...).",
+            "type": "boolean"
+          },
+          "force": {
+            "description": "The answer to the artifact-conflict question (spec 5.9), which the client asks before the call as before a build: build over another profile's output artifact.",
+            "type": "boolean"
+          },
+          "build_scope": {
+            "description": "What the preparation builds before resolving: profile (the default) builds the profile and runs its deploy steps, as lw run does; target runs the launch flow instead -- the launch's dependencies, the pre-build deploy steps, the launch target's own unit, the post-build deploy steps -- each build taking only its unit's build-directory lock. Neither builds or deploys with no_build.",
+            "enum": [
+              "profile",
+              "target"
+            ]
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The preparation's end: the launch spec on success.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "launch": {
+              "$ref": "loomworks.Common/1#/$defs/LaunchSpec"
+            },
+            "device": {
+              "description": "The program runs on a device: the client runs it (API.md §9.1).",
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "prepare_debug": {
+      "description": "Prepare a debug launch: the steps of prepare_run in the same order with the same gates and lines, ending with the debug spec the client hands to its debugger. A device target, or a target found foreign by its kit or by probing its artifact, ends the task nonzero with the in-process refusal (before the build when the kit tells, otherwise once the build probed it, and before any deploy); it is never declined for it.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote (lw build, ...).",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target or launch configuration name.",
+            "type": "string"
+          },
+          "project": {
+            "description": "The project the target belongs to.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "kind": {
+            "description": "Which kind of name target is (--target / --launch); absent: either.",
+            "enum": [
+              "target",
+              "launch"
+            ]
+          },
+          "cwd": {
+            "description": "Overrides the launch's working directory.",
+            "type": "string"
+          },
+          "extra": {
+            "description": "The program's arguments (after --).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_build": {
+            "type": "boolean"
+          },
+          "force": {
+            "description": "The answer to the artifact-conflict question (spec 5.9), which the client asks before the call as before a build: build over another profile's output artifact.",
+            "type": "boolean"
+          },
+          "build_scope": {
+            "description": "What the preparation builds before resolving: profile (the default) builds the profile and runs its deploy steps, as lw run does; target runs the launch flow instead -- the launch's dependencies, the pre-build deploy steps, the launch target's own unit, the post-build deploy steps -- each build taking only its unit's build-directory lock. Neither builds or deploys with no_build.",
+            "enum": [
+              "profile",
+              "target"
+            ]
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The preparation's end: the debug spec on success.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "debug": {
+              "$ref": "loomworks.Common/1#/$defs/DebugSpec"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "build": {
+      "description": "Build a launch target as the editor's in-process launch build does (API.md §9.4; step 5t): the target resolved as prepare_run resolves it, then its dependencies, the pre-build deploy steps and its own unit, in that order, as one task whose steps (Common/1 TaskMeta.steps, Tasks/1 step) follow each phase. No artifact probe, post-build deploy or launch resolution — except that a device target (step 5n) ends with its post-build deploy steps; its install and launch are Devices/1's.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target or launch configuration name.",
+            "type": "string"
+          },
+          "project": {
+            "description": "The project the target belongs to.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "kind": {
+            "description": "Which kind of name target is (--target / --launch); absent: either.",
+            "enum": [
+              "target",
+              "launch"
+            ]
+          },
+          "force": {
+            "description": "The answer to the artifact-conflict question (spec 5.9), asked by the client before the call: build over another profile's output artifact.",
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The build's end: exit_code 0 when every step succeeded, else the first failing step's failure line.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "device_log": {
+      "description": "A task (meta.kind device_log) streaming the device log of the program a finished Devices/1.launch task of the caller launched, from what that launch recorded (its target, device, process id and bundle). The module's log-clear command runs first under the device lock (a failed clear is a note line); the log command then runs without a lock in the caller's environment, each line parsed and prefiltered (the launch's process id and bundle) as the in-process device-log view does, the kept lines sent as the log signal. The task's start meta carries level, the module's default log level, when it has one. Refused as Devices/1.stop is: another client's launch is forbidden; an unknown, still running, failed or stopped launch, one whose process id was not found, or a module with no log command is the refused result. Ends on a cancel or the owner's disconnect, when the log command exits (its exit code), or with exit 0 once the program's process id is missing from two probes in a row (every 3 s).",
+      "params": {
+        "type": "object",
+        "required": [
+          "task"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "task": {
+            "description": "The launch's task id (Devices/1.launch).",
+            "$ref": "loomworks.Common/1#/$defs/TaskId"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The log stream's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "errors": [
+        "forbidden"
+      ],
+      "needs_env": true,
+      "mutates": true
+    },
+    "targets": {
+      "description": "The profile's launchable targets, as headless introspection lists them (spec §16.18): a query, read-only, that builds nothing and runs in the client's environment as Toolchains/1.list does. targets is one record per target, per project in the profile's order (its launch configurations, then its build targets, then its device targets); incomplete lists the keys of the profile's projects whose build targets are unknown because they are not configured (empty when the list is complete); override is true when the profile stores a default-target choice in the working copy. An unknown profile or a stale id is the refused result.",
+      "params": {
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/TargetsResult"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Refused"
+          },
+          {
+            "$ref": "loomworks.Common/1#/$defs/Declined"
+          }
+        ]
+      },
+      "needs_env": true,
+      "mutates": false
+    }
+  },
+  "signals": {
+    "log": {
+      "description": "Records of a device_log task (API.md §9.5), in order and batched, to the subscriptions naming this task or none; sent after the task's start and before its done. dropped counts the records the server's bounded queue dropped (the oldest) since the previous log: a client shows it as a gap.",
+      "args": {
+        "type": "object",
+        "required": [
+          "task",
+          "records"
+        ],
+        "properties": {
+          "task": {
+            "$ref": "loomworks.Common/1#/$defs/TaskId"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/DeviceLogRecord"
+            }
+          },
+          "dropped": {
+            "description": "Records dropped before these since the previous log.",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  },
+  "subscribe_args": {
+    "description": "Optionally only one device_log task's records.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "task": {
+        "$ref": "loomworks.Common/1#/$defs/TaskId"
+      }
+    }
+  },
+  "$defs": {
+    "DeviceLogRecord": {
+      "description": "A normalized device log record (spec §19.18): an unparsed line is only its message, at level info.",
+      "type": "object",
+      "required": [
+        "level",
+        "message"
+      ],
+      "properties": {
+        "ts": {
+          "description": "The line's time as the device printed it.",
+          "type": "string"
+        },
+        "level": {
+          "description": "verbose, debug, info, warn, error or fatal; a client shows an unknown level as info.",
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "fields": {
+          "description": "The line's other columns.",
+          "type": "object",
+          "properties": {
+            "tid": {
+              "type": "integer"
+            },
+            "domain": {
+              "type": "string"
+            },
+            "proc": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "TargetsResult": {
+      "type": "object",
+      "required": [
+        "outcome",
+        "targets",
+        "incomplete",
+        "override"
+      ],
+      "properties": {
+        "outcome": {
+          "const": "ok"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LaunchTarget"
+          }
+        },
+        "incomplete": {
+          "description": "The keys of the profile's projects whose build targets are unknown because they are not configured.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "override": {
+          "description": "The profile stores a default-target choice in the working copy.",
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note_roles": {
+          "$ref": "loomworks.Common/1#/$defs/NoteRoles"
+        }
+      }
+    },
+    "LaunchTarget": {
+      "description": "A launchable target of a profile (API.md §9.6); kind, project and name are what Profiles/1.set_default_target takes.",
+      "type": "object",
+      "required": [
+        "kind",
+        "project",
+        "name",
+        "label",
+        "default"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "launch: a command launch configuration; target: an executable build target of a configured unit; device: a module's device target.",
+          "enum": [
+            "launch",
+            "target",
+            "device"
+          ]
+        },
+        "project": {
+          "description": "The project's { id, key }.",
+          "$ref": "loomworks.Common/1#/$defs/Entity"
+        },
+        "name": {
+          "description": "What a reference names: the launch configuration's name, the build target's id, the device target's id.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Its display name.",
+          "type": "string"
+        },
+        "description": {
+          "description": "A launch configuration's description.",
+          "type": "string"
+        },
+        "default": {
+          "description": "The profile's default target (spec §8.6).",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

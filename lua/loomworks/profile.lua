@@ -14,6 +14,7 @@ local description_mod = require("loomworks.description")
 --- @field _configuration loomworks.Configuration|nil resolved configuration
 --- @field _config_unit loomworks.ConfigUnit|nil resolved config unit
 --- @field _tool_compat_error string|nil tool/configuration compatibility error for this (profile, configuration) pair, or nil when compatible. Recomputed every sync.
+--- @field _build_dir_error string|nil the configuration's build directory is another configuration's (spec §1.7 "One build directory per configuration"): the refusal, or nil. Recomputed every sync; a refused ProfileProject has no ConfigUnit.
 --- @field _removed boolean
 local ProfileProject = {}
 ProfileProject.__index = ProfileProject
@@ -21,7 +22,7 @@ ProfileProject.__index = ProfileProject
 --- Create a ProfileProject.
 --- @param workspace loomworks.Workspace
 --- @param project_key string used for identity and fallback resolution
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string, build_dir_error?: string }
 --- @return loomworks.ProfileProject
 function ProfileProject.new(workspace, project_key, data)
     local self = setmetatable({}, ProfileProject)
@@ -34,7 +35,7 @@ end
 
 --- Update in place (preserves table identity).
 --- Receives pre-resolved references from _sync_profile_projects.
---- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string }
+--- @param data { profile: loomworks.Profile, project?: loomworks.Project, configuration?: loomworks.Configuration, config_unit?: loomworks.ConfigUnit, tool_compat_error?: string, build_dir_error?: string }
 function ProfileProject:_apply(data)
     self._profile = data.profile
     self._project = data.project
@@ -43,6 +44,7 @@ function ProfileProject:_apply(data)
     -- Compat error is recomputed each sync — preserve nil when the
     -- module didn't report one, set the reason when it did.
     self._tool_compat_error = data.tool_compat_error
+    self._build_dir_error = data.build_dir_error
 end
 
 --- Get the tool/configuration compatibility error for this
@@ -52,6 +54,37 @@ end
 --- @return string|nil reason
 function ProfileProject:tool_compat_error()
     return self._tool_compat_error
+end
+
+--- The refusal of this configuration's build directory, which another
+--- configuration keeps (spec §1.7 "One build directory per configuration"),
+--- or nil. A refused ProfileProject has no ConfigUnit: build, rebuild,
+--- configure, clean, deploy, launch, debug and test are refused with it.
+--- @return string|nil reason
+function ProfileProject:build_dir_error()
+    return self._build_dir_error
+end
+
+--- Why this ProfileProject is invalid (invariant 11), else nil: the one
+--- check behind every profile-level gate (core §5.4 "Invalid
+--- ProfileProjects": build, configure, test, clean, rebuild) and the status
+--- marks. A configuration the module reported an `error` for (§8 `info`),
+--- a refused build directory (§1.7) or a tool compat error (§8.4); a new
+--- reason a configuration is invalid is added here.
+--- @return string|nil reason
+--- @return string|nil remedy what the user changes to clear it, when the
+---   reason does not say
+function ProfileProject:invalid_reason()
+    local cfg = self._configuration
+    local cfg_err = cfg and cfg.module_error and cfg:module_error() or nil
+    if cfg_err then return cfg_err, "fix the configuration in loomworks.json or user.json" end
+    local dir_err = self:build_dir_error()
+    if dir_err then return dir_err end
+    local compat = self:tool_compat_error()
+    if compat then
+        return compat, "change the profile's tool to match the configuration"
+    end
+    return nil
 end
 
 function ProfileProject:__tostring()
@@ -159,6 +192,12 @@ end
 
 -- ========================== Profile ==========================
 
+--- The outcome of the last operation that finished on a profile.
+--- @class loomworks.ProfileLastResult
+--- @field status "ok"|"failed"|"cancelled"
+--- @field message? string its end message (`built in 12s`)
+--- @field success boolean status == "ok"
+
 --- @class loomworks.Profile
 --- @field key string profile key — derived from data, never set externally
 --- @field _workspace loomworks.Workspace
@@ -192,7 +231,8 @@ end
 --- @field _projects_by_key table<string, loomworks.ProfileProject> project_key -> PP
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
---- @field _last_operation { message: string, success: boolean }|nil
+--- @field _last_operation loomworks.ProfileLastResult|nil the last finished operation's outcome
+--- @field _remote_tasks loomworks.RemoteTask[]|nil tasks running in the workspace daemon on this profile (`lw status`, spec §16.18); runtime only
 --- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
 local Profile = {}
 Profile.__index = Profile
@@ -715,6 +755,28 @@ function Profile:projects()
     return self._projects_list or {}
 end
 
+--- The `Cache:` row text of a compiler-cache status (`Profile:compiler_cache_status`
+--- fields `policy`, `applicable`, `not_applied_reason`, `tool`,
+--- `msvc_auto_off`). Pure: also formats the structured result of the daemon's
+--- `profile_cache` query (spec §19.14).
+--- @param st { policy: string, applicable: boolean, not_applied_reason?: string, tool?: string, msvc_auto_off?: boolean }
+--- @return string
+local function compiler_cache_text(st)
+    local policy = st.policy or "auto"
+    if policy == "off" then
+        return "Cache: off"
+    elseif st.applicable == false then
+        return "Cache: not applied (" .. (st.not_applied_reason or "not supported") .. ")"
+    elseif st.tool then
+        return "Cache: " .. st.tool
+    elseif st.msvc_auto_off then
+        return "Cache: auto (off for MSVC-style)"
+    elseif policy == "auto" then
+        return "Cache: auto (none found)"
+    end
+    return "Cache: " .. policy .. " (not found)"
+end
+
 --- Profile-level compiler-cache status (spec/ui.md profile Cache row, headless
 --- §16.18). Returns nil when the profile contains no C/C++-caching module.
 --- Otherwise a display-ready descriptor: the effective `cache` policy, the
@@ -780,22 +842,7 @@ function Profile:compiler_cache_status(pp)
         end
     end
 
-    local text
-    if policy == "off" then
-        text = "Cache: off"
-    elseif not applicable then
-        text = "Cache: not applied (" .. (not_applied_reason or "not supported") .. ")"
-    elseif resolved then
-        text = "Cache: " .. resolved.tool
-    elseif msvc_auto_off then
-        text = "Cache: auto (off for MSVC-style)"
-    elseif policy == "auto" then
-        text = "Cache: auto (none found)"
-    else
-        text = "Cache: " .. policy .. " (not found)"
-    end
-
-    return {
+    local status = {
         policy = policy,
         tool = resolved and resolved.tool or nil,
         path = resolved and resolved.path or nil,
@@ -807,8 +854,9 @@ function Profile:compiler_cache_status(pp)
         not_applied_hint = not_applied_hint,
         project = project,
         configuration = configuration,
-        text = text,
     }
+    status.text = compiler_cache_text(status)
+    return status
 end
 
 -- ---------------------------------------------------------------------------
@@ -816,6 +864,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Activate this profile and set it as active.
+--- @return boolean|nil saved, string|nil err, "stale"|nil reason the working copy's save
 function Profile:activate()
     self._workspace._active_profile = self
     self._workspace._active_profile_key = self.key
@@ -831,8 +880,9 @@ function Profile:activate()
             end
         end
     end
-    self._workspace:_save_user()
+    local saved, err, reason = self._workspace:_save_user()
     self._workspace:remerge()
+    return saved, err, reason
 end
 
 --- Deactivate this profile if it is currently active.
@@ -899,32 +949,46 @@ function Profile:has_default_target_override()
     return self._default_target_descriptor ~= nil
 end
 
+--- Write the default-target descriptor to the working copy: `descriptor`
+--- (nil clears it). A write that fails restores the previous descriptor
+--- unless it was refused as stale: the model was then reloaded from disk,
+--- which undoing would overwrite.
+--- @param descriptor table|nil
+--- @return boolean ok, string|nil err the working copy's write
+function Profile:_write_default_target(descriptor)
+    local before = self._default_target_descriptor
+    self._default_target_descriptor = descriptor
+    local ok, err, reason = self._workspace:_save_user()
+    if not ok and reason ~= "stale" then self._default_target_descriptor = before end
+    return ok == true, err
+end
+
 --- Set the default target for this profile.
 --- @param project loomworks.Project
 --- @param target_id? string opaque target identifier (module targets)
 --- @param launch_name? string launch config name (command launches)
 --- @param working_dir? string optional persistent working-dir override
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:set_default_target(project, target_id, launch_name, working_dir)
     local descriptor = { project = project.key }
     if target_id then descriptor.target = target_id end
     if launch_name then descriptor.launch = launch_name end
     if working_dir and working_dir ~= "" then descriptor.working_dir = working_dir end
-    self._default_target_descriptor = descriptor
-    self._workspace:_save_user()
+    return self:_write_default_target(descriptor)
 end
 
 --- Clear the default target for this profile.
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:clear_default_target()
-    self._default_target_descriptor = nil
-    self._workspace:_save_user()
+    return self:_write_default_target(nil)
 end
 
 --- Set the default target descriptor directly.
 --- Used for non-standard descriptors like device targets.
 --- @param descriptor table
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:set_default_target_descriptor(descriptor)
-    self._default_target_descriptor = descriptor
-    self._workspace:_save_user()
+    return self:_write_default_target(descriptor)
 end
 
 -- ---------------------------------------------------------------------------
@@ -937,17 +1001,32 @@ function Profile:device_serial()
     return self._device_serial
 end
 
+--- Write the profile's device selection to the working copy. A refused or
+--- failed write leaves the selection as it was (unless the refusal re-read
+--- the working copy: a new baseline), as Workspace:set_debug_adapter does.
+--- @param serial string|nil
+--- @return boolean ok, string|nil err
+function Profile:_write_device(serial)
+    local ws = self._workspace
+    local before = self._device_serial
+    self._device_serial = serial
+    local base = ws._disk_baseline and ws._disk_baseline.user
+    local ok, err = ws:_save_user()
+    if not ok and (ws._disk_baseline and ws._disk_baseline.user) == base then self._device_serial = before end
+    return ok == true, err
+end
+
 --- Set the selected device for this profile.
 --- @param serial string device serial
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:set_device(serial)
-    self._device_serial = serial
-    self._workspace:_save_user()
+    return self:_write_device(serial)
 end
 
 --- Clear the selected device for this profile.
+--- @return boolean ok, string|nil err the working copy's write
 function Profile:clear_device()
-    self._device_serial = nil
-    self._workspace:_save_user()
+    return self:_write_device(nil)
 end
 
 --- Get the Device domain object for the selected device serial.
@@ -1188,10 +1267,8 @@ end
 --- from the active list.
 --- @param operation loomworks.Operation
 function Profile:complete_operation(operation)
-    self._last_operation = {
-        message = operation.message,
-        success = operation.success,
-    }
+    self:set_last_result(operation.success and "ok" or (operation.cancelled and "cancelled" or "failed"),
+        operation.message)
     -- Remove from active list
     if self._operations then
         for i, op in ipairs(self._operations) do
@@ -1209,23 +1286,90 @@ function Profile:active_operations()
     return self._operations or {}
 end
 
---- Check if this profile has any active operations.
+--- Register a task running in the workspace daemon on this profile (`lw
+--- status`, spec §16.18: cli.mark_daemon_tasks): it counts as an active
+--- operation (spec/ui.md §1.5). Runtime only; it never blocks an operation.
+--- @param task loomworks.RemoteTask
+function Profile:add_remote_task(task)
+    self._remote_tasks = self._remote_tasks or {}
+    for _, t in ipairs(self._remote_tasks) do
+        if t == task then return end
+    end
+    self._remote_tasks[#self._remote_tasks + 1] = task
+end
+
+--- The running tasks observed in the workspace daemon on this profile.
+--- @return loomworks.RemoteTask[]
+function Profile:remote_tasks()
+    return self._remote_tasks or {}
+end
+
+--- Check if this profile has any active operations — local, or a task
+--- observed in the workspace daemon (spec §19.16).
 --- @return boolean
 function Profile:has_active_operation()
-    return self._operations ~= nil and #self._operations > 0
+    return (self._operations ~= nil and #self._operations > 0)
+        or (self._remote_tasks ~= nil and #self._remote_tasks > 0)
 end
 
 --- Get the last completed operation result.
---- @return { message: string, success: boolean }|nil
+--- @return loomworks.ProfileLastResult|nil
 function Profile:operation()
     return self._last_operation
+end
+
+--- Record the outcome of an operation that finished on this profile (the
+--- view's `last_result`, API.md §14.4): an Operation's, a task observed in
+--- the workspace daemon, or — in the daemon — its own run's
+--- (Service:on_run_done). Kept until the next one ends. Runtime only.
+--- @param status "ok"|"failed"|"cancelled" the final status, as a Tasks/1 step's
+--- @param message? string its end message
+function Profile:set_last_result(status, message)
+    self._last_operation = { status = status, message = message, success = status == "ok" }
+end
+
+--- The percent of the running operation: the weighted progress of the
+--- units shown configuring (10%) or building (90%) that report a count,
+--- else the last tick of a task observed in the workspace daemon; nil when
+--- none reports one. In-process task tracking, never view state (API.md
+--- §14.4 "Progress is not in the view").
+--- @return integer|nil
+function Profile:operation_pct()
+    local has_any, total_pct, count = false, 0, 0
+    for _, pp in ipairs(self:projects()) do
+        local status = pp:status()
+        if status == "configuring" or status == "building" then
+            local p = pp._config_unit:progress()
+            if p and p.current and p.total and p.total > 0 then
+                has_any = true
+                local phase_pct = p.current / p.total
+                if status == "configuring" then
+                    total_pct = total_pct + 10 * phase_pct
+                else
+                    total_pct = total_pct + 10 + 90 * phase_pct
+                end
+                count = count + 1
+            end
+        end
+    end
+    if has_any then return math.floor(total_pct / count) end
+    local remote = self._remote_tasks and self._remote_tasks[1]
+    return remote and remote.pct or nil
 end
 
 --- Get elapsed seconds for the first active operation.
 --- @return number|nil seconds
 function Profile:operation_elapsed()
-    if not self._operations or #self._operations == 0 then return nil end
-    return self._operations[1]:elapsed()
+    if self._operations and #self._operations > 0 then
+        return self._operations[1]:elapsed()
+    end
+    local remote = self._remote_tasks and self._remote_tasks[1]
+    if remote then
+        local ws = self._workspace
+        local clock = ws and ws._core and ws._core._deps and ws._core._deps.clock
+        return remote:elapsed(clock and clock() or ((vim.uv or vim.loop).hrtime() / 1e9))
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -1490,7 +1634,7 @@ end
 function Profile:is_configured()
     for _, pp in ipairs(self:projects()) do
         if pp._config_unit then
-            local state = pp._config_unit:state()
+            local state = pp._config_unit:local_state()
             if state and state ~= "unconfigured" then
                 return true
             end
@@ -1499,7 +1643,9 @@ function Profile:is_configured()
     return false
 end
 
---- Check if this profile has any running tasks.
+--- Check if this profile has any running tasks of this editor (the ones it
+--- can cancel). A task observed in the workspace daemon is not one
+--- (`has_active_operation` covers it, spec §19.16).
 --- @return boolean
 function Profile:is_running()
     if not self.mappings then return false end
@@ -1525,6 +1671,7 @@ function Profile:status()
         configuring = 0,
         building = 0,
         deleting = 0,
+        unknown = 0,
     }
 
     for _, pp in ipairs(pps) do
@@ -1562,6 +1709,7 @@ function Profile:status()
     if counts.built == total then return "built", STATUS_HL.built end
     if counts.configured == total then return "configured", STATUS_HL.configured end
     if counts.unconfigured == total then return "unconfigured", STATUS_HL.unconfigured end
+    if counts.unknown == total then return "unknown", STATUS_HL.unconfigured end
 
     if failed > 0 then
         local parts = {}
@@ -1582,6 +1730,7 @@ function Profile:status()
     if counts.built > 0 then parts[#parts + 1] = counts.built .. " built" end
     if counts.configured > 0 then parts[#parts + 1] = counts.configured .. " configured" end
     if counts.unconfigured > 0 then parts[#parts + 1] = counts.unconfigured .. " unconfigured" end
+    if counts.unknown > 0 then parts[#parts + 1] = counts.unknown .. " unknown" end
     return table.concat(parts, ", "), STATUS_HL.configured
 end
 
@@ -1697,23 +1846,35 @@ end
 
 --- Hard-reset this profile (plan + execute, no UI confirmation): rm -rf the
 --- build directories and drop the config units back to `unconfigured`, keeping
---- the profile itself (spec §16.30). Returns a Future.
+--- the profile itself (spec §16.30). Returns a Future (`true` when every
+--- removal succeeded). `opts.stop` (the daemon's cancellation, §19.15
+--- "Reset") is asked before each entry of the removal; a stopped reset
+--- resolves `false` with the cache left `unknown` (never reset after a
+--- partial removal).
 --- @param on_done? function
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Profile:reset(on_done)
+function Profile:reset(on_done, opts)
     -- No Operation is created: an Operation drives the editor's live progress UI
     -- and only completes when its units reach their target state via task
     -- tracking. The headless reset runs no tasks, so an Operation here would
     -- never complete — leaking a progress handle at process teardown. The CLI
     -- reports its own result instead.
     -- No profile removal, no deactivation — reset preserves the active profile.
-    return self._workspace:execute_deletion(self:plan_reset(), nil, on_done)
+    local stop = opts and opts.stop or nil
+    return self._workspace:execute_deletion(self:plan_reset(), stop and { stop = stop } or nil, on_done)
 end
 
 --- Clean this profile's configs. Returns a Future.
 --- @param on_done? function legacy callback (deprecated)
+--- @param opts? { refused_ok?: boolean } refused_ok: the ProfileProjects not
+---   cleaned as invalid (core §5.4) still fail the clean's Operation, but when
+---   they are its only failure the Future resolves with their result lines
+---   (loomworks.RefusalLine[]) instead of rejecting (the in-process
+---   `Build/1.clean` reports them as its `not_run`: a rebuild goes on to
+---   build the others)
 --- @return loomworks.Future
-function Profile:clean(on_done)
+function Profile:clean(on_done, opts)
     local future_mod = require("loomworks.future")
     local pps = self:projects()
     if #pps == 0 then
@@ -1721,13 +1882,40 @@ function Profile:clean(on_done)
         return future_mod.resolved(true)
     end
 
+    -- (A `daemon`-mode editor holds no model, step 6b-α: a model's clean is
+    -- always in-process — the daemon's, the CLI's or the in-process
+    -- editor's.)
+    local f = self:_clean_in_process(opts)
+
+    if on_done then
+        f:next(function() on_done() end)
+         :catch(function() on_done() end)
+    end
+    return f
+end
+
+--- The in-process module clean of this profile (Profile:clean).
+--- @param opts? { refused_ok?: boolean } as Profile:clean
+--- @return loomworks.Future
+function Profile:_clean_in_process(opts)
+    local pps = self:projects()
     local items = {}
     local units = {}
     local target_states = {}
+    -- An invalid ProfileProject (`invalid_reason`) is not cleaned (core §5.4
+    -- "Invalid ProfileProjects", §8.4): the operation counts it finished and
+    -- failed, and the clean fails once the others are cleaned.
+    local refused = {}
+    local overseer = require("loomworks.overseer")
     for _, pp in ipairs(pps) do
-        items[#items + 1] = { unit = pp._config_unit }
-        units[#units + 1] = pp._config_unit
-        target_states[pp._config_unit] = "configured"
+        local refusal = overseer.pp_refusal(pp)
+        if refusal then
+            refused[#refused + 1] = refusal
+        elseif pp._config_unit then
+            items[#items + 1] = { unit = pp._config_unit }
+            units[#units + 1] = pp._config_unit
+            target_states[pp._config_unit] = "configured"
+        end
     end
 
     self._workspace:cancel_conflicting_operations(units)
@@ -1736,15 +1924,15 @@ function Profile:clean(on_done)
         unit:mark_deleting(true, "cleaning")
     end
     -- The runtime mark is cleared on every exit (success, failed task,
-    -- cancel, refusal, throw) — exactly once. Only the in-memory mark: the
-    -- cache state written by mark_cached_configs_cleaned is left as is.
+    -- cancel, refusal, throw) — exactly once. Only the in-memory mark: cache
+    -- state is left as is.
     -- Clearing on cancel is safe: the clean task holds the exclusive build-dir lock.
     local ws = self._workspace
     local clear_mark = ws:_deleting_mark_clearer(units)
     local ok, f = pcall(function()
-        ws:create_operation(self, "clean", units, target_states)
-
-        ws:mark_cached_configs_cleaned(items)
+        ws:create_operation(self, "clean", units, target_states, { refused = refused })
+        -- The built state is recorded per module clean task once it succeeds
+        -- (overseer.record_module_clean); a wipe resets the unit itself.
 
         local running = ws:find_running_tasks_for_items(items)
         local task_ids = {}
@@ -1753,10 +1941,12 @@ function Profile:clean(on_done)
         end
 
         return ws:stop_tasks_then(task_ids):next(function()
-            return require("loomworks.overseer").run_profile_clean(self)
-        end):next(function()
+            return require("loomworks.overseer").run_profile_clean(self, nil, opts)
+        end):next(function(v)
             clear_mark()
-            return true
+            -- (With refused_ok: the result lines of the ProfileProjects not
+            -- cleaned, when they are the clean's only failure.)
+            return v
         end, function(err)
             clear_mark()
             error(err, 0)
@@ -1766,20 +1956,18 @@ function Profile:clean(on_done)
         clear_mark()
         error(f, 0)
     end
-
-    if on_done then
-        f:next(function() on_done() end)
-         :catch(function() on_done() end)
-    end
     return f
 end
 
 --- Rebuild: clean then build. Returns a Future.
+--- A ProfileProject invalid for the action (core §5.4) does not stop the
+--- rebuild of the others: the clean's refusal of it fails only the clean's
+--- Operation, and the build fails naming it once the others are built.
 --- @return loomworks.Future
 function Profile:rebuild()
-    return self:clean():next(function()
+    return self:clean(nil, { refused_ok = true }):next(function()
         return self:build()
     end)
 end
 
-return { Profile = Profile, ProfileProject = ProfileProject }
+return { Profile = Profile, ProfileProject = ProfileProject, compiler_cache_text = compiler_cache_text }

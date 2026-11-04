@@ -118,14 +118,69 @@ describe("shell module", function()
     end)
 
     describe("info", function()
-        it("puts build_dir template into each config's module_config", function()
+        it("puts the build_dir template on each config's info, flat (§8 info shape)", function()
             local info = shell.info("/x", {
                 build_dir = "${workspace_root}/out/${variant}",
             })
             local cfg = info.configurations["variant:default"]
             assert.is_not_nil(cfg)
-            assert.equals("${workspace_root}/out/${variant}", cfg.module_config.build_dir)
-            assert.equals("default", cfg.module_config.variant)
+            assert.equals("${workspace_root}/out/${variant}", cfg.build_dir)
+            assert.equals("default", cfg.variant)
+            assert.is_nil(cfg.module_config)
+        end)
+
+        -- Regression: the template reached the Configuration nested as
+        -- module_config.module_config.build_dir, so the build dir fell back
+        -- to <root>/.nvim/build/<project>/<variant>.
+        it("the build_dir template reaches resolve_build_dir through a Configuration", function()
+            local Configuration = require("loomworks.configuration")
+            local info = shell.info("/x", {
+                build_dir = "${workspace_root}/out/${variant}",
+                configurations = { Debug = vim.empty_dict() },
+            })
+            local cfg = Configuration.new(nil, "Debug", info.configurations.Debug)
+            assert.equals("/ws/out/Debug",
+                shell.resolve_build_dir("app", "Debug", cfg.module_config, "/ws", nil))
+            -- The project-level template is the project's, not this
+            -- configuration's to persist (no frozen copy in user.json).
+            local entry = cfg:serialize_user_override() or {}
+            assert.is_nil(entry.build_dir)
+            assert.is_nil(entry.module_config)
+        end)
+
+        -- Shell spec §6 / core §8 `info` `error`: only ${workspace_root},
+        -- ${project_path} and ${variant} expand in a build_dir template; any
+        -- other name (an environment variable's too) makes the configuration
+        -- invalid, reported to core as the configuration info's `error`.
+        it("reports a build_dir template naming another variable as the configuration's error", function()
+            local info = shell.info("/x", {
+                build_dir = "${workspace_root}/out/${HOME}/${variant}",
+                configurations = { Debug = vim.empty_dict(),
+                    Release = { build_dir = "${workspace_root}/rel/${project_path}" } },
+            })
+            assert.equals("build_dir template uses ${HOME}: only ${workspace_root}, "
+                .. "${project_path} and ${variant} are available", info.configurations.Debug.error)
+            -- A configuration's own template is checked on its own.
+            assert.is_nil(info.configurations.Release.error)
+        end)
+
+        it("names every disallowed variable of a configuration's own template", function()
+            local info = shell.info("/x", {
+                build_dir = "${workspace_root}/out/${variant}",
+                configurations = { Debug = { build_dir = "${project}/${configuration}/${variant}" } },
+            })
+            assert.equals("build_dir template uses ${configuration}, ${project}: only "
+                .. "${workspace_root}, ${project_path} and ${variant} are available",
+                info.configurations.Debug.error)
+            assert.is_nil(info.configurations["variant:default"].error)
+        end)
+
+        it("keeps a configuration's own build_dir over the project template", function()
+            local info = shell.info("/x", {
+                build_dir = "${workspace_root}/out/${variant}",
+                configurations = { Debug = { build_dir = "${workspace_root}/dbg" } },
+            })
+            assert.equals("${workspace_root}/dbg", info.configurations.Debug.build_dir)
         end)
 
         it("preserves user-declared configurations alongside the default", function()
@@ -167,6 +222,14 @@ describe("shell module", function()
                 { build_dir = "${workspace_root}/${project_path}/out" },
                 "/ws", nil)
             assert.equals("/ws/myproj/out", out)
+        end)
+
+        it("never expands an environment variable", function()
+            vim.env.LW_SHELL_BD_PROBE = "leaked"
+            local out = shell.resolve_build_dir("myproj", "Debug",
+                { build_dir = "${workspace_root}/${LW_SHELL_BD_PROBE}" }, "/ws", nil)
+            vim.env.LW_SHELL_BD_PROBE = nil
+            assert.is_nil(out:find("leaked", 1, true))
         end)
 
         it("falls back to .nvim/build when no template provided", function()
@@ -251,6 +314,34 @@ describe("shell module", function()
             })
             local tasks = shell.tasks(ctx, "default")
             assert.same({ "echo", ROOT .. "/cached/path" }, tasks[1].builder().cmd)
+        end)
+
+        it("never expands an unvalidated build_dir template when core gave no build dir", function()
+            vim.env.LW_SHELL_BD_PROBE = "leaked"
+            local ctx = make_ctx({
+                type_config = {
+                    build_dir = "${workspace_root}/${LW_SHELL_BD_PROBE}",
+                    configure_cmd = { "echo", "${build_dir}" },
+                    build_cmd = { "echo", "build" },
+                },
+            })
+            local ok, res = pcall(shell.tasks, ctx, "default")
+            vim.env.LW_SHELL_BD_PROBE = nil
+            assert.is_false(ok)
+            assert.truthy(tostring(res):find("${LW_SHELL_BD_PROBE}", 1, true), tostring(res))
+        end)
+
+        it("expands a valid build_dir template with the project key when core gave no build dir", function()
+            local ctx = make_ctx({
+                name = "myproj", path = "sub/dir",
+                type_config = {
+                    build_dir = "${workspace_root}/out/${project_path}/${variant}",
+                    configure_cmd = { "echo", "${build_dir}" },
+                    build_cmd = { "echo", "build" },
+                },
+            })
+            local tasks = shell.tasks(ctx, "default")
+            assert.same({ "echo", ROOT .. "/out/myproj/default" }, tasks[1].builder().cmd)
         end)
 
         it("emits no tasks when configure_cmd / build_cmd are missing", function()

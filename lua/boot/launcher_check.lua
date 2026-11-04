@@ -228,11 +228,9 @@ function M.run_checks(root, env)
         entry.present = false
         nag("launcher-missing", name .. " is missing", repair(), nil, R)
       else
-        local c = launcher.classify(kind, bytes, env.sha256, res.version)
+        local c = launcher.classify(kind, bytes, env.sha256)
         entry.generation, entry.releases = c.status, c.releases
-        -- A known generation with no defect for this pin (one whose only defect
-        -- is the legacy origin, under a legacy pin) works as it is: no finding.
-        if c.status == "known" and #c.defects > 0 then
+        if c.status == "known" then
           local texts = {}
           for _, d in ipairs(c.defects or {}) do texts[#texts + 1] = d.text end
           if c.breaks then

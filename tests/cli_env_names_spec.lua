@@ -73,15 +73,18 @@ describe("reserved compiler-driver env names are case-insensitive", function()
 end)
 
 describe("env.PATH", function()
+  -- The warning goes through the host's notifier (loomworks.notify: the
+  -- core's `_deps.notify`, which an earlier `lw` load in this process set).
   local orig_notify
   local notified
   before_each(function()
     notified = {}
-    orig_notify = vim.notify
-    vim.notify = function(msg, level) notified[#notified + 1] = { msg = msg, level = level } end
+    local core = require("loomworks")._core()
+    orig_notify = core._deps.notify
+    core._deps.notify = function(msg, level) notified[#notified + 1] = { msg = msg, level = level } end
     config_env._warned = {}
   end)
-  after_each(function() vim.notify = orig_notify end)
+  after_each(function() require("loomworks")._core()._deps.notify = orig_notify end)
 
   it("is accepted with a clear warning at set time, any case", function()
     local root = make_ws()

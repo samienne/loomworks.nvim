@@ -197,6 +197,12 @@ function M.make_mock_workspace(overrides)
         _user_cs_names = overrides._user_cs_names or {},
     }
 
+    -- The mock models no build-directory claims (spec §1.7), so a command's
+    -- change never refuses a new configuration here. Tests of the refusal
+    -- itself use a real Workspace.
+    ws._new_build_dir_collision = overrides._new_build_dir_collision
+        or function() return nil end
+
     -- Add config unit methods (same logic as Workspace)
     local ConfigUnit = require("loomworks.config_unit")
     local cache_mod_h = require("loomworks.cache")
@@ -381,7 +387,8 @@ function M.make_mock_workspace(overrides)
             entry.path = project.path
         end
         if project._depends_on_keys then entry.depends_on = project._depends_on_keys end
-        if project.launch then entry.launch = project.launch end
+        local launch = project.serialize_launches and project:serialize_launches()
+        if launch then entry.launch = launch end
         return entry
     end
     ws._serialize_project_partial = core_overrides._serialize_project_partial or function(self_ws, project, needed_config_names)
@@ -405,7 +412,8 @@ function M.make_mock_workspace(overrides)
             entry.path = project.path
         end
         if project._depends_on_keys then entry.depends_on = project._depends_on_keys end
-        if project.launch then entry.launch = project.launch end
+        local launch = project.serialize_launches and project:serialize_launches()
+        if launch then entry.launch = launch end
         return entry
     end
     ws._serialize_user = core_overrides._serialize_user or function(self_ws)
@@ -764,6 +772,22 @@ function M.make_test_deps(files, opts)
     end
 
     local deps = {
+        -- In-memory cross-process locks: a fake root must never get lockfiles
+        -- on the real file system (spec §19.3 locks are exercised for real in
+        -- tests/lock_recovery_spec.lua and tests/op_lock_spec.lua).
+        locks = {
+            fake = true,
+            op = {
+                acquire = function() return { fake = true } end,
+                release = function() end,
+                reclaimed_line = function() return "" end,
+            },
+            build = {
+                acquire = function(dir) return { path = dir, fake = true } end,
+                held_by_me = function() return false end,
+                release = function() end,
+            },
+        },
         io = {
             read_file = file_lookup,
             write_json = function() return true end,
@@ -839,6 +863,9 @@ function M.make_test_deps(files, opts)
                     stop = function() end,
                     content = function(_, path) return file_lookup(path) end,
                     mark_written = function() end,
+                    paused = false,
+                    pause = function(self) self.paused = true end,
+                    resume = function(self) self.paused = false end,
                 }
             end,
         },
@@ -976,6 +1003,29 @@ function M.temp_root()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     return ((uv.fs_realpath(root) or root):gsub("\\", "/"))
+end
+
+--- Give `project` the launch configurations `launches` (name → declared
+--- table), as a refresh of the files would (spec §1.2.1). `project` is a real
+--- Project, or a plain table standing in for one, which then gets the
+--- Project's launch-registry methods (and nothing else).
+--- @param project table
+--- @param launches table<string, table>|nil
+--- @return table project
+function M.set_launches(project, launches)
+    local Project = require("loomworks.project")
+    if getmetatable(project) == nil then
+        setmetatable(project, { __index = {
+            _sync_launches = Project._sync_launches,
+            launch_configs = Project.launch_configs,
+            has_launches = Project.has_launches,
+            find_launch = Project.find_launch,
+            serialize_launches = Project.serialize_launches,
+        } })
+    end
+    project._launches = project._launches or {}
+    project:_sync_launches(launches)
+    return project
 end
 
 return M

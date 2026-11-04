@@ -389,6 +389,22 @@ describe("multi-config cmake: deleting a shared tree (spec §4.6, §5.7 crash sa
         assert.equals("unknown", ws:_serialize_cache().build_dirs[TREE .. "#Old:ninja-mc"].state)
     end)
 
+    it("an orphaned sibling keeps its state when the cache save before the removal fails", function()
+        local removed, fail = {}, false
+        local opts = debug_only()
+        opts.deps = { io = rm_io(removed), notify = function() end,
+            cache = { save = function() return not fail end } }
+        local _, ws = make_core(opts)
+        local d = unit_of(ws, "debug")
+        assert.equals("built", ws:find_build_dir(TREE .. "#Old:ninja-mc").state)
+        fail = true
+        assert.is_false(delete_items(ws, { d }))
+        assert.same({}, removed, "nothing is removed when the unknown marks never reached disk")
+        assert.equals("built", ws:find_build_dir(TREE .. "#Old:ninja-mc").state)
+        assert.equals("built", ws:_serialize_cache().build_dirs[TREE .. "#Old:ninja-mc"].state)
+        assert.equals("built", d.state_value)
+    end)
+
     it("a kept tree (still referenced) leaves its orphaned sibling untouched", function()
         local removed = {}
         local core, ws = make_core({ cache = orphan_cache(), deps = { io = rm_io(removed),
@@ -446,6 +462,17 @@ describe("multi-config cmake: cache input hardening (three-file-model §2.3)", f
                 assert.is_nil(id:find("ninja-mc:ninja-mc", 1, true), id)
             end
         end
+    end)
+
+    it("record_task_result's fallback without a configuration_key records nothing in a shared tree", function()
+        local core, ws = make_core()
+        local before = #ws._config_units
+        assert.has_no.errors(function()
+            core:record_task_result({ project_key = "App", variant = "Debug",
+                tool = { key = KIT.id, data = KIT }, action = "configure", success = true,
+                build_dir = TREE_ABS })
+        end)
+        assert.equals(before, #ws._config_units)
     end)
 end)
 

@@ -33,6 +33,7 @@ M.SGR = {
   green = "32",
   red = "31",
   yellow = "33",
+  blue = "34",
   cyan = "36",
 }
 

@@ -276,9 +276,10 @@ describe("ensure_tools_detected", function()
     end)
 end)
 
--- execute_add_project, compute_remove_context, execute_remove_project,
--- compute_initial_mappings, compute_upgrade_preview tests are in
--- integration_spec.lua.
+-- execute_add_project tests are in integration_spec.lua. Project removal,
+-- orphan cleanup and stray directory deletion run through
+-- model_commands.execute_deletion (deletion_plan_spec.lua,
+-- orphan_cleanup_safety_spec.lua, view_deletion_locks_spec.lua).
 
 -- =========================================================================
 -- compute_config_set_candidates

@@ -232,8 +232,21 @@ function Tree:on_key(action, line)
 
     elseif action == "load" then
         local lw = require("loomworks")
-        if lw.get_workspace() then
-            lw.rescan_tools()
+        local ws = lw.get_workspace()
+        -- (In `daemon` mode the editor holds no model, step 6b-α: a loaded
+        -- workspace is the root it observes the daemon of.)
+        if ws or (require("loomworks.daemon.facade").active() and lw.loaded_root()) then
+            -- In `daemon` mode the daemon's rescan (it waits for detection,
+            -- up to 45 s: announced at once); a refusal, or a detection that
+            -- outran the wait (a warn note), is notified.
+            vim.notify("loomworks: Rescanning toolchains…", vim.log.levels.INFO)
+            local model = require("loomworks.ui.model_calls")
+            model.call(ws, "Toolchains/1.rescan", {}, function(r)
+                local ok, err = model.result(r)
+                if ok then return end
+                vim.notify("loomworks: " .. tostring(err),
+                    r.outcome == "ok" and vim.log.levels.WARN or vim.log.levels.ERROR)
+            end)
         else
             lw.setup({ root = vim.fn.getcwd() })
         end
@@ -248,7 +261,7 @@ function Tree:on_key(action, line)
         return {}
 
     elseif action == "trust" then
-        require("loomworks").trust_user_prefs()
+        self:_trust()
         return { refresh = true }
 
     elseif action == "help" then
@@ -274,6 +287,13 @@ end
 
 function Tree:_create_workspace()
     local lw = require("loomworks")
+    -- `daemon` mode (spec §19.16 "Model writes", step 6b-α): refused,
+    -- loaded or not, nothing written; the notification names `lw init`.
+    local facade = require("loomworks.daemon.facade")
+    if facade.active() then
+        vim.notify("loomworks: " .. facade.CREATE_REFUSAL, vim.log.levels.ERROR)
+        return
+    end
     if lw.get_workspace() then
         vim.notify("loomworks: workspace already exists", vim.log.levels.INFO)
         return
@@ -347,47 +367,13 @@ end
 -- Cache nuke confirmation dialog
 -- -----------------------------------------------------------------------
 
+--- `<C-n>`: `Maintenance/1.nuke` through ui/model_calls (step 5o C2c-2):
+--- its confirmation lists what it removes (or is refused — a lock another
+--- process holds, in `daemon` mode a task of the daemon running); `y` sends
+--- the plan back. The workspace is the loaded one, also while its load is
+--- refused; no root is ever sent.
 function Tree:_confirm_nuke()
-    local dialog = require("loomworks.ui.dialog")
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    local err = lw.get_setup_error()
-    local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
-
-    local lines = {
-        "  Reset workspace cache",
-        "",
-        "  This will permanently delete:",
-        "    " .. root .. "/.nvim/build/",
-        "    " .. root .. "/.nvim/loomworks.cache.json",
-    }
-    -- Module-owned LSP database areas present on disk (spec ui §1.11). A
-    -- failed area check is shown here; the nuke itself then aborts.
-    local core = lw._core and lw._core()
-    if core and core._nuke_lsp_db_areas then
-        local areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root))
-        for _, a in ipairs(areas or {}) do lines[#lines + 1] = "    " .. a .. "/" end
-        if not areas then lines[#lines + 1] = "    (refused: " .. tostring(area_err) .. ")" end
-    end
-    local last_path = #lines
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "  Press y to confirm, q to cancel"
-
-    local highlights = { { line = 1, hl_group = "DiagnosticError" } }
-    for i = 3, last_path do highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn" } end
-
-    dialog.show({
-        title = "Confirm Reset",
-        lines = lines,
-        highlights = highlights,
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                lw.nuke_cache(root)
-            end,
-        },
-    })
+    require("loomworks.ui.actions").nuke()
 end
 
 -- -----------------------------------------------------------------------
@@ -396,40 +382,91 @@ end
 
 function Tree:_confirm_delete_user_prefs()
     local dialog = require("loomworks.ui.dialog")
-    local lw = require("loomworks")
-    local ws = lw.get_workspace()
-    local err = lw.get_setup_error()
-    local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
-    local user_path = require("loomworks.user").filepath(root)
+    local model = require("loomworks.ui.model_calls")
+    local ws = require("loomworks").get_workspace()
+    -- `Workspace/1.delete_user_prefs` (step 5o C2a): its `confirm` shows what
+    -- would be deleted; `y` sends its plan back, so a working copy changed
+    -- since is refused, not deleted.
+    model.call(ws, "Workspace/1.delete_user_prefs", {}, function(r)
+        if r.outcome ~= "confirm" then
+            local _, err = model.result(r)
+            vim.notify("loomworks: " .. tostring(err or "the working copy was not deleted"), vim.log.levels.ERROR)
+            return
+        end
+        local lines = { "  Delete user preferences", "" }
+        local highlights = { { line = 1, hl_group = "DiagnosticWarn" } }
+        for _, l in ipairs(r.lines or {}) do
+            lines[#lines + 1] = "  " .. l
+            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Active profile and default targets will be reset."
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "  Press y to confirm, q to cancel"
+        dialog.show({
+            title = "Confirm Delete",
+            lines = lines,
+            highlights = highlights,
+            keys = {
+                n = "close",
+                y = function(self)
+                    self:close()
+                    model.call(ws, "Workspace/1.delete_user_prefs", { plan = r.plan }, function(d)
+                        local ok, err = model.result(d)
+                        if not ok then
+                            vim.notify("loomworks: " .. tostring(err or "the working copy was not deleted"),
+                                vim.log.levels.ERROR)
+                        end
+                    end)
+                end,
+            },
+        })
+    end)
+end
 
-    local lines = {
-        "  Delete user preferences",
-        "",
-        "  This will delete:",
-        "    " .. user_path,
-        "",
-        "  Active profile and default targets will be reset.",
-        "",
-        "  Press y to confirm, q to cancel",
-    }
+-- -----------------------------------------------------------------------
+-- Working copy trust (spec §17.4)
+-- -----------------------------------------------------------------------
 
-    dialog.show({
-        title = "Confirm Delete",
-        lines = lines,
-        highlights = {
-            { line = 1, hl_group = "DiagnosticWarn" },
-            { line = 3, hl_group = "DiagnosticWarn" },
-            { line = 4, hl_group = "DiagnosticWarn" },
-            { line = 6, hl_group = "Comment" },
-        },
-        keys = {
-            n = "close",
-            y = function(self)
-                self:close()
-                lw.delete_user_prefs(root)
-            end,
-        },
-    })
+--- `T`: review & trust the working copy (`Workspace/1.trust_accept`). In the
+--- `in-process` mode its body asks its own question; a daemon's `confirm`
+--- (step 5o C2a) is asked here — Trust sends its plan back (a working copy
+--- changed since is refused), Discard goes to the working copy's deletion
+--- (its own confirmation), Cancel does nothing.
+--- @param confirm? fun(msg: string, choices: string, default: integer): integer (tests; default vim.fn.confirm)
+function Tree:_trust(confirm)
+    local model = require("loomworks.ui.model_calls")
+    local ws = nil -- (the loaded workspace's, model_calls)
+    model.call(ws, "Workspace/1.trust_accept", {}, function(r)
+        if r.outcome == "confirm" then
+            local lines = vim.list_extend({}, r.lines or {})
+            lines[#lines + 1] = ""
+            lines[#lines + 1] = "Trust this working copy?"
+            local choice = (confirm or vim.fn.confirm)(table.concat(lines, "\n"), "&Trust\n&Discard\n&Cancel", 3)
+            if choice == 1 then
+                model.call(ws, "Workspace/1.trust_accept", { plan = r.plan }, function(a)
+                    local ok, err = model.result(a)
+                    if ok then
+                        vim.notify("loomworks: working copy trusted (signed for this machine)", vim.log.levels.INFO)
+                    else
+                        vim.notify("loomworks: " .. tostring(err or "the working copy was not trusted"),
+                            vim.log.levels.ERROR)
+                    end
+                end)
+            elseif choice == 2 then
+                self:_confirm_delete_user_prefs()
+            end
+            return
+        end
+        local ok, err = model.result(r)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(err or "the working copy was not trusted"), vim.log.levels.ERROR)
+            return
+        end
+        -- (An already trusted working copy: its note.)
+        for _, note in ipairs(r.notes or {}) do vim.notify("loomworks: " .. note, vim.log.levels.INFO) end
+    end)
 end
 
 -- -----------------------------------------------------------------------

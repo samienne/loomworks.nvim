@@ -3,6 +3,7 @@
 --- Auto-discovers SDK providers from runtimepath. Third-party plugins
 --- can add providers by placing files in lua/loomworks/sdks/.
 
+local notify_once = require("loomworks.notify").once
 local API = require("loomworks.api_versions")
 local loader = require("loomworks.plugin_loader")
 
@@ -23,12 +24,24 @@ local _rejected = {}
 --- @type table<string, string>
 local _load_failed = {}
 
+--- The notification of a provider `reject` refused, re-raised once per load.
+--- @type table<string, string>
+local _rejection_notes = {}
+
+--- Report a rejected provider: once per workspace load (loomworks.notify
+--- `once`), so each load's diagnostics carry it (core daemon.md §19.13 "Load
+--- warnings") while the gets within one load stay silent.
+--- @param id string
+local function report_rejected(id)
+    local msg = _rejection_notes[id]
+    if msg then notify_once("sdk-rejected|" .. id, msg, vim.log.levels.ERROR) end
+end
+
 local function reject(id, reason)
     if _rejected[id] then return end
     _rejected[id] = reason
-    vim.notify(
-        "loomworks: SDK provider " .. loader.display_id(id) .. " will not load: " .. reason,
-        vim.log.levels.ERROR)
+    _rejection_notes[id] = "loomworks: SDK provider " .. loader.display_id(id) .. " will not load: " .. reason
+    report_rejected(id)
 end
 
 --- List all available provider IDs from runtimepath.
@@ -61,7 +74,10 @@ end
 function M.get(id)
     if type(id) ~= "string" then return nil end
     if _providers[id] then return _providers[id] end
-    if _rejected[id] then return nil end
+    if _rejected[id] then
+        report_rejected(id)
+        return nil
+    end
     local mod, err, status = loader.load("sdks", id)
     if status == "invalid" then
         reject(id, err)

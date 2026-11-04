@@ -2,7 +2,7 @@
 --- One per unit (cache entry): siblings in a module's shared tree (spec §1.7)
 --- each have their own BuildDir with the same `path`, so directory-level
 --- state (refs, locks, deletion, the missing-directory stat) keys by
---- `Workspace:_build_dir_ref_key(path)`, never by `rel_path`.
+--- `Workspace:_build_dir_identity(path)`, never by `rel_path`.
 --- Separate from ConfigUnit (user intent) — a ConfigUnit references a BuildDir.
 --- Orphaned BuildDirs have state but no ConfigUnit pointing to them.
 

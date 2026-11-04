@@ -6,6 +6,30 @@
 
 local CTestUnit = require("loomworks.test_units.ctest")
 
+describe("CTestUnit results file (spec §19.15 Tests)", function()
+    it("a structured run writes to opts.output_path when given (a per-run path)", function()
+        local tu = CTestUnit.new({
+            build_dir = function() return "/nonexistent-build" end,
+            variant = function() return "Debug" end,
+            configuration = function() return nil end,
+            configuration_env = function() return {} end,
+            run_env = function() return nil end,
+        })
+        tu._entries = {
+            { id = "target:t", name = "t", runnable = true, framework = "gtest", executable = "/b/t" },
+            { id = "test:A.B", name = "A.B", parent = "target:t", runnable = true, framework = "gtest",
+                executable = "/b/t" },
+        }
+        tu._exec_specs = { ["/b/t"] = { cmd = { "/b/t" }, env = {} } }
+        local c = tu:test_command("test:A.B", { output_path = "/w/.nvim/tmp/lw-test-ab12.xml" })
+        assert.equals("/w/.nvim/tmp/lw-test-ab12.xml", c.output_path)
+        assert.equals("--gtest_output=xml:/w/.nvim/tmp/lw-test-ab12.xml", c.cmd[#c.cmd])
+        assert.equals("A.B", c.env.GTEST_FILTER)
+        local all = tu:test_command_all({ output_path = "/w/.nvim/tmp/lw-test-cd34.xml" })
+        assert.equals("/w/.nvim/tmp/lw-test-cd34.xml", all.output_path)
+    end)
+end)
+
 local function stub_unit(opts)
     return {
         build_dir = function() return opts.build_dir end,

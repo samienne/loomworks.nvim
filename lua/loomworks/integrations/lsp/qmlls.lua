@@ -67,17 +67,16 @@ local function resolve_build_dir(entry)
     return dir
 end
 
---- Get the qmlls entry for a project by asking the core for this server.
---- @param project loomworks.Project
---- @return table|nil
-local function entry_for(project)
-    local lsp = require("loomworks.lsp")
-    return lsp.entry_for_project(project, "qmlls")
+--- The qmlls entry of a project record of the LSP configuration state.
+--- @param rec loomworks.LspConfigProject
+--- @return loomworks.LspStateEntry|nil
+local function entry_for(rec)
+    return require("loomworks.lsp_config").entry(rec, "qmlls")
 end
 
 --- Find the qmlls entry for a given root_dir by asking the core.
 --- @param root_dir string|nil
---- @return loomworks.Project|nil project, table|nil entry
+--- @return loomworks.LspConfigProject|nil record, loomworks.LspStateEntry|nil entry
 local function find_by_root(root_dir)
     if not root_dir then return nil, nil end
     local lsp = require("loomworks.lsp")
@@ -194,15 +193,12 @@ end
 function M.root_dir_factory(fallback)
     --- The existing per-buffer resolution: routed project entry, else fallback.
     local function resolve(bufnr, on_dir)
-        local ok, lw = pcall(require, "loomworks")
-        if ok then
-            local project = lw.project_for_buf(bufnr)
-            if project then
-                local entry = entry_for(project)
-                if entry and entry.root_dir then
-                    on_dir(normalize(entry.root_dir))
-                    return
-                end
+        local rec = require("loomworks.lsp_source").project_for_buf(bufnr)
+        if rec then
+            local entry = entry_for(rec)
+            if entry and entry.root_dir then
+                on_dir(normalize(entry.root_dir))
+                return
             end
         end
         if fallback then fallback(bufnr, on_dir) end
@@ -330,12 +326,12 @@ end
 --- Detect qmlls state changes after a profile/active set change and restart
 --- clients whose resolved build dir (or binary) moved.
 function M.on_active_set_changed()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok or not lw.get_workspace() then return end
+    local source = require("loomworks.lsp_source")
+    if not source.loaded() then return end
 
     local new_state = {}
-    for _, project in pairs(lw.get_projects()) do
-        local entry = entry_for(project)
+    for _, rec in ipairs(source.projects()) do
+        local entry = entry_for(rec)
         if entry and entry.root_dir then
             local key = normalize(entry.root_dir)
             local new = {
@@ -356,7 +352,7 @@ function M.on_active_set_changed()
                     if new.binary ~= prev.binary then
                         parts[#parts + 1] = "binary: " .. (new.binary or "default")
                     end
-                    vim.notify("loomworks: restarting qmlls for " .. project.key
+                    vim.notify("loomworks: restarting qmlls for " .. rec.project
                         .. (#parts > 0 and " (" .. table.concat(parts, ", ") .. ")" or ""))
                     restart_clients(clients)
                 end

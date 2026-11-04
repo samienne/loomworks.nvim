@@ -16,6 +16,7 @@ local SIGN_DEFS = {
     unknown = { text = "○", texthl = "Comment" },
     running = { text = "↻", texthl = "DiagnosticInfo" },
     pending = { text = "↻", texthl = "DiagnosticInfo" },
+    queued  = { text = "↻", texthl = "DiagnosticInfo" },
 }
 
 local _signs_defined = false
@@ -41,7 +42,7 @@ local function aggregate_status(statuses)
         has[s or "unknown"] = true
     end
     if has.failed or has.errored then return "failed" end
-    if has.running or has.pending then return "running" end
+    if has.running or has.pending or has.queued then return "running" end
     if has.skipped then return "skipped" end
     if has.passed then return "passed" end
     return "unknown"

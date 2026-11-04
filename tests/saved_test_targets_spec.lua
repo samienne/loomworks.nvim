@@ -11,6 +11,7 @@ local cli = require("loomworks.cli")
 local tt = require("loomworks.test_targets")
 local ConfigUnit = require("loomworks.config_unit")
 local Target = require("loomworks.target")
+local set_launches = require("tests.helpers").set_launches
 
 local function capture(fn)
     local out_buf, err_buf = {}, {}
@@ -338,8 +339,8 @@ end
 local function fake_unit(key, o)
     o = o or {}
     local cfg = { name = o.cfg or "Tests", _project = nil, variables = o.cfg_vars }
-    local project = { key = key, launch = o.launch, variables = o.variables,
-        _module = { impl = { parse_targets = function() return {} end } } }
+    local project = set_launches({ key = key, variables = o.variables,
+        _module = { impl = { parse_targets = function() return {} end } } }, o.launch)
     cfg._project = project
     local unit = {
         _project = project, targets = o.targets, _configuration = cfg, build_dir_value = o.build_dir,
@@ -399,9 +400,9 @@ describe("lw test plan (§16.16)", function()
     --- /bin/<name>; a launch runs its config's program with its own args, and
     --- records its deploy.
     local function fake_lt(c, log, deploy_fail)
-        local cfg = c.kind == "launch" and c.project.launch[c.name] or nil
+        local cfg = c.kind == "launch" and c.project:find_launch(c.name) or nil
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function()
                 log[#log + 1] = "deploy " .. c.name
@@ -876,6 +877,12 @@ describe("lw test plan (§16.16)", function()
             assert.same({ "P", "saved" }, { got[1], got[2] })
         end)
 
+        it("is a known option of lw test (the command line's unknown-option check)", function()
+            local opts_mod = require("loomworks.cli_options")
+            assert.is_nil((opts_mod.find_unknown({ "test", "dev", "--no-build" })))
+            assert.is_nil((opts_mod.find_unknown({ "test", "--target", "x", "--no-build", "--junit", "j.xml" })))
+        end)
+
         it("named targets: nothing built, unbuilt ones fail before any runs, locks held", function()
             local _, ppa = fake_unit("A", {})
             local profile = fake_profile({ ppa })
@@ -1130,13 +1137,13 @@ describe("lw test-target (§16.9)", function()
         local root = make_ws(SECTION, "Tests")
         local ws = load(root)
         local p = targets_for(ws)
-        p.launch = { BaseTests = { command = "tool" }, chk = { command = "tool", args = { "--c" } } }
+        set_launches(p, { BaseTests = { command = "tool" }, chk = { command = "tool", args = { "--c" } } })
         local r = capture(function() return cli._tt_add(root, { "test-target", "add", "Dev", "chk", "BaseTests" }, ws) end)
         assert.is_nil(r.exit_code, r.stderr)
         assert.truthy(r.stdout:find("saved chk (launch), BaseTests #2 (launch)", 1, true), r.stdout)
         -- A launch name needs no configured targets.
         local ws2 = load(root)
-        project(ws2, "App").launch = { only = { command = "tool" } }
+        set_launches(project(ws2, "App"), { only = { command = "tool" } })
         local impl = project(ws2, "App")._module.impl
         local orig = impl.parse_targets
         impl.parse_targets = function() return nil end
@@ -1231,7 +1238,7 @@ describe("lw test-target (§16.9)", function()
         assert.truthy(r.stdout:find("inherited from Tests", 1, true), r.stdout)
         assert.truthy(r.stdout:find("BaseTests", 1, true))
         local p = targets_for(ws)
-        p.launch = { X1 = { command = "tool" } }
+        set_launches(p, { X1 = { command = "tool" } })
         assert.is_true(p:get_configuration("Tests"):set_test_targets({ { name = "BaseTests" },
             { name = "X1", args = { "--x" } }, { name = "BaseTests", args = { "--b" } } }))
         local l = capture(function() return cli._tt_list(root, nil, ws) end)
@@ -1304,11 +1311,11 @@ describe("launch rename carries saved entries (§8.7)", function()
             Tests = { inherits = "variant:default" }, Other = { inherits = "variant:default" } } }, "Tests")
         local ws = load(root)
         local p = project(ws, "App")
-        p.launch = { chk = { command = "tool" } }
+        set_launches(p, { chk = { command = "tool" } })
         assert.is_true(p:set_test_targets({ { name = "chk" } }))
         assert.is_true(p:get_configuration("Tests"):set_test_targets({ { name = "A" },
             { name = "chk", args = { "--x" } }, { name = "chk" } }))
-        local changed, err = p:rename_launch_config("chk", "check")
+        local changed, err = p:rename_launch_config(p:find_launch("chk"), "check")
         assert.is_true(changed, err)
         local user = read_json(root .. "/.nvim/loomworks.user.json")
         local tc = user.projects.App.typescript
@@ -1340,7 +1347,7 @@ describe("ConfigUnit + saved-targets TestUnit (§8.9.2–§8.9.3)", function()
 
     local function saved_unit(entries_raw, launch)
         local unit
-        local project = { key = "App", launch = launch }
+        local project = set_launches({ key = "App" }, launch)
         local ws = { _projects = { project }, _profiles = {} }
         local profile = { key = "Dev", project = function(_, k) return k == "App" and { _config_unit = unit } or nil end }
         unit = {
@@ -1369,6 +1376,10 @@ describe("ConfigUnit + saved-targets TestUnit (§8.9.2–§8.9.3)", function()
         package.loaded["loomworks.launch_target"] = { new = function(_, _, d)
             return {
                 deploy_sync = function() deployed[#deployed + 1] = d.launch; return true end,
+                deploy_async = function(_, o, cb)
+                    deployed[#deployed + 1] = { async = d.launch, opts = o }
+                    cb(d.launch ~= "chk", "copy failed")
+                end,
                 resolve_launch_spec = function()
                     return { cmd = "/usr/bin/tool", args = { "--own" }, cwd = "/w", env = { M = "1" } }
                 end,
@@ -1401,6 +1412,14 @@ describe("ConfigUnit + saved-targets TestUnit (§8.9.2–§8.9.3)", function()
         assert.is_function(lc.prepare)
         assert.is_true(lc.prepare())
         assert.same({ "chk" }, deployed)
+        -- The same deploy without blocking the loop (the daemon's runs):
+        -- deploy_async with the runner's options, its failure the step's.
+        assert.is_function(lc.prepare_async)
+        local res
+        local o = { cancelled = function() return false end }
+        lc.prepare_async(o, function(ok, err) res = { ok, err } end)
+        assert.same({ async = "chk", opts = o }, deployed[2])
+        assert.same({ false, "deploy failed: copy failed" }, res)
         assert.equals("launch:chk", lc.test_id)
         assert.same({ "/usr/bin/tool", "--own", "--e" }, lc.cmd)
         assert.equals("/w", lc.cwd)
@@ -1497,9 +1516,11 @@ end)
 -- ===========================================================================
 describe("loomtest adapter: owning-unit dispatch (§8.9.4)", function()
     local lw = require("loomworks")
-    local orig_active
-    before_each(function() orig_active = lw.get_active_profile end)
-    after_each(function() lw.get_active_profile = orig_active end)
+    -- (test_source reads the active profile from the model,
+    -- test_state.active_profile.)
+    local orig_ws
+    before_each(function() orig_ws = lw.get_workspace end)
+    after_each(function() lw.get_workspace = orig_ws end)
 
     local function unit_with(tus)
         return {
@@ -1523,9 +1544,8 @@ describe("loomtest adapter: owning-unit dispatch (§8.9.4)", function()
     it("run-all covers every TestUnit of every unit; run / parse go through the owner", function()
         local m1, s1, m2 = tu("target:A", true), tu("launch:S", false), tu("target:B", true)
         local u1, u2 = unit_with({ m1, s1 }), unit_with({ m2 })
-        lw.get_active_profile = function()
-            return { projects = function() return { { _config_unit = u1 }, { _config_unit = u2 } } end }
-        end
+        local profile = { projects = function() return { { _config_unit = u1 }, { _config_unit = u2 } } end }
+        lw.get_workspace = function() return { _active_profile = profile } end
         package.loaded["loomworks.loomtest_adapter"] = nil
         local adapter_mod = require("loomworks.loomtest_adapter")
         local captured
@@ -1549,6 +1569,12 @@ end)
 -- ===========================================================================
 describe("status page Tests: line (ui)", function()
     local helpers = require("loomworks.ui.helpers")
+    local Project = require("loomworks.project")
+    -- The status page formats the project's resolved view.
+    local function line(eff, item, targets, width, proj)
+        proj = setmetatable(proj or set_launches({ key = "App" }), { __index = Project })
+        return helpers.test_targets_chunks(proj:saved_tests_view(eff, item, targets), width)
+    end
     local function text(chunks)
         local p = {}
         for _, c in ipairs(chunks) do p[#p + 1] = c[1] end
@@ -1560,34 +1586,35 @@ describe("status page Tests: line (ui)", function()
         local cfg = { name = "Rel", _project = base._project }
         local eff = { entries = tt.parse({ "BaseTests", "CoreTests", { "CoreTests", "--x" }, "Gone" }).entries, source = base }
         assert.equals("Tests: BaseTests, CoreTests, CoreTests, Gone  (inherited from Tests)",
-            text(helpers.test_targets_chunks(eff, cfg, nil, 200)))
-        assert.equals("Tests: BaseTests, CoreTests, CoreTests, Gone", text(helpers.test_targets_chunks(eff, base, nil, 200)))
-        local cut = text(helpers.test_targets_chunks(eff, base, nil, 30))
+            text(line(eff, cfg, nil, 200)))
+        assert.equals("Tests: BaseTests, CoreTests, CoreTests, Gone", text(line(eff, base, nil, 200)))
+        local cut = text(line(eff, base, nil, 30))
         assert.truthy(cut:find(", %+%d$"), cut)
         local targets = { BaseTests = fake_target("BaseTests"), CoreTests = fake_target("CoreTests") }
-        local chunks = helpers.test_targets_chunks(eff, base, targets, 200)
+        local chunks = line(eff, base, targets, 200)
         local warn
         for _, c in ipairs(chunks) do if c[2] == "DiagnosticWarn" then warn = c[1] end end
         assert.equals("⚠ Gone", warn)
-        assert.equals("Tests: none (explicit)", text(helpers.test_targets_chunks({ entries = {}, source = base }, base, nil, 80)))
-        assert.is_nil(helpers.test_targets_chunks(nil, base, nil, 80))
+        assert.equals("Tests: none (explicit)", text(line({ entries = {}, source = base }, base, nil, 80)))
+        assert.is_nil(line(nil, base, nil, 80))
     end)
 
     it("a launch name is not missing; a trust-ignored launch and an invalid list are flagged", function()
-        local proj = { key = "App", launch = { chk = { command = "tool" } },
-            _workspace = { _shared_ignored = { { kind = "launch", path = { "projects", "App", "launch", "ign" } } } } }
+        local proj = set_launches({ key = "App",
+            _workspace = { _shared_ignored = { { kind = "launch", path = { "projects", "App", "launch", "ign" } } } } },
+            { chk = { command = "tool" } })
         local base = { name = "Tests", _project = proj }
         local eff = { entries = tt.parse({ "chk", "ign" }).entries, source = base }
-        local chunks = helpers.test_targets_chunks(eff, base, {}, 200, proj)
+        local chunks = line(eff, base, {}, 200, proj)
         local warn = {}
         for _, c in ipairs(chunks) do if c[2] == "DiagnosticWarn" then warn[#warn + 1] = c[1] end end
         assert.same({ "⚠ ign" }, warn)
         -- Unconfigured (targets unknown): the ignored launch is still flagged.
-        chunks = helpers.test_targets_chunks(eff, base, nil, 200, proj)
+        chunks = line(eff, base, nil, 200, proj)
         warn = {}
         for _, c in ipairs(chunks) do if c[2] == "DiagnosticWarn" then warn[#warn + 1] = c[1] end end
         assert.same({ "⚠ ign" }, warn)
-        assert.truthy(text(helpers.test_targets_chunks({ entries = {}, source = base, invalid = true }, base, nil, 80))
+        assert.truthy(text(line({ entries = {}, source = base, invalid = true }, base, nil, 80))
             :find("invalid", 1, true))
     end)
 end)
@@ -1639,12 +1666,12 @@ describe("table entries and working_dir (§1.3.4)", function()
     end)
 
     it("resolve_working_dir: absolute as-is, else workspace-root-relative, expanded", function()
-        assert.equals("/abs/d", tt.resolve_working_dir("/abs/d", {}, "/root"))
-        assert.equals("/root/rel/x", tt.resolve_working_dir("rel/${v}", { v = "x" }, "/root"))
-        local p, un = tt.resolve_working_dir("${target_dir}/data", {}, "/root")
+        assert.equals("/abs/d", require("loomworks.test_plan").resolve_working_dir("/abs/d", {}, "/root"))
+        assert.equals("/root/rel/x", require("loomworks.test_plan").resolve_working_dir("rel/${v}", { v = "x" }, "/root"))
+        local p, un = require("loomworks.test_plan").resolve_working_dir("${target_dir}/data", {}, "/root")
         assert.equals("/root/${target_dir}/data", p)
         assert.same({ "target_dir" }, un)
-        assert.is_nil(tt.resolve_working_dir(nil, {}, "/root"))
+        assert.is_nil(require("loomworks.test_plan").resolve_working_dir(nil, {}, "/root"))
     end)
 end)
 
@@ -1729,8 +1756,8 @@ describe("${target_dir} (§8.7)", function()
         for _, u in pairs(ws._config_units) do if u._project == p then unit = u end end
         unit.state_value, unit.build_dir_value = "built", root .. "/build"
         unit.targets = { CoreTests = Target.new(unit, "CoreTests", { type = "executable", artifact = "bin/c" }) }
-        p.launch = { chk = { target = "CoreTests", working_dir = "${target_dir}/w", args = { "${target_dir}" } },
-            cmd = { command = "tool", working_dir = "${target_dir}" } }
+        set_launches(p, { chk = { target = "CoreTests", working_dir = "${target_dir}/w", args = { "${target_dir}" } },
+            cmd = { command = "tool", working_dir = "${target_dir}" } })
         local profile = ws._profiles[1]
         local LT = require("loomworks.launch_target")
         local t = LT.new(ws, profile, { project = "App", target = "CoreTests" })
@@ -1761,9 +1788,9 @@ describe("lw test: working directories (§16.16)", function()
     after_each(function() gtest.probe_sync = orig_probe end)
 
     local function lt_for(c, seen)
-        local cfg = c.kind == "launch" and c.project.launch[c.name] or nil
+        local cfg = c.kind == "launch" and c.project:find_launch(c.name) or nil
         return {
-            _launch_config = cfg,
+            _launch = cfg,
             is_valid = function() return true end,
             deploy_sync = function() return true end,
             resolve_launch_spec = function(_, o)
@@ -1891,7 +1918,7 @@ describe("saved-targets TestUnit: working directories (§8.9.2)", function()
                 resolve_launch_spec = function() return { cmd = "/usr/bin/tool", args = {}, cwd = "/w" } end }
         end }
         local unit
-        local project = { key = "App", launch = { chk = { command = "tool" } } }
+        local project = set_launches({ key = "App" }, { chk = { command = "tool" } })
         local ws = { root = "/root", _projects = { project }, _profiles = {} }
         local profile = { key = "Dev", project = function(_, k) return k == "App" and { _config_unit = unit } or nil end }
         local raw = { { name = "Run", working_dir = "${target_dir}/d" }, { name = "chk", working_dir = "rel" }, "chk" }
@@ -1930,6 +1957,7 @@ describe("saved launch deploys: every runner path (§16.16, §8.8)", function()
         local applied = {}
         local unit = setmetatable({
             state = function() return "built" end,
+            local_state = function() return "built" end,
             test_command_for = function(_, id) return cmds[id], { kind = "tu" } end,
             test_commands_all = function()
                 local all = {}
@@ -2127,5 +2155,93 @@ describe("saved launch deploys: every runner path (§16.16, §8.8)", function()
         assert.equals("launch", r.kind)
         assert.equals("missing", r.state)
         assert.truthy(r.reason:find("neither a command nor a target", 1, true))
+    end)
+end)
+
+-- ===========================================================================
+-- An asynchronous host (the workspace daemon's, §19.15): the probe and the
+-- deploy go through it — never the blocking in-process calls — and a step it
+-- ends without calling back (a cancel) has its results file removed.
+describe("test_plan.exec_step through an asynchronous host", function()
+    local test_plan = require("loomworks.test_plan")
+    local gtest = require("loomworks.gtest")
+    local uv = vim.uv or vim.loop
+    local orig_probe
+    before_each(function()
+        orig_probe = gtest.probe_sync
+        gtest.probe_sync = function() error("probe_sync on an asynchronous host") end
+    end)
+    after_each(function() gtest.probe_sync = orig_probe end)
+
+    local function host()
+        local h = { lines = {}, spawned = {} }
+        h.out = function(s) h.lines[#h.lines + 1] = s end
+        h.err = function(s) h.lines[#h.lines + 1] = s end
+        h.fail = function(msg) error("fail: " .. msg) end
+        h.foreign_of = function() return nil end
+        h.spawn = function(spec, cb) h.spawned[#h.spawned + 1] = { spec = spec, cb = cb } end
+        h.probe = function(exe, _, _, cb) h.probing = { exe = exe, cb = cb } end
+        h.deploy = function(_, cb) h.deploying = cb end
+        return h
+    end
+    local function lt(cfg)
+        return {
+            _launch = cfg,
+            is_valid = function() return true end,
+            deploy_sync = function() error("deploy_sync on an asynchronous host") end,
+            resolve_launch_spec = function()
+                return { cmd = cfg and cfg.command or "/bin/T", args = {}, cwd = "/" }
+            end,
+        }
+    end
+    local function ws()
+        local root = vim.fn.tempname():gsub("\\", "/")
+        vim.fn.mkdir(root .. "/.nvim", "p")
+        return { root = root }
+    end
+
+    it("a target's probe goes through the host; the program runs once it answered", function()
+        local h, done = host(), nil
+        test_plan.exec_step(ws(), lt(nil), { label = "A: T", saved = true }, h, function(...) done = { ... } end)
+        assert.equals("/bin/T", h.probing.exe)
+        assert.equals(0, #h.spawned)
+        h.probing.cb(nil)
+        assert.equals(1, #h.spawned)
+        assert.same({ "/bin/T" }, h.spawned[1].spec.cmd)
+        assert.is_nil(h.spawned[1].spec.cleanup)
+        h.spawned[1].cb(0)
+        assert.is_false(done[1])
+    end)
+
+    it("a launch's deploy goes through the host; a failed one fails the step without running it", function()
+        local h, done = host(), nil
+        local cfg = { command = "/usr/bin/chk" }
+        test_plan.exec_step(ws(), lt(cfg), { label = "A: chk", saved = true }, h, function(...) done = { ... } end)
+        assert.is_function(h.deploying)
+        assert.equals(0, #h.spawned)
+        h.deploying(false, "cancelled")
+        assert.equals(0, #h.spawned)
+        assert.is_true(done[1])
+        assert.same({ "deploy failed: cancelled" }, done[2])
+        -- A successful deploy runs the program (a command launch: no probe).
+        h, done = host(), nil
+        test_plan.exec_step(ws(), lt(cfg), { label = "A: chk", saved = true }, h, function(...) done = { ... } end)
+        h.deploying(true)
+        assert.is_nil(h.probing)
+        assert.same({ "/usr/bin/chk" }, h.spawned[1].spec.cmd)
+    end)
+
+    it("a step ended without a callback (a cancel) has its gtest results file removed by cleanup", function()
+        local h, done = host(), nil
+        test_plan.exec_step(ws(), lt(nil), { label = "A: T", saved = true }, h, function(...) done = { ... } end)
+        h.probing.cb("gtest")
+        local spec = h.spawned[1].spec
+        local xml = spec.cmd[2]:match("^%-%-gtest_output=xml:(.+)$")
+        assert.truthy(xml and xml:find("/.nvim/tmp/lw-test-", 1, true), spec.cmd[2])
+        local f = assert(io.open(xml, "w")); f:write("<partial"); f:close()
+        assert.is_function(spec.cleanup)
+        spec.cleanup()
+        assert.is_nil(uv.fs_stat(xml))
+        assert.is_nil(done)
     end)
 end)

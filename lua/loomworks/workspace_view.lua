@@ -6,8 +6,28 @@
 --- composes them.
 
 local modules = require("loomworks.modules")
+local commands = require("loomworks.model_commands")
+local deletion_plan = require("loomworks.deletion_plan")
 
 local M = {}
+
+--- A command's outcome (model_commands, API.md §4.1) as the editor's
+--- `ok, err`: refused is `false, message`. A `warn` note of an `ok` composite
+--- (D1) is reported as the error it was before the command layer, so the
+--- editor still shows it as one.
+--- @param r loomworks.CommandOutcome
+--- @return boolean ok, string|nil err
+local function as_result(r)
+    if r.outcome ~= "ok" then return false, r.message end
+    for i, role in ipairs(r.note_roles or {}) do
+        if role == "warn" then return false, r.notes[i] end
+    end
+    return true
+end
+
+--- The candidate token of an automatic configuration set
+--- (model_commands.candidate_token).
+M.candidate_token = commands.candidate_token
 
 --- Extract display-friendly project_key and config_key from a DeletionItem.
 --- Reads from the unit's resolved references, with fallbacks.
@@ -40,7 +60,8 @@ local function collect_keyed_tools(tools_for_type)
     return keyed
 end
 
---- Context for the mapping dialog: inherited tool, no-tool profiles,
+--- Context for adding a project of `mod_type` (the add command's initial
+--- mappings and tool, model_commands): inherited tool, no-tool profiles,
 --- keyed tools. Pure query over cached profiles.
 --- @param ws loomworks.Workspace
 --- @param mod_type string module type (e.g. "cmake")
@@ -118,58 +139,18 @@ end
 --- @param mod_type string module type
 --- @param path string|nil relative path
 --- @param result { mappings: table, tool_entry: table|nil }
---- @param has_keyed boolean whether module has keyed tools
 --- @return boolean ok, string|nil err
-function M.execute_add_project(ws, key, mod_type, path, result, has_keyed)
-    local project, err = ws:add_project(key, mod_type, path)
-    if not project then
-        return false, err
-    end
-
-    -- Skip mappings when keyed module has no tool selected —
-    -- the project is added unmapped until a tool is chosen.
-    if has_keyed and not result.tool_entry then
-        return true
-    end
-    for _, cs in pairs(ws._config_sets) do
-        local variant = result.mappings[cs.name]
-        if variant and project then
-            local cfg = project:get_configuration(variant)
-                or project:ensure_configuration(variant)
-            cs:update_mapping(project, cfg)
-        end
-    end
-
-    if result.tool_entry then
-        ws:upgrade_profiles_for_tool(result.tool_entry)
-    end
-
-    return true
-end
-
--- =========================================================================
--- Remove Project
--- =========================================================================
-
---- Collect all cached configurations for a project.
---- Returns items sorted by config_key, with build_dir, state, and unit.
---- @param ws loomworks.Workspace
---- @param project loomworks.Project
---- @return { config_key: string, state: string|nil, build_dir: string|nil, unit: loomworks.ConfigUnit|nil }[]
-function M.collect_project_configs(ws, project)
-    local items = {}
-    for _, unit in pairs(ws._config_units) do
-        if unit._project == project and unit._config_key then
-            items[#items + 1] = {
-                config_key = unit._config_key,
-                state = unit.state_value,
-                build_dir = unit.build_dir_value,
-                unit = unit,
-            }
-        end
-    end
-    table.sort(items, function(a, b) return a.config_key < b.config_key end)
-    return items
+function M.execute_add_project(ws, key, mod_type, path, result)
+    -- A keyed module's project without a toolchain is added unmapped: its
+    -- configurations are mapped once a tool is chosen (when a profile is
+    -- created), so initial mappings passed without one are not a request
+    -- (no warn note).
+    local mod = require("loomworks.modules").get(mod_type)
+    local mappings = result.mappings
+    if mod and mod.has_keyed_tools and not result.tool_entry then mappings = nil end
+    local r = commands.project_add(ws, key, mod_type, path, mappings, result.tool_entry)
+    local ok, err = as_result(r)
+    return ok, err, r.project
 end
 
 --- Make a path relative to workspace root for display.
@@ -188,120 +169,8 @@ local function rel_path(ws, abs)
     return abs
 end
 
---- Context for removal confirmation: type, downgrade preview, cached
---- configs, dialog lines and highlights. Pure query.
---- @param ws loomworks.Workspace
---- @param project loomworks.Project
---- @return { project_type: string, downgrade_preview: table[], cached_configs: table[], lines: string[], highlights: table[] }|nil
-function M.compute_remove_context(ws, project)
-    local proj_type = project.type
-    local downgrade_preview = ws:compute_downgrade_preview(project)
-    local cached_configs = M.collect_project_configs(ws, project)
-
-    local lines = {
-        "  Remove project: " .. project.key,
-        "",
-        "  This removes the project from loomworks.json.",
-    }
-    local highlights = {
-        { line = 1, hl_group = "DiagnosticWarn" },
-        { line = 3, hl_group = "Comment" },
-    }
-
-    -- Show cached configurations with build state
-    local stateful = {}
-    for _, item in ipairs(cached_configs) do
-        if item.state and item.state ~= "unconfigured" then
-            stateful[#stateful + 1] = item
-        end
-    end
-
-    if #stateful > 0 then
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "  Will delete cached configurations:"
-        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        for _, item in ipairs(stateful) do
-            local dir = item.build_dir and rel_path(ws, item.build_dir) or nil
-            local suffix = dir and ("  " .. dir) or ""
-            local state_label = item.state and (" (" .. item.state .. ")") or ""
-            lines[#lines + 1] = "    " .. project.key .. " / " .. item.config_key
-                .. state_label .. suffix
-            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        end
-    elseif #cached_configs > 0 then
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "  Will delete " .. #cached_configs .. " cached configuration(s)."
-        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-    end
-
-    if #downgrade_preview > 0 then
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "  Profiles to rename:"
-        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-        for _, rename in ipairs(downgrade_preview) do
-            lines[#lines + 1] = "    " .. rename.old_key .. " → " .. rename.new_key
-            highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-        end
-    end
-
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "  Press y to confirm, q to cancel"
-
-    return {
-        project_type = proj_type,
-        downgrade_preview = downgrade_preview,
-        cached_configs = cached_configs,
-        lines = lines,
-        highlights = highlights,
-    }
-end
-
---- Execute remove: delete cached configs + build dirs, remove project,
---- downgrade profiles. The deletion is async (build dirs deleted via
---- subprocess), so on_done is called when complete.
---- @param ws loomworks.Workspace
---- @param project loomworks.Project project to remove
---- @param ctx { project_type: string, cached_configs: table[], downgrade_preview: table[] }
---- @param on_done? fun(ok: boolean, err: string|nil)
-function M.execute_remove_project(ws, project, ctx, on_done)
-    on_done = on_done or function() end
-
-    -- Step 1: Delete cached configs and build dirs (async)
-    local configs = ctx.cached_configs or {}
-    if #configs > 0 then
-        ws:_run_deletion(configs, function()
-            ws:delete_cached_configs(configs)
-            ws:_save_cache()
-            ws:remerge()
-        end, function()
-            -- Step 2: Remove project from config (after deletion completes)
-            local ok, err = ws:remove_project(project)
-            if not ok then
-                on_done(false, err)
-                return
-            end
-            -- Step 3: Downgrade profiles if needed
-            if #ctx.downgrade_preview > 0 then
-                ws:downgrade_profiles_from_tool(ctx.project_type)
-            end
-            on_done(true)
-        end)
-    else
-        -- No cached configs to delete — remove directly
-        local ok, err = ws:remove_project(project)
-        if not ok then
-            on_done(false, err)
-            return
-        end
-        if #ctx.downgrade_preview > 0 then
-            ws:downgrade_profiles_from_tool(ctx.project_type)
-        end
-        on_done(true)
-    end
-end
-
 -- =========================================================================
--- Mapping Dialog Data
+-- Initial Configuration-Set Mappings (adding a project)
 -- =========================================================================
 
 --- Auto-detect variant mappings for configuration sets.
@@ -364,7 +233,7 @@ end
 --- Combines existing sets with auto-detected candidates.
 --- @param ws loomworks.Workspace
 --- @param config_sets table<string, loomworks.ConfigurationSet> existing config sets
---- @return table[] items array of { name, real_name?, mappings?, cs?, auto, desc? }
+--- @return table[] items array of { name, real_name?, mappings?, candidate?, cs?, auto, desc? }
 function M.compute_config_set_candidates(ws, config_sets)
     local existing = {}
     for name, cs in pairs(config_sets) do
@@ -388,6 +257,7 @@ function M.compute_config_set_candidates(ws, config_sets)
                     name = name .. " (auto-detected)",
                     real_name = name,
                     mappings = set_mappings,
+                    candidate = commands.candidate_token(name, set_mappings),
                     cs = nil,
                     auto = true,
                     desc = table.concat(parts, ", "),
@@ -444,14 +314,9 @@ end
 --- @param mappings table<loomworks.Project, loomworks.Configuration|nil>
 --- @return loomworks.ConfigurationSet|nil cs, string|nil err
 function M.execute_create_config_set(ws, name, mappings)
-    -- Serialize to {project_key → variant_name} for add_configuration_set
-    local raw = {}
-    for project, config in pairs(mappings) do
-        if config then
-            raw[project.key] = config.name
-        end
-    end
-    return ws:add_configuration_set(name, raw)
+    local r = commands.config_set_add(ws, name, mappings)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.config_set
 end
 
 --- Context for editing a config set: current mappings, available configs
@@ -495,62 +360,15 @@ function M.compute_edit_config_set_context(ws, set_name)
     }
 end
 
---- Execute config set edit: apply changed mappings, optionally rename.
+--- Execute config set edit: replace the mappings (a project absent from
+--- `new_mappings` is unmapped), renaming first when the name changed
+--- (model_commands.config_set_update).
 --- @param cs loomworks.ConfigurationSet the config set to edit
 --- @param new_name string new name (same as cs.name if not renamed)
 --- @param new_mappings table<loomworks.Project, loomworks.Configuration|nil>
---- @param old_mappings table<loomworks.Project, loomworks.Configuration|nil>
 --- @return boolean ok, string|nil err
-function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
-    local ws = cs._workspace
-    local old_name = cs.name
-    local renamed = new_name ~= old_name
-
-    if renamed then
-        -- Rename in place first, then apply the mapping changes below: the
-        -- set keeps its description, intent and every other field.
-        local ok, err = M.execute_rename_config_set(ws, cs, new_name)
-        if not ok then return false, err end
-    end
-
-    -- Apply mapping changes to existing set
-    for project, new_config in pairs(new_mappings) do
-        local old_config = old_mappings[project]
-        if new_config ~= old_config then
-            local ok, err = cs:update_mapping(project, new_config)
-            if not ok then return false, err end
-        end
-    end
-    -- Handle projects that were mapped but now removed
-    for project, old_config in pairs(old_mappings) do
-        if old_config and not new_mappings[project] then
-            local ok, err = cs:update_mapping(project, nil)
-            if not ok then return false, err end
-        end
-    end
-    return true
-end
-
---- Rename a configuration set in place (Workspace:rename_configuration_set,
---- the same atomic mutation `lw configset rename` uses): the set object, its
---- mappings, description and intent are kept and the profiles that reference
---- it re-derive their keys. The active profile follows the rename.
---- @param ws loomworks.Workspace
---- @param cs loomworks.ConfigurationSet configuration set being renamed
---- @param new_name string
---- @return boolean ok, string|nil err
-function M.execute_rename_config_set(ws, cs, new_name)
-    local old_keys = {}
-    for _, profile in pairs(ws._profiles) do old_keys[profile] = profile.key end
-    local ok, err = ws:rename_configuration_set(cs, new_name)
-    if not ok then return false, err end
-    for profile, old_key in pairs(old_keys) do
-        if ws._active_profile_key == old_key and profile.key ~= old_key then
-            ws._active_profile_key = profile.key
-            break
-        end
-    end
-    return true
+function M.execute_edit_config_set(cs, new_name, new_mappings)
+    return as_result(commands.config_set_update(cs, new_name, new_mappings))
 end
 
 --- Context for deleting a config set: affected profiles, warning lines.
@@ -609,294 +427,34 @@ function M.compute_delete_config_set_context(ws, cs)
 end
 
 --- Execute config set deletion (orphans profiles, does not delete caches).
---- @param ws loomworks.Workspace
+--- @param _ws loomworks.Workspace unused (the set's own)
 --- @param cs loomworks.ConfigurationSet
 --- @return boolean ok, string|nil err
-function M.execute_delete_config_set(ws, cs)
-    return ws:remove_configuration_set(cs)
+function M.execute_delete_config_set(_ws, cs)
+    return as_result(commands.config_set_remove(cs))
+end
+
+--- Add the automatic configuration set of a template / candidate (its
+--- `candidate` token from compute_config_set_candidates).
+--- @param ws loomworks.Workspace
+--- @param candidate string
+--- @return loomworks.ConfigurationSet|nil cs, string|nil err
+function M.execute_create_config_set_from_candidate(ws, candidate)
+    local r = commands.config_set_add_candidate(ws, candidate)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.config_set
 end
 
 -- =========================================================================
 -- Orphan Cleanup
 -- =========================================================================
 
---- Directory-identity helpers (live build dirs in every path form, the
---- stray/orphan overlap rule) live on Workspace so the single-row orphan
---- delete (`Workspace:delete_orphaned_build_dir`) applies the same rule.
-local function live_build_dirs_canonical(ws) return ws:_live_build_dirs_canonical() end
-local function path_forms(ws, dir) return ws:_path_forms(dir) end
-local function overlaps_live_build_dir(ws, dir, known) return ws:_overlaps_live_build_dir(dir, known) end
-
---- Find build directories on disk under {root}/.nvim/build/ that are not
---- referenced by any cache entry. Uses top-down pruning: reports the
---- highest-level directory whose entire subtree contains no cache entries.
---- Comparisons use every path form (live_build_dirs_canonical); reported paths
---- keep the scanned (normalized) spelling under ws.root for display.
+--- Build directories on disk under {root}/.nvim/build/ that no cache entry
+--- references (Workspace:find_stray_build_dirs).
 --- @param ws loomworks.Workspace
 --- @return string[] absolute paths of stray directories
 function M.find_stray_build_dirs(ws)
-    local uv = vim.uv or vim.loop
-    local build_root = ws.root .. "/.nvim/build"
-    local normalize = ws._core._deps.normalize
-
-    -- Build dirs (all forms) referenced by ConfigUnit objects
-    local known_dirs = live_build_dirs_canonical(ws)
-
-    -- Build a set for exact match and a list for prefix checks
-    local known_set = {}
-    for _, d in ipairs(known_dirs) do known_set[d] = true end
-
-    --- Check if any known cache dir is a proper child of the candidate.
-    --- @param candidate string dir path (one of path_forms)
-    --- @return boolean
-    local function has_cache_entry_below(candidate)
-        local prefix = candidate .. "/"
-        for _, known in ipairs(known_dirs) do
-            if known:sub(1, #prefix) == prefix then
-                return true
-            end
-        end
-        return false
-    end
-
-    -- Top-down walk:
-    -- - If this dir IS a cache entry → stop (it's a valid build dir).
-    -- - If no cache entry lives below it → report as stray, stop.
-    -- - Otherwise → recurse into children.
-    local stray = {}
-    local function scan(dir)
-        local normalized = normalize(dir)
-        local forms = path_forms(ws, dir)
-        for _, f in ipairs(forms) do
-            if known_set[f] then
-                return -- this dir is a known build dir, don't touch it
-            end
-        end
-        local below = false
-        for _, f in ipairs(forms) do
-            if has_cache_entry_below(f) then below = true; break end
-        end
-        if not below then
-            stray[#stray + 1] = normalized
-            return
-        end
-        -- Some cache entry lives deeper — recurse into children
-        local handle = uv.fs_scandir(dir)
-        if not handle then return end
-        while true do
-            local name, ftype = uv.fs_scandir_next(handle)
-            if not name then break end
-            if ftype == "directory" then
-                scan(dir .. "/" .. name)
-            end
-        end
-    end
-
-    local norm_root = normalize(build_root)
-    local stat = uv.fs_stat(build_root)
-    if stat and stat.type == "directory" then
-        -- Scan each top-level child (not the build root itself)
-        local handle = uv.fs_scandir(build_root)
-        if handle then
-            while true do
-                local name, ftype = uv.fs_scandir_next(handle)
-                if not name then break end
-                if ftype == "directory" then
-                    scan(norm_root .. "/" .. name)
-                end
-            end
-        end
-    end
-
-    table.sort(stray)
-    return stray
-end
-
---- Collect all orphaned items for the cleanup dialog: orphaned cached
---- configs + stray build dirs not in cache.
---- @param ws loomworks.Workspace
---- @return { orphaned_configs: table[], stray_dirs: string[], lines: string[], highlights: table[] }
-function M.compute_orphan_cleanup_context(ws)
-    local orphans = ws:get_orphaned_configs()
-    local orphaned_configs = {}
-
-    for _, o in ipairs(orphans) do
-        local entry = o.cached_entry or {}
-        orphaned_configs[#orphaned_configs + 1] = {
-            project_key = o.project_key,
-            config_key = o.config_key,
-            state = entry.state or nil,
-            build_dir = entry.build_dir or (o.build_dir_obj and o.build_dir_obj.path) or nil,
-            build_dir_obj = o.build_dir_obj,
-        }
-    end
-
-    local stray_dirs = M.find_stray_build_dirs(ws)
-
-    local lines = {
-        "  Clean orphaned items",
-        "",
-    }
-    local highlights = {
-        { line = 1, hl_group = "DiagnosticWarn" },
-    }
-
-    local has_anything = #orphaned_configs > 0 or #stray_dirs > 0
-
-    if #orphaned_configs > 0 then
-        lines[#lines + 1] = "  Orphaned configurations (" .. #orphaned_configs .. "):"
-        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        for _, item in ipairs(orphaned_configs) do
-            local state_label = item.state and (" (" .. item.state .. ")") or ""
-            local dir = item.build_dir and ("  " .. rel_path(ws, item.build_dir)) or ""
-            lines[#lines + 1] = "    " .. item.project_key .. " / " .. item.config_key
-                    .. state_label .. dir
-            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        end
-        lines[#lines + 1] = ""
-    end
-
-    if #stray_dirs > 0 then
-        lines[#lines + 1] = "  Stray build directories (" .. #stray_dirs .. "):"
-        highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        for _, dir in ipairs(stray_dirs) do
-            lines[#lines + 1] = "    " .. rel_path(ws, dir)
-            highlights[#highlights + 1] = { line = #lines, hl_group = "DiagnosticWarn" }
-        end
-        lines[#lines + 1] = ""
-    end
-
-    if not has_anything then
-        lines[#lines + 1] = "  Nothing to clean."
-        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
-    else
-        lines[#lines + 1] = "  Press y to confirm, q to cancel"
-    end
-
-    return {
-        orphaned_configs = orphaned_configs,
-        stray_dirs = stray_dirs,
-        lines = lines,
-        highlights = highlights,
-    }
-end
-
---- Execute orphan cleanup: delete the orphaned configurations' build dirs and
---- drop their entries, then delete the stray build dirs.
---- The orphans go through `Workspace:_run_deletion` like every cache-backed
---- deletion (spec §4.6, §5.7; spec/ui.md §1.6): their entries are marked
---- `unknown` on disk before any tree is removed, a directory a live
---- configuration still references is kept (the shared-dir refs check, plus
---- `overlaps_live_build_dir` for any other spelling of a live dir), and the
---- entries are dropped only when every removal succeeded — a failed removal
---- keeps them (`unknown`, reported). Confirmed-deleted orphan dirs hand their
---- module to the owned LSP database cleanup. A failed stray removal is
---- reported too.
---- @param ws loomworks.Workspace
---- @param orphaned_configs table[] { project_key, config_key, build_dir?, build_dir_obj? }
---- @param stray_dirs string[] absolute paths
---- @param on_done? fun(ok: boolean) false when a removal failed or the cleanup raised an error (reported)
-function M.execute_orphan_cleanup(ws, orphaned_configs, stray_dirs, on_done)
-    on_done = on_done or function() end
-    local future_mod = require("loomworks.future")
-    local deps = ws._core._deps
-    local normalize = deps.normalize
-
-    --- @return loomworks.Future resolving true when every stray dir was removed
-    local function delete_stray()
-        if #stray_dirs == 0 then return future_mod.resolved(true) end
-        local safe_prefix = normalize(ws.root)
-        -- Re-check against the live build dirs at deletion time (the list may
-        -- be stale); identity is compared canonically, never by spelling.
-        local known = live_build_dirs_canonical(ws)
-        local valid_dirs = {}
-        for _, dir in ipairs(stray_dirs) do
-            if overlaps_live_build_dir(ws, dir, known) then
-                deps.notify("loomworks: refusing to delete stray dir holding a live build dir: " .. dir,
-                    vim.log.levels.ERROR)
-            elseif ws:_validate_build_dir(dir, safe_prefix) then
-                valid_dirs[#valid_dirs + 1] = dir
-            end
-        end
-        if #valid_dirs == 0 then return future_mod.resolved(true) end
-        return ws:_delete_build_dirs_async(valid_dirs):next(function(results)
-            local ok = true
-            for _, r in ipairs(results) do
-                if not r.ok then
-                    ok = false
-                    deps.notify("loomworks: failed to delete " .. tostring(r.dir) .. ": "
-                        .. (r.err or "unknown"), vim.log.levels.ERROR)
-                end
-            end
-            return ok
-        end)
-    end
-
-    --- @return loomworks.Future resolving true when every orphan was removed
-    local function delete_orphans()
-        if #orphaned_configs == 0 then return future_mod.resolved(true) end
-        -- An orphaned entry's build dir (from the cache, never trusted) may be
-        -- the same directory as a live unit's under another spelling: keep the
-        -- tree (no build_dir handed to the deletion), drop only the entry.
-        local known = live_build_dirs_canonical(ws)
-        local items = {}
-        for _, item in ipairs(orphaned_configs) do
-            local dir = item.build_dir and normalize(item.build_dir) or nil
-            if dir and overlaps_live_build_dir(ws, dir, known) then
-                deps.notify("loomworks: skipped deleting " .. dir
-                    .. " — it holds a live build dir", vim.log.levels.INFO)
-                dir = nil
-            end
-            items[#items + 1] = {
-                project_key = item.project_key, config_key = item.config_key,
-                build_dir = dir, build_dir_obj = item.build_dir_obj,
-                disposition = "clean",
-            }
-        end
-
-        -- Runs only once every removal succeeded (`_run_deletion`), which
-        -- then saves the cache and resyncs the refs.
-        local removed = false
-        local function remove_build_dir_objects()
-            removed = true
-            local deploy = require("loomworks.deploy")
-            for _, item in ipairs(orphaned_configs) do
-                local bd = item.build_dir_obj
-                if bd then
-                    -- Clean deploy records sourced from this build dir
-                    deploy.clean_deploy_records(ws._deploy_records, bd.rel_path)
-                    bd:clear_state()
-                    for i, b in ipairs(ws._build_dirs) do
-                        if b == bd then
-                            table.remove(ws._build_dirs, i)
-                            break
-                        end
-                    end
-                end
-            end
-        end
-
-        return ws:_run_deletion(items, remove_build_dir_objects)
-            :next(function() return removed end)
-    end
-
-    local function failed(err)
-        deps.notify("loomworks: orphan cleanup failed: " .. tostring(err), vim.log.levels.ERROR)
-        on_done(false)
-    end
-
-    local ok, f = pcall(function()
-        return delete_orphans():next(function(orphans_ok)
-            return delete_stray():next(function(stray_ok)
-                return orphans_ok ~= false and stray_ok ~= false
-            end)
-        end)
-    end)
-    if not ok then
-        failed(f)
-        return
-    end
-    f:next(function(done_ok) on_done(done_ok) end, failed)
+    return ws:find_stray_build_dirs()
 end
 
 -- =========================================================================
@@ -921,146 +479,9 @@ function M.derive_key_and_path(root, abs_path, name)
     end
 end
 
---- Find the project key in workspace config that matches a browser entry path.
---- Find a project by its relative path or basename.
---- @param ws loomworks.Workspace
---- @param rel_path string relative path from root
---- @param basename string directory basename
---- @return loomworks.Project|nil
-function M.find_project_by_path(ws, rel_path, basename)
-    for _, proj in pairs(ws._projects) do
-        local proj_rel = proj.path or proj.key
-        if proj_rel == rel_path or proj_rel == basename then
-            return proj
-        end
-    end
-    return nil
-end
-
---- Prepare context for adding a project from the browser. Determines
---- whether a mapping dialog is needed or the project can be added directly.
---- @param ws loomworks.Workspace
---- @param root string workspace root
---- @param abs_path string entry's absolute path
---- @param name string entry's directory basename
---- @param mod_type string module type
---- @return { action: "add_direct"|"show_dialog", key: string, path: string|nil, mod_type: string, config_names?: string[], has_keyed?: boolean }
-function M.prepare_add_project_from_browser(ws, root, abs_path, name, mod_type)
-    local key, path = M.derive_key_and_path(root, abs_path, name)
-
-    local has_config_sets = #ws._config_sets > 0
-
-    if not has_config_sets then
-        return { action = "add_direct", key = key, path = path, mod_type = mod_type }
-    end
-
-    -- Detect available configurations for the new project
-    local mod = modules.get(mod_type)
-    local config_names = {}
-    if mod and mod.info and mod.map_variant then
-        local info = mod.info(abs_path, {})
-        if info and info.configurations then
-            for cfg_name in pairs(info.configurations) do
-                config_names[#config_names + 1] = cfg_name
-            end
-            table.sort(config_names)
-        end
-    end
-
-    if #config_names == 0 then
-        return { action = "add_direct", key = key, path = path, mod_type = mod_type }
-    end
-
-    local has_keyed = mod and mod.has_keyed_tools or false
-
-    return {
-        action = "show_dialog",
-        key = key,
-        path = path,
-        mod_type = mod_type,
-        config_names = config_names,
-        has_keyed = has_keyed,
-    }
-end
-
 -- =========================================================================
 -- Confirmation Dialog Content
 -- =========================================================================
-
---- Collect clean items for a profile (project_key, config_key, build_dir).
---- @param profile loomworks.Profile
---- @return table[]
-function M.collect_clean_items(profile)
-    local items = {}
-    for _, pp in ipairs(profile:projects()) do
-        items[#items + 1] = {
-            project_key = pp:project_key(),
-            config_key = pp:config_key(),
-            build_dir = pp:build_dir(),
-            unit = pp._config_unit,
-        }
-    end
-    return items
-end
-
---- Collect clean items for a single ConfigUnit.
---- @param unit loomworks.ConfigUnit
---- @return table[]
-function M.collect_clean_items_for_unit(unit)
-    return { {
-        unit = unit,
-        build_dir = unit:build_dir(),
-    } }
-end
-
---- Build confirmation dialog content for clean/rebuild actions.
---- @param ws loomworks.Workspace
---- @param title string
---- @param items table[] { project_key, config_key, build_dir? }
---- @param opts? { rebuild?: boolean }
---- @return { lines: string[], highlights: table[] }
-function M.compute_clean_confirmation_context(ws, title, items, opts)
-    local lines = {}
-    local highlights = {}
-
-    local function add(text, hl)
-        lines[#lines + 1] = text
-        if hl then
-            highlights[#highlights + 1] = { line = #lines, hl_group = hl }
-        end
-    end
-
-    add("  " .. title, "DiagnosticWarn")
-    add("")
-
-    local running_tasks = ws:find_running_tasks_for_items(items)
-    local has_running = false
-    for _ in pairs(running_tasks) do has_running = true; break end
-
-    if has_running then
-        add("  Will stop running tasks:", "DiagnosticWarn")
-        for _, info in pairs(running_tasks) do
-            add("    " .. info.project_key .. ": " .. info.action .. " " .. info.configuration_key,
-                "DiagnosticWarn")
-        end
-        add("")
-    end
-
-    opts = opts or {}
-    local desc = opts.rebuild
-        and "  Will clean build artifacts then rebuild:"
-        or "  Will clean build artifacts and reset to configured:"
-    add(desc, "DiagnosticWarn")
-    for _, item in ipairs(items) do
-        local pkey, ckey = item_display_keys(item)
-        add("    " .. pkey .. " / " .. ckey, "DiagnosticWarn")
-    end
-    add("")
-
-    add("  Press y to confirm, q to cancel", "Comment")
-
-    return { lines = lines, highlights = highlights }
-end
 
 --- Build confirmation dialog content for deletion actions.
 --- @param ws loomworks.Workspace
@@ -1155,298 +576,96 @@ function M.compute_delete_confirmation_context(ws, title, plan, description)
     return { lines = lines, highlights = highlights }
 end
 
---- Build confirmation dialog content for stray dir deletion.
---- @param ws loomworks.Workspace
---- @param dir string absolute normalized path
---- @return { lines: string[], highlights: table[] }
-function M.compute_delete_stray_dir_context(ws, dir)
-    local display = rel_path(ws, dir) or dir
-    return {
-        lines = {
-            "  Delete stray build directory:",
-            "",
-            "    " .. display,
-            "",
-            "  Press y to confirm, q to cancel",
-        },
-        highlights = {
-            { line = 1, hl_group = "DiagnosticWarn" },
-            { line = 3, hl_group = "DiagnosticWarn" },
-        },
-    }
-end
-
---- Execute stray build dir deletion.
---- @param ws loomworks.Workspace
---- @param dir string absolute normalized path
---- @param on_done? fun(ok: boolean, err: string|nil)
-function M.execute_delete_stray_dir(ws, dir, on_done)
-    on_done = on_done or function() end
-    local safe_prefix = ws._core._deps.normalize(ws.root)
-    if overlaps_live_build_dir(ws, dir) then
-        on_done(false, "directory holds a live build dir")
-        return
-    end
-    if not ws:_validate_build_dir(dir, safe_prefix) then
-        on_done(false, "path outside workspace")
-        return
-    end
-    ws:_delete_build_dirs_async({ dir }, function(results)
-        if results[1] and results[1].ok then
-            ws._core._deps.events.emit("deletion_completed", {})
-            on_done(true)
-        else
-            local err = results[1] and results[1].err or "unknown"
-            on_done(false, err)
-        end
-    end)
-end
-
 -- =========================================================================
 -- Create Profile
 -- =========================================================================
 
---- Handle a config set choice for profile creation: materialize auto-detected
---- sets, resolve the ConfigurationSet object.
+--- Handle a config set choice for profile creation: materialize an
+--- auto-detected set (by its candidate token), resolve the
+--- ConfigurationSet object.
 --- @param ws loomworks.Workspace
---- @param choice { cs?: loomworks.ConfigurationSet, auto: boolean, real_name?: string, mappings?: table }
+--- @param choice { cs?: loomworks.ConfigurationSet, auto: boolean, candidate?: string, real_name?: string, mappings?: table }
 --- @return loomworks.ConfigurationSet|nil cs, string|nil err
 function M.resolve_config_set_choice(ws, choice)
-    local cs = choice.cs
-    if choice.auto then
-        local created, err = ws:add_configuration_set(choice.real_name, choice.mappings)
-        if not created then
-            return nil, err or "failed to add config set"
-        end
-        cs = created
-    end
-    return cs
+    if not choice.auto then return choice.cs end
+    return M.execute_create_config_set_from_candidate(ws,
+        choice.candidate or commands.candidate_token(choice.real_name, choice.mappings))
 end
 
---- Execute profile creation: materialize or activate.
+--- The command outcomes the status page's profile-creation picker reads
+--- and writes in the `in-process` mode (loomworks.model_commands' own
+--- outcomes, API.md §4.1, not `ok, err`: the seam passes them on as the
+--- daemon's): the declared and automatic configuration sets, a set's
+--- toolchain choices and the creation itself. `set` a ConfigurationSet or
+--- `{ candidate = token }` (step 5o C2a).
+--- @param ws loomworks.Workspace
+--- @return loomworks.CommandOutcome
+function M.config_set_candidates(ws) return commands.config_set_candidates(ws) end
+--- @param ws loomworks.Workspace
+--- @param set loomworks.ConfigurationSet|{ candidate: string }|nil
+--- @return loomworks.CommandOutcome
+function M.profile_tool_choices(ws, set) return commands.profile_tool_choices(ws, set) end
+--- @param ws loomworks.Workspace
+--- @param set loomworks.ConfigurationSet|{ candidate: string }|nil
+--- @param tool_entry table|nil
+--- @param activate boolean
+--- @return loomworks.CommandOutcome
+function M.create_profile(ws, set, tool_entry, activate)
+    return commands.profile_create(ws, set, tool_entry, activate)
+end
+
+--- `Workspace/1.delete_user_prefs { plan? }` in the `in-process` mode: the
+--- working copy of the loaded workspace (else of the refused load, else of
+--- the cwd's root); without `plan` the `confirm` of what would be deleted,
+--- with it the deletion of exactly that (model_commands; the command's
+--- outcome).
+--- @param ws loomworks.Workspace|nil
+--- @param plan string|nil
+--- @return loomworks.CommandOutcome|{ outcome: "confirm", lines: string[], plan: string }
+function M.delete_user_prefs(ws, plan)
+    local lw = require("loomworks")
+    local r = commands.delete_user_prefs(lw._core(), (ws and ws.root) or lw.user_prefs_root(), plan)
+    r.reloaded = nil
+    return r
+end
+
+--- Execute profile creation: materialize, or return the existing profile of
+--- that set and tool; optionally activate.
 --- @param cs loomworks.ConfigurationSet
 --- @param tool_entry? table { tool_key, tool_data, tool_label, tool_mod_type }
 --- @param activate boolean
---- @return loomworks.Profile|nil
+--- @return loomworks.Profile|nil profile, string|nil err
 function M.execute_create_profile(cs, tool_entry, activate)
-    local profile = cs:ensure_profile(tool_entry)
-    if profile then
-        profile._intent = "local"
-        if activate then
-            profile:activate()
-        else
-            profile._workspace:_save_user()
-        end
+    local r = commands.profile_create(cs._workspace, cs, tool_entry, activate)
+    if not r.profile then
+        local _, err = as_result(r)
+        return nil, err
     end
-    return profile
+    return r.profile
 end
 
 -- =========================================================================
 -- Project Configuration Editing
 -- =========================================================================
 
---- Context for editing a project configuration.
---- @param project loomworks.Project
---- @param config_name string|nil nil for new configuration
---- @return table context
-function M.compute_edit_configuration_context(project, config_name)
-    local ws = project._workspace
-    local project_key = project.key
-    local type_config = project.type_config or {}
-
-    local impl = project._module and project._module.impl or nil
-    local abs_path = ws.root .. "/" .. (project.path or project_key)
-    local tc_for_module = project:_type_config_for_module()
-    local defaults = impl and impl.default_configurations
-        and impl.default_configurations(abs_path, tc_for_module) or {}
-
-    -- Build list of available configs for the "inherits" picker
-    local mod_info = impl and impl.info and impl.info(abs_path, tc_for_module)
-        or { configurations = {} }
-    local available_configs = {}
-    for name in pairs(mod_info.configurations or {}) do
-        available_configs[#available_configs + 1] = name
-    end
-    table.sort(available_configs)
-
-    -- is_default must reflect the actual Configuration's is_default flag
-    -- (set by canonicalize for module-emitted auto-gens), NOT a raw lookup
-    -- against `defaults` keyed by bare auto-gen names: `variant:default` is
-    -- the canonical auto-gen key, while a user config literally named
-    -- "default" is a separate Configuration with is_user = true and
-    -- is_default = false. The Configuration object already encodes this.
-    local config_data = {}
-    local is_default = false
-    if config_name then
-        local cfg_obj = project:get_configuration(config_name)
-        if cfg_obj and cfg_obj.is_user then
-            config_data = cfg_obj:serialize_user_override() or {}
-        end
-        if cfg_obj and cfg_obj.is_default then
-            is_default = true
-        end
-    end
-
-    -- Resolve variant from the merged config (already resolved by module)
-    local resolved_config = config_name and (mod_info.configurations or {})[config_name]
-    local variant = resolved_config and resolved_config.variant or (config_name or "")
-
-    -- Get project-wide options for display
-    local project_options = type_config.options or {}
-
-    -- Resolve inherited options with accurate sources
-    local inherited_options = {}
-    if impl and impl.resolve_options_with_sources and config_name then
-        local all_with_sources = impl.resolve_options_with_sources(
-            type_config, mod_info.configurations or {}, config_name)
-        local own = config_data.options or {}
-        for k, info in pairs(all_with_sources) do
-            if not own[k] then
-                inherited_options[k] = info
-            end
-        end
-    end
-
-    -- Resolve variant source
-    local variant_source = nil
-    if impl and impl.resolve_variant_source and config_name then
-        variant_source = impl.resolve_variant_source(
-            mod_info.configurations or {}, config_name)
-    end
-
-    -- Resolve build dir from ConfigUnit objects (first matching entry)
-    local build_dir = nil
-    if config_name then
-        for _, unit in pairs(ws._config_units) do
-            if unit._project == project
-                    and unit._variant == config_name
-                    and unit.build_dir_value then
-                build_dir = unit.build_dir_value
-                break
-            end
-        end
-    end
-
-    -- Active compiler family from the active profile's tool for this project's
-    -- module — selects which compiler-specific `overrides` are live and drives
-    -- the read-only overrides display (core §1.3.1). nil when no active profile
-    -- resolves a tool for this project.
-    local active_family = nil
-    local active_profile = ws.get_active_profile and ws:get_active_profile() or nil
-    if active_profile and active_profile.tool_for then
-        local tref = active_profile:tool_for(project.type)
-        active_family = require("loomworks.cpp_compilers")
-            .family_from_tool_data(tref and tref.data or nil)
-    end
-
-    -- Resolve project variables with provenance for this configuration,
-    -- honouring the active compiler family's overrides.
-    local project_variables = project.variables or {}
-    local resolved_variables = {}
-    local config_variable_overrides = {}
-    local config_compiler_overrides = {}
-    -- This config's own variable overrides (not inherited). Always the
-    -- configuration's, even when the project declares no variables, since the
-    -- dialog's save writes back what it was given (execute_save_configuration).
-    if config_name then
-        local cfg_obj = project:get_configuration(config_name)
-        if cfg_obj and cfg_obj.variables then
-            config_variable_overrides = vim.deepcopy(cfg_obj.variables)
-        end
-    end
-    if config_name and next(project_variables) then
-        local cfg_obj = project:get_configuration(config_name)
-        if cfg_obj then
-            local vars_mod = require("loomworks.variables")
-            -- Thread the active profile so a blank variable's fill value
-            -- (§1.3.1) shows in the editor; a still-blank one has value nil.
-            resolved_variables = vars_mod.resolve(project, cfg_obj, active_family, active_profile)
-            -- This config's own compiler-family overrides, shown read-only.
-            if cfg_obj._overrides then
-                config_compiler_overrides = vim.deepcopy(cfg_obj._overrides)
-            end
-        end
-    end
-
-    -- Languages: explicit override from the live Configuration if
-    -- the user has set one (nil otherwise) + the module's static
-    -- list as the default to show in "(inherited)" mode.
-    local cfg_languages = nil
-    local module_languages = {}
-    if config_name then
-        local cfg_obj = project:get_configuration(config_name)
-        if cfg_obj and cfg_obj.languages and #cfg_obj.languages > 0 then
-            cfg_languages = vim.deepcopy(cfg_obj.languages)
-        end
-    end
-    if project._module and project._module.languages then
-        module_languages = vim.deepcopy(project._module.languages)
-    end
-
-    return {
-        project_key = project_key,
-        project_type = project.type,
-        name = config_name or "",
-        variant = variant or (config_name or ""),
-        variant_source = variant_source,
-        inherits = config_data.inherits or "",
-        options = config_data.options and vim.deepcopy(config_data.options) or {},
-        variables = config_variable_overrides,
-        toolchain = config_data.toolchain or "",
-        generator = config_data.generator or "",
-        languages = cfg_languages,
-        module_languages = module_languages,
-        is_default = is_default,
-        has_options = impl and impl.has_options or false,
-        available_configs = available_configs,
-        project_options = project_options,
-        inherited_options = inherited_options,
-        project_variables = project_variables,
-        resolved_variables = resolved_variables,
-        config_compiler_overrides = config_compiler_overrides,
-        active_compiler_family = active_family,
-        build_dir = build_dir,
-    }
-end
-
---- The configuration fields the configuration editor dialog edits. Saving
---- from the dialog replaces exactly these; every other declared field of the
---- configuration (env, overrides, description, role, other module fields, …)
---- is carried over unchanged.
-local CONFIG_DIALOG_FIELDS = {
-    "inherits", "options", "variables", "languages", "toolchain", "generator",
-}
-
 --- Save a project configuration from the configuration editor dialog (create,
---- edit, or rename). `edits` holds the dialog's fields (`CONFIG_DIALOG_FIELDS`;
---- nil clears one); an existing user configuration's other declared fields
---- are preserved, so the save changes only what the dialog edits.
+--- update, or rename): only the dialog's fields change; every other declared
+--- field is kept (model_commands.configuration_save).
 --- @param project loomworks.Project
---- @param old_name string|nil nil for new
+--- @param cfg loomworks.Configuration|nil the configuration edited; nil for new
 --- @param new_name string
 --- @param edits table { inherits?, options?, variables?, languages?, toolchain?, generator? }
 --- @return boolean ok, string|nil err
-function M.execute_save_configuration(project, old_name, new_name, edits)
-    local cfg = old_name and project:get_configuration(old_name) or nil
-    local data = (cfg and cfg.is_user) and cfg:declared_data() or {}
-    for _, field in ipairs(CONFIG_DIALOG_FIELDS) do
-        data[field] = edits[field]
-    end
-
-    -- Rename: atomic propagation to config sets, cache entries, and profiles
-    if old_name and old_name ~= new_name and cfg and cfg.is_user then
-        return project:rename_configuration(old_name, new_name, data)
-    end
-
-    return project:save_configuration(new_name, data)
+function M.execute_save_configuration(project, cfg, new_name, edits)
+    return as_result(commands.configuration_save(project, cfg, new_name, edits))
 end
 
 --- Delete a project configuration.
 --- @param project loomworks.Project
---- @param config_name string
+--- @param cfg loomworks.Configuration
 --- @return boolean ok, string|nil err
-function M.execute_delete_configuration(project, config_name)
-    return project:delete_configuration(config_name)
+function M.execute_delete_configuration(project, cfg)
+    return as_result(commands.configuration_remove(project, cfg))
 end
 
 --- Save project-wide options.
@@ -1454,100 +673,32 @@ end
 --- @param options table<string, string>
 --- @return boolean ok, string|nil err
 function M.execute_save_project_options(project, options)
-    return project:save_options(options)
+    return as_result(commands.options_save(project, options))
 end
 
 -- =========================================================================
 -- Launch Config Editing
 -- =========================================================================
 
---- Get all launch configs for a project.
+--- Save a launch config (create or update, with optional rename;
+--- model_commands.launch_save).
 --- @param project loomworks.Project
---- @return { name: string, config: table }[]
-function M.get_launch_configs(project)
-    if not project.launch then return {} end
-
-    local result = {}
-    for name, config in pairs(project.launch) do
-        result[#result + 1] = { name = name, config = config }
-    end
-    table.sort(result, function(a, b) return a.name < b.name end)
-    return result
-end
-
---- Context for editing a launch config.
---- @param project loomworks.Project
---- @param launch_name string|nil nil for new config
---- @return { project_key: string, name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table, debug: table }
-function M.compute_edit_launch_context(project, launch_name)
-    local config = {}
-    if launch_name then
-        if project.launch and project.launch[launch_name] then
-            config = project.launch[launch_name]
-        end
-    end
-
-    return {
-        project_key = project.key,
-        name = launch_name or "",
-        command = config.command or "",
-        args = config.args or {},
-        working_dir = config.working_dir or "",
-        env = config.env and vim.deepcopy(config.env) or {},
-        deploy = config.deploy and vim.deepcopy(config.deploy) or {},
-        debug = config.debug and vim.deepcopy(config.debug) or {},
-    }
-end
-
---- Save a launch config (create or update, with optional rename).
---- @param project loomworks.Project
---- @param old_name string|nil nil for new config
+--- @param launch loomworks.LaunchConfiguration|nil nil for a new config
 --- @param new_name string
 --- @param data { command: string, args: string[], working_dir: string, env: table<string, string>, deploy?: table, debug?: string[] }
---- @return boolean ok, string|nil err
-function M.execute_save_launch_config(project, old_name, new_name, data)
-    -- Start from the existing config so the fields the launch editor does not
-    -- show (the `device` block, spec §18.9, and any other declared field)
-    -- survive; replace only the editor's fields, omitting empty ones.
-    local existing = old_name and project.launch and project.launch[old_name]
-    local config = type(existing) == "table" and vim.deepcopy(existing) or {}
-    -- An empty command field means "no command": the key is absent, never
-    -- `""` (a target-backed launch carries only `target`). A command makes
-    -- this a command-type launch: it no longer runs a target (as
-    -- `lw launch set --command`).
-    if data.command and data.command ~= "" then
-        config.command = data.command
-        config.target = nil
-    else
-        config.command = nil
-    end
-    config.args = (data.args and #data.args > 0) and data.args or nil
-    config.working_dir = (data.working_dir and data.working_dir ~= "")
-        and data.working_dir or nil
-    config.env = (data.env and next(data.env)) and data.env or nil
-    config.deploy = (data.deploy and next(data.deploy)) and data.deploy or nil
-    config.debug = (data.debug and #data.debug > 0) and data.debug or nil
-
-    -- A name change is a rename (spec §8.7): the atomic operation that moves
-    -- the whole launch and re-points every profile's default target — never
-    -- a delete plus re-create. The edited fields are then saved on the new name.
-    if old_name and old_name ~= new_name then
-        local changed, err = project:rename_launch_config(old_name, new_name)
-        if changed == nil then return false, err end
-    elseif not old_name then
-        local vok, verr = require("loomworks.project").validate_launch_name(new_name)
-        if not vok then return false, "invalid launch name: " .. verr end
-    end
-
-    return project:save_launch_config(new_name, config)
+--- @return boolean ok, string|nil err, loomworks.LaunchConfiguration|nil launch
+function M.execute_save_launch_config(project, launch, new_name, data)
+    local r = commands.launch_save(project, launch, new_name, data)
+    local ok, err = as_result(r)
+    return ok, err, r.launch
 end
 
 --- Delete a launch config.
 --- @param project loomworks.Project
---- @param launch_name string
+--- @param launch loomworks.LaunchConfiguration
 --- @return boolean ok, string|nil err
-function M.execute_delete_launch_config(project, launch_name)
-    return project:delete_launch_config(launch_name)
+function M.execute_delete_launch_config(project, launch)
+    return as_result(commands.launch_remove(project, launch))
 end
 
 -- ---------------------------------------------------------------------------
@@ -1567,20 +718,23 @@ function M.get_variables(project)
     return result
 end
 
---- Context for editing a variable declaration.
+--- The project's declaration as the working copy holds it (for the
+--- variable and configuration editors; model_commands.project_declaration),
+--- without ids.
 --- @param project loomworks.Project
---- @param var_name string|nil nil for new variable
---- @return { name: string, type: string, default: string }
-function M.compute_edit_variable_context(project, var_name)
-    if var_name and project.variables and project.variables[var_name] then
-        local decl = project.variables[var_name]
-        return {
-            name = var_name,
-            type = decl.type,
-            default = decl.default,
-        }
-    end
-    return { name = "", type = "string", default = "" }
+--- @return loomworks.CommandOutcome
+function M.project_declaration(project)
+    return commands.project_declaration(project, function() return nil end)
+end
+
+--- Each template expanded as a launch of `project` would expand it, under
+--- the active profile (the launch, deploy and path editors' previews;
+--- model_commands.expand_preview).
+--- @param project loomworks.Project
+--- @param templates string[]
+--- @return loomworks.CommandOutcome values: string[]
+function M.expand_preview(project, templates)
+    return commands.expand_preview(project, nil, templates)
 end
 
 --- Save a variable declaration.
@@ -1590,12 +744,7 @@ end
 --- @param data { type: string, default: string }
 --- @return boolean ok, string|nil err
 function M.execute_save_variable(project, old_name, new_name, data)
-    -- If renamed, delete old first
-    if old_name and old_name ~= new_name then
-        local ok, err = project:delete_variable(old_name)
-        if not ok then return false, err end
-    end
-    return project:save_variable(new_name, { type = data.type, default = data.default })
+    return as_result(commands.variable_save(project, old_name, new_name, data))
 end
 
 --- Delete a variable declaration.
@@ -1603,7 +752,152 @@ end
 --- @param var_name string
 --- @return boolean ok, string|nil err
 function M.execute_delete_variable(project, var_name)
-    return project:delete_variable(var_name)
+    return as_result(commands.variable_remove(project, var_name))
 end
+
+-- ---------------------------------------------------------------------------
+-- Other model writes (model_commands): publish state, descriptions,
+-- profiles' toolchains, deploy, type_config fields, SDKs
+-- ---------------------------------------------------------------------------
+
+--- Publish the working copy (`:w`).
+--- @param ws loomworks.Workspace
+--- @return boolean ok, string|nil err
+function M.publish(ws) return as_result(commands.publish(ws)) end
+
+--- Revert the working copy to the published baseline (`:e!`).
+--- @param ws loomworks.Workspace
+--- @return boolean ok, string|nil err
+function M.revert_to_baseline(ws) return as_result(commands.revert_to_baseline(ws)) end
+
+--- Publish one item.
+--- @param item table a profile, configuration set, project or configuration
+--- @return boolean ok, string|nil err
+function M.publish_one(item) return as_result(commands.publish_one(item)) end
+
+--- Revert one item to its published baseline.
+--- @param item table
+--- @return boolean ok, string|nil err
+function M.revert_one(item) return as_result(commands.revert_one(item)) end
+
+--- Set an item's intent (`P` cycles it; the next value is the caller's).
+--- @param item table
+--- @param intent "local"|"shared"|"local+shared"
+--- @return boolean ok, string|nil err
+function M.set_intent(item, intent) return as_result(commands.set_intent(item, intent)) end
+
+--- Set or clear an item's description (a launch configuration included).
+--- @param item table
+--- @param text string|nil
+--- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
+--- @return string|nil err
+function M.set_description(item, text)
+    local r = commands.set_description(item, text)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.changed
+end
+
+--- Make a profile the active one.
+--- @param profile loomworks.Profile
+--- @return boolean ok, string|nil err
+function M.activate_profile(profile) return as_result(commands.profile_set_active(profile)) end
+
+--- Add a toolchain (its key) to a profile.
+--- @param profile loomworks.Profile
+--- @param tool_key string
+--- @return boolean ok, string|nil err
+function M.add_profile_tool(profile, tool_key) return as_result(commands.profile_add_tool(profile, tool_key)) end
+
+--- Remove a toolchain (its key) from a profile.
+--- @param profile loomworks.Profile
+--- @param tool_key string
+--- @return boolean ok, string|nil err
+function M.remove_profile_tool(profile, tool_key)
+    return as_result(commands.profile_remove_tool(profile, tool_key))
+end
+
+--- Save a project's whole deploy declaration (nil or empty removes it).
+--- @param project loomworks.Project
+--- @param deploy table|nil
+--- @return boolean ok, string|nil err
+function M.save_deploy(project, deploy) return as_result(commands.deploy_save(project, deploy)) end
+
+--- Set or clear one of a project's editable type_config fields.
+--- @param project loomworks.Project
+--- @param field string
+--- @param value any
+--- @return boolean ok, string|nil err
+function M.save_type_config_field(project, field, value)
+    return as_result(commands.type_config_set(project, field, value))
+end
+
+--- `Maintenance/1.execute_deletion { target, plan?, yes? }` in-process
+--- (model_commands.execute_deletion; step 5o C2c-2): `cb` gets the request's
+--- `refused` or `confirm { lines, plan }` at once (its lines end with the
+--- running tasks the deletion stops, if any), or — accepted — the
+--- deletion's final outcome once it ended (`ok`, or `refused`: a held lock,
+--- a changed plan, a failed removal). Never `cb` at the acceptance.
+--- @param ws loomworks.Workspace
+--- @param target table a deletion target (its objects; loomworks.deletion_plan)
+--- @param plan string|nil the token the confirmation returned
+--- @param yes boolean|nil
+--- @param cb fun(r: loomworks.CommandOutcome)
+function M.execute_deletion(ws, target, plan, yes, cb)
+    local r = commands.execute_deletion(ws, target, { plan = plan, yes = yes, done = cb })
+    if r.outcome == "confirm" then
+        -- No model objects in a call result; in-process the deletion stops
+        -- the editor's own tasks itself (Workspace:_run_deletion).
+        r.units = nil
+        -- The editor's own running tasks the deletion stops first
+        -- (Workspace:_run_deletion; spec/ui.md §1.10), after the listing.
+        local running = ws:find_running_tasks_for_items(deletion_plan.plan(ws, target).items)
+        local stopped = {}
+        for _, info in pairs(running) do
+            stopped[#stopped + 1] = "  " .. tostring(info.project_key) .. ": " .. tostring(info.action) .. " "
+                .. tostring(info.configuration_key)
+        end
+        if #stopped > 0 then
+            table.sort(stopped)
+            r.lines[#r.lines + 1] = "Will stop running tasks:"
+            vim.list_extend(r.lines, stopped)
+        end
+    end
+    if r.outcome ~= "accepted" then cb(r) end
+end
+
+--- `Maintenance/1.nuke { plan?, yes? }` in-process (model_commands.nuke) on
+--- the root of `ws`, else the refused load's or the cwd's
+--- (`user_prefs_root`): the command's outcome.
+--- @param ws loomworks.Workspace|nil
+--- @param plan string|nil
+--- @param yes boolean|nil
+--- @return loomworks.CommandOutcome
+function M.nuke(ws, plan, yes)
+    local lw = require("loomworks")
+    return commands.nuke(lw._core(), (ws and ws.root) or lw.user_prefs_root(), plan, yes)
+end
+
+--- The installed SDK providers (or the one named) and the installations
+--- each detects (model_commands.sdk_detect): the command's outcome.
+--- @param provider string|nil
+--- @return loomworks.CommandOutcome
+function M.sdk_detect(provider) return commands.sdk_detect(provider) end
+
+--- Declare an SDK.
+--- @param ws loomworks.Workspace
+--- @param provider string
+--- @param path string|nil
+--- @return loomworks.SDK|nil sdk, string|nil err
+function M.add_sdk(ws, provider, path)
+    local r = commands.sdk_add(ws, provider, path)
+    if r.outcome ~= "ok" then return nil, r.message end
+    return r.sdk
+end
+
+--- Remove an SDK's declaration.
+--- @param ws loomworks.Workspace
+--- @param sdk loomworks.SDK
+--- @return boolean ok, string|nil err
+function M.remove_sdk(ws, sdk) return as_result(commands.sdk_remove(ws, sdk)) end
 
 return M

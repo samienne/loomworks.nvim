@@ -32,7 +32,19 @@ local ACTION_TITLE = {
     ["configure+build"] = "Building",
     delete = "Deleting",
     clean = "Cleaning",
+    reset = "Resetting",
+    test = "Testing",
+    run = "Preparing",
 }
+
+--- A remote task's entry message: its action and origin marker
+--- (`Building (lw)`).
+--- @param task loomworks.RemoteTask
+--- @return string
+local function daemon_title(task)
+    local origin = task:origin_label()
+    return (ACTION_TITLE[task.kind] or task.kind) .. (origin and (" (" .. origin .. ")") or "")
+end
 
 --- Create a fidget handle for an operation or task.
 --- @param key string handle key
@@ -138,7 +150,7 @@ function M.setup(opts)
     end)
 
     lw.on("operation_started", function(data)
-        local title = ACTION_TITLE[data.action] or data.action
+        local title = (ACTION_TITLE[data.action] or data.action)
         local key = data.operation and ("op:" .. data.operation.id) or data.profile_key
         local message = data.profile_key or "workspace"
         create_handle(key, title, message)
@@ -168,7 +180,7 @@ function M.setup(opts)
             end
         else
             -- Standalone task (from Projects section)
-            local title = ACTION_TITLE[data.action] or data.action
+            local title = (ACTION_TITLE[data.action] or data.action)
             local pkey = data.unit._project and data.unit._project.key or data.unit._init_project_key or "?"
             local ckey = data.unit:config_key() or data.unit.id
             local message = pkey .. "/" .. ckey
@@ -201,6 +213,41 @@ function M.setup(opts)
         local task_key = "task:" .. data.task_id
         finish_handle(task_key)
     end)
+
+    -- Operations observed in the workspace daemon (spec §19.16): e.g. `lw
+    -- build` in a terminal — the same entry as a local operation of the kind
+    -- and profile, plus the origin marker. Keyed by the daemon's task id.
+    lw.on("daemon_task_started", function(data)
+        local task = data.task
+        create_handle("daemon:" .. task.id, daemon_title(task), task.profile_name or task.name)
+    end)
+
+    lw.on("daemon_task_progress", function(data)
+        local handle = handles["daemon:" .. data.task.id]
+        if handle and data.task.pct then
+            handle:report({ percentage = data.task.pct })
+        end
+    end)
+
+    -- A task carrying steps (step 5t, §19.15 "Steps of a task") keeps its
+    -- one entry, which follows its current step.
+    lw.on("daemon_task_step", function(data)
+        local task = data.task
+        local handle = handles["daemon:" .. task.id]
+        if not handle then return end
+        -- No step running: the entry's own message again, without the step.
+        handle:report({ message = clip(task:step_text() or daemon_title(task)) })
+    end)
+
+    lw.on("daemon_task_stopped", function(data)
+        local task = data.task
+        local key = "daemon:" .. task.id
+        local handle = handles[key]
+        if not handle then return end
+        handle:report({ message = clip(task:outcome()) })
+        handle:finish()
+        handles[key] = nil
+    end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -216,6 +263,18 @@ function M.start_action(title)
     if not fidget_progress then return nil end
     local key = "action:" .. title .. ":" .. tostring(os.clock())
     return create_handle(key, "", title)
+end
+
+--- The progress entry of a user action that runs a build, configure or
+--- clean (spec §19.16 "Editor operations"): none in `daemon` mode — the
+--- routed task's own entry is its one progress entry, and an operation the
+--- daemon cannot carry is refused ("Availability") — and in the
+--- `in-process` mode exactly `start_action(title)`.
+--- @param title string
+--- @return table|nil handle
+function M.start_op_action(title)
+    if require("loomworks.daemon.observer").current() then return nil end
+    return M.start_action(title)
 end
 
 --- Report progress on a handle (nil-safe).

@@ -32,6 +32,15 @@
 
 --- @alias loomworks.DiagnosticSeverity "warn"|"error"
 
+--- A warning or error a workspace load raised through the host's notifier
+--- (core `_deps.notify`, captured by `Core:_begin_load_notes`): the load's
+--- persistent diagnostics (core daemon.md §19.13 "Load warnings").
+--- `text` is the notification exactly as the hosts print it.
+--- @class loomworks.LoadNote
+--- @field severity loomworks.DiagnosticSeverity
+--- @field text string
+--- @field in_diagnostics boolean|nil a structural diagnostic already shows it: left out of `Workspace:load_diagnostics()` (still a reply note)
+
 --- A structural diagnostic surfaced by `Workspace:diagnostics()`.
 --- Aggregated from per-domain-object `:diagnostic()` methods (Profile,
 --- Configuration, ConfigurationSet, ...).
@@ -193,6 +202,8 @@
 --- @field tool_data table
 --- @field tool_label? string
 --- @field tool_mod_type? string
+--- @field sdk_key? string a kit toolchain's: the key of the SDK that provides it
+---        (Workspace:kit_tool_entries_for)
 --- @field sdk? loomworks.SDK an SDK's entry: the SDK (tool_key its key)
 --- @field sdk_tools? table<string, loomworks.ToolRef> an SDK's entry: its kit
 ---        toolchains by module type, a profile made of it stores as tool keys
@@ -208,6 +219,7 @@
 --- @field server string                server name (e.g. "clangd")
 --- @field root_dir? string             absolute project-root path for client scoping
 --- @field db_state? "ready"|"unconfigured" whether the unit supplying build-dir-derived inputs (the compile DB) is configured on this machine (spec §8.4, §9.1). Derived by core from the active ConfigUnit when a module omits it
+--- @field db_dir? string               the build directory whose owned database (§8.4 `refresh_lsp_database`) the entry reads; set by a module that redirects its database to another unit, else filled by core with the project's active build dir (spec §8.4, daemon.md §19.20)
 --- @field binary? string               override server executable (env expansion supported)
 --- @field binary_required? boolean     refuse to start when `binary` is missing — use when stock PATH server would be actively wrong
 --- @field compile_commands_dir? string (clangd) directory containing compile_commands.json
@@ -373,13 +385,15 @@
 --- @class loomworks.OrphanedConfig
 --- @field project_key string
 --- @field config_key string
---- @field unit loomworks.ConfigUnit the config unit with state
+--- @field build_dir_key string the BuildDir's rel_path
+--- @field cached_entry table the BuildDir serialized as a cache entry
+--- @field build_dir_obj loomworks.BuildDir the orphaned BuildDir (no ConfigUnit references it)
 
 -- ========================== UI Data ==========================
 
 --- Buffer status info for statusline/LSP integration.
 --- Per-buffer LSP status of a managed language server (spec §9.8).
---- @alias loomworks.LspBufState "none"|"held"|"ok"|"withheld_unconfigured"|"withheld_no_db"|"withheld_error"
+--- @alias loomworks.LspBufState "none"|"held"|"ok"|"withheld_unconfigured"|"withheld_no_db"|"withheld_error"|"withheld_daemon"
 
 --- @class loomworks.BufStatus
 --- @field profile_key? string full active profile key
@@ -396,7 +410,8 @@
 ---     the workspace, nil when there are no diagnostics. Workspace-level
 ---     (not buffer-scoped) — same value for every buffer in the workspace.
 --- @field lsp loomworks.LspBufState per-buffer LSP status (spec §9.8):
----     none, held, ok, withheld_unconfigured, withheld_no_db, withheld_error.
+---     none, held, ok, withheld_unconfigured, withheld_no_db, withheld_error,
+---     withheld_daemon.
 
 --- Cached target info from module file-api parsing. Runtime-only.
 --- @class loomworks.CachedTarget

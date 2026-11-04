@@ -312,13 +312,26 @@ describe("more roles", function()
 
   it("die paints its message as a failure on stderr", function()
     cc.mode = "always"
-    local r = capture(function() cli._no_build_die({ key = "p" }, { "x" }) end)
-    assert.equals(1, r.exit_code)
-    assert.equals(ESC .. "31mlw: --no-build: cannot run the tests against the existing build:" .. ESC .. "0m\n",
-      r.stderr:match("^[^\n]*\n"))
+    local ws = { root = "/r", _profiles = { { key = "p" } } }
+    local r = capture(function() cli.cmd_clean(ws, { "clean", "zzz" }) end)
+    assert.is_true(r.exit_code ~= nil and r.exit_code ~= 0, vim.inspect(r))
+    assert.truthy(r.stderr:find(ESC .. "31mlw: ", 1, true), r.stderr)
     cc.mode = "never"
-    r = capture(function() cli._no_build_die({ key = "p" }, { "x" }) end)
+    r = capture(function() cli.cmd_clean(ws, { "clean", "zzz" }) end)
     assert.is_nil(r.stderr:find(ESC, 1, true))
+  end)
+
+  it("nothing to clean is a plain stdout line, exit 1 (as the daemon's refusal on stdout)", function()
+    cc.mode = "always"
+    overseer.plan_profile_clean = function() return {} end
+    local ws = { root = "/r", _profiles = { { key = "p" } } }
+    local got
+    local r = capture(function() got = cli.cmd_clean(ws, { "clean", "p" }) end)
+    assert.equals("nothing to clean for profile 'p' — no configured build directories.\n", r.stdout)
+    assert.equals("", r.stderr)
+    -- Returned, not exited: the dispatcher's finish(1).
+    assert.is_nil(r.exit_code)
+    assert.equals(1, got)
   end)
 
   it("clean: lead, step header and the CLEAN OK outcome", function()
@@ -330,5 +343,69 @@ describe("more roles", function()
     assert.equals(ESC .. "1mcleaning profile: p" .. ESC .. "0m\n"
       .. ESC .. "1;36m==>" .. ESC .. "0m" .. ESC .. "1m [clean] App" .. ESC .. "0m\n"
       .. ESC .. "32mCLEAN OK: p" .. ESC .. "0m\n", r.stdout)
+  end)
+end)
+
+describe("a daemon reply's notes (API.md §4.1)", function()
+  after_each(reset)
+
+  it("each on stderr, painted by its note_roles entry as in-process; a missing or unknown role is plain", function()
+    cc.mode = "always"
+    local buf = {}
+    local rs = io.stderr
+    io.stderr = { write = function(_, s) buf[#buf + 1] = s end }
+    local ok, err = pcall(cli._reply_notes, { notes = { "e", "w", "p", "u", "m" },
+      note_roles = { "fail", "warn", "plain", "sparkly" } })
+    io.stderr = rs
+    assert(ok, err)
+    assert.equals(ESC .. "31me" .. ESC .. "0m\n" .. ESC .. "33mw" .. ESC .. "0m\np\nu\nm\n", table.concat(buf))
+    -- No note_roles at all (an older daemon): every note plain.
+    buf = {}
+    io.stderr = { write = function(_, s) buf[#buf + 1] = s end }
+    ok, err = pcall(cli._reply_notes, { notes = { "a", "b" } })
+    io.stderr = rs
+    assert(ok, err)
+    assert.equals("a\nb\n", table.concat(buf))
+  end)
+end)
+
+describe("a notification raised while projecting a daemon snapshot", function()
+  after_each(reset)
+
+  it("is painted on stderr as the in-process load paints it (fail / warn), info dropped", function()
+    cc.mode = "always"
+    -- A live daemon of this version that answers the snapshot `ok`; the
+    -- projection then raises one notification of each level.
+    local seams = {
+      { require("loomworks.daemon.runtime"), "select", function()
+        return { mode = require("loomworks.daemon.runtime").DAEMON, daemon = true }
+      end },
+      { cli, "_daemon_workspace_trusted", function() return true end },
+      { require("loomworks.daemon.inspect"), "state", function()
+        return { kind = "live", handle = { endpoint = "e" } }
+      end },
+      { require("loomworks.daemon.endpoint"), "check", function() return true end },
+      { require("loomworks.daemon.client"), "session", function()
+        return { challenge = {}, closed = false, close = function() end }
+      end },
+      { require("loomworks.daemon.version"), "matches", function() return true end },
+      { require("loomworks.daemon.calls"), "request", function(_, _, cb) cb({ outcome = "ok" }) end },
+      { require("loomworks.daemon.snapshot"), "project", function(_, _, opts)
+        opts.notify("boom", vim.log.levels.ERROR)
+        opts.notify("careful", vim.log.levels.WARN)
+        opts.notify("chatter", vim.log.levels.INFO)
+        return nil
+      end },
+    }
+    local saved = {}
+    for i, s in ipairs(seams) do saved[i] = s[1][s[2]]; s[1][s[2]] = s[3] end
+    local buf = {}
+    local rs = io.stderr
+    io.stderr = { write = function(_, s) buf[#buf + 1] = s end }
+    local ok, err = pcall(cli._read_projection, "/r", {})
+    io.stderr = rs
+    for i, s in ipairs(seams) do s[1][s[2]] = saved[i] end
+    assert(ok, err)
+    assert.equals(ESC .. "31mboom" .. ESC .. "0m\n" .. ESC .. "33mcareful" .. ESC .. "0m\n", table.concat(buf))
   end)
 end)

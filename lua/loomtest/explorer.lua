@@ -26,6 +26,7 @@ local STATUS_PRIORITY = {
     passed  = 1,
     skipped = 2,
     pending = 3,
+    queued  = 3,
     running = 4,
     errored = 5,
     failed  = 5,
@@ -56,9 +57,45 @@ local STATUS_ICONS = {
     errored = { icon = "!", hl = "DiagnosticError" },
     running = { icon = "↻", hl = "DiagnosticInfo" },
     pending = { icon = "◌", hl = "DiagnosticHint" },
+    queued  = { icon = "◌", hl = "DiagnosticHint" },
 }
 
---- Infer suite grouping from flat test nodes.
+--- The descendants of a target whose adapter supplied its suites (LOOMTEST.md
+--- §3.1), shown as given: depth-first in the adapter's order, each suite a
+--- copy carrying its children's aggregate status and its test count.
+--- @param target_id string
+--- @param children_of table<string, loomtest.TestNode[]>
+--- @param out loomtest.TestNode[]
+local function append_given(target_id, children_of, out)
+    local function walk(id)
+        local statuses = {}
+        for _, child in ipairs(children_of[id] or {}) do
+            if child.type == "suite" then
+                local copy = {}
+                for k, v in pairs(child) do copy[k] = v end
+                out[#out + 1] = copy
+                local tests, agg = walk(child.id)
+                copy._test_count = tests
+                copy.status = agg
+                statuses[#statuses + 1] = agg
+            else
+                out[#out + 1] = child
+                statuses[#statuses + 1] = child.status
+                if children_of[child.id] then walk(child.id) end
+            end
+        end
+        local tests = 0
+        for _, child in ipairs(children_of[id] or {}) do
+            if child.type == "test" then tests = tests + 1 end
+        end
+        return tests, aggregate_status(statuses)
+    end
+    walk(target_id)
+end
+
+--- Infer suite grouping from flat test nodes. A target whose adapter
+--- supplied suite nodes (any child of type `suite`) is shown as given
+--- instead (LOOMTEST.md §3.1).
 --- @param nodes loomtest.TestNode[]
 --- @return loomtest.TestNode[]
 local function build_grouped_nodes(nodes)
@@ -74,9 +111,20 @@ local function build_grouped_nodes(nodes)
         end
     end
 
+    -- Targets with adapter-supplied suites, and every node's children.
+    local given, children_of = {}, {}
+    for _, node in ipairs(nodes) do
+        if node.parent then
+            children_of[node.parent] = children_of[node.parent] or {}
+            local list = children_of[node.parent]
+            list[#list + 1] = node
+            if node.type == "suite" and targets[node.parent] then given[node.parent] = true end
+        end
+    end
+
     local seen_ids = {}
     for _, node in ipairs(nodes) do
-        if node.parent and targets[node.parent] then
+        if node.parent and targets[node.parent] and not given[node.parent] then
             if seen_ids[node.id] then goto continue end
             seen_ids[node.id] = true
 
@@ -95,6 +143,8 @@ local function build_grouped_nodes(nodes)
     for _, target_id in ipairs(target_order) do
         local target = targets[target_id]
         result[#result + 1] = target
+
+        if given[target_id] then append_given(target_id, children_of, result) end
 
         local suites = suites_by_target[target_id]
         if suites then
@@ -159,10 +209,15 @@ local function build_tree()
     local highlights = {}
     local line_data = {}
 
+    -- An adapter's status replaces the description, in its level's
+    -- highlight (LOOMTEST.md §4.2).
     local adapter = loomtest.adapters()[1]
-    local desc = adapter and adapter.description() or "Tests"
+    local status = loomtest.status()
+    local desc = status and status.text or (adapter and adapter.description()) or "Tests"
+    local STATUS_HL = { info = "DiagnosticInfo", warn = "DiagnosticWarn", error = "DiagnosticError" }
     lines[#lines + 1] = " " .. desc
-    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines], hl_group = "Title" }
+    highlights[#highlights + 1] = { line = #lines, col_start = 0, col_end = #lines[#lines],
+        hl_group = status and (STATUS_HL[status.level] or "DiagnosticWarn") or "Title" }
 
     local counts = { passed = 0, failed = 0, skipped = 0, unknown = 0, running = 0, pending = 0 }
     local total = 0
@@ -171,6 +226,7 @@ local function build_tree()
             total = total + 1
             local s = node.status or "unknown"
             if s == "errored" then s = "failed" end
+            if s == "queued" then s = "pending" end
             counts[s] = (counts[s] or 0) + 1
         end
     end
@@ -532,27 +588,31 @@ function M.open()
             pcall(vim.api.nvim_win_set_cursor, target_win, { node.line, 0 })
         end,
         e = function()
-            -- Jump to first error location
-            local node = node_at_cursor()
-            if not node or not node._errors or #node._errors == 0 then return end
-            local err = node._errors[1]
-            if not err.file or not err.line then return end
-            local target_win = nil
-            for _, w in ipairs(vim.api.nvim_list_wins()) do
-                local buf = vim.api.nvim_win_get_buf(w)
-                if buf ~= _bufnr and vim.bo[buf].buftype == "" then
-                    target_win = w
-                    break
+            -- Jump to first error location (read from the adapter when it
+            -- keeps them, §8.3)
+            local at = node_at_cursor()
+            if not at then return end
+            loomtest.load_result(at.id, function(node)
+                if not node or not node._errors or #node._errors == 0 then return end
+                local err = node._errors[1]
+                if not err.file or not err.line then return end
+                local target_win = nil
+                for _, w in ipairs(vim.api.nvim_list_wins()) do
+                    local buf = vim.api.nvim_win_get_buf(w)
+                    if buf ~= _bufnr and vim.bo[buf].buftype == "" then
+                        target_win = w
+                        break
+                    end
                 end
-            end
-            if not target_win then
-                vim.cmd("wincmd p")
-                target_win = vim.api.nvim_get_current_win()
-            else
-                vim.api.nvim_set_current_win(target_win)
-            end
-            vim.cmd("edit " .. vim.fn.fnameescape(err.file))
-            pcall(vim.api.nvim_win_set_cursor, target_win, { err.line, 0 })
+                if not target_win then
+                    vim.cmd("wincmd p")
+                    target_win = vim.api.nvim_get_current_win()
+                else
+                    vim.api.nvim_set_current_win(target_win)
+                end
+                vim.cmd("edit " .. vim.fn.fnameescape(err.file))
+                pcall(vim.api.nvim_win_set_cursor, target_win, { err.line, 0 })
+            end)
         end,
         o = function()
             local node = node_at_cursor()
@@ -724,12 +784,18 @@ function M.show_output()
 
     local node = loomtest.get_node(_selected_id)
 
-    -- For suite/target nodes, find a failed child
+    -- For suite/target nodes, find a failed child (an adapter-supplied tree:
+    -- by its parents, never by id text, §3.1)
     if not node or (not node._output and not node.message and node.type ~= "test") then
+        local below = nil
+        if loomtest.has_given_suites() then
+            below = {}
+            for _, id in ipairs(loomtest.descendant_tests(_selected_id)) do below[id] = true end
+        end
         for _, n in ipairs(loomtest.nodes()) do
             if n.type == "test" and n.status == "failed"
                 and (n._output or n.message)
-                and n.id:find(_selected_id, 1, true) then
+                and (below and below[n.id] or (not below and n.id:find(_selected_id, 1, true))) then
                 node = n; break
             end
         end
@@ -740,6 +806,17 @@ function M.show_output()
         return
     end
 
+    -- Its output and error locations, read from the adapter when it keeps
+    -- them (§3, §8).
+    if not loomtest.get_node(node.id) then return M._show_node_output(node) end
+    loomtest.load_result(node.id, function(loaded)
+        if loaded then M._show_node_output(loaded) end
+    end)
+end
+
+--- The output float of one node.
+--- @param node loomtest.TestNode
+function M._show_node_output(node)
     -- For tests with no output/message (e.g. passed tests)
     if not node._output and not node.message then
         local title = node.name .. " (" .. (node.status or "unknown") .. ")"
@@ -870,5 +947,8 @@ function M._show_output_float(title, output, errors)
         wo = { number = true, relativenumber = false, wrap = true },
     })
 end
+
+--- Test seam: the grouped node list the tree renders.
+M._build_grouped_nodes = build_grouped_nodes
 
 return M

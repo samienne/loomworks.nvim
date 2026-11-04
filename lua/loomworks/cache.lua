@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local io_mod = require("loomworks.io")
@@ -188,7 +189,7 @@ function M.load(root)
     migrate_v7_to_v8(data)
     migrate_v8_to_v9(data)
     if not data._meta or data._meta.version ~= CURRENT_VERSION then
-        vim.notify("loomworks: cache.json has unexpected version, using defaults", vim.log.levels.WARN)
+        notify("loomworks: cache.json has unexpected version, using defaults", vim.log.levels.WARN)
         return M.default()
     end
 

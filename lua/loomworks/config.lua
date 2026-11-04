@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local io_mod = require("loomworks.io")
@@ -72,11 +73,11 @@ function M._extract_device(key, def, ptype, type_config)
     end
     if def.device ~= nil then
         if device ~= nil then
-            vim.notify("loomworks: project '" .. key .. "': ignoring the old project-level \"device\" block — \""
+            notify("loomworks: project '" .. key .. "': ignoring the old project-level \"device\" block — \""
                 .. ptype .. ".device\" is set", vim.log.levels.WARN)
         else
             device = def.device
-            vim.notify("loomworks: project '" .. key .. "': the \"device\" block moved into \"" .. ptype
+            notify("loomworks: project '" .. key .. "': the \"device\" block moved into \"" .. ptype
                 .. "\" (projects." .. key .. "." .. ptype .. ".device); it is rewritten there on the next save",
                 vim.log.levels.WARN)
         end
@@ -139,7 +140,7 @@ function M.normalize_projects(raw_projects)
             return nil, "project '" .. key .. "': " .. type_err
         end
         if not is_known_type(ptype) then
-            vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
+            notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
         local device, description
         device, type_config = M._extract_device(key, def, ptype, type_config)
@@ -183,7 +184,7 @@ function M.validate(raw, root)
         end
 
         if not is_known_type(ptype) then
-            vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
+            notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
 
         local device, description
@@ -196,7 +197,7 @@ function M.validate(raw, root)
         local abs_path = root .. "/" .. project_path
         local stat = (vim.uv or vim.loop).fs_stat(abs_path)
         if not stat then
-            vim.notify("loomworks: project '" .. key .. "' directory not found: " .. abs_path, vim.log.levels.WARN)
+            notify("loomworks: project '" .. key .. "' directory not found: " .. abs_path, vim.log.levels.WARN)
         end
 
         if def.launch then
@@ -252,7 +253,7 @@ function M.validate(raw, root)
                 for _, name in ipairs(stripped) do
                     type_config.configurations[name] = nil
                 end
-                vim.notify(
+                notify(
                     "loomworks: project '" .. key
                         .. "' loomworks.json contained reserved-prefix "
                         .. "config names ("
@@ -317,7 +318,7 @@ function M.validate(raw, root)
     for key in pairs(projects) do
         local lk = key:lower()
         if proj_lower[lk] then
-            vim.notify(
+            notify(
                 "loomworks: project keys '" .. proj_lower[lk] .. "' and '" .. key
                     .. "' differ only by case — may collide on case-insensitive filesystems",
                 vim.log.levels.WARN)
@@ -335,7 +336,7 @@ function M.validate(raw, root)
         for set_name in pairs(raw.configuration_sets) do
             local lk = set_name:lower()
             if cs_lower[lk] then
-                vim.notify(
+                notify(
                     "loomworks: configuration sets '" .. cs_lower[lk] .. "' and '" .. set_name
                         .. "' differ only by case — may cause profile key collisions",
                     vim.log.levels.WARN)
@@ -347,7 +348,7 @@ function M.validate(raw, root)
             if type(mappings) == "table" then
                 for proj_name, _ in pairs(mappings) do
                     if not projects[proj_name] then
-                        vim.notify(
+                        notify(
                             "loomworks: configuration_set '" .. set_name .. "' references unknown project '" .. proj_name .. "'",
                             vim.log.levels.WARN
                         )

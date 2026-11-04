@@ -2,6 +2,7 @@
 --- Pure-data _sync_* logic. Entry point: M.refresh(). Also exposes
 --- sync_build_dir_refs() for use by mutation methods.
 
+local notify_once = require("loomworks.notify").once
 local M = {}
 
 local BuildDir = require("loomworks.build_dir")
@@ -213,7 +214,7 @@ local function sync_projects(ctx, workspace, active_set)
 
     for key, project in pairs(ctx.projects) do
         if not new_data[key] then
-            project._removed = true
+            project:_mark_removed()
             ctx.projects[key] = nil
         end
     end
@@ -248,14 +249,6 @@ local function sync_projects(ctx, workspace, active_set)
     return arr
 end
 
---- Once-per-session dedup for stale config_set mapping warnings.
---- Keyed by `<set_name>|<project_key>|<variant>` so a remerge or
---- file refresh doesn't repeat the notification. Cleared on
---- workspace re-init by re-requiring the module — fresh load
---- gets a fresh report.
---- @type table<string, boolean>
-local _reported_stale_mappings = {}
-
 --- Sync the config sets registry with current config data.
 --- Runs after sync_projects so Project objects are available.
 --- Pre-resolves project_key -> Project before calling _update.
@@ -285,20 +278,20 @@ local function sync_config_sets(ctx, workspace, config)
                 if not cfg then
                     -- Stale mapping: the configuration_set names a variant
                     -- the project no longer has. Create a `_source_missing`
-                    -- stub so references don't break, and warn once — left
-                    -- silent it produces malformed build dirs / phantom
-                    -- configurations on the status page.
-                    local key = name .. "|" .. project_key .. "|" .. tostring(variant)
-                    if not _reported_stale_mappings[key] then
-                        _reported_stale_mappings[key] = true
-                        vim.notify(
-                            "loomworks: configuration_set '" .. name
-                                .. "' references unknown configuration '"
-                                .. tostring(variant) .. "' for project '"
-                                .. project_key
-                                .. "' — fix the mapping in loomworks.json or user.json",
-                            vim.log.levels.WARN)
-                    end
+                    -- stub so references don't break, and warn once per
+                    -- load (a remerge does not repeat it; the next load,
+                    -- whose diagnostics carry it, does) — left silent it
+                    -- produces malformed build dirs / phantom configurations
+                    -- on the status page. The set's structural diagnostic
+                    -- (ConfigurationSet:is_valid) already lists it in the
+                    -- views, so the load note is left out there.
+                    notify_once("stale-mapping|" .. name .. "|" .. project_key .. "|" .. tostring(variant),
+                        "loomworks: configuration_set '" .. name
+                            .. "' references unknown configuration '"
+                            .. tostring(variant) .. "' for project '"
+                            .. project_key
+                            .. "' — fix the mapping in loomworks.json or user.json",
+                        vim.log.levels.WARN, { in_diagnostics = true })
                     cfg = project:ensure_configuration(variant)
                 end
                 if cfg then
@@ -554,7 +547,10 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
     local expected_units = {}  -- build_dir_id → apply_data
     local expected_pps = {}    -- reg_key → pp_data
 
-    -- Build config_units from profile resolution
+    -- Resolve every profile's ProfileProjects first: their build directories
+    -- are compared before any ConfigUnit is made (spec §1.7 "One build
+    -- directory per configuration").
+    local records = {}
     for _, profile in pairs(ctx.profiles) do
         if profile.mappings then
             for project_key, variant in pairs(profile.mappings) do
@@ -571,31 +567,9 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 -- `tool_for(project.type)` path when the configuration
                 -- isn't resolved yet (so we can still compute a build_dir
                 -- for orphaned / partially-resolved units).
-                local tool_data = nil
-                local tool_key = nil
-                local effective_tools = nil
+                local tool_data, tool_key, effective_tools = nil, nil, nil
                 if project then
-                    if configuration and profile.tools_for then
-                        local tools = profile:tools_for(configuration)
-                        if tools and #tools > 0 then
-                            effective_tools = {}
-                            for _, t in ipairs(tools) do
-                                effective_tools[#effective_tools + 1] = {
-                                    key = t.key,
-                                    data = t.data,
-                                }
-                            end
-                            tool_data = tools[1].data
-                            tool_key = tools[1].key
-                        end
-                    end
-                    if not tool_data then
-                        local tool_ref = profile:tool_for(project.type)
-                        if tool_ref then
-                            tool_data = tool_ref.data
-                            tool_key = tool_ref.key
-                        end
-                    end
+                    tool_data, tool_key, effective_tools = M.mapping_tools(profile, project, configuration)
                 end
 
                 -- Anchor the ConfigUnit on its stable (project, config)
@@ -608,7 +582,10 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 local build_dir_id = nil
                 local abs_path = nil
                 local matched_entry = nil
-                if project then
+                -- A configuration the module reported an `error` for (spec
+                -- §8 `info`) has no build directory and no ConfigUnit, not
+                -- even one adopted from the cache.
+                if project and not (configuration and configuration:module_error()) then
                     -- Pass the effective tools list when we have one
                     -- (multi-tool path); otherwise fall back to the
                     -- legacy single-tool_data call.
@@ -641,6 +618,29 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                         build_dir_id, abs_path = deps.compute_unit_id(project, variant, arg, tool_key)
                     end
                 end
+                -- The directory the configuration resolves to (§8.4); the
+                -- claims resolver compares each configuration's effective
+                -- directory — its cache entry's anchor, else this one (§1.7).
+                -- A shared-tree unit never adopts an entry keyed by the plain
+                -- directory (§1.7).
+                local claim = nil
+                if project and configuration and deps.compute_unit_id then
+                    local arg = effective_tools and #effective_tools > 0
+                        and effective_tools or tool_data
+                    local res_id, res_abs, res_shared, res_rel = deps.compute_unit_id(project, variant, arg, tool_key)
+                    claim = {
+                        project_key = project_key,
+                        config_name = variant,
+                        tool_key = tool_key,
+                        config_key = require("loomworks.merge").build_config_key(variant, tool_key),
+                        abs = res_abs,
+                        shared = res_shared == true,
+                    }
+                    if matched_entry and res_shared and build_dir_id == res_rel
+                            and not cache._v8_moved then
+                        build_dir_id, abs_path, matched_entry = res_id, res_abs, nil
+                    end
+                end
 
                 -- Resolve tool domain object (used for both the
                 -- ConfigUnit accumulator below and the per-PP compat
@@ -661,6 +661,43 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                 local tool_compat_error = M.compute_tool_compat_error(
                     project, configuration, tool)
 
+                records[#records + 1] = {
+                    profile = profile, project_key = project_key, project = project,
+                    configuration = configuration, tool = tool, build_dir_id = build_dir_id,
+                    abs_path = abs_path, matched_entry = matched_entry,
+                    tool_compat_error = tool_compat_error, claim = claim,
+                }
+            end
+        end
+    end
+
+    -- Collisions, after cache matching and on effective directories (§1.7):
+    -- the owner keeps the directory, every other configuration is refused —
+    -- no ConfigUnit, an invalid ProfileProject, a load error.
+    local claims = {}
+    for _, r in ipairs(records) do
+        if r.claim then claims[#claims + 1] = r.claim end
+    end
+    local refused, refusals = require("loomworks.build_dir_claims").resolve(claims,
+        cache and cache.build_dirs, deps.build_dir_key or function(p) return p end, {
+            root = workspace.root,
+            entry_dir = function(key)
+                return cache and cache._v8_moved and cache_mod.absolute_build_dir(key, workspace.root) or nil
+            end,
+        })
+    for _, rf in ipairs(refusals) do
+        notify_once("build-dir-collision|" .. rf.message, "loomworks: " .. rf.message, vim.log.levels.ERROR)
+    end
+
+    for _, rec in ipairs(records) do
+        local profile, project_key, project = rec.profile, rec.project_key, rec.project
+        local configuration, tool = rec.configuration, rec.tool
+        local build_dir_id, abs_path, matched_entry = rec.build_dir_id, rec.abs_path, rec.matched_entry
+        local tool_compat_error = rec.tool_compat_error
+        local build_dir_error = rec.claim and refused[rec.claim] or nil
+        if build_dir_error then build_dir_id = nil end
+        do
+            do
                 -- Accumulate ConfigUnit data (dedup by build_dir_id).
                 -- This block is iteration-order-sensitive by design:
                 -- the unit's stored `_tool_data` reflects whichever
@@ -712,6 +749,7 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                     configuration = configuration,
                     config_unit_ref = config_unit_ref,  -- resolved after unit creation
                     tool_compat_error = tool_compat_error,
+                    build_dir_error = build_dir_error,
                 }
             end
         end
@@ -787,12 +825,11 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
 end
 
 --- Rebuild the build dir reverse index from ConfigUnit objects.
---- Maps build-dir identity key -> array of ConfigUnits that reference it.
---- The key is directory IDENTITY (`Workspace:_build_dir_ref_key`: canonical
---- form, 8.3 short<->long + case reconciled), so two spellings of one
---- directory share an entry; every lookup must use the same key function.
+--- Maps build-dir identity -> array of ConfigUnits that reference it.
 --- @param config_units table[] array of ConfigUnit objects
---- @param key_of fun(dir: string): string build dir -> identity key
+--- @param key_of fun(dir: string): string the key of a build dir path (the workspace's
+---   `_build_dir_identity`: resolved real path, spec §4.6; plain path
+---   normalization when none is given)
 --- @return table<string, table[]> build_dir_refs
 function M.sync_build_dir_refs(config_units, key_of)
     local refs = {}
@@ -838,6 +875,38 @@ function M.sync_artifact_refs(config_units, normalize)
         end
     end
     return refs
+end
+
+--- The tools a profile resolves a project's configuration with: the
+--- language-aware effective list (`profile:tools_for`), else the profile's
+--- tool for the project's module type (an unresolved configuration).
+--- @param profile loomworks.Profile
+--- @param project loomworks.Project
+--- @param configuration loomworks.Configuration|nil
+--- @return table|nil tool_data the primary tool's data
+--- @return string|nil tool_key the primary tool's key
+--- @return { key: string, data: table }[]|nil effective_tools
+function M.mapping_tools(profile, project, configuration)
+    local tool_data, tool_key, effective_tools = nil, nil, nil
+    if configuration and profile.tools_for then
+        local tools = profile:tools_for(configuration)
+        if tools and #tools > 0 then
+            effective_tools = {}
+            for _, t in ipairs(tools) do
+                effective_tools[#effective_tools + 1] = { key = t.key, data = t.data }
+            end
+            tool_data = tools[1].data
+            tool_key = tools[1].key
+        end
+    end
+    if not tool_data then
+        local tool_ref = profile:tool_for(project.type)
+        if tool_ref then
+            tool_data = tool_ref.data
+            tool_key = tool_ref.key
+        end
+    end
+    return tool_data, tool_key, effective_tools
 end
 
 --- Compute the per-(profile, configuration) tool compatibility error
@@ -895,8 +964,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local build_dirs = sync_build_dirs(ctx, workspace, cache)
     local config_units, profile_projects = sync_profile_projects_and_config_units(
         ctx, workspace, cache, deps)
-    local build_dir_refs = M.sync_build_dir_refs(config_units,
-        deps.build_dir_ref_key or deps.normalize)
+    local build_dir_refs = M.sync_build_dir_refs(config_units, deps.build_dir_key or deps.normalize)
     local artifact_refs = M.sync_artifact_refs(config_units, deps.normalize)
 
     -- Set _source and _intent on projects, config_sets, and profiles

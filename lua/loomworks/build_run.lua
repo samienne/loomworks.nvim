@@ -8,7 +8,8 @@
 ---               step_lines (announce, why, log the command line)
 ---               spawn_spec (hardened argv + env) → run
 ---               after_step (record result, populate artifacts)
----               failure_message on a nonzero exit
+---               failure_message on a nonzero exit (exit_status: a step a
+---               signal ended is a failure, status 128 + signal)
 ---
 --- A runner differs only in HOW a step is spawned (blocking vs streamed) and
 --- how a refusal is reported (die vs a streamed error). Everything here returns
@@ -17,6 +18,182 @@
 --- record, full reconfigure), §5.10 (program resolution).
 
 local M = {}
+
+-- ---------------------------------------------------------------------------
+-- Profile resolution (§16.9) — host-neutral: every refusal is returned as the
+-- exact message the CLI prints (`lw: <message>`, exit 1), so the in-process
+-- host and the workspace daemon (§19.15) refuse identically.
+-- ---------------------------------------------------------------------------
+
+--- The stable positional numbering of profiles (sorted by key, 1..N) — the
+--- numbers every listing shows and a bare-integer argument selects.
+--- @param ws table
+--- @return table[] list
+function M.profile_order(ws)
+    local list = {}
+    for _, p in ipairs(ws._profiles or {}) do list[#list + 1] = p end
+    table.sort(list, function(a, b) return a.key < b.key end)
+    return list
+end
+
+--- The single NAMED-profile matcher: a bare integer is the stable positional
+--- index (unless `opts.no_number`), then the exact key, then an unambiguous
+--- boundary-anchored substring (`merge.match_profile`). Returns the profile,
+--- nil on a miss, or nil + the refusal (number out of range, ambiguous).
+--- @param ws table
+--- @param name string
+--- @param opts? { no_number?: boolean }
+--- @return table|nil profile, string|nil err
+function M.match_profile(ws, name, opts)
+    if not (opts and opts.no_number) and type(name) == "string" and name:match("^%d+$") then
+        local list = M.profile_order(ws)
+        local n = tonumber(name)
+        if n < 1 or n > #list then
+            return nil, "profile number " .. n .. " out of range (1.." .. #list .. "); see `lw profile list`"
+        end
+        return list[n]
+    end
+    local keys, by_key = {}, {}
+    for _, p in ipairs(ws._profiles or {}) do keys[#keys + 1] = p.key; by_key[p.key] = p end
+    local hit, ambiguous = require("loomworks.merge").match_profile(keys, name)
+    if hit then return by_key[hit] end
+    if ambiguous then
+        return nil, "'" .. name .. "' matches multiple profiles: " .. table.concat(ambiguous, ", ")
+    end
+    return nil
+end
+
+--- Resolve the profile a command operates on: the named one, else — only when
+--- interactive — the active profile, else the only one. Non-interactive mode
+--- never uses the active profile nor infers one (a deterministic CI result).
+--- Returns the profile, or nil + the refusal + its exit code: 2 for no profile
+--- named in non-interactive mode (a usage error, spec 16.7), nil (exit 1) for
+--- the workspace-state refusals.
+--- @param ws table
+--- @param name string|nil
+--- @param opts? { no_number?: boolean, usage?: string, interactive?: boolean }
+--- @return table|nil profile, string|nil err, integer|nil code
+function M.resolve_profile(ws, name, opts)
+    opts = opts or {}
+    local profiles = ws._profiles or {}
+    if name then
+        local hit, err = M.match_profile(ws, name, opts)
+        if err then return nil, err end
+        if hit then return hit end
+        return nil, "no profile matching '" .. name .. "'. Run `lw profile list` to list."
+    end
+    if not opts.interactive then
+        local keys = {}
+        for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
+        table.sort(keys)
+        return nil, "no profile specified — non-interactive mode never uses the active profile\n" ..
+            "  and never infers one (not even when only one profile exists).\n" ..
+            "  pass one explicitly (a unique substring works): " ..
+            (opts.usage or "lw <command> <profile>") .. "\n" ..
+            "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
+            "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically", 2
+    end
+    local active = ws._active_profile_key
+    if active then
+        for _, p in ipairs(profiles) do
+            if p.key == active then return p end
+        end
+    end
+    if #profiles == 1 then return profiles[1] end
+    return nil, "no profile specified and no unambiguous default — run `lw profile select`"
+end
+
+--- Resolve the profile a build (and clean / test / reset / run) targets
+--- (§16.9). Returns the profile; or nil + the refusal + nil + its exit code
+--- (2 for a usage error, see `resolve_profile`; nil = exit 1); or nil, nil,
+--- "onboard" when no profile matches and the caller is interactive — the host
+--- then onboards a profile from a configuration set (prompts; never in a daemon).
+--- @param ws table
+--- @param name string|nil
+--- @param opts? { usage?: string, interactive?: boolean }
+--- @return table|nil profile, string|nil err, "onboard"|nil action, integer|nil code
+function M.resolve_target(ws, name, opts)
+    opts = opts or {}
+    local profiles = ws._profiles or {}
+    local usage = opts.usage or "lw build <profile>"
+    -- A concrete profile match always wins; a miss falls through to the
+    -- configuration-set onboarding / non-interactive refusal below.
+    if name then
+        local hit, err = M.match_profile(ws, name)
+        if err then return nil, err end
+        if hit then return hit end
+    else
+        if not opts.interactive then
+            local p, err, code = M.resolve_profile(ws, nil, { usage = usage })
+            return p, err, nil, code
+        end
+        local active = ws._active_profile_key
+        if active then for _, p in ipairs(profiles) do if p.key == active then return p end end end
+        if #profiles == 1 then return profiles[1] end
+        if #profiles > 1 then
+            return nil, "no profile specified and no active default — `lw profile select`, or `" .. usage .. "`"
+        end
+    end
+    if not opts.interactive then
+        if name then
+            for _, s in ipairs(ws._config_sets or {}) do
+                if s.name == name then
+                    return nil, "'" .. name .. "' is a configuration set with no profile yet — " ..
+                        "create one:\n  lw profile create " .. name .. " <tool> --activate   " ..
+                        "(tools: `lw tools`)\n  then: lw build"
+                end
+            end
+        end
+        local p, err, code = M.resolve_profile(ws, name, { usage = usage })
+        return p, err, nil, code
+    end
+    return nil, nil, "onboard"
+end
+
+--- Build directories in the canonical lock order of spec §19.3: by
+--- the normalized identity (§4.6 real path, then §2.3 normalization: forward
+--- slashes, no trailing slash, lowercased on Windows), duplicates dropped.
+--- @param dirs string[]
+--- @return string[]
+function M.lock_order(dirs)
+    local win = package.config:sub(1, 1) == "\\"
+    local seen, keyed = {}, {}
+    for _, d in ipairs(dirs or {}) do
+        -- By identity (spec §4.6): one folder spelled two ways is one lock
+        -- (its lockfile is one file, loomworks.build_lock).
+        local k = require("loomworks.dir_identity").resolve(d):gsub("/+$", "")
+        if win then k = k:lower() end
+        if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
+    end
+    table.sort(keyed, function(a, b) return a.k < b.k end)
+    local out = {}
+    for _, e in ipairs(keyed) do out[#out + 1] = e.d end
+    return out
+end
+
+--- The projects a build scope builds, each with its configuration unit and the
+--- profile its context resolves against: a profile's projects, or the given
+--- configuration units (`Build/1` `units`, spec §19.15) in the active
+--- profile's context, as the editor's unit actions resolve them.
+--- @param profile loomworks.Profile|nil
+--- @param units? loomworks.ConfigUnit[]
+--- @return { project: loomworks.Project, unit: loomworks.ConfigUnit|nil, profile: loomworks.Profile|nil }[]
+local function scope_entries(profile, units)
+    local out = {}
+    if units then
+        for _, unit in ipairs(units) do
+            if unit._project then
+                local ws = unit._workspace
+                out[#out + 1] = { project = unit._project, unit = unit, profile = ws and ws._active_profile }
+            end
+        end
+        return out
+    end
+    for _, pp in ipairs(profile and profile.projects and profile:projects() or {}) do
+        if pp._project then out[#out + 1] = { project = pp._project, unit = pp._config_unit, profile = profile } end
+    end
+    return out
+end
 
 --- The distinct build directories a profile's projects map to — the set the
 --- per-build-directory advisory lock (§16.6) covers for one build.
@@ -29,6 +206,67 @@ function M.profile_build_dirs(profile)
         if bd and not seen[bd] then seen[bd] = true; dirs[#dirs + 1] = bd end
     end
     return dirs
+end
+
+--- The distinct build directories of configuration units (a `units`
+--- operation's lock set, spec §19.15; as `profile_build_dirs`).
+--- @param units loomworks.ConfigUnit[]
+--- @return string[]
+function M.unit_build_dirs(units)
+    local dirs, seen = {}, {}
+    for _, u in ipairs(units or {}) do
+        local bd = u.build_dir and u:build_dir()
+        if bd and not seen[bd] then seen[bd] = true; dirs[#dirs + 1] = bd end
+    end
+    return dirs
+end
+
+--- The one notice a build prints when loomworks.json program settings of the
+--- profile's projects are ignored (spec §17.6, §17.10), or nil when none are.
+--- Both hosts print it (in-process and through the daemon, §19.15), so a
+--- build never silently runs without an environment or command the shared
+--- file names. Counts workspace-level entries and those of the profile's
+--- projects. Its highlighting role (§16.7, `warn`) is returned beside it.
+--- @param ws table workspace
+--- @param profile table|nil
+--- @param units? table[] configuration units: their projects instead of the profile's
+--- @return string|nil line
+--- @return string|nil role `warn` (with a line)
+function M.trust_notice(ws, profile, units)
+    if not (ws and ws.ignored_program_settings) then return nil end
+    local keys = {}
+    for _, e in ipairs(scope_entries(profile, units)) do keys[e.project.key] = true end
+    local n = 0
+    for _, e in ipairs(ws:ignored_program_settings()) do
+        if e.project == nil or keys[e.project] then n = n + 1 end
+    end
+    if n == 0 then return nil end
+    return string.format("lw: %d program setting%s in loomworks.json ignored — only your local config "
+        .. "may name programs or environment (`lw status` lists %s; lw help trust)",
+        n, n == 1 and "" or "s", n == 1 and "it" or "them"), "warn"
+end
+
+local LEAD_VERB = { build = "building", clean = "cleaning", configure = "configuring" }
+
+--- An operation's lead line (§16.4), printed before its steps by both hosts
+--- (in-process and through the daemon, §19.15), and its highlighting role
+--- (§16.7): `building <scope>`, `cleaning <scope>`, `configuring <scope>`.
+--- @param op "build"|"clean"|"configure"
+--- @param scope string `profile: <key>`, or the units' names (`units_label`)
+--- @return string line
+--- @return string role `lead`
+function M.lead_line(op, scope)
+    return LEAD_VERB[op] .. " " .. scope, "lead"
+end
+
+--- An operation's success line, printed by both hosts, and its highlighting
+--- role (§16.7): `BUILD OK: <label>`, `CLEAN OK: <label>`, `CONFIGURE OK: <label>`.
+--- @param op "build"|"clean"|"configure"
+--- @param label string the profile key, the units' names or a launch target's name
+--- @return string line
+--- @return string role `ok`
+function M.ok_line(op, label)
+    return op:upper() .. " OK: " .. label, "ok"
 end
 
 --- Whether `cmd` runs a batch file through cmd.exe: the program the build
@@ -64,12 +302,331 @@ function M.conflict_message(block)
         block.profile, block.path or "?", block.profile)
 end
 
---- The refusal for a profile with no buildable step.
---- @param profile loomworks.Profile
+--- The refusal for a profile (or configuration units, `label` their
+--- units_label) with no buildable step.
+--- @param profile loomworks.Profile|nil
+--- @param label? string the units' names instead of the profile
 --- @return string
-function M.nothing_to_build_message(profile)
-    return "nothing to build for profile '" .. profile.key ..
-        "' — no buildable projects (unavailable module or unresolved tool?)"
+function M.nothing_to_build_message(profile, label)
+    return "nothing to build for " .. (label or ("profile '" .. profile.key .. "'")) ..
+        " — no buildable projects (unavailable module or unresolved tool?)"
+end
+
+-- ---------------------------------------------------------------------------
+-- Target operands (headless §16.4 *Naming a build target*) — shared by every
+-- runner (in-process `lw build`, the workspace daemon §19.15) through `plan`,
+-- and by the launch-target matchers (`lw run`, `lw test --target`, `lw target
+-- set`) through `split_target_ref`.
+-- ---------------------------------------------------------------------------
+
+--- Up to three of `candidates` close to `name` (case-insensitive substring
+--- either way, or a small edit distance), nearest first.
+--- @param name string
+--- @param candidates string[]
+--- @return string[]
+function M.close_matches(name, candidates)
+    local function dist(a, b)
+        local prev = {}
+        for j = 0, #b do prev[j] = j end
+        for i = 1, #a do
+            local cur = { [0] = i }
+            for j = 1, #b do
+                local cost = a:sub(i, i) == b:sub(j, j) and 0 or 1
+                cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            end
+            prev = cur
+        end
+        return prev[#b]
+    end
+    local lname, limit = name:lower(), math.max(1, math.floor(#name / 3))
+    local scored = {}
+    for _, c in ipairs(candidates) do
+        local lc = c:lower()
+        local d = dist(lname, lc)
+        if d <= limit or lc:find(lname, 1, true) or lname:find(lc, 1, true) then
+            scored[#scored + 1] = { name = c, d = d }
+        end
+    end
+    table.sort(scored, function(a, b)
+        if a.d ~= b.d then return a.d < b.d end
+        return a.name < b.name
+    end)
+    local out = {}
+    for i = 1, math.min(3, #scored) do out[i] = scored[i].name end
+    return out
+end
+
+--- Ensure a config unit's build targets are parsed — the headless equivalent
+--- of the editor's post-configure scan (workspace.lua). No-op if already
+--- parsed (unless `opts.refresh`: re-read, e.g. in a long-lived daemon whose
+--- unit outlived a configure) or the module exposes no target introspection.
+--- Requires a build dir this machine configured.
+--- @param ws loomworks.Workspace
+--- @param unit loomworks.ConfigUnit|nil
+--- @param opts? { refresh?: boolean }
+function M.ensure_unit_targets(ws, unit, opts)
+    if not unit or (unit.targets and not (opts and opts.refresh)) then return end
+    local mod, ctx = M._targets_ctx(ws, unit)
+    if not mod then return end
+    local ok, targets = pcall(mod.parse_targets, ctx)
+    if ok and targets then unit:set_targets(targets) end
+end
+
+--- The module and `parse_targets` context of a unit whose targets can be
+--- parsed (the module parses targets; a build dir this machine configured,
+--- spec §17.8), else nil.
+--- @param ws loomworks.Workspace
+--- @param unit loomworks.ConfigUnit
+--- @return table|nil mod, table|nil ctx
+function M._targets_ctx(ws, unit)
+    local project = unit._project
+    local mod = project and project._module and project._module.impl
+    local build_dir = unit.build_dir and unit:build_dir()
+    if not (mod and mod.parse_targets and build_dir) then return nil end
+    -- Only a build dir this machine configured (signed cache, spec §17.8).
+    if unit.configured_here and not unit:configured_here() then return nil end
+    -- config_name is the module build type (e.g. "Debug"); matters for
+    -- multi-config generators, ignored by single-config ones.
+    local cfg = unit.configuration and unit:configuration()
+    local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
+        or (unit._cached_module_config and unit._cached_module_config.variant)
+        or (unit.variant and unit:variant())
+    return mod, {
+        build_dir = build_dir,
+        project_path = ws.root .. "/" .. (project.path or project.key),
+        config_name = config_name,
+    }
+end
+
+--- How long parse_unit_targets_async waits on a module's
+--- `parse_targets_async` before giving up (nil): a module whose callback
+--- never runs (it threw on a later turn) must not hold its caller.
+M.TARGETS_PARSE_TIMEOUT_MS = 30000
+
+--- Parse a unit's build targets without blocking the caller: the module's
+--- `parse_targets_async` (spec §8), else its `parse_targets` on a later
+--- event-loop turn. `cb(targets|nil)` always runs, once, on a later turn
+--- (nil: nothing parsed — not parseable, no data, the module failed, or its
+--- `parse_targets_async` did not call back within TARGETS_PARSE_TIMEOUT_MS).
+--- Nothing is set on the unit: the caller applies the result.
+--- @param ws loomworks.Workspace
+--- @param unit loomworks.ConfigUnit
+--- @param cb fun(targets: table|nil)
+function M.parse_unit_targets_async(ws, unit, cb)
+    local called, timer = false, nil
+    local function once(t)
+        if called then return end
+        called = true
+        if timer then
+            pcall(timer.stop, timer)
+            pcall(timer.close, timer)
+            timer = nil
+        end
+        cb(t)
+    end
+    local okc, mod, ctx = pcall(M._targets_ctx, ws, unit)
+    if not (okc and mod) then return vim.schedule(function() once(nil) end) end
+    if mod.parse_targets_async then
+        -- The watchdog: spec §8 does not require a module's callback on an
+        -- error, and one thrown on a later turn is out of this pcall's reach.
+        timer = vim.defer_fn(function() timer = nil; once(nil) end, M.TARGETS_PARSE_TIMEOUT_MS)
+        local ok = pcall(mod.parse_targets_async, ctx, function(t)
+            vim.schedule(function() once(type(t) == "table" and t or nil) end)
+        end)
+        if not ok then vim.schedule(function() once(nil) end) end
+        return
+    end
+    vim.schedule(function()
+        local ok, t = pcall(mod.parse_targets, ctx)
+        once(ok and type(t) == "table" and t or nil)
+    end)
+end
+
+--- Split a target operand into the project it is qualified with and the
+--- bare name. `<project>:<name>` (the form `lw target` lists) is qualified
+--- only when `<project>` names one of the scope's projects — a module's own
+--- target syntax may contain ':' (e.g. meson `name:type`); otherwise the whole
+--- operand is the bare name. The scope is a profile (its projects) or a list
+--- of projects (a `units` scope, spec §19.15).
+--- @param scope loomworks.Profile|loomworks.Project[]
+--- @param name string
+--- @return loomworks.Project|nil project, string bare
+function M.split_target_ref(scope, name)
+    local pfx, rest = name:match("^([^:]+):(.+)$")
+    if pfx then
+        if type(scope.projects) == "function" then
+            for _, pp in ipairs(scope:projects()) do
+                if pp._project and pp._project.key == pfx then return pp._project, rest end
+            end
+        else
+            for _, project in ipairs(scope) do
+                if project.key == pfx then return project, rest end
+            end
+        end
+    end
+    return nil, name
+end
+
+--- The `<project>/<configuration>` names of configuration units (the scope
+--- of a `units` operation, spec §19.15), comma-separated.
+--- @param units loomworks.ConfigUnit[]
+--- @return string
+function M.units_label(units)
+    local names = {}
+    for _, u in ipairs(units or {}) do
+        names[#names + 1] = (u._project and u._project.key or "?") .. "/" .. tostring(u:config_key() or "?")
+    end
+    return table.concat(names, ", ")
+end
+
+--- Resolve `--target` operands to the projects that build them (§16.4), against
+--- each project's KNOWN target list — a unit configured here that needs no
+--- configure now (a configure can change its targets) and whose module
+--- introspects targets. A qualified operand goes to its project; a bare name
+--- to the one project whose list has it (several → refused as ambiguous), or,
+--- in no known list, to every project (the build tool decides). An operand
+--- `{ project, target }` (`Build/1`, spec §19.15) is that target of that
+--- project only; a project the scope does not build is refused. Returns a map
+--- Project → bare target names (projects absent from it are not built), or
+--- nil + lw's refusal. Never runs anything.
+--- @param profile loomworks.Profile|nil (nil with `opts.units`)
+--- @param names (string|{ project: string, target: string })[]
+--- @param opts? { reconfigure?: boolean, units?: loomworks.ConfigUnit[] }
+---   units: the scope is these configuration units instead of the profile
+--- @return table<loomworks.Project, string[]>|nil picks, string|nil err
+function M.resolve_build_targets(profile, names, opts)
+    opts = opts or {}
+    local entries = {}
+    for _, e in ipairs(scope_entries(profile, opts.units)) do
+        local unit = e.unit
+        local ws = (profile and profile._workspace) or (unit and unit._workspace)
+        local known
+        if unit and not opts.reconfigure and unit.configure_reason
+                and not unit:configure_reason(false, e.profile, false) then
+            if ws then pcall(M.ensure_unit_targets, ws, unit, { refresh = true }) end
+            if type(unit.targets) == "table" and next(unit.targets) then known = unit.targets end
+        end
+        entries[#entries + 1] = { project = e.project, known = known }
+    end
+    -- The scope's distinct projects, in order (several units can be of one).
+    local projects, seen_project = {}, {}
+    for _, e in ipairs(entries) do
+        if not seen_project[e.project] then
+            seen_project[e.project] = true
+            projects[#projects + 1] = e.project
+        end
+    end
+    local picks = {}
+    local function add(project, t)
+        local list = picks[project]
+        if not list then list = {}; picks[project] = list end
+        for _, x in ipairs(list) do if x == t then return end end
+        list[#list + 1] = t
+    end
+    for _, name in ipairs(names) do
+        local qproj, bare
+        if type(name) == "table" then
+            for _, e in ipairs(entries) do
+                if e.project.key == name.project then qproj = e.project end
+            end
+            if not qproj then
+                return nil, string.format("target '%s' names project '%s', which %s does not build",
+                    tostring(name.target), tostring(name.project),
+                    opts.units and M.units_label(opts.units) or ("profile '" .. tostring(profile and profile.key) .. "'"))
+            end
+            bare = name.target
+        else
+            -- `<project>:<name>` is qualified only when `<project>` is one of
+            -- the scope's projects (split_target_ref, the one rule).
+            qproj, bare = M.split_target_ref(projects, name)
+        end
+        if qproj then
+            -- Scoped to that project even when its list lacks the name (a
+            -- target lw does not list); the build tool decides.
+            add(qproj, bare)
+        else
+            -- The distinct projects whose known list has it (units of one
+            -- project are that project once).
+            local hits, hit = {}, {}
+            for _, e in ipairs(entries) do
+                if e.known and e.known[bare] and not hit[e.project] then
+                    hit[e.project] = true
+                    hits[#hits + 1] = e
+                end
+            end
+            if #hits > 1 then
+                local labels = {}
+                for _, e in ipairs(hits) do labels[#labels + 1] = e.project.key .. ":" .. bare end
+                return nil, string.format("target '%s' is ambiguous — it is a build target of several "
+                    .. "projects: %s\n  qualify it as <project>:<target>", bare, table.concat(labels, ", "))
+            elseif #hits == 1 then
+                add(hits[1].project, bare)
+            else
+                -- In no known list (a custom / build-system target such as
+                -- `install`, a project not configured yet, or a typo): every
+                -- project gets it, as a plain `--target` always did; the
+                -- build tool decides and a failure names close matches.
+                for _, e in ipairs(entries) do add(e.project, bare) end
+            end
+        end
+    end
+    return picks
+end
+
+--- After a failed `--target` build: name each target this step requested
+--- that its project's parsed target list does not contain, with close matches
+--- from every project of the profile, in the `<project>:<target>` form `lw
+--- target` lists (§16.4). Advisory: the lists omit targets a module does not
+--- introspect, so such a name was handed to the build tool, which decided.
+--- `targets` are the bare names the step built (`step.build_targets` when
+--- planned). nil when there is nothing to say.
+--- @param ws loomworks.Workspace
+--- @param step table
+--- @param targets? string[]
+--- @return string|nil
+function M.unknown_target_hint(ws, step, targets)
+    targets = step.build_targets or targets
+    if not (targets and step.unit) then return nil end
+    local units = { step.unit }
+    if step.profile and step.profile.projects then
+        units = {}
+        for _, pp in ipairs(step.profile:projects()) do
+            if pp._config_unit then units[#units + 1] = pp._config_unit end
+        end
+    end
+    local cands, ids, seen = {}, {}, {}
+    for _, u in ipairs(units) do
+        pcall(M.ensure_unit_targets, ws, u, { refresh = true })
+        local proj = u._project
+        if type(u.targets) == "table" and proj then
+            for id in pairs(u.targets) do
+                cands[#cands + 1] = { project = proj, id = id }
+                if not seen[id] then seen[id] = true; ids[#ids + 1] = id end
+            end
+        end
+    end
+    local known = step.unit.targets
+    if type(known) ~= "table" or not next(known) then return nil end
+    table.sort(ids)
+    table.sort(cands, function(x, y)
+        if x.project.key ~= y.project.key then return x.project.key < y.project.key end
+        return x.id < y.id
+    end)
+    local lines = {}
+    local project = step.unit._project and step.unit._project.key or "the project"
+    for _, t in ipairs(targets) do
+        if not known[t] then
+            local near = {}
+            for _, b in ipairs(M.close_matches(t, ids)) do
+                for _, c in ipairs(cands) do
+                    if c.id == b then near[#near + 1] = c.project.key .. ":" .. c.id end
+                end
+            end
+            lines[#lines + 1] = string.format("target '%s' is not among %s's known targets%s", t,
+                project, #near > 0 and (" — did you mean '" .. table.concat(near, "', '") .. "'?") or "")
+        end
+    end
+    return #lines > 0 and table.concat(lines, "\nlw: ") or nil
 end
 
 --- Plan a profile build: the build gate, the module plan, and the build
@@ -79,28 +636,75 @@ end
 --- select a target) and forwarded args are appended to the step's command —
 --- unless that command runs a batch file, where they would be silently
 --- ignored, so it is refused instead.
---- @param profile loomworks.Profile
---- @param opts? { for_test?: boolean, reconfigure?: boolean, extra_args?: string[], build_targets?: string[] }
+--- With `opts.units` the scope is those configuration units instead of the
+--- profile (`Build/1` `units`, spec §19.15): each unit's tool/configuration
+--- compatibility gate instead of the profile's buildability gate, as the
+--- editor's unit actions gate (overseer.run_configuration_action), and the
+--- units' own tasks (overseer.plan_units_build).
+--- @param profile loomworks.Profile|nil (nil with `opts.units`)
+--- @param opts? { for_test?: boolean, configure_only?: boolean, reconfigure?: boolean, extra_args?: string[], build_targets?: (string|{ project: string, target: string })[], jobs?: integer, units?: loomworks.ConfigUnit[] }
+---   build_targets are the caller's `--target` operands, resolved per
+---   project by `resolve_build_targets`; each build step carries the bare
+---   names it builds as `step.build_targets`. configure_only: the configure
+---   step of every unit and no build (`Build/1.configure`). jobs: the build
+---   tool's parallelism, appended to each build step as the editor's
+---   parallel-jobs option (overseer.append_parallel_jobs).
 --- @return table[]|nil steps (possibly empty), string|nil err
+--- @return loomworks.RefusalLine[]|nil refused the profile's ProfileProjects left out as
+---   invalid for the action (core §5.4 "Invalid ProfileProjects"), one result
+---   line each: the host runs the steps, then fails with `refused_message`
 function M.plan(profile, opts)
     opts = opts or {}
-    -- Same gate the editor applies in `Profile:build` / `Profile:configure`:
-    -- without it an unbuildable profile — e.g. one mapping an abstract
-    -- configuration — would build anyway, on whatever default the module picked.
-    if profile.assert_buildable then
+    local overseer = require("loomworks.overseer")
+    if opts.units then
+        for _, unit in ipairs(opts.units) do
+            local compat = unit.tool_compat_error and unit:tool_compat_error() or nil
+            if compat then
+                return nil, compat .. " — change the profile's tool to match the configuration"
+            end
+        end
+    elseif profile.assert_buildable then
+        -- Same gate the editor applies in `Profile:build` / `Profile:configure`:
+        -- without it an unbuildable profile — e.g. one mapping an abstract
+        -- configuration — would build anyway, on whatever default the module picked.
         local buildable, why = profile:assert_buildable()
         if not buildable then return nil, tostring(why) end
     end
-    local steps, plan_err = require("loomworks.overseer").plan_profile_build(profile, {
-        for_test = opts.for_test,
-        reconfigure = opts.reconfigure,
-        build_args = opts.extra_args,
-        build_targets = opts.build_targets,
-    })
+    -- `--target` operands resolve to (project, bare name) BEFORE anything
+    -- runs (§16.4): a refusal is lw's, never the build tool's; a project no
+    -- operand selects is neither configured nor built.
+    local picks
+    if opts.build_targets and (opts.units or profile.projects) then
+        local perr
+        picks, perr = M.resolve_build_targets(profile, opts.build_targets,
+            { reconfigure = opts.reconfigure, units = opts.units })
+        if not picks then return nil, perr end
+    end
+    local steps, plan_err, refused
+    if opts.units then
+        steps, plan_err = overseer.plan_units_build(opts.units, {
+            configure_only = opts.configure_only,
+            reconfigure = opts.reconfigure,
+            build_args = opts.extra_args,
+            build_targets_for = picks,
+        })
+    else
+        steps, plan_err, refused = overseer.plan_profile_build(profile, {
+            for_test = opts.for_test,
+            configure_only = opts.configure_only,
+            reconfigure = opts.reconfigure,
+            build_args = opts.extra_args,
+            build_targets = opts.build_targets,
+            build_targets_for = picks,
+        })
+    end
     if plan_err then return nil, "cannot build: " .. tostring(plan_err) end
     steps = steps or {}
     for _, step in ipairs(steps) do
         if step.kind == "build" then
+            -- The bare names this step builds (the failure hint's input).
+            local project = step.unit and step.unit._project
+            step.build_targets = (picks and project and picks[project]) or opts.build_targets
             if opts.build_targets and not step.applied_build_targets then
                 return nil, string.format("%s: this project's module does not support --target "
                     .. "(pass the build tool's own target syntax after `--` instead)", step.name or "?")
@@ -112,12 +716,25 @@ function M.plan(profile, opts)
                 end
                 step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
             end
+            if opts.jobs then
+                step.cmd = overseer.append_parallel_jobs(vim.list_extend({}, step.cmd), opts.jobs)
+            end
         end
     end
-    return steps
+    return steps, nil, refused
 end
 
---- The gates evaluated immediately before a step runs:
+--- The failure of a profile-level operation whose invalid ProfileProjects
+--- were not run (core §5.4 "Invalid ProfileProjects"): their result lines,
+--- one per line. Reported after the other projects ran.
+--- @param refused loomworks.RefusalLine[] `plan`'s third return (or `plan_clean`'s second)
+--- @return string
+function M.refused_message(refused)
+    return require("loomworks.overseer").refused_message(refused)
+end
+
+--- The gates evaluated immediately before a step runs (after recording the
+--- step in this process's build-directory lock, spec §19.5):
 ---   * the output-artifact conflict gate (§5.9 / §16.28), directional and
 ---     evaluated at compile-start — for a configure→build chain the configure
 ---     (after_step) already populated this unit's artifact set. `force` is the
@@ -131,6 +748,11 @@ end
 --- @return boolean|nil ok, string|nil err
 function M.before_step(ws, step, opts)
     opts = opts or {}
+    -- The held build-dir lock names the step now running, so a recovery after
+    -- this process dies knows what was interrupted (spec §19.5).
+    if step.kind == "configure" or step.kind == "build" then
+        require("loomworks.build_lock").set_operation(step.build_dir, step.kind)
+    end
     if step.kind == "build" and step.unit and ws.artifact_conflict_block then
         local block = ws:artifact_conflict_block(step.unit, opts.force or false)
         if block then return nil, M.conflict_message(block) end
@@ -145,13 +767,17 @@ end
 
 --- The status lines announcing a step (§16.4): `==> [kind] name`, WHY a
 --- configure runs (the gate's reason + the module's full / in-place choice),
---- and with `verbose` the command line + cwd + env overrides
---- (`command_lines`). Also writes the command line to
---- the workspace log (always, §16.4). Each line's highlighting role (§16.7)
---- is returned alongside it: `phase` for the header, `reason`, `command`.
+--- and with `verbose` the command line + cwd (`command_lines`) — plus, with
+--- `env`, the env overrides line (`env_line`): `true` computes it against THIS
+--- process's environment (the in-process host); a table is the environment
+--- the step inherits — the daemon's runner passes the one the requesting
+--- client sent (spec §19.15 "Roles and verbose"), never its own. Also writes
+--- the command line to the workspace log (always, §16.4). Each line's
+--- highlighting role (§16.7) is returned alongside it: `phase` for the
+--- header, `reason`, `command`.
 --- @param ws loomworks.Workspace
 --- @param step table
---- @param opts? { verbose?: boolean }
+--- @param opts? { verbose?: boolean, env?: boolean|table<string, string> }
 --- @return string[] lines (no trailing newlines)
 --- @return string[] roles parallel to `lines` (loomworks.cli_color roles)
 function M.step_lines(ws, step, opts)
@@ -169,7 +795,7 @@ function M.step_lines(ws, step, opts)
     local cwd = step.cwd or ws.root
     overseer.log_task_command(ws, step.name, step, cwd)
     if opts.verbose then
-        for _, l in ipairs(M.command_lines(step, cwd)) do
+        for _, l in ipairs(M.command_lines(step, cwd, { env = opts.env or false })) do
             lines[#lines + 1] = l
             roles[#roles + 1] = "command"
         end
@@ -182,14 +808,20 @@ end
 --- (formatted as for the workspace log, `overseer.command_text`), then
 --- `    (in <cwd>)` when a working directory is given, then
 --- `    env: <NAME>=<value> …` for the environment overrides the step adds
---- (`spec.env`, names sorted) — never the inherited environment.
+--- (`spec.env`, names sorted; `env_line`) — never the inherited environment,
+--- which is this process's, or `opts.env` when it is a table (the
+--- environment the step inherits: a daemon's requesting client's).
+--- `opts.env = false` leaves the env line out.
 --- @param spec { cmd?: string[], display_cmd?: string[], env?: table<string, string> }
 --- @param cwd? string
+--- @param opts? { env?: boolean|table<string, string> }
 --- @return string[]
-function M.command_lines(spec, cwd)
+function M.command_lines(spec, cwd, opts)
     local lines = { "    $ " .. require("loomworks.overseer").command_text(spec) }
     if cwd then lines[#lines + 1] = "    (in " .. tostring(cwd) .. ")" end
-    local env = M.env_line(spec.env)
+    local inherited = opts and opts.env
+    local env = inherited ~= false
+        and M.env_line(spec.env, type(inherited) == "table" and inherited or nil) or nil
     if env then lines[#lines + 1] = env end
     return lines
 end
@@ -200,21 +832,42 @@ end
 --- equals the inherited one is left out, and a value that extends the
 --- inherited one (`<added><sep><inherited>` or `<inherited><sep><added>`, sep
 --- the platform path separator) shows the added part with the inherited part
---- as `$NAME`. Display only — the env that runs is untouched.
+--- as `$NAME`. Display only — the env that runs is untouched. The inherited
+--- environment is this process's, or `inherited` when given (the daemon: the
+--- requesting client's, before the daemon's own adjustments, spec §19.15
+--- "Roles and verbose") — then only that table, never this process's.
 --- @param env table<string, string>|nil
+--- @param inherited_env? table<string, string>
 --- @return string|nil
-function M.env_line(env)
+function M.env_line(env, inherited_env)
     if type(env) ~= "table" or not next(env) then return nil end
     local exe = require("loomworks.exe")
     local sep = exe.is_windows and ";" or ":"
+    -- This process's environment as a table (libuv's view, which sees
+    -- in-process changes): an inherited empty value is a value (equal: hidden).
+    if type(inherited_env) ~= "table" then
+        local uv = vim.uv or vim.loop
+        local ok, cur = pcall(uv.os_environ)
+        inherited_env = ok and type(cur) == "table" and cur or {}
+    end
+    -- (Case-insensitive on Windows, as the process env lookup is; the
+    -- exact-case spelling first when the table holds two, `Path` and `PATH`.)
+    local by_key = {}
+    for k, v in pairs(inherited_env) do
+        by_key[exe.is_windows and tostring(k):upper() or tostring(k)] = tostring(v)
+    end
+    local function lookup(k)
+        local exact = inherited_env[k]
+        if exact ~= nil then return tostring(exact) end
+        return by_key[exe.is_windows and k:upper() or k]
+    end
     local names = {}
     for k in pairs(env) do names[#names + 1] = tostring(k) end
     table.sort(names)
     local parts = {}
     for _, k in ipairs(names) do
         local v = tostring(env[k])
-        -- The process env lookup is case-insensitive on Windows.
-        local inherited = exe.getenv(k)
+        local inherited = lookup(k)
         if v ~= inherited then
             if inherited then
                 local n = #inherited
@@ -305,24 +958,300 @@ function M.after_step(ws, step, code)
     end
 end
 
+--- Names of the signals whose numbers are the same on Linux and macOS.
+M.SIGNAL_NAMES = {
+    [1] = "SIGHUP", [2] = "SIGINT", [3] = "SIGQUIT", [4] = "SIGILL", [5] = "SIGTRAP",
+    [6] = "SIGABRT", [8] = "SIGFPE", [9] = "SIGKILL", [11] = "SIGSEGV", [13] = "SIGPIPE",
+    [14] = "SIGALRM", [15] = "SIGTERM",
+}
+
+--- A step's exit status from libuv's exit callback `(code, signal)` (§16.7).
+--- On POSIX a process that a signal ended (the OOM killer, `kill -9` on the
+--- build tool) is reported as code 0 + the signal: that is a FAILURE, with the
+--- conventional status 128 + signal — never a success. Returns the status and,
+--- when a signal ended the process, that signal. A status already mapped
+--- (128 + signal: the standalone shim's vim.system, Neovim's jobs) is kept.
+--- Windows has no such signals: libuv reports the exit code with signal 0,
+--- except for its own emulated kills (TerminateProcess: exit code 1 + the
+--- signal sent), which keep their exit code, as before.
+--- @param code integer|nil
+--- @param signal integer|nil
+--- @return integer status, integer|nil signal
+function M.exit_status(code, signal)
+    code = tonumber(code) or 0
+    signal = tonumber(signal) or 0
+    if signal ~= 0 and (code == 0 or code == 128 + signal) then return 128 + signal, signal end
+    return code
+end
+
+--- How a step ended, for its failure line: `exit <code>`, or `killed by
+--- signal <n> (<NAME>)` when a signal ended it (`signal` from exit_status).
+--- @param code integer
+--- @param signal? integer
+--- @return string
+function M.exit_text(code, signal)
+    if signal and signal ~= 0 then
+        local name = M.SIGNAL_NAMES[signal]
+        return "killed by signal " .. signal .. (name and (" (" .. name .. ")") or "")
+    end
+    return "exit " .. tostring(code)
+end
+
+--- The line reporting a step whose resolved program could not be started
+--- (the spawn itself failed) — the same on every host; the step then fails
+--- with status 127.
+--- @param exe string
+--- @param err any
+--- @return string
+function M.spawn_failure_line(exe, err)
+    return "lw: cannot start " .. tostring(exe) .. ": " .. tostring(err)
+end
+
 --- The failure line for a step that exited nonzero. A build that fails after
 --- the post-configure scan predicted it (an error-severity cache-compat
 --- finding, e.g. /Zi under sccache) closes with one line pointing back at that
 --- finding — advisory: the scan never gates the build (§5.1). `extra_hint`
---- (e.g. an unknown `--target`) leads the hint lines.
+--- (e.g. an unknown `--target`) leads the hint lines. `signal` (from
+--- exit_status): the signal that ended the step, named instead of the code.
 --- @param step table
 --- @param code integer
 --- @param extra_hint? string
+--- @param signal? integer
 --- @return string
-function M.failure_message(step, code, extra_hint)
+function M.failure_message(step, code, extra_hint, signal)
     local hint
     if step.kind == "build" and step.unit and step.unit.module_info then
         hint = require("loomworks.compiler_cache").compat_failure_hint(
             step.unit.module_info.cache_compat)
     end
     if extra_hint then hint = hint and (extra_hint .. "\nlw: " .. hint) or extra_hint end
-    return string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?")
+    return string.format("%s failed (%s): %s", step.kind, M.exit_text(code, signal), step.name or "?")
         .. (hint and ("\nlw: " .. hint) or "")
+end
+
+-- ---------------------------------------------------------------------------
+-- Headless clean (§16.1) — `lw clean`, shared by the in-process host (cli.lua
+-- `cmd_clean`) and the workspace daemon (daemon/runner.lua, §19.15 "Clean"):
+-- the plan, the lines, the failure lines and the core-performed wipe (one
+-- deletion path, `wipe_step` over Workspace:clean_wipe_build_dir). A host
+-- differs only in how a module clean step is spawned and in how it waits for
+-- the asynchronous wipe (the in-process host waits; the daemon keeps serving
+-- and passes its cancellation as the wipe's stop predicate). A failing module
+-- step reports `failure_message` (kind "clean").
+-- ---------------------------------------------------------------------------
+
+--- The clean steps of a profile (overseer.plan_profile_clean: one step per
+--- project, a configured build directory that exists on disk), or nil when
+--- there is nothing to clean (`nothing_to_clean_message`).
+--- With `units` the scope is those configuration units (`Build/1.clean`
+--- `units`, spec §19.15; overseer.plan_units_clean).
+--- A profile's invalid ProfileProject (`invalid_reason`) is not cleaned (core
+--- §5.4 "Invalid ProfileProjects"): `refused` names it; the host cleans the
+--- others, then fails with `refused_message`.
+--- @param profile table|nil (nil with `units`)
+--- @param units? loomworks.ConfigUnit[]
+--- @return table[]|nil steps
+--- @return loomworks.RefusalLine[]|nil refused
+function M.plan_clean(profile, units)
+    local overseer = require("loomworks.overseer")
+    local steps, refused
+    if units then steps = overseer.plan_units_clean(units) else steps, refused = overseer.plan_profile_clean(profile) end
+    if not steps or #steps == 0 then return nil, refused end
+    return steps, refused
+end
+
+--- The refusal of a clean with nothing to clean (exit 1).
+--- @param profile table|nil
+--- @param label? string the units' names (units_label) instead of the profile
+--- @return string
+function M.nothing_to_clean_message(profile, label)
+    return "nothing to clean for " .. (label or ("profile '" .. profile.key .. "'"))
+        .. " — no configured build directories."
+end
+
+--- The line announcing a clean step, and its highlighting role (§16.7).
+--- @param step table
+--- @return string line
+--- @return string role `phase` (a step header)
+function M.clean_step_line(step)
+    return require("loomworks.cli_color").header("clean", step.name), "phase"
+end
+
+--- After a module clean step (not a wipe) exits — both hosts: a successful
+--- clean leaves the unit `configured` (the build system's artifact clean keeps
+--- the configuration, spec §3, §16.1), persisted so `lw status` (§16.18) no
+--- longer shows it built. A failing step records nothing.
+--- @param ws loomworks.Workspace
+--- @param step table a plan_clean step
+--- @param code integer
+function M.after_clean_step(ws, step, code)
+    if code ~= 0 or step.wipe_build_dir or not step.unit then return end
+    ws:mark_cached_configs_cleaned({ { unit = step.unit } })
+end
+
+--- How long a wipe waits, after the removal, for the directory to be gone on
+--- disk (Windows delete-pending: an antivirus/indexer handle keeps the entry
+--- in the namespace until it closes) before the removal counts as failed.
+--- Instant on a healthy filesystem. Polled with a timer, never blocking.
+M.WIPE_VERIFY_MS = 30000
+
+--- The key a wipe groups a build directory under: the workspace's build-dir
+--- identity (resolved real path, spec §4.6), so one folder spelled two ways
+--- is one group; plain normalization for a workspace without it.
+local function wipe_key(ws, dir)
+    if ws._build_dir_identity then return ws:_build_dir_identity(dir) end
+    local n = ws._core and ws._core._deps and ws._core._deps.normalize or vim.fs.normalize
+    return n(dir)
+end
+
+--- The wipe groups of a clean (`plan_clean` steps): the clean's units per
+--- normalized build directory. Every unit of the clean using a directory is
+--- ONE deletion batch (spec §4.6), so a directory shared only among them is
+--- wiped once (one unit per batch would see the others as outside references
+--- and keep it); the later steps of the group find it done.
+--- @param ws table
+--- @param steps table[]
+--- @return table<string, { units: table[], wiped: boolean }>
+function M.wipe_groups(ws, steps)
+    local groups = {}
+    for _, step in ipairs(steps or {}) do
+        if step.wipe_build_dir and step.build_dir then
+            local k = wipe_key(ws, step.build_dir)
+            local g = groups[k] or { units = {}, wiped = false }
+            groups[k] = g
+            if step.unit then g.units[#g.units + 1] = step.unit end
+        end
+    end
+    return groups
+end
+
+--- Does a clean plan contain a core-performed wipe (a deletion: it takes the
+--- workspace operation lock, before the build-directory locks, spec §19.3)?
+--- @param steps table[]
+--- @return boolean
+function M.has_wipe(steps)
+    for _, step in ipairs(steps or {}) do
+        if step.wipe_build_dir then return true end
+    end
+    return false
+end
+
+--- A core-performed wipe (spec §8.1 `wipe_build_dir`) — the ONE wipe path of
+--- both hosts (in-process `lw clean` and the workspace daemon, §19.15
+--- "Clean"): a build-directory DELETION (§4.6, §4.7) through
+--- `Workspace:clean_wipe_build_dir`: validated against the workspace root
+--- (`_validate_build_dir`: non-empty, within the root, never the root itself —
+--- Deletion Safety), the cache `unknown` on disk before the asynchronous
+--- removal, the units reset only after it succeeded, a directory still used
+--- by a config outside the group kept. `groups` from `wipe_groups`.
+--- `opts.stop` (the daemon's cancellation) is asked before each entry; a
+--- stopped wipe leaves the cache `unknown`. `opts.verify_ms`: the
+--- delete-pending budget (`WIPE_VERIFY_MS`).
+--- `done(code, message, stopped, note)`: 0 on success (`note`: the line to
+--- print, e.g. a kept shared directory); else the exit code and the line the
+--- CLI prints; `stopped` when the removal was stopped (nothing more to say).
+--- `done` runs from a scheduled callback or a timer (hosts reschedule model
+--- work); the caller already holds the build-directory locks of the dir
+--- (the deletion's own lock acquisition re-enters them).
+--- @param ws table
+--- @param step table a plan_clean step with `wipe_build_dir`
+--- @param groups table from wipe_groups
+--- @param opts? { stop?: fun(): boolean, verify_ms?: integer }
+--- @param done fun(code: integer|nil, message: string|nil, stopped: boolean|nil, note: string|nil)
+function M.wipe_step(ws, step, groups, opts, done)
+    opts = opts or {}
+    local dir = step.build_dir
+    if not ws:_validate_build_dir(dir, ws.root) then
+        return done(1, "clean refused: unsafe build directory " .. tostring(dir))
+    end
+    local g = groups and groups[wipe_key(ws, dir)]
+    if g and g.wiped then return done(0) end
+    local stop = opts.stop
+    if stop and stop() then return done(nil, nil, true) end
+    if g then g.wiped = true end
+    local function failed()
+        return done(1, "clean failed: could not remove " .. dir .. ": " .. (step.name or "?"))
+    end
+    local f, shared = ws:clean_wipe_build_dir(g and g.units or (step.unit and { step.unit } or {}), dir,
+        { stop = stop })
+    local settled = false
+    local function settle(ok)
+        if settled then return end
+        settled = true
+        -- The deletion's own outcome decides (`false` = lock refused, removal
+        -- failed or stopped), never the unit's state.
+        if not ok then
+            if stop and stop() then return done(nil, nil, true) end
+            return failed()
+        end
+        if shared then
+            return done(0, nil, nil, "kept " .. dir .. " — still used by another configuration")
+        end
+        local uv = vim.uv or vim.loop
+        if not uv.fs_stat(dir) then return done(0) end
+        -- Delete-pending: poll for genuine absence without blocking.
+        local budget = opts.verify_ms or M.WIPE_VERIFY_MS
+        local waited, timer = 0, uv.new_timer()
+        timer:start(20, 20, function()
+            waited = waited + 20
+            local gone = uv.fs_stat(dir) == nil
+            if gone or waited >= budget then
+                timer:stop()
+                timer:close()
+                if gone then done(0) else failed() end
+            end
+        end)
+    end
+    f:next(function(v) settle(v == true) end):catch(function() settle(false) end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Headless test runs (§16.16) — the batch `lw test` around the build steps,
+-- shared by the in-process host (cli.lua `cmd_test`) and the workspace daemon
+-- (daemon/runner.lua, §19.15): every line and refusal is returned as the text
+-- the CLI prints.
+-- ---------------------------------------------------------------------------
+
+local function is_win() return package.config:sub(1, 1) == "\\" end
+
+--- A path for comparison: forward slashes, no trailing slash, case-folded on
+--- Windows.
+local function norm_cmp(p)
+    p = tostring(p):gsub("\\", "/"):gsub("/+$", "")
+    if is_win() then p = p:lower() end
+    return p
+end
+
+--- Create the directory of a requested JUnit file up front (ctest's
+--- --output-junit and the copy of a runner's own file both need it).
+--- @param junit string|nil absolute path
+--- @return boolean ok, string|nil err
+function M.prepare_junit(junit)
+    local dir = junit and junit:match("^(.*)/[^/]+$")
+    if not dir then return true end
+    local ok, err = require("loomworks.io").mkdir_p(dir)
+    if not ok then return false, "cannot create " .. dir .. ": " .. tostring(err) end
+    return true
+end
+
+--- Materialize a test step's JUnit file at the caller's path, after the step
+--- ran (also when it failed — CI wants the report): copied from the runner's
+--- own location when it wrote elsewhere (meson), confirmed when it wrote
+--- there directly (ctest). Returns the written path, or a warning line (with
+--- its newline) when the runner wrote none; nothing when none was requested.
+--- @param step table a test step (overseer.plan_profile_test)
+--- @return string|nil path, string|nil warning
+function M.junit_result(step)
+    if not (step.junit_dest and step.junit_out) then return nil end
+    local uv = vim.uv or vim.loop
+    local warning = "lw: warning: no JUnit output for " .. (step.name or "?") .. "\n"
+    if norm_cmp(step.junit_out) ~= norm_cmp(step.junit_dest) then
+        if not uv.fs_stat(step.junit_out) then return nil, warning end
+        uv.fs_copyfile(step.junit_out, step.junit_dest)
+        return step.junit_dest
+    end
+    if uv.fs_stat(step.junit_dest) then return step.junit_dest end
+    return nil, warning
 end
 
 return M

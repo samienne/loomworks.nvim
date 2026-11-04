@@ -1,0 +1,130 @@
+  1|  loomworks.nvim test
+   hl 0--1 Title
+  2|
+  3|  Workspace: root
+   hl 0--1 Type
+  4|  Root:      /root
+   hl 0--1 Comment
+  5|  ⚠ loomworks.json not on disk — :w to publish
+   hl 0--1 DiagnosticWarn
+  6|  [?] help  [L] load  [<C-n>] reset
+   hl 0--1 Comment
+  7|
+  8|  Diagnostics  1 warning(s)
+   hl 2-15 Title; 15-27 Comment
+  9|
+ 10|  ⚠ [Profile/debug:ninja-gcc-12] profile 'debug:ninja-gcc-12' has unused tool(s): ninja-gcc-12
+   hl 0--1 DiagnosticWarn
+   w  direct=true on_enter()
+ 11|
+ 12|  Profiles
+   hl 0--1 Title
+ 13|  [Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete
+   hl 0--1 Comment
+ 14|
+ 15|  ── Local ──
+   hl 0--1 NonText
+ 16|  ✓ ▼ debug:ninja-gcc-12 (built)
+   hl 2-6 DiagnosticOk; 6-36 LoomworksProfile
+   w  enter_label=Activate fold_key=profile:debug:ninja-gcc-12 on_build() on_build_serial() on_clean() on_configure() on_delete() on_describe() on_enter() on_publish() on_rebuild() publish_label=Share (→ local + shared)
+ 17|        Set: debug
+   hl 0--1 Comment
+ 18|        ▼ Toolchain: ninja-gcc-12
+   hl 0--1 Comment
+   w  fold_key=toolchain:debug:ninja-gcc-12
+ 19|            ninja-gcc-12
+   hl 0--1 Comment
+   w  direct=true enter_label=Tool actions on_delete() on_enter()
+ 20|            + Add tool
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 21|        Target: (no target set)
+   hl 0--1 Comment
+   w  direct=true on_build() on_enter()
+ 22|        Projects:
+   hl 0--1 LoomworksSection
+ 23|          ✓ ▼ App [cmake] → Debug (built)
+   hl 10-14 DiagnosticOk; 14-18 LoomworksProject; 18-21 LoomworksProject; 21-29 Comment; 29-34 Comment; 34-39 LoomworksVariant; 39-47 Comment
+   w  enter_label=Open task output fold_key=profile_proj:debug:ninja-gcc-12:App on_build() on_build_serial() on_clean() on_configure() on_delete() on_enter() on_options() on_rebuild() on_task()
+ 24|                Build dir: /root/.nvim/build/App/ninja-gcc-12/Debug
+   hl 0--1 Comment
+ 25|
+ 26|  ▸ Create new profile
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 27|
+ 28|  Configuration Sets
+   hl 0--1 Title
+ 29|
+ 30|  ── Shared ──
+   hl 0--1 NonText
+ 31|  ▼ debug
+   hl 0--1 LoomworksActive
+   w  enter_label=Edit mappings fold_key=set:debug on_create() on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 32|      Projects:
+   hl 0--1 LoomworksSection
+ 33|        App → Debug
+   hl 8-11 LoomworksProject; 11-16 Comment; 16-21 LoomworksVariant
+ 34|
+ 35|  ▸ Create configuration set
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 36|
+ 37|  Projects
+   hl 0--1 Title
+ 38|
+ 39|  ── Shared ──
+   hl 0--1 NonText
+ 40|  ▼ App [cmake]
+   hl 2-6 Comment; 6-6 Comment; 6-9 Comment; 9-17 Comment
+   w  fold_key=project:App on_delete() on_describe() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 41|      Path: App
+   hl 0--1 Comment
+ 42|      Configurations:
+   hl 0--1 LoomworksSection
+ 43|        ── Local ──
+   hl 0--1 NonText
+ 44|        ▼ variant:Debug
+   hl 8-12 Comment; 12-25 Comment
+   w  enter_label=Edit configuration fold_key=config:App:variant:Debug on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
+ 45|        ▼ variant:Release
+   hl 8-12 Comment; 12-27 Comment
+   w  enter_label=Edit configuration fold_key=config:App:variant:Release on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Share (→ local + shared)
+ 46|        ── Shared ──
+   hl 0--1 NonText
+ 47|        ▼ Debug
+   hl 8-12 Comment; 12-17 Comment
+   w  enter_label=Edit configuration fold_key=config:App:Debug on_delete() on_describe() on_enter() on_publish() on_publish_now() on_revert_one() publish_label=Pin local (→ local)
+ 48|            1 tool(s) configured
+   hl 0--1 Comment
+ 49|        ▸ Add configuration
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 50|      Launch:
+   hl 0--1 LoomworksSection
+ 51|        ▸ Add launch config
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 52|      Deploy:
+   hl 0--1 LoomworksSection
+ 53|        ▸ Add deploy step
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 54|      Variables:
+   hl 0--1 LoomworksSection
+ 55|        ▸ Add variable
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 56|
+ 57|  ▸ Add project
+   hl 0--1 LoomworksAdd
+   w  enter_label=Add project on_enter()
+ 58|
+ 59|
+ 60|  SDKs
+   hl 0--1 Title
+ 61|
+ 62|  ▸ Add SDK
+   hl 0--1 LoomworksActionable
+   w  direct=true on_enter()
+ 63|

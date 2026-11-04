@@ -34,14 +34,17 @@
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID
 --- @field _action string|nil "configure" or "build" while running
+--- @field _remote_task loomworks.RemoteTask|nil a task running in the workspace daemon on this unit (`lw status`, spec §16.18); runtime only
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
 --- @field _last_progress_notify number|nil clock() value of last progress notify
 --- @field _deleting boolean
 --- @field _deleting_reason "deleting"|"cleaning"|nil
+--- @field _deleting_marks integer open deleting/cleaning marks (nested: a clean's clean_wipe deletion)
 --- @field _listeners function[]
 --- @field _removed boolean
 --- @field targets table<string, loomworks.Target>|nil runtime-only
+--- @field _targets_stamp string|nil targets_stamp() when `targets` was last set (runtime only)
 --- Test integration (runtime-only):
 --- @field _test_tree table[]|nil cached merged test entries from all TestUnits
 --- @field _test_results table[]|nil last parsed test results
@@ -50,6 +53,7 @@
 --- @field _saved_tests_sig string|nil fingerprint of the saved test-target list
 ---        the cached TestUnits / test tree were built for (spec §1.3.4)
 --- @field _last_test_task_id number|nil most recent test overseer task ID
+local notify = require("loomworks.notify").notify
 local ConfigUnit = {}
 ConfigUnit.__index = ConfigUnit
 
@@ -87,6 +91,7 @@ function ConfigUnit.new(workspace, id, project_key)
     self._last_progress_notify = nil
     self._deleting = false
     self._deleting_reason = nil
+    self._deleting_marks = 0
     self._listeners = {}
     self._removed = false
     self.targets = nil
@@ -313,10 +318,31 @@ function ConfigUnit:configured_here()
     return s == "configured" or s == "built" or s == "failed_build"
 end
 
---- Get the derived state for this unit.
---- Priority: deleting > running > first-class field.
+--- Get the derived state for this unit, as shown.
+--- Priority: deleting > running (this editor's task, else a task observed in
+--- the workspace daemon) > first-class field. For display: a remote task never
+--- blocks an editor operation (spec §19.16), so readiness and gating decisions
+--- use `local_state()`.
 --- @return loomworks.ConfigUnitState
 function ConfigUnit:state()
+    if not self._deleting and not self._action
+            and self._remote_task and not self._remote_task.finished then
+        -- A build another client runs in the workspace daemon (spec §19.16);
+        -- a clean shows as a local clean does (`deleting`, reason `cleaning`),
+        -- a reset as the in-process reset's deletion (`deleting`).
+        local a = self._remote_task.action
+        if a == "clean" or a == "reset" then return "deleting" end
+        return a == "configure" and "configuring" or "building"
+    end
+    return self:local_state()
+end
+
+--- The unit's state as this process knows it, ignoring a task observed in
+--- the workspace daemon (spec §19.16). What every decision (task readiness,
+--- the build gate, operation progress) reads: the cross-process build-dir
+--- locks (§16.6), not a remote task, serialize the editor behind `lw`.
+--- @return loomworks.ConfigUnitState
+function ConfigUnit:local_state()
     if self._deleting then return "deleting" end
     if self._action then
         return self._action == "configure" and "configuring" or "building"
@@ -340,6 +366,38 @@ end
 --- @return string|nil "configure" or "build"
 function ConfigUnit:running_action()
     return self._action
+end
+
+--- The action this unit is shown running: its own task's, else that of a task
+--- observed in the workspace daemon (spec §19.16). Display only — never a
+--- reason to block or cancel anything (`running_action` is).
+--- A remote clean is shown as a local clean is (`state()` "deleting",
+--- `deleting_reason()` "cleaning"), a remote reset as a deletion (`state()`
+--- "deleting", `deleting_reason()` "deleting"), not as a running action.
+--- @return string|nil "configure" or "build"
+function ConfigUnit:shown_action()
+    if self._action then return self._action end
+    local t = self._remote_task
+    if t and not t.finished and t.action ~= "clean" and t.action ~= "reset" then return t.action end
+    return nil
+end
+
+--- Mark this unit as run by a task running in the workspace daemon (`lw
+--- status`, spec §16.18: cli.mark_daemon_tasks; one invocation, so never
+--- cleared). Reporting only: it never blocks an operation (the
+--- cross-process build-directory locks do).
+--- @param task loomworks.RemoteTask
+function ConfigUnit:begin_remote_task(task)
+    self._remote_task = task
+    self:_notify()
+end
+
+--- The task observed in the workspace daemon that runs this unit, if any.
+--- @return loomworks.RemoteTask|nil
+function ConfigUnit:remote_task()
+    local t = self._remote_task
+    if t and not t.finished then return t end
+    return nil
 end
 
 --- Check if this unit is being deleted/cleaned.
@@ -383,7 +441,7 @@ end
 --- build directory to lose.
 --- @return boolean
 function ConfigUnit:missing_build_dir_needs_reconfigure()
-    local state = self:state()
+    local state = self:local_state()
     if state ~= "configured" and state ~= "built"
             and state ~= "build_failed" and state ~= "configure_failed" then
         return false
@@ -704,7 +762,7 @@ ConfigUnit.ORPHAN_STATE_REASON = "configure record missing (existing build direc
 --- @param build_dir? string the unit's build directory (default: its own)
 --- @return boolean
 function ConfigUnit:has_orphan_configure_state(build_dir)
-    if self:state() ~= "unconfigured" then return false end
+    if self:local_state() ~= "unconfigured" then return false end
     local bd = build_dir or self:build_dir()
     if type(bd) ~= "string" or bd == "" then return false end
     local mod = self:_module_impl()
@@ -729,7 +787,7 @@ end
 --- @param orphan_state? boolean the build directory already holds configure state
 --- @return string|nil
 function ConfigUnit:configure_reason(forced, profile, orphan_state)
-    local state = self:state()
+    local state = self:local_state()
     if state == "unconfigured" then
         return orphan_state and ConfigUnit.ORPHAN_STATE_REASON or "first configure"
     end
@@ -931,7 +989,12 @@ end
 --- Get elapsed seconds since the running task started.
 --- @return number|nil seconds
 function ConfigUnit:elapsed()
-    if not self._start_time then return nil end
+    if not self._start_time then
+        -- A task observed in the workspace daemon (spec §19.16).
+        local t = self:remote_task()
+        if t then return t:elapsed(self._workspace._core._deps.clock()) end
+        return nil
+    end
     return self._workspace._core._deps.clock() - self._start_time
 end
 
@@ -956,9 +1019,33 @@ function ConfigUnit:referencing_profiles()
     return result
 end
 
+--- The freshness stamp of this unit's build tree as its parsed targets
+--- depend on it: the build directory and the last configure and build that
+--- loomworks recorded (either can rewrite the build system's target data).
+--- @return string
+function ConfigUnit:targets_stamp()
+    local bd = self.build_dir and self:build_dir()
+    return table.concat({ tostring(bd), tostring(self.last_configured), tostring(self.last_built) }, "|")
+end
+
+--- Are this unit's targets due a parse: the module parses targets, the unit
+--- has a build directory this machine configured (spec §17.8), and its
+--- targets are unknown or were set before its last configure or build
+--- (targets_stamp)?
+--- @return boolean
+function ConfigUnit:targets_stale()
+    local project = self._project
+    local mod = project and project._module and project._module.impl
+    if not (mod and mod.parse_targets and self:build_dir()) then return false end
+    if not self:configured_here() then return false end
+    return self.targets == nil or self._targets_stamp ~= self:targets_stamp()
+end
+
 --- Set targets from raw parse data, wrapping each in a Target object.
+--- Records the build tree's targets_stamp they were set at.
 --- @param raw table<string, { type: string, dependencies?: string[], artifact?: string }>|nil
 function ConfigUnit:set_targets(raw)
+    self._targets_stamp = self:targets_stamp()
     if not raw then
         self.targets = nil
         return
@@ -1103,6 +1190,20 @@ end
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function ConfigUnit:clean(on_done)
+    -- (A `daemon`-mode editor holds no model, step 6b-α: a model's clean is
+    -- always in-process — the daemon's, the CLI's or the in-process
+    -- editor's.)
+    local f = self:_clean_in_process()
+    if on_done then
+        f:next(function() on_done() end)
+         :catch(function() on_done() end)
+    end
+    return f
+end
+
+--- The in-process module clean of this configuration (ConfigUnit:clean).
+--- @return loomworks.Future
+function ConfigUnit:_clean_in_process()
     local ws = self._workspace
     local items = { { unit = self } }
 
@@ -1110,8 +1211,8 @@ function ConfigUnit:clean(on_done)
 
     self:mark_deleting(true, "cleaning")
     -- The runtime mark is cleared on every exit (success, failed task,
-    -- cancel, refusal, throw) — exactly once. Only the in-memory mark: the
-    -- cache state written by mark_cached_configs_cleaned is left as is.
+    -- cancel, refusal, throw) — exactly once. Only the in-memory mark: cache
+    -- state is left as is.
     -- Clearing on cancel is safe: the clean task holds the exclusive build-dir lock.
     local clear_mark = ws:_deleting_mark_clearer({ self })
     local unit = self
@@ -1119,8 +1220,8 @@ function ConfigUnit:clean(on_done)
         local refs = unit:referencing_profiles()
         local profile = refs[1] or nil
         ws:create_operation(profile, "clean", { unit }, { [unit] = "configured" })
-
-        ws:mark_cached_configs_cleaned(items)
+        -- The built state is recorded per module clean task once it succeeds
+        -- (overseer.record_module_clean); a wipe resets the unit itself.
 
         local running = ws:find_running_tasks_for_items(items)
         local task_ids = {}
@@ -1142,11 +1243,6 @@ function ConfigUnit:clean(on_done)
         clear_mark()
         error(f, 0)
     end
-
-    if on_done then
-        f:next(function() on_done() end)
-         :catch(function() on_done() end)
-    end
     return f
 end
 
@@ -1162,6 +1258,21 @@ function ConfigUnit:options()
     if not impl or not impl.get_options then return nil end
 
     return impl.get_options(bd, self._project.type_config)
+end
+
+--- Get build options without blocking (spec §8 `get_options_async`): the
+--- module's async companion when it has one, else its `get_options`.
+--- `callback(tree|nil)` runs exactly once, after this returns.
+--- @param callback fun(tree: (loomworks.OptionGroup | loomworks.Option)[]|nil)
+--- @param opts? { system?: fun(cmd: string[], opts: table, on_exit: fun(res: table)): any } passed to the companion
+function ConfigUnit:options_async(callback, opts)
+    local bd = self:build_dir()
+    local impl = self._project and self._project._module and self._project._module.impl or nil
+    if bd and impl and impl.get_options_async then
+        return impl.get_options_async(bd, self._project.type_config, callback, opts)
+    end
+    local tree = self:options()
+    vim.schedule(function() callback(tree) end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1296,19 +1407,49 @@ function ConfigUnit:open_task_output(win_opts, on_close)
     return true
 end
 
---- Mark this unit as deleting/cleaning (or clear the flag).
+--- Mark this unit as deleting/cleaning (`true`), or end one mark (`false`).
+--- Marks nest: a deletion run inside a clean (its clean_wipe step) marks the
+--- unit again and its end leaves the clean's mark — and that mark's reason —
+--- in place; the unit stops deleting when the last mark ends. Never raises
+--- from a state listener (see below).
 --- @param flag boolean
 --- @param reason? "deleting"|"cleaning" defaults to "deleting"
 function ConfigUnit:mark_deleting(flag, reason)
-    self._deleting = flag
-    self._deleting_reason = flag and (reason or "deleting") or nil
-    self:_notify()
+    local n = self._deleting_marks or 0
+    if flag then
+        n = n + 1
+        if n == 1 then self._deleting_reason = reason or "deleting" end
+    else
+        n = math.max(n - 1, 0)
+        if n == 0 then self._deleting_reason = nil end
+    end
+    self._deleting_marks = n
+    self._deleting = n > 0
+    -- Marks are counted, so an unbalanced change never heals: a listener
+    -- that raises is reported, never propagated — a caller's mark/clear loop
+    -- over several units always completes (deletion safety).
+    for _, fn in ipairs(self._listeners) do
+        local ok, err = pcall(fn, self)
+        if not ok then
+            local ws = self._workspace
+            local log = ws and ws._core and ws._core._deps and ws._core._deps.log
+            if log then pcall(log.error, log, "state listener failed on a deleting mark: %s", tostring(err)) end
+        end
+    end
 end
 
---- Get the reason this unit is being deleted/cleaned.
+--- Get the reason this unit is being deleted/cleaned — its own, else
+--- "cleaning" while a clean observed in the workspace daemon runs it,
+--- "deleting" while a reset does (spec §19.16; display only, `state()`).
 --- @return "deleting"|"cleaning"|nil
 function ConfigUnit:deleting_reason()
-    return self._deleting_reason
+    if self._deleting_reason then return self._deleting_reason end
+    if not self._action then
+        local t = self._remote_task
+        if t and not t.finished and t.action == "clean" then return "cleaning" end
+        if t and not t.finished and t.action == "reset" then return "deleting" end
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -1508,8 +1649,13 @@ function ConfigUnit._merge_test_entries(units, per_unit)
 end
 
 --- Discover tests asynchronously. Delegates to TestUnits.
+--- `opts.system` (the workspace daemon's discovery, spec §19.15 "Tests")
+--- replaces `vim.system` for every program the TestUnits spawn while
+--- discovering (`TestUnit._system`): the daemon spawns them in the client's
+--- environment and kills them on a cancel.
 --- @param callback fun(entries: table[]|nil)
-function ConfigUnit:discover_tests_async(callback)
+--- @param opts? { system?: fun(cmd: string[], opts: table, on_exit: fun(res: table)): table }
+function ConfigUnit:discover_tests_async(callback, opts)
     self:_check_saved_tests()
     if self._test_tree then
         callback(self._test_tree)
@@ -1522,10 +1668,13 @@ function ConfigUnit:discover_tests_async(callback)
         return
     end
 
+    local system = opts and opts.system or nil
     local per_unit = {}
     local pending = #units
     for i, tu in ipairs(units) do
+        tu._system = system
         tu:discover_async(function(entries)
+            tu._system = nil
             per_unit[i] = entries
             pending = pending - 1
             if pending == 0 then
@@ -1547,6 +1696,31 @@ function ConfigUnit:invalidate_tests()
     self._test_results = nil
     self._test_units = nil
     self._saved_tests_sig = nil
+end
+
+--- The discovered test tree as cached (the merged entries of
+--- `discover_tests`), or nil when none is cached. Never discovers.
+--- @return table[]|nil
+function ConfigUnit:test_tree()
+    return self._test_tree
+end
+
+--- Why this unit has no test tree to discover (the tests view's unit state,
+--- daemon.md §19.13 "The tests view"): `not_configured` (not configured on
+--- this machine, §17.8), `foreign` (its kit builds for another platform,
+--- §18.1) or `no_tests` (no TestUnit and no saved test targets), with the
+--- message shown for it; nil when its TestUnits can discover.
+--- @return "not_configured"|"foreign"|"no_tests"|nil state, string|nil message
+function ConfigUnit:test_availability()
+    if not self:configured_here() then
+        return "not_configured", "not configured on this machine — configure it first"
+    end
+    local token = require("loomworks.remote.foreign").unit_platform(self)
+    if token then
+        return "foreign", "its kit builds for " .. tostring(token) .. ": its tests do not run on this host"
+    end
+    if #self:test_units() == 0 then return "no_tests", nil end
+    return nil, nil
 end
 
 --- Merge test results into the cached test tree.
@@ -1735,7 +1909,7 @@ function ConfigUnit:_prepare_test_step(name, test_cmd)
     local ok, pok, perr = pcall(test_cmd.prepare)
     if ok and pok then return true end
     local msg = tostring((ok and perr) or (not ok and pok) or "preparation failed")
-    vim.notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
+    notify("loomworks: " .. name .. ": " .. msg, vim.log.levels.ERROR)
     if test_cmd.test_id then
         self:_apply_test_results({ { test_id = test_cmd.test_id, status = "failed", message = msg } })
         local events = self._workspace and self._workspace._core and self._workspace._core._deps.events

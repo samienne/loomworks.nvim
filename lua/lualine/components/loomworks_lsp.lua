@@ -14,6 +14,8 @@
 ---   withheld_unconfigured → "(unconfigured)"
 ---   withheld_no_db        → "(no db)"
 ---   withheld_error        → "(ws error)"
+---   withheld_daemon       → "(no lsp config)" (daemon mode: no LSP
+---                           configuration from the workspace daemon)
 --- and the empty string otherwise (none / held / ok, outside any workspace, or
 --- loomworks not loaded). Reads `loomworks.lsp_buf_state`, which works without
 --- an active profile. Refreshed by loomworks' own `redrawstatus` whenever a
@@ -27,6 +29,7 @@ local TEXT = {
     withheld_unconfigured = "(unconfigured)",
     withheld_no_db        = "(no db)",
     withheld_error        = "(ws error)",
+    withheld_daemon       = "(no lsp config)",
 }
 M._TEXT = TEXT
 

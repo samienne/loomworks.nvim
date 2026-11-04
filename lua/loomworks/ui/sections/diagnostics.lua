@@ -1,9 +1,12 @@
 --- loomworks/ui/sections/diagnostics.lua — Diagnostics section.
 ---
---- Aggregates structural diagnostics from `Workspace:diagnostics()`
---- (incomplete profiles, source-missing configurations, stale
---- configuration_set mappings, unresolved inherits) into a single
---- list at the top of the status page.
+--- Lists the structural diagnostics of the workspace view
+--- (`loomworks.view.Workspace/1` `diagnostics`, from
+--- `Workspace:diagnostics()`: incomplete profiles, source-missing configurations, stale
+--- configuration_set mappings, unresolved inherits — then the warnings of
+--- the workspace's last load, `[load]`, from `Workspace:load_diagnostics()`,
+--- core daemon.md §19.13 "Load warnings") into a single list at the top of
+--- the status page.
 ---
 --- Each entry's source object also has its own inline indicator
 --- elsewhere on the page (`[incomplete]`, `⚠ missing source`, ...);
@@ -41,13 +44,9 @@ end
 
 --- Render the diagnostics section.
 --- @param tree loomworks.Tree
---- @param ctx { lw: table }
+--- @param ctx { view: table } the workspace view (`diagnostics`)
 return function(tree, ctx)
-    local lw = ctx.lw
-    local ws = lw.get_workspace()
-    if not ws or not ws.diagnostics then return end
-
-    local diagnostics = ws:diagnostics()
+    local diagnostics = ctx.view.diagnostics
     if #diagnostics == 0 then return end
 
     local n_warn, n_err = 0, 0

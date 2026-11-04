@@ -5,6 +5,7 @@
 --- only copied when the source has changed or the configuration has switched.
 
 local expand = require("loomworks.expand")
+local uv = vim.uv or vim.loop
 
 local M = {}
 
@@ -413,6 +414,14 @@ end
 --- Execute all deploy steps for a launch target. Returns a Future.
 --- Resolves all steps first (fail-fast), then copies as needed.
 --- Source values can be a single descriptor or an array of descriptors.
+---
+--- By default the copies are synchronous and `on_complete` runs before this
+--- returns. With `opts.async` each copy runs on the event loop and the next
+--- step continues through `opts.resume(fn)` (default `vim.schedule`), so a
+--- long copy never blocks the caller's loop; `opts.cancelled()` true before a
+--- step skips it and every later one (the deploy then fails "cancelled").
+--- Only `on_complete` reports an asynchronous deploy (the returned Future is
+--- settled already only for a synchronous one).
 --- @param deploy_dict table<string, table|table[]> deploy definitions from launch config
 --- @param ctx table { workspace, profile, launch_project, on_step? }
 ---   `on_step(ev)` (optional) hears each step as it is decided, before any
@@ -421,9 +430,11 @@ end
 --- @param deploy_records table<string, table> workspace deploy records (mutated on copy)
 --- @param normalize fun(p: string): string path normalizer
 --- @param on_complete? fun(ok: boolean, err?: string)
+--- @param opts? { async: boolean|nil, cancelled: (fun(): boolean)|nil, resume: (fun(fn: function))|nil }
 --- @return loomworks.Future
-function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_complete)
+function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_complete, opts)
     local future_mod = require("loomworks.future")
+    opts = opts or {}
 
     if not deploy_dict or not next(deploy_dict) then
         if on_complete then on_complete(true) end
@@ -444,77 +455,192 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
         end
     end
 
-    -- Phase 2: check freshness and copy (synchronous file ops)
+    -- Phase 2: check freshness and copy, one step after the other.
     local uv = vim.uv or vim.loop
     local errors = {}
+    local result
+    local resume = opts.resume or vim.schedule
 
-    for _, step in ipairs(resolved_steps) do
+    local function finish()
+        if #errors > 0 then
+            local err = table.concat(errors, "; ")
+            result = future_mod.rejected(err)
+            if on_complete then on_complete(false, err) end
+            return
+        end
+        result = future_mod.resolved(true)
+        if on_complete then on_complete(true) end
+    end
+
+    local function copied(step, source_stat, ok, copy_err)
+        if not ok then
+            errors[#errors + 1] = "copy failed: " .. step.source_path
+                .. " → " .. step.dest_path .. ": " .. tostring(copy_err)
+            return
+        end
+        local source_mtime = source_stat.mtime
+        if type(source_mtime) == "table" then
+            source_mtime = source_mtime.sec
+        end
+        local dest_key = normalize(step.dest_path)
+        deploy_records[dest_key] = {
+            source_build_dir = step.source_build_dir_id,
+            source_rel_path = step.source_rel_path,
+            source_mtime = source_mtime,
+        }
+    end
+
+    local i = 0
+    local function next_step()
+        i = i + 1
+        local step = resolved_steps[i]
+        if not step then return finish() end
+        if opts.cancelled and opts.cancelled() then
+            errors[#errors + 1] = "cancelled"
+            return finish()
+        end
         local needs_copy = M.check_freshness(step, deploy_records, normalize)
         if ctx.on_step then
             ctx.on_step({ action = needs_copy and "copy" or "fresh",
                 source = step.source_path, dest = step.dest_path })
         end
-        if needs_copy then
-            local source_stat = uv.fs_stat(step.source_path)
-            if not source_stat then
-                errors[#errors + 1] = "source file missing: " .. step.source_path
-                goto continue
-            end
-
-            local dest_dir = vim.fn.fnamemodify(step.dest_path, ":h")
-            assert(require("loomworks.io").mkdir_p(dest_dir))
-
-            local ok, copy_err = uv.fs_copyfile(step.source_path, step.dest_path)
-            if not ok then
-                errors[#errors + 1] = "copy failed: " .. step.source_path
-                    .. " → " .. step.dest_path .. ": " .. tostring(copy_err)
-                goto continue
-            end
-
-            local source_mtime = source_stat.mtime
-            if type(source_mtime) == "table" then
-                source_mtime = source_mtime.sec
-            end
-            local dest_key = normalize(step.dest_path)
-            deploy_records[dest_key] = {
-                source_build_dir = step.source_build_dir_id,
-                source_rel_path = step.source_rel_path,
-                source_mtime = source_mtime,
-            }
+        if not needs_copy then return next_step() end
+        local source_stat = uv.fs_stat(step.source_path)
+        if not source_stat then
+            errors[#errors + 1] = "source file missing: " .. step.source_path
+            return next_step()
         end
-        ::continue::
+        local dest_dir = vim.fn.fnamemodify(step.dest_path, ":h")
+        assert(require("loomworks.io").mkdir_p(dest_dir))
+        if not opts.async then
+            local ok, copy_err = uv.fs_copyfile(step.source_path, step.dest_path)
+            copied(step, source_stat, ok, copy_err)
+            return next_step()
+        end
+        uv.fs_copyfile(step.source_path, step.dest_path, nil, function(copy_err, ok)
+            resume(function()
+                copied(step, source_stat, ok and not copy_err, copy_err)
+                return next_step()
+            end)
+        end)
     end
+    next_step()
 
-    if #errors > 0 then
-        local err = table.concat(errors, "; ")
-        if on_complete then on_complete(false, err) end
-        return future_mod.rejected(err)
-    end
-
-    if on_complete then on_complete(true) end
-    return future_mod.resolved(true)
+    return result or future_mod.Future.new()
 end
 
---- Clean deploy records sourced from a given build directory.
---- Deletes destination files and removes records.
+--- Fold backslashes to "/" and drop trailing slashes.
+--- @param p string
+--- @return string
+local function slash(p)
+    return (p:gsub("\\", "/"):gsub("/+$", ""))
+end
+
+--- Split a "/"-separated path into its non-empty segments.
+--- @param p string
+--- @return string[]
+local function segments(p)
+    local out = {}
+    for seg in p:gmatch("[^/]+") do out[#out + 1] = seg end
+    return out
+end
+
+--- Whether `p` has a `.` / `..` segment, or (on Windows) a segment ending
+--- in "." or " " that Win32 would silently trim into another name.
+--- @param p string
+--- @return boolean
+local function has_dot_segment(p)
+    local win = vim.fn.has("win32") == 1
+    for _, seg in ipairs(segments(p)) do
+        if seg == "." or seg == ".." then return true end
+        if win and seg:match("[%. ]$") then return true end
+    end
+    return false
+end
+
+--- Strictly under: `path` is a descendant of `prefix` (separator-bounded).
+local function strictly_under(path, prefix)
+    return path:sub(1, #prefix + 1) == prefix .. "/"
+end
+
+--- Classify a deploy record's destination for cleanup (spec §8.8.5 step 2).
+---   "remove"  — absolute, traversal-free, a regular file (lstat), lexically
+---               and canonically strictly under the workspace root, every
+---               directory from the root down a real directory (no link or
+---               junction on the way): safe to unlink.
+---   "outside" — a regular file that is not inside the workspace (or no root
+---               is known): never unlinked, left in place and reported.
+---   "invalid" — not an absolute, traversal-free path to a regular file
+---               (relative, `.`/`..`, a directory, a link, missing): dropped
+---               without touching disk.
+--- @param dest any record key (from loomworks.cache.json — untrusted)
+--- @param root string|nil absolute workspace root
+--- @param normalize fun(p: string): string comparison normalizer
+--- @return "remove"|"outside"|"invalid"
+function M.cleanup_disposition(dest, root, normalize)
+    if type(dest) ~= "string" or dest == "" then return "invalid" end
+    local p = slash(dest)
+    if not (p:match("^/") or p:match("^%a:/")) then return "invalid" end
+    if has_dot_segment(p) then return "invalid" end
+    local st = uv.fs_lstat(p)
+    if not st or st.type ~= "file" then return "invalid" end
+    if type(root) ~= "string" or root == "" then return "outside" end
+
+    -- Canonical containment: the file's realpath strictly under the root's.
+    local root_real = uv.fs_realpath(root)
+    local dest_real = uv.fs_realpath(p)
+    if not root_real or not dest_real then return "outside" end
+    root_real = normalize(slash(root_real))
+    if not strictly_under(normalize(slash(dest_real)), root_real) then
+        return "outside"
+    end
+
+    -- Lexical containment under the root (as given or canonical), then lstat
+    -- every directory from the root down: no link or junction on the way.
+    local np = normalize(p)
+    local base
+    for _, r in ipairs({ normalize(slash(root)), root_real }) do
+        if strictly_under(np, r) then base = r; break end
+    end
+    if not base then return "outside" end
+    local segs = segments(np:sub(#base + 2))
+    local cur = base
+    for i = 1, #segs - 1 do
+        cur = cur .. "/" .. segs[i]
+        local dst = uv.fs_lstat(cur)
+        if not dst or dst.type ~= "directory" then return "outside" end
+    end
+    return "remove"
+end
+
+--- Clean deploy records sourced from a given build directory (spec §8.8.5).
+--- Every matching record is dropped. Its destination file is unlinked only
+--- when `cleanup_disposition` says "remove"; a destination outside the
+--- workspace is left in place and passed to `opts.on_left`, an invalid key
+--- to `opts.on_invalid`. With no `opts.root`, nothing is unlinked.
 --- @param deploy_records table<string, table> workspace deploy records (mutated)
 --- @param build_dir_id string config unit id (spec §8.8.5) to match
+--- @param opts? { root?: string, normalize?: fun(p: string): string, on_left?: fun(dest: string), on_invalid?: fun(dest: string) }
 --- @return string[] removed_keys list of removed destination keys
-function M.clean_deploy_records(deploy_records, build_dir_id)
+function M.clean_deploy_records(deploy_records, build_dir_id, opts)
+    opts = opts or {}
+    local normalize = opts.normalize or function(p) return p end
     local removed = {}
     for dest_key, record in pairs(deploy_records) do
         if record.source_build_dir == build_dir_id then
-            -- Try to delete destination file
-            pcall(function()
-                local uv = vim.uv or vim.loop
-                uv.fs_unlink(dest_key)
-            end)
             removed[#removed + 1] = dest_key
         end
     end
-    -- Remove records
     for _, key in ipairs(removed) do
         deploy_records[key] = nil
+        local disposition = M.cleanup_disposition(key, opts.root, normalize)
+        if disposition == "remove" then
+            uv.fs_unlink(slash(key))
+        elseif disposition == "outside" then
+            if opts.on_left then opts.on_left(key) end
+        elseif opts.on_invalid then
+            opts.on_invalid(key)
+        end
     end
     return removed
 end

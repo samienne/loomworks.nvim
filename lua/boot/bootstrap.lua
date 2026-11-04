@@ -47,15 +47,17 @@ end
 
 --- Fetch + verify a release's SHA256SUMS for `version`, returning { name -> hex }.
 --- Verifies SHA256SUMS.sig against the embedded release key before trusting any
---- hash (spec §16.24). Returns map or nil, err.
+--- hash (spec §16.24). `opts.fetch` (curl limits, see `download.fetch`) bounds
+--- both fetches (the release query, §16.42). Returns map or nil, err.
 function M.fetch_hashes(version, opts)
   if not pin.valid_version(version) then
     return nil, "unsafe release version '" .. tostring(version) .. "'"
   end
   local base = update.versioned_base(version, opts)
-  local sums, e1 = download.fetch(base .. "/SHA256SUMS")
+  local limits = opts and opts.fetch
+  local sums, e1 = download.fetch(base .. "/SHA256SUMS", limits)
   if not sums then return nil, "fetch SHA256SUMS: " .. e1 end
-  local sig, e2 = download.fetch(base .. "/SHA256SUMS.sig")
+  local sig, e2 = download.fetch(base .. "/SHA256SUMS.sig", limits)
   if not sig then return nil, "fetch SHA256SUMS.sig: " .. e2 end
   local ok, verr = verify.verify_detached(sums, sig)
   if not ok then return nil, "SHA256SUMS signature: " .. verr end
@@ -121,9 +123,8 @@ end
 --- @param root string
 --- @param kind "sh"|"cmd"
 --- @param force boolean|nil
---- @param pinned_version? string the pin's version (boot.launcher.classify)
 --- @return "written"|"refreshed"|"eol"|"replaced"|"kept"|"same"|nil status, table|string|nil info
-function M.write_launcher(root, kind, force, pinned_version)
+function M.write_launcher(root, kind, force)
   local name = launcher.KINDS[kind]
   local path = root .. "/" .. name
   local want = launcher.render(kind)
@@ -132,7 +133,7 @@ function M.write_launcher(root, kind, force, pinned_version)
   local status = "written"
   local info
   if have ~= nil then
-    local c = launcher.classify(kind, have, verify.sha256_hex, pinned_version)
+    local c = launcher.classify(kind, have, verify.sha256_hex)
     if c.status == "current" then
       status = "eol"                       -- same content, wrong line endings
     elseif c.status == "known" then
@@ -226,7 +227,7 @@ local function apply(root, version, hashes, opts)
     end
   else
     for _, kind in ipairs({ "sh", "cmd" }) do
-      local st, info = M.write_launcher(root, kind, opts.force, version)
+      local st, info = M.write_launcher(root, kind, opts.force)
       if st == nil then return nil, info end
       if st == "written" then created_launcher = true end
       if st ~= "same" and st ~= "kept" then touch(launcher.KINDS[kind]) end

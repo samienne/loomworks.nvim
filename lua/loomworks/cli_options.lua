@@ -5,10 +5,10 @@
 --- The tables mirror the command parsers in cli.lua; keep them in step when a
 --- parser gains an option (tests/cli_unknown_options_spec.lua pins the rules).
 --- The global options (`M.GLOBAL`: `--no-input`, `--non-interactive`,
---- `--shared`, `--local`, `--dev[=…]`, `--no-pin`) are stripped
---- by the dispatcher (`split_globals`) before this check — only where they are
---- lw's own (`own_end`), never from a program's arguments — and `--help` /
---- `-h` are answered before it.
+--- `--shared`, `--local`, `--dev[=…]`, `--no-pin`, `--no-daemon`, `--no-color`,
+--- `--color=<when>`) are stripped by the dispatcher (`split_globals`) before
+--- this check — only where they are lw's own (`own_end`), never from a
+--- program's arguments — and `--help` / `-h` are answered before it.
 ---
 --- A spec is:
 ---   flags      options that take no value;
@@ -83,8 +83,13 @@ end
 local NONE = spec({})
 local PERMISSIVE = spec({ permissive = true })
 
--- Device options (DEV.parse_device_opt, spec §16.34) on run / test.
-local DEVICE_FLAGS = { "--fresh", "--no-wait" }
+-- Device options (DEV.parse_device_opt, spec §16.34) on run / test, plus
+-- `--break-locks[=now]` (spec §19.5), accepted by every command that takes a
+-- build-directory or device lock and stripped by the dispatcher after this
+-- check (loomworks.lock_break).
+local DEVICE_FLAGS = { "--fresh", "--no-wait", "--break-locks" }
+local BREAK = { "--break-locks" }
+local BREAK_EQ = { "--break-locks=" }
 local DEVICE_VALUED = { "--device", "--timeout", "--query-timeout", "--transfer-timeout", "--log" }
 
 local function concat(...)
@@ -92,6 +97,9 @@ local function concat(...)
   for _, l in ipairs({ ... }) do for _, v in ipairs(l) do r[#r + 1] = v end end
   return r
 end
+
+-- Sub-commands that take the workspace operation lock (spec §19.3).
+local OPLOCK = spec({ flags = BREAK, eq = BREAK_EQ })
 
 -- `-m <para>` on item-creating verbs (M._extract_create_paras, §16.35).
 local CREATE = spec({ valued = { "-m", "--message" }, eq = { "-m=", "--message=" } })
@@ -114,32 +122,35 @@ M.COMMANDS = {
     flags = concat({ "--target", "--launch", "--print", "--dry-run", "--no-build", "--verbose", "-v" },
       DEVICE_FLAGS),
     valued = concat({ "--project", "--cwd", "--working-dir", "--prefix" }, DEVICE_VALUED),
-    eq = { "--print=", "--dry-run=" },
+    eq = { "--print=", "--dry-run=", "--break-locks=" },
   }),
-  build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v" }, valued = { "--target" },
-    eq = { "--target=" } }),
+  build = spec({ flags = { "--force", "--reconfigure", "--verbose", "-v", "--break-locks" },
+    valued = { "--target" }, eq = { "--target=", "--break-locks=" } }),
   test = spec({ flags = concat({ "--saved", "--discovered", "--list", "--json", "--no-build", "--verbose",
       "-v" }, DEVICE_FLAGS),
-    valued = concat({ "--junit", "--target", "--cwd", "--working-dir" }, DEVICE_VALUED) }),
-  clean = spec({ flags = { "--verbose", "-v" } }),
-  reset = spec({ flags = { "--all", "-y", "--yes" } }),
-  unlock = spec({ flags = { "--all" }, valued = { "--device" } }),
+    valued = concat({ "--junit", "--target", "--cwd", "--working-dir" }, DEVICE_VALUED),
+    eq = BREAK_EQ }),
+  clean = spec({ flags = concat(BREAK, { "--verbose", "-v" }), eq = BREAK_EQ }),
+  reset = spec({ flags = { "--all", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
+  unlock = spec({ flags = { "--all", "--force", "--workspace", "--journal" }, valued = { "--device" } }),
   profiles = NONE,
-  publish = NONE,
+  publish = spec({ flags = BREAK, eq = BREAK_EQ }),
   -- `lw export` / `lw import` (§16.39). A lone `-` is an operand (stdout/stdin).
   export = spec({ flags = { "--published", "--no-profiles" }, valued = { "-o", "--output" },
     eq = { "--output=" } }),
-  import = spec({ flags = { "-y", "--yes", "-n", "--dry-run", "--take-name" } }),
+  import = spec({ flags = { "-y", "--yes", "-n", "--dry-run", "--take-name", "--break-locks" }, eq = BREAK_EQ }),
   status = spec({ flags = { "--check", "--cache-stats" } }),
   -- `--force` / `--refresh` predate health re-checking everything; kept as no-ops.
   -- Positional words are health areas (§16.36).
   health = spec({ flags = { "--json", "--verbose", "-v", "--all", "--force", "--refresh" } }),
   init = spec({ valued = { "--name" } }),
   tools = spec({ flags = { "--cached" } }),
-  trust = spec({ flags = { "-y", "--yes", "--discard" } }),
-  nuke = spec({ flags = { "-y", "--yes" } }),
-  migrate = spec({ flags = { "--check", "-y", "--yes" } }),
-  pull = spec({ flags = { "--dry-run", "-n" } }),
+  trust = spec({ flags = { "-y", "--yes", "--discard", "--break-locks" }, eq = BREAK_EQ }),
+  nuke = spec({ flags = { "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
+  cleanup = spec({ flags = { "--dry-run", "--yes", "-y", "--all" }, valued = { "--pinned-older-than" },
+    eq = { "--pinned-older-than=" } }),
+  migrate = spec({ flags = { "--check", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
+  pull = spec({ flags = { "--dry-run", "-n", "--break-locks" }, eq = BREAK_EQ }),
   ["release-notes"] = spec({ flags = { "--all", "--json" }, valued = { "--since", "-n" },
     eq = { "--since=", "-n=" } }),
   -- Topic / shell names only; their own parsers report anything else.
@@ -169,16 +180,27 @@ M.COMMANDS = {
     subs = {
       list = spec({ flags = { "--json" }, valued = { "--query-timeout" } }),
       select = spec({ flags = { "--clear" } }),
-      clean = spec({ flags = { "--no-wait" }, valued = { "--device", "--query-timeout" } }),
+      clean = spec({ flags = { "--no-wait", "--break-locks" }, valued = { "--device", "--query-timeout" },
+        eq = BREAK_EQ }),
     },
     aliases = { ls = "list" },
     default = NONE,
   },
   workspace = { subs = { rename = NONE }, aliases = { mv = "rename" }, default = NONE },
+  -- `lw daemon <sub>` (spec §19.11; list and --all §19.6.1).
+  daemon = {
+    subs = { status = NONE,
+      list = spec({ flags = { "--json" }, valued = { "--under" }, eq = { "--under=" } }),
+      stop = spec({ flags = { "--force", "--all" }, valued = { "--under" }, eq = { "--under=" } }),
+      kill = spec({ flags = { "--all", "--strays" }, valued = { "--under" }, eq = { "--under=" } }),
+      restart = spec({ flags = { "--force" } }), run = spec({ flags = { "--stdio", "--no-launch", "--private" },
+        valued = { "--root", "--skip-instance" }, eq = { "--root=", "--skip-instance=" } }) },
+    default = NONE,
+  },
   profile = {
     subs = {
       list = NONE, show = NONE, select = spec({ flags = { "--none" } }),
-      create = CREATE_PROFILE, remove = NONE, publish = NONE, query = NONE,
+      create = CREATE_PROFILE, remove = OPLOCK, publish = OPLOCK, query = NONE,
       -- `[<profile>] <project> <variable> <value>`: the value may start with '-'.
       set = spec({ free_after = 2 }), unset = NONE, describe = DESCRIBE,
     },
@@ -187,8 +209,8 @@ M.COMMANDS = {
   },
   project = {
     subs = {
-      list = NONE, show = NONE, add = CREATE, remove = NONE, rename = NONE, unset = NONE,
-      publish = NONE, describe = DESCRIBE,
+      list = NONE, show = NONE, add = CREATE, remove = NONE, rename = OPLOCK, unset = NONE,
+      publish = OPLOCK, describe = DESCRIBE,
       -- `<project> <variable> [<default>] [--type T]`: the default may start with '-'.
       set = spec({ valued = { "--type" }, eq = { "--type=" }, free_after = 2 }),
     },
@@ -197,8 +219,8 @@ M.COMMANDS = {
   },
   config = {
     subs = {
-      list = NONE, show = NONE, get = NONE, add = CREATE, unset = NONE, rename = NONE,
-      remove = NONE, publish = NONE, describe = DESCRIBE,
+      list = NONE, show = NONE, get = NONE, add = CREATE, unset = NONE, rename = OPLOCK,
+      remove = NONE, publish = OPLOCK, describe = DESCRIBE,
       -- `<project> <config> <param> <value>`: the value may start with '-' (-O2).
       set = spec({ free_after = 3 }),
     },
@@ -207,8 +229,8 @@ M.COMMANDS = {
   },
   configset = {
     subs = {
-      list = NONE, show = NONE, create = CREATE, map = NONE, unmap = NONE, rename = NONE,
-      remove = NONE, publish = NONE, describe = DESCRIBE,
+      list = NONE, show = NONE, create = CREATE, map = NONE, unmap = NONE, rename = OPLOCK,
+      remove = NONE, publish = OPLOCK, describe = DESCRIBE,
     },
     aliases = { add = "create", mv = "rename", rm = "remove" },
     default = NONE,
@@ -298,7 +320,7 @@ end
 --- valued ones are spelled `--dev=<path>` and `--color=<when>` (a bare
 --- `--color` is not one).
 M.GLOBAL = set({ "--no-input", "--non-interactive", "--shared", "--local",
-  "--dev", "--no-pin", "--no-color" })
+  "--dev", "--no-pin", "--no-daemon", "--no-color" })
 
 --- Is `v` a global option (including `--dev=<path>` and `--color=<when>`)?
 --- @param v any

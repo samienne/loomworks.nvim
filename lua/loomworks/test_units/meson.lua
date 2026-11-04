@@ -248,6 +248,7 @@ local function parse_meson_tests(json_str)
                     parent = nil,
                     runnable = true,
                     framework = "gtest",
+                    source = "meson",
                     executable = exe,
                 }
             end
@@ -257,6 +258,7 @@ local function parse_meson_tests(json_str)
                 parent = "target:" .. executables[exe],
                 runnable = true,
                 framework = "gtest",
+                source = "meson",
                 executable = exe,
             }
         else
@@ -266,6 +268,7 @@ local function parse_meson_tests(json_str)
                 parent = nil,
                 runnable = true,
                 framework = nil,
+                source = "meson",
                 executable = exe,
             }
         end
@@ -332,7 +335,7 @@ function MesonTestUnit:discover_async(callback)
     end
     local self_ref = self
 
-    vim.system(cmd, { text = true, timeout = 10000 },
+    require("loomworks.test_unit").system(self, cmd, { text = true, timeout = 10000 },
         function(result)
             vim.schedule(function()
                 if result.code ~= 0 or not result.stdout then
@@ -455,7 +458,9 @@ function MesonTestUnit:_probe_frameworks(entries, callback)
 
     local remaining = #targets
     for _, target in ipairs(targets) do
-        gtest.probe(target.executable, target.id, self:_probe_opts_for(target.executable), function(framework, test_list, diag)
+        local popts = self:_probe_opts_for(target.executable) or {}
+        popts.system = self._system
+        gtest.probe(target.executable, target.id, popts, function(framework, test_list, diag)
             self._framework_cache[target.executable] = framework or false
             if log then
                 log:debug("meson gtest probe %s: %s | %s",
@@ -555,8 +560,10 @@ end
 --- to actually be a gtest binary — caller must confirm framework first.
 --- @param exe string
 --- @param filter? string GTEST_FILTER value
+--- @param output_path? string the results file (a per-run path, spec §19.15
+---   "Tests"); default the build directory's fixed `.nvim/gtest_results.xml`
 --- @return table|nil
-function MesonTestUnit:_build_gtest_run(exe, filter)
+function MesonTestUnit:_build_gtest_run(exe, filter, output_path)
     local spec = self._exec_specs[exe]
     if not spec then return nil end
 
@@ -567,11 +574,14 @@ function MesonTestUnit:_build_gtest_run(exe, filter)
         env.GTEST_FILTER = filter
     end
 
-    local nvim_dir = self._build_dir .. "/.nvim"
-    if not uv.fs_stat(nvim_dir) then
-        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    local xml = output_path
+    if type(xml) ~= "string" or xml == "" then
+        local nvim_dir = self._build_dir .. "/.nvim"
+        if not uv.fs_stat(nvim_dir) then
+            uv.fs_mkdir(nvim_dir, 493) -- 0755
+        end
+        xml = nvim_dir .. "/gtest_results.xml"
     end
-    local xml = nvim_dir .. "/gtest_results.xml"
     cmd[#cmd + 1] = "--gtest_output=xml:" .. xml
 
     local result = {
@@ -630,7 +640,7 @@ function MesonTestUnit:_framework_for(entry)
 end
 
 --- @param test_id string
---- @param opts? table { gtest_filter? }
+--- @param opts? table { gtest_filter?, output_path? }
 --- @return table|nil
 function MesonTestUnit:test_command(test_id, opts)
     opts = opts or {}
@@ -655,7 +665,7 @@ function MesonTestUnit:test_command(test_id, opts)
         elseif opts.gtest_filter then
             filter = opts.gtest_filter
         end
-        return self:_build_gtest_run(exe, filter)
+        return self:_build_gtest_run(exe, filter, opts.output_path)
     end
 
     -- Unknown framework — run the executable exactly as meson reported
@@ -663,7 +673,7 @@ function MesonTestUnit:test_command(test_id, opts)
     return self:_build_plain_run(exe)
 end
 
---- @param opts? table { filter? }
+--- @param opts? table { filter?, output_path? }
 --- @return table|nil
 function MesonTestUnit:test_command_all(opts)
     opts = opts or {}
@@ -680,7 +690,7 @@ function MesonTestUnit:test_command_all(opts)
     if not exe then return nil end
 
     if self:_framework_for(entry) == "gtest" then
-        return self:_build_gtest_run(exe, opts.filter)
+        return self:_build_gtest_run(exe, opts.filter, opts.output_path)
     end
     return self:_build_plain_run(exe)
 end

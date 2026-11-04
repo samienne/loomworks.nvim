@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local modules = require("loomworks.modules")
@@ -436,7 +437,7 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
                 test_targets.adopt_declared(mod_info.configurations,
                     project.type_config and project.type_config.configurations)
             else
-                vim.notify("loomworks: module '" .. (project.type or "?")
+                notify("loomworks: module '" .. (project.type or "?")
                     .. "' info() failed for " .. key .. ": " .. tostring(result),
                     vim.log.levels.WARN)
             end

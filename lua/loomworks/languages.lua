@@ -45,11 +45,8 @@ function M.tracked_set()
     -- Languages with a debug-adapter mapping. These may not be tied
     -- to any module (e.g. a future swift-only debug setup) but a user
     -- could still meaningfully declare them on a launch config.
-    local ok, debug_mod = pcall(require, "loomworks.debug")
-    if ok and debug_mod.known_languages then
-        for _, lang in ipairs(debug_mod.known_languages()) do
-            set[lang] = true
-        end
+    for _, lang in ipairs(require("loomworks.debug_config").known_languages()) do
+        set[lang] = true
     end
 
     return set

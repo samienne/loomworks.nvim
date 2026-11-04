@@ -126,7 +126,14 @@ describe("lsp", function()
             local lw = require("loomworks")
             local orig_pfb = lw.project_for_buf
             local orig_gw = lw.get_workspace
-            lw.project_for_buf = function(bufnr) return core:project_for_buf(bufnr) end
+            local orig_bp, orig_gp = lw.buf_project, lw.get_projects
+            -- The LSP layer maps a buffer by `lw.buf_project` (§19.13), here
+            -- the test core's project of the faked buffer name.
+            lw.buf_project = function(bufnr)
+                local p = core:project_for_buf(bufnr)
+                return p and { key = p.key } or nil
+            end
+            lw.get_projects = function() return core:get_projects() end
             lw.get_workspace = function() return core:get_workspace() end
 
             local root_fn = lsp.clangd_root_dir(function(_, on_dir)
@@ -138,6 +145,7 @@ describe("lsp", function()
             assert.equals("/workspace/MyLib", result)
 
             lw.project_for_buf = orig_pfb
+            lw.buf_project, lw.get_projects = orig_bp, orig_gp
             lw.get_workspace = orig_gw
         end)
 
@@ -152,7 +160,14 @@ describe("lsp", function()
             local lw = require("loomworks")
             local orig_pfb = lw.project_for_buf
             local orig_gw = lw.get_workspace
-            lw.project_for_buf = function(bufnr) return core:project_for_buf(bufnr) end
+            local orig_bp, orig_gp = lw.buf_project, lw.get_projects
+            -- The LSP layer maps a buffer by `lw.buf_project` (§19.13), here
+            -- the test core's project of the faked buffer name.
+            lw.buf_project = function(bufnr)
+                local p = core:project_for_buf(bufnr)
+                return p and { key = p.key } or nil
+            end
+            lw.get_projects = function() return core:get_projects() end
             lw.get_workspace = function() return core:get_workspace() end
 
             local fallback_called = false
@@ -167,6 +182,7 @@ describe("lsp", function()
             assert.equals("/fallback", result)
 
             lw.project_for_buf = orig_pfb
+            lw.buf_project, lw.get_projects = orig_bp, orig_gp
             lw.get_workspace = orig_gw
         end)
 
@@ -185,7 +201,14 @@ describe("lsp", function()
             local lw = require("loomworks")
             local orig_pfb = lw.project_for_buf
             local orig_gw = lw.get_workspace
-            lw.project_for_buf = function(bufnr) return core:project_for_buf(bufnr) end
+            local orig_bp, orig_gp = lw.buf_project, lw.get_projects
+            -- The LSP layer maps a buffer by `lw.buf_project` (§19.13), here
+            -- the test core's project of the faked buffer name.
+            lw.buf_project = function(bufnr)
+                local p = core:project_for_buf(bufnr)
+                return p and { key = p.key } or nil
+            end
+            lw.get_projects = function() return core:get_projects() end
             lw.get_workspace = function() return core:get_workspace() end
 
             local root_fn = lsp.clangd_root_dir(function(_, on_dir)
@@ -197,6 +220,7 @@ describe("lsp", function()
             assert.equals("/workspace/Root/SubLib", result)
 
             lw.project_for_buf = orig_pfb
+            lw.buf_project, lw.get_projects = orig_bp, orig_gp
             lw.get_workspace = orig_gw
         end)
     end)

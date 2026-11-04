@@ -1,7 +1,15 @@
 --- loomworks/ui/sections/debug.lua — Debug adapter section renderer.
 ---
---- Shows current debug adapter selection per module type.
---- Allows picking from known adapters via Enter action.
+--- Shows the current debug adapter selection per language: the languages
+--- are the mapping's own records (one per language of the workspace's
+--- modules, API.md §12 `DebugConfig/1.adapters`), never read from the
+--- editor's model. Allows picking from known adapters via Enter action.
+---
+--- The mapping comes from loomworks.daemon.editor_ops: in `daemon` mode
+--- `DebugConfig/1` (step 5k C2, spec §19.16 "Editor operations"), the
+--- section unavailable while it is not carried (step 5s, "Availability");
+--- in the `in-process` mode the working copy. Whether an adapter is
+--- installed is always nvim-dap's answer, here.
 
 local debug_mod = require("loomworks.debug")
 
@@ -11,31 +19,36 @@ local debug_mod = require("loomworks.debug")
 return function(tree, ctx)
     local lw = ctx.lw
     local ws = lw.get_workspace()
-    if not ws then return end
-
-    local modules = ws._modules
-    if not modules or #modules == 0 then return end
-
-    local seen = {}
-    local languages = {}
-    for _, mod in ipairs(modules) do
-        for _, lang in ipairs(mod.languages) do
-            if not seen[lang] then
-                seen[lang] = true
-                languages[#languages + 1] = lang
-            end
+    local ops = require("loomworks.daemon.editor_ops")
+    -- In `daemon` mode the editor holds no model (step 6b-alpha): the
+    -- section reads the daemon's records with no workspace.
+    if not ws and not ops.daemon_of(nil) then return end
+    local records, why = ops.debug_adapters(ws)
+    -- No language known: no section.
+    if records and #records == 0 then return end
+    local languages, by_lang = {}, {}
+    for _, r in ipairs(records or {}) do
+        if type(r) == "table" and type(r.language) == "string" and not by_lang[r.language] then
+            by_lang[r.language] = r
+            languages[#languages + 1] = r.language
         end
     end
-    if #languages == 0 then return end
     table.sort(languages)
 
     tree:blank()
     tree:leaf("Debug Adapters", "Title")
     tree:blank()
 
+    if not records then
+        tree:leaf("unavailable — " .. tostring(why), "DiagnosticWarn")
+        tree:blank()
+        return
+    end
+
     for _, lang in ipairs(languages) do
-        local current = debug_mod.resolve_adapter(ws, lang)
-        local default = debug_mod.default_adapter(lang)
+        local rec = by_lang[lang] or {}
+        local current = rec.adapter
+        local default = rec.default
 
         if not current and not default then goto next_lang end
 
@@ -45,17 +58,12 @@ return function(tree, ctx)
             label = label .. "  (default)"
         end
 
-        local installed = false
-        local ok, dap = pcall(require, "dap")
-        if ok and dap.adapters[current] then
-            installed = true
-        end
-        local hl = installed and "Comment" or "DiagnosticWarn"
+        local hl = debug_mod.adapter_installed(current) and "Comment" or "DiagnosticWarn"
 
         tree:item(label, {
             hl = hl,
             on_enter = function()
-                local known = debug_mod.known_adapters(lang)
+                local known = type(rec.known) == "table" and rec.known or {}
                 if #known == 0 then return end
 
                 vim.ui.select(known, {
@@ -68,8 +76,7 @@ return function(tree, ctx)
                         if adapter == default then
                             marks[#marks + 1] = "default"
                         end
-                        local ok2, dap2 = pcall(require, "dap")
-                        if ok2 and dap2.adapters[adapter] then
+                        if debug_mod.adapter_installed(adapter) then
                             marks[#marks + 1] = "installed"
                         else
                             marks[#marks + 1] = "not installed"
@@ -81,24 +88,12 @@ return function(tree, ctx)
                     end,
                 }, function(choice)
                     if not choice then return end
-                    if choice == default then
-                        -- Reset to default: remove override from user.json
-                        if ws._debug_settings
-                            and ws._debug_settings.adapters
-                            and ws._debug_settings.adapters[lang] then
-                            ws._debug_settings.adapters[lang] = nil
-                            if not next(ws._debug_settings.adapters) then
-                                ws._debug_settings.adapters = nil
-                            end
-                            if not next(ws._debug_settings) then
-                                ws._debug_settings = nil
-                            end
-                            ws:_save_user()
-                        end
-                    else
-                        ws:set_debug_adapter(lang, choice)
-                    end
-                    require("loomworks.ui.status").refresh()
+                    -- The default removes the override from user.json.
+                    local adapter = choice ~= default and choice or nil
+                    if adapter == nil and not rec.overridden then return end
+                    ops.set_debug_adapter(ws, lang, adapter, function()
+                        require("loomworks.ui.status").refresh()
+                    end)
                 end)
             end,
         })

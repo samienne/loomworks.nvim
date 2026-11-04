@@ -15,6 +15,7 @@
 --- verbatim and treated as missing; a `tests` value that is not an array is an
 --- invalid declaration, kept verbatim, that still stops the inheritance walk.
 
+local notify = require("loomworks.notify").notify
 local M = {}
 
 --- @class loomworks.SavedTestEntry
@@ -37,8 +38,8 @@ M._warned = {}
 local function report_once(key, msg)
     if M._warned[key] then return end
     M._warned[key] = true
-    if vim.schedule and vim.notify then
-        vim.schedule(function() vim.notify(msg, vim.log.levels.WARN) end)
+    if vim.schedule then
+        vim.schedule(function() notify(msg, vim.log.levels.WARN) end)
     end
 end
 
@@ -388,8 +389,11 @@ end
 --- configuration of the project in the model first, otherwise an executable
 --- build target of the unit. A launch the trust filter ignored as a whole is
 --- missing — never resolved to a same-named build target.
+--- The entry's name is matched against `ctx.project`'s launch configurations
+--- (a saved entry is a name a file supplies), or against the plain
+--- `ctx.launches` declarations (name → declared table) when no project is given.
 --- @param e loomworks.SavedTestEntry
---- @param ctx { launches: table<string, table>|nil, launch_ignored: (fun(name: string): boolean)|nil, targets: table<string, loomworks.Target>|nil, level: string|nil }
+--- @param ctx { project: loomworks.Project|nil, launches: table<string, table>|nil, launch_ignored: (fun(name: string): boolean)|nil, targets: table<string, loomworks.Target>|nil, level: string|nil }
 --- @return loomworks.SavedTestResolution
 function M.resolve_entry(e, ctx)
     local level = ctx.level or "?"
@@ -399,7 +403,13 @@ function M.resolve_entry(e, ctx)
     end
     local name = e.name
     local targets = type(ctx.targets) == "table" and ctx.targets or nil
-    local l = type(ctx.launches) == "table" and ctx.launches[name] or nil
+    local l
+    if ctx.project then
+        local launch = ctx.project:find_launch(name)
+        l = (launch and not launch:is_invalid()) and launch or nil
+    else
+        l = type(ctx.launches) == "table" and ctx.launches[name] or nil
+    end
     if type(l) == "table" then
         -- A launch of the model is the launch, whatever its shape: one with
         -- neither `command` nor `target` is missing, never the same-named
@@ -448,7 +458,7 @@ end
 --- @param name string
 --- @return boolean
 function M.launch_ignored(ignored, project, name)
-    if type(project.launch) == "table" and project.launch[name] ~= nil then return false end
+    if project:find_launch(name) ~= nil then return false end
     for _, ig in ipairs(ignored or {}) do
         if ig.kind == "launch" and type(ig.path) == "table" and ig.path[2] == project.key
                 and ig.path[4] == name then
@@ -456,45 +466,6 @@ function M.launch_ignored(ignored, project, name)
         end
     end
     return false
-end
-
---- Resolve an entry's `working_dir` like a launch's (spec §1.3.4 "Working
---- directory", §8.7): variable-expanded in the launch context `lctx`, then
---- absolute as-is or workspace-root-relative. nil when the entry has none.
---- An unresolved reference stays literal, as in a launch's `working_dir`,
---- and is returned in `unresolved`.
---- @param wd string|nil the entry's working_dir as written
---- @param lctx table|nil launch expansion context
---- @param root string|nil workspace root (nil: a relative result is returned as expanded)
---- @return string|nil abs
---- @return string[] unresolved names of `${…}` references that resolve to nothing
-function M.resolve_working_dir(wd, lctx, root)
-    if type(wd) ~= "string" or wd == "" then return nil, {} end
-    local expand = require("loomworks.expand")
-    local unresolved = expand.unresolved_vars(wd, lctx)
-    local ex = expand.expand_string(wd, lctx)
-    if ex:match("^/") or ex:match("^%a:") or not root then return ex, unresolved end
-    if ex == "." or ex == "./" then return root, unresolved end
-    return root .. "/" .. ex, unresolved
-end
-
---- Expand an entry's args like a launch configuration's (spec §1.3.4, §8.7):
---- built-in then project variables of the launch context `lctx`
---- (`expand.launch_context`). Names are never expanded.
---- @param args string[]|nil
---- @param lctx table|nil launch expansion context
---- @return string[] expanded
---- @return string[] unresolved names of `${…}` references that resolve to nothing
-function M.expand_args(args, lctx)
-    local expand = require("loomworks.expand")
-    local out, unresolved, seen = {}, {}, {}
-    for _, a in ipairs(args or {}) do
-        for _, v in ipairs(expand.unresolved_vars(a, lctx)) do
-            if not seen[v] then seen[v] = true; unresolved[#unresolved + 1] = v end
-        end
-    end
-    for i, a in ipairs(expand.expand_array(args or {}, lctx) or {}) do out[i] = a end
-    return out, unresolved
 end
 
 return M

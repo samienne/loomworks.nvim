@@ -7,7 +7,7 @@
 --- Key invariant after user actions: every cached config in
 --- configured/built/failed state is referenced by at least one profile.
 --- Orphaned configs (unreferenced) ARE allowed to exist from branch switching
---- or cache loading — they show up in the "Orphaned Configurations" UI section.
+--- or cache loading — they show up in the "Orphaned Build Dirs" UI section.
 
 local Core = require("loomworks.core")
 local h = require("tests.helpers")

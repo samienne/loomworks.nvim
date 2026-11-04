@@ -8,24 +8,44 @@
 --- @field _config_unit loomworks.ConfigUnit owning config unit
 --- @field _entries table[]|nil cached test entries
 --- @field _framework_cache table<string, string|false> per-executable framework detection
+--- @field _system? fun(cmd: string[], opts: table, on_exit: fun(res: table)): table set by
+---   `ConfigUnit:discover_tests_async(cb, { system })` for one discovery: discovery spawns its programs
+---   through it instead of `vim.system` (`TestUnit.system`)
 local TestUnit = {}
 TestUnit.__index = TestUnit
 
 --- @return table[]|nil test entries
 function TestUnit:discover() end
 
+--- Spawn a program of an asynchronous discovery: through `tu._system` when
+--- the discovery's caller set one (the workspace daemon: the client's
+--- environment, killed on a cancel), else `fallback` (default `vim.system`).
+--- @param tu table the TestUnit
+--- @param cmd string[]
+--- @param opts table vim.system options
+--- @param on_exit fun(res: table)
+--- @param fallback? fun(cmd: string[], opts: table, on_exit: fun(res: table)): table
+--- @return table
+function TestUnit.system(tu, cmd, opts, on_exit, fallback)
+    if tu and tu._system then return tu._system(cmd, opts, on_exit) end
+    return (fallback or vim.system)(cmd, opts, on_exit)
+end
+
 --- @param callback fun(entries: table[]|nil)
 function TestUnit:discover_async(callback) end
 
---- Construct a command to run a specific test.
+--- Construct a command to run a specific test. `opts.output_path` names the
+--- results file the harness writes (a per-run path, spec §19.15 "Tests");
+--- without it the TestUnit picks its own (a fixed path in the build
+--- directory). `opts.gtest_filter` narrows a target or suite's run.
 --- @param test_id string
---- @param opts? table
+--- @param opts? { gtest_filter?: string, output_path?: string }
 --- @return table|nil { cmd, env, cwd, output_path, prepare?, test_id? } (`prepare` runs when the step executes; `false, err` fails it)
 function TestUnit:test_command(test_id, opts) end
 
 --- Construct a command to run all tests as structured, per-test output (editor
 --- UI): a framework harness that emits a machine-readable results file.
---- @param opts? table { filter?: string }
+--- @param opts? table { filter?: string, output_path?: string } (`output_path` as for test_command)
 --- @return table|nil { cmd, env, cwd, output_path }
 function TestUnit:test_command_all(opts) end
 

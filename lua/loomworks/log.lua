@@ -53,11 +53,9 @@ end
 --- Append one chunk (whole lines) in a single write, then rotate when the
 --- file has grown past the limit.
 local function append(path, text)
-    local f = io.open(path, "ab")
-    if not f then return end
-    f:write(text)
-    local size = f:seek("end")
-    f:close()
+    -- loomworks.io.append: atomic between concurrent writers (the C
+    -- runtime's "a" mode loses lines on Windows).
+    local size = require("loomworks.io").append(path, text)
     if size and size > M.MAX_BYTES then maybe_rotate(path) end
 end
 

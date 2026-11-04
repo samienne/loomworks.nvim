@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local io_mod = require("loomworks.io")
@@ -206,7 +207,7 @@ local function warn_once(key, msg)
     if M._warned[key] then return end
     M._warned[key] = true
     vim.schedule(function()
-        vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+        notify("loomworks: " .. msg, vim.log.levels.WARN)
     end)
 end
 
@@ -378,8 +379,12 @@ local function wrap_cmd(cmd, kit, generator, build_dir, tag, env)
         -- argv is identical under both spawning conventions (the editor's job
         -- runner hands cmd.exe its arguments verbatim; the standalone host
         -- quotes them). cmake spec §14.
-        local out_env = {}
-        for k, v in pairs(env or {}) do out_env[k] = v end
+        -- The Visual Studio Installer folder goes on the batch's PATH (when it
+        -- exists, once): vcvarsall runs `vswhere.exe` by bare name and would
+        -- otherwise print "'vswhere.exe' is not recognized" on every step.
+        -- Added here, in the step env, so in-process and daemon-routed runs
+        -- both get it.
+        local out_env = require("loomworks.msvc").with_installer_path(env)
         out_env[M.VCVARS_BAT_ENV] = (bat_path:gsub("/", "\\"))
         return { "cmd", "/d", "/v:on", "/c", "!" .. M.VCVARS_BAT_ENV .. "!" }, out_env,
             vim.list_extend({}, cmd)
@@ -981,8 +986,10 @@ function M.resolve_options_with_sources(config, configurations, config_name)
 end
 
 --- Find the source config that provides the variant for a configuration.
---- Walks the inheritance chain depth-first to find the first config with
---- a variant defined as a default (is_default) or explicitly set.
+--- Walks the inheritance chain depth-first to find the first config that
+--- declares its variant itself: a default (is_default) or one whose
+--- `variant` is set on it rather than taken from a base (`_derived.variant`).
+--- A configuration declaring its own variant is its own source.
 --- @param configurations table<string, table> resolved configurations
 --- @param config_name string
 --- @return string|nil source config name that provides the variant
@@ -992,8 +999,11 @@ function M.resolve_variant_source(configurations, config_name)
         visited[name] = true
         local cfg = configurations[name]
         if not cfg then return nil end
-        -- Defaults define their own variant
-        if cfg.is_default and cfg.variant then return name end
+        -- Defaults, and a configuration that sets `variant` itself, define
+        -- their own variant
+        if cfg.variant and (cfg.is_default or not (cfg._derived and cfg._derived.variant)) then
+            return name
+        end
         -- Walk bases to find who provides the variant
         local bases = normalize_inherits(cfg.inherits)
         for _, base_name in ipairs(bases) do
@@ -2466,17 +2476,20 @@ local PT_REFS_PER_STEP = 8
 --- the next tick, then reads/decodes the per-target detail JSONs in bounded,
 --- time-boxed batches across `vim.schedule` turns (each target detail is a disk
 --- read + JSON decode), so a project with many targets never parses in one
---- synchronous burst. Output is identical to `parse_targets`.
+--- synchronous burst. Output is identical to `parse_targets`. Always calls
+--- back, once: nil when a step throws (a decodable but mis-shaped reply,
+--- e.g. `configurations` or `dependencies` not a list).
 --- @param ctx { build_dir: string, project_path?: string, config_name?: string }
 --- @param callback fun(targets: table<string, loomworks.CachedTarget>|nil)
 function M.parse_targets_async(ctx, callback)
     vim.schedule(function()
-        local plan = parse_targets_plan(ctx)
-        if not plan then callback(nil); return end
+        local ok, plan = pcall(parse_targets_plan, ctx)
+        if not (ok and plan) then callback(nil); return end
 
         local targets = {}
         local i = 0
-        local function step()
+        -- One time-boxed batch of target refs; true once all are read.
+        local function slice()
             local start = uv.hrtime()
             local n = 0
             while i < #plan.refs do
@@ -2490,7 +2503,13 @@ function M.parse_targets_async(ctx, callback)
                     break
                 end
             end
-            if i >= #plan.refs then
+            return i >= #plan.refs
+        end
+        local function step()
+            local sok, done = pcall(slice)
+            if not sok then
+                callback(nil)
+            elseif done then
                 callback(next(targets) and targets or nil)
             else
                 vim.schedule(step)
@@ -3053,11 +3072,25 @@ end
 --- @field started boolean whether the opening `[` has been emitted
 --- @field ok boolean cleared on any write/encode failure
 
+--- The temp file of a write: `<out_file>.<pid>.tmp`, unique per process and in
+--- the same directory as `out_file` (so the final rename stays atomic on one
+--- filesystem). The single-flight guard of `refresh_generated_cc` is per
+--- process, so the daemon (D6 startup regeneration) and a daemon-mode editor
+--- may write the same database at once; with a shared fixed name one would
+--- truncate the other's temp file and rename a half-written database into
+--- place. Each process only ever writes, renames or removes its own name.
+--- @param out_file string
+--- @return string
+local function cc_writer_tmp_path(out_file)
+    return out_file .. "." .. tostring(uv.os_getpid()) .. ".tmp"
+end
+M._cc_writer_tmp_path = cc_writer_tmp_path
+
 --- Open the temp file and return a writer, or nil + err.
 --- @param out_file string absolute target path
 --- @return loomworks.cmake.CcWriter|nil writer, string|nil err
 local function cc_writer_open(out_file)
-    local tmp = out_file .. ".tmp"
+    local tmp = cc_writer_tmp_path(out_file)
     local fd, err = uv.fs_open(tmp, "w", 438)
     if not fd then return nil, "open tmp: " .. (err or "unknown") end
     return {
@@ -3129,7 +3162,12 @@ local function cc_writer_finish(w, cb)
     uv.fs_fsync(w.fd)
     uv.fs_close(w.fd)
     if not w.ok then pcall(uv.fs_unlink, w.tmp); cb(false, "write failed"); return end
-    async_rename(w.tmp, w.out_file, cb)
+    async_rename(w.tmp, w.out_file, function(ok, err)
+        -- A failed rename leaves this process's own temp file behind; remove
+        -- it (only ours: the name carries our pid).
+        if not ok then pcall(uv.fs_unlink, w.tmp) end
+        cb(ok, err)
+    end)
 end
 
 --- Select the codemodel configuration matching `variant` (multi-config
@@ -4525,10 +4563,15 @@ function M.lsp_configs(project)
             -- triggers, then return the generated dir immediately (§12.4).
             -- Generation is async + single-flight, so this never blocks LSP
             -- wiring; the previous database (if any) stays readable meanwhile.
-            M.refresh_generated_cc(build_dir, out_dir, {
-                variant = variant,
-                compiler = compiler,
-            })
+            -- Only when this process generates: never in a daemon-mode
+            -- editor, where only the workspace daemon does (core §9.7, §12.4
+            -- "one writer").
+            if not ws.generates_lsp_databases or ws:generates_lsp_databases() then
+                M.refresh_generated_cc(build_dir, out_dir, {
+                    variant = variant,
+                    compiler = compiler,
+                })
+            end
             clangd_cc_dir = out_dir
         end
     end
@@ -4539,6 +4582,10 @@ function M.lsp_configs(project)
             binary = binary,
             binary_required = binary_required,
             compile_commands_dir = clangd_cc_dir,
+            -- The build dir whose owned database clangd reads (core §8.4):
+            -- the redirect target under `compile_commands_from`, else the
+            -- active unit's. Core matches database writes against it.
+            db_dir = build_dir,
             db_state = configured and "ready" or "unconfigured",
             root_dir = root_dir,
         },

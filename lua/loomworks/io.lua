@@ -1,3 +1,4 @@
+local notify = require("loomworks.notify").notify
 local M = {}
 
 local uv = vim.uv or vim.loop
@@ -6,6 +7,12 @@ local uv = vim.uv or vim.loop
 --- @param path string
 --- @return string|nil content, string|nil err
 function M.read_file(path)
+    -- Inside a transaction (loomworks.txn, spec §19.4) a staged workspace file
+    -- reads as its staged bytes.
+    if M._txn_hook then
+        local hit, data = M._txn_hook.read(path)
+        if hit then return data, nil end
+    end
     local fd, err = uv.fs_open(path, "r", 438) -- 0666
     if not fd then return nil, err end
     local stat, stat_err = uv.fs_fstat(fd)
@@ -19,8 +26,106 @@ function M.read_file(path)
     return data, nil
 end
 
+--- Append `data` to `path` (created when missing) as one write that lands
+--- whole at the end of the file even while other processes append to it at
+--- the same moment: opened with libuv's O_APPEND, which on Windows is
+--- FILE_APPEND_DATA access — the system puts every write at the end. The C
+--- runtime's `io.open(path, "a")` does not: on Windows it seeks to the end,
+--- then writes, and two writers that seek together write at the same offset —
+--- one line overwrites the other (a log line lost; seen on fresh logs, where
+--- a client and the daemon it launched write their first lines at once).
+--- @param path string
+--- @param data string
+--- @param mode? integer creation mode (default 0644)
+--- @return integer|nil size the file's size after the write, string|nil err
+function M.append(path, data, mode)
+    local fd, err = uv.fs_open(path, "a", mode or 420)
+    if not fd then return nil, err end
+    local _, werr = uv.fs_write(fd, data, -1)
+    local st = uv.fs_fstat(fd)
+    uv.fs_close(fd)
+    if werr then return nil, werr end
+    return st and st.size or 0
+end
+
+--- The exclusive create (O_CREAT|O_EXCL; tests inject failures here).
+--- @return integer|nil fd, string|nil err, string|nil code
+function M._open_exclusive(path, mode)
+    return uv.fs_open(path, "wx", mode)
+end
+
+--- Bounded retry of an exclusive create that a lingering handle blocks.
+M.CREATE_RETRIES = 5
+M.CREATE_RETRY_MS = 50
+
+--- Create `path` EXCLUSIVELY (O_CREAT|O_EXCL: never through an existing file,
+--- a hard link to another file, or a symbolic link — whose target is never
+--- opened) and write `data` to it, flushed. Returns true, or false + error +
+--- the error code ("EEXIST" when something already has that name).
+--- @param path string
+--- @param data string
+--- @param mode? integer
+--- @return boolean ok, string|nil err, string|nil code
+function M.write_exclusive(path, data, mode)
+    -- A leftover at that name held open by an antivirus scanner or indexer
+    -- stays "delete pending" after unlink on Windows, and the exclusive create
+    -- fails with EPERM/EACCES until the last handle closes: retried briefly
+    -- (the timing of write_file_atomic's rename retry). EEXIST is an answer
+    -- (callers choose another name or clear it), never retried here.
+    local ok, err, code
+    for i = 1, M.CREATE_RETRIES do
+        ok, err, code = M._create_once(path, data, mode)
+        if ok or (code ~= "EPERM" and code ~= "EACCES") then break end
+        if i < M.CREATE_RETRIES then uv.sleep(M.CREATE_RETRY_MS) end
+    end
+    return ok, err, code
+end
+
+--- One exclusive create + flushed write (no retry).
+--- @return boolean ok, string|nil err, string|nil code
+function M._create_once(path, data, mode)
+    local fd, err, code = M._open_exclusive(path, mode or 438)
+    if not fd then return false, err, code end
+    local _, werr = uv.fs_write(fd, data, 0)
+    pcall(uv.fs_fsync, fd)
+    uv.fs_close(fd)
+    if werr then
+        pcall(uv.fs_unlink, path)
+        return false, werr
+    end
+    return true
+end
+
+--- Write a temporary file at a FIXED name (`<target>.tmp`, the name crash
+--- recovery and stray-file cleanup know): whatever sits at that name first
+--- is removed — a leftover of a crashed write, or a link someone planted in a
+--- shared `.nvim/` (unlinking a link removes only the link, never its
+--- target) — then the file is created exclusively. A directory there is left
+--- alone (the create then fails).
+--- @param tmp string
+--- @param data string
+--- @param mode? integer
+--- @return boolean ok, string|nil err
+function M.write_fresh(tmp, data, mode)
+    -- Retried briefly (Windows): a leftover held open by an antivirus scanner
+    -- or indexer lingers "delete pending" after the unlink, so the create
+    -- fails (EEXIST/EPERM/EACCES) until its last handle closes. Each attempt
+    -- clears the name again (a non-directory only; never following a link)
+    -- and creates exclusively. The final failure is returned as before.
+    local ok, err, code
+    for i = 1, M.CREATE_RETRIES do
+        local st = uv.fs_lstat(tmp)
+        if st and st.type ~= "directory" then pcall(uv.fs_unlink, tmp) end
+        ok, err, code = M._create_once(tmp, data, mode)
+        if ok or (code ~= "EEXIST" and code ~= "EPERM" and code ~= "EACCES") then break end
+        if st and st.type == "directory" then break end
+        if i < M.CREATE_RETRIES then uv.sleep(M.CREATE_RETRY_MS) end
+    end
+    return ok, err
+end
+
 --- Write data to path atomically:
----   1. Write to path..".tmp"
+---   1. Write to path..".tmp" (created exclusively, M.write_fresh)
 ---   2. fsync the fd
 ---   3. If path exists, rename path -> path..".bak" (unless `opts.backup` is
 ---      false: an export written for the user leaves no `.bak` beside it)
@@ -30,20 +135,16 @@ end
 --- @param opts? { backup: boolean|nil }
 --- @return boolean ok, string|nil err
 function M.write_file_atomic(path, data, opts)
+    -- Inside a transaction (loomworks.txn, spec §19.4) a workspace file is
+    -- staged to `<path>.txn-<id>`; the commit replaces the target.
+    if M._txn_hook then
+        local handled, ok, err = M._txn_hook.write(path, data, opts)
+        if handled then return ok, err end
+    end
     local tmp = path .. ".tmp"
 
-    local fd, err = uv.fs_open(tmp, "w", 438)
-    if not fd then return false, "open tmp: " .. (err or "unknown") end
-
-    local _, write_err = uv.fs_write(fd, data, 0)
-    if write_err then
-        uv.fs_close(fd)
-        uv.fs_unlink(tmp)
-        return false, "write: " .. write_err
-    end
-
-    uv.fs_fsync(fd)
-    uv.fs_close(fd)
+    local okw, werr = M.write_fresh(tmp, data, 438)
+    if not okw then return false, "write tmp: " .. tostring(werr or "unknown") end
 
     if uv.fs_stat(path) and not (opts and opts.backup == false) then
         uv.fs_rename(path, path .. ".bak")
@@ -85,7 +186,7 @@ function M.read_json(path)
 
     local ok, decoded = pcall(vim.json.decode, bak_content)
     if ok and type(decoded) == "table" then
-        vim.notify("loomworks: loaded from backup: " .. bak, vim.log.levels.WARN)
+        notify("loomworks: loaded from backup: " .. bak, vim.log.levels.WARN)
         return decoded, nil
     end
 
@@ -208,7 +309,8 @@ end
 --- sorted, pretty encoding as `write_json`, with the signature member first.
 --- When the key is unavailable the file is still written, unsigned (it will be
 --- refused or discarded on the next read — never trusted) and the error is
---- returned as a third value so callers can report it.
+--- returned as a third value so callers can report it. A file that already
+--- holds exactly these bytes is left untouched (reported as written).
 --- @param path string
 --- @param kind "user"|"cache"|"health"
 --- @param tbl table
@@ -221,6 +323,12 @@ function M.write_json_signed(path, kind, tbl)
     if not pretty then return false, err end
     local signed, sign_err = require("loomworks.trust").sign(kind, pretty)
     local bytes = signed or pretty
+    -- Already on disk byte for byte: nothing to write (no rewrite another
+    -- process would see as a change). Inside a transaction every write is
+    -- staged as usual.
+    if not M._txn_hook and M.read_file(path) == bytes then
+        return true, nil, sign_err, bytes
+    end
     local wok, werr = M.write_file_atomic(path, bytes)
     return wok, werr, sign_err, wok and bytes or nil
 end
@@ -326,10 +434,15 @@ function M.rm_rf(dir)
 end
 
 --- Asynchronous tree removal over libuv's threadpool (no subprocess, no
---- shell). `done(err|nil)`; a missing path is success.
+--- shell). `done(err|nil, stopped|nil)`; a missing path is success. `stop`
+--- (optional) is asked before each entry: once it returns true no further
+--- entry is started (what was removed stays removed), the directories still
+--- holding entries are kept, and `done` reports `stopped = true`.
 --- @param path string
---- @param done fun(err: string|nil)
-local function rm_tree_async(path, done)
+--- @param done fun(err: string|nil, stopped: boolean|nil)
+--- @param stop? fun(): boolean
+local function rm_tree_async(path, done, stop)
+    if stop and stop() then return done(nil, true) end
     uv.fs_lstat(path, function(lerr, st)
         if not st then
             if lerr and not tostring(lerr):match("^ENOENT") then
@@ -352,8 +465,12 @@ local function rm_tree_async(path, done)
                 if not name then break end
                 names[#names + 1] = name
             end
-            local errors, pending = {}, #names
+            local errors, pending, stopped = {}, #names, false
             local function finish()
+                -- Stopped: entries remain below; the directory is kept.
+                if stopped or (stop and stop()) then
+                    return done(#errors > 0 and table.concat(errors, "; ") or nil, true)
+                end
                 uv.fs_rmdir(path, function(rerr)
                     if rerr then errors[#errors + 1] = "rmdir " .. path .. ": " .. tostring(rerr) end
                     done(#errors > 0 and table.concat(errors, "; ") or nil)
@@ -361,11 +478,12 @@ local function rm_tree_async(path, done)
             end
             if pending == 0 then return finish() end
             for _, name in ipairs(names) do
-                rm_tree_async(path .. "/" .. name, function(e)
+                rm_tree_async(path .. "/" .. name, function(e, s)
                     if e then errors[#errors + 1] = e end
+                    if s then stopped = true end
                     pending = pending - 1
                     if pending == 0 then finish() end
-                end)
+                end, stop)
             end
         end)
     end)
@@ -373,29 +491,39 @@ end
 
 --- Recursively remove a directory/file asynchronously (libuv filesystem
 --- calls — never a shell command built from the path). Links are removed,
---- not followed. Returns a Future.
+--- not followed. Returns a Future (rejected with "stopped" when stopped).
+--- `opts.stop` (optional) is asked before each entry: once it returns true no
+--- further entry is started — what was removed stays removed, the directories
+--- still holding entries are kept — and the callback gets `stopped = true`
+--- (the workspace daemon's cancellable clean wipe, spec §19.15 "Clean"). The
+--- CALLER validates `dir` (Deletion Safety) before calling.
 --- @param dir string
---- @param callback? fun(ok: boolean, err: string|nil) legacy callback (deprecated)
+--- @param callback? fun(ok: boolean, err: string|nil, stopped: boolean|nil) legacy callback (deprecated)
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function M.rm_rf_async(dir, callback)
+function M.rm_rf_async(dir, callback, opts)
     local future_mod = require("loomworks.future")
     if not uv.fs_lstat(dir) then
         if callback then callback(true, nil) end
         return future_mod.resolved(true)
     end
 
+    local stop = opts and opts.stop or nil
     local f = future_mod.create(function(resolve, reject)
-        rm_tree_async(dir, function(err)
+        rm_tree_async(dir, function(err, stopped)
             vim.schedule(function()
-                if err then reject(err) else resolve(true) end
+                if callback then
+                    if stopped then callback(false, err or "stopped", true)
+                    elseif err then callback(false, err)
+                    else callback(true, nil) end
+                end
+                if stopped then reject(err or "stopped")
+                elseif err then reject(err) else resolve(true) end
             end)
-        end)
+        end, stop)
     end)
-
-    if callback then
-        f:next(function() callback(true, nil) end)
-         :catch(function(err) callback(false, err) end)
-    end
+    -- (The callback ran above; a rejection it reports must not go unhandled.)
+    if callback then f:catch(function() end) end
     return f
 end
 

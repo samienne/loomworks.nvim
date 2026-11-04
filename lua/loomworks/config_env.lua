@@ -9,6 +9,7 @@
 --- invariant 13 (`CC`, `CXX`, …) are stripped. Module-agnostic: every module
 --- receives the result through `ModuleContext.env` / `.configuration_env`.
 
+local notify = require("loomworks.notify").notify
 local M = {}
 
 --- Merge a configuration's raw `env` across its inheritance chain for the
@@ -85,7 +86,7 @@ M._warned = {}
 local function warn_once(key, msg)
     if M._warned[key] then return end
     M._warned[key] = true
-    vim.schedule(function() vim.notify(msg, vim.log.levels.WARN) end)
+    vim.schedule(function() notify(msg, vim.log.levels.WARN) end)
 end
 
 --- Resolve a configuration's environment: merged across the chain for the

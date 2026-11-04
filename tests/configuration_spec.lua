@@ -216,6 +216,51 @@ describe("Configuration", function()
         end)
     end)
 
+    -- Core §8 `info`: a configuration's info MAY carry `error` (a core-reserved
+    -- key, never module config); the configuration is then invalid (§15
+    -- invariant 11) with that reason, until a refresh no longer reports it.
+    describe("module-reported error", function()
+        it("is a reason of is_valid, never part of module_config", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "Debug",
+                { is_default = true, variant = "Debug", error = "build_dir template uses ${X}" })
+            local ok, reasons = cfg:is_valid()
+            assert.is_false(ok)
+            assert.same({ "build_dir template uses ${X}" }, reasons)
+            assert.equals("build_dir template uses ${X}", cfg:module_error())
+            assert.is_nil(cfg.module_config.error)
+        end)
+
+        it("is an error-severity diagnostic naming the project and configuration", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "Debug",
+                { is_default = true, variant = "Debug", error = "bad template" })
+            local d = cfg:diagnostic()
+            assert.is_not_nil(d)
+            assert.equals("error", d.severity)
+            assert.truthy(d.message:find("'Debug'", 1, true), d.message)
+            assert.truthy(d.message:find("'App'", 1, true), d.message)
+            assert.truthy(d.message:find("bad template", 1, true), d.message)
+        end)
+
+        it("clears when a refresh no longer reports it", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "Debug",
+                { is_default = true, variant = "Debug", error = "bad template" })
+            cfg:_update({ is_default = true, variant = "Debug" })
+            assert.is_true((cfg:is_valid()))
+            assert.is_nil(cfg:module_error())
+            assert.is_nil(cfg:diagnostic())
+        end)
+
+        it("is not written to user.json", function()
+            local project = make_project()
+            local cfg = Configuration.new(project, "Debug",
+                { is_user = true, variant = "Debug", error = "bad template" })
+            assert.is_nil((cfg:serialize_user_override() or {}).error)
+        end)
+    end)
+
     describe("is_abstract", function()
         it("returns true when no variant", function()
             local project = make_project()

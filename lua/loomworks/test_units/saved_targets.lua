@@ -126,7 +126,7 @@ function SavedTargetsTestUnit:_resolve_entries()
     if saved.invalid then
         entries[1] = {
             id = "target:<invalid tests>", name = "tests", parent = nil, runnable = false,
-            status = "errored", saved = true,
+            status = "errored", saved = true, source = "saved",
             message = "`tests` of " .. level .. " is not an array of saved test entries",
         }
         return entries, probe
@@ -135,7 +135,7 @@ function SavedTargetsTestUnit:_resolve_entries()
     local profile = self:_profile()
     local expand = require("loomworks.expand")
     local rctx = {
-        launches = project and project.launch or nil,
+        project = project,
         launch_ignored = function(n)
             return test_targets.launch_ignored(ws and ws._shared_ignored, project, n)
         end,
@@ -146,7 +146,7 @@ function SavedTargetsTestUnit:_resolve_entries()
         local id = test_targets.entry_id(se, r.kind)
         local label = test_targets.entry_label(se)
         local base = {
-            id = id, name = label, parent = nil, saved = true,
+            id = id, name = label, parent = nil, saved = true, source = "saved",
             saved_kind = r.kind, saved_index = se.index, saved_repeated = se.repeated,
             saved_working_dir = se.working_dir ~= nil or nil,
         }
@@ -157,7 +157,7 @@ function SavedTargetsTestUnit:_resolve_entries()
             -- with `${target_dir}` where a build target is resolved (§8.7).
             local lctx = expand.launch_context(ws, profile, project, { target = r.target })
             top = { entry = se, kind = r.kind, target = r.target, lctx = lctx,
-                cwd = (test_targets.resolve_working_dir(se.working_dir, lctx, ws and ws.root)) }
+                cwd = (require("loomworks.test_plan").resolve_working_dir(se.working_dir, lctx, ws and ws.root)) }
             if r.kind == "launch" then
                 top.launch_target = require("loomworks.launch_target").new(ws, profile,
                     { project = project.key, launch = se.name })
@@ -165,7 +165,7 @@ function SavedTargetsTestUnit:_resolve_entries()
             program, perr = self:_program(top)
         end
         if program then
-            top.args = test_targets.expand_args(se.args, top.lctx)
+            top.args = require("loomworks.test_plan").expand_args(se.args, top.lctx)
             top.lctx = nil
             base.runnable = true
             base.executable = program.cmd
@@ -258,7 +258,7 @@ function SavedTargetsTestUnit:discover_async(callback)
     if #todo == 0 then done(); return end
     local pending = #todo
     for _, e in ipairs(todo) do
-        gtest.probe(e.executable, e.id, function(fw, list)
+        gtest.probe(e.executable, e.id, { system = self._system }, function(fw, list)
             add_children(self, entries, e, fw, list)
             pending = pending - 1
             if pending == 0 then done() end
@@ -281,9 +281,14 @@ end
 --- (expanded), in the entry's working directory. A `launch` entry's deploy
 --- steps are NOT run here: `prepare` runs them when the step executes (the
 --- runner calls it first; `false, err` fails the step, never drops it).
+--- `prepare_async(opts, cb)` is the same deploy without blocking the event
+--- loop (LaunchTarget:deploy_async: `opts.cancelled` / `opts.resume`), for a
+--- runner on a shared loop (the daemon's Tests/1 runs); `cb(ok, err)`.
 --- @param test_id string
---- @param opts? { gtest_filter?: string }
---- @return table|nil { cmd, env, cwd, output_path, prepare?: fun(): boolean, string|nil, test_id: string }
+--- @param opts? { gtest_filter?: string, output_path?: string } `output_path`: the results file (a
+---   per-run path, spec §19.15 "Tests"); default a fixed one in the build directory
+--- @return table|nil { cmd, env, cwd, output_path, prepare?: fun(): boolean, string|nil,
+---   prepare_async?: fun(opts: table|nil, cb: fun(ok: boolean, err: string|nil)), test_id: string }
 function SavedTargetsTestUnit:test_command(test_id, opts)
     opts = opts or {}
     local e = self:_entry(test_id)
@@ -295,13 +300,19 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     -- A launch entry's deploy steps run when the step executes, not while
     -- the command is built: the runner calls `prepare` first, and a failed
     -- deploy fails that step (spec §16.16, §8.8.4).
-    local prepare
+    local prepare, prepare_async
     if top.launch_target then
         local lt = top.launch_target
         prepare = function()
             local ok, err = lt:deploy_sync()
             if not ok then return false, "deploy failed: " .. tostring(err) end
             return true
+        end
+        prepare_async = function(popts, cb)
+            lt:deploy_async(popts, function(ok, err)
+                if not ok then return cb(false, "deploy failed: " .. tostring(err)) end
+                return cb(true)
+            end)
         end
     end
     local spec = self:_program(top)
@@ -310,10 +321,13 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     local env = spec.env and vim.deepcopy(spec.env) or {}
     local output_path
     if top_e.framework == "gtest" then
-        local build_dir = self._config_unit:build_dir()
-        local dir = (build_dir or uv.os_tmpdir():gsub("\\", "/")) .. "/.nvim"
-        if not uv.fs_stat(dir) then uv.fs_mkdir(dir, 493) end
-        output_path = dir .. "/saved_" .. (top_e.id:gsub("[^%w%._%-]", "_")) .. "_results.xml"
+        output_path = opts.output_path
+        if type(output_path) ~= "string" or output_path == "" then
+            local build_dir = self._config_unit:build_dir()
+            local dir = (build_dir or uv.os_tmpdir():gsub("\\", "/")) .. "/.nvim"
+            if not uv.fs_stat(dir) then uv.fs_mkdir(dir, 493) end
+            output_path = dir .. "/saved_" .. (top_e.id:gsub("[^%w%._%-]", "_")) .. "_results.xml"
+        end
         self._suffix_by_output[output_path] = child_suffix(top_e)
         cmd[#cmd + 1] = "--gtest_output=xml:" .. output_path
         if e.parent then
@@ -325,7 +339,7 @@ function SavedTargetsTestUnit:test_command(test_id, opts)
     for _, a in ipairs(spec.args or {}) do cmd[#cmd + 1] = a end
     for _, a in ipairs(top.args or {}) do cmd[#cmd + 1] = a end
     return { cmd = cmd, env = next(env) and env or nil, cwd = spec.cwd, output_path = output_path,
-        prepare = prepare, test_id = top_e.id }
+        prepare = prepare, prepare_async = prepare_async, test_id = top_e.id }
 end
 
 --- nil — run-all iterates the top-level entries (spec §8.9.4).

@@ -117,9 +117,9 @@ describe("global options stop at the command's program arguments", function()
     for _, v in ipairs({ "--dev", "--no-input", "--no-pin", "--local" }) do
       assert.is_true(has(r.args, v), v .. " " .. vim.inspect(r.args))
     end
-    r = dispatch(root, "test", "Dev", "--", "--shared", "--non-interactive")
+    r = dispatch(root, "test", "Dev", "--", "--shared", "--no-daemon")
     assert.equals("cmd_test", r.called, r.stderr)
-    assert.is_true(has(r.args, "--shared") and has(r.args, "--non-interactive"), vim.inspect(r.args))
+    assert.is_true(has(r.args, "--shared") and has(r.args, "--no-daemon"), vim.inspect(r.args))
     r = dispatch(root, "build", "Dev", "--", "--dev=x")
     assert.equals("cmd_build", r.called, r.stderr)
     assert.is_true(has(r.args, "--dev=x"), vim.inspect(r.args))
@@ -161,7 +161,7 @@ describe("launch add / set take the args after --", function()
   local function cfg(root, name)
     local ws = assert(cli._load_workspace(root, false))
     for _, p in pairs(ws._projects) do
-      if p.key == "App" then return p.launch and p.launch[name] end
+      if p.key == "App" then local l = p:find_launch(name); return l and l:serialize() end
     end
   end
 

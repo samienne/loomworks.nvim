@@ -149,6 +149,7 @@ local function parse_ctest_json(json_str)
                     parent = nil,
                     runnable = true,
                     framework = "gtest",
+                    source = "ctest",
                     executable = exe,
                 }
             end
@@ -158,6 +159,7 @@ local function parse_ctest_json(json_str)
                 parent = "target:" .. executables[exe],
                 runnable = true,
                 framework = "gtest",
+                source = "ctest",
                 executable = exe,
             }
         else
@@ -167,6 +169,7 @@ local function parse_ctest_json(json_str)
                 parent = nil,
                 runnable = true,
                 framework = nil,
+                source = "ctest",
                 executable = exe,
             }
         end
@@ -220,7 +223,8 @@ function CTestUnit:discover_async(callback)
     cmd[#cmd + 1] = "--show-only=json-v1"
     local self_ref = self
 
-    require("loomworks.exe").system(cmd, { text = true, timeout = 10000 },
+    local exe = require("loomworks.exe")
+    require("loomworks.test_unit").system(self, cmd, { text = true, timeout = 10000 },
         function(result)
             vim.schedule(function()
                 if result.code ~= 0 or not result.stdout then
@@ -241,7 +245,7 @@ function CTestUnit:discover_async(callback)
                     callback(entries)
                 end)
             end)
-        end
+        end, exe.system
     )
 end
 
@@ -290,7 +294,7 @@ function CTestUnit:_probe_frameworks(entries, callback)
 
     local pending = #targets
     for _, target in ipairs(targets) do
-        gtest.probe(target.executable, target.id, function(framework, test_list)
+        gtest.probe(target.executable, target.id, { system = self._system }, function(framework, test_list)
             self._framework_cache[target.executable] = framework or false
             if framework and test_list then
                 target.framework = framework
@@ -384,6 +388,23 @@ function CTestUnit:_find_exec_spec(test_id)
     return self._exec_specs[exe], exe
 end
 
+--- The results file of a structured run: `opts.output_path` (a per-run
+--- path, the daemon's `<root>/.nvim/tmp/lw-test-<hex>.xml`, spec §19.15
+--- "Tests"), else the build directory's fixed `.nvim/gtest_results.xml`.
+--- @param build_dir string
+--- @param opts table
+--- @return string
+local function results_path(build_dir, opts)
+    if type(opts.output_path) == "string" and opts.output_path ~= "" then return opts.output_path end
+    local nvim_dir = build_dir .. "/.nvim"
+    if not uv.fs_stat(nvim_dir) then
+        uv.fs_mkdir(nvim_dir, 493) -- 0755
+    end
+    return nvim_dir .. "/gtest_results.xml"
+end
+
+--- @param test_id string
+--- @param opts? { gtest_filter?: string, output_path?: string }
 function CTestUnit:test_command(test_id, opts)
     opts = opts or {}
 
@@ -427,11 +448,7 @@ function CTestUnit:test_command(test_id, opts)
     end
 
     -- gtest XML output for per-test results and output capture
-    local nvim_dir = self._build_dir .. "/.nvim"
-    if not uv.fs_stat(nvim_dir) then
-        uv.fs_mkdir(nvim_dir, 493) -- 0755
-    end
-    local gtest_xml = nvim_dir .. "/gtest_results.xml"
+    local gtest_xml = results_path(self._build_dir, opts)
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
     return {
@@ -443,7 +460,7 @@ function CTestUnit:test_command(test_id, opts)
 end
 
 --- Construct command to run all tests.
---- @param opts? table { filter?: string }
+--- @param opts? table { filter?: string, output_path?: string }
 --- @return table { cmd, env, cwd, output_path }
 function CTestUnit:test_command_all(opts)
     opts = opts or {}
@@ -471,11 +488,7 @@ function CTestUnit:test_command_all(opts)
         env.GTEST_FILTER = opts.filter
     end
 
-    local nvim_dir = self._build_dir .. "/.nvim"
-    if not uv.fs_stat(nvim_dir) then
-        uv.fs_mkdir(nvim_dir, 493) -- 0755
-    end
-    local gtest_xml = nvim_dir .. "/gtest_results.xml"
+    local gtest_xml = results_path(self._build_dir, opts)
     cmd[#cmd + 1] = "--gtest_output=xml:" .. gtest_xml
 
     return {

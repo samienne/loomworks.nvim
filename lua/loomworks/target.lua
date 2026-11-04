@@ -11,6 +11,7 @@
 ---   join via loomworks.paths.artifact_path, never a bare `build_dir .. artifact`)
 --- @field sources? string[] absolute source file paths (for test source mapping)
 --- @field _config_unit loomworks.ConfigUnit back-reference to owning unit
+local notify = require("loomworks.notify").notify
 local Target = {}
 Target.__index = Target
 
@@ -81,6 +82,8 @@ function Target:build(on_complete)
         local project_ctx = unit._project:to_module_context(ws.root)
         project_ctx.configuration = unit:variant()
         project_ctx.configuration_key = unit:config_key()
+        -- The unit's own build directory (the one its lock names).
+        project_ctx.cached_build_dir = unit:build_dir()
         -- Detected tool data only (spec §17.7).
         project_ctx.tool_data = require("loomworks.overseer")._exec_tool_data(unit)
         -- Tool env with the configuration environment layered on top (spec
@@ -91,6 +94,10 @@ function Target:build(on_complete)
 
         local task_def = mod.build_target_task(project_ctx, self.id)
         if task_def then
+            -- The target it builds: what a routed build names (spec §19.16
+            -- "Editor operations", overseer.launch_single_task).
+            task_def.loomworks = task_def.loomworks or {}
+            task_def.loomworks.target_id = self.id
             f = require("loomworks.overseer").launch_single_task(task_def, unit)
         end
     end
@@ -161,7 +168,7 @@ end
 function Target:launch(opts)
     local spec, err = self:resolve_run_spec(opts)
     if not spec then
-        if err then vim.notify("loomworks: " .. err, vim.log.levels.WARN) end
+        if err then notify("loomworks: " .. err, vim.log.levels.WARN) end
         return
     end
 

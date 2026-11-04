@@ -12,7 +12,7 @@
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
 ---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
----           unlock <profile>|--all|--device <serial> | device <list|select|clean> |
+---           unlock <profile>|<dir>|--all [--force]|--device <serial> | device <list|select|clean> |
 --           settings <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
@@ -44,6 +44,7 @@ local M = {}
 -- Terminal-safe rendering of everything the CLI prints (control characters in
 -- data escaped; only our own palette markers become escape sequences).
 local term = require("loomworks.term")
+local output_bytes = require("loomworks.proto.bytes").output_bytes
 
 -- Cleanups run before any os.exit() (both finish() and die()), so a build-dir
 -- lock is always released even when a step fails and we bail out.
@@ -97,12 +98,35 @@ local function note(s, role)
   io.stdout:flush(); io.stderr:write(term.render(s or "") .. "\n")
 end
 
+--- A workspace load's notification (`core._deps.notify`), as `lw` prints it:
+--- warnings and errors on stderr, painted `fail` (ERROR and above) or `warn`;
+--- the editor's info chatter is noise on a CLI and dropped. The in-process
+--- load and the projection of a daemon snapshot both print through it.
+--- @param msg any
+--- @param level? integer vim.log.levels; nil prints as a warning
+local function load_notify(msg, level)
+  if not level or level >= vim.log.levels.WARN then
+    note(tostring(msg), (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
+  end
+end
+
 --- stderr counterpart of `out` for text that is not a whole line (same
 --- rendering; stdout flushed first, as `note`). Raw tool output relayed from a
 --- child process does not use it.
 local function errw(s, role)
   if role then s = require("loomworks.cli_color").paint(role, s or "", "stderr") end
   io.stdout:flush(); io.stderr:write(term.render(s or ""))
+end
+
+--- A daemon reply's notes (API.md §4.1), in order on stderr, each painted by
+--- its `note_roles` entry exactly as `note` paints it in-process; a missing
+--- array or entry is plain (and `paint` shows an unknown role as plain).
+--- @param r table the reply
+function M._reply_notes(r)
+  local roles = type(r.note_roles) == "table" and r.note_roles or {}
+  for i, n in ipairs(type(r.notes) == "table" and r.notes or {}) do
+    note(tostring(n), type(roles[i]) == "string" and roles[i] or nil)
+  end
 end
 
 --- `-v` / `--verbose` output (spec §16.4 *Verbose*): each line, of the
@@ -204,19 +228,12 @@ M._posix_sh_quote = posix_sh_quote
 --- / target-backed launch resolves a FULL env (inherited + a PATH prepend), so
 --- diffing against the inherited env reduces it to exactly the launch's
 --- contribution — never the whole inherited environment (spec §16.17 "Command
---- inspection"). Returns a plain table (possibly empty).
+--- inspection"). Returns a plain table (possibly empty). loomworks.run_prep
+--- (shared with the workspace daemon's `prepare_run`, §19.15).
 --- @param env table<string,string>|nil
 --- @return table<string,string>
 local function launch_env_overrides(env)
-  if not env then return {} end
-  local inherited = {}
-  local ok, cur = pcall(function() return vim.fn.environ() end)
-  if ok and type(cur) == "table" then inherited = cur end
-  local ov = {}
-  for k, v in pairs(env) do
-    if inherited[k] ~= v then ov[k] = v end
-  end
-  return ov
+  return require("loomworks.run_prep").env_overrides(env)
 end
 M._launch_env_overrides = launch_env_overrides
 
@@ -320,19 +337,36 @@ local function interrupt_context(signal, windows)
 end
 M._interrupt_context = interrupt_context
 
+--- The interrupt interceptor (`M._set_interrupt_intercept`), or nil. (A
+--- field, not a chunk local: cli.lua's main chunk is at Lua's 200-local limit.)
+--- @type (fun(escalate: fun()): boolean)|nil
+M._interrupt_intercept = nil
+
+--- Offer the next Ctrl-C to `fn` instead of ending lw (nil: none). The
+--- interceptor is used at most once: the Ctrl-C after it ends lw. Returns the
+--- previous interceptor.
+--- @param fn (fun(escalate: fun()): boolean)|nil
+--- @return (fun(escalate: fun()): boolean)|nil
+function M._set_interrupt_intercept(fn)
+  local prev = M._interrupt_intercept
+  M._interrupt_intercept = fn
+  return prev
+end
+
 --- Build the guarded interrupt-cleanup callback (the body a signal handler
 --- runs, called with the signal name): run the exit hooks with the interrupt
 --- context (releasing held build/device locks and stopping a remote run's
 --- device program), flush the output streams, then exit with `code`. The
 --- returned closure fires the cleanup at most once — a repeated Ctrl-C or a
---- second signal is ignored. `exit_fn` defaults to os.exit and is injectable
+--- second signal is ignored — except that a Ctrl-C while an interceptor is set
+--- (`M._set_interrupt_intercept`) goes to it first. `exit_fn` defaults to os.exit and is injectable
 --- so tests can drive the callback without terminating the process.
 --- @param code integer
 --- @param exit_fn? fun(code: integer)
 --- @return fun(signal?: string) callback
 local function make_interrupt_cleanup(code, exit_fn)
   local fired = false
-  return function(signal)
+  local function fire(signal)
     if fired then return end
     fired = true
     run_exit_hooks(interrupt_context(type(signal) == "string" and signal or nil,
@@ -340,6 +374,22 @@ local function make_interrupt_cleanup(code, exit_fn)
     pcall(function() io.stdout:flush() end)
     pcall(function() io.stderr:flush() end)
     ;(exit_fn or os.exit)(code)
+  end
+  return function(signal)
+    if fired then return end
+    -- The two-stage Ctrl-C (spec §19.15 "Task ownership"): a Ctrl-C (sigint
+    -- only; Ctrl-Break, a closed console, a hangup or a termination request
+    -- end lw at once) is first offered to the interceptor, which is taken
+    -- down as it is offered, so the next Ctrl-C ends lw here. The
+    -- interceptor gets `escalate` (this cleanup, for when it finds it cannot
+    -- act after all) and returns whether it handled the interrupt.
+    local intercept = M._interrupt_intercept
+    if intercept and signal == "sigint" then
+      M._interrupt_intercept = nil
+      local ok, handled = pcall(intercept, function() fire(signal) end)
+      if ok and handled then return end
+    end
+    fire(signal)
   end
 end
 
@@ -509,6 +559,8 @@ function M._set_create_intent(v) create_intent = v end
 local function interactive()
   if force_noninteractive then return false end
   if M._test_interactive ~= nil then return M._test_interactive end
+  -- (Tests of a spawned `lw` without a terminal: the interactive defaults.)
+  if os.getenv("LW_TEST_INTERACTIVE") == "1" then return true end
   local ok, h = pcall(uv.guess_handle, 0)
   return ok and h == "tty"
 end
@@ -563,20 +615,22 @@ local function write_config(cfg)
 end
 
 -- ---------------------------------------------------------------------------
--- Tool cache (machine-level tools.json: %LOCALAPPDATA%/loomworks/cache on
--- Windows, else $XDG_CACHE_HOME/loomworks or ~/.cache/loomworks). Detecting toolchains probes compilers, vswhere, and vcvarsall —
--- seconds of work redone in every fresh process. We persist the last scan so
--- the fast paths (profile create, profiles, later completion) reuse it.
+-- Tool cache (machine-level tools.json, spec §16.43: loomworks.tool_cache).
+-- Detecting toolchains probes compilers, vswhere, and vcvarsall — seconds of
+-- work redone in every fresh process — so each module type's last result is
+-- kept with the fingerprint of its inputs and reused while it matches, in
+-- both hosts (this wrapper is installed by every load, the daemon's too).
 -- `lw tools` always does a real scan and rewrites the cache (deliberate = real
 -- result); `lw tools --cached` reads it. Compilers are a machine fact, not a
 -- workspace one, so the cache is shared across workspaces, keyed by module type.
 -- ---------------------------------------------------------------------------
 
-local TOOL_CACHE_VERSION = 1
--- "auto"   serve the cache when it covers the needed modules, else scan+write
+local tool_cache = require("loomworks.tool_cache")
+-- "auto"   reuse each needed type whose fingerprint matches, detect the rest
 -- "force"  always scan + write (`lw tools`)
--- "cached" never scan; serve whatever is cached (`lw tools --cached`, and any
---          command that doesn't wait for tools — no point probing)
+-- "cached" never scan; serve whatever is cached, whatever its fingerprint
+--          (`lw tools --cached`, and any command that doesn't wait for tools
+--          — no point probing)
 local tool_cache_mode = "auto"
 
 -- Set while serving `lw __complete`: load_workspace returns nil instead of
@@ -594,96 +648,77 @@ function M._reset_modes()
   tool_cache_mode = "auto"
 end
 
-local function tool_cache_dir()
-  if is_windows() then
-    local lad = os.getenv("LOCALAPPDATA")
-    if lad and #lad > 0 then return (lad:gsub("\\", "/")) .. "/loomworks/cache" end
-  end
-  local xdg = os.getenv("XDG_CACHE_HOME")
-  if xdg and #xdg > 0 then return (xdg:gsub("\\", "/")) .. "/loomworks" end
-  local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
-  return (home:gsub("\\", "/")) .. "/.cache/loomworks"
+--- @return table|nil { version, timestamp, scanned_types, tools_by_type, types? }
+local function read_tool_cache() return tool_cache.read() end
+
+--- Is `mod_type`'s module loaded with a detector? A missing or rejected
+--- module's type is never cached (spec §16.43): installing it later detects.
+local function tool_detectable(mod_type)
+  local mod = require("loomworks.modules").get(mod_type)
+  return mod ~= nil and mod.detect_tools_async ~= nil
 end
 
-local function tool_cache_path() return tool_cache_dir() .. "/tools.json" end
-
---- @return table|nil { version, timestamp, scanned_types, tools_by_type }
-local function read_tool_cache()
-  local f = io.open(tool_cache_path(), "r")
-  if not f then return nil end
-  local content = f:read("*a"); f:close()
-  if not content or content == "" then return nil end
-  local ok, data = pcall(vim.json.decode, content)
-  if not ok or type(data) ~= "table" or data.version ~= TOOL_CACHE_VERSION then return nil end
-  return data
-end
-
---- Merge a fresh scan of `scanned_types` into the on-disk cache. Per-type merge
---- keeps entries for module types this workspace didn't scan (machine cache),
---- while refreshing the ones it did — including clearing a type that now has no
---- tools (its tools_by_type entry becomes absent but it stays "scanned").
+--- Record a complete scan of `scanned_types` (a set) from `tools_by_type`
+--- (`lw tools` through the daemon's projection): each type's entry with its
+--- current fingerprint; entries of other module types are kept. A type whose
+--- module is not loaded here is skipped; fingerprints that cannot be computed
+--- write nothing.
 local function write_tool_cache(tools_by_type, scanned_types)
-  local existing = read_tool_cache() or {}
-  local tbt = existing.tools_by_type or {}
-  local scanned = existing.scanned_types or {}
+  local types = {}
   for mod_type in pairs(scanned_types) do
-    scanned[mod_type] = true
-    tbt[mod_type] = tools_by_type[mod_type] -- nil clears a now-empty type
+    if tools_by_type[mod_type] or tool_detectable(mod_type) then types[mod_type] = true end
   end
-  assert(require("loomworks.io").mkdir_p(tool_cache_dir()))
-  local f = io.open(tool_cache_path(), "w")
-  if not f then return end
-  f:write(vim.json.encode({
-    version = TOOL_CACHE_VERSION,
-    timestamp = os.time(),
-    scanned_types = scanned,
-    tools_by_type = tbt,
-  }))
-  f:close()
+  local ok, fps = pcall(tool_cache.fingerprints, types)
+  if not ok then return end
+  local entries = {}
+  for mod_type in pairs(types) do
+    entries[mod_type] = { tools = tools_by_type[mod_type], fp = fps[mod_type] }
+  end
+  tool_cache.write(entries)
 end
 
---- Module types the workspace needs tools for, from the reconstructed config.
-local function config_needed_types(config)
+--- Module types the workspace needs tools for: its projects' types and the
+--- types its build-state cache still records (as merge.detect_tools_async).
+local function config_needed_types(config, cfg_cache)
   local t = {}
   if config and config.projects then
     for _, p in pairs(config.projects) do
       if p.type then t[p.type] = true end
     end
   end
-  return t
-end
-
---- True when the cache has scanned every needed module type (an empty result
---- for a type still counts as covered — scanned_types records it).
-local function cache_covers(cache, needed)
-  local scanned = cache and cache.scanned_types or {}
-  for mod_type in pairs(needed) do
-    if not scanned[mod_type] then return false end
+  for _, c in pairs(cfg_cache and cfg_cache.build_dirs or {}) do
+    if type(c) == "table" and c.type then t[c.type] = true end
   end
-  return true
+  return t
 end
 
 --- The real detect_tools_async, captured before we wrap it.
 local orig_detect_tools_async = nil
 
---- Caching wrapper around core's detect_tools_async, honoring tool_cache_mode.
-local function cached_detect_tools_async(config, cfg_cache, callback)
-  local needed = config_needed_types(config)
-  if tool_cache_mode ~= "force" then
+--- Caching wrapper around core's detect_tools_async, honoring tool_cache_mode
+--- (spec §16.43 "Reuse"). `opts.cancelled` (Workspace:_scan_tools_async):
+--- true once the workspace was torn down — no further type is detected;
+--- `opts.force` (Workspace:rescan_tools): every type is detected again.
+local function cached_detect_tools_async(config, cfg_cache, callback, opts)
+  if tool_cache_mode == "cached" then
     local cache = read_tool_cache()
-    if cache and (tool_cache_mode == "cached" or cache_covers(cache, needed)) then
-      return callback(cache.tools_by_type or {})
-    end
-    if tool_cache_mode == "cached" then
-      return callback({}) -- told not to scan and nothing cached
-    end
+    return callback(cache and cache.tools_by_type or {}) -- nothing cached: {}
   end
-  -- Real scan; record which types we scanned so "scanned but empty" is cached.
-  orig_detect_tools_async(config, cfg_cache, function(tools_by_type)
-    write_tool_cache(tools_by_type, needed)
-    callback(tools_by_type)
-  end)
+  local detect = orig_detect_tools_async
+  tool_cache.detect({
+    needed = config_needed_types(config, cfg_cache),
+    force = tool_cache_mode == "force" or (opts ~= nil and opts.force == true),
+    cancelled = opts and opts.cancelled,
+    detectable = tool_detectable,
+    -- One module type at a time, so each is written when it finishes.
+    detect_one = function(mod_type, cb)
+      detect({ projects = { [mod_type] = { type = mod_type } } }, nil, function(tbt)
+        cb(tbt and tbt[mod_type])
+      end)
+    end,
+  }, callback)
 end
+M._cached_detect_tools_async = cached_detect_tools_async
 
 --- Bootstrap a live, remerged Workspace headlessly. Waits for tool detection
 --- unless `wait_tools` is false (status only needs pinned info, not live tools).
@@ -696,15 +731,31 @@ end
 --- @param opts? { soft_trust?: boolean, replace_untrusted_user?: boolean }
 --- @return table|nil workspace, table core, table|nil trust refusal
 local function load_workspace(root, wait_tools, opts)
+  local ws, core, fail = M._load_workspace_soft(root, wait_tools, opts)
+  if ws then return ws, core end
+  if completion_mode then return nil end
+  -- `lw health` reports a refused working copy as an item instead (§16.36).
+  if fail.trust and opts and opts.soft_trust then return nil, core, fail.trust end
+  die(fail.message)
+end
+
+--- Bootstrap a live, remerged Workspace headlessly without exiting: the load
+--- behind `load_workspace`, also used by the workspace daemon (spec §19.15),
+--- which reports a refusal to its client instead of exiting. Returns
+--- `ws, core`, or `nil, core, { message, trust? }` — `message` is exactly
+--- what `lw` prints for that refusal. `opts.handlers` (the daemon) replaces
+--- the exiting hooks: `notify(msg, level)` and `refused(msg)` (a refused
+--- save or workspace operation lock); it also makes the file tracker manual.
+--- @param root string
+--- @param wait_tools? boolean
+--- @param opts? { soft_trust?: boolean, replace_untrusted_user?: boolean, handlers?: table }
+--- @return table|nil ws, table core, table|nil failure
+function M._load_workspace_soft(root, wait_tools, opts)
   local lw = require("loomworks")
   local core = lw._core()
-  -- Route notifications to stderr (warnings/errors only); the editor's
-  -- info chatter is noise on a CLI.
-  core._deps.notify = function(msg, level)
-    if not level or level >= vim.log.levels.WARN then
-      note(tostring(msg), (level or 0) >= vim.log.levels.ERROR and "fail" or "warn")
-    end
-  end
+  local handlers = opts and opts.handlers
+  -- Route notifications to stderr (warnings/errors only, see load_notify).
+  core._deps.notify = handlers and handlers.notify or load_notify
   -- A refused `.nvim` file (spec §17.4) is reported by the CLI itself, with
   -- its own commands (spec §17.10).
   core._deps.quiet_trust_errors = true
@@ -715,17 +766,34 @@ local function load_workspace(root, wait_tools, opts)
   -- A refused save (spec §2.7: the working copy changed on disk since this
   -- command read it, or a state file has a newer schema) ends the command:
   -- `lw: <message>`, exit 1. Nothing was written.
-  core._deps.on_save_refused = function(msg) die(msg) end
+  core._deps.on_save_refused = handlers and handlers.refused or function(msg) die(msg) end
+  -- A refused workspace operation lock (spec §19.3: another process runs a
+  -- multi-file operation) ends the command too, before anything was changed.
+  core._deps.on_lock_refused = handlers and handlers.refused or function(msg) die(msg) end
+  -- The daemon broadcasts each committed state-file write (spec §19.12).
+  core._deps.on_written = handlers and handlers.written or nil
+  -- The daemon applies external file changes itself (spec §19.13 "Freshness
+  -- of views", §19.15): its tracker never syncs on its own; it watches the
+  -- files and signals the daemon (`files_changed`), which applies them.
+  core._deps.manual_file_tracking = handlers and true or nil
+  core._deps.file_signal = handlers and handlers.files_changed or nil
   -- Skip the automatic background target scan — it can spawn a per-build-dir
   -- meson/python subprocess (~2s) on every load. Commands that need targets
   -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
   -- just the resolved profile via ensure_unit_targets, which is independent of
   -- this flag and only reads an already-configured build tree.
   core._deps.scan_targets = false
+  -- The workspace daemon (`handlers`) still generates the owned LSP databases
+  -- its LspConfig/1 clients read, and reports their readiness (§19.16 "LSP
+  -- configuration", §9.7).
+  core._deps.lsp_databases = handlers and true or nil
   -- Serve tools from the machine-level cache. A load that won't wait for tools
   -- never probes — serve cache only (never spend seconds for a command that
   -- doesn't need live tools). Install the wrapper before setup triggers a scan.
-  if wait_tools == false and tool_cache_mode == "auto" then
+  -- Not in the daemon (`handlers`): the latch would outlive this load and
+  -- keep every later request from probing (a snapshot's load does not wait
+  -- for tools, spec §19.13; its detection still runs in the background).
+  if wait_tools == false and tool_cache_mode == "auto" and not handlers then
     tool_cache_mode = "cached"
   end
   if core._deps.detect_tools_async ~= cached_detect_tools_async then
@@ -737,18 +805,11 @@ local function load_workspace(root, wait_tools, opts)
     return core._state == "initialized" or core._state == "uninitialized"
   end, 25)
   if not ok then
-    if completion_mode then return nil end
-    die("timed out loading workspace at " .. root)
+    return nil, core, { message = "timed out loading workspace at " .. root }
   end
   local ws = lw.get_workspace()
   if not ws then
-    if completion_mode then return nil end
-    local e = core.get_setup_error and core:get_setup_error()
-    -- `lw health` reports a refused working copy as an item instead (§16.36).
-    if e and e.trust and opts and opts.soft_trust then return nil, core, e.trust end
-    if e and e.trust then die(M._trust_refusal_message(e.trust)) end
-    if e and e.newer then die(e.message) end
-    die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
+    return nil, core, M._setup_failure(core)
   end
   -- Await tool detection (needed for cold builds + accurate buildability).
   if wait_tools ~= false then
@@ -756,8 +817,37 @@ local function load_workspace(root, wait_tools, opts)
   end
   return ws, core
 end
+
+--- The refusal of a workspace core that has no workspace (its setup error),
+--- as `lw` prints it: `{ message, trust? }`.
+--- @param core table
+--- @return table
+function M._setup_failure(core)
+  local e = core.get_setup_error and core:get_setup_error()
+  if e and e.trust then return { message = M._trust_refusal_message(e.trust), trust = e.trust } end
+  if e and (e.newer or e.journal) then return { message = e.message } end
+  return { message = "failed to load workspace" .. (e and e.message and (": " .. e.message) or "") }
+end
 -- Test seam: load a real workspace the way dispatch does (build/clean/reset).
 M._load_workspace = load_workspace
+
+--- The workspace a read-only command reads (spec §19.1, §19.13): in
+--- `runtime-mode daemon`, the read-only projection of a live, compatible
+--- shared daemon's model (`M._read_projection`); otherwise — `in-process`
+--- mode, an attached selection, no such daemon, or one that cannot serve it
+--- in time — the in-process load, exactly as before. A projection
+--- never saves (`_no_write`): only commands that write nothing read through
+--- this.
+--- @param root string
+--- @param wait_tools? boolean as for load_workspace (the in-process load only)
+--- @param opts? loomworks.cli.ReadOpts
+--- @return table workspace
+local function read_workspace(root, wait_tools, opts)
+  local ws = M._read_projection(root, opts)
+  if ws then return ws end
+  return load_workspace(root, wait_tools)
+end
+M._read_workspace = read_workspace
 
 -- ---------------------------------------------------------------------------
 -- Commands
@@ -793,27 +883,6 @@ local function profile_numbering(ws)
   return { list = list, number = number }
 end
 M._profile_numbering = profile_numbering
-
---- If `arg` is a pure integer (`^%d+$`), resolve it as the 1-based index into
---- the stable profile numbering (`profile_numbering`); out of range dies with
---- the valid range. Returns the profile, or `nil` when `arg` is not a bare
---- number, so the caller falls through to its own name/key matching (profile
---- keys are never bare integers, so there is no ambiguity). Shared by every
---- profile resolver that accepts a number; `lw profile query` deliberately does
---- not take this path (keys only).
---- @param ws table
---- @param arg string|nil
---- @return table|nil profile
-local function profile_by_number(ws, arg)
-  if type(arg) ~= "string" or not arg:match("^%d+$") then return nil end
-  local order = profile_numbering(ws)
-  local total = #order.list
-  local n = tonumber(arg)
-  if n < 1 or n > total then
-    die("profile number " .. n .. " out of range (1.." .. total .. "); see `lw profile list`")
-  end
-  return order.list[n]
-end
 
 --- Hint lines for mapping project `pkey` (configuration `cfg`, a literal name
 --- or the `<config>` placeholder) into a configuration set (spec §16.38): `map`
@@ -916,19 +985,10 @@ end
 --- @param opts { no_number: boolean }|nil
 --- @return table|nil profile
 local function match_profile_arg(ws, name, opts)
-  local profiles = ws._profiles or {}
-  if not (opts and opts.no_number) then
-    local by_num = profile_by_number(ws, name)
-    if by_num then return by_num end
-  end
-  local keys, by_key = {}, {}
-  for _, p in ipairs(profiles) do keys[#keys + 1] = p.key; by_key[p.key] = p end
-  local hit, ambiguous = require("loomworks.merge").match_profile(keys, name)
-  if hit then return by_key[hit] end
-  if ambiguous then
-    die("'" .. name .. "' matches multiple profiles: " .. table.concat(ambiguous, ", "))
-  end
-  return nil
+  -- loomworks.build_run.match_profile (host-neutral, shared with the daemon).
+  local hit, err = require("loomworks.build_run").match_profile(ws, name, opts)
+  if err then die(err) end
+  return hit
 end
 M._match_profile_arg = match_profile_arg
 
@@ -945,36 +1005,11 @@ M._match_profile_arg = match_profile_arg
 --- @param opts { no_number: boolean, usage: string }|nil
 --- @return table profile
 local function resolve_profile(ws, name, opts)
-  local profiles = ws._profiles or {}
-  if name then
-    local hit = match_profile_arg(ws, name, opts)
-    if hit then return hit end
-    die("no profile matching '" .. name .. "'. Run `lw profile list` to list.")
-  end
-  -- No profile given. Non-interactive mode deliberately does NOT fall back to
-  -- the active/selected profile (or the single-profile shortcut): the active
-  -- profile is mutable shared state in user.json that a parallel run or a
-  -- committed dev setting could change under a CI build, so we require it
-  -- spelled out for a deterministic, contention-free result.
-  if not interactive() then
-    local keys = {}
-    for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
-    table.sort(keys)
-    die("no profile specified — non-interactive mode never uses the active profile\n" ..
-      "  and never infers one (not even when only one profile exists).\n" ..
-      "  pass one explicitly (a unique substring works): " ..
-      (opts and opts.usage or "lw <command> <profile>") .. "\n" ..
-      "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
-      "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically", 2)
-  end
-  local active = ws._active_profile_key
-  if active then
-    for _, p in ipairs(profiles) do
-      if p.key == active then return p end
-    end
-  end
-  if #profiles == 1 then return profiles[1] end
-  die("no profile specified and no unambiguous default — run `lw profile select`")
+  -- loomworks.build_run.resolve_profile; the refusals are its messages.
+  local o = { no_number = opts and opts.no_number, usage = opts and opts.usage, interactive = interactive() }
+  local p, err, code = require("loomworks.build_run").resolve_profile(ws, name, o)
+  if not p then die(err, code or 1) end
+  return p
 end
 M._resolve_profile = resolve_profile
 
@@ -987,14 +1022,16 @@ M._resolve_profile = resolve_profile
 --- @param root string
 --- @param to_stderr? boolean route the child's stdout to OUR stderr (keeps our
 ---   stdout clean for a machine consumer — used by `lw run --print`'s build).
---- @return integer code
+--- @return integer code, integer|nil signal the signal that ended the step
+---   (code is then 128 + signal: a failure, never a success — §16.7)
 local function run_spec(step, root, to_stderr)
   -- Resolve the program to an absolute path (never the cwd / a relative PATH
   -- entry) and, on Windows, add NoDefaultCurrentDirectoryInExePath=1 to the
   -- child env. An unresolvable program is reported, never spawned by name.
   -- loomworks.build_run.spawn_spec (the shared headless build path); an
   -- empty env is dropped there (the child inherits ours, never a wiped PATH).
-  local spec, herr = require("loomworks.build_run").spawn_spec(step, root)
+  local build_run = require("loomworks.build_run")
+  local spec, herr = build_run.spawn_spec(step, root)
   if not spec then
     errw("lw: " .. tostring(herr) .. "\n", "fail")
     return 127
@@ -1015,13 +1052,21 @@ local function run_spec(step, root, to_stderr)
       stdio = to_stderr and "inherit_err" or "inherit",
       hide = false,
     }):wait()
-    return res.code
+    -- (Inherited output is never captured: only a failed spawn reports here.)
+    if res.spawn_error then errw(build_run.spawn_failure_line(step.cmd[1], res.spawn_error) .. "\n") end
+    return build_run.exit_status(res.code, res.signal)
   end
-  local res = vim.system(step.cmd, {
+  local okc, obj = pcall(vim.system, step.cmd, {
     cwd = step.cwd or root,
     env = env,
     text = true,
-  }):wait()
+  })
+  if not okc then
+    -- Neovim's vim.system raises when the program cannot be started.
+    errw(build_run.spawn_failure_line(step.cmd[1], obj) .. "\n")
+    return 127
+  end
+  local res = obj:wait()
   if to_stderr then
     io.stderr:write(res.stdout or "")
   else
@@ -1029,7 +1074,8 @@ local function run_spec(step, root, to_stderr)
   end
   local err = res.stderr or ""
   if err ~= "" then io.stderr:write(err) end
-  return res.code
+  -- Neovim's vim.system reports a signal-ended process as code 0 + signal.
+  return build_run.exit_status(res.code, res.signal)
 end
 M._run_spec = run_spec
 
@@ -1058,38 +1104,13 @@ end
 --- (default `lw build <profile>`; test/clean/reset/run pass their own).
 --- @param usage? string
 local function resolve_build_target(ws, name, usage)
-  local profiles = ws._profiles or {}
   usage = usage or "lw build <profile>"
-
-  -- A concrete profile match (number index, exact key, or unambiguous
-  -- boundary-anchored substring — the shared matcher) always wins. A miss
-  -- (nil) falls through to the config-set onboarding / CI-refuse branches.
-  if name then
-    local hit = match_profile_arg(ws, name)
-    if hit then return hit, ws end
-  else
-    if not interactive() then return resolve_profile(ws, nil, { usage = usage }), ws end
-    local active = ws._active_profile_key
-    if active then for _, p in ipairs(profiles) do if p.key == active then return p, ws end end end
-    if #profiles == 1 then return profiles[1], ws end
-    if #profiles > 1 then
-      die("no profile specified and no active default — `lw profile select`, or `" .. usage .. "`")
-    end
-  end
-
-  -- No profile matched. Non-interactive → strict error with the exact commands.
-  if not interactive() then
-    if name then
-      for _, s in ipairs(ws._config_sets or {}) do
-        if s.name == name then
-          die("'" .. name .. "' is a configuration set with no profile yet — " ..
-            "create one:\n  lw profile create " .. name .. " <tool> --activate   " ..
-            "(tools: `lw tools`)\n  then: lw build")
-        end
-      end
-    end
-    return resolve_profile(ws, name, { usage = usage }), ws
-  end
+  -- The match / refusal rules are loomworks.build_run.resolve_target's (shared
+  -- with the workspace daemon, spec §19.15); only onboarding is this host's.
+  local p, err, _, code = require("loomworks.build_run").resolve_target(ws, name,
+    { usage = usage, interactive = interactive() })
+  if p then return p, ws end
+  if err then die(err, code or 1) end
 
   -- Onboard: build a config set by creating a profile for it.
   local sets = ws._config_sets or {}
@@ -1139,117 +1160,82 @@ end
 M._record_step = function(ws, step, ok) return require("loomworks.build_run").record(ws, step, ok) end
 M._runs_batch_file = function(cmd) return require("loomworks.build_run").runs_batch_file(cmd) end
 
---- Up to three of `candidates` close to `name` (case-insensitive substring
---- either way, or a small edit distance), nearest first.
---- @param name string
---- @param candidates string[]
---- @return string[]
+--- Up to three of `candidates` close to `name` (loomworks.build_run).
 local function close_matches(name, candidates)
-  local function dist(a, b)
-    local prev = {}
-    for j = 0, #b do prev[j] = j end
-    for i = 1, #a do
-      local cur = { [0] = i }
-      for j = 1, #b do
-        local cost = a:sub(i, i) == b:sub(j, j) and 0 or 1
-        cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
-      end
-      prev = cur
-    end
-    return prev[#b]
-  end
-  local lname, limit = name:lower(), math.max(1, math.floor(#name / 3))
-  local scored = {}
-  for _, c in ipairs(candidates) do
-    local lc = c:lower()
-    local d = dist(lname, lc)
-    if d <= limit or lc:find(lname, 1, true) or lname:find(lc, 1, true) then
-      scored[#scored + 1] = { name = c, d = d }
-    end
-  end
-  table.sort(scored, function(a, b)
-    if a.d ~= b.d then return a.d < b.d end
-    return a.name < b.name
-  end)
-  local outl = {}
-  for i = 1, math.min(3, #scored) do outl[i] = scored[i].name end
-  return outl
+  return require("loomworks.build_run").close_matches(name, candidates)
 end
 M._close_matches = close_matches
 
--- Defined with the test runner below; used by the --target failure hint.
+-- Defined with the test runner below.
 local ensure_unit_targets
 
---- After a failed `--target` build: name each requested target the unit's
---- parsed target list does not contain, with close matches. Advisory only —
---- the list omits targets a module does not introspect (e.g. cmake custom /
---- utility targets), so `--target` is never refused up front on it; the build
---- tool is the authority. nil when there is nothing to say.
+--- After a failed `--target` build: the build tool's unknown targets, named
+--- with close matches (loomworks.build_run.unknown_target_hint, §16.4).
 --- @return string|nil
 local function unknown_target_hint(ws, step, targets)
-  if not (targets and step.unit) then return nil end
-  pcall(ensure_unit_targets, ws, step.unit)
-  local known = step.unit.targets
-  if type(known) ~= "table" or not next(known) then return nil end
-  local names = {}
-  for id in pairs(known) do names[#names + 1] = id end
-  local lines = {}
-  local project = step.unit._project and step.unit._project.key or "the project"
-  for _, t in ipairs(targets) do
-    if not known[t] then
-      local near = close_matches(t, names)
-      lines[#lines + 1] = string.format("target '%s' is not among %s's known targets%s", t,
-        project, #near > 0 and (" — did you mean '" .. table.concat(near, "', '") .. "'?") or "")
-    end
-  end
-  return #lines > 0 and table.concat(lines, "\nlw: ") or nil
+  return require("loomworks.build_run").unknown_target_hint(ws, step, targets)
 end
+
+M._unknown_target_hint = unknown_target_hint
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean, verbose?: boolean }
+--- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean, verbose?: boolean, defer_refused?: boolean }
 ---   for_test skips building units whose native test runner rebuilds itself;
 ---   extra_args are forwarded to the build tool and build_targets select what
 ---   it builds — both handed to the module's build task (core §8.1), which
 ---   puts them on its native build command before any wrapping (§16.4);
 ---   force overrides the output-artifact conflict gate (§5.9); reconfigure
 ---   forces a FULL reconfigure of every unit before building (§16.4);
----   verbose prints each step's command line + cwd (always logged, §16.4).
+---   verbose prints each step's command line + cwd (always logged, §16.4);
+---   defer_refused returns the ProfileProjects not run as invalid (core §5.4)
+---   as a second value instead of dying on them, for a caller with more to
+---   run first (`lw test` tests the others, then fails).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- The plan/gate/record sequence lives in loomworks.build_run (host-neutral);
   -- only the spawn (blocking here) and the reporting (die) are this host's.
   local build_run = require("loomworks.build_run")
-  local steps, plan_err = build_run.plan(profile, {
+  local steps, plan_err, refused = build_run.plan(profile, {
     for_test = opts.for_test,
     reconfigure = opts.reconfigure,
     extra_args = opts.extra_args,
     build_targets = opts.build_targets,
   })
   if not steps then die(plan_err) end
-  if #steps == 0 then return 0 end
+  -- Invalid ProfileProjects (core §5.4) are not run: the others build first,
+  -- then the command fails naming them.
+  if #steps == 0 then
+    if refused and not opts.defer_refused then die(build_run.refused_message(refused), 1) end
+    return 0, refused
+  end
   -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
   -- so a machine consumer like `lw run --print` captures only its report.
   local quiet = opts.quiet or false
   local log = quiet and note or out
-  log("building profile: " .. profile.key, "lead")
+  log(build_run.lead_line("build", "profile: " .. profile.key))
+  -- Ignored loomworks.json program settings (spec §17.10): one line, stderr.
+  local tn, tn_role = build_run.trust_notice(ws, profile)
+  if tn then note(tn, tn_role) end
   for _, step in ipairs(steps) do
     -- Conflict gate + full-reconfigure reset. `--force` and `--no-input`
     -- alike just refuse with exit 1; force is the only bypass, never a prompt.
     local ok_g, g_err = build_run.before_step(ws, step, { force = opts.force })
     if not ok_g then die(g_err, 1) end
-    local lines, roles = build_run.step_lines(ws, step, { verbose = opts.verbose })
+    local lines, roles = build_run.step_lines(ws, step, { verbose = opts.verbose, env = true })
     for i, line in ipairs(lines) do log(line, roles[i]) end
     -- Through the module table so tests can stub the spawn.
-    local code = M._run_spec(step, ws.root, quiet)
+    -- (A step a signal ended comes back as 128 + signal, with the signal.)
+    local code, sig = M._run_spec(step, ws.root, quiet)
     build_run.after_step(ws, step, code)
     if code ~= 0 then
       -- A `--target` the unit's parsed targets do not list (likely a typo).
       local th = step.kind == "build" and unknown_target_hint(ws, step, opts.build_targets) or nil
-      die(build_run.failure_message(step, code, th), code)
+      die(build_run.failure_message(step, code, th, sig), code)
     end
   end
-  return #steps
+  if refused and not opts.defer_refused then die(build_run.refused_message(refused), 1) end
+  return #steps, refused
 end
 M._run_build_steps = run_build_steps  -- exported for tests
 
@@ -1262,11 +1248,15 @@ end
 --- for the duration of `fn`, then release. Fail-fast: if any dir is in use by
 --- another process, dies with a clear message (releasing any already held). A
 --- release is also registered as an exit hook so a `die()` inside `fn` frees
---- the locks too.
+--- the locks too. Directories are locked in canonical order (normalized path,
+--- spec §19.3). A dead holder's lock is reclaimed and the interrupted step's
+--- state recovered (§19.5 step 5); a hung or live holder is broken first under
+--- `--break-locks` (M._lock_holder_or_die).
 --- @param dirs string[] distinct build directories to lock
---- @param action "build"|"clean"
+--- @param action string "build"|"clean"|"reset"
 --- @param fn fun()
-local function with_build_dir_locks(dirs, action, fn)
+--- @param ws? loomworks.Workspace for messages and state recovery
+local function with_build_dir_locks(dirs, action, fn, ws)
   local build_lock = require("loomworks.build_lock")
   local held = {}
   local function release_all()
@@ -1274,23 +1264,53 @@ local function with_build_dir_locks(dirs, action, fn)
     held = {}
   end
   on_exit(release_all)
-  for _, bd in ipairs(dirs) do
-    local h, err = build_lock.acquire(bd, action)
-    if not h then
-      release_all()
-      die("cannot " .. action .. ": " .. tostring(err))
-    end
+  local ordered = M._lock_order(dirs)
+  for _, bd in ipairs(ordered) do
+    local shown = ws and ws:_display_build_dir(bd) or bd
+    local ctx = { what = shown, command = require("loomworks.lock_break").command, unlock = shown }
+    local h = M._lock_holder_or_die(function()
+      local hh, _, info = build_lock.acquire(bd, action, ctx)
+      return hh, info
+    end, ctx, release_all)
     held[#held + 1] = h
+    if h.reclaimed and ws then
+      local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
+      if line then errw("lw: " .. line .. "\n") end
+    end
   end
   fn()
   release_all()
+end
+M._with_build_dir_locks = with_build_dir_locks -- exported for tests
+
+--- Build directories in the canonical lock order of spec §19.3: by
+--- normalized identity (§4.6, §2.3), duplicates dropped.
+--- @param dirs string[]
+--- @return string[]
+function M._lock_order(dirs)
+  return require("loomworks.build_run").lock_order(dirs)
+end
+
+--- Acquire one lock through `try()` (→ handle | nil, classified info), dying
+--- with the holder's message on refusal (after `cleanup`). Under
+--- `--break-locks` (loomworks.lock_break.requested) a hung or live holder on
+--- this host is stopped first and the acquisition retried once (§19.5).
+--- @param try fun(): table|nil, table|nil
+--- @param ctx table busy-message context
+--- @param cleanup? fun()
+--- @return table handle
+function M._lock_holder_or_die(try, ctx, cleanup)
+  local h, msg = require("loomworks.lock_break").acquire(try, ctx)
+  if h then return h end
+  if cleanup then cleanup() end
+  die(msg)
 end
 
 --- @param profile loomworks.Profile
 --- @param action "build"|"clean"
 --- @param fn fun()
 local function with_build_locks(profile, action, fn)
-  with_build_dir_locks(profile_build_dirs(profile), action, fn)
+  with_build_dir_locks(profile_build_dirs(profile), action, fn, profile._workspace)
 end
 
 --- `lw build [profile] [--target <name>]... [-- <build-tool args>]` — configure
@@ -1340,65 +1360,11 @@ function M.cmd_build(ws, args)
     die("nothing to build for profile '" .. profile.key ..
       "' — no buildable projects (unavailable module or unresolved tool?)")
   end
-  out("BUILD OK: " .. profile.key, "ok")
+  out(require("loomworks.build_run").ok_line("build", profile.key))
   return 0
 end
 
---- `lw clean [profile] [-v|--verbose]` — run each project's build-system clean
---- (e.g. `meson compile --clean`, `cmake --build --target clean`) on the
---- profile's configured build dirs. Removes build artifacts but keeps the
---- configuration (a later build reconfigures only if stale). Dies on any
---- failure. With `-v` each clean step prints its command (or the directory a
---- core-performed wipe removes) under its header (§16.4 *Verbose*).
---- @param args string[] the command line from the command word on
-function M.cmd_clean(ws, args)
-  local overseer = require("loomworks.overseer")
-  local build_run = require("loomworks.build_run")
-  local profile_name, verbose = nil, false
-  for i = 2, #args do
-    local a = args[i]
-    if a == "-v" or a == "--verbose" then verbose = true
-    elseif not profile_name then profile_name = a
-    else die("unexpected argument '" .. tostring(a) .. "' — usage: lw clean [profile] [-v|--verbose]", 2) end
-  end
-  local profile
-  profile, ws = resolve_build_target(ws, profile_name, "lw clean <profile>")
-  local steps = overseer.plan_profile_clean(profile)
-  if not steps or #steps == 0 then
-    die("nothing to clean for profile '" .. profile.key ..
-      "' — no configured build directories.")
-  end
-  with_build_locks(profile, "clean", function()
-    out("cleaning profile: " .. profile.key, "lead")
-    for _, step in ipairs(steps) do
-      out(require("loomworks.cli_color").header("clean", step.name), "phase")
-      if step.wipe_build_dir then
-        -- Core-performed wipe (spec §8.1): validated against the workspace
-        -- root (never the root itself), removed in-process — no shell.
-        if not ws:_validate_build_dir(step.build_dir, ws.root) then
-          die("clean refused: unsafe build directory " .. tostring(step.build_dir))
-        end
-        if verbose then out(build_run.remove_line(step.build_dir), "command") end
-        local ok, err = require("loomworks.io").rm_rf(step.build_dir)
-        if not ok then
-          die("clean failed: " .. tostring(err) .. ": " .. (step.name or "?"))
-        end
-      else
-        if verbose then
-          for _, l in ipairs(build_run.command_lines(step, step.cwd or ws.root)) do out(l, "command") end
-        end
-        local code = M._run_spec(step, ws.root)
-        if code ~= 0 then
-          die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
-        end
-      end
-    end
-  end)
-  out("CLEAN OK: " .. profile.key, "ok")
-  return 0
-end
-
--- A deletion spawns rm-rf subprocesses; give the whole reset a generous budget
+-- A deletion spawns rm-rf subprocesses; give the whole reset / clean wipe a generous budget
 -- (large trees / slow disks) before declaring it stuck.
 local RESET_TIMEOUT_MS = 120000
 -- After the deletion subprocess exits, the directory can briefly linger on
@@ -1406,6 +1372,75 @@ local RESET_TIMEOUT_MS = 120000
 -- namespace until it closes). Poll for genuine on-disk absence up to this long
 -- before declaring the removal failed. Instant on a healthy filesystem.
 local RESET_VERIFY_MS = 30000
+
+--- `lw clean [profile] [-v|--verbose]` — run each project's build-system clean (e.g.
+--- `meson compile --clean`, `cmake --build --target clean`) on the profile's
+--- configured build dirs. Removes build artifacts but keeps the configuration
+--- (a later build reconfigures only if stale). Dies on any failure. The plan,
+--- lines and the core-performed wipe are loomworks.build_run's, shared with
+--- the workspace daemon (spec §19.15 "Clean"). With `-v` each clean step
+--- prints its command (or the directory a core-performed wipe removes) under
+--- its header (§16.4 *Verbose*).
+--- @param ws loomworks.Workspace
+--- @param args string[] the command line from the command word on
+function M.cmd_clean(ws, args)
+  local build_run = require("loomworks.build_run")
+  local profile_name, verbose = M._parse_clean_args(args, die)
+  local profile
+  profile, ws = resolve_build_target(ws, profile_name, "lw clean <profile>")
+  local steps, refused = build_run.plan_clean(profile)
+  -- Invalid ProfileProjects (core §5.4) are not cleaned: the others are,
+  -- then the command fails naming them.
+  if not steps and refused then die(build_run.refused_message(refused), 1) end
+  -- Nothing to clean: an ordinary stdout line (as the daemon's refusal on
+  -- stdout, API.md §8.4), its exit code 1 kept.
+  if not steps then
+    out(build_run.nothing_to_clean_message(profile), "plain")
+    return 1
+  end
+  -- A core-performed wipe is a deletion, which takes the workspace operation
+  -- lock; lock order (spec §19.3) puts it before the build-directory locks
+  -- (the deletion's own acquisition then re-enters both).
+  local op_tok
+  if build_run.has_wipe(steps) then
+    op_tok = ws:_op_lock("clean")
+    on_exit(function() require("loomworks.op_lock").release(op_tok) end)
+  end
+  local groups = build_run.wipe_groups(ws, steps)
+  with_build_locks(profile, "clean", function()
+    out(build_run.lead_line("clean", "profile: " .. profile.key))
+    for _, step in ipairs(steps) do
+      out(build_run.clean_step_line(step))
+      if step.wipe_build_dir then
+        -- Core-performed wipe (spec §8.1) = a build-directory deletion
+        -- (§4.6, §4.7), the daemon's same path (build_run.wipe_step).
+        if verbose then out(build_run.remove_line(step.build_dir), "command") end
+        local done, res = false, nil
+        build_run.wipe_step(ws, step, groups,
+          { verify_ms = M._reset_verify_ms or RESET_VERIFY_MS },
+          function(code, msg, _, note) done, res = true, { code = code, msg = msg, note = note } end)
+        if not vim.wait(RESET_TIMEOUT_MS + (M._reset_verify_ms or RESET_VERIFY_MS),
+            function() return done end, 20) then
+          die("clean timed out — the build-directory deletion did not complete: "
+            .. (step.name or "?"))
+        end
+        if res.code ~= 0 then die(res.msg, res.code) end
+        if res.note then out(res.note, "plain") end
+      else
+        if verbose then
+          for _, l in ipairs(build_run.command_lines(step, step.cwd or ws.root)) do out(l, "command") end
+        end
+        local code, sig = M._run_spec(step, ws.root)
+        build_run.after_clean_step(ws, step, code)
+        if code ~= 0 then die(build_run.failure_message(step, code, nil, sig), code) end
+      end
+    end
+  end)
+  if op_tok then require("loomworks.op_lock").release(op_tok) end
+  if refused then die(build_run.refused_message(refused), 1) end
+  out(build_run.ok_line("clean", profile.key))
+  return 0
+end
 
 --- `lw reset [profile] [--all] [-y]` — HARD reset build state (spec §16.30):
 --- remove the build directories (rm -rf, not the build system's own artifact
@@ -1415,7 +1450,16 @@ local RESET_VERIFY_MS = 30000
 --- profiles, including orphaned dirs. Destructive, so it confirms first: `-y` /
 --- `--yes` skips the prompt; a non-interactive host without `-y` refuses rather
 --- than deleting unprompted.
-function M.cmd_reset(ws, args)
+--- `opts.plan`: the token of a plan the user already confirmed from the
+--- workspace daemon's listing (§19.15 "Reset": the second request could not
+--- be routed) — nothing is listed or asked again, and a plan whose token
+--- differs is refused (`reset_plan.CHANGED`) before anything is removed.
+--- @param ws loomworks.Workspace
+--- @param args string[]
+--- @param opts? { plan?: string }
+--- @return integer
+function M.cmd_reset(ws, args, opts)
+  opts = opts or {}
   local all, yes, profile_name = false, false, nil
   for i = 2, #args do
     local a = args[i]
@@ -1432,142 +1476,77 @@ function M.cmd_reset(ws, args)
     die("`lw reset --all` resets every profile — drop the profile argument", 2)
   end
 
-  -- Three sets:
-  --  * lock_dirs   — EVERY computed build dir (a loaded profile carries a
-  --                  computed path even when never built, and another process
-  --                  could be configuring it): all must be held exclusive.
-  --  * removal_dirs — dirs that actually EXIST on disk AND are targeted for
-  --                  physical removal (disposition ≠ "keep"): reported, and
-  --                  verified gone after the deletion.
-  --  * state_to_clear — true if any targeted unit carries build state even with
-  --                  no dir on disk (e.g. a build dir deleted out of band): the
-  --                  reset still clears that stale state.
-  local lock_dirs, lock_seen = {}, {}
-  local removal_dirs, removal_seen = {}, {}
-  local state_to_clear = false
-  local function add_lock(bd)
-    if bd and not lock_seen[bd] then lock_seen[bd] = true; lock_dirs[#lock_dirs + 1] = bd end
-  end
-  -- Owned LSP database mirrors of the removed dirs, present on disk: listed,
-  -- removed with them by the deletion (spec §4.6), checked afterwards (warning).
-  local mirrors, mirror_seen = {}, {}
-  local function add_removal(bd, unit, bd_obj)
-    if bd and not removal_seen[bd] and uv.fs_stat(bd) ~= nil then
-      removal_seen[bd] = true; removal_dirs[#removal_dirs + 1] = bd
-    end
-    local m = bd and ws:_lsp_db_mirror(ws:_lsp_db_module_for(unit, bd_obj), bd)
-    if m and not mirror_seen[m] and uv.fs_stat(m) ~= nil then
-      mirror_seen[m] = true; mirrors[#mirrors + 1] = m
-    end
-  end
-  local scope_label, run
-
+  -- The plan (spec §16.30) is loomworks.reset_plan's, shared with the
+  -- workspace daemon (§19.15 "Reset"): the lock set (every computed build
+  -- dir), the removal set (dirs on disk to remove), the listing, the token.
+  local reset_plan = require("loomworks.reset_plan")
+  local plan
   if all then
-    scope_label = "the whole workspace"
-    for _, unit in pairs(ws._config_units or {}) do
-      local bd = unit:build_dir()
-      add_lock(bd)
-      add_removal(bd, unit, unit._build_dir) -- reset_all batches every unit; none are "keep"
-      if unit.state_value ~= nil then state_to_clear = true end
-    end
-    for _, o in ipairs(ws:get_orphaned_configs()) do
-      add_lock(o.build_dir_obj and o.build_dir_obj.path or nil)
-      add_removal(o.build_dir_obj and o.build_dir_obj.path or nil, nil, o.build_dir_obj)
-      state_to_clear = true -- get_orphaned_configs only returns dirs WITH state
-    end
-    run = function(on_done) ws:reset_all(on_done) end
+    plan = reset_plan.plan(ws, { all = true })
   else
     local profile
     profile, ws = resolve_build_target(ws, profile_name, "lw reset <profile>")
-    scope_label = "profile '" .. profile.key .. "'"
-    -- plan_reset marks a unit shared with another profile as "keep" (its dir is
-    -- retained); only non-keep items are physically removed.
-    for _, item in ipairs(profile:plan_reset().items) do
-      add_lock(item.build_dir)
-      if item.disposition ~= "keep" then
-        add_removal(item.build_dir, item.unit, item.unit and item.unit._build_dir)
-        if item.unit and item.unit.state_value ~= nil then state_to_clear = true end
-      end
-    end
-    run = function(on_done) profile:reset(on_done) end
+    plan = reset_plan.plan(ws, { profile = profile })
   end
 
-  if #removal_dirs == 0 and not state_to_clear then
-    out("nothing to reset for " .. scope_label .. " — no build directories to remove.", "plain")
+  -- Confirmed against the daemon's listing: never remove a directory the
+  -- user was not shown (§19.15 "Reset").
+  if opts.plan and opts.plan ~= plan.token then die(reset_plan.CHANGED) end
+
+  if reset_plan.is_empty(plan) then
+    out(reset_plan.nothing_message(plan), "plain")
     return 0
   end
 
-  if #removal_dirs > 0 then
-    out(string.format("Will remove %d build director%s and reset %s to unconfigured:",
-      #removal_dirs, (#removal_dirs == 1) and "y" or "ies", scope_label), "plain")
-    for _, d in ipairs(removal_dirs) do out("  " .. d, "plain") end
-    if #mirrors > 0 then
-      out("and the owned LSP database" .. (#mirrors == 1 and "" or "s") .. " generated from them:", "plain")
-      for _, m in ipairs(mirrors) do out("  " .. m, "plain") end
-    end
-  else
-    out("Will reset " .. scope_label .. " to unconfigured "
-      .. "(no build directories on disk; clearing cached state).", "plain")
+  if not opts.plan then
+    for _, line in ipairs(reset_plan.listing(plan)) do out(line, "plain") end
   end
 
   -- Destructive → confirm. `-y` skips; a non-interactive host without it refuses
   -- rather than deleting unprompted (spec §16.30).
-  if not yes then
-    if not interactive() then
-      die("refusing to remove build directories without confirmation.\n"
-        .. "  Re-run with -y to reset " .. scope_label .. ".")
-    end
-    local answer = prompt_line("Reset " .. scope_label .. "? [y/N]")
+  if not yes and not opts.plan then
+    if not interactive() then die(reset_plan.unconfirmed_message(plan)) end
+    local answer = prompt_line(reset_plan.prompt(plan))
     answer = (answer or ""):lower()
     if answer ~= "y" and answer ~= "yes" then
-      die("aborted — nothing was removed")
+      die(reset_plan.ABORTED)
     end
   end
 
   -- Exclusive like clean/delete: hold every target dir's lock across the async
-  -- deletion, driving it to completion headlessly (spec §16.6, §16.30). The
-  -- deletion's on_done fires when the rm subprocess exits, but the process
-  -- exiting does not guarantee the directory is gone: on Windows a failed rm
-  -- leaves it, and a successful rm can leave it delete-pending for a moment.
-  -- So after logical completion we VERIFY genuine on-disk absence (polling out
-  -- delete-pending) and fail loudly if a directory truly could not be removed —
-  -- reset must not report success while a build tree survives.
-  local done, still_present = false, nil
-  with_build_dir_locks(lock_dirs, "clean", function()
-    run(function() done = true end)
-    if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then return end
-    if #removal_dirs > 0 then
-      local pending = {}
-      for _, d in ipairs(removal_dirs) do pending[d] = true end
-      vim.wait(M._reset_verify_ms or RESET_VERIFY_MS, function()
-        local any = false
-        for d in pairs(pending) do
-          if uv.fs_stat(d) == nil then pending[d] = nil else any = true end
-        end
-        return not any
-      end, 20)
-      local left = {}
-      for d in pairs(pending) do left[#left + 1] = d end
-      if #left > 0 then table.sort(left); still_present = left end
+  -- deletion (spec §16.6, §16.30). reset_plan.execute runs the deletion and
+  -- then VERIFIES genuine on-disk absence (polling out delete-pending without
+  -- blocking) — reset must not report success while a build tree survives.
+  -- This host waits on it; the daemon keeps serving instead.
+  local verify_ms = M._reset_verify_ms or reset_plan.VERIFY_MS
+  local settled, res = false, nil
+  -- Lock order (spec §19.3): the workspace operation lock first, then every
+  -- build directory's lock; the workspace's own deletion re-enters both.
+  local op_tok = ws:_op_lock("reset")
+  on_exit(function() require("loomworks.op_lock").release(op_tok) end)
+  with_build_dir_locks(plan.lock_dirs, "reset", function()
+    -- Under the locks, before anything is removed: the plan must still be the
+    -- one listed (a dir another process created meanwhile is refused, never
+    -- removed unseen; spec §16.30).
+    local vok, vmsg = reset_plan.verify(ws, plan)
+    if not vok then
+      settled, res = true, { code = 1, msg = vmsg }
+      return
     end
-  end)
-  if not done then
-    die("reset timed out — a build-directory deletion did not complete")
-  end
-  if still_present then
-    die(string.format("reset failed — %d build director%s could not be removed:\n  %s",
-      #still_present, (#still_present == 1) and "y" or "ies",
-      table.concat(still_present, "\n  ")))
-  end
+    reset_plan.execute(ws, plan, { verify_ms = verify_ms }, function(code, msg)
+      settled, res = true, { code = code, msg = msg }
+    end)
+    -- Backstop only: execute's own timers settle it (timeout / verify bound).
+    vim.wait(reset_plan.TIMEOUT_MS + verify_ms + 5000, function() return settled end, 20)
+  end, ws)
+  require("loomworks.op_lock").release(op_tok)
+  if not settled then die(reset_plan.TIMED_OUT) end
+  if res.code ~= 0 then die(res.msg, res.code) end
 
   -- A mirror left behind is a warning, not a reset failure (spec §16.30):
   -- it was kept as shared, refused by a safety check, or failed to delete.
-  for _, m in ipairs(mirrors) do
-    if uv.fs_stat(m) ~= nil then
-      out("warning: owned LSP database not removed: " .. m, "warn")
-    end
-  end
-  out("RESET OK: " .. scope_label, "ok")
+  for _, line in ipairs(reset_plan.mirror_warnings(plan)) do out(line, "warn") end
+  out(reset_plan.ok_line(plan))
   return 0
 end
 
@@ -1630,6 +1609,15 @@ function M.cmd_trust(root, args)
   local status, content = trust.verify("user", text)
 
   if discard then
+    -- Removes the working copy and its backup: the workspace operation lock
+    -- (spec §19.3) keeps a concurrent publish / import out of the middle. It
+    -- is taken before the notice and any prompt, so a refusal prints alone:
+    -- held from here with --yes; with a prompt only checked (a lock held
+    -- across a blocking prompt stops heartbeating) and taken after the answer.
+    local op_lock = require("loomworks.op_lock")
+    local tok, lmsg = op_lock.acquire(root, "trust --discard")
+    if not tok then die(lmsg) end
+    if not yes then op_lock.release(tok) end
     out("Will delete " .. path .. " (the working copy: profiles, local configuration, settings).", "plain")
     if not yes then
       if not interactive() then
@@ -1637,11 +1625,16 @@ function M.cmd_trust(root, args)
       end
       local answer = (prompt_line("Discard it? [y/N]") or ""):lower()
       if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+      tok, lmsg = op_lock.acquire(root, "trust --discard")
+      if not tok then die(lmsg) end
     end
+    if tok.recovered then errw("lw: " .. tok.recovered .. "\n") end
+    on_exit(function() op_lock.release(tok) end)
     for _, p in ipairs({ path, path .. ".bak" }) do
       local ok, err = io_mod.rm_rf(p)
       if not ok then die("could not delete " .. p .. ": " .. tostring(err)) end
     end
+    op_lock.release(tok)
     out("DISCARDED: " .. path, "ok")
     return 0
   end
@@ -1697,17 +1690,32 @@ function M.cmd_nuke(root, args)
     if v == "-y" or v == "--yes" then yes = true
     else die("unknown argument '" .. v .. "' — usage: lw nuke [-y]", 2) end
   end
-  local targets = {
-    root .. "/.nvim/build/",
-    require("loomworks.cache").filepath(root),
-    root .. "/.nvim/loomworks.health.json",
-  }
   local core = require("loomworks")._core()
+  -- The locks first (spec §19.3), BEFORE the list of what would go and any
+  -- prompt: a refused nuke prints only its refusal. With -y they are held
+  -- from here to the deletion. Otherwise they are only checked here (taken
+  -- and released: a lock held across a blocking prompt stops heartbeating)
+  -- and taken again once confirmed; the check never breaks a holder —
+  -- `--break-locks` acts only on the confirmed nuke.
+  local st, why
+  if yes then
+    st, why = core:_nuke_begin(root)
+    if not st then die(M._nuke_message(why)) end
+  else
+    local lock_break = require("loomworks.lock_break")
+    local requested = lock_break.requested
+    lock_break.requested = nil
+    local ok, cwhy = core:nuke_check(root)
+    lock_break.requested = requested
+    if not ok and not requested then die(M._nuke_message(cwhy)) end
+  end
   -- Module-owned LSP database areas present on disk (spec §4.6, ui §1.11).
-  -- A failed area check aborts before anything is deleted.
-  local areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root))
+  -- `_nuke_begin` / `nuke_check` above already refused a failed area check;
+  -- this lists them (with -y, the ones the held nuke state removes).
+  local areas, area_err
+  if st then areas = st.areas else areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root)) end
   if not areas then die("nuke refused: " .. tostring(area_err)) end
-  for _, a in ipairs(areas) do targets[#targets + 1] = a .. "/" end
+  local targets = core:nuke_targets(root, areas)
   out("Will delete (build state only; your configuration is kept):", "plain")
   for _, p in ipairs(targets) do out("  " .. p, "plain") end
   if not yes then
@@ -1716,30 +1724,57 @@ function M.cmd_nuke(root, args)
     end
     local answer = (prompt_line("Reset the build cache? [y/N]") or ""):lower()
     if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+    st, why = core:_nuke_begin(root)
+    if not st then die(M._nuke_message(why)) end
   end
   local errors = {}
   local saved_notify = core._deps.notify
   core._deps.notify = function(msg, level)
-    if level and level >= vim.log.levels.ERROR then errors[#errors + 1] = tostring(msg) end
+    if level and level >= vim.log.levels.ERROR then errors[#errors + 1] = M._nuke_message(msg) end
   end
-  local done = core:_nuke_files(root)
+  local done = core:_nuke_run(st)
   core._deps.notify = saved_notify
-  if not done or #errors > 0 then
-    die("nuke failed" .. (#errors > 0 and (":\n  " .. table.concat(errors, "\n  ")) or ""))
-  end
+  if not done or #errors > 0 then die(M._nuke_failure(errors)) end
   out("NUKED: build state removed — the next build reconfigures from scratch.", "ok")
   return 0
 end
 
---- `lw unlock <profile> | --all` — force-remove build-dir locks,
---- for recovery after a crash left a stale lock. Warns before clearing a lock
---- that still looks active (fresh heartbeat).
-function M.cmd_unlock(ws, args)
-  local build_lock = require("loomworks.build_lock")
-  local all, profile_name, device_serial = false, nil, nil
+--- A core nuke message as the CLI prints it: core's own `loomworks: `
+--- prefix dropped (`die` adds `lw: `).
+--- @param msg any
+--- @return string
+function M._nuke_message(msg)
+  return (tostring(msg or "nuke failed"):gsub("^loomworks: ", ""))
+end
+
+--- The message for the errors a running nuke reported: one refusal stands
+--- alone (`cannot nuke: …`), one failure reads `nuke failed: …`, several go
+--- on their own lines under `nuke failed:`.
+--- @param errors string[] already stripped (`_nuke_message`)
+--- @return string
+function M._nuke_failure(errors)
+  if #errors == 0 then return "nuke failed" end
+  if #errors == 1 then
+    return errors[1]:find("^cannot nuke: ") and errors[1] or ("nuke failed: " .. errors[1])
+  end
+  return "nuke failed:\n  " .. table.concat(errors, "\n  ")
+end
+
+--- `lw unlock <profile|dir> | --all [--force]` — clear build-dir locks
+--- (spec §16.6, §19.5). Without `--force` only a lock whose holder is gone (dead,
+--- or stale where it cannot be checked) is removed — its interrupted step's
+--- state recovered as on any reclaim; a live or hung holder's lock is refused,
+--- naming the holder. `--force` removes the record whatever the holder's state,
+--- WITHOUT stopping it, after warning that it may still be running and writing.
+--- `--device <serial>` clears a device lock (§18.7; always forced).
+function M.cmd_unlock(ws, args, root)
+  local all, profile_name, device_serial, force, workspace = false, nil, nil, false, false
   local i = 2
   while args[i] do
     if args[i] == "--all" then all = true; i = i + 1
+    elseif args[i] == "--force" then force = true; i = i + 1
+    elseif args[i] == "--journal" then return M._unlock_journal(root or (ws and ws.root))
+    elseif args[i] == "--workspace" then workspace = true; i = i + 1
     elseif args[i] == "--device" then
       device_serial = args[i + 1]
       if not device_serial then die("--device requires a serial", 2) end
@@ -1768,6 +1803,8 @@ function M.cmd_unlock(ws, args)
     end
     if not info.stale then
       errw("lw: forcing an ACTIVE device lock (" .. device_lock.holder(info, device_serial) .. " ago)\n")
+      M._record_recovery(root or (ws and ws.root), "lw unlock --device: forced the active device lock of "
+        .. device_serial .. " held by pid " .. tostring(info.pid))
     end
     device_lock.force(device_serial)
     out("unlocked device " .. device_serial)
@@ -1779,36 +1816,184 @@ function M.cmd_unlock(ws, args)
     return 0
   end
 
-  local function unlock_dir(bd)
-    local info = build_lock.read(bd)
-    if not info then return false end
-    if not info.stale then
-      errw(string.format(
-        "lw: forcing an ACTIVE lock (pid %s, %s, %ss ago): %s\n",
-        tostring(info.pid), tostring(info.action), tostring(info.age), bd))
-    end
-    build_lock.force(bd)
-    out("unlocked " .. bd)
-    return true
+  -- `lw unlock --workspace` clears the workspace operation lock (spec §19.3);
+  -- `--all` includes it.
+  if workspace and not all and not profile_name then
+    return M._unlock_workspace(root or (ws and ws.root), force)
   end
+  if all then
+    local code = M._unlock_workspace(ws.root, force, true)
+    if code ~= 0 then return code end
+  end
+  return M._unlock_build_dirs(ws, all, profile_name, force)
+end
 
+--- Discard a stuck commit journal (`lw unlock --journal`, spec §19.4): under
+--- the workspace operation lock (taken WITHOUT completing the journal), remove
+--- exactly `.nvim/loomworks.txn.json` and the stray staged copies of the three
+--- workspace files (`<file>.txn-<hex>`, regular files). The files stay as
+--- they are — possibly a mix of the interrupted operation's old and new state.
+--- @param root string
+--- @return integer exit code
+function M._unlock_journal(root)
+  local txn = require("loomworks.txn")
+  local op_lock = require("loomworks.op_lock")
+  local j, why = txn.read_journal(root)
+  if j == nil and #txn.strays(root) == 0 then
+    out("no commit journal")
+    return 0
+  end
+  local tok, lmsg = op_lock.acquire(root, "unlock --journal", { no_recover = true })
+  if not tok then die(lmsg) end
+  on_exit(function() op_lock.release(tok) end)
+  local removed = txn.discard_locked(root)
+  op_lock.release(tok)
+  for _, p in ipairs(removed) do out("removed " .. p) end
+  if j ~= nil then
+    errw("lw: WARNING: discarded the journal of an interrupted "
+      .. (j and tostring(j.operation or "operation") or ("operation (the journal " .. tostring(why) .. ")"))
+      .. " — the workspace files may now mix its old and new state; check them (`lw status`), or "
+      .. "reset the build state (`lw nuke`)\n")
+  end
+  return 0
+end
+
+--- Clear the workspace operation lock (`lw unlock --workspace`, `--all`):
+--- a gone holder's lock is removed (nonce-checked); a running or hung one only
+--- with `force`, loudly, without stopping it. `quiet` = say nothing when free.
+--- @param root string
+--- @param force boolean
+--- @param quiet? boolean
+--- @return integer exit code
+function M._unlock_workspace(root, force, quiet)
+  local op_lock = require("loomworks.op_lock")
+  local build_lock = require("loomworks.build_lock")
+  local lock_record = require("loomworks.lock_record")
+  local path = op_lock.path(root)
+  local info = build_lock.read_path(path)
+  if not info then
+    if not quiet then out("no workspace operation lock") end
+    return 0
+  end
+  info.state = lock_record.classify(info)
+  if lock_record.RECLAIMABLE[info.state] then
+    if build_lock.reclaim_path(path) then out("unlocked the workspace operation lock") end
+    return 0
+  end
+  if not force then
+    errw("lw: " .. lock_record.busy_message(info, op_lock.ctx()) .. "\n")
+    die("the workspace operation lock was left in place — its holder is running (use --force "
+      .. "to remove the record anyway, or the command's --break-locks to stop the holder)")
+  end
+  errw(string.format("lw: WARNING: removing the workspace operation lock held by %s (pid %s%s, %s) "
+    .. "without stopping it — it may still be running and writing\n", lock_record.holder_text(info),
+    tostring(info.pid or "?"), lock_record.same_host(info) and "" or (" on " .. tostring(info.host)),
+    info.state))
+  M._record_recovery(root, "lw unlock --force: removed the workspace operation lock held by pid "
+    .. tostring(info.pid) .. " (" .. tostring(info.state) .. ")")
+  build_lock.force_path(path)
+  out("unlocked the workspace operation lock")
+  return 0
+end
+
+--- The build-directory part of `lw unlock` (see M.cmd_unlock). `name` is a
+--- profile, or a build directory (relative to the workspace root, or
+--- absolute) that must lie under the root (separator-bounded), both as
+--- spelled and by identity (loomworks.dir_identity: its real path must lie
+--- under the root's real path, so a junction / symlink to a folder outside
+--- the workspace is refused): only `<dir>.loomworks-lock` beside that
+--- identity — exactly that regular file — is ever removed.
+--- @param ws loomworks.Workspace
+--- @param all boolean
+--- @param name string|nil
+--- @param force boolean
+--- @return integer exit code
+function M._unlock_build_dirs(ws, all, name, force)
+  local build_lock = require("loomworks.build_lock")
+  local lock_record = require("loomworks.lock_record")
   local targets = {}
   if all then
     for _, p in ipairs(ws._profiles or {}) do
-      for _, bd in ipairs(profile_build_dirs(p)) do targets[bd] = true end
+      for _, bd in ipairs(profile_build_dirs(p)) do targets[#targets + 1] = bd end
     end
   else
-    if not profile_name then
-      die("usage: lw unlock <profile> | --all | --device <serial>", 2)
+    if not name then
+      die("usage: lw unlock <profile> | <build dir> | --all [--force] | --device <serial>", 2)
     end
-    for _, bd in ipairs(profile_build_dirs(resolve_profile(ws, profile_name))) do
-      targets[bd] = true
+    -- A name with a path separator is a build directory; else a profile.
+    local is_path = name:find("[/\\]") ~= nil
+    local hit = not is_path and match_profile_arg(ws, name) or nil
+    if not is_path and not hit then
+      die("no profile matching '" .. name .. "' (a build directory is named by its path, e.g. "
+        .. ".nvim/build/App/Debug). Run `lw profile list` to list.")
+    end
+    if hit then
+      for _, bd in ipairs(profile_build_dirs(hit)) do targets[#targets + 1] = bd end
+    else
+      local p = name:gsub("\\", "/"):gsub("/+$", "")
+      -- No `.` / `..` segments: the prefix check below compares spellings,
+      -- so `../x` must never pass for a path under the root.
+      for seg in p:gmatch("[^/]+") do
+        if seg == "." or seg == ".." then
+          die("a build directory is named by a plain path under the workspace root "
+            .. "(no '.' or '..' segments): " .. name)
+        end
+      end
+      if not (p:match("^%a:/") or p:sub(1, 1) == "/") then p = ws.root .. "/" .. p end
+      local nr, np = norm_cmp(ws.root), norm_cmp(p)
+      if np:sub(1, #nr + 1) ~= nr .. "/" then
+        die("no profile matching '" .. name .. "', and it is not a directory under the workspace root")
+      end
+      -- The lockfile sits beside the directory's IDENTITY (build_lock.lock_path),
+      -- so the spelled check above is not enough: a junction / symlink under
+      -- the root can point outside it. Require the identity under the
+      -- root's identity too (separator-bounded), else refuse.
+      local identity = require("loomworks.dir_identity")
+      local rr, ri = norm_cmp(identity.resolve(ws.root)), norm_cmp(identity.resolve(p))
+      if ri:sub(1, #rr + 1) ~= rr .. "/" then
+        die("'" .. name .. "' resolves to " .. identity.resolve(p) .. ", outside the workspace root; "
+          .. "lw unlock does not remove its lockfile " .. build_lock.lock_path(p)
+          .. " — remove it by hand if its holder is gone")
+      end
+      targets[1] = p
     end
   end
 
-  local removed = 0
-  for bd in pairs(targets) do
-    if unlock_dir(bd) then removed = removed + 1 end
+  local removed, refused = 0, 0
+  for _, bd in ipairs(M._lock_order(targets)) do
+    local path = build_lock.lock_path(bd)
+    local shown = ws:_display_build_dir(bd)
+    local info = build_lock.read_path(path)
+    if info then
+      info.state = lock_record.classify(info)
+      local gone
+      if lock_record.RECLAIMABLE[info.state] then
+        gone = build_lock.reclaim_path(path) ~= nil
+      elseif force then
+        errw(string.format("lw: WARNING: removing the lock of %s held by %s (pid %s%s, %s) without "
+          .. "stopping it — it may still be running and writing there\n", shown,
+          lock_record.holder_text(info), tostring(info.pid or "?"),
+          lock_record.same_host(info) and "" or (" on " .. tostring(info.host)), info.state))
+        M._record_recovery(ws.root, "lw unlock --force: removed the lock of " .. shown .. " held by pid "
+          .. tostring(info.pid) .. " (" .. tostring(info.state) .. ")")
+        gone = build_lock.force_path(path)
+      else
+        refused = refused + 1
+        errw("lw: " .. lock_record.busy_message(info, { what = shown, command = "lw build",
+          unlock = shown }) .. "\n")
+      end
+      if gone then
+        removed = removed + 1
+        out("unlocked " .. shown)
+        local line = ws:_recover_interrupted_build_dir(bd, info)
+        if line then errw("lw: " .. line .. "\n") end
+      end
+    end
+  end
+  if refused > 0 then
+    die(string.format("%d lock%s left in place — its holder is running (use --force to remove the "
+      .. "record anyway, or the command's --break-locks to stop the holder)", refused,
+      refused == 1 and " was" or "s were"))
   end
   if removed == 0 then out("no build-dir locks to clear") end
   return 0
@@ -1979,11 +2164,13 @@ function M._device_select(ws, args)
       out("profile '" .. profile.key .. "' has no device selected")
       return 0
     end
-    profile:clear_device()
+    local ok, err = profile:clear_device()
+    if not ok then die("could not clear the device of profile '" .. profile.key .. "': " .. tostring(err)) end
     out("cleared the device of profile '" .. profile.key .. "'")
     return 0
   end
-  profile:set_device(serial)
+  local ok, err = profile:set_device(serial)
+  if not ok then die("could not save the device of profile '" .. profile.key .. "': " .. tostring(err)) end
   out("device for profile '" .. profile.key .. "': " .. serial)
   return 0
 end
@@ -2159,30 +2346,10 @@ function M.cmd_device(sub, root, args)
     "lw device clean [--device <serial>]", 2)
 end
 
---- Ensure a config unit's build targets are parsed — the headless equivalent
---- of the editor's post-configure scan (workspace.lua). No-op if already
---- parsed or the module exposes no target introspection. Requires a configured
---- build dir, so the caller must build first.
+--- Ensure a config unit's build targets are parsed (loomworks.build_run).
+--- Requires a configured build dir, so the caller must build first.
 ensure_unit_targets = function(ws, unit)
-  if not unit or unit.targets then return end
-  local project = unit._project
-  local mod = project and project._module and project._module.impl
-  local build_dir = unit.build_dir and unit:build_dir()
-  if not (mod and mod.parse_targets and build_dir) then return end
-  -- Only a build dir this machine configured (signed cache, spec §17.8).
-  if unit.configured_here and not unit:configured_here() then return end
-  -- config_name is the module build type (e.g. "Debug"); matters for
-  -- multi-config generators, ignored by single-config ones.
-  local cfg = unit.configuration and unit:configuration()
-  local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
-    or (unit._cached_module_config and unit._cached_module_config.variant)
-    or (unit.variant and unit:variant())
-  local ok, targets = pcall(mod.parse_targets, {
-    build_dir = build_dir,
-    project_path = ws.root .. "/" .. (project.path or project.key),
-    config_name = config_name,
-  })
-  if ok and targets then unit:set_targets(targets) end
+  return require("loomworks.build_run").ensure_unit_targets(ws, unit)
 end
 
 --- `lw test [profile] [--target <exe>… [--cwd <dir>] | --saved | --discovered] [--no-build]
@@ -2278,79 +2445,31 @@ end
 -- Launch configurations + run
 -- ---------------------------------------------------------------------------
 
---- Enumerate launchable targets in a profile: command launch configs and
---- executable build targets across the profile's mapped projects. Each entry:
---- `{ kind = "launch"|"target", project = Project, name = string, target_id? = string }`.
---- Parses targets on demand (build first).
+--- The launch-target enumeration, formatting and matching of `lw run` /
+--- `lw target` / `lw test --target` live in loomworks.run_prep (shared with
+--- the workspace daemon's `prepare_run`, §19.15); these are its local names.
+--- `launchable_targets(ws, profile)` → candidates
+--- `{ kind = "launch"|"target", project, name, target_id? }` (parses targets
+--- on demand: build first).
 local function launchable_targets(ws, profile)
-  local list = {}
-  for _, pp in ipairs(profile:projects()) do
-    local unit = pp._config_unit
-    local project = unit and unit._project
-    if project then
-      if type(project.launch) == "table" then
-        local names = {}
-        for lname, cfg in pairs(project.launch) do
-          if type(cfg) == "table" and (cfg.command or cfg.target) then names[#names + 1] = lname end
-        end
-        table.sort(names)
-        for _, lname in ipairs(names) do
-          list[#list + 1] = { kind = "launch", project = project, name = lname }
-        end
-      end
-      ensure_unit_targets(ws, unit)
-      if type(unit.targets) == "table" then
-        local ids = {}
-        for id in pairs(unit.targets) do ids[#ids + 1] = id end
-        table.sort(ids)
-        for _, id in ipairs(ids) do
-          local t = unit.targets[id]
-          if t and t.is_executable and t:is_executable() then
-            local dname = (t.display_name and t:display_name()) or id
-            list[#list + 1] = { kind = "target", project = project, name = dname, target_id = id }
-          end
-        end
-      end
-    end
-  end
-  return list
+  return require("loomworks.run_prep").launchable_targets(ws, profile)
 end
 
 --- Format a candidate for messages: `project:name (kind)`.
 local function fmt_cand(c)
-  return c.project.key .. ":" .. c.name .. " (" .. c.kind .. ")"
+  return require("loomworks.run_prep").fmt_cand(c)
 end
 
 --- Build a LaunchTarget object from a resolved candidate.
 local function candidate_launch_target(ws, profile, c)
-  local descriptor = { project = c.project.key }
-  if c.kind == "target" then descriptor.target = c.target_id else descriptor.launch = c.name end
-  return require("loomworks.launch_target").new(ws, profile, descriptor)
+  return require("loomworks.run_prep").candidate_launch_target(ws, profile, c)
 end
 
---- Match a run operand `name` against a profile's launchable targets, honoring
---- an explicit `--project` scope, a `project:name` prefix (only when the prefix
---- is a known project in this profile — target ids may themselves contain ':'),
---- and a `--target`/`--launch` kind filter. Pure and non-dying: returns the
---- matching candidates (0 = none, 1 = unique, >1 = ambiguous) plus the full
---- candidate list for error messages. Shared by the one- and two-operand
---- named-target paths (spec §16.17); runs after the build, so build targets
---- are enumerated. `all` (the candidate list) defaults to `launchable_targets`
---- and is injectable for testing.
+--- Match a run operand `name` against a profile's launchable targets
+--- (loomworks.run_prep.match_targets; `all` is injectable for testing).
 --- @return table matches, table all
 local function match_targets(ws, profile, name, proj_scope, kind, all)
-  local scope, bare = proj_scope, name
-  if not scope then
-    local pfx, rest = name:match("^([^:]+):(.+)$")
-    if pfx and profile:project(pfx) then scope, bare = pfx, rest end
-  end
-  all = all or launchable_targets(ws, profile)
-  local matches = {}
-  for _, c in ipairs(all) do
-    if c.name == bare and (not scope or c.project.key == scope)
-      and (not kind or c.kind == kind) then matches[#matches + 1] = c end
-  end
-  return matches, all
+  return require("loomworks.run_prep").match_targets(ws, profile, name, proj_scope, kind, all)
 end
 M._match_targets = match_targets
 
@@ -2387,14 +2506,116 @@ function M._run_selection(ws, positionals, deps)
   return profile, nil, ws
 end
 
+--- The device options of `lw run` / `lw test` (spec §18.3), each mapped to
+--- whether it takes a value — what `_run_request` recognizes without parsing
+--- them (a run with any of them is not routed, §19.15).
+M.RUN_DEVICE_OPTIONS = { ["--device"] = true, ["--timeout"] = true, ["--query-timeout"] = true,
+  ["--transfer-timeout"] = true, ["--log"] = true, ["--fresh"] = false, ["--no-wait"] = false }
+
+--- @class loomworks.cli.RunArgs
+--- @field positionals string[] the pre-`--` operands (§16.17 grammar: 0, 1 or 2)
+--- @field proj_scope string|nil `--project`
+--- @field kind "target"|"launch"|nil `--target` / `--launch`
+--- @field cwd_override string|nil `--cwd` / `--working-dir`, verbatim
+--- @field prefix_tokens string[] `--prefix`, shell-word split
+--- @field print_mode "sh"|"json"|nil `--print` / `--dry-run` report format
+--- @field dry_run boolean
+--- @field no_build boolean `--no-build` (also set by `--dry-run`)
+--- @field verbose boolean `-v` / `--verbose` (§16.4 *Verbose*)
+--- @field extra_args string[] the arguments after `--`
+--- @field dev table device options (DEV.new_device_opts)
+--- @field device_option boolean a device option was given
+
+--- Parse a `lw run` argv (args[1] == "run"). `fail(msg)` reports a refusal
+--- (cmd_run: die); `device(argv, i, o)` consumes a device option at
+--- `argv[i]` into `o` (cmd_run: DEV.parse_device_opt), returning false when
+--- it is none.
+--- @param args string[]
+--- @param fail fun(msg: string)
+--- @param device fun(argv: string[], i: integer, o: table): boolean
+--- @return loomworks.cli.RunArgs
+function M._parse_run_args(args, fail, device)
+  -- Split on `--`: everything after is forwarded verbatim to the program.
+  local pre, extra_args, seen_sep = {}, {}, false
+  for i = 2, #args do
+    if not seen_sep and args[i] == "--" then seen_sep = true
+    elseif seen_sep then extra_args[#extra_args + 1] = args[i]
+    else pre[#pre + 1] = args[i] end
+  end
+  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`), a
+  -- per-invocation `--cwd <dir>`, the launch `--prefix`, `--print`/`--dry-run`,
+  -- and `--no-build`; remaining pre-`--` tokens are positional and follow the
+  -- §16.17 operand grammar (0/1/2). None of the options consume the operands or
+  -- the forwarded (post-`--`) args.
+  local r = { positionals = {}, prefix_tokens = {}, no_build = false, dry_run = false, verbose = false,
+    extra_args = extra_args, dev = DEV.new_device_opts(), device_option = false }
+  local i = 1
+  while pre[i] do
+    if pre[i] == "--project" then r.proj_scope = pre[i + 1]; i = i + 2
+    elseif pre[i] == "-v" or pre[i] == "--verbose" then r.verbose = true; i = i + 1
+    elseif pre[i] == "--target" then r.kind = "target"; i = i + 1
+    elseif pre[i] == "--launch" then r.kind = "launch"; i = i + 1
+    elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then r.cwd_override = pre[i + 1]; i = i + 2
+    elseif pre[i] == "--prefix" then
+      local val = pre[i + 1]
+      if val == nil then
+        return fail("--prefix requires a wrapper command (e.g. `--prefix valgrind` or " ..
+          "`--prefix 'valgrind --leak-check=full'`)", 2)
+      end
+      for _, tok in ipairs(shell_split(val)) do r.prefix_tokens[#r.prefix_tokens + 1] = tok end
+      i = i + 2
+    elseif pre[i] == "--print" or pre[i] == "--dry-run" then
+      r.print_mode, r.dry_run = "sh", r.dry_run or pre[i] == "--dry-run"; i = i + 1
+    elseif pre[i]:match("^%-%-print=") or pre[i]:match("^%-%-dry%-run=") then
+      r.dry_run = r.dry_run or pre[i]:match("^%-%-dry%-run=") ~= nil
+      local fmt = pre[i]:gsub("^%-%-[%w%-]+=", "")
+      if fmt ~= "sh" and fmt ~= "json" then
+        return fail("--print format must be 'sh' or 'json' (got '" .. fmt .. "')", 2)
+      end
+      r.print_mode = fmt; i = i + 1
+    elseif pre[i] == "--no-build" then r.no_build = true; i = i + 1
+    elseif device(pre, i, r.dev) then r.device_option = true; i = r.dev._next
+    else r.positionals[#r.positionals + 1] = pre[i]; i = i + 1 end
+  end
+  -- --dry-run is the pure read-only report: it never builds or deploys.
+  if r.dry_run then r.no_build = true end
+
+  if r.print_mode and #r.prefix_tokens > 0 then
+    -- --print reports the bare resolved command; a wrapper is a run-execution
+    -- concern. Combining them is contradictory — reject rather than guess.
+    return fail("--print and --prefix are mutually exclusive: --print reports the " ..
+      "resolved command (compose your own wrapper), --prefix runs under one.", 2)
+  end
+  return r
+end
+
+--- The options of `_run_launch_target` for a parsed run.
+--- @param r loomworks.cli.RunArgs
+--- @return table
+function M._run_target_opts(r)
+  local d = r.dev
+  return {
+    prefix_tokens = r.prefix_tokens,
+    print_mode = r.print_mode,
+    no_build = r.no_build,
+    dry_run = r.dry_run,
+    extra_args = r.extra_args,
+    cwd_override = r.cwd_override,
+    verbose = r.verbose,
+    device = d.device, fresh = d.fresh, timeout = d.timeout,
+    timeouts = d.timeouts, log_options = d.log_options, no_wait = d.no_wait,
+  }
+end
+
 --- `lw run [<target>] [-- prog-args…]` / `lw run <profile> <target>` — resolve a
 --- profile and a launch target, then build → deploy → execute. The pre-`--`
 --- operands follow the §16.17 grammar: none → the resolved profile's default
 --- target; one → that target on the resolved profile (never a profile selector);
 --- two → the named target on the named profile. Args after `--` are forwarded to
 --- the program. Returns its exit code. Routes through the editor's LaunchTarget
---- seams (resolve_launch_spec / deploy_sync) so headless
---- and editor launches stay identical.
+--- seams (resolve_launch_spec / deploy_sync, via loomworks.run_prep — shared
+--- with the workspace daemon's `prepare_run`, §19.15) so headless and editor
+--- launches stay identical.
 ---
 --- Options (spec §16.17):
 ---   --prefix <cmd>   interpose a wrapper before the resolved command — the
@@ -2410,128 +2631,34 @@ end
 ---                     --no-build): a pure read-only report. A program that is
 ---                     not built yet is still reported, with a note on stderr.
 ---   --no-build        skip the build+deploy (inspect / run what is already built).
+---   -v, --verbose     also print the build's commands, each deploy step and, for
+---                     a device run, every device command (§16.4 *Verbose*; on
+---                     stderr with --print).
 function M.cmd_run(ws, args)
-  -- Split on `--`: everything after is forwarded verbatim to the program.
-  local pre, extra_args, seen_sep = {}, {}, false
-  for i = 2, #args do
-    if not seen_sep and args[i] == "--" then seen_sep = true
-    elseif seen_sep then extra_args[#extra_args + 1] = args[i]
-    else pre[#pre + 1] = args[i] end
-  end
-  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`), a
-  -- per-invocation `--cwd <dir>`, the launch `--prefix`, `--print`/`--dry-run`,
-  -- and `--no-build`; remaining pre-`--` tokens are positional and follow the
-  -- §16.17 operand grammar (0/1/2). None of the options consume the operands or
-  -- the forwarded (post-`--`) args.
-  local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
-  local prefix_tokens, print_mode, no_build, dry_run, verbose = {}, nil, false, false, false
-  local dev_opts = DEV.new_device_opts()
-  local i = 1
-  while pre[i] do
-    if pre[i] == "--project" then proj_scope = pre[i + 1]; i = i + 2
-    elseif pre[i] == "-v" or pre[i] == "--verbose" then verbose = true; i = i + 1
-    elseif pre[i] == "--target" then kind = "target"; i = i + 1
-    elseif pre[i] == "--launch" then kind = "launch"; i = i + 1
-    elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then cwd_override = pre[i + 1]; i = i + 2
-    elseif pre[i] == "--prefix" then
-      local val = pre[i + 1]
-      if val == nil then
-        die("--prefix requires a wrapper command (e.g. `--prefix valgrind` or " ..
-          "`--prefix 'valgrind --leak-check=full'`)", 2)
-      end
-      for _, tok in ipairs(shell_split(val)) do prefix_tokens[#prefix_tokens + 1] = tok end
-      i = i + 2
-    elseif pre[i] == "--print" or pre[i] == "--dry-run" then
-      print_mode, dry_run = "sh", dry_run or pre[i] == "--dry-run"; i = i + 1
-    elseif pre[i]:match("^%-%-print=") or pre[i]:match("^%-%-dry%-run=") then
-      dry_run = dry_run or pre[i]:match("^%-%-dry%-run=") ~= nil
-      local fmt = pre[i]:gsub("^%-%-[%w%-]+=", "")
-      if fmt ~= "sh" and fmt ~= "json" then
-        die("--print format must be 'sh' or 'json' (got '" .. fmt .. "')", 2)
-      end
-      print_mode = fmt; i = i + 1
-    elseif pre[i] == "--no-build" then no_build = true; i = i + 1
-    elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
-    else positionals[#positionals + 1] = pre[i]; i = i + 1 end
-  end
-  -- --dry-run is the pure read-only report: it never builds or deploys.
-  if dry_run then no_build = true end
-
-  if print_mode and #prefix_tokens > 0 then
-    -- --print reports the bare resolved command; a wrapper is a run-execution
-    -- concern. Combining them is contradictory — reject rather than guess.
-    die("--print and --prefix are mutually exclusive: --print reports the " ..
-      "resolved command (compose your own wrapper), --prefix runs under one.", 2)
-  end
+  local r = M._parse_run_args(args, die, DEV.parse_device_opt)
 
   -- Determine (profile, target) from the operand count (§16.17). The profile is
   -- resolved here; a named target is matched AFTER the build below, so build
   -- targets are enumerated.
   local profile, target_name
-  profile, target_name, ws = M._run_selection(ws, positionals)
+  profile, target_name, ws = M._run_selection(ws, r.positionals)
 
   -- Build the profile first (configures + builds); dies on failure. Build
   -- targets and the default target's artifact resolve against the built tree.
   -- `--no-build` (and `--dry-run`, which implies it) skips build+deploy
   -- (inspect/run what is already built). Under `--print` the build streams to
-  -- stderr (quiet) so our stdout carries only the report line. The build-dir lock is held only for the build — released
-  -- before the launch, which just executes the artifact and may run
-  -- indefinitely.
-  if not no_build then
+  -- stderr (quiet) so our stdout carries only the report line. The build-dir
+  -- lock is held only for the build — released before the launch, which just
+  -- executes the artifact and may run indefinitely.
+  if not r.no_build then
     with_build_locks(profile, "build", function()
-      M._run_build_steps(profile, ws, { quiet = print_mode ~= nil, verbose = verbose })
+      M._run_build_steps(profile, ws, { quiet = r.print_mode ~= nil, verbose = r.verbose })
     end)
   end
 
-  local lt
-  if target_name then
-    local matches, all = match_targets(ws, profile, target_name, proj_scope, kind)
-    if #matches == 0 then
-      local labels = {}
-      for _, c in ipairs(all) do labels[#labels + 1] = fmt_cand(c) end
-      die("no launch target '" .. target_name .. "' in profile '" .. profile.key .. "'.\n" ..
-        "  available: " .. (next(labels) and table.concat(labels, ", ") or "(none)") .. "\n" ..
-        "  a target on a different profile: lw run <profile> <target>")
-    elseif #matches > 1 then
-      local labels = {}
-      for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
-      die("'" .. target_name .. "' is ambiguous: " .. table.concat(labels, ", ") ..
-        "\n  qualify with `--target`/`--launch`, `--project <key>`, or `<project>:<name>`.")
-    end
-    lt = candidate_launch_target(ws, profile, matches[1])
-  else
-    -- No name → the profile's default target.
-    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
-    lt = profile:default_target()
-    if not lt then
-      local cands = launchable_targets(ws, profile)
-      if #cands == 1 then
-        lt = candidate_launch_target(ws, profile, cands[1])
-      elseif #cands == 0 then
-        die("nothing to run in profile '" .. profile.key ..
-          "' — no launch configs or executable targets.")
-      else
-        local labels = {}
-        for _, c in ipairs(cands) do labels[#labels + 1] = fmt_cand(c) end
-        die("no default target set for profile '" .. profile.key .. "'.\n" ..
-          "  set one:      lw target set " .. profile.key .. " <target>\n" ..
-          "  or name one:  lw run " .. profile.key .. " <target>\n" ..
-          "  candidates:   " .. table.concat(labels, ", "))
-      end
-    end
-  end
-
-  return M._run_launch_target(lt, ws, {
-    prefix_tokens = prefix_tokens,
-    print_mode = print_mode,
-    no_build = no_build,
-    dry_run = dry_run,
-    extra_args = extra_args,
-    cwd_override = cwd_override,
-    verbose = verbose,
-    device = dev_opts.device, fresh = dev_opts.fresh, timeout = dev_opts.timeout,
-    timeouts = dev_opts.timeouts, log_options = dev_opts.log_options, no_wait = dev_opts.no_wait,
-  })
+  local lt, serr = require("loomworks.run_prep").select(ws, profile, target_name, r.proj_scope, r.kind)
+  if not lt then die(serr) end
+  return M._run_launch_target(lt, ws, M._run_target_opts(r))
 end
 
 --- The editor-shared deploy → resolve → (report | prefix-exec) tail of a run,
@@ -2572,16 +2699,7 @@ end
 --- @param lt loomworks.LaunchTarget
 --- @return loomworks.ForeignArtifact|nil
 function M._foreign_of(lt)
-  local target = lt._launch_config and lt._config_target or lt._target
-  if lt._launch_config and not lt._launch_config.target then return nil end
-  if not (target and target.artifact) then return nil end
-  local unit = target._config_unit or lt._config_unit
-  local bd = unit and unit.build_dir and unit:build_dir()
-  if not bd then return nil end
-  local artifact = require("loomworks.paths").artifact_path(bd, target.artifact)
-  local f = require("loomworks.remote.foreign").classify(unit, artifact)
-  if f then f.target = target end
-  return f
+  return require("loomworks.run_prep").foreign_of(lt)
 end
 
 --- Whether a launch target runs on a device: a foreign build target (§18.1)
@@ -2624,7 +2742,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
   end
 
   local project = lt._project
-  local cfg = lt._launch_config
+  local cfg = lt._launch
   local block = manifest.effective_block(project and project.device, cfg and cfg.device)
   for _, b in ipairs({ { project and project.device, "project device" }, { cfg and cfg.device, "launch device" } }) do
     local vok, verr = manifest.validate_block(b[1], b[2])
@@ -2688,15 +2806,12 @@ end
 --- (implementation of `_run_launch_target`, after the device-option check)
 function M._run_launch_target_impl(lt, ws, opts, deps)
   deps = deps or {}
-  local run = deps.run_spec or run_spec
+  local rp = require("loomworks.run_prep")
   local prefix_tokens = opts.prefix_tokens or {}
 
   -- Validity gate (stale descriptor / invalid profile or configuration).
-  local ok, reasons = lt:is_valid()
-  if not ok then
-    die("launch target is not runnable: " ..
-      table.concat(type(reasons) == "table" and reasons or { "invalid" }, "; "))
-  end
+  local verr = rp.validity_error(lt)
+  if verr then die(verr) end
 
   -- A prefix wraps LOCAL execution; a device target runs on the device, where a
   -- host-side wrapper does not apply (device launch is deferred anyway, §16.17).
@@ -2724,12 +2839,23 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
     if not dok then die("deploy failed: " .. tostring(derr)) end
   end
 
-  local spec, serr = lt:resolve_launch_spec({
-    extra_args = opts.extra_args, working_dir = opts.cwd_override })
-  -- An unresolved build-target artifact reports its reason here and exits
-  -- non-zero — reported, never guessed (§16.3 / §16.18).
-  if not spec then die("cannot resolve launch: " .. tostring(serr)) end
+  local spec, serr = rp.resolve_spec(lt, opts)
+  if not spec then die(serr) end
+  return M._run_resolved(spec, opts, ws.root, deps)
+end
 
+--- Finish a run whose launch spec is resolved — in-process, or as returned by
+--- the workspace daemon's `prepare_run` (§19.15 "Run"): `--print` /
+--- `--dry-run` report it (§16.17 "Command inspection"); otherwise print
+--- `running <name> [cwd: <cwd>]: <argv>` and execute `<prefix> <cmd> <args>`
+--- in this process, on its terminal. Returns the exit code.
+--- @param spec { name: string, cmd: string, args: string[]|nil, cwd: string|nil, env: table|nil }
+--- @param opts { prefix_tokens?: string[], print_mode?: "sh"|"json", dry_run?: boolean }
+--- @param root string the workspace root (the cwd when the spec has none)
+--- @param deps? { run_spec?: function }
+--- @return integer
+function M._run_resolved(spec, opts, root, deps)
+  local run = deps and deps.run_spec or run_spec
   -- --print / --dry-run: report the resolved invocation, never execute (§16.17
   -- "Command inspection").
   if opts.print_mode then
@@ -2741,219 +2867,69 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
       and not uv.fs_stat(cmd) then
       errw("note: " .. cmd .. " is not built yet\n", "plain")
     end
-    return emit_run_print(spec, opts.print_mode, ws.root)
+    return emit_run_print(spec, opts.print_mode, root)
   end
 
   -- Build the launched argv (prefix, then cmd, then args) and execute it in the
   -- launch's resolved cwd/env on the real terminal, so an interactive wrapper
   -- (gdb, valgrind) drives the tty. The wrapper process's exit status becomes
   -- the invocation's (§16.17 "Launch prefix").
-  local full = build_run_argv(prefix_tokens, spec)
-  out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
+  local full = build_run_argv(opts.prefix_tokens, spec)
+  out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or root,
     table.concat(full, " ")), "phase")
-  return run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
+  -- (Only the status: a program a signal ended exits 128 + signal.)
+  return (run({ cmd = full, cwd = spec.cwd, env = spec.env }, root))
 end
 
---- Run ONE test executable step (spec §16.16, §18.6) — the shared executor of
---- named (`--target`) and saved test entries. `lt` is the resolved
---- `LaunchTarget` (the same object `lw run <name>` uses): a build target, or a
---- launch configuration. A launch's deploy steps run first (a failed deploy
---- fails the step without running the program). The program runs on a device
---- when its build-target artifact is foreign (§18.5), locally otherwise, with
---- argv = program, the framework results option (only for a build target's
---- artifact the gtest helper recognises), a launch's own args, the step's
---- `args` (already expanded), then the caller-forwarded args. The outcome is
---- judged from exit status + parsed results (+ crashes / missing results on a
---- device). Prints the step header and its one-line outcome; writes JUnit to
---- `opts.junit_path` when given.
---- `opts = { label, header?, args?, extra?, dev, junit_path?, saved?, cwd?,
---- entry_working_dir?, cwd_override? }`: `cwd` is a saved entry's resolved
---- working directory (absolute; it replaces the program's), `entry_working_dir`
---- the entry's `working_dir` as written (a device step notes it is not used),
---- `cwd_override` a named target's per-invocation `--cwd` (raw, expanded in
---- the target's launch context; refused for a device run). `no_build`
---- (`lw test --no-build`) skips a launch's deploy steps (§16.16). With
---- `saved` (a saved entry's step) a refused or unresolvable run fails the step
---- instead of the invocation, and a program without per-case results is
---- judged on its exit status alone and written to JUnit as one test case.
---- With `verbose` the step prints its deploy steps and the program invocation
---- (on a device, every device command) under its header (§16.4 *Verbose*).
---- @return boolean failed, string[] reasons, table counts, boolean exit_only
-function M._run_test_executable(ws, lt, opts, deps)
+--- The in-process host of the test plan (loomworks.test_plan): lines on this
+--- process's stdout / stderr, a refusal ends it (`die`), each program runs on
+--- this terminal (`run_spec`) and a device step through `_run_foreign`.
+--- With `verbose` (`lw test -v`, §16.4 *Verbose*) each runner and program
+--- invocation prints its command lines first, a launch's deploy its steps,
+--- and a device step every device command.
+--- `deps` (tests): run_spec, plus `_run_foreign` deps.
+--- @param verbose? boolean
+--- @return table host
+function M._test_host(ws, deps, verbose)
   deps = deps or {}
-  local test_run = require("loomworks.remote.test_run")
-  local gtest = require("loomworks.gtest")
-  local remote_run = require("loomworks.remote.run")
-  local label = opts.label
-  local tail = {}
-  for _, a in ipairs(opts.args or {}) do tail[#tail + 1] = a end
-  for _, a in ipairs(opts.extra or {}) do tail[#tail + 1] = a end
-  local cfg = lt._launch_config
-  -- The results option applies only to a build target's artifact (§16.16).
-  local artifact = not (cfg and not cfg.target)
-  local f = artifact and M._foreign_of(lt) or nil
-  local results, results_requested, results_missing, failed, reasons
-
-  --- A step that cannot run: fail it (saved entry) or the invocation.
-  local function refuse(msg)
-    if not opts.saved then die(msg) end
-    errw("lw: " .. msg .. "\n", "fail")
-    return { msg }
+  local hooks = M._verbose_hooks(verbose)
+  local host = { out = out, err = errw, fail = function(msg, code) die(msg, code) end }
+  function host.foreign_of(lt) return M._foreign_of(lt) end
+  function host.spawn(spec, cb)
+    if verbose then M._verbose_out(require("loomworks.build_run").command_lines(spec, spec.cwd or ws.root)) end
+    return cb((deps.run_spec or run_spec)(spec, ws.root))
   end
-
-  if opts.cwd_override and (f or (lt.requires_device and lt:requires_device())) then
-    die("--cwd does not apply to a device run ('" .. label .. "') — set the project's device.working_dir instead", 2)
+  if verbose then
+    function host.deploy(lt, cb) return cb(lt:deploy_sync({ on_step = hooks.on_step })) end
   end
-  -- A device step takes its working directory from the `device` block, never
-  -- from the entry (§1.3.4 "Working directory"): say so.
-  out(require("loomworks.cli_color").header("test", (opts.header or label) ..
-    (f and (opts.entry_working_dir and " (on a device; its working_dir is not used there)" or " (on a device)") or "")),
-    "phase")
-  if opts.saved then
-    local ok, why = lt:is_valid()
-    if not ok then
-      reasons = refuse("launch target is not runnable: " ..
-        table.concat(type(why) == "table" and why or { "invalid" }, "; "))
-    end
-    if not reasons and f and not (f.platform and require("loomworks.remote.runners").for_foreign(f)) then
-      reasons = refuse(require("loomworks.remote.foreign").refusal(f))
-    end
+  function host.exec(lt, o, cb)
+    return cb(M._run_test_executable(ws, lt, vim.tbl_extend("force", o, { verbose = verbose }), deps))
   end
-  -- A launch's deploy steps run before its program (§8.8.4) — unless the
-  -- build is skipped, which skips deploy too (§16.16).
-  local hooks = M._verbose_hooks(opts.verbose)
-  if not reasons and cfg and not opts.no_build then
-    local dok, derr = lt:deploy_sync({ on_step = hooks.on_step })
-    if not dok then reasons = refuse("deploy failed: " .. tostring(derr)) end
-  end
-
-  if reasons then
-    failed = true
-  elseif f then
-    local hook, st = test_run.device_hook(f.name, tail)
+  function host.foreign(lt, f, o, cb)
     local outcome
-    local dev = opts.dev or DEV.new_device_opts()
+    local dev = o.dev or DEV.new_device_opts()
     M._run_foreign(lt, ws, f, {
-      extra_args = {}, device = dev.device, fresh = dev.fresh, no_build = (cfg ~= nil) or opts.no_build or false,
+      extra_args = {}, device = dev.device, fresh = dev.fresh, no_build = o.no_build,
       timeout = dev.timeout, timeouts = dev.timeouts, log_options = dev.log_options,
-      no_wait = dev.no_wait, before_exec = hook, verbose = opts.verbose,
+      no_wait = dev.no_wait, before_exec = o.before_exec, verbose = verbose,
       on_result = function(r) outcome = r; return r.exit_code end,
     }, deps)
-    results_requested = st.framework == "gtest"
-    local path = st.results_name and outcome.results[st.results_name]
-    results = path and gtest.parse_xml_results(path) or nil
-    if path and not results then results = {} end
-    results_missing = results_requested and not path
-    failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
-      results = results, results_missing = results_missing, crashes = #outcome.crashes,
-      transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
-    remote_run.report(outcome, function(s2, role) errw(s2 .. "\n", role) end, failed)
-  else
-    local spec, serr = lt:resolve_launch_spec({ working_dir = opts.cwd_override })
-    if not spec then
-      reasons = refuse("cannot resolve test executable: " .. tostring(serr))
-      failed = true
-    else
-      -- A saved entry's working directory replaces the program's (§1.3.4).
-      if opts.cwd then spec.cwd = opts.cwd end
-      local xml
-      if artifact and gtest.probe_sync(spec.cmd, label, { env = spec.env, cwd = spec.cwd }) == "gtest" then
-        results_requested = true
-        -- (no vim.fn.tempname in the standalone host)
-        xml = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-test-" .. require("loomworks.remote.transport").nonce() .. ".xml"
-        -- argv: program, results option, the launch's own args, then the tail.
-        table.insert(spec.args, 1, "--gtest_output=xml:" .. xml)
-      end
-      for _, a in ipairs(tail) do spec.args[#spec.args + 1] = a end
-      local argv = { spec.cmd }
-      for _, a in ipairs(spec.args) do argv[#argv + 1] = a end
-      local step = { cmd = argv, cwd = spec.cwd, env = spec.env }
-      if opts.verbose then M._verbose_out(require("loomworks.build_run").command_lines(step, spec.cwd or ws.root)) end
-      local code = (deps.run_spec or run_spec)(step, ws.root)
-      if xml then
-        if uv.fs_stat(xml) then
-          results = gtest.parse_xml_results(xml) or {}
-          os.remove(xml)
-        else
-          results_missing = true
-        end
-      end
-      failed, reasons = test_run.judge({ status = code, results_requested = results_requested,
-        results = results, results_missing = results_missing })
-    end
+    return cb(outcome)
   end
-  -- A saved program without per-case results is judged on its exit status
-  -- alone, and is one JUnit case (§16.16 "Results option").
-  local exit_only = opts.saved and not results_requested and true or false
-  local c = test_run.count(results)
-  if failed then
-    local names = test_run.failed_names(c, test_run.FAILED_NAMES_CAP)
-    out(string.format("%s: FAILED (%s)%s", label, test_run.failed_reasons(reasons, c),
-      names ~= "" and (": " .. names) or ""), "fail")
-  elseif exit_only then
-    out(label .. ": passed (exit status 0; no per-case results)", "ok")
-  else
-    out(string.format("%s: %d test%s passed%s", label, c.passed, c.passed == 1 and "" or "s",
-      test_run.not_run_suffix(c)), "ok")
-  end
-  if opts.junit_path then
-    local junit_results = results
-    if exit_only then
-      junit_results = { { test_id = "test:" .. label, status = failed and "failed" or "passed",
-        message = failed and table.concat(reasons or {}, ", ") or nil } }
-    end
-    if junit_results then
-      local ok, werr = test_run.write_file(opts.junit_path, test_run.junit_xml(label, junit_results))
-      if ok then out("JUnit: " .. opts.junit_path, "plain")
-      else errw("lw: warning: cannot write JUnit " .. opts.junit_path .. ": " .. tostring(werr) .. "\n", "warn") end
-    else
-      errw("lw: warning: no JUnit output for " .. label .. " (no results file)\n", "warn")
-    end
-  end
-  return failed, reasons or {}, c, exit_only
+  return host
 end
 
---- `lw test --no-build` (spec §16.16 "Skipping the build"): whether a build
---- target's artifact exists. `t` is the target, `unit` its config unit.
---- @return boolean built, string|nil path
-function M._artifact_built(unit, t)
-  local bd = unit and unit.build_dir and unit:build_dir()
-  local path = (bd and t and t.artifact) and require("loomworks.paths").artifact_path(bd, t.artifact) or nil
-  return (path and uv.fs_stat(path)) and true or false, path
-end
-
---- The build target behind a launch target (a named target, or a
---- target-backed launch), or nil for a command launch.
-function M._lt_build_target(lt)
-  return lt and (lt._target or lt._config_target) or nil
-end
-
---- Fail a `--no-build` invocation before any step runs (exit 1): one line per
---- problem, then the two ways forward (§16.16).
-function M._no_build_die(profile, problems, head)
-  local lines = {}
-  for _, p in ipairs(head or {}) do lines[#lines + 1] = p end
-  for _, p in ipairs(problems) do lines[#lines + 1] = p end
-  die("--no-build: cannot run the tests against the existing build:\n  " .. table.concat(lines, "\n  ")
-    .. "\n  build first: lw build " .. profile.key
-    .. "\n  or run without --no-build", 1)
-end
-
---- `--no-build`: one note per unit whose recorded state says its build may
---- not match the current configuration (§16.16 "Stale builds are noted") —
---- the build gate's reconfigure reasons, or a failed last build. Recorded
---- state only: no source scan, no build-tool query.
-function M._no_build_stale_notes(profile, units)
-  for _, unit in ipairs(units) do
-    if unit.configured_here and unit:configured_here() then
-      local why = unit.configure_reason and unit:configure_reason(false, profile) or nil
-      if not why and unit.state_value == "failed_build" then why = "last build failed" end
-      if why then
-        note(string.format("lw: note: %s: its build may be stale (%s) — --no-build runs it as it is",
-          unit._project and unit._project.key or "?", why), "plain")
-      end
-    end
-  end
+--- Run ONE test executable step in this process (spec §16.16, §18.6;
+--- loomworks.test_plan.exec_step documents `opts`). A step that cannot run
+--- fails the invocation (`die`) unless it is a saved entry's. `opts.verbose`
+--- (`-v`): the step prints its deploy steps and the program invocation (on a
+--- device, every device command) under its header (`_test_host`).
+--- @return boolean failed, string[] reasons, table counts, boolean exit_only, string|nil junit_path
+function M._run_test_executable(ws, lt, opts, deps)
+  local r
+  require("loomworks.test_plan").exec_step(ws, lt, opts, M._test_host(ws, deps, opts.verbose),
+    function(...) r = { ... } end)
+  return r[1], r[2], r[3], r[4], r[5]
 end
 
 --- Run named test executables (spec §16.16, §18.6): build the profile, then
@@ -3034,6 +3010,7 @@ end
 --- them before the first one runs, then run each.
 --- @return integer exit code
 function M._run_named_tests(ws, profile, names, opts, deps, resolve, check_cwd)
+  local test_plan = require("loomworks.test_plan")
   local test_run = require("loomworks.remote.test_run")
   local lts, problems = {}, {}
   -- `--no-build`: the projects not configured here whose module can have
@@ -3051,8 +3028,8 @@ function M._run_named_tests(ws, profile, names, opts, deps, resolve, check_cwd)
   end
   local artifact_built = deps.artifact_built
     or function(lt)
-      local t = M._lt_build_target(lt)
-      return M._artifact_built(t and t._config_unit or lt._config_unit, t)
+      local t = test_plan.lt_build_target(lt)
+      return test_plan.artifact_built(t and t._config_unit or lt._config_unit, t)
     end
   for i, name in ipairs(names) do
     if opts.no_build then
@@ -3078,14 +3055,14 @@ function M._run_named_tests(ws, profile, names, opts, deps, resolve, check_cwd)
     end
     check_cwd(name, lts[i])
   end
-  if #problems > 0 then M._no_build_die(profile, problems) end
+  if #problems > 0 then die(test_plan.no_build_message(profile, problems), 1) end
   if opts.no_build then
     local units, seen = {}, {}
     for _, lt in ipairs(lts) do
       local u = lt._config_unit
       if u and not seen[u] then seen[u] = true; units[#units + 1] = u end
     end
-    M._no_build_stale_notes(profile, units)
+    for _, n in ipairs(test_plan.stale_notes(profile, units)) do note(n) end
   end
 
   local several = #names > 1
@@ -3108,102 +3085,21 @@ function M._run_named_tests(ws, profile, names, opts, deps, resolve, check_cwd)
 end
 
 --- Whether device options were given (spec §16.34).
-function M._has_device_opts(d)
-  return d and (d.device or d.fresh or d.timeout or d.no_wait or d.log_options) and true or false
-end
+function M._has_device_opts(d) return require("loomworks.test_plan").has_device_opts(d) end
 
---- The pre-build test plan of a profile (spec §16.16): per unit, in the
---- profile's project order, whether its batch step is planned and its saved
---- entries. `sel` is nil, "saved" or "discovered". Pure model data — reads no
---- build directory beyond the static batch-runner question. An invalid `tests`
---- declaration (§1.3.4) is planned as one invalid entry, so it fails like a
---- missing entry.
---- @return table[] units { unit, project, pp, batch, batch_dropped, platform, saved, entries }
---- @return integer n_batch, integer n_exec
-function M._test_plan_units(profile, sel)
-  local foreign = require("loomworks.remote.foreign")
-  local units, n_batch, n_exec = {}, 0, 0
-  for _, pp in ipairs(profile:projects()) do
-    local unit = pp._config_unit
-    local project = unit and unit._project
-    if unit and project then
-      local u = { unit = unit, project = project, pp = pp, entries = {} }
-      if sel ~= "saved" then
-        local list_fn = unit.batch_runner_test_units or unit.test_units
-        for _, tu in ipairs(list_fn and list_fn(unit) or {}) do
-          if tu.run_command_all and not tu.is_saved_targets then u.batch = true end
-        end
-      end
-      if sel ~= "discovered" and unit.saved_test_targets then
-        u.saved = unit:saved_test_targets()
-        u.entries = u.saved and u.saved.entries or {}
-        if u.saved and u.saved.invalid then
-          u.entries = { { invalid = "tests", decl_invalid = true, index = 1 } }
-        end
-        local mod = project._module and project._module.impl
-        if #u.entries > 0 and not (mod and mod.parse_targets) then
-          -- §1.3.4 Applicability: kept, reported as unsupported, never acted on.
-          u.unsupported = true
-          u.entries = {}
-        end
-      end
-      local token, tool = foreign.unit_platform(unit)
-      if token and u.batch then
-        u.batch, u.batch_dropped, u.platform, u.tool = false, true, token, tool
-      end
-      if u.batch then n_batch = n_batch + 1 end
-      n_exec = n_exec + #u.entries
-      units[#units + 1] = u
-    end
-  end
-  return units, n_batch, n_exec
-end
+--- The pre-build test plan of a profile (spec §16.16; loomworks.test_plan.units).
+--- @return table[] units, integer n_batch, integer n_exec
+function M._test_plan_units(profile, sel) return require("loomworks.test_plan").units(profile, sel) end
 
 --- The project's executable targets, for messages ("App:a, App:b").
-function M._executables_of(unit)
-  local labels = {}
-  for id, t in pairs(type(unit.targets) == "table" and unit.targets or {}) do
-    if t.is_executable and t:is_executable() then
-      labels[#labels + 1] = unit._project.key .. ":" .. ((t.display_name and t:display_name()) or id)
-    end
-  end
-  table.sort(labels)
-  return next(labels) and table.concat(labels, ", ") or "(none)"
-end
+function M._executables_of(unit) return require("loomworks.test_plan").executables_of(unit) end
 
 --- The project's launch configurations in the model, for messages.
-function M._launches_of(project)
-  local labels = {}
-  for name, cfg in pairs(type(project.launch) == "table" and project.launch or {}) do
-    if type(cfg) == "table" and (cfg.command or cfg.target) then labels[#labels + 1] = project.key .. ":" .. name end
-  end
-  table.sort(labels)
-  return next(labels) and table.concat(labels, ", ") or "(none)"
-end
+function M._launches_of(project) return require("loomworks.test_plan").launches_of(project) end
 
---- The resolution context of a unit's saved entries (spec §1.3.4
---- "Resolution"): the project's launch configurations, the trust-ignored
---- launches, and the unit's parsed build targets (nil = unknown).
+--- The resolution context of a unit's saved entries (spec §1.3.4).
 function M._tt_rctx(ws, unit, project, level)
-  local test_targets = require("loomworks.test_targets")
-  return {
-    launches = project.launch,
-    launch_ignored = function(n) return test_targets.launch_ignored(ws._shared_ignored, project, n) end,
-    targets = unit and type(unit.targets) == "table" and unit.targets or nil,
-    level = level,
-  }
-end
-
---- The `lw test-target remove` form that drops a saved entry at its level
---- (`--index <k>` for one occurrence of a repeated name).
-function M._test_target_remove_hint(profile, project, entry, source)
-  local level = (source and source._project) and (" --config " .. source.name) or " --project-wide"
-  if not entry.name then
-    return "fix it in the file by hand, or clear the list: lw test-target clear " .. profile.key .. " "
-      .. project.key .. level
-  end
-  return "lw test-target remove " .. profile.key .. " " .. project.key .. ":" .. entry.name
-    .. (entry.repeated and (" --index " .. entry.index) or "") .. level
+  return require("loomworks.test_plan").rctx(ws, unit, project, level)
 end
 
 --- `lw test [profile] [--saved | --discovered]` — the test plan (spec §16.16):
@@ -3214,292 +3110,47 @@ end
 --- unit is not configured here, an executable is not built, or a
 --- self-rebuilding runner cannot skip its rebuild (§16.16 "Skipping the
 --- build"); the build-dir locks are held as without it.
+--- The plan is loomworks.test_plan, shared with the workspace daemon's test
+--- run (§19.15); this is its in-process host.
 --- `deps` (tests): build(profile, ws, keep), with_locks(profile, action, fn),
 --- artifact_built(unit, target) → built, path, run_spec, launch_target, plus
 --- `_run_foreign` deps.
 --- @return integer exit code
 function M._test_plan(ws, profile, opts, deps)
   deps = deps or {}
-  local overseer = require("loomworks.overseer")
-  local test_targets = require("loomworks.test_targets")
-  local plan, n_batch, n_exec = M._test_plan_units(profile, opts.sel)
-  local extra = opts.extra or {}
-
-  -- Foreign units: the batch step is never run on the host (invariant 19).
-  -- A unit whose skip note already says its saved targets are unsupported
-  -- gets no second "— ignored" note below.
-  local noted_unsupported = {}
-  for _, u in ipairs(plan) do
-    if u.batch_dropped and #u.entries > 0 then
-      note(string.format("lw: note: %s: its registered tests cannot run on this host (%s) — "
-        .. "skipping its batch runner; its saved test targets run on a device", u.project.key, u.platform), "plain")
-    elseif u.batch_dropped and n_batch + n_exec > 0 then
-      -- Never skipped silently: name the unit, and how to include it only when
-      -- it truly has no saved entries (under --discovered they were not
-      -- planned; unsupported ones were cleared — neither is "none saved").
-      local why
-      if opts.sel == "discovered" then
-        why = string.format("its discovered tests cannot run on this host (%s)", u.platform)
-      elseif u.unsupported then
-        noted_unsupported[u] = true
-        why = string.format("its registered tests cannot run on this host (%s) and its saved test "
-          .. "targets are not supported by its module", u.platform)
-      else
-        why = string.format("its registered tests cannot run on this host (%s) and it has no saved test "
-          .. "targets; to run executables on a device: lw test-target add %s %s:<exe>",
-          u.platform, profile.key, u.project.key)
-      end
-      note(string.format("lw: note: %s: skipped — %s", u.project.key, why), "plain")
-    end
-  end
-  if n_batch + n_exec == 0 then
-    for _, u in ipairs(plan) do
-      if u.batch_dropped then
-        local tool = u.tool
-        die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
-          .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]"
-          .. "\n  or save them: lw test-target add %s <exe>",
-          profile.key, tostring(tool and (tool.key or tool.label) or "?"), u.platform, profile.key, profile.key))
-      end
-    end
-  end
-  for _, u in ipairs(plan) do
-    if u.unsupported and not noted_unsupported[u] then
-      note("lw: note: " .. u.project.key .. ": saved test targets are not supported by its module (no build targets) — ignored", "plain")
-    end
-  end
-  if M._has_device_opts(opts.dev) and n_exec == 0 then
-    die("device options apply to test executables: lw test <profile> --target <exe> …, "
-      .. "or saved test targets (lw test-target add)", 2)
-  end
-  if #extra > 0 and n_batch > 0 and n_exec > 0 then
-    die("arguments after `--` need a plan of one kind — the native runners' arguments and the "
-      .. "test programs' differ.\n  only the saved test executables: lw test " .. profile.key .. " --saved -- …"
-      .. "\n  only the native runners:        lw test " .. profile.key .. " --discovered -- …"
-      .. "\n  named executables:              lw test " .. profile.key .. " --target <exe> -- …", 2)
-  end
-
-  local keep = {}
-  for _, u in ipairs(plan) do if #u.entries > 0 then keep[u.unit] = true end end
-
-  local no_build = opts.no_build and true or false
-  local artifact_built = deps.artifact_built or M._artifact_built
+  local test_plan = require("loomworks.test_plan")
+  local pre = test_plan.precheck(profile, opts)
+  for _, n in ipairs(pre.notes) do note(n, "plain") end
+  if pre.err then die(pre.err, pre.code) end
 
   local function body()
     -- `--no-build`: nothing is configured, built or deployed (§16.16
     -- "Skipping the build").
-    if not no_build then
+    if not opts.no_build then
       if deps.build then
-        deps.build(profile, ws, keep)
+        deps.build(profile, ws, pre.keep)
       else
-        run_build_steps(profile, ws, { for_test = { keep = keep }, verbose = opts.verbose })
+        -- Invalid ProfileProjects (core §5.4): the others are tested first;
+        -- `pre.refused` names the same ones (test_plan.with_refused).
+        run_build_steps(profile, ws, { for_test = { keep = pre.keep }, verbose = opts.verbose,
+          defer_refused = true })
       end
     end
     for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
-
-    -- `--no-build`: what must already exist (§16.16). A unit with a batch
-    -- step, or with an entry that needs its build targets, must be configured
-    -- here — one line per unit, never a configure.
-    local problems, unconfigured = {}, {}
-    local function configured_here(u) return u.unit.configured_here and u.unit:configured_here() end
-    local function not_configured(u)
-      if not unconfigured[u] then
-        unconfigured[u] = true
-        problems[#problems + 1] = u.project.key .. ": not configured on this machine"
-      end
-    end
-    -- Configured here, yet its build targets could not be read (its build
-    -- directory is missing, or the module's target introspection failed).
-    local function targets_unknown(u)
-      if not unconfigured[u] then
-        unconfigured[u] = true
-        problems[#problems + 1] = u.project.key
-          .. ": its build targets are unknown (build directory missing or unreadable)"
-      end
-    end
-    if no_build then
-      for _, u in ipairs(plan) do
-        if u.batch and not configured_here(u) then not_configured(u) end
-      end
-    end
-
-    -- Resolve every saved entry before the first step runs (missing → fail):
-    -- a launch configuration first, else an executable build target (§1.3.4).
-    local missing = {}
-    for _, u in ipairs(plan) do
-      u.exec = {}
-      local level = u.saved and test_targets.level_label(u.saved.source) or u.project.key
-      local rctx = M._tt_rctx(ws, u.unit, u.project, level)
-      for _, e in ipairs(u.entries) do
-        local r = test_targets.resolve_entry(e, rctx)
-        if no_build and r.state == "unknown" then
-          -- Its build targets are unknown: the unit is not configured here,
-          -- or it is but they could not be read.
-          if configured_here(u) then targets_unknown(u) else not_configured(u) end
-          r = { state = "skip" }
-        elseif no_build and r.state == "ok" and r.target then
-          -- A `target` entry or a target-backed launch: its artifact must
-          -- exist (a command launch needs no check).
-          local built, path = artifact_built(u.unit, r.target)
-          if not built then
-            problems[#problems + 1] = string.format("saved test entry '%s' (%s): not built%s",
-              test_targets.entry_label(e), level, path and (" (" .. path .. ")") or "")
-          end
-        end
-        -- Args and working_dir expand in the entry's launch context, where
-        -- `${target_dir}` is its build target's artifact directory (§8.7).
-        local lctx = r.state == "ok"
-          and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
-        if r.state == "ok" then
-          local lt
-          if r.kind == "launch" then
-            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
-              { kind = "launch", project = u.project, name = e.name })
-          else
-            local dname = (r.target.display_name and r.target:display_name()) or r.target.id
-            lt = (deps.launch_target or candidate_launch_target)(ws, profile,
-              { kind = "target", project = u.project, name = dname, target_id = r.target.id })
-          end
-          u.exec[#u.exec + 1] = { entry = e, lt = lt, kind = r.kind, args = test_targets.expand_args(e.args, lctx),
-            cwd = (test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)) }
-        elseif r.state ~= "skip" then
-          local why = r.reason or ("cannot be resolved (the build targets of " .. u.project.key .. " are unknown)")
-          if e.decl_invalid then why = "`tests` of " .. level .. " is not an array of saved test entries" end
-          missing[#missing + 1] = string.format(
-            "saved test entry '%s' (%s): %s.\n    executables: %s\n    launch configurations: %s\n    remove it: %s",
-            test_targets.entry_label(e), level, why, M._executables_of(u.unit), M._launches_of(u.project),
-            M._test_target_remove_hint(profile, u.project, e, u.saved and u.saved.source))
-        end
-      end
-    end
-    -- Batch steps (after the build: a runner without a test set plans none).
-    -- Under --no-build a self-rebuilding runner that cannot skip its rebuild
-    -- is refused here, before any step runs (§8.9.2 `opts.no_rebuild`).
-    local skip = {}
-    for _, u in ipairs(plan) do if not u.batch or unconfigured[u] then skip[u.unit] = true end end
-    local probe = (n_batch > 0) and overseer.plan_profile_test(profile, { skip_units = skip,
-      no_rebuild = no_build or nil }) or {}
-    local batch_count = {}
-    for _, st in ipairs(probe or {}) do
-      batch_count[st.unit] = (batch_count[st.unit] or 0) + 1
-      if st.refused then
-        problems[#problems + 1] = string.format("%s: %s",
-          st.unit._project and st.unit._project.key or st.name, st.refused)
-      end
-    end
-    if #problems > 0 then M._no_build_die(profile, problems, missing) end
-    if #missing > 0 then die(table.concat(missing, "\n  ")) end
-    if no_build then
-      local units = {}
-      for _, u in ipairs(plan) do
-        if batch_count[u.unit] or #u.exec > 0 then units[#units + 1] = u.unit end
-      end
-      M._no_build_stale_notes(profile, units)
-    end
-
-    -- The final ordered steps and their JUnit labels (§16.16).
-    local steps, labels = {}, {}
-    for _, u in ipairs(plan) do
-      if batch_count[u.unit] then
-        local label = u.project.key .. ":" .. tostring(u.unit:variant())
-        steps[#steps + 1] = { kind = "batch", unit = u.unit, project = u.project, label = label }
-        labels[label] = (labels[label] or 0) + 1
-      end
-      for _, x in ipairs(u.exec) do
-        steps[#steps + 1] = { kind = "exec", unit = u.unit, project = u.project, entry = x.entry,
-          lt = x.lt, args = x.args, cwd = x.cwd, label = x.entry.name }
-        labels[x.entry.name] = (labels[x.entry.name] or 0) + 1
-      end
-    end
-    if #steps == 0 then
+    local prepared, perr = test_plan.prepare(ws, profile, pre, opts, deps)
+    if not prepared then die(perr, 1) end
+    for _, n in ipairs(prepared.notes or {}) do note(n, "plain") end
+    if #prepared.steps == 0 then
       out("no tests to run for profile '" .. profile.key .. "'", "plain")
+      local _, rerr = test_plan.with_refused(pre, 0, nil)
+      if rerr then die(rerr, 1) end
       return 0
     end
-    -- Same label twice: qualify the executable step with its project, then,
-    -- when its name repeats in its list, with its occurrence index.
-    for _, st in ipairs(steps) do
-      if st.kind == "exec" and labels[st.label] > 1 then
-        st.label = st.project.key .. ":" .. st.label
-          .. (st.entry.repeated and ("#" .. st.entry.index) or "")
-      end
-    end
-    local multi = #steps > 1
-    local function junit_for(label)
-      return opts.junit and overseer._junit_dest_for(opts.junit, label, multi) or nil
-    end
-    local batch_steps = {}
-    if n_batch > 0 then
-      local planned = overseer.plan_profile_test(profile, {
-        skip_units = skip, extra_args = (#extra > 0) and extra or nil, junit = opts.junit,
-        no_rebuild = no_build or nil,
-        junit_dest_for = function(label) return junit_for(label) end,
-      })
-      for _, st in ipairs(planned or {}) do
-        batch_steps[st.unit] = batch_steps[st.unit] or {}
-        table.insert(batch_steps[st.unit], st)
-      end
-    end
-    if opts.junit then
-      local dir = opts.junit:match("^(.*)/[^/]+$")
-      if dir then assert(require("loomworks.io").mkdir_p(dir)) end
-    end
-
-    local summary, summary_roles, n_failed = {}, {}, 0
-    for _, st in ipairs(steps) do
-      if st.kind == "batch" then
-        for _, b in ipairs(batch_steps[st.unit] or {}) do
-          out(require("loomworks.cli_color").header("test", st.project.key .. ": " .. (b.runner or "runner")),
-            "phase")
-          if opts.verbose then
-            M._verbose_out(require("loomworks.build_run").command_lines(b, b.cwd or ws.root))
-          end
-          local code = (deps.run_spec or run_spec)(b, ws.root)
-          if b.junit_dest and b.junit_out then
-            if norm_cmp(b.junit_out) ~= norm_cmp(b.junit_dest) then
-              if uv.fs_stat(b.junit_out) then
-                uv.fs_copyfile(b.junit_out, b.junit_dest)
-                out("JUnit: " .. b.junit_dest, "plain")
-              else
-                errw("lw: warning: no JUnit output for " .. st.label .. "\n", "warn")
-              end
-            elseif uv.fs_stat(b.junit_dest) then
-              out("JUnit: " .. b.junit_dest, "plain")
-            else
-              errw("lw: warning: no JUnit output for " .. st.label .. "\n", "warn")
-            end
-          end
-          local ok = code == 0
-          if not ok then n_failed = n_failed + 1 end
-          summary_roles[#summary + 1] = ok and "ok" or "fail"
-          summary[#summary + 1] = string.format("  %-28s %s", st.project.key .. ": " .. (b.runner or "runner"),
-            ok and "passed" or ("FAILED (exit status " .. tostring(code) .. ")"))
-        end
-      else
-        local name = test_targets.entry_label(st.entry)
-        local failed, reasons, c, exit_only = M._run_test_executable(ws, st.lt, {
-          label = name, header = st.project.key .. ": " .. name, saved = true,
-          args = st.args, cwd = st.cwd, entry_working_dir = st.entry.working_dir,
-          extra = extra, dev = opts.dev, junit_path = junit_for(st.label), no_build = no_build,
-          verbose = opts.verbose,
-        }, deps)
-        if failed then n_failed = n_failed + 1 end
-        local test_run = require("loomworks.remote.test_run")
-        local names = failed and test_run.failed_names(c, test_run.FAILED_NAMES_CAP) or ""
-        summary_roles[#summary + 1] = failed and "fail" or "ok"
-        summary[#summary + 1] = string.format("  %-28s %s%s", st.project.key .. ": " .. name,
-          failed and ("FAILED (" .. test_run.failed_reasons(reasons, c) .. ")" .. (names ~= "" and (": " .. names) or ""))
-            or ("passed" .. ((c and not exit_only) and test_run.not_run_suffix(c) or "")),
-          exit_only and "  (exit status only — no per-case results)" or "")
-      end
-    end
-    out("", "plain")
-    out("summary — profile '" .. profile.key .. "':", "plain")
-    for i, l in ipairs(summary) do out(l, summary_roles[i]) end
-    if n_failed > 0 then
-      die(string.format("%d of %d test step%s failed", n_failed, #summary, #summary == 1 and "" or "s"), 1)
-    end
-    out(string.format("TESTS OK: %s (%d step%s)", profile.key, #summary, #summary == 1 and "" or "s"), "ok")
-    return 0
+    local rc, err
+    test_plan.run(ws, profile, prepared, opts, M._test_host(ws, deps, opts.verbose), function(code, msg) rc, err = code, msg end)
+    rc, err = test_plan.with_refused(pre, rc or 0, err)
+    if err then die(err, rc) end
+    return rc
   end
 
   local rc
@@ -3541,14 +3192,14 @@ function M._report_entry(ws, profile, u, e, here, local_only)
   local lctx = e.name and require("loomworks.expand").launch_context(ws, profile, u.project, { target = r.target }) or nil
   local expanded
   if e.args and #e.args > 0 then
-    local ex, unresolved = test_targets.expand_args(e.args, lctx)
+    local ex, unresolved = require("loomworks.test_plan").expand_args(e.args, lctx)
     if #unresolved == 0 then expanded = ex end
   elseif e.name then
     expanded = {}
   end
   local wd_expanded
   if e.working_dir then
-    local abs, unresolved = test_targets.resolve_working_dir(e.working_dir, lctx, ws.root)
+    local abs, unresolved = require("loomworks.test_plan").resolve_working_dir(e.working_dir, lctx, ws.root)
     if #unresolved == 0 then wd_expanded = abs end
   end
   local program_values = (e.args and #e.args > 0) or e.working_dir ~= nil
@@ -3681,7 +3332,7 @@ end
 function M.cmd_launch_list(ws, proj_name)
   local projs = {}
   for _, p in pairs(ws._projects) do
-    if (not proj_name or p.key == proj_name) and type(p.launch) == "table" and next(p.launch) then
+    if (not proj_name or p.key == proj_name) and p:has_launches() then
       projs[#projs + 1] = p
     end
   end
@@ -3691,24 +3342,21 @@ function M.cmd_launch_list(ws, proj_name)
   -- order you pass them to `lw launch show|set <project> <name>`.
   local rows = {}
   for _, p in ipairs(projs) do
-    local names = {}
-    for n in pairs(p.launch) do names[#names + 1] = n end
-    table.sort(names)
-    for _, n in ipairs(names) do
-      local cfg = p.launch[n]
+    for _, launch in ipairs(p:launch_configs()) do
+      local n = launch.name
       local runs
-      if type(cfg) == "table" and cfg.target then
-        runs = "target:" .. cfg.target
-      elseif type(cfg) == "table" and cfg.command then
-        runs = cfg.command
+      if launch.target then
+        runs = "target:" .. launch.target
+      elseif launch.command then
+        runs = launch.command
       else
         runs = "(no command)"
       end
-      if type(cfg) == "table" and cfg.args and #cfg.args > 0 then
-        runs = runs .. " " .. table.concat(cfg.args, " ")
+      if launch.args and #launch.args > 0 then
+        runs = runs .. " " .. table.concat(launch.args, " ")
       end
       rows[#rows + 1] = { project = p.key, name = n, runs = runs,
-        description = type(cfg) == "table" and cfg.description or nil }
+        description = launch.description }
     end
   end
 
@@ -3929,16 +3577,15 @@ function M.cmd_launch_set(root, args)
   local proj_name, name, next_i = consume_launch_address(ws, args, 3)
   if not (proj_name and name) then die(usage, 2) end
   local project = resolve_project(ws, proj_name)
-  local cur = project.launch and project.launch[name]
-  if type(cur) ~= "table" then
+  local cur_launch = project:find_launch(name)
+  if not cur_launch or cur_launch:is_invalid() then
     die("no launch config '" .. name .. "' on project '" .. project.key ..
       "' — create it with `lw launch add`")
   end
 
   -- Copy so a save failure leaves the in-memory config untouched. Preserve
   -- fields we don't edit (e.g. deploy, debug); deep-copy the mutated tables.
-  local new = {}
-  for k, v in pairs(cur) do new[k] = v end
+  local new = cur_launch:serialize()
   if type(new.env) == "table" then
     local e = {}; for k, v in pairs(new.env) do e[k] = v end; new.env = e
   end
@@ -4020,7 +3667,7 @@ end
 --- Print one launch config, given a resolved project + name. Shared by
 --- `launch show` and the confirmation `launch set` prints after a save.
 function launch_show_resolved(project, name)
-  local cfg = project.launch and project.launch[name]
+  local cfg = project:find_launch(name)
   if not cfg then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   out("launch config '" .. name .. "'  (project " .. project.key .. ")")
   if type(cfg.description) == "string" then
@@ -4066,8 +3713,8 @@ end
 --- @param name string
 --- @return integer
 function M._launch_show_json(project, name)
-  local cfg = project.launch and project.launch[name]
-  if type(cfg) ~= "table" then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
+  local cfg = project:find_launch(name)
+  if not cfg or cfg:is_invalid() then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   local d = require("loomworks.description")
   local desc = type(cfg.description) == "string" and cfg.description or nil
   local obj = {
@@ -4093,7 +3740,7 @@ end
 --- `lw launch show <project> <name>` (also `[<project>:]<name>` /
 --- `--project`/`--launch`).
 function M.cmd_launch_show(root, args)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local proj_name, name = consume_launch_address(ws, args, 3, { ["--json"] = true })
   if not (proj_name and name) then
     die("usage: lw launch show [<project>] <name> [--json]  (also <project>:<name> / --project P --launch N)", 2)
@@ -4114,14 +3761,16 @@ function M.cmd_launch_remove(root, args)
     die("usage: lw launch remove [<project>] <name>  (also <project>:<name> / --project P --launch N)", 2)
   end
   local project = resolve_project(ws, proj_name)
-  local ok, err = project:delete_launch_config(name)
+  local launch = project:find_launch(name)
+  if not launch then die("launch config '" .. name .. "' not found") end
+  local ok, err = project:delete_launch_config(launch)
   if not ok then die(tostring(err)) end
   out("removed launch config '" .. name .. "' from project '" .. project.key .. "'")
   return 0
 end
 
 function M.cmd_launch(sub, root, args)
-  if sub == nil or sub == "list" then return M.cmd_launch_list(load_workspace(root, false), args[3]) end
+  if sub == nil or sub == "list" then return M.cmd_launch_list(read_workspace(root, false), args[3]) end
   if sub == "add" or sub == "create" then return M.cmd_launch_add(root, args) end
   if sub == "set" or sub == "edit" then return M.cmd_launch_set(root, args) end
   if sub == "show" then return M.cmd_launch_show(root, args) end
@@ -4173,7 +3822,12 @@ end
 --- @return integer
 function M._launch_rename(ws, project, old, new, opts)
   opts = opts or {}
-  local changed, err, moved = project:rename_launch_config(old, new)
+  local launch = project:find_launch(old)
+  if not launch then
+    die("could not rename launch config: no launch config '" .. tostring(old) .. "' on project '"
+      .. project.key .. "'")
+  end
+  local changed, err, moved = project:rename_launch_config(launch, new)
   if changed == nil then die("could not rename launch config: " .. tostring(err)) end
   if changed == false then
     out("launch configuration '" .. project.key .. ":" .. old .. "' (unchanged)")
@@ -4251,20 +3905,18 @@ function M.cmd_launch_describe(root, args)
   local o = M._describe_parse(rest, usage)
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
-  local cfg = project.launch and project.launch[name]
-  if type(cfg) ~= "table" then
+  local launch = project:find_launch(name)
+  if not launch or launch:is_invalid() then
     die("no launch config '" .. name .. "' on project '" .. project.key .. "'")
   end
   local handle = {
-    description = type(cfg.description) == "string"
-      and require("loomworks.description").normalize(cfg.description) or nil,
+    description = launch.description,
     _json_extra = { project = project.key, name = name },
     _shared_item = project,
   }
   function handle:set_description(text)
-    local changed, err = project:set_launch_description(name, text)
-    local c = project.launch and project.launch[name]
-    self.description = c and c.description or nil
+    local changed, err = launch:set_description(text)
+    self.description = launch.description
     return changed, err
   end
   return M._describe_item(ws, handle, "launch configuration", project.key .. ":" .. name,
@@ -4385,6 +4037,16 @@ function M.cmd_migrate(root, args)
     end
   end
 
+  -- Rewrites the working copy and the published snapshot: one operation
+  -- under the workspace operation lock (spec §19.3).
+  local op_tok = ws:_op_lock("migrate")
+  on_exit(function() require("loomworks.op_lock").release(op_tok) end)
+  -- The plan was made (and confirmed) before the lock: refuse if another
+  -- process changed the working copy since, before writing anything.
+  if not ws:_working_copy_fresh() then
+    die(require("loomworks.workspace").STALE_USER_MESSAGE .. " — re-run `lw migrate`")
+  end
+  local mtxn = ws:_txn_begin("migrate")
   local applied, err = migrate.apply(plan)
   if err then die("migration failed after " .. applied .. " change(s): " .. err) end
 
@@ -4395,6 +4057,9 @@ function M.cmd_migrate(root, args)
     die("migrated the working copy, but publishing failed: " .. tostring(pub_err)
       .. "\n  Run `lw publish` once resolved.")
   end
+  local c_ok, c_err = ws:_txn_finish(mtxn)
+  require("loomworks.op_lock").release(op_tok)
+  if not c_ok then die("migration failed: " .. tostring(c_err)) end
   out("")
   out("migrated " .. applied .. " configuration(s); wrote the working copy and "
     .. "regenerated loomworks.json")
@@ -4615,13 +4280,23 @@ end
 --- writes). Test seam: replace `M._raw_stdout`.
 --- @param s string
 function M._raw_stdout(s)
+  M._raw_write(1, s)
+end
+
+--- Write `s` raw to file descriptor `fd` (1 or 2), after flushing both
+--- buffered streams (so the order with our own lines holds).
+--- @param fd integer
+--- @param s string
+function M._raw_write(fd, s)
   io.stdout:flush()
+  io.stderr:flush()
   local pos = 1
   while pos <= #s do
-    local ok, n = pcall(uv.fs_write, 1, s:sub(pos))
+    local ok, n = pcall(uv.fs_write, fd, s:sub(pos))
     if not ok or type(n) ~= "number" or n <= 0 then
-      io.stdout:write(s:sub(pos))
-      io.stdout:flush()
+      local f = fd == 2 and io.stderr or io.stdout
+      f:write(s:sub(pos))
+      f:flush()
       return
     end
     pos = pos + n
@@ -5191,7 +4866,7 @@ end
 
 --- `lw project [list]` — list the workspace's projects.
 function M.cmd_project_list(root)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local sorted = M._sorted_projects(ws)
   if #sorted == 0 then out("(no projects)"); return 0 end
   for _, p in ipairs(sorted) do
@@ -5220,7 +4895,7 @@ end
 --- workspace's only project; with several it lists them and the named form,
 --- and with none it says so — both usage errors (exit 2).
 function M.cmd_project_show(root, name)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local proj
   if name then
     proj = resolve_project(ws, name)
@@ -5614,7 +5289,7 @@ M._get_param = get_param
 
 --- `lw config list [project]` — configs for one project, or all.
 function M.cmd_configuration_list(root, proj_name)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local projs = {}
   if proj_name then
     projs = { resolve_project(ws, proj_name) }
@@ -5767,7 +5442,7 @@ end
 --- `lw config show <project> <name>`
 function M.cmd_configuration_show(root, proj_name, cfg_name)
   if not proj_name or not cfg_name then die("usage: lw config show <project> <name>", 2) end
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, false)
   local kind = cfg.is_user and "user" or (cfg:is_auto_gen() and "module-generated" or "preset")
@@ -5816,7 +5491,7 @@ function M.cmd_configuration_get(root, proj_name, cfg_name, param)
       "  param: inherits | languages | options.<KEY> | variables.<NAME> | env[.<NAME>]\n" ..
       "         | overrides[.<family>[.<NAME> | .env[.<NAME>]]] | <module field>", 2)
   end
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local cfg = resolve_config(resolve_project(ws, proj_name), cfg_name, false)
   if param == "description" then
     if cfg.description then M._describe_print(cfg.description) else out("(unset)") end
@@ -6085,7 +5760,7 @@ end
 
 --- `lw configset list` — all sets with their mappings.
 function M.cmd_cset_list(root)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local sets = {}
   for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
   if #sets == 0 then out("(no configuration sets)"); return 0 end
@@ -6120,7 +5795,7 @@ end
 --- `lw configset show <name>`
 function M.cmd_cset_show(root, name)
   if not name then die("usage: lw configset show <name>", 2) end
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   out(cs.name)
   M._describe_block(cs.description)
@@ -6397,8 +6072,8 @@ function M._describe_edit(prefill, what, root)
     die("no editor: set $VISUAL or $EDITOR, or give the description with -m, "
       .. "-F <file>, -F - or as an argument")
   end
-  local path = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-describe-"
-    .. require("loomworks.remote.transport").nonce() .. ".txt"
+  -- In the workspace's .nvim/tmp, not the system temp dir (§16.40).
+  local path = require("loomworks.housekeeping").tmp_path(root, "lw-describe-", ".txt")
   local f = io.open(path, "wb")
   if not f then die("cannot create a temporary file for the editor") end
   f:write((prefill or "") .. "\n\n"
@@ -6679,7 +6354,10 @@ function M.cmd_describe(kind, root, args)
   end
   if #ops < n_ops then die(usage, 2) end
   local o = M._describe_parse(rest, usage)
-  local ws = load_workspace(root, false)
+  -- The read form reads the runtime's projection in daemon mode (§19.13);
+  -- a form that writes loads the workspace in-process.
+  local reading = not (o.paras or o.text ~= nil or o.stdin or o.file or o.edit or o.clear)
+  local ws = reading and read_workspace(root, false) or load_workspace(root, false)
   if kind == "project" then
     local proj = resolve_project(ws, ops[1])
     return M._describe_item(ws, proj, "project", proj.key, "projects", nil, o)
@@ -6940,13 +6618,25 @@ function M.cmd_profile_create(root, args)
     first_entry = { tool_key = t.key, tool_data = t.data, tool_label = t.label, tool_mod_type = order[1] }
   end
   local existed = cs:find_profile(first_entry) ~= nil
-  local profile = cs:ensure_profile(first_entry)
-  if not profile then die("failed to create profile for set '" .. cs.name .. "'") end
+  -- A new profile that would take another configuration's build directory
+  -- is refused, writing nothing (spec §1.7): by ensure_profile for its first
+  -- toolchain, here once the others are added.
+  local profile, perr = cs:ensure_profile(first_entry)
+  if not profile then die(perr or ("failed to create profile for set '" .. cs.name .. "'")) end
   for i = 2, #order do profile:add_tool(resolved[order[i]].key) end
+  if not existed and #order > 1 then
+    local collision = ws:_new_build_dir_collision(profile)
+    if collision then
+      ws:_remove_profile(profile)
+      die(collision)
+    end
+  end
   -- Profiles default to `local`: the toolchains they pin were resolved on
   -- this machine, so publishing one by default would push a build environment
-  -- into the shared contract that other machines may not have.
-  profile._intent = created_intent("local")
+  -- into the shared contract that other machines may not have. Only a new
+  -- profile: an existing one keeps its intent (API.md §11 `Profiles/1.create`,
+  -- as model_commands.profile_create).
+  if not existed then profile._intent = created_intent("local") end
   if activate then profile:activate() else ws:_save_user() end
   M._apply_create_description(profile, "profile '" .. profile.key .. "'")
 
@@ -7008,15 +6698,13 @@ local function collect_targets(ws, profile)
   for _, c in ipairs(cands) do
     local is_default = candidate_is_default(desc, c)
     if is_default then seen_default = true end
-    local lcfg = c.kind == "launch" and c.project.launch and c.project.launch[c.name]
     rows[#rows + 1] = {
       label = c.project.key .. ":" .. c.name,
       kind_label = target_kind_label(c.kind),
       is_default = is_default,
       cand = c,
       -- A launch's description summary ends its row (spec §16.35).
-      description = type(lcfg) == "table" and type(lcfg.description) == "string"
-        and lcfg.description or nil,
+      description = c.launch and c.launch.description or nil,
     }
   end
   -- The default points at a target we couldn't enumerate (e.g. an unconfigured
@@ -7037,7 +6725,7 @@ local function collect_targets(ws, profile)
     local project = unit and unit._project
     local mod = project and project._module and project._module.impl
     if mod and mod.parse_targets then
-      local st = unit:state()
+      local st = unit:local_state()
       if st ~= "configured" and st ~= "built" then unconfigured[#unconfigured + 1] = project.key end
     end
   end
@@ -7115,18 +6803,8 @@ local function target_set(root, args)
   local profile = resolve_profile(ws, profile_name, -- nil → active (interactive) / dies in CI
     { usage = "lw target set <profile> <target>" })
 
-  -- Resolve <target> to a candidate (same rules as `lw run`).
-  local bare = target_name
-  if not scope then
-    local pfx = target_name:match("^([^:]+):(.+)$")
-    if pfx and profile:project(pfx) then scope, bare = pfx, target_name:match("^[^:]+:(.+)$") end
-  end
-  local all = launchable_targets(ws, profile)
-  local matches = {}
-  for _, c in ipairs(all) do
-    if c.name == bare and (not scope or c.project.key == scope)
-      and (not kind or c.kind == kind) then matches[#matches + 1] = c end
-  end
+  -- Resolve <target> to a candidate (the same matcher as `lw run`).
+  local matches, all = match_targets(ws, profile, target_name, scope, kind)
   if #matches == 0 then
     local labels = {}
     for _, c in ipairs(all) do labels[#labels + 1] = fmt_cand(c) end
@@ -7877,7 +7555,12 @@ function M.cmd_sdk(sub, root, args)
     local key = args[3]
     if not key then die("usage: lw sdk remove <key>  (`lw sdk list` shows keys)", 2) end
     local ws = load_workspace(root, false)
-    if not ws:remove_sdk(key) then
+    -- The key the user typed names the SDK (exactly, as before).
+    local target
+    for _, s in ipairs(ws._sdks) do
+      if s.key == key then target = s; break end
+    end
+    if not target or not ws:remove_sdk(target) then
       die("no SDK with key '" .. key .. "'. Run `lw sdk list`.")
     end
     out("removed SDK '" .. key .. "'")
@@ -7933,7 +7616,8 @@ function M.cmd_profile_query(root, args)
     die("usage: lw profile query <profile> <project> <field>\n" ..
       "  fields: build-dir | config | state | tool | cache | variables | variables.<name>", 2)
   end
-  local ws = load_workspace(root, false)
+  -- `cache` probes the host: asked of the runtime (§19.14) on a session kept open.
+  local ws = read_workspace(root, false, { keep = field == "cache" })
   -- Deterministic machine path: resolve by key only, never a positional number
   -- (numbers are an interactive convenience that shifts on profile add/remove).
   local profile = resolve_profile(ws, profile_name, { no_number = true })
@@ -7981,7 +7665,13 @@ function M.cmd_profile_query(root, args)
     local t = pp:tool_object()
     value = t and t.key or ""
   elseif field == "cache" then
-    value = M._profile_query_cache(profile, pp)
+    local q = ws._projection and M._read_query("profile_cache", { profile = profile.key, project = project_key })
+    if q then
+      value = type(q.cache) == "table"
+        and (require("loomworks.profile").compiler_cache_text(q.cache):gsub("^Cache: ", "")) or ""
+    else
+      value = M._profile_query_cache(profile, pp)
+    end
   elseif field == "variables" then
     -- Deterministic, machine-parseable: sorted `name=value` lines.
     local resolved = resolved_variables()
@@ -8178,6 +7868,16 @@ local function effective_config_default(key)
     -- Precedence mirrors boot.update.resolve_channel (env > config > default).
     return os.getenv("LOOMWORKS_CHANNEL") or "stable"
   end
+  if key == "runtime-mode" then
+    -- Precedence mirrors loomworks.daemon.runtime.resolve (env > config > default).
+    local rt = require("loomworks.daemon.runtime")
+    local v = os.getenv(rt.ENV)
+    return (rt.is_valid(v) and v) or rt.DEFAULT
+  end
+  if key == "daemon-idle-timeout" then
+    return require("loomworks.daemon.runtime").IDLE_GRACE_SECONDS .. "s"
+  end
+  if key == "runtime-busy-wait" then return "5s" end
   return nil
 end
 
@@ -8213,6 +7913,15 @@ function M.cmd_settings(sub, key, value)
     if key == "release-notes" and value ~= "on" and value ~= "off" then
       die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'", 2)
     end
+    if key == "runtime-mode" and not require("loomworks.daemon.runtime").is_valid(value) then
+      die("invalid runtime-mode '" .. value .. "' — use 'in-process' or 'daemon'")
+    end
+    if key == "daemon-idle-timeout" and not require("loomworks.daemon.runtime").parse_duration(value) then
+      die("invalid daemon-idle-timeout '" .. value .. "' — use seconds, or a number with s, m or h (30m, 1h)")
+    end
+    if key == "runtime-busy-wait" and not require("loomworks.daemon.runtime").parse_busy_wait(value) then
+      die("invalid runtime-busy-wait '" .. value .. "' — use 0, seconds, or a number with ms, s or m (500ms, 5s)")
+    end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
     local ok, err = write_config(cfg)
@@ -8245,6 +7954,17 @@ local ANSI_TITLE, ANSI_DIM, ANSI_ACTIVE = term.sgr(SGR.bold), term.sgr(SGR.dim),
 -- Diagnostic severities: red for errors, yellow for warnings. Same gating as
 -- the rest of the palette — plain on a pipe/redirect.
 local ANSI_ERR, ANSI_WARN = term.sgr(SGR.red), term.sgr(SGR.yellow)
+-- The editor highlight groups the CLI mirrors (a profile's build state,
+-- `Profile:status()` / STATUS_HL, spec §16.18), mapped to the terminal colors
+-- with the same meaning — the one place a highlight group becomes ANSI. Info is
+-- blue, not cyan: cyan is the CLI's command-token color.
+local ANSI_BY_HL = {
+  Comment = ANSI_DIM,
+  DiagnosticInfo = term.sgr(SGR.blue),
+  DiagnosticOk = ANSI_ACTIVE,
+  DiagnosticWarn = ANSI_WARN,
+  DiagnosticError = ANSI_ERR,
+}
 
 --- A named set of painters for `lw status`. When `color` is false every field
 --- is the identity function, so the exact same rendering code produces plain
@@ -8267,6 +7987,13 @@ local function status_palette(color)
     inline = color and mk(ANSI_DIM) or function(s) return "`" .. s .. "`" end,
     err = mk(ANSI_ERR),
     warn = mk(ANSI_WARN),
+    -- Paint `s` in the color of editor highlight group `group` (ANSI_BY_HL);
+    -- plain for an unmapped group or with color off.
+    hl = function(group, s)
+      local seq = color and ANSI_BY_HL[group]
+      if not seq then return s end
+      return seq .. s .. ANSI_RESET
+    end,
   }
 end
 
@@ -8569,6 +8296,15 @@ local function stdout_supports_color()
 end
 M._stdout_supports_color = stdout_supports_color
 
+--- The stderr counterpart of `stdout_supports_color` (the same `--color`,
+--- NO_COLOR, tty and Windows-VT gates, tested on stderr) — for the dim
+--- one-line notes `lw` writes to stderr, e.g. the daemon-delegation line
+--- (spec §19.15).
+--- @return boolean
+function M._stderr_supports_color()
+  return require("loomworks.cli_color").enabled("stderr")
+end
+
 --- Best-effort width of the output terminal, in columns. A real stdout tty is
 --- measured via libuv (`new_tty` + `get_winsize`); a redirected / piped /
 --- captured run (every test) falls back to `$COLUMNS`, then a sensible default
@@ -8610,13 +8346,11 @@ local function fit_column(longest, tw, reserved, min)
 end
 M._fit_column = fit_column
 
--- Fixed, non-name characters on a Profiles row: "* " (mark + space) + " set="
--- (the space before the tail plus the literal "set=") + the set value, which is
--- `trunc(..., PROFILE_SET_W)`, plus a few columns of slack for the inline
--- diagnostic markers (those actually render on their own lines, so the slack is
--- just breathing room). The name column gets whatever the terminal leaves.
-local PROFILE_SET_W = 22
-local PROFILE_RESERVED = 2 + 5 + PROFILE_SET_W + 4
+-- Fixed, non-name characters on a Profiles row: "* " (mark + space) plus a few
+-- columns of slack for the inline diagnostic markers (those actually render on
+-- their own lines, so the slack is just breathing room). The number and state
+-- columns are added per call; the name column gets whatever the terminal leaves.
+local PROFILE_RESERVED = 2 + 4
 
 --- Build the formatted rows for the Profiles section, sizing the profile-name
 --- column to its content and capping it to `tw` columns. Raw text is formatted
@@ -8624,30 +8358,50 @@ local PROFILE_RESERVED = 2 + 5 + PROFILE_SET_W + 4
 --- for tests; `cmd_status` renders exactly these rows. Returns the row-string
 --- array and the name column width it chose.
 --- @param pal table status_palette()
---- @param plist table Profile-like objects ({ key, _configuration_set_name })
+--- @param plist table Profile-like objects ({ key, status? })
 --- @param active_key string|nil
 --- @param grouped table group_diagnostics() result
 --- @param tw integer terminal width in columns
 --- @param numbers table<string, integer> profile.key → stable number (profile_numbering)
 local function status_profile_rows(pal, plist, active_key, grouped, tw, numbers)
   numbers = numbers or {}
-  local longest, num_w = 0, 1
+  local longest, num_w, state_w = 0, 1, 0
+  -- Build state (§16.18): the editor's aggregate `Profile:status()` label and
+  -- highlight group, shown verbatim in parentheses after the name. No set
+  -- column: a profile key is always `<set>[:<tools>]` (Profile:_derive_key), so
+  -- the name already shows the set.
+  local states = {}
+  local dwidth = require("loomworks.description").width
   for _, p in ipairs(plist) do
     longest = math.max(longest, #tostring(p.key))
     num_w = math.max(num_w, #tostring(numbers[p.key] or ""))
+    local ok, label, hl = pcall(function()
+      if p.status then return p:status() end
+    end)
+    if ok and type(label) == "string" and label ~= "" then
+      states[p] = { text = "(" .. label .. ")", hl = hl }
+      state_w = math.max(state_w, 1 + dwidth(states[p].text))
+    end
   end
-  -- The number column widens the fixed overhead; take it off the name budget.
-  local name_w = fit_column(longest, tw, PROFILE_RESERVED + num_w, 8)
-  -- "<mark><n> <name> set=<set>" — the stable number is a label here, so it
+  -- The number and state columns widen the fixed overhead; take them off the
+  -- name budget.
+  local name_w = fit_column(longest, tw, PROFILE_RESERVED + num_w + state_w, 8)
+  -- "<mark><n> <name> (<state>)" — the stable number is a label here, so it
   -- keeps its value even though the section lists the active profile first.
-  local fmt = "%s%" .. num_w .. "s %-" .. name_w .. "s set=%s"
+  -- The name is padded only when a state follows it.
   local rows = {}
   for _, p in ipairs(plist) do
     local is_active = (p.key == active_key)
-    local row = string.format(fmt, is_active and "*" or " ", tostring(numbers[p.key] or ""),
-      trunc(p.key, name_w), trunc(p._configuration_set_name or "?", PROFILE_SET_W))
-    rows[#rows + 1] = (is_active and pal.active(row) or row)
-      .. M._summary_suffix(require("loomworks.description").width(row), p.description, tw, pal)
+    local st = states[p]
+    local name = trunc(p.key, name_w)
+    if st then name = name .. string.rep(" ", name_w - dwidth(name)) end
+    local head = string.format("%s%" .. num_w .. "s %s", is_active and "*" or " ",
+      tostring(numbers[p.key] or ""), name)
+    local plain = st and (head .. " " .. st.text) or head
+    local row = (is_active and pal.active(head) or head)
+      .. (st and (" " .. pal.hl(st.hl, st.text)) or "")
+    rows[#rows + 1] = row
+      .. M._summary_suffix(dwidth(plain), p.description, tw, pal)
       .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
   end
   return rows, name_w
@@ -8817,6 +8571,1303 @@ end
 --- it never changes the rendering.
 --- `opts.submodule` (the submodule dir the root search crossed, spec §1.1)
 --- adds a one-line note that the workspace came from the superproject.
+--- The `Trust` row of `lw status` (spec §17.10): whether the working copy is
+--- present (a refused one never reaches the page) and how many program
+--- settings in loomworks.json are ignored. A workspace's NAME can read
+--- "untrusted" (it is its directory's); this row is the trust state.
+--- @param ws table workspace
+--- @param root string
+--- @return string
+function M._trust_row(ws, root)
+  local present = uv.fs_stat(require("loomworks.user").filepath(root)) ~= nil
+  local row = present and "local config signed on this machine (its program settings are used)"
+    or "no local config (only a local config may name programs)"
+  local ok, ignored = pcall(function() return ws:ignored_program_settings() end)
+  local n = ok and type(ignored) == "table" and #ignored or 0
+  if n > 0 then
+    row = row .. string.format(" · %d program setting%s in loomworks.json ignored", n, n == 1 and "" or "s")
+  end
+  return row .. " — lw help trust"
+end
+
+--- The `Runtime` row of `lw status` (spec §19.6), computed from the runtime
+--- lock and handle files only (nil only if that fails).
+--- @param root string
+--- @return string|nil
+function M._runtime_row(root)
+  local ok, row = pcall(function()
+    local rt = require("loomworks.daemon.runtime")
+    local mode = rt.resolve(read_config()[rt.SETTING])
+    local inspect = require("loomworks.daemon.inspect")
+    return inspect.row(inspect.state(root), mode, require("loomworks.daemon.version").identity())
+  end)
+  return ok and row or nil
+end
+
+--- Workspace commands that never start or contact the daemon (besides the
+--- ones dispatched before the workspace guard: status, health, pull, worktree,
+--- settings, help, daemon …).
+M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
+
+--- The read-only sub-commands of each command (spec §19.1, §19.14; `lw
+--- status` is dispatched before the guard): they read a live compatible
+--- daemon's projection or in-process (`read_workspace`), so their ensure step
+--- never launches a daemon. `false` = the bare command (its list form).
+M.READ_ONLY_SUBS = {
+  project = { [false] = true, list = true, show = true },
+  config = { [false] = true, list = true, show = true, get = true },
+  configset = { [false] = true, list = true, show = true },
+  profile = { show = true, query = true },
+  launch = { [false] = true, list = true, show = true },
+}
+M.READ_ONLY_ALIAS = {
+  configuration = "config", cfg = "config", ["configuration-set"] = "configset", cs = "configset",
+}
+--- The commands with a `describe` sub-command read by `cmd_describe`, and its
+--- item operand count.
+M.DESCRIBE_OPS = { project = 1, config = 2, configset = 1, profile = 1 }
+
+--- Is argv `args` a read-only command (spec §19.1, §19.14): `lw tools`,
+--- `profile show` / `query`, `project` / `config` / `configset` / `launch`
+--- list and show, `config get`, and the read form of `describe` (no
+--- description source, `--clear` or `--edit`; only `--json`)? Like the
+--- NO_DAEMON_COMMANDS its ensure step is skipped: it never launches, stops or
+--- restarts a daemon. Commands that write keep the ensure step.
+--- @param args string[]
+--- @return boolean
+function M._read_only_command(args)
+  local command = args[1]
+  if command == "tools" then return true end
+  command = M.READ_ONLY_ALIAS[command] or command
+  local subs = M.READ_ONLY_SUBS[command]
+  if not subs then return false end
+  local sub = args[2]
+  if sub == nil then return subs[false] == true end
+  if subs[sub] then return true end
+  if sub == "describe" and M.DESCRIBE_OPS[command] then
+    for i = 3 + M.DESCRIBE_OPS[command], #args do
+      if args[i] ~= "--json" then return false end
+    end
+    return #args >= 2 + M.DESCRIBE_OPS[command]
+  end
+  return false
+end
+
+--- Workspace commands routed to the workspace daemon (spec §19.15): their
+--- ensure step waits longer for a slow daemon (§19.10) before they run
+--- in-process. `test`: its batch form (§19.19 step 5); `run`: its preparation
+--- (§19.15 "Run"; the program runs here); `clean` (§19.15 "Clean", step 5c);
+--- `reset` (§19.15 "Reset", step 5d).
+M.ROUTED_COMMANDS = { build = true, test = true, run = true, clean = true, reset = true }
+
+--- Would argv `args` be routed to the daemon, for the ensure step's bound
+--- (§19.10)? A routed command — `-v` included, which the requests carry
+--- (§19.15 "Roles and verbose") — except `lw test --target` and a `lw run`
+--- with a device option (they stay in-process, §19.15), which get the plain
+--- non-routed ensure.
+--- @param args string[]
+--- @return boolean
+function M._routed_command(args)
+  local command = args[1]
+  if not M.ROUTED_COMMANDS[command] then return false end
+  if command == "test" and M._test_request(args) == "target" then return false end
+  if command == "run" and M._run_request(args) == "device" then return false end
+  return true
+end
+
+--- Keep the workspace daemon running before a workspace command (spec §19.1,
+--- §19.10; loomworks.daemon.ensure). Never fails the command. Returns what
+--- happened (loomworks.daemon.ensure.ensure's outcome; nil on an error).
+--- `routed`: the command would be routed to the daemon (`lw build`), which
+--- gives a live-but-slow daemon the longer bound (ensure.ROUTED_STEP_MS).
+--- @param root string
+--- @param routed? boolean
+--- @return string|nil
+function M._ensure_daemon(root, routed)
+  local ok, outcome = pcall(function()
+    return require("loomworks.daemon.ensure").ensure(root, {
+      config = read_config(), flag = M._no_daemon, note = note, routed = routed == true,
+      log = require("loomworks.daemon.rlog").writer(root),
+      -- A repo that pins another lw: its daemon is the pinned lw's (§16.23).
+      foreign_pin = rawget(_G, "__loomworks_foreign_pin"),
+    })
+  end)
+  if not ok then
+    -- Never silent (§19.15): the command runs without the daemon, and says so.
+    note("lw: could not use the workspace daemon (" .. (tostring(outcome):match("[^\n]*")) .. "); running without it")
+    return nil
+  end
+  return outcome
+end
+
+--- The one stderr line of a `lw build` / `lw test` the daemon does not run
+--- although this command has one (spec §19.15): `lw: <what> (<reason>);
+--- running without it`.
+--- @param what string
+--- @param reason string
+--- @return string
+function M._not_routed_line(what, reason)
+  return "lw: " .. what .. " (" .. tostring(reason) .. "); running without it"
+end
+
+--- Why the workspace runtime `st` (loomworks.daemon.inspect) is not a daemon
+--- this command can use, for `_not_routed_line`.
+--- @param st table
+--- @return string
+function M._runtime_reason(st)
+  local lk = st.lock or {}
+  local pid = tostring(lk.pid or (st.handle or {}).pid or "?")
+  if st.kind == "foreign" then return "it runs on " .. tostring(lk.host or "?") .. ", pid " .. pid end
+  if st.kind == "attached" then
+    return "the workspace runtime is held by " .. require("loomworks.daemon.rlock").holder_text(lk) .. ", pid " .. pid
+  end
+  if st.kind == "starting" then return "it is still starting, pid " .. pid end
+  return "the workspace runtime: " .. require("loomworks.daemon.inspect").row(st, "daemon")
+end
+
+--- The one stderr line an operation routed to the daemon prints before its
+--- output while the daemon is opt-in (spec §19.15): `lw: building through the
+--- workspace daemon (pid <n>)` (`testing …` for `lw test`, `preparing the
+--- run …` for `lw run`). Dim on a color-capable stderr.
+--- @param pid integer|nil the daemon's pid
+--- @param color? boolean override the stderr color probe (tests)
+--- @param op? "build"|"test"|"run"|"clean"|"reset" (default "build")
+--- @return string
+function M._delegation_line(pid, color, op)
+  local what = ({ test = "testing", run = "preparing the run", clean = "cleaning", reset = "resetting" })[op]
+    or "building"
+  local line = "lw: " .. what .. " through the workspace daemon"
+  if type(pid) == "number" and pid > 0 then line = line .. " (pid " .. math.floor(pid) .. ")" end
+  if color == nil then color = M._stderr_supports_color() end
+  if color then return term.sgr(SGR.dim) .. line .. term.sgr(SGR.reset) end
+  return line
+end
+
+--- The request a `lw build` argv routes as (spec §19.15): the same parse as
+--- `cmd_build` — `{ profile?, targets, extra, force, reconfigure, verbose }` —
+--- or nil when `cmd_build` would refuse the arguments (it then reports them).
+--- @param args string[] argv, args[1] == "build"
+--- @return table|nil
+function M._build_request(args)
+  local req = { targets = {}, extra = {}, force = false, reconfigure = false, verbose = false }
+  local pre, seen_sep, i = {}, false, 2
+  while i <= #args do
+    local a = args[i]
+    if not seen_sep and a == "--" then seen_sep = true
+    elseif seen_sep then req.extra[#req.extra + 1] = a
+    elseif a == "--force" then req.force = true
+    elseif a == "--reconfigure" then req.reconfigure = true
+    elseif a == "--verbose" or a == "-v" then req.verbose = true
+    elseif a == "--target" or a:match("^%-%-target=") then
+      local name = a:match("^%-%-target=(.*)$")
+      if not name then i = i + 1; name = args[i] end
+      if not name or name == "" or name == "--" or name:sub(1, 1) == "-" then return nil end
+      req.targets[#req.targets + 1] = name
+    else pre[#pre + 1] = a end
+    i = i + 1
+  end
+  if pre[2] then return nil end
+  req.profile = pre[1]
+  return req
+end
+
+--- The request a `lw clean` argv routes as (spec §19.15 "Clean"): the same
+--- parse as `cmd_clean` (`_parse_clean_args`) — `{ profile?, verbose? }`
+--- (`verbose` only with `-v`) — or nil when `cmd_clean` would refuse the
+--- arguments (it then reports them).
+--- @param args string[] argv, args[1] == "clean"
+--- @return table|nil
+function M._clean_request(args)
+  local ok, profile, verbose = pcall(M._parse_clean_args, args, function() error("refused", 0) end)
+  if not ok then return nil end
+  return { profile = profile, verbose = verbose or nil }
+end
+
+--- `lw clean`'s arguments: an optional profile (or config-set) and
+--- `-v` / `--verbose`; anything else is refused through `fail(msg)`.
+--- @param args string[] argv, args[1] == "clean"
+--- @param fail fun(msg: string)
+--- @return string|nil profile_name, boolean verbose
+function M._parse_clean_args(args, fail)
+  local profile_name, verbose = nil, false
+  for i = 2, #args do
+    local a = args[i]
+    if a == "-v" or a == "--verbose" then verbose = true
+    elseif not profile_name then profile_name = a
+    else fail("unexpected argument '" .. tostring(a) .. "' — usage: lw clean [profile] [-v|--verbose]", 2) end
+  end
+  return profile_name, verbose
+end
+
+--- The request a `lw reset` argv routes as (spec §19.15 "Reset"): the same
+--- parse as `cmd_reset` — `{ profile?, all, yes }` — or nil when `cmd_reset`
+--- would refuse the arguments (an unknown flag, a second operand, `--all`
+--- with a profile; it then reports them).
+--- @param args string[] argv, args[1] == "reset"
+--- @return table|nil
+function M._reset_request(args)
+  local req = { all = false, yes = false }
+  for i = 2, #args do
+    local a = args[i]
+    if a == "--all" then req.all = true
+    elseif a == "-y" or a == "--yes" then req.yes = true
+    elseif a:sub(1, 1) == "-" then return nil
+    elseif not req.profile then req.profile = a
+    else return nil end
+  end
+  if req.all and req.profile then return nil end
+  return req
+end
+
+--- A routed `lw reset` the workspace daemon asked to confirm (spec §19.15
+--- "Reset", Confirmation): print its listing, ask as in-process, then send
+--- the reset again with `yes` and the listed plan's token. When that second
+--- request is not routed (the daemon stopped or was retired meanwhile), the
+--- reset runs in-process with the user's answer, never asking again, and
+--- refuses when its plan differs from the one shown — except after an
+--- attached runtime lost its lock (`opts.lost()`, §19.2): nothing is reset,
+--- exit 1.
+--- @param root string
+--- @param args string[]
+--- @param req table the first request (`_reset_request`)
+--- @param reply table the `confirm` reply { lines, plan, profile_key? }
+--- @param ensured string|nil
+--- @param opts table `_delegate`'s
+--- @return integer exit code
+function M._reset_confirm(root, args, req, reply, ensured, opts)
+  local reset_plan = require("loomworks.reset_plan")
+  local shown = { label = reset_plan.label_for((not req.all and type(reply.profile_key) == "string")
+    and reply.profile_key or nil) }
+  for _, line in ipairs(type(reply.lines) == "table" and reply.lines or {}) do out(tostring(line)) end
+  if not interactive() then die(reset_plan.unconfirmed_message(shown)) end
+  local answer = prompt_line(reset_plan.prompt(shown))
+  answer = (answer or ""):lower()
+  if answer ~= "y" and answer ~= "yes" then die(reset_plan.ABORTED) end
+  -- An attached runtime whose lock was lost while the prompt waited (§19.2)
+  -- has no authority left: nothing is reset, here or in-process.
+  local function lost_exit()
+    local why = opts and opts.lost and opts.lost()
+    if why then return M._lost_runtime_exit("reset", why) end
+  end
+  local gone = lost_exit()
+  if gone then return gone end
+  local token = tostring(reply.plan or "")
+  local second = vim.deepcopy(req)
+  second.yes, second.plan = true, token
+  local routed = M._delegate("reset", root, args, ensured, vim.tbl_extend("force", opts or {}, { req = second }))
+  if routed then return routed end
+  gone = lost_exit()
+  if gone then return gone end
+  -- An attached runtime ends before the in-process reset loads the workspace.
+  if opts and opts.release then opts.release() end
+  return M.cmd_reset(load_workspace(root), args, { plan = token })
+end
+
+--- The request a `lw test` argv routes as (spec §19.15): the same parse as
+--- `cmd_test` — `{ profile?, junit?, extra, no_build?, verbose? }`, `junit` made absolute against
+--- this process's working directory as `cmd_test` does. Returns "target" for
+--- the named-executable form (`--target`, not carried in this step), or nil
+--- when `cmd_test` would refuse the arguments or they carry a form the daemon
+--- does not (`--saved`, `--discovered`, `--list`, `--cwd`, device options:
+--- `cmd_test` runs or reports them in-process).
+--- @param args string[] argv, args[1] == "test"
+--- @return table|"target"|nil
+function M._test_request(args)
+  local req = { extra = {} }
+  local pre, seen_sep = {}, false
+  for i = 2, #args do
+    if not seen_sep and args[i] == "--" then seen_sep = true
+    elseif seen_sep then req.extra[#req.extra + 1] = args[i]
+    else pre[#pre + 1] = args[i] end
+  end
+  for _, a in ipairs(pre) do
+    if a == "--target" then return "target" end
+  end
+  local i = 1
+  while pre[i] do
+    local a = pre[i]
+    if a == "--junit" then
+      if not pre[i + 1] then return nil end
+      req.junit = resolve_abs_out(pre[i + 1], user_cwd())
+      i = i + 2
+    elseif a == "--no-build" then
+      req.no_build = true
+      i = i + 1
+    elseif a == "-v" or a == "--verbose" then
+      req.verbose = true
+      i = i + 1
+    elseif a:sub(1, 1) == "-" or req.profile then
+      return nil
+    else
+      req.profile = a
+      i = i + 1
+    end
+  end
+  return req
+end
+
+--- The request a `lw run` argv routes as (spec §19.15 "Run"): the same parse
+--- as `cmd_run` (`_parse_run_args`) — `{ profile?, target?, project?, kind?,
+--- cwd?, extra, no_build, quiet }` — and, second, what stays with this client
+--- (the parsed run: wrapper, report format). "device" when a device option is
+--- given (a device run stays in-process); nil when `cmd_run` would refuse the
+--- arguments (it then reports them). `verbose` only with `-v`. `cwd` is sent as given: the launch
+--- resolves it as in-process (variables expanded, relative to the workspace
+--- root).
+--- @param args string[] argv, args[1] == "run"
+--- @return table|"device"|nil req, loomworks.cli.RunArgs|nil run
+function M._run_request(args)
+  local seen_sep = false
+  for i = 2, #args do
+    if args[i] == "--" then seen_sep = true end
+    if not seen_sep and M.RUN_DEVICE_OPTIONS[args[i]] ~= nil then return "device" end
+  end
+  local ok, r = pcall(M._parse_run_args, args, function() error("refused", 0) end,
+    function() return false end)
+  if not ok or type(r) ~= "table" then return nil end
+  local pos = r.positionals
+  local req = {
+    extra = r.extra_args, no_build = r.no_build, quiet = r.print_mode ~= nil,
+    project = r.proj_scope, kind = r.kind, cwd = r.cwd_override,
+    -- (Only whether a wrapper is given: it refuses a device target before
+    -- any deploy, as in-process; the wrapper itself stays here.)
+    prefix = (r.prefix_tokens and #r.prefix_tokens > 0) or nil,
+    verbose = r.verbose or nil,
+  }
+  -- The §16.17 operand grammar (`_run_selection`): one operand is a target.
+  if #pos >= 2 then req.profile, req.target = pos[1], pos[2] else req.target = pos[1] end
+  return req, r
+end
+
+--- Finish a `lw run` whose preparation the workspace daemon did (spec §19.15
+--- "Run"): its `done` carries the resolved `launch`, executed (or reported)
+--- here; or `device = true` — the target runs on a device, which stays in this
+--- process: say so, then continue in-process from the deploy without building
+--- again. Returns the exit code.
+--- @param root string
+--- @param req table the request sent (`_run_request`)
+--- @param r loomworks.cli.RunArgs
+--- @param done table { code, launch?, device?, profile_key? } (`profile_key`: the
+--- `accepted` reply's)
+--- @param attached? boolean an attached run (§19.1): no daemon line
+--- @return integer
+function M._finish_routed_run(root, req, r, done, attached)
+  if done.device then
+    local ws = load_workspace(root)
+    -- The profile the daemon built (its `accepted` reply), never re-resolved:
+    -- the active profile may have changed since.
+    local profile
+    for _, p in ipairs(ws._profiles or {}) do
+      if p.key == done.profile_key then profile = p; break end
+    end
+    if not profile then
+      die("profile '" .. tostring(done.profile_key) .. "' the workspace daemon built is gone — it was not run here")
+    end
+    local lt, serr = require("loomworks.run_prep").select(ws, profile, req.target, r.proj_scope, r.kind)
+    if not lt then die(serr) end
+    local f = M._foreign_of(lt)
+    if not attached then
+      note("lw: the workspace daemon could not take the run (" .. tostring(f and f.name or lt:display_name())
+        .. " runs on a device in this process); continuing without it")
+    end
+    return M._run_launch_target(lt, ws, M._run_target_opts(r))
+  end
+  local l = done.launch
+  if type(l) ~= "table" or type(l.cmd) ~= "string" then
+    die("the workspace daemon returned no launch for the run — it was not run here")
+  end
+  local spec = { name = tostring(l.name or l.cmd), cmd = l.cmd, cwd = type(l.cwd) == "string" and l.cwd or nil,
+    args = {}, env = nil }
+  for _, a in ipairs(type(l.args) == "table" and l.args or {}) do spec.args[#spec.args + 1] = tostring(a) end
+  if type(l.env) == "table" and next(l.env) then
+    spec.env = {}
+    for k, v in pairs(l.env) do spec.env[tostring(k)] = tostring(v) end
+  end
+  return M._run_resolved(spec, M._run_target_opts(r), spec.cwd or root)
+end
+
+--- Would this machine refuse the workspace's working copy or cache (§17.4)?
+--- Such a workspace is never routed (§19.15): the in-process path reports the
+--- refusal with its remedies.
+--- @param root string
+--- @return boolean
+function M._daemon_workspace_trusted(root)
+  local trust = require("loomworks.trust")
+  local function read(path)
+    local f = io.open(path, "rb"); if not f then return nil end
+    local t = f:read("*a"); f:close(); return t
+  end
+  local utext = read(require("loomworks.user").filepath(root))
+  if utext and trust.verify("user", utext) ~= "valid" then return false end
+  local ctext = read(require("loomworks.cache").filepath(root))
+  if ctext and trust.verify("cache", ctext) == "invalid" then return false end
+  return true
+end
+
+--- Windows: make this process receive the console's Ctrl-C again. A process
+--- started with Ctrl-C disabled — `start /b`, a new process group (as Git
+--- Bash runs a native program it signals with `kill -INT`), or inherited from
+--- a parent that ignores it — never sees the interrupt; in-process that did
+--- not matter (the build's own processes in the console still get it and the
+--- build stops), but a routed build's processes are the daemon's, so only
+--- this client can cancel it. `SetConsoleCtrlHandler(NULL, FALSE)`; a no-op
+--- elsewhere, without the FFI, or when Ctrl-C was not disabled. Returns
+--- whether it changed the state — only then `_restore_console_ctrl_c` puts it
+--- back, before a routed run's program starts (it inherits this process's
+--- state, as in-process). The prior state is the process parameters'
+--- `CONSOLE_IGNORE_CTRL_C` flag (bit 0 of `ConsoleFlags`, which
+--- `SetConsoleCtrlHandler(NULL, …)` maintains); when it cannot be read,
+--- nothing is changed.
+--- @return boolean
+function M._enable_console_ctrl_c()
+  if package.config:sub(1, 1) ~= "\\" then return false end
+  local ok, res = pcall(function()
+    local ffi = require("ffi")
+    pcall(ffi.cdef, "int SetConsoleCtrlHandler(void *handler, int add);")
+    pcall(ffi.cdef, "void *RtlGetCurrentPeb(void);")
+    local peb = ffi.cast("uint8_t *", ffi.load("ntdll").RtlGetCurrentPeb())
+    local x64 = ffi.abi("64bit")
+    local params = ffi.cast("uint8_t **", peb + (x64 and 0x20 or 0x10))[0]
+    if params == nil then return false end
+    local flags = ffi.cast("uint32_t *", params + (x64 and 0x18 or 0x14))[0]
+    if require("bit").band(flags, 1) == 0 then return false end
+    return ffi.C.SetConsoleCtrlHandler(nil, 0) ~= 0
+  end)
+  return ok and res == true
+end
+
+--- Undo `_enable_console_ctrl_c` (it returned true): Ctrl-C disabled again,
+--- as this process was started.
+function M._restore_console_ctrl_c()
+  pcall(function()
+    local ffi = require("ffi")
+    pcall(ffi.cdef, "int SetConsoleCtrlHandler(void *handler, int add);")
+    ffi.C.SetConsoleCtrlHandler(nil, 1)
+  end)
+end
+
+--- Route `lw build` to the workspace daemon (spec §19.15, §19.19 step 3):
+--- `_delegate("build", …)`.
+--- @param root string
+--- @param args string[]
+--- @param ensured string|nil
+--- @param opts? table
+--- @return integer|nil exit code
+function M._delegate_build(root, args, ensured, opts)
+  return M._delegate("build", root, args, ensured, opts)
+end
+
+--- The routed operation's connect + handshake bound (`M._delegate`).
+--- `LW_TEST_DAEMON_CONNECT_MS` lengthens it for the suite, which runs every
+--- spec file at once: a healthy daemon can miss 5 s there, and the command
+--- then runs without it (as `LW_TEST_DAEMON_STEP_MS` does an ensure step).
+M.DELEGATE_CONNECT_MS = tonumber(os.getenv("LW_TEST_DAEMON_CONNECT_MS") or "") or 5000
+
+--- Route `lw build`, the batch `lw test`, the preparation of `lw run` or `lw
+--- clean` to the workspace daemon (spec §19.15, §19.19 steps 3, 5 and 5c). A routed run's
+--- program then runs here, after the connection was closed
+--- (`_finish_routed_run`).
+--- Only when this command has a daemon (`ensured` is "used", "launched" or
+--- "restarted" — runtime-mode daemon, not `--no-daemon` / CI, versions
+--- matched) or runs attached (`opts.attached`, below), the arguments parse, `--break-locks` is not given (it stays
+--- in-process), and the workspace is trusted. Returns nil to run in-process
+--- (nothing was done), or the exit code once the daemon refused or ran the
+--- build — an accepted build is NEVER re-run in-process. The daemon runs the
+--- build in this process's environment (sent with the request).
+--- `lw test --target` (the named-executable form) and a `lw run` with a
+--- device option stay in-process with one line (§19.15).
+--- `lw reset` (§19.15 "Reset") is asked in two requests: a `confirm` reply
+--- is answered here (`_reset_confirm`), which sends the second one
+--- (`opts.req`: the request to send instead of the one argv parses as).
+--- @param op "build"|"test"|"run"|"clean"|"reset"
+--- @param root string
+--- @param args string[]
+--- @param ensured string|nil
+--- An attached run (`opts.attached`, spec §19.1 "Loopback", from
+--- `_delegate_attached`) sends the same request to the server it started in
+--- this process (`opts.session`): no daemon state, endpoint or
+--- `--break-locks` checks, and none of the daemon's lines — a case it does
+--- not take runs in-process silently, as before step 5e. `opts.release`
+--- releases its runtime lock (a run's, before the program starts);
+--- `opts.lost()` says why the runtime stopped by itself meanwhile (its lock
+--- taken over, the root removed; false while it runs): from then on no path
+--- falls back to in-process (§19.2).
+--- @param opts? { session?: function, keepalive_ms?: integer, connect_ms?: integer, req?: table, attached?: boolean, release?: function, lost?: function }
+--- @return integer|nil exit code
+function M._delegate(op, root, args, ensured, opts)
+  opts = opts or {}
+  local attached = opts.attached == true
+  local inspect = require("loomworks.daemon.inspect")
+  local function could_not(reason)
+    if not attached then note(M._not_routed_line("the workspace daemon could not take the " .. op, reason)) end
+    return nil
+  end
+  -- An attached runtime that stopped by itself (its lock taken over, the
+  -- root removed; §19.2, §19.11) ends the command.
+  local function lost_lock()
+    return M._lost_runtime_exit(op, opts.lost and opts.lost() or nil)
+  end
+  local function lost() return attached and opts.lost ~= nil and opts.lost() and true or false end
+  -- Every outcome that does not route in daemon mode prints one line saying
+  -- why (§19.15): ensure() printed it for a bypass, a newer daemon, a hung,
+  -- starting or unstartable one; "off" is in-process mode or an explicit
+  -- `--no-daemon` / LOOMWORKS_NO_DAEMON / CI.
+  local have = ensured == "used" or ensured == "launched" or ensured == "restarted"
+  if not attached and not have and ensured ~= "elsewhere" then return nil end
+  -- An argument cmd_build / cmd_test refuses, and a workspace the machine
+  -- refuses: the in-process path reports them (that is the line).
+  local req, run_args
+  if opts.req then req = opts.req
+  else req, run_args = M._routed_request(op, args) end
+  -- `--target` / a device option always says why in its own words, whatever
+  -- the runtime is.
+  if req == "target" then
+    return could_not("--target runs test executables in this process")
+  end
+  if req == "device" then
+    return could_not("device options run the program on a device in this process")
+  end
+  -- `lw run --print` / `--dry-run`: the whole task stream on stderr, so
+  -- stdout carries only the report (§19.15 "Run").
+  local quiet = op == "run" and req and req.quiet
+  if not attached and ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
+  -- (Attached, `--break-locks` runs here: its recovery is this process's.)
+  if not attached and require("loomworks.lock_break").requested then
+    return could_not("--break-locks runs the " .. op .. " in this process")
+  end
+  if not req or not M._daemon_workspace_trusted(root) then return nil end
+  local client = require("loomworks.daemon.client")
+  local endpoint
+  if not attached then
+    local st = inspect.state(root)
+    if st.kind ~= "live" then return could_not(M._runtime_reason(st)) end
+    local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
+    if not eok then return could_not(ewhy) end
+    endpoint = st.handle.endpoint
+  end
+  local task_id, done, accepted, profile_key = nil, nil, false, nil
+  local function on_message(m)
+    if m.kind ~= "task" or m.task_id == nil or m.task_id ~= task_id then return end
+    if m.phase == "line" then
+      local text = tostring(m.text or "")
+      -- Painted by its role exactly as in-process, for the stream it lands
+      -- on after the `quiet` redirection (an unknown role prints plain).
+      local role = type(m.role) == "string" and m.role or nil
+      if m.stream == "out" and not quiet then out(text, role); io.stdout:flush()
+      elseif m.stream == "out" or m.stream == "note" then note(text, role)
+      else errw(text, role) end
+    elseif m.phase == "output" then
+      -- A step's raw bytes, as the in-process child writes them to the
+      -- inherited terminal: written to the file descriptor directly, never
+      -- through the C runtime's text mode (which would turn the tool's CRLF
+      -- into CR CR LF on Windows).
+      -- Its bytes: `text`, or `data` decoded (PROTOCOL.md §14.2).
+      M._raw_write((m.stream == "stderr" or quiet) and 2 or 1, output_bytes(m))
+    elseif m.phase == "done" then
+      -- An interface method's task carries its task result (§19.20); a
+      -- protocol-10 task the same fields on the frame itself.
+      local res = type(m.result) == "table" and m.result or m
+      done = { code = tonumber(res.exit_code) or 1, error = res.error, launch = res.launch,
+        device = res.device == true, profile_key = profile_key }
+    end
+  end
+  local session = opts.session or client.session
+  local conn, cerr = session(endpoint, { timeout_ms = opts.connect_ms or M.DELEGATE_CONNECT_MS,
+    on_message = on_message })
+  if not conn then
+    -- Never an in-process fallback once an attached runtime lost its lock.
+    if lost() then return lost_lock() end
+    if not attached then
+      note("lw: could not reach the workspace daemon (" .. tostring(cerr) .. "); running without it")
+    end
+    return nil
+  end
+  -- Ctrl-C cancels the routed operation (§19.15): the interrupt handler runs the
+  -- exit hooks — this one drops the connection first, which the daemon takes
+  -- as the cancellation — and exits 130. The build's own processes are the
+  -- daemon's, not in this console, so the interrupt must reach THIS process:
+  -- on Windows it may have been started with Ctrl-C disabled.
+  on_exit(function() pcall(conn.close, conn) end)
+  local ctrl_c_enabled = M._enable_console_ctrl_c()
+  local reply, rerr
+  -- Over transport 11 the interface method (Build/1, Tests/1.run,
+  -- Launch/1.prepare_run), else the protocol-10 request (daemon/calls.lua).
+  local msg = { kind = op == "run" and "prepare_run" or op, args = req, interactive = interactive(),
+    command = "lw " .. op, env = require("loomworks.daemon.envscope").capture() }
+  require("loomworks.daemon.calls").request(conn, msg, function(r, e)
+    reply, rerr = r, e
+    if not r then return end
+    -- Printed here, before any task event of it is dispatched (they can
+    -- arrive in the same read).
+    M._reply_notes(r)
+    if r.outcome == "accepted" then
+      task_id, accepted = r.task_id, true
+      profile_key = type(r.profile_key) == "string" and r.profile_key or nil
+      -- No daemon is involved in an attached run (§19.1 rule c).
+      if not attached then note(M._delegation_line(r.pid, nil, op)) end
+    end
+  end)
+  -- No timeout: loading the workspace or a build takes as long as it takes
+  -- (as in-process). The connection is kept alive with pings; Ctrl-C ends
+  -- this process and the daemon cancels the build (§19.15).
+  local keepalive = opts.keepalive_ms or tonumber(os.getenv("LW_TEST_DAEMON_KEEPALIVE_MS") or "")
+    or require("loomworks.daemon.server").KEEPALIVE_MS
+  local last_ping = uv.now()
+  local function waiting(cond)
+    while not cond() and not conn.closed do
+      vim.wait(keepalive, function() return cond() or conn.closed end, 10)
+      if not cond() and not conn.closed and uv.now() - last_ping >= keepalive then
+        last_ping = uv.now()
+        conn:request({ kind = "ping" }, function() end)
+      end
+    end
+  end
+  waiting(function() return reply ~= nil or rerr ~= nil end)
+  if not reply then
+    conn:close()
+    if lost() then return lost_lock() end
+    -- Nothing was accepted: run without it, as for a daemon that cannot be
+    -- started (§19.10).
+    return could_not(rerr or "connection lost")
+  end
+  if reply.outcome == "declined" then
+    conn:close()
+    -- (A stopping attached runtime declines: never in-process then.)
+    if lost() then return lost_lock() end
+    if not attached then
+      note(M._not_routed_line("the workspace daemon declined the " .. op, reply.reason or "no reason given"))
+    end
+    return nil
+  end
+  if reply.outcome == "refused" then
+    conn:close()
+    -- (A refusal on stdout, API.md §4.1 — a reset with nothing to reset,
+    -- exit 0, or a clean with nothing to clean, exit 1: the in-process
+    -- stdout line with the reply's exit code.)
+    if reply.stream == "out" then
+      if ctrl_c_enabled then M._restore_console_ctrl_c() end
+      out(tostring(reply.message))
+      return tonumber(reply.exit_code) or 0
+    end
+    die(tostring(reply.message), tonumber(reply.exit_code) or 1)
+  end
+  if reply.outcome == "confirm" and op == "reset" and not opts.req then
+    conn:close()
+    if ctrl_c_enabled then M._restore_console_ctrl_c() end
+    return M._reset_confirm(root, args, req, reply, ensured, opts)
+  end
+  if not accepted then
+    conn:close()
+    if lost() then return lost_lock() end
+    return could_not("unexpected reply")
+  end
+  -- The two-stage Ctrl-C (§19.15 "Task ownership"): the first one asks the
+  -- daemon to stop the task and the wait goes on until it has stopped; the
+  -- second ends lw, closing the connection, while the daemon finishes
+  -- stopping it. (Not for an attached run: its runtime is this process.)
+  local function wait_done() waiting(function() return done ~= nil end) end
+  local intercepted = false
+  if attached then wait_done() else intercepted = M._await_routed(conn, task_id, op, wait_done) end
+  conn:close()
+  -- Its runtime lock taken over mid-operation: the running task was
+  -- cancelled (its steps killed) as on Ctrl-C (§19.2); the command ends.
+  if lost() then
+    if ctrl_c_enabled then M._restore_console_ctrl_c() end
+    local code = lost_lock()
+    return intercepted and 130 or code
+  end
+  -- The routed operation ended: this process's Ctrl-C state as it started,
+  -- before a run's program (or the in-process device run) inherits it.
+  if ctrl_c_enabled then M._restore_console_ctrl_c() end
+  -- Interrupted: exit 130 however the task ended, and a run's program is
+  -- never started (the task may have finished before the cancel landed).
+  if intercepted then return M._interrupted_end(op, done) end
+  if not done then
+    if attached then return lost_lock() end
+    errw("lw: lost the connection to the workspace daemon during the " .. op .. " — it was not re-run here\n")
+    return 1
+  end
+  if done.error then die(tostring(done.error), done.code) end
+  -- A run: the task (and every lock) ended; the program runs here, never the
+  -- daemon's (§19.15 "Run").
+  -- An attached run releases the runtime lock when its preparation ends,
+  -- before the program runs (§19.1 rule a): the program is not the runtime's.
+  if op == "run" and opts.release then opts.release() end
+  if op == "run" and done.code == 0 then return M._finish_routed_run(root, req, run_args, done, attached) end
+  return done.code
+end
+
+--- Wait for a routed task's end (`wait`) with the two-stage Ctrl-C (spec
+--- §19.15 "Task ownership"): the first Ctrl-C meanwhile goes to
+--- `_routed_cancel` and prints one stderr line saying lw goes on waiting. The
+--- previous interceptor is restored afterwards, also when `wait` raises (the
+--- error is re-raised). Returns whether a Ctrl-C was intercepted.
+--- @param conn table the client session
+--- @param task_id any the accepted reply's task id
+--- @param op string
+--- @param wait fun()
+--- @return boolean intercepted
+function M._await_routed(conn, task_id, op, wait)
+  local state = { intercepted = false }
+  local prev = M._set_interrupt_intercept(function(escalate)
+    local handled = M._routed_cancel(conn, task_id, escalate)
+    if handled then
+      state.intercepted = true
+      errw("lw: stopping the " .. op .. " - press Ctrl-C again to stop waiting\n")
+    end
+    return handled
+  end)
+  local ok, err = pcall(wait)
+  M._set_interrupt_intercept(prev)
+  if not ok then error(err, 0) end
+  return state.intercepted
+end
+
+--- The end of a routed operation whose first Ctrl-C was intercepted (spec
+--- §19.15 "Task ownership"): exit status 130 however the task ended — also
+--- when it finished before the cancel landed or the connection was lost —
+--- and a run's program is never started.
+--- @param op string
+--- @param done table|nil the task's end (nil: the connection was lost)
+--- @return integer
+function M._interrupted_end(op, done)
+  if not done then
+    errw("lw: lost the connection to the workspace daemon while stopping the " .. op .. "\n")
+  elseif done.error then
+    errw("lw: " .. tostring(done.error) .. "\n")
+  elseif op == "run" and done.code == 0 then
+    errw("lw: interrupted - the program was not started\n")
+  end
+  return 130
+end
+
+--- The first Ctrl-C of a routed operation (spec §19.15 "Task ownership"):
+--- send `loomworks.Tasks/1.cancel` for the task `conn` started and keep
+--- waiting for it to end. Returns false — the Ctrl-C then ends lw and closes
+--- the connection, as a second one does — when the connection cannot carry
+--- the call: a daemon of protocol 10 (no interface calls, an integer task
+--- id). A daemon that turns out to have no `Tasks/1` (the call's error says
+--- nothing ran) gets the same through `escalate`. Any other answer (the task
+--- already ended, the connection closed) leaves the wait to end as it does.
+--- @param conn table the client session
+--- @param task_id any the accepted reply's task id
+--- @param escalate fun() end lw now (the interrupt cleanup)
+--- @return boolean handled
+function M._routed_cancel(conn, task_id, escalate)
+  local calls = require("loomworks.daemon.calls")
+  if type(task_id) ~= "string" or conn.closed or not calls.speaks_calls(conn) then return false end
+  conn:call("/tasks", "loomworks.Tasks", 1, "cancel", { task_id = task_id }, function(_, err)
+    if type(err) == "table" and calls.RETRY_V0[err.code] then escalate() end
+  end)
+  return true
+end
+
+--- The exit of an attached run whose runtime stopped by itself (spec §19.2,
+--- §19.11): one stderr line saying why, exit status 1. `why` is what
+--- `_delegate_attached`'s `lost()` returns (the attached server's
+--- `stop_reason`): loomworks.daemon.server LOST_LOCK, ROOT_REMOVED, or another
+--- reason.
+--- @param op string
+--- @param why string|boolean|nil
+--- @return integer
+function M._lost_runtime_exit(op, why)
+  local server_mod = require("loomworks.daemon.server")
+  if why == server_mod.ROOT_REMOVED then
+    errw("lw: the workspace root was removed during the " .. op .. " — stopped\n")
+  elseif why == server_mod.LOST_LOCK or type(why) ~= "string" then
+    errw("lw: the workspace runtime lock was taken over during the " .. op .. " — stopped\n")
+  else
+    errw("lw: the workspace runtime stopped during the " .. op .. " (" .. why .. ")\n")
+  end
+  return 1
+end
+
+--- The request argv routes as for `op` (`_build_request`, `_test_request`,
+--- `_run_request`, `_clean_request`, `_reset_request`): the request (or
+--- "target" / "device" for a form that stays in-process, nil for arguments
+--- the in-process path refuses), and a run's parsed arguments.
+--- @param op "build"|"test"|"run"|"clean"|"reset"
+--- @param args string[]
+--- @return table|string|nil req, loomworks.cli.RunArgs|nil run_args
+function M._routed_request(op, args)
+  if op == "test" then return M._test_request(args) end
+  if op == "run" then return M._run_request(args) end
+  if op == "clean" then return M._clean_request(args) end
+  if op == "reset" then return M._reset_request(args) end
+  return M._build_request(args)
+end
+
+--- Is this command's selection attached in `runtime-mode daemon` (spec §19.1
+--- "Loopback during the transition")? `--no-daemon`, LOOMWORKS_NO_DAEMON=1,
+--- CI, or a daemon that could not be started (`ensured == "failed"`, or nil:
+--- the ensure step itself failed with an error — never in-process without the
+--- runtime lock). Never in `in-process` mode (the default).
+--- @param ensured string|nil `_ensure_daemon`'s outcome
+--- @return boolean
+function M._attached_selected(ensured)
+  if ensured == "failed" then return true end
+  if ensured ~= "off" and ensured ~= nil then return false end
+  local rt = require("loomworks.daemon.runtime")
+  local sel = rt.select(read_config()[rt.SETTING], { flag = M._no_daemon })
+  if ensured == nil then return sel.mode == rt.DAEMON end
+  return sel.mode == rt.DAEMON and not sel.daemon
+end
+
+--- The "workspace busy" refusal of an attached run (spec §19.2): `lk` is the
+--- runtime lock's record (loomworks.daemon.inspect `state().lock`).
+--- @param lk table|nil
+--- @return string
+function M._busy_message(lk)
+  lk = lk or {}
+  local rlock = require("loomworks.daemon.rlock")
+  local who = string.format("%s (pid %s on %s)", rlock.holder_text(lk), tostring(lk.pid or "?"),
+    tostring(lk.host or "?"))
+  if lk.mode == "attached" then
+    return "workspace busy: " .. who .. " is running here without a daemon — retry when it finishes"
+  end
+  return "workspace busy: " .. who .. " holds this workspace — retry when it finishes"
+end
+
+--- An attached selection meets the live daemon `st` holding the runtime lock
+--- (spec §19.2, §19.9): loomworks.daemon.ensure.meet — the endpoint check,
+--- handshake and version reconcile of the normal daemon-mode path — except
+--- that an idle daemon of another version is only stopped (`no_launch`): the
+--- command then runs attached. `opts.meet` (tests) replaces it.
+--- @param root string
+--- @param st table loomworks.daemon.inspect `state()`, kind "live"
+--- @param opts table `_delegate_attached`'s
+--- @return string "used" | "stopped" | "bypass" | "newer" | "failed"
+function M._meet_live(root, st, opts)
+  if opts.meet then return opts.meet(root, st) end
+  local ensure = require("loomworks.daemon.ensure")
+  local ok, outcome = pcall(ensure.meet, root, st, {
+    note = note, log = require("loomworks.daemon.rlog").writer(root), no_launch = true,
+    step_ms = ensure.step_ms(true),
+  })
+  if not ok then
+    note("lw: could not use the workspace daemon (" .. (tostring(outcome):match("[^\n]*")) .. "); running without it")
+    return "failed"
+  end
+  return outcome
+end
+
+--- A shared selection (daemon mode, `ensured == "elsewhere"`) whose runtime
+--- lock an attached run holds (spec §19.2): wait `runtime-busy-wait` for it,
+--- then fail "workspace busy", exit 1 (`die`). When it ends in time, the
+--- ensure step runs again (the daemon is launched or used as usual) and its
+--- outcome is returned. Any other holder (another host, a daemon still
+--- starting): "elsewhere", unchanged.
+--- @param root string
+--- @return string|nil `_ensure_daemon`'s outcome
+function M._await_attached_runtime(root)
+  local inspect = require("loomworks.daemon.inspect")
+  local st = inspect.state(root)
+  if st.kind ~= "attached" then return "elsewhere" end
+  local wait = require("loomworks.daemon.runtime").busy_wait_ms(read_config())
+  vim.wait(math.max(1, wait), function()
+    st = inspect.state(root)
+    return st.kind ~= "attached"
+  end, 25)
+  if st.kind == "attached" then die(M._busy_message(st.lock), 1) end
+  return M._ensure_daemon(root, true)
+end
+
+--- Run a routed operation attached (spec §19.1 "Loopback during the
+--- transition", §19.19 step 5e): start the daemon's server and build service
+--- in this process, holding the runtime lock in `attached` mode for the
+--- command, and send the same request over the loopback transport
+--- (`_delegate` with `attached`). A live daemon holding the lock is used as a
+--- shared client instead; another attached run (or a daemon still starting)
+--- is waited for `runtime-busy-wait`, then the command fails "workspace
+--- busy", exit 1 (§19.2). The lock is released on every path — return,
+--- error, `die`/`finish` and Ctrl-C (an exit hook, which also cancels the
+--- running task). Returns nil to run in-process (a form the service does not
+--- take), or the exit code.
+--- @param op "build"|"test"|"run"|"clean"|"reset"
+--- @param root string
+--- @param args string[]
+--- @param opts? table as for `_delegate`; `start` (tests) replaces
+--- loomworks.daemon.command.start_attached
+--- @return integer|nil exit code
+function M._delegate_attached(op, root, args, opts)
+  opts = opts or {}
+  -- The forms that stay in-process (`lw test --target`, device options),
+  -- arguments the in-process path refuses, and a workspace this machine
+  -- refuses never take the runtime lock: in-process, silently.
+  local req = M._routed_request(op, args)
+  if type(req) ~= "table" or not M._daemon_workspace_trusted(root) then return nil end
+  local server_mod = require("loomworks.daemon.server")
+  local inspect = require("loomworks.daemon.inspect")
+  local host = M._daemon_host()
+  local start = opts.start or require("loomworks.daemon.command").start_attached
+  local deadline = uv.now() + require("loomworks.daemon.runtime").busy_wait_ms(host.config)
+  local srv, code, st
+  while true do
+    local _
+    srv, _, code = start(root, host, op)
+    if srv or code ~= server_mod.EXIT_HELD then break end
+    st = inspect.state(root)
+    local met
+    if st.kind == "live" then
+      -- A live daemon: connect to it as a shared client (§19.2) after the
+      -- same version handshake as the normal path (§19.9, `_meet_live`).
+      met = M._meet_live(root, st, opts)
+      if met == "used" then return M._delegate(op, root, args, "used", opts) end
+      -- A version bypass, a newer daemon, one that cannot be reached: its
+      -- line is printed, and the command runs without it, as for a shared
+      -- selection.
+      if met ~= "stopped" then return nil end
+      -- An idle daemon of another version was stopped (nothing launched):
+      -- the lock is free, start attached at once (still within the wait).
+    end
+    if uv.now() >= deadline then break end
+    if met ~= "stopped" then
+      vim.wait(math.max(1, math.min(100, deadline - uv.now())), function() return false end, 10)
+    end
+  end
+  if not srv then
+    if code == server_mod.EXIT_HELD then
+      st = st or inspect.state(root)
+      if st.kind == "hung" then
+        die("the workspace runtime is not responding (" .. M._runtime_reason(st) .. ") — see `lw daemon status`")
+      end
+      die(M._busy_message(st.lock), 1)
+    end
+    -- Not startable here (e.g. the root is gone): the in-process path reports it.
+    return nil
+  end
+  local released = false
+  local function release()
+    if released then return end
+    released = true
+    pcall(srv.stop, srv, "the command ended", 0)
+    -- The service loaded the workspace into this process's core with its own
+    -- hooks: unload it, so an in-process load after it (a fallback, a device
+    -- run) starts clean.
+    if srv.service and srv.service._unload then pcall(srv.service._unload, srv.service) end
+  end
+  -- `die` / `finish` / Ctrl-C: stopping cancels the running task (its steps
+  -- killed, its build locks released) and releases the runtime lock.
+  on_exit(function()
+    if not released then released = true; pcall(srv.stop, srv, "interrupted", 130) end
+  end)
+  local o = vim.tbl_extend("force", opts, {
+    attached = true,
+    session = require("loomworks.daemon.client").loopback_sessioner(srv),
+    release = release,
+    -- Stopped by itself (its lock taken over, or the root removed): why
+    -- (the server's `stop_reason`), else false.
+    lost = function()
+      if released then return false end
+      -- Checked now, not only on the next heartbeat: a prompt blocked the
+      -- loop (the root and the lock record, as the heartbeat does).
+      if srv.stopped ~= true then pcall(srv._tick, srv) end
+      if srv.stopped ~= true then return false end
+      return srv.stop_reason or server_mod.LOST_LOCK
+    end,
+  })
+  o.start = nil
+  local ok, res = xpcall(M._delegate, debug.traceback, op, root, args, "attached", o)
+  -- A runtime that stopped by itself never lets the caller run the command
+  -- in-process (nil) without the lock (§19.2).
+  local why = o.lost()
+  release()
+  if not ok then error(res, 0) end
+  if res == nil and why then return M._lost_runtime_exit(op, why) end
+  return res
+end
+
+--- @class loomworks.cli.ReadOpts
+--- Options of `read_workspace` / `M._read_projection`.
+--- @field tools? "query"|table "query": build the projection from the
+--- runtime's `tools` query (a fresh detection in this process's environment,
+--- `lw tools`, §19.14); a table: this detection (tools_by_type, `lw tools
+--- --cached`); absent: the detection the runtime's model holds
+--- @field keep? boolean keep the session open until the command ends, for
+--- `M._read_query` (`lw profile query … cache`)
+
+--- How long a read waits for the daemon's answer to one request (spec
+--- §19.1): a snapshot, and a host-probing query (a fresh tool detection takes
+--- longer). Past it, or after `READ_MISSED_PINGS` keepalive pings in a row went
+--- unanswered (one each `READ_PING_MS`), the command reads in-process with a
+--- one-line note. `LW_TEST_READ_DEADLINE_MS` (tests) replaces both deadlines.
+M.READ_DEADLINE_MS = 15000
+M.READ_QUERY_DEADLINE_MS = 60000
+M.READ_PING_MS = 1000
+M.READ_MISSED_PINGS = 3
+
+--- The open session a `keep` read leaves for `M._read_query` (nil otherwise).
+--- @type { ask: fun(msg: table): table|nil, string|nil }|nil
+M._read_session = nil
+
+--- The read-only projection of the workspace daemon's model for a read-only
+--- command (spec §19.1, §19.13), or nil to load the workspace in-process.
+--- Only in `runtime-mode daemon` with a shared selection, and only from a
+--- daemon that is already live, authenticates as this machine's and runs this
+--- lw's version: a read never launches, stops or restarts a daemon, never
+--- starts an attached (loopback) runtime and never takes the runtime lock.
+--- Anything else — no daemon, another version, an attached selection
+--- (`--no-daemon`, CI, the setting), a workspace this machine refuses, a
+--- connection that fails, a declined request or no answer in time
+--- (`READ_DEADLINE_MS`, missed pings: a one-line note) — is nil: the
+--- in-process path, which reports a refusal itself. A refused snapshot ends
+--- the command with the daemon's message — the same line the in-process load
+--- prints.
+--- @param root string
+--- @param opts? loomworks.cli.ReadOpts
+--- @return table|nil ws the projection (`_projection`, `_no_write`)
+function M._read_projection(root, opts)
+  opts = opts or {}
+  if completion_mode or not root then return nil end
+  local rt = require("loomworks.daemon.runtime")
+  local sel = rt.select(read_config()[rt.SETTING], { flag = M._no_daemon })
+  if sel.mode ~= rt.DAEMON or not sel.daemon or not M._daemon_workspace_trusted(root) then return nil end
+  local st = require("loomworks.daemon.inspect").state(root)
+  if st.kind ~= "live" or not require("loomworks.daemon.endpoint").check(root, st.handle.endpoint) then
+    return nil
+  end
+  local client = require("loomworks.daemon.client")
+  local conn = client.session(st.handle.endpoint, { timeout_ms = 5000 })
+  if not conn then return nil end
+  -- Another version is never reconciled here (no stop, no restart).
+  if not require("loomworks.daemon.version").matches(conn.challenge or {}) then
+    pcall(conn.close, conn)
+    return nil
+  end
+  local function release() pcall(conn.close, conn) end
+  on_exit(release)
+  local test_deadline = tonumber(os.getenv("LW_TEST_READ_DEADLINE_MS") or "")
+  local timed_out = false
+  -- One request, bounded (see READ_DEADLINE_MS): nil, err on no answer.
+  local function ask(msg, deadline_ms)
+    if timed_out or conn.closed then return nil, "the connection closed" end
+    local res
+    -- (Over transport 11: lw.internal.Snapshot/1.get, Toolchains/1.list,
+    -- Profiles/1.compiler_cache; daemon/calls.lua.)
+    require("loomworks.daemon.calls").request(conn, msg, function(r, e) res = { r, e } end)
+    local deadline = uv.now() + (test_deadline or deadline_ms or M.READ_DEADLINE_MS)
+    local pong, missed, last = true, 0, uv.now()
+    while not res and not conn.closed do
+      vim.wait(math.max(1, math.min(M.READ_PING_MS, deadline - uv.now())),
+        function() return res ~= nil or conn.closed end, 10)
+      if res or conn.closed then break end
+      if uv.now() >= deadline then timed_out = true; break end
+      if uv.now() - last >= M.READ_PING_MS then
+        missed = pong and 0 or (missed + 1)
+        if missed >= M.READ_MISSED_PINGS then timed_out = true; break end
+        pong, last = false, uv.now()
+        conn:request({ kind = "ping" }, function() pong = true end)
+      end
+    end
+    if timed_out then
+      note("lw: the workspace daemon did not answer in time; reading without it")
+      release()
+      return nil, "timed out"
+    end
+    if not res then return nil, "the connection closed" end
+    return res[1], res[2]
+  end
+  local env = require("loomworks.daemon.envscope").capture()
+  local KIND = require("loomworks.daemon.protocol").KIND
+  local snapshot = require("loomworks.daemon.snapshot")
+  -- The reply, or nil (the in-process path); a refusal ends the command.
+  -- Its notes (API.md §4.1) are printed first, also on an `ok` reply.
+  local function answered(r)
+    if not r or r.kind == "error" or r.outcome == "declined" then return nil end
+    if r.outcome == "refused" then
+      M._reply_notes(r)
+      die(r.message or "the workspace runtime refused the request")
+    end
+    if r.outcome ~= "ok" then return nil end
+    M._reply_notes(r)
+    return r
+  end
+  local snap = answered((ask({ kind = KIND.snapshot, scope = "all", env = env })))
+  if not snap then release(); return nil end
+  local tools = type(opts.tools) == "table" and opts.tools or nil
+  if opts.tools == "query" then
+    local q = answered((ask({ kind = KIND.query, name = "tools", args = {}, env = env }, M.READ_QUERY_DEADLINE_MS)))
+    if not (q and type(q.result) == "table") then release(); return nil end
+    tools = snapshot.tools_from_rows(q.result.tools)
+  end
+  local ws = snapshot.project(root, snap, {
+    tools = tools,
+    -- As the in-process load: warnings and errors on stderr, painted.
+    notify = load_notify,
+  })
+  if not ws then release(); return nil end
+  -- Tests: a marker that this command read the daemon's projection.
+  local trace = os.getenv("LW_TEST_READ_TRACE")
+  if trace and trace ~= "" then
+    local f = io.open(trace, "a")
+    if f then f:write("projection " .. root .. "\n"); f:close() end
+  end
+  if opts.keep then
+    M._read_session = { ask = function(msg)
+      msg.env = msg.env or env
+      return ask(msg, M.READ_QUERY_DEADLINE_MS)
+    end }
+  else
+    release()
+  end
+  return ws
+end
+
+--- Run a host-probing query (spec §19.14) on the session a `keep` read left
+--- open: its `result`, or nil when there is none (the caller computes the
+--- value in-process). A refusal ends the command with its message.
+--- @param name string
+--- @param args? table
+--- @return table|nil result
+function M._read_query(name, args)
+  local s = M._read_session
+  if not s then return nil end
+  local r = s.ask({ kind = require("loomworks.daemon.protocol").KIND.query, name = name, args = args or {} })
+  if not r or r.kind == "error" or r.outcome == "declined" then return nil end
+  if r.outcome == "refused" then die(r.message or ("query " .. name .. " failed")) end
+  return type(r.result) == "table" and r.result or nil
+end
+
+--- Record a kill or forced unlock in the runtime log (spec §19.5, §19.10).
+--- @param root string|nil
+--- @param line string
+function M._record_recovery(root, line)
+  if root then require("loomworks.daemon.rlog").write(root, line) end
+end
+
+--- The output helpers loomworks.daemon.command uses.
+--- @return table
+function M._daemon_host()
+  return { out = out, note = note, errw = errw, die = die, config = read_config(), finish = finish,
+    on_exit = on_exit, build = M._daemon_build_host() }
+end
+
+--- What the workspace daemon's build service (loomworks.daemon.service,
+--- spec §19.15) needs from this host: the workspace load of the in-process
+--- path — never exiting, refusals returned as the text `lw` prints — and the
+--- `--target` failure hint.
+--- @return table
+function M._daemon_build_host()
+  local function core() return require("loomworks")._core() end
+  return {
+    -- `opts.wait_tools = false`: a snapshot's or query's load (§19.13), which
+    -- does not wait for tool detection.
+    load = function(root, handlers, opts)
+      local wait = not (opts and opts.wait_tools == false)
+      local ws, _, fail = M._load_workspace_soft(root, wait, { handlers = handlers })
+      if ws then return ws end
+      return nil, fail and fail.message
+    end,
+    unload = function() core():shutdown() end,
+    -- nil while the core (re)loads: a refused file put it back through
+    -- setup (§17.4), and its old workspace must not be used meanwhile.
+    current = function()
+      local c = core()
+      return c._state == "initialized" and c:get_workspace() or nil
+    end,
+    settle = function(ms)
+      vim.wait(ms, function()
+        local c = core()
+        return c._state == "initialized" or c._state == "uninitialized"
+      end, 25)
+      local ws = core():get_workspace()
+      if ws then vim.wait(ms, function() return ws._tool_state == "scanned" end, 25) end
+    end,
+    setup_error = function() return M._setup_failure(core()).message end,
+    -- The failed load the welcome header reports (spec §19.13), nil when
+    -- none: `refused` for a trust, newer-schema or journal refusal, `trust`
+    -- the refused file's kind (`user` / `cache`) of a trust refusal
+    -- (view.Header/1).
+    error_state = function()
+      local c = core()
+      local e = c.get_setup_error and c:get_setup_error()
+      if not e then return nil end
+      local kind = type(e.trust) == "table" and e.trust.kind or nil
+      return { message = M._setup_failure(c).message,
+        refused = (e.trust or e.newer or e.journal) and true or nil,
+        trust = (kind == "user" or kind == "cache") and kind or nil }
+    end,
+    unknown_target_hint = function(ws, step, targets) return M._unknown_target_hint(ws, step, targets) end,
+    -- The workspace core itself: Workspace/1's trust_accept and
+    -- delete_user_prefs (API.md §6) act on its working copy, also while its
+    -- load is refused.
+    core = core,
+  }
+end
+
+--- `lw daemon <sub>` (spec §19.11) — loomworks.daemon.command.
+--- @param root string|nil
+--- @param args string[]
+--- @return integer
+--- `lw cleanup [--dry-run | --yes] [--all] [--pinned-older-than <dur>]`
+--- (spec §16.40).
+function M.cmd_cleanup(root, args)
+  return require("loomworks.housekeeping").cmd(root, args, { out = out, die = die })
+end
+
+function M.cmd_daemon(root, args)
+  return require("loomworks.daemon.command").run(args[2], root, args, M._daemon_host())
+end
+
+--- Put the running state of the workspace daemon's tasks (its `status`
+--- reply's `tasks`, §19.6) on this process's profiles and units, as `lw
+--- status` shows them (§16.18): each entry adopted as a RemoteTask (display
+--- data), its `profile` and `units` keys resolved against this host's own
+--- model here, at the boundary — a task of a profile runs that profile and its
+--- named units; a task with no profile (`reset --all`, a `units` build) runs
+--- the named units of the workspace, and every profile with one of them.
+--- Display only, never persisted; a bad entry is skipped.
+--- @param ws loomworks.Workspace
+--- @param entries table[]
+--- @param clock number now, clock seconds
+function M.mark_daemon_tasks(ws, entries, clock)
+  local rt = require("loomworks.daemon.remote_task")
+  for _, entry in ipairs(entries) do
+    pcall(function()
+      local task = rt.adopt(entry, clock)
+      if not task then return end
+      local profile
+      if task.profile_name then
+        for _, p in ipairs(ws:get_profiles() or {}) do
+          if p.key == task.profile_name and not p._removed then profile = p; break end
+        end
+      end
+      local units = {}
+      for _, u in ipairs(task.units) do
+        if u.configuration ~= nil then
+          if profile then
+            for _, pp in ipairs(profile:projects()) do
+              if pp:project_key() == u.project and pp:config_key() == u.configuration then
+                units[#units + 1] = pp._config_unit
+                break
+              end
+            end
+          elseif not task.profile_name then
+            for _, cu in pairs(ws._config_units or {}) do
+              local pk = cu._project and cu._project.key or cu._init_project_key
+              if pk == u.project and cu:config_key() == u.configuration then units[#units + 1] = cu; break end
+            end
+          end
+        end
+      end
+      local profiles = { profile }
+      if not profile and not task.profile_name then
+        local mine = {}
+        for _, cu in ipairs(units) do mine[cu] = true end
+        for _, p in ipairs(ws:get_profiles() or {}) do
+          if not p._removed then
+            for _, pp in ipairs(p:projects()) do
+              if pp._config_unit and mine[pp._config_unit] then profiles[#profiles + 1] = p; break end
+            end
+          end
+        end
+      end
+      for _, p in ipairs(profiles) do p:add_remote_task(task) end
+      for _, cu in ipairs(units) do cu:begin_remote_task(task) end
+    end)
+  end
+end
+
 function M.cmd_status(root, opts)
   opts = opts or {}
   if not root then
@@ -8830,7 +9881,7 @@ function M.cmd_status(root, opts)
     -- The page is unchanged — `--check` only sets the exit status (§16.18).
     return opts.check and 1 or 0
   end
-  local ws = load_workspace(root, false) -- pinned info only; skip tool detection
+  local ws = read_workspace(root, false) -- pinned info only; skip tool detection
   local pal = status_palette(stdout_supports_color())
   out(pal.title("loomworks — " .. (ws.name or "?")) .. "  " .. pal.dim("(" .. ws.root .. ")"))
   -- Reached by walking out of a submodule (spec §1.1): say so, so acting on the
@@ -8903,6 +9954,31 @@ function M.cmd_status(root, opts)
     out(pal.title("Cache") .. string.rep(" ", 12)
       .. pal.dim("(no active profile — activate one with `lw profile select` for --cache-stats)"))
   end
+
+  -- Runtime row (spec §19.6): from the runtime lock and handle files only —
+  -- never launches or connects. Under it, a busy daemon's running tasks: asked
+  -- with a bounded `status` request, never launching one; a failed query is
+  -- one line and changes nothing else.
+  do
+    local row = M._runtime_row(root)
+    if row then out(pal.title("Runtime") .. string.rep(" ", 10) .. pal.dim(row)) end
+    local ok, lines, reply = pcall(function() return require("loomworks.daemon.running").lines(root) end)
+    if ok then
+      for _, l in ipairs(lines) do out(pal.dim(l)) end
+    end
+    -- The same reply's tasks put their running state on this process's
+    -- profiles and units, exactly as the editor shows an observed task
+    -- (§19.16), so the Profiles rows' state shows them running (§16.18).
+    -- Display only, never persisted; a bad entry is skipped.
+    if ok and type(reply) == "table" and type(reply.tasks) == "table" then
+      M.mark_daemon_tasks(ws, reply.tasks, uv.hrtime() / 1e9)
+    end
+  end
+
+  -- Trust row (spec §17.10): what loomworks may run on whose word. A refused
+  -- working copy never gets here (the load exits with the refusal), so a
+  -- present one is signed on this machine.
+  out(pal.title("Trust") .. string.rep(" ", 12) .. pal.dim(M._trust_row(ws, root)))
 
   -- Diagnostics section — right after the active-profile block, before Targets.
   -- Renders nothing when there are none.
@@ -9803,7 +10879,7 @@ M._resolve_profile_for_show = resolve_profile_for_show
 --- @param profile_name string|nil
 --- @return integer exit code
 function M.cmd_profile_show(root, profile_name)
-  local ws = load_workspace(root)
+  local ws = read_workspace(root)
   local profile = resolve_profile_for_show(ws, profile_name)
   for _, line in ipairs(profile_show_rows(ws, profile)) do out(line) end
   return 0
@@ -10173,7 +11249,17 @@ function M.cmd_pull(args, opts)
     return 0
   end
 
+  -- Write under the target's workspace operation lock (spec §19.3), planned
+  -- again under it so a concurrent multi-file operation is not overwritten.
+  local op_lock = require("loomworks.op_lock")
+  local tok, lmsg = op_lock.acquire(plan.target_root, "pull")
+  if not tok then die(lmsg) end
+  if tok.recovered then errw("lw: " .. tok.recovered .. "\n") end
+  on_exit(function() op_lock.release(tok) end)
+  plan, err = M._plan_pull({ source = source, cwd = opts.cwd, git = opts.git })
+  if not plan then die(err) end
   local ok, serr = require("loomworks.user").save(plan.target_root, plan.merged)
+  op_lock.release(tok)
   if not ok then die("could not write working copy: " .. tostring(serr)) end
   out("")
   out("wrote " .. plan.target_user_path)
@@ -10487,7 +11573,22 @@ function M.cmd_tools(root, args)
       human_age(os.time() - (c.timestamp or os.time()))))
   end
 
-  local ws = load_workspace(root) -- served from cache or scanned per the mode
+  -- daemon mode (§19.14): the projection, its tools a fresh `tools` query (or
+  -- the cached detection with --cached); a scan refreshes the machine-level
+  -- cache as the in-process scan does.
+  local ws = M._read_projection(root, { tools = cached and ((read_tool_cache() or {}).tools_by_type or {}) or "query" })
+  if ws and not cached then
+    -- Every type the daemon detected (its projects' and its build-state
+    -- cache's, snapshot.lua `tools`), and the projects' types without tools.
+    local needed = {}
+    for _, p in ipairs(ws._projects or {}) do
+      local t = p.type or (p._module and p._module.id)
+      if t then needed[t] = true end
+    end
+    for t in pairs(ws._tools_by_type or {}) do needed[t] = true end
+    write_tool_cache(ws._tools_by_type or {}, needed)
+  end
+  ws = ws or load_workspace(root) -- served from cache or scanned per the mode
   local mods = {}
   for _, m in pairs(ws._modules or {}) do mods[#mods + 1] = m end
   table.sort(mods, function(a, b) return a.id < b.id end)
@@ -10553,8 +11654,8 @@ local function comp_launch_names(ws, project_key)
   local t = {}
   if ws then
     for _, p in pairs(ws._projects or {}) do
-      if (not project_key or p.key == project_key) and type(p.launch) == "table" then
-        for n in pairs(p.launch) do t[#t + 1] = n end
+      if not project_key or p.key == project_key then
+        for _, launch in ipairs(p:launch_configs()) do t[#t + 1] = launch.name end
       end
     end
   end
@@ -10596,7 +11697,8 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "export", "import", "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes",
+  "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes", "daemon",
+  "cleanup", "release",
   "test-target",
   "--no-input", "--no-color", "--color=auto", "--color=always", "--color=never",
 }
@@ -10654,6 +11756,11 @@ function M.cmd_complete(cword, words)
   elseif cmd == "release-notes" then
     emit(M._release_notes_completions(a, n))
     return 0
+  elseif cmd == "release" then
+    if n == 1 then emit({ "query" }); return 0 end
+    if a[n] == "--channel" then emit({ "stable", "unstable" }); return 0 end
+    emit({ "--channel", "--json", "--timeout" })
+    return 0
   elseif cmd == "bootstrap" then
     if n == 1 then emit({ "install", "upgrade", "--json", "--check" }); return 0 end
     if sub == "install" then
@@ -10664,16 +11771,30 @@ function M.cmd_complete(cword, words)
       emit({ "--channel", "--pin-only", "--force" })
     end
     return 0
+  elseif cmd == "daemon" then
+    if n == 1 then emit(require("loomworks.daemon.command").SUBS) end
+    return 0
+  elseif cmd == "cleanup" then
+    if a[n] == "--pinned-older-than" then emit({ "30d", "90d" }); return 0 end
+    local c = {}
+    for _, v in ipairs({ "--dry-run", "--yes", "--all", "--pinned-older-than" }) do
+      if not has(a, v) then c[#c + 1] = v end
+    end
+    emit(c)
+    return 0
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
-      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes" })
+      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes",
+        "runtime-mode", "daemon-idle-timeout", "runtime-busy-wait" })
     end
     if n == 3 and sub == "set" and a[3] == "release-notes" then emit({ "on", "off" }) end
+    if n == 3 and sub == "set" and a[3] == "runtime-mode" then emit({ "in-process", "daemon" }) end
     return 0
   elseif cmd == "build" and n >= 2 and a[n] == "--target" then
     -- `lw build <profile> --target <TAB>`: the named profile's parsed build
-    -- targets (read from its configured build dirs; none before a configure).
+    -- targets (read from its configured build dirs; none before a configure),
+    -- bare and in the project-qualified form `lw target` lists (§16.4).
     local ws_c = comp_ws(root)
     local names = {}
     for _, p in ipairs(ws_c and ws_c._profiles or {}) do
@@ -10683,6 +11804,7 @@ function M.cmd_complete(cword, words)
           pcall(ensure_unit_targets, ws_c, unit)
           for id in pairs(unit and type(unit.targets) == "table" and unit.targets or {}) do
             names[#names + 1] = id
+            if pp._project then names[#names + 1] = pp._project.key .. ":" .. id end
           end
         end
       end
@@ -11061,6 +12183,15 @@ with their configurations. Each section is limited to fit a page — use
 lists. Build targets appear only once a project is configured; a hint shows
 when the target list is incomplete.
 
+Each profile row shows its build state in parentheses after the profile
+name: the editor's status label, `(built)`, `(configured)`, `(unconfigured)`,
+`(unknown)`, or counts when its projects differ (`(1 built, 1 unconfigured)`).
+A task the workspace daemon runs shows as running (`(1 building)`). On a
+terminal the state is colored as in the editor (built green, configured blue,
+unconfigured dim, running yellow, failed red). The row has no set column: a
+profile's name starts with its configuration set. Read fresh from the cache on
+every run.
+
 For a profile with a C/C++ project the overview shows a `Cache` line — the
 resolved compiler-cache launcher (ccache/sccache), or that caching is `off` /
 `auto (none found)` / `auto (off for MSVC-style)` (auto never enables a cache
@@ -11117,10 +12248,11 @@ Probing compilers/vcvarsall is slow, so the result is cached in tools.json
 under the per-user cache dir: %LOCALAPPDATA%\loomworks\cache on Windows,
 $XDG_CACHE_HOME/loomworks (default ~/.cache/loomworks) elsewhere.
 `lw tools` always does a real scan and refreshes that cache; other commands
-(profile create, profiles) read it.
+reuse a module type's cached result while lw's version, PATH, PATHEXT and the
+PATH directories are unchanged, and re-detect that type otherwise.
   --cached   print the cached result instantly (with its age); don't scan.
-Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-v] [-- <build-tool args>]
+Installed a compiler outside PATH, or upgraded one in place? run `lw tools`.]],
+  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-v] [--break-locks] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
 `lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI. They go on
@@ -11147,10 +12279,14 @@ for a deterministic build. The CI pattern is:
 
   --target <name>  build just this target instead of the default set;
                 repeatable (cmake `--build --target <name>…`, meson `compile
-                <name>…`; e.g. an EXCLUDE_FROM_ALL target). Applies to every
-                project of the profile. Not supported for shell / typescript
-                projects. A misspelt name fails in the build tool, and lw then
-                suggests close matches from the parsed targets. Tab-completes.
+                <name>…`; e.g. an EXCLUDE_FROM_ALL target). Name it as
+                `lw target` lists it (<project>:<target>) or bare when only one
+                project lists it; only the projects named are built. A bare
+                name several projects list is refused, naming the choices; one
+                no project lists (e.g. `install`, a custom target) goes to
+                every project's build tool, and a failure suggests close
+                matches. Not supported for shell / typescript projects.
+                Tab-completes.
   --force        build even if it overwrites an artifact another built profile
                 owns (that profile is marked stale).
   --reconfigure  force a FULL reconfigure of every project before building
@@ -11162,6 +12298,11 @@ for a deterministic build. The CI pattern is:
                 (for an MSVC kit, the cmake command run inside vcvarsall). The
                 command line is always written to .nvim/loomworks.log. (Before
                 the command, `lw -v` is the version.)
+  --break-locks[=now]  recover a build-directory lock whose holder hangs (or,
+                on this host, is still running): ask it to stop (POSIX), wait
+                ~5s (`=now` skips the wait), kill its process tree, recover the
+                interrupted step's state, then run. Never another host's holder
+                or the editor's (see `lw help unlock`).
 
 Configures first if the build dir isn't configured — or when a configure input
 changed since the last configure (options, env, toolchain, compiler cache), or
@@ -11169,7 +12310,7 @@ the build dir was configured by an older lw — then builds. Each configure
 prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO
 removed)`. Non-zero exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
-  clean = [[lw clean [profile | config-set] [-v]
+  clean = [[lw clean [profile | config-set] [-v] [--break-locks]
 
 Run each project's build-system clean on the profile's build directories
 (cmake -> `cmake --build <dir> --target clean`; meson -> `meson compile
@@ -11180,10 +12321,11 @@ created are skipped. Non-zero exit on any failure.
 Profile resolution matches `lw build` (a unique substring works; --no-input
 requires an explicit profile). To remove a build directory entirely rather than
 just its artifacts — a hard reset to unconfigured — use `lw reset`.
+`--break-locks[=now]` recovers a hung build-directory lock (see `lw help build`).
 
   -v, --verbose  print each clean command and the directory it runs in (or
                  `remove <dir>` for a build directory lw wipes itself).]],
-  reset = [[lw reset [profile | --all] [-y]
+  reset = [[lw reset [profile | --all] [-y] [--break-locks]
 
 HARD-reset build state: remove the build directories (rm -rf, NOT the build
 system's artifact clean of `lw clean`) and drop the affected configurations back
@@ -11199,6 +12341,7 @@ artifacts.
             and including orphaned ones (cached build state no profile still
             references). Takes no profile argument.
   -y | --yes  skip the confirmation prompt (required in --no-input / CI).
+  --break-locks[=now]  recover a hung build-directory lock (`lw help build`).
 
 Destructive, so it confirms first: the build directories to remove are printed
 and confirmation is requested. In non-interactive mode (--no-input / LW_NO_INPUT
@@ -11224,13 +12367,26 @@ it may run by where a setting comes from:
   .nvim/loomworks.user.json (yours)    honored — when it is signed by this
       machine. Every lw/editor write signs it with a per-machine key
       (<data dir>/trust.key, never in a repository). A file written by hand,
-      by an earlier lw, or copied from elsewhere is REFUSED until you review it.
+      by an earlier lw, or copied from another machine is REFUSED until you
+      review it. The signature does not bind the directory: a working copy
+      this machine signed stays trusted when moved or copied to another
+      workspace here (or seeded into a git worktree) — its profiles, tools
+      and launch commands are then used as they are.
   .nvim/loomworks.cache.json            build state; used only when signed here.
       An unsigned one (earlier lw) is ignored unread and replaced by the next
       command that writes the cache (read-only commands leave it); one
       signed elsewhere refuses the load until `lw nuke`.
   Tool paths                            always from detection on this machine,
-      never from the cache.
+      never from the cache. A profile only selects a detected toolchain by
+      its key; what that runs (compiler, developer-environment script such as
+      vcvarsall) is what detection found here.
+
+`lw status` shows the state in its Trust row: whether your local config is
+present (a refused one stops every command with the instructions below
+instead) and how many loomworks.json program settings are ignored. A build
+whose profile is affected prints one line saying so. (The status title is the
+workspace's name — a directory named "untrusted" shows as
+"loomworks — untrusted"; that is not a trust state.)
 
 Opening a workspace (`lw status`, the editor) never runs anything the shared or
 an unsigned file names. `lw build` / `lw test` / `lw run` still run the
@@ -11245,7 +12401,10 @@ that is what you asked for.
 Editing .nvim/loomworks.user.json by hand is fine: run `lw trust` afterwards.
 Environment variables that hijack loaders or interpreters (LD_PRELOAD,
 DYLD_*, NODE_OPTIONS, PYTHONPATH, ComSpec, PATHEXT, GIT_SSH_COMMAND, …) are
-refused from every configuration, even a trusted one.]],
+refused from every configuration, even a trusted one.
+
+`--discard` holds the workspace operation lock while it removes the working
+copy and its backup; `--break-locks[=now]` recovers it from a hung holder.]],
   nuke = [[lw nuke [-y | --yes]
 
 Delete the workspace's build state: .nvim/build/, .nvim/loomworks.cache.json
@@ -11254,22 +12413,200 @@ working copy) is kept; the next `lw build` reconfigures from scratch.
 
 This is the remedy when the build cache was not written on this machine (it is
 refused — see `lw help trust`). Confirms first; -y skips the prompt and is
-required in non-interactive mode. Prefer `lw reset` to reset one profile.]],
-  unlock = [[lw unlock <profile> | --all | --device <serial>
+required in non-interactive mode. Prefer `lw reset` to reset one profile.
 
-Force-remove build-directory locks. loomworks serializes configure/build/clean
-on a build dir across processes (editor + CLI) with an advisory lockfile;
-a crashed process's lock is normally reclaimed automatically once
-its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
+Nuke holds the workspace operation lock and the build lock of every build
+directory it removes, so it refuses while a build runs ("cannot nuke: a
+build is running in ...") instead of deleting under it. `--break-locks[=now]`
+stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
+  cleanup = [[lw cleanup [--dry-run | --yes] [--all] [--pinned-older-than <duration>]
 
-  <profile>   clear locks on that profile's build dirs
-  --all       clear locks on every profile's build dirs
+List, and with --yes remove, what lw left behind outside the workspace:
+downloads and staging directories of an interrupted self-update, pinned
+provisioning or module install, temporary files, the MSVC environment probe's
+batch file, a self-update's lw.new / lw.old, a device lock or daemon socket
+whose owner is gone, and files earlier versions kept outside the workspace
+(runtime logs, test results, description buffers). Only exact lw names in
+lw's own directories are touched, never through a link, never while in use.
+
+  --dry-run   list only (the default): kind, path, size, age, and the total
+  --yes, -y   remove them; exit 1 if one could not be removed (in use, ...)
+  --all       also prune pinned releases (<data dir>/pinned) not used for 30
+              days (that is all it adds); never the release this
+              repository's lw.pin pins, nor the running lw
+  --pinned-older-than <duration>
+              the pinned-release threshold, e.g. 90d, 12h (implies the pinned
+              part of --all)
+
+lw also does this by itself: once a day, at the start of a command, it
+silently removes the same leftovers (pinned releases excepted, and old runtime
+logs only once unmodified for 30 days), and notes it in the workspace's
+runtime log (.nvim/loomworks.daemon-<slot>.log). In the workspace it also
+removes the daemon files of lw before slots (.nvim/loomworks.daemon.lock and
+.json once their daemon is gone, .log and .log.1 as old runtime logs).
+
+What lw keeps outside the workspace on purpose: its settings (config.json),
+the machine key (trust.key), the tool scan cache (tools.json), the newest three
+releases, installed modules, pinned releases in use, and the empty daemon
+working directory. <data dir> is %LOCALAPPDATA%\loomworks,
+$XDG_DATA_HOME/loomworks or ~/.local/share/loomworks (LOOMWORKS_DATA_DIR).]],
+  daemon = [[lw daemon [status] | list [--json] | stop [--force] | kill | restart [--force] | run [--root <dir>] [--stdio] [--no-launch]
+       lw daemon stop --all [--force] | kill --all [--strays]   [--under <dir>]
+
+EXPERIMENTAL, opt-in. The workspace daemon is one long-lived `lw` process per
+workspace that will, step by step, run the workspace's operations for every
+client (the editor and each `lw` command). So far `lw build` runs through it
+(in `daemon` mode); with the default runtime mode, `in-process`, lw behaves
+exactly as before.
+
+  status    (also bare `lw daemon`) the runtime mode and the workspace's
+            daemon: pid, host, version, endpoint, heartbeat, and what a live
+            daemon on this host answers. Never starts a daemon.
+  list      every workspace daemon of yours on this machine, in any
+            workspace (works anywhere): pid, uptime, state (idle, busy,
+            active, starting, not responding, stray), clients, version and
+            root. Found by scanning processes for `lw ... daemon run`; never
+            starts, contacts or stops one, and writes nothing. A "stray" is
+            not its workspace's runtime (it lost its lock, its workspace is
+            gone, or it has no --root). --json for scripts; --under <dir>
+            keeps the workspaces under <dir>.
+  stop      ask the daemon to exit and wait for it (about 10 s). Never kills:
+            a daemon that does not stop is reported as not responding. With
+            no daemon running there is nothing to do; the files of one that
+            is gone are cleared.
+            --force: if it does not stop within about 5 s, kill its process
+            tree, then reclaim its lock and complete an interrupted commit
+  kill      the same without asking first
+  restart   stop (with --force if given), then start a daemon in the
+            background
+  run       serve this workspace in the foreground (what a started daemon
+            runs; --root names the workspace). --stdio (with --root): relay
+            the protocol between standard input/output and the workspace's
+            daemon, starting it first when none runs (a connection, not a
+            daemon; ends when the client closes standard input).
+            --no-launch: never start one, wait for a daemon to appear;
+            --skip-instance <pid>:<start_time> (with --no-launch): never use
+            that daemon instance
+
+  --all     with stop / kill: do it for every daemon `lw daemon list` shows
+            (--under <dir>: only those workspaces), one line each, through
+            each workspace's runtime lock with the rules above. Strays are
+            skipped unless `lw daemon kill --all --strays`, which kills them
+            after checking each is still that daemon. A daemon of another
+            loomworks data dir (another LOOMWORKS_DATA_DIR, a test run's;
+            `list` marks it "other data dir") is not this lw's and is
+            skipped. A `run --stdio` relay is a connection, not a daemon: it
+            is never listed as one (`--json`: `relays` on its daemon), stopped
+            or killed. Exit 1 when one of this lw's is left running.
+
+A daemon on another host (a shared drive) is never stopped or killed from
+here: run the command there. Kills are printed on stderr.
+
+The endpoint (a named pipe on Windows, a socket in a private per-user
+directory elsewhere) is restricted to your user, and every connection proves
+knowledge of this machine's key (the trust key, `lw help trust`) before
+anything else is exchanged.
+
+Runtime mode: `lw settings set runtime-mode in-process|daemon`, or the
+LOOMWORKS_RUNTIME environment variable (wins). `lw status` shows it on its
+`Runtime` row, read from the files below only.
+
+In `daemon` mode every workspace command (not `lw status`, `health`, `help`,
+`settings`, `pull`, `worktree`, `trust`, `nuke`, `unlock`, `daemon …`) first
+makes sure the daemon runs: it connects (and pings it, waiting about a second
+at most; `lw build`, which the daemon runs, waits up to about 5 seconds for a
+slow one) or starts one in the background, then runs exactly as before, except
+`lw build`, which runs in the daemon: one dim line says so
+(`lw: building through the workspace daemon (pid N)`), then the build's output
+and result are the same as without it. Ctrl-C (or the end of `lw`) stops the
+build in the daemon. `lw build --break-locks` and creating a missing profile
+interactively still run without it. Whenever a build does not run in the
+daemon, one line says why (only the opt-outs below are silent). A daemon of another lw version is
+replaced when idle; a busy one is asked to exit when idle and the command runs
+without it (one line says so). If it cannot start, does not answer, or is
+still starting, one line says so and the command runs without it. A daemon
+that stopped responding is named with the recovery command; a command given
+`--break-locks` recovers it (asks it to stop, kills it, starts a fresh one).
+These never start it: `--no-daemon`, LOOMWORKS_NO_DAEMON=1, and
+CI=true (LOOMWORKS_NO_DAEMON=0 overrides CI). CI is detected by the `CI`
+variable only: Jenkins and Azure Pipelines do not set it — set
+LOOMWORKS_NO_DAEMON=1 there. In daemon mode these (and a daemon that could
+not be started) run `lw build`, `lw test`, `lw run`'s preparation, `lw clean`
+and `lw reset` with the daemon's own code inside the lw process, holding the
+workspace for the command, with no "through the workspace daemon" line; a
+running daemon is still used. When another such command holds the workspace,
+lw waits `runtime-busy-wait` (default 5s; 0, or a number with ms, s or m) and
+then fails "workspace busy" (exit 1).
+
+A routed build runs in the environment of the `lw build` that asked for it
+(its PATH, compiler and SDK variables, …): lw sends its environment to the
+daemon over the private endpoint below; it is never written anywhere. Other
+work of a started daemon keeps the environment of the command that started
+it. Builds from two terminals (tabs, panes, SSH sessions) share the daemon's
+loaded workspace: variables that only name the terminal or session
+(WT_SESSION, TMUX_PANE, SSH_TTY, VSCODE_*, cmd.exe's hidden =C: entries,
+...) do not count as a different
+environment; any other difference (PATH, a compiler variable) reloads it.
+
+A routed build's tools write into a pipe, not your terminal (as with
+`lw build | tee`): ninja prints every [n/N] line instead of one status line,
+and tools that colour only on a terminal do not. lw adds no colour variable
+(it would reach every process of the build); set one yourself, e.g.
+CLICOLOR_FORCE=1, and the build gets it. When the reader of lw's output
+stops reading (`lw build | less`, paused), the daemon keeps up to about
+4 MiB of the build's output for it, then pauses the build tool until it reads
+again (as without the daemon); no output is lost or reordered.
+
+Lifetime: the daemon runs while a client is connected (a connection silent for
+three 30 s keepalive intervals is dropped) and exits after
+`daemon-idle-timeout` without any (setting: seconds, or a number with s, m or h
+such as 90s, 2m, 30m, 1h; default 45s),
+when the workspace directory is removed, or when its lock is taken over.
+
+Files: .nvim/loomworks.daemon-<slot>.lock (the runtime lock: one runtime per
+workspace and slot), .nvim/loomworks.daemon-<slot>.json (the handle a client
+finds the daemon by), and the runtime log .nvim/loomworks.daemon-<slot>.log
+(2 MB + one rotated .1): the daemon's starts, stops and refusals, every
+launch, and every kill and forced unlock (`lw daemon kill`, `--break-locks`,
+`lw unlock --force`). `lw daemon status` names the log. <slot> is a short
+hash of the OS user and, on Windows, whether the process is elevated: an
+elevated and a normal lw, or two users, each have their own daemon and never
+connect to each other's. A daemon of an lw before slots (files without
+<slot>) is stopped once when this lw starts its daemon; `lw daemon stop`
+removes its lock and handle once it is gone.]],
+  unlock = [[lw unlock <profile> | <build dir> | --workspace | --journal | --all [--force] | --device <serial>
+
+Clear build-directory locks. loomworks serializes configure/build/clean on a
+build dir across processes (editor + CLI) with an advisory lockfile that names
+its holder (process id, host, start time). A holder that crashed or was killed
+is reclaimed automatically by the next command; one that hangs (alive, no
+heartbeat) is reported with the recovery command, `<command> --break-locks`.
+
+  <profile>    the locks of that profile's build dirs
+  <build dir>  one build dir, by path (relative to the workspace root, or
+               absolute; it must lie under the root), e.g. .nvim/build/App/Debug
+  --all        the locks of every profile's build dirs, and the workspace
+               operation lock
+  --workspace  the workspace operation lock (.nvim/loomworks.op.lock), held
+               by publish / import / pull / rename / remove / reset / nuke
+  --journal    discard a stuck commit journal (.nvim/loomworks.txn.json) and
+               its staged copies. A multi-file operation that crashed is
+               normally completed by the next command; when it cannot be
+               (a file changed since, a staged copy is missing) the workspace
+               is refused until you discard the journal (the files then stay
+               as they are — possibly mixed). `lw nuke` cannot help: it takes
+               the same lock, and only resets build state.
+  --force      also remove the lock of a holder that is running (or hung, or on
+               another host) — WITHOUT stopping it: it may still be running and
+               writing there. Printed loudly, recorded in the runtime log
+               (`lw help daemon`).
   --device <serial>
-              clear the per-user DEVICE lock of that serial (remote runs hold
-              it for their whole duration; see `lw help device`)
+               clear the per-user DEVICE lock of that serial (remote runs hold
+               it for their whole duration; see `lw help device`)
 
-Warns (on stderr) before clearing a lock that still looks active — meaning a
-build may really be running elsewhere.]],
+Without --force a lock whose holder is still running is left in place and
+named (exit 1). A removed lock of a killed configure leaves its units
+unconfigured, of a killed build step not built (configured).]],
   run = [[lw run [<target>] [-- prog-args…]   |   lw run <profile> <target> [-- …]
 
 Resolve a profile and a launch target, then build -> deploy -> execute.
@@ -11341,6 +12678,8 @@ device/transport lost it, 124 on --timeout). See `lw help device`.
                         transport timeouts (defaults 120 s / 600 s)
   --log <key>=<value>   device-log option for the runner (repeatable)
   --no-wait             fail instead of waiting when the device is busy
+  --break-locks[=now]   recover a hung build-directory or device lock first
+                        (stop its holder's process tree; see `lw help build`)
 `--prefix` and `--cwd` are errors on a foreign target; `--print` reports the
 device-side invocation and the staging manifest. The run announces
 "running <program> on <serial> (pid N)"; Ctrl-C stops the device program and
@@ -11362,7 +12701,7 @@ build for another platform may ship a DEVICE RUNNER; loomworks uses it to copy
                                   attached; non-zero when no runner is available.
   select <serial> [profile]       persist the profile's device (working copy)
   select --clear [profile]        forget it
-  clean [--device <serial>] [--query-timeout <s>] [--no-wait]
+  clean [--device <serial>] [--query-timeout <s>] [--no-wait] [--break-locks]
                                   remove this workspace's staging tree from
                                   the device (and the staging base if that
                                   leaves it empty) and clear the host's sync
@@ -11395,7 +12734,9 @@ Trust: stage/archive and device_log are honored from loomworks.json; device
 `env` and `working_dir` only from your local config (`lw help trust`).
 One remote operation per device at a time: runs wait for the device lock
 (`--no-wait` fails fast; `lw unlock --device <serial>`;
-LOOMWORKS_DEVICE_LOCK_DIR relocates the lock directory).]],
+LOOMWORKS_DEVICE_LOCK_DIR relocates the lock directory). A holder that hangs is
+reported instead of waited for; `--break-locks[=now]` on run / test / device
+clean stops it (never another host's process or the editor's).]],
   target = [[lw target [list] [profile]
 lw target set [<profile>] <target>   |   lw target clear [profile]
 
@@ -11502,6 +12843,8 @@ profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
 
   profile        e.g. Debug:ninja-clang-19  (unique substring works)
   config-set     a set name (interactive: onboards a profile, then tests)
+  --break-locks[=now]  recover a hung build-directory or device lock first
+                 (stop its holder's process tree; see `lw help build`)
   --saved        run only the saved test executables (no native runners)
   --discovered   run only the native runners (saved lists ignored)
   --no-build     skip configure, build and deploy: run the tests against the
@@ -11644,7 +12987,12 @@ Rules:
                      one declared source. Rewrites the old shape onto the
                      matching `variant:*` base. Skips a variant no
                      configuration provides, and a chain where adding the base
-                     could change which option wins.]],
+                     could change which option wins.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   cache = [[lw help cache — compiler caching (ccache / sccache)   (also: sccache, ccache)
 
 loomworks can wrap C/C++ compiles with a compiler cache so clean and
@@ -11982,7 +13330,12 @@ Bare `lw publish` warns if the result is empty (nothing is shared yet).
 
 `lw export --published` prints what `lw publish` would write, without writing
 it. To carry the whole configuration (local items too) to another machine,
-`lw export` here and `lw import` there.]],
+`lw export` here and `lw import` there.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   export = [[lw export [--published] [--no-profiles] [-o <file>]
 
 Print this workspace's configuration as a loomworks.json, without publishing:
@@ -12042,7 +13395,12 @@ does not block an import: it is replaced unread — none of its settings is kept
 The previous working copy is saved as .nvim/loomworks.user.json.<time>.bak;
 copy it back over .nvim/loomworks.user.json to undo. A working copy
 (.nvim/loomworks.user.json) is not an export: on the same machine use
-`lw pull`; from another machine run `lw export` there.]],
+`lw pull`; from another machine run `lw export` there.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   pull = [[lw pull [<source>] [--dry-run]
 
 Fold another checkout's working config into THIS checkout's working copy
@@ -12077,7 +13435,12 @@ cache or build dirs.
 
 Another machine? A working copy is signed for the machine that wrote it, so pull
 cannot read one copied from elsewhere: run `lw export > file.json` there and
-`lw import file.json` here.]],
+`lw import file.json` here.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 
@@ -12164,7 +13527,12 @@ Examples:
   lw project set  App out_dir '${project_path}/dist' --type path
   lw project set  App sdk_root --type path      # blank; fill with `lw profile set`
   lw project set  App port 8080                 # string (the default type)
-  lw project unset App out_dir]],
+  lw project unset App out_dir
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   config = [[lw config <list|add|show|get|set|unset|rename|describe|remove>   (aliases: configuration, cfg)
 
 Manage a project's build configurations in the working copy; `lw publish`
@@ -12227,7 +13595,12 @@ Examples:
   lw config set   App Debug overrides.clang.warn_flags '-Werror -Wno-unused-command-line-argument'
   lw config get   App Debug overrides.clang.warn_flags
   lw config unset App Debug overrides.clang.warn_flags
-  lw config rename App Debug Debug-asan]],
+  lw config rename App Debug Debug-asan
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   configset = [[lw configset <list|show|create|map|unmap|rename|describe|remove>   (aliases: configuration-set, cs)
 
 A configuration set maps each project to one of its configurations — the
@@ -12250,7 +13623,12 @@ cross-project selection a profile builds. Managed in the working copy;
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.
 
 Examples:
-  lw configset rename Dev Development]],
+  lw configset rename Dev Development
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   describe = [[lw <project|config|configset|profile> describe <item> [text | flags]
 
 Projects, configurations, configuration sets and profiles can carry an
@@ -12351,7 +13729,12 @@ The active profile is the default for `lw build`. Profiles and toolchains
 resolve by a TRUNCATED selector, matched at segment boundaries: `ninja-clang-18`
 picks the highest `18.x`, and `msvc-17` picks an installed VS 17 without naming
 the edition. A truncated selector never crosses a boundary (`…-1` never matches
-`…-18`), and a substring like `lw build clang-19` works when unambiguous.]],
+`…-18`), and a substring like `lw build clang-19` works when unambiguous.
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   settings = [[lw settings <list|get|set|unset> [key] [value]
 
 Read or write lw's OWN user settings (]] .. config_path() .. [[). This is lw's
@@ -12526,7 +13909,7 @@ both fetched sources and compiled objects.]],
 ;(function()
   local ok, bh = pcall(require, "boot.help")
   local topics = ok and type(bh) == "table" and type(bh.TOPICS) == "table" and bh.TOPICS or {}
-  for _, k in ipairs({ "version", "install", "self-update", "bootstrap" }) do
+  for _, k in ipairs({ "version", "install", "self-update", "bootstrap", "release" }) do
     HELP[k] = topics[k]
       or ("lw " .. k .. ": this lw binary (host) is too old to document this command.\n"
         .. "Install the current lw binary as in the README's \"Installing lw\"; "
@@ -12634,9 +14017,12 @@ Usage: lw [command] [args]
   build [profile]   build a profile (configure if needed, then build)
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
-  unlock <profile>  clear a stuck build-dir lock (--all, --device <serial>)
+  unlock <profile>  clear a stuck build-dir lock (--all, --force, --device <serial>)
+  daemon <sub>      the workspace daemon: status | list | stop | kill | restart | run
+                    (experimental, opt-in: runtime-mode)
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)
+  cleanup           list / remove what lw left outside the workspace (--yes, --all)
   test  [profile]   build a profile, then run its tests (real exit code)
   test-target <sub> saved test targets plain `lw test` also runs: list | add | remove | clear
   run [target]      build, then execute a target on the active profile
@@ -12660,6 +14046,7 @@ Usage: lw [command] [args]
   install           install the lw binary on PATH + fetch the first bundle
   self-update       download + verify the latest release (bundle + lw binary)
   release-notes     what changed in each release (--since <version>, --all)
+  release query     the newest verified release on a channel (--channel, --json)
   bootstrap [install|upgrade]  repo-local launcher + version pin: status / write / bump
   help  [command]   this help, or details for a command
 
@@ -12683,6 +14070,9 @@ for custom variants.
 
 Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
+--no-daemon: this command starts no workspace daemon; in daemon mode its
+build/test/run/clean/reset run the daemon's code in this process, or use a
+running daemon (`lw help daemon`).
 Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile (and never picks a sole profile)
 — pass the profile explicitly.
@@ -12712,7 +14102,39 @@ local function env_truthy(name)
   return v ~= nil and v ~= "" and v ~= "0" and v:lower() ~= "false"
 end
 
+--- Strip `--break-locks` / `--break-locks=now` from `argv` (before any `--`)
+--- and configure loomworks.lock_break for this run; records this process as
+--- an `lw` lock holder (spec §19.5). Returns the remaining argv.
+--- @param argv string[]
+--- @param command string|nil
+--- @return string[]
+function M._take_break_locks(argv, command)
+  require("loomworks.lock_record").set_holder_kind("lw")
+  local lb = require("loomworks.lock_break")
+  lb.command = command and ("lw " .. command) or "lw"
+  lb.report = function(line) errw("lw: " .. line .. "\n") end
+  local kept, after = {}, false
+  for _, v in ipairs(argv) do
+    local mode = (not after) and lb.parse_flag(v) or nil
+    if v == "--" then after = true end
+    if mode == false then
+      die("--break-locks takes no value, or `=now` — see `lw help " .. tostring(command) .. "`", 2)
+    elseif mode then
+      lb.requested = mode
+    else
+      kept[#kept + 1] = v
+    end
+  end
+  return kept
+end
+
 local function main()
+  -- A workspace operation lock (spec §19.3) taken inside a guarded operation
+  -- is released on every exit path, `die` included.
+  on_exit(function()
+    pcall(function() require("loomworks.txn").abandon() end)
+    pcall(function() require("loomworks.op_lock").release_all() end)
+  end)
   -- Before any dispatch: release held build-dir locks if we're interrupted
   -- (Ctrl-C's SIGINT reaches the whole foreground group and would otherwise
   -- kill lw before its exit hooks run — see install_interrupt_handler).
@@ -12741,6 +14163,9 @@ local function main()
       create_intent = "local+shared"
     elseif v == "--local" then
       create_intent = "local"
+    elseif v == "--no-daemon" then
+      -- Attached (spec §19.1): launch and use no daemon for this command.
+      M._no_daemon = true
     elseif v == "--no-color" or v:sub(1, 8) == "--color=" then
       -- Highlighting of lw's own lines (spec §16.7): auto|always|never.
       local ok_c, c_err = require("loomworks.cli_color").set_from_option(v)
@@ -12794,6 +14219,11 @@ local function main()
     end
     a = require("loomworks.cli_options").normalize(a)
   end
+  -- `--break-locks[=now]` (spec §19.5), validated per command above: strip it
+  -- (before any `--`) and make it the process-wide request every lock
+  -- acquisition of this run consults. This process records itself as an `lw`
+  -- lock holder.
+  a = M._take_break_locks(a, command)
   -- An unknown command (or an option in the command position) is a usage
   -- error decided from the name alone, BEFORE workspace resolution — outside a
   -- workspace a typo must not read as "no loomworks.json" (spec §16.7).
@@ -12854,6 +14284,32 @@ local function main()
   -- runs from elsewhere (the luvi host runs from the bundle dir).
   -- `root_info.submodule` is set when the root came from a superproject.
   local root, root_info = find_root(os.getenv("LW_ROOT"))
+  -- Every kill and forced unlock is recorded in the workspace's runtime log
+  -- (spec §19.5, §19.10).
+  if root then
+    pcall(function()
+      require("loomworks.lock_break").log = require("loomworks.daemon.rlog").writer(root)
+    end)
+  end
+
+  -- `daemon` manages the workspace runtime (spec §19.11); it never loads the
+  -- workspace, and `status` works outside one.
+  if command == "daemon" then
+    finish(M.cmd_daemon(root, a))
+  end
+  -- `cleanup` lists / removes what lw left outside the workspace (spec
+  -- §16.40); no workspace needed, none loaded.
+  if command == "cleanup" then
+    finish(M.cmd_cleanup(root, a))
+  end
+  -- Housekeeping (spec §16.40): once a day, remove leftovers of interrupted
+  -- lw runs outside the workspace, and record the last use of a pinned
+  -- release this process runs from. Silent; never fails the command.
+  pcall(function()
+    local hk = require("loomworks.housekeeping")
+    hk.touch_running()
+    hk.startup(root)
+  end)
 
   -- Bare `lw` and `lw status` → status (also fine outside a workspace).
   if not command or command == "status" then
@@ -12911,6 +14367,18 @@ local function main()
 
   -- Workspace commands.
   if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
+
+  -- In `runtime-mode daemon` every workspace command keeps the workspace
+  -- daemon running (spec §19.1, §19.19 step 2); `lw build` is then routed to
+  -- it (below), so its ensure gives a slow daemon longer (§19.10).
+  -- Not the recovery commands: `trust` / `nuke` repair a refused workspace
+  -- and `unlock` clears stuck locks — none of them may wait on (or start) a
+  -- daemon. Nor the read-only commands: like `lw status` they read a live
+  -- compatible daemon or in-process and never launch one (§19.1, §19.14).
+  local ensured
+  if not M.NO_DAEMON_COMMANDS[command] and not M._read_only_command(a) then
+    ensured = M._ensure_daemon(root, M._routed_command(a))
+  end
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).
@@ -12976,9 +14444,11 @@ local function main()
   if command == "device" or command == "devices" then
     finish(M.cmd_device(a[2], root, a))
   end
-  -- `unlock --device <serial>` needs no workspace (device locks are per user).
-  if command == "unlock" and vim.tbl_contains(a, "--device") then
-    finish(M.cmd_unlock(nil, a))
+  -- `unlock --device <serial>` needs no workspace (device locks are per user),
+  -- nor does `unlock --workspace` (the operation lock is a file under .nvim/).
+  if command == "unlock" and (vim.tbl_contains(a, "--device") or vim.tbl_contains(a, "--journal")
+      or (vim.tbl_contains(a, "--workspace") and not vim.tbl_contains(a, "--all"))) then
+    finish(M.cmd_unlock(nil, a, root))
   end
   -- `launch` manages launch configs in the working copy (no tools needed).
   if command == "launch" then
@@ -12992,6 +14462,23 @@ local function main()
   -- `test-target` edits saved test targets (§16.9); its own workspace load.
   if command == "test-target" then
     finish(M.cmd_test_target(root, a))
+  end
+
+  -- `lw build`, the batch `lw test`, the preparation of `lw run`, `lw clean`
+  -- and `lw reset` routed to the workspace daemon (spec §19.15, §19.19 steps
+  -- 3, 5, 5c, 5d): nil = not routed (every other case runs in-process exactly
+  -- as before).
+  if command == "build" or command == "test" or command == "run" or command == "clean"
+      or command == "reset" then
+    -- An attached selection in daemon mode runs them attached (§19.1
+    -- "Loopback during the transition", step 5e).
+    local routed
+    -- A runtime lock an attached run holds: wait for it, or "workspace
+    -- busy" (§19.2).
+    if ensured == "elsewhere" and M._routed_command(a) then ensured = M._await_attached_runtime(root) end
+    if M._attached_selected(ensured) then routed = M._delegate_attached(command, root, a)
+    else routed = M._delegate(command, root, a, ensured) end
+    if routed then finish(routed) end
   end
 
   local ws = load_workspace(root)

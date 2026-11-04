@@ -17,8 +17,8 @@ local ns = vim.api.nvim_create_namespace("loomworks_description_editor")
 --- @param item table
 --- @return string kind, string name
 function M.describe_item(item)
-    -- A handle for an item that is not a domain object (a launch
-    -- configuration, spec §8.7) names its own kind and label.
+    -- A handle for an item that is not a domain object names its own kind
+    -- and label.
     if item._kind then return item._kind, item._label or "?" end
     local mt = getmetatable(item)
     if mt == require("loomworks.profile") then return "profile", tostring(item.key) end
@@ -26,6 +26,9 @@ function M.describe_item(item)
     if mt == require("loomworks.project") then return "project", item.key end
     if mt == require("loomworks.configuration") then
         return "configuration", (item._project and (item._project.key .. "/") or "") .. item.name
+    end
+    if mt == require("loomworks.launch_configuration") then
+        return "launch configuration", (item._project and (item._project.key .. ":") or "") .. item.name
     end
     return "item", tostring(item.key or item.name)
 end
@@ -35,6 +38,7 @@ end
 --- @param item table
 --- @return boolean ok, string|nil reason
 function M.editable(item)
+    if item._readonly then return false, item._readonly end
     local Configuration = require("loomworks.configuration")
     if getmetatable(item) == Configuration then
         if item:is_auto_gen() or not item.is_user or item._source_missing then
@@ -67,33 +71,48 @@ function M.initial_lines(kind, name, desc)
     return lines
 end
 
---- Apply the buffer's content to the item (the BufWriteCmd body). Returns
---- true when saved (or unchanged), false with the error when refused.
+--- Apply the buffer's content to the item (the BufWriteCmd body, through
+--- `Workspace/1.set_description`). Returns true when saved (or unchanged),
+--- false with the error when refused — nil while the outcome is pending (a
+--- call to the workspace daemon, step 5o C2a: its outcome arrives later).
+--- A row item (helpers.row_item) takes the saved text as its description.
 --- @param buf integer
 --- @param item table
 --- @param on_saved? fun(item: table) called after a successful save
---- @return boolean ok, string|nil err
+--- @return boolean|nil ok, string|nil err
 function M.apply(buf, item, on_saved)
     local d = require("loomworks.description")
     local text = d.strip_comments(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-    local changed, err = item:set_description(text)
-    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-    if changed == nil then
-        vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
-            virt_lines = { { { "  " .. tostring(err), "ErrorMsg" } } },
-            virt_lines_above = false,
-        })
-        vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
-        return false, err
-    end
-    vim.bo[buf].modified = false
-    if on_saved then on_saved(item) end
-    if changed then
-        local kind, name = M.describe_item(item)
-        vim.notify("loomworks: " .. kind .. " '" .. name .. "' "
-            .. (item.description and "described" or "description removed"), vim.log.levels.INFO)
-    end
-    return true, nil
+    local ok, err
+    require("loomworks.ui.model_calls").call(nil, "Workspace/1.set_description", { item = item, text = text },
+        function(r)
+            -- true when saved, false when unchanged, nil when refused (a
+            -- daemon's `ok` carries no `changed`: saved).
+            local changed = nil
+            if r.outcome == "ok" then changed = r.changed ~= false end
+            if not vim.api.nvim_buf_is_valid(buf) then return end
+            vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+            if changed == nil then
+                err = r.message
+                vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
+                    virt_lines = { { { "  " .. tostring(err), "ErrorMsg" } } },
+                    virt_lines_above = false,
+                })
+                vim.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+                ok = false
+                return
+            end
+            vim.bo[buf].modified = false
+            if item._row then item.description = text end
+            if on_saved then on_saved(item) end
+            if changed then
+                local kind, name = M.describe_item(item)
+                vim.notify("loomworks: " .. kind .. " '" .. name .. "' "
+                    .. (item.description and "described" or "description removed"), vim.log.levels.INFO)
+            end
+            ok = true
+        end)
+    return ok, err
 end
 
 --- Open the editor for `item`. For a generated configuration, notifies and

@@ -1,0 +1,35 @@
+  1|  loomworks.nvim test
+   hl 0--1 Title
+  2|
+  3|  Workspace: root
+   hl 0--1 Type
+  4|  Root:      /root
+   hl 0--1 Comment
+  5|  ⚠ loomworks.json not on disk — :w to publish
+   hl 0--1 DiagnosticWarn
+  6|  [?] help  [L] load  [<C-n>] reset
+   hl 0--1 Comment
+  7|
+  8|  Profiles
+   hl 0--1 Title
+  9|  [Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete
+   hl 0--1 Comment
+ 10|
+ 11|  No projects yet. Add projects first.
+   hl 0--1 Comment
+ 12|
+ 13|  Projects
+   hl 0--1 Title
+ 14|
+ 15|  ▸ Add project
+   hl 0--1 LoomworksAdd
+   w  direct=true on_enter()
+ 16|
+ 17|
+ 18|  SDKs
+   hl 0--1 Title
+ 19|
+ 20|  ▸ Add SDK
+   hl 0--1 LoomworksActionable
+   w  direct=true on_enter()
+ 21|

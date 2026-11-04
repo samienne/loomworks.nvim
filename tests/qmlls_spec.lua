@@ -109,6 +109,56 @@ describe("cmake lsp_configs qmlls entry", function()
         local cfgs = cmake.lsp_configs(p)
         assert.equals("/work/out/A", cfgs[2].build_dir)
         assert.equals("/work/out/B", cfgs[1].compile_commands_dir)
+        -- clangd reads the redirect target's database: that is its db_dir
+        -- (core §8.4). qmlls sets none (core fills in the active dir).
+        assert.equals("/work/out/B", cfgs[1].db_dir)
+        assert.is_nil(cfgs[2].db_dir)
+    end)
+
+    it("clangd's db_dir is the active build dir without a redirect", function()
+        local cfgs = cmake.lsp_configs(fake_project({ build_dir = "/work/.nvim/build/myapp/Debug" }))
+        assert.equals("/work/.nvim/build/myapp/Debug", cfgs[1].db_dir)
+    end)
+
+    it("core's state keeps qmlls's own build_dir (its -b) under a redirect", function()
+        local lsp_config = require("loomworks.lsp_config")
+        lsp_config.clear_memo()
+        local function unit(bd, here)
+            return { build_dir = function() return bd end, configured_here = function() return here end }
+        end
+        local p = fake_project({
+            build_dir = "/work/active",
+            type_config = { compile_commands_from = "Release" },
+        })
+        p.get_configuration = function() return {} end
+        p.config_units_for_configuration = function()
+            return { unit("/work/out/A", false), unit("/work/out/B", true) }
+        end
+        p._module = { impl = cmake }
+        local ws = p._workspace
+        -- The memo key also reads the unit's config key and status.
+        local active = ws.get_active_profile
+        ws.get_active_profile = function()
+            local prof = active()
+            local project = prof.project
+            prof.project = function(self, key)
+                local pp = project(self, key)
+                pp.config_key = function() return "Debug" end
+                pp.status = function() return "configured" end
+                return pp
+            end
+            return prof
+        end
+        local entries = lsp_config.entries(ws, p)
+        assert.equals("/work/out/B", entries[1].db_dir)
+        assert.equals("/work/out/A", entries[2].build_dir, "the module's field passes through")
+        assert.equals("/work/active", entries[2].db_dir)
+        -- db_rev of the clangd entry follows the redirect target.
+        lsp_config.bump_db_rev(ws, "/work/active")
+        assert.equals(0, lsp_config.entries(ws, p)[1].db_rev)
+        lsp_config.bump_db_rev(ws, "/work/out/B")
+        assert.equals(1, lsp_config.entries(ws, p)[1].db_rev)
+        lsp_config.clear_memo()
     end)
 
     it("type_config.qmlls flows into entry.binary; absent ⇒ nil", function()
@@ -216,6 +266,7 @@ describe("qmlls root_dir_factory", function()
         -- lsp_configs; give the project a module whose impl emits a qmlls
         -- entry rooted at /work/myapp.
         local fake_project = {
+            key = "App",
             _module = {
                 impl = {
                     lsp_configs = function()
@@ -224,7 +275,10 @@ describe("qmlls root_dir_factory", function()
                 },
             },
         }
+        local orig_bp, orig_gp = lw.buf_project, lw.get_projects
         lw.project_for_buf = function() return fake_project end
+        lw.buf_project = function() return { key = "App" } end
+        lw.get_projects = function() return { App = fake_project } end
         lw.get_workspace = function() return {} end
 
         local result = nil
@@ -235,6 +289,7 @@ describe("qmlls root_dir_factory", function()
         assert.equals("/work/myapp", result)
 
         lw.project_for_buf = orig_pfb
+        lw.buf_project, lw.get_projects = orig_bp, orig_gp
         lw.get_workspace = orig_gw
     end)
 

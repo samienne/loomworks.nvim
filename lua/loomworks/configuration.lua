@@ -94,6 +94,8 @@ end
 ---        in v1 — not persisted to cache yet. Drives the soft
 ---        "language declared vs enabled" diagnostic.
 --- @field _removed boolean
+--- @field _module_error string|nil the module's `error` for this configuration
+---        (spec §8 `info`): invalid while set; see `module_error()`
 --- @field _source_missing boolean true when this Configuration exists as
 ---        a skeleton — created because a config_set mapping,
 ---        inherits reference, or similar pointed at its name, but
@@ -305,6 +307,11 @@ function Configuration:_update(data)
     -- silently. Runtime keeps it; `serialize_user_override` skips it.
     self._derived = type(data._derived) == "table" and data._derived or nil
 
+    -- Module-reported error (generic, core-reserved, spec §8 `info`): the
+    -- module cannot use this configuration as declared. Invalid while set
+    -- (`is_valid`); each refresh replaces it, so a load without it clears it.
+    self._module_error = type(data.error) == "string" and data.error ~= "" and data.error or nil
+
     -- Module-specific config: everything except the generic fields above
     local module_config = {}
     local generic = {
@@ -312,7 +319,7 @@ function Configuration:_update(data)
         role = true, inherits = true, options = true, variables = true,
         env = true, overrides = true, languages = true,
         prefix = true, base_name = true, _derived = true,
-        description = true, tests = true,
+        description = true, tests = true, error = true,
     }
     for k, v in pairs(data) do
         if not generic[k] then
@@ -449,12 +456,24 @@ function Configuration:is_valid()
             .. "' is referenced but not defined — fix the reference "
             .. "or restore the configuration"
     end
+    if self._module_error then
+        reasons[#reasons + 1] = self._module_error
+    end
     local unresolved = self:unresolved_inherits_names()
     if #unresolved > 0 then
         reasons[#reasons + 1] = "inherits from unknown bases: "
             .. table.concat(unresolved, ", ")
     end
     return #reasons == 0, reasons
+end
+
+--- The module's reason this configuration cannot be used as declared
+--- (spec §8 `info` `error`), or nil. While set the configuration is invalid
+--- (§15 invariant 11): no build directory is resolved for it, no ConfigUnit
+--- exists for it, every operation on it is refused.
+--- @return string|nil
+function Configuration:module_error()
+    return self._module_error
 end
 
 --- Return a structural diagnostic for this configuration, or nil
@@ -521,7 +540,8 @@ function Configuration:diagnostic()
     end
 
     return {
-        severity = "warn",
+        -- A module-reported error (spec §8 `info`) is error severity.
+        severity = self._module_error and "error" or "warn",
         source = "Project/" .. proj_key .. "/" .. self.name,
         message = "configuration '" .. self.name .. "' on project '"
             .. proj_key .. "' is invalid: " .. table.concat(reasons, "; "),

@@ -7,41 +7,7 @@
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
 local trust = require("loomworks.trust")
-
-local H = {}
-
-function H.tmp()
-    local d = (vim.fn.tempname():gsub("\\", "/"))
-    vim.fn.mkdir(d, "p")
-    return d
-end
-
---- A workspace with one `shell` project `app` and a configuration set `dev`
---- (app=Debug), plus a signed working copy with the profile `dev` (the trust
---- key must already be set).
---- @return string root
-function H.shell_workspace()
-    local root = H.tmp()
-    vim.fn.mkdir(root .. "/app", "p")
-    vim.fn.mkdir(root .. "/.nvim", "p")
-    local nv = (vim.v.progpath:gsub("\\", "/"))
-    local function cmd(kind) return { nv, "--headless", "-u", "NONE", "-l", root .. "/step.lua", kind } end
-    local cfg = {
-        projects = { app = { path = "app", shell = {
-            build_dir = "${workspace_root}/out/${variant}",
-            configure_cmd = cmd("configure"), build_cmd = cmd("build"),
-            configurations = { Debug = vim.empty_dict() },
-        } } },
-        configuration_sets = { dev = { app = "Debug" } },
-    }
-    local f = io.open(root .. "/loomworks.json", "w"); f:write(vim.json.encode(cfg)); f:close()
-    local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
-    local signed, serr = trust.sign("user", trust.encode(user))
-    if not signed then error(serr) end
-    f = io.open(root .. "/.nvim/loomworks.user.json", "wb")
-    f:write(signed); f:close()
-    return root
-end
+local H = require("tests.daemon_helpers")
 
 local function read(path)
     local f = io.open(path, "rb")
@@ -59,7 +25,7 @@ describe("tool picker: a profile made of an SDK", function()
 
     before_each(function()
         trust._set_key_path(H.tmp() .. "/trust.key")
-        root = H.shell_workspace()
+        root = H.shell_workspace({ profile = true })
 
         -- A fake SDK provider offering the shell module capabilities, and
         -- the shell module given one keyed kit per SDK (tool data carrying

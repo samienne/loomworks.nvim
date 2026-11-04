@@ -468,6 +468,28 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         }
     end
 
+    local data = M._assemble_parsed(root, config, user_content, cache_content)
+    -- Update cache hash from raw content
+    if data.cache._meta then
+        data.cache._meta.loomworks_hash = cache_mod.compute_hash(config_content or "")
+    end
+    data.user_trust = user_trust
+    data.cache_trust = cache_trust
+    -- Program-bearing fields removed from the shared layer (spec §17.6).
+    data.shared_ignored = shared_ignored
+    return data, nil
+end
+
+--- The part of `assemble` after the signatures were verified and the shared
+--- snapshot parsed: parse the working copy and the cache bodies and validate
+--- them. Shared with `assemble_snapshot` (the daemon's projection, §19.13), so
+--- a projection is built by the same deserializer as an on-disk load.
+--- @param root string
+--- @param config table parsed (and stripped) loomworks.json
+--- @param user_content string|nil verified user.json body
+--- @param cache_content string|nil verified cache body
+--- @return loomworks.WorkspaceData
+function M._assemble_parsed(root, config, user_content, cache_content)
     local user_data, user_version_mismatch, user_newer
     if user_content then
         user_data, user_version_mismatch, user_newer = user_mod.parse(user_content)
@@ -498,11 +520,6 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         cache_version_mismatch = false
     end
 
-    -- Update cache hash from raw content
-    if cache_data._meta then
-        cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content or "")
-    end
-
     -- Validate cache internal consistency
     local cache_consistent = true
     if not cache_version_mismatch then
@@ -529,11 +546,30 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         user_projects_invalid = user_projects_invalid,
         -- Trust status of the signed files: "valid" | "unsigned" | "invalid",
         -- nil when the file is absent (spec §17.4).
-        user_trust = user_trust,
-        cache_trust = cache_trust,
+        user_trust = nil,
+        cache_trust = nil,
         -- Program-bearing fields removed from the shared layer (spec §17.6).
-        shared_ignored = shared_ignored,
-    }, nil
+        shared_ignored = {},
+    }
+end
+
+--- Assemble workspace data from a daemon snapshot (spec §19.13) instead of
+--- files: `snap.config` is the published baseline as the daemon loaded it
+--- (parsed and stripped), `snap.user` / `snap.cache` the file-shaped working
+--- copy and cache tables. They go through the same parsing as file bodies
+--- (`_assemble_parsed`); nothing is verified (the wire is authenticated) and
+--- nothing is read from disk.
+--- @param root string
+--- @param snap table { config, user, cache, shared_ignored }
+--- @return loomworks.WorkspaceData
+function M.assemble_snapshot(root, snap)
+    local config = vim.deepcopy(snap.config or { projects = {} })
+    config.projects = config.projects or {}
+    local data = M._assemble_parsed(root, config,
+        snap.user and vim.json.encode(snap.user) or nil,
+        snap.cache and vim.json.encode(snap.cache) or nil)
+    data.shared_ignored = vim.deepcopy(snap.shared_ignored or {})
+    return data
 end
 
 -- ========================== Workspace class ==========================
@@ -565,10 +601,17 @@ end
 --- @field _operations loomworks.Operation[] active operations
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> detected tools per module type
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
+--- @field _stray_cache { sig: string, dirs: string[], stamps: (string|false)[], stray: string[] }|nil the
+---   view's last stray build dir scan (`_view_stray_build_dirs`)
+--- @field _tool_scan_gen integer the newest toolchain scan started (`_scan_tools_async`); only its completion is taken in
 --- @field _tool_waiters function[]
 --- @field _lsp_ready boolean active profile's owned LSP databases are generated/settled (§9.7)
+--- @field _lsp_db_revs table<string, integer>|nil normalized build dir -> times its owned LSP database was (re)written (`db_rev`, lsp_config.lua)
+--- @field _no_write string|nil set (the reason) when the runtime holding this workspace lost its lock (§19.2): the cache and the working copy are never saved again
+--- @field _projection boolean|nil a read-only projection of the workspace daemon's model (spec §19.13, daemon/snapshot.lua `project`); `_no_write` is set
+--- @field _index table|nil a projection's current-key → opaque-id index from its snapshot (§19.12)
 --- @field _delete_waiters function[]
---- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> build-dir identity key (`_build_dir_ref_key`) -> units
+--- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> build-dir identity key (`_build_dir_identity`) -> units
 --- @field _artifact_refs table<string, loomworks.ConfigUnit[]> normalized_artifact_path -> units (§5.9)
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 --- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
@@ -583,10 +626,13 @@ end
 --- @field _user_provenance table<string, table> per-project sub-item provenance from merge
 --- @field _shared_baseline table|nil raw parsed loomworks.json for modified-state computation
 --- @field _shared_ignored table[] program-bearing fields stripped from loomworks.json (spec §17.6; program_fields.strip)
+--- @field _load_notes loomworks.LoadNote[]|nil the warnings and errors the load of this workspace raised (core daemon.md §19.13 "Load warnings"); nil for a workspace no load made (a daemon snapshot's projection)
 --- @field _user_unread "unsigned"|"invalid"|nil the working copy on disk was refused (spec §17.4) and this load, made for an import that replaces it unread (spec §16.39), treated it as absent; no save may overwrite it until that import writes
 --- @field _import_writing boolean|nil true while `commit_import` saves the working copy
 --- @field _merged_config table|nil last merged config (internal shape) — supplies-check for _shared_ignored diagnostics
 --- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
+--- @field _file_batch? { save_user: boolean } set while one tracker sync's changes are applied (spec §2.7)
+--- @field _held_notes? table<string, loomworks.LoadNote> per tracked path: the load warning of a change held back because the file cannot be parsed (the workspace daemon, core daemon.md §19.13)
 --- @field _disk_baseline table<"user"|"cache", { text: string|nil }> per guarded
 ---     file, the exact bytes this process last read from or wrote to disk
 ---     (`text` nil = absent). A save whose file no longer matches is stale
@@ -643,6 +689,7 @@ function Workspace.new(core, data)
     self._status_cursor_row = nil
     self._event_handlers = {}
     self._tool_state = "not_scanned"
+    self._tool_scan_gen = 0
     self._tool_waiters = {}
     self._lsp_ready = false
     self._delete_waiters = {}
@@ -738,9 +785,10 @@ end
 --- @param project loomworks.Project
 --- @param variant string configuration variant name
 --- @param tool_data_or_list? table single tool_data, or list of `{key, data}` entries
---- @return string relative build_dir path (the ConfigUnit id outside a
----   shared tree; see `_compute_unit_id`)
---- @return string absolute build_dir path
+--- @return string|nil relative build_dir path (the ConfigUnit id outside a
+---   shared tree; see `_compute_unit_id`); nil for a configuration the
+---   module reported an `error` for (§8 `info`)
+--- @return string|nil absolute build_dir path (nil likewise)
 --- @return boolean shared the module reported the directory as a shared tree
 ---   (spec §8.4 `resolve_build_dir` second return value)
 function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
@@ -771,12 +819,17 @@ function Workspace:_compute_build_dir(project, variant, tool_data_or_list)
         end
     end
 
+    -- A configuration the module reported an `error` for (spec §8 `info`)
+    -- resolves no build directory: `resolve_build_dir` is not called.
+    local configuration = project:get_configuration(variant)
+    if configuration and configuration:module_error() then return nil, nil end
+
     local mod = project._module and project._module.impl or nil
     local abs_path
     local shared = false
     if mod and mod.resolve_build_dir then
         local config_info = nil
-        local cfg = project:get_configuration(variant)
+        local cfg = configuration
         if cfg and cfg.module_config then
             config_info = cfg.module_config
         end
@@ -812,20 +865,107 @@ end
 --- @return string rel_key relative build_dir path
 function Workspace:_compute_unit_id(project, variant, tool_data_or_list, tool_key)
     local rel_key, abs_path, shared = self:_compute_build_dir(project, variant, tool_data_or_list)
+    -- No build dir (a configuration the module reported an `error` for, §8
+    -- `info`): no unit id either.
+    if not rel_key then return nil, nil, false, nil end
     local config_key = self._core._deps.merge.build_config_key(variant, tool_key)
     return cache_mod.unit_id(rel_key, shared, config_key), abs_path, shared, rel_key
 end
 
+--- The build-directory claims of every profile's ProfileProjects in the live
+--- model (spec §1.7 "One build directory per configuration"): each profile's
+--- mappings from its live configuration set, resolved with its tools.
+--- @return loomworks.BuildDirClaim[] claims
+--- @return table<loomworks.BuildDirClaim, { profile: loomworks.Profile, project: loomworks.Project, configuration: loomworks.Configuration }> owners
+function Workspace:_live_build_dir_claims()
+    local claims, owners = {}, {}
+    local merge = self._core._deps.merge
+    for _, profile in pairs(self._profiles or {}) do
+        local cs = profile._config_set_ref
+        if not profile._removed and cs and not cs._removed then
+            for project, configuration in pairs(cs.mappings or {}) do
+                if not project._removed and configuration and not configuration._removed then
+                    local tool_data, tool_key, effective = data_model.mapping_tools(profile, project, configuration)
+                    local arg = effective and #effective > 0 and effective or tool_data
+                    local _, abs, shared = self:_compute_unit_id(project, configuration.name, arg, tool_key)
+                    local c = { project_key = project.key, config_name = configuration.name,
+                        tool_key = tool_key, config_key = merge.build_config_key(configuration.name, tool_key),
+                        abs = abs, shared = shared == true }
+                    claims[#claims + 1] = c
+                    owners[c] = { profile = profile, project = project, configuration = configuration }
+                end
+            end
+        end
+    end
+    return claims, owners
+end
+
+--- The configurations the live model refuses a build directory (spec §1.7):
+--- another configuration keeps it. Indexed by project, then configuration.
+--- @return table<loomworks.Project, table<loomworks.Configuration, string>> refused message
+--- @return string[] messages sorted
+function Workspace:_build_dir_refusals()
+    local claims, owners = self:_live_build_dir_claims()
+    local refused = require("loomworks.build_dir_claims").resolve(claims,
+        self:_serialize_cache().build_dirs, function(p) return self:_build_dir_identity(p) end,
+        { root = self.root })
+    local index, messages = {}, {}
+    for c, msg in pairs(refused) do
+        local o = owners[c]
+        index[o.project] = index[o.project] or {}
+        if not index[o.project][o.configuration] then
+            index[o.project][o.configuration] = msg
+            messages[#messages + 1] = msg
+        end
+    end
+    table.sort(messages)
+    return index, messages
+end
+
+--- A command's change, already made in memory, would refuse a configuration
+--- the loaded model does not refuse (spec §1.7 "Commands refuse to create
+--- one"): the first such refusal, else nil. The caller undoes its change and
+--- writes nothing.
+--- @param new_profile? loomworks.Profile a profile the command made: its
+---   ProfileProjects (already carrying their refusals) are not the loaded model
+--- @return string|nil message
+function Workspace:_new_build_dir_collision(new_profile)
+    local before = {}
+    for _, pp in pairs(self._profile_projects or {}) do
+        if not pp._removed and pp._build_dir_error and pp._project and pp._configuration
+            and not (new_profile and pp._profile == new_profile) then
+            before[pp._project] = before[pp._project] or {}
+            before[pp._project][pp._configuration] = true
+        end
+    end
+    local index = self:_build_dir_refusals()
+    local new = {}
+    for project, by_cfg in pairs(index) do
+        for cfg, msg in pairs(by_cfg) do
+            if not (before[project] and before[project][cfg]) then new[#new + 1] = msg end
+        end
+    end
+    table.sort(new)
+    return new[1]
+end
+
 --- Find or create a ConfigUnit for the given project, configuration, and tool.
 --- Searches by properties first. If not found, creates a new cache entry
---- and ConfigUnit. Key generation is a write-time cache concern only.
+--- and ConfigUnit. Key generation is a write-time cache concern only. A
+--- configuration refused its build directory (spec §1.7) gets none: nil.
 --- @param project loomworks.Project
 --- @param configuration loomworks.Configuration configuration domain object
 --- @param tool? loomworks.Tool tool domain object (nil for non-keyed modules)
---- @return loomworks.ConfigUnit
-function Workspace:ensure_config_unit(project, configuration, tool)
+--- @param refused? table the `_build_dir_refusals` index, when the caller has it
+--- @return loomworks.ConfigUnit|nil nil for a configuration the module
+---   reported an `error` for (spec §8 `info`) or whose build directory is
+---   refused (§1.7): no ConfigUnit exists for it
+function Workspace:ensure_config_unit(project, configuration, tool, refused)
+    if configuration:module_error() then return nil end
     local existing = self:find_config_unit(project, configuration, tool)
     if existing then return existing end
+    refused = refused or self:_build_dir_refusals()
+    if refused[project] and refused[project][configuration] then return nil end
 
     local variant = configuration.name
     local tool_key = tool and tool.key or nil
@@ -959,6 +1099,20 @@ function Workspace:_record_written(kind, path, written)
     if written == nil and type(read_file) == "function" then written = read_file(path) end
     self._disk_baseline[kind] = { text = written }
     if self._tracker then self._tracker:mark_written(path, written) end
+    -- The workspace daemon tells its clients (spec §19.12, `model_change`).
+    local on_written = self._core._deps.on_written
+    if on_written then pcall(on_written, kind, path) end
+    self:_emit_written(kind)
+end
+
+--- Tell the host this process wrote one of the workspace's state files
+--- (`state_file_written { workspace, kind }`): the editor in `daemon` mode
+--- then fetches the workspace view, whose freshness check applies the write
+--- in the daemon (spec §19.13 "Freshness of views", until step 5o).
+--- @param kind "cache"|"user"|"config"
+function Workspace:_emit_written(kind)
+    local events = self._core._deps.events
+    if events then pcall(events.emit, "state_file_written", { workspace = self, kind = kind }) end
 end
 
 --- The guarded file's current bytes, or `false` when this host cannot read
@@ -1012,6 +1166,7 @@ end
 --- the in-memory state is then reconciled to the merged cache.
 --- @return boolean ok
 function Workspace:_save_cache()
+    if self._torn_down or self._no_write then return false end
     local deps = self._core._deps
     local cache = self:_serialize_cache()
     -- Compute loomworks_hash from serialized config content
@@ -1163,6 +1318,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     local result = data_model.refresh(self, config, cache, active_set, all_profile_defs, current, {
         modules_registry = self._core._deps.modules,
         normalize = self._core._deps.normalize,
+        build_dir_key = function(p) return self:_build_dir_identity(p) end,
         tools_by_type = self._tools_by_type,
         default_target_data = default_target_data,
         device_data = device_data,
@@ -1177,7 +1333,6 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
             return self:_compute_unit_id(project, variant, tool_data, tool_key)
         end,
         dir_exists = self._core._deps.dir_exists,
-        build_dir_ref_key = function(dir) return self:_build_dir_ref_key(dir) end,
     })
 
     self._modules = result.modules
@@ -1284,7 +1439,9 @@ function Workspace:_rebuild_profile_projects_for(profile)
         end
     end
 
-    -- Build new PPs from profile mappings
+    -- Build new PPs from profile mappings. A configuration refused its build
+    -- directory (spec §1.7) gets no ConfigUnit — never the owner's.
+    local refused = self:_build_dir_refusals()
     local new_pps = {}
     if profile.mappings then
         for project_key, variant in pairs(profile.mappings) do
@@ -1293,8 +1450,10 @@ function Workspace:_rebuild_profile_projects_for(profile)
             if project then
                 configuration = project:get_configuration(variant)
             end
+            local build_dir_error = project and configuration and refused[project]
+                and refused[project][configuration] or nil
             local config_unit = nil
-            if project then
+            if project and not build_dir_error then
                 local tool_data = nil
                 local tool_key = nil
                 local profile_tools = profile:tools_data()
@@ -1307,9 +1466,9 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 -- Create ConfigUnit if no existing one found. Link BuildDir if available.
                 if not config_unit and expected_id and configuration then
                     local tool = project._module and project._module:find_tool(tool_key) or nil
-                    config_unit = self:ensure_config_unit(project, configuration, tool)
+                    config_unit = self:ensure_config_unit(project, configuration, tool, refused)
                     -- Link to existing BuildDir at the expected path
-                    local bd = self:find_build_dir(expected_id)
+                    local bd = config_unit and self:find_build_dir(expected_id)
                     if bd then
                         config_unit._build_dir = bd
                         -- Sync ConfigUnit fields from BuildDir for backward compat
@@ -1321,7 +1480,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                         config_unit._cached_options = bd.options_snapshot
                         config_unit._cached_module_config = bd.module_config_snapshot
                     end
-                    units_by_id[config_unit.id] = config_unit
+                    if config_unit then units_by_id[config_unit.id] = config_unit end
                 end
             end
             -- Per-(profile, config) tool compatibility check. Mirrors
@@ -1350,6 +1509,7 @@ function Workspace:_rebuild_profile_projects_for(profile)
                 configuration = configuration,
                 config_unit = config_unit,
                 tool_compat_error = tool_compat_error,
+                build_dir_error = build_dir_error,
             }
             local existing = existing_pps[reg_key]
             if existing then
@@ -1381,33 +1541,50 @@ function Workspace:_rebuild_profile_projects_for(profile)
 end
 
 
---- Identity key of a build directory in the `_build_dir_refs` index: its
---- canonical form (`_canonicalize_boundary_path` — 8.3 short<->long and case
---- reconciled, links resolved), so two spellings of one directory (e.g. a
---- Windows runner's `C:/Users/RUNNER~1/...` vs the long form) key the same
---- entry and the shared-dir check in `_run_deletion` sees both users. A path
---- that does not resolve falls back (inside `_canonicalize_boundary_path`) to
---- its longest existing ancestor's canonical form + the missing tail, else to
---- plain normalization — the same function on the insert and lookup sides.
---- Display spellings (cached `build_dir`) are untouched.
---- @param dir string
---- @return string
-function Workspace:_build_dir_ref_key(dir)
-    return self:_canonicalize_boundary_path(dir)
+--- The identity of a build directory for shared-directory protection and
+--- the build-directory locks (spec §4.6, §16.6): its resolved real path when
+--- it exists — so one physical folder spelled differently (a junction or
+--- symlink, a Windows 8.3 short name, an aliased root, `..` segments) is ONE
+--- directory — else the real path of its nearest existing ancestor plus the
+--- rest of the path, so a lock taken before configure creates the directory
+--- keeps its identity afterwards (loomworks.dir_identity). Always
+--- `normalize`d. Only a comparison key: display paths and the deletion
+--- target keep their own spelling.
+--- @param path string|nil
+--- @return string|nil
+function Workspace:_build_dir_identity(path)
+    if not path or path == "" then return path end
+    local deps = self._core._deps
+    return deps.normalize(require("loomworks.dir_identity").resolve(path, deps.realpath))
 end
 
---- Rebuild the build dir reverse index from ConfigUnit objects.
---- Delegates to data_model.sync_build_dir_refs, keyed by `_build_dir_ref_key`.
+--- Rebuild the build dir reverse index from ConfigUnit objects, keyed by
+--- `_build_dir_identity`. Delegates to data_model.sync_build_dir_refs.
 function Workspace:_sync_build_dir_refs()
     self._build_dir_refs = data_model.sync_build_dir_refs(
-        self._config_units, function(dir) return self:_build_dir_ref_key(dir) end)
+        self._config_units, function(p) return self:_build_dir_identity(p) end)
 end
 
 --- Get the ConfigUnits that share a build directory.
+--- An index key can be stale: a directory indexed while missing is keyed by
+--- its normalized spelling, and once it exists that spelling may resolve to
+--- another real path (an aliased root). Every key is therefore re-resolved
+--- and compared, so a missed reference never lets a shared directory be
+--- wiped. The index holds one key per build directory, so this stays small.
 --- @param build_dir string build directory path (any spelling)
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
-    return self._build_dir_refs[self:_build_dir_ref_key(build_dir)] or {}
+    if not build_dir or build_dir == "" then return {} end
+    local id = self:_build_dir_identity(build_dir)
+    local out, seen = {}, {}
+    for key, list in pairs(self._build_dir_refs or {}) do
+        if key == id or self:_build_dir_identity(key) == id then
+            for _, unit in ipairs(list) do
+                if not seen[unit] then seen[unit] = true; out[#out + 1] = unit end
+            end
+        end
+    end
+    return out
 end
 
 --- Rebuild the output-artifact reverse index from ConfigUnit objects (§5.9).
@@ -1612,7 +1789,7 @@ function Workspace:_invalidate_overwritten_by(builder)
         for _, p in ipairs(arts) do bset[normalize(p)] = true end
         for _, other in pairs(self._config_units) do
             if other ~= builder and not other._removed
-                    and other:state() == "built" then
+                    and other:local_state() == "built" then
                 local oarts = other:artifacts()
                 if oarts then
                     for _, p in ipairs(oarts) do
@@ -1686,7 +1863,7 @@ function Workspace:artifact_conflicts_for(unit)
             for _, other in ipairs(units) do
                 if other ~= unit and not seen[other]
                         and not other._removed
-                        and other:state() == "built"
+                        and other:local_state() == "built"
                         and not other:is_overwritten() then
                     seen[other] = true
                     out[#out + 1] = other
@@ -1852,8 +2029,13 @@ end
 --- Scan for connected devices from all device-capable modules.
 --- Merges results into the _devices registry (identity-preserving).
 --- Calls callback(devices) when all modules have reported.
+--- `opts.resume(fn)` runs the merge (default: vim.schedule; the workspace
+--- daemon passes a model segment of the scan's request); with
+--- `opts.cancelled()` true by then, nothing is merged and `callback` is not
+--- called.
 --- @param callback? fun(devices: loomworks.Device[])
-function Workspace:scan_devices(callback)
+--- @param opts? { resume?: fun(fn: fun()), cancelled?: fun(): boolean }
+function Workspace:scan_devices(callback, opts)
     -- Collect modules that support devices with their tool_data.
     -- For each module, find a tool_data entry that has meaningful fields
     -- (at minimum, non-empty). Source preference:
@@ -1908,7 +2090,12 @@ function Workspace:scan_devices(callback)
             end
             pending = pending - 1
             if pending == 0 then
-                vim.schedule(function()
+                local resume = opts and opts.resume or vim.schedule
+                resume(function()
+                    if opts and opts.cancelled and opts.cancelled() then
+                        self._device_scan_state = "done"
+                        return
+                    end
                     self:_merge_device_results(all_results)
                     self._device_scan_state = "done"
                     self._core._deps.events.emit("devices_changed", self:devices())
@@ -1956,22 +2143,43 @@ end
 --- @field exclusive boolean true if an exclusive op is running
 --- @field shared_count number number of concurrent shared ops
 --- @field queue { fn: function, lock_type: "exclusive"|"shared" }[]
+--- @field dir string the normalized spelling the entry was created with (display)
+--- @field spellings table<string, true> normalized spellings it was taken by
+
+--- Find the lock entry of a build directory (any spelling). Entries are
+--- keyed by `_build_dir_identity` (spec §4.6), so one folder spelled two
+--- ways is one lock; a spelling the entry was taken by also finds it, so a
+--- release still matches if the identity moved meanwhile (a link removed).
+--- @param dir string build directory path (any spelling)
+--- @return loomworks.BuildDirLock|nil lock, string key
+function Workspace:_find_lock(dir)
+    local locks = self._build_dir_locks
+    local key = self:_build_dir_identity(dir)
+    if locks[key] then return locks[key], key end
+    local n = self._core._deps.normalize(dir)
+    for k, lock in pairs(locks) do
+        if lock.spellings and lock.spellings[n] then return lock, k end
+    end
+    return nil, key
+end
 
 --- Get or create a lock entry for a build directory.
---- @param dir string normalized build directory path
---- @return loomworks.BuildDirLock
+--- @param dir string build directory path (any spelling)
+--- @return loomworks.BuildDirLock lock, string key
 function Workspace:_get_lock(dir)
-    local lock = self._build_dir_locks[dir]
+    local lock, key = self:_find_lock(dir)
+    local n = self._core._deps.normalize(dir)
     if not lock then
-        lock = { exclusive = false, shared_count = 0, queue = {} }
-        self._build_dir_locks[dir] = lock
+        lock = { exclusive = false, shared_count = 0, queue = {}, dir = n, spellings = {} }
+        self._build_dir_locks[key] = lock
     end
-    return lock
+    lock.spellings[n] = true
+    return lock, key
 end
 
 --- Try to acquire a build dir lock. If the lock can be acquired immediately,
 --- calls fn() and returns true. Otherwise queues fn for later and returns false.
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling; locks go by identity)
 --- @param lock_type "exclusive"|"shared" exclusive for configure/delete/clean, shared for build
 --- @param fn function called when lock is acquired (immediately or dequeued)
 --- @return boolean acquired true if lock was acquired immediately
@@ -1998,10 +2206,10 @@ function Workspace:acquire_build_dir_lock(dir, lock_type, fn)
 end
 
 --- Release a build dir lock and dequeue the next compatible operation(s).
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @param lock_type "exclusive"|"shared"
 function Workspace:release_build_dir_lock(dir, lock_type)
-    local lock = self._build_dir_locks[dir]
+    local lock, key = self:_find_lock(dir)
     if not lock then return end
 
     if lock_type == "shared" then
@@ -2011,7 +2219,7 @@ function Workspace:release_build_dir_lock(dir, lock_type)
     end
 
     -- Dequeue: run as many compatible queued items as possible
-    self:_dequeue_build_dir_lock(dir)
+    self:_dequeue_build_dir_lock(key)
 end
 
 --- Acquire the cross-process file lock for a build dir, refcounted
@@ -2020,37 +2228,165 @@ end
 --- complements the in-process queue lock above — together they serialize a
 --- build dir both within this process and across processes (editor + CLI).
 --- Fail-fast: returns (false, reason) when another live process holds it.
---- @param dir string normalized build dir
+--- @param dir string build dir (any spelling; held by identity, spec §4.6)
 --- @param action string "configure"|"build"|"clean"
 --- @return boolean ok, string|nil reason
 function Workspace:_acquire_file_lock(dir, action)
     self._build_dir_file_locks = self._build_dir_file_locks or {}
-    local entry = self._build_dir_file_locks[dir]
+    local key = self:_file_lock_key(dir)
+    local entry = self._build_dir_file_locks[key]
     if entry then
         entry.refs = entry.refs + 1
+        if entry.spellings then entry.spellings[self._core._deps.normalize(dir)] = true end
         return true
     end
-    local handle, err = require("loomworks.build_lock").acquire(dir, action)
+    local build_lock = require("loomworks.op_lock").locks(self._core._deps, self.root).build
+    local handle, err = build_lock.acquire(dir, action,
+        { what = "build directory " .. self:_display_build_dir(dir), command = "lw build",
+          unlock = self:_display_build_dir(dir) })
     if not handle then return false, err end
-    self._build_dir_file_locks[dir] = { handle = handle, refs = 1 }
+    self._build_dir_file_locks[key] = { handle = handle, refs = 1, build = build_lock,
+        spellings = { [self._core._deps.normalize(dir)] = true } }
+    if handle.reclaimed then
+        local line = self:_recover_interrupted_build_dir(dir, handle.reclaimed)
+        if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
+    end
     return true
 end
 
+--- A build directory as messages name it: relative to the workspace root when
+--- it lies under it, else as given.
+--- @param dir string
+--- @return string
+function Workspace:_display_build_dir(dir)
+    local d = tostring(dir):gsub("\\", "/")
+    -- A normalized (case-folded) path is shown in its recorded casing.
+    local norm = self._core and self._core._deps and self._core._deps.normalize
+    if norm then
+        local key = norm(d)
+        for _, unit in pairs(self._config_units or {}) do
+            local v = unit.build_dir_value
+            if v and norm(v) == key then d = tostring(v):gsub("\\", "/"); break end
+        end
+    end
+    local root = tostring(self.root or ""):gsub("\\", "/"):gsub("/+$", "")
+    local nd, nr = d, root
+    if vim.fn.has("win32") == 1 then nd, nr = d:lower(), root:lower() end
+    if nr ~= "" and nd:sub(1, #nr + 1) == nr .. "/" then return d:sub(#root + 2) end
+    -- The same directory spelled differently (8.3 short vs long name on
+    -- Windows): relative by the canonical forms, shown with `d`'s own tail.
+    if nr ~= "" and self._canonicalize_boundary_path then
+        local cd, cr = self:_canonicalize_boundary_path(d), self:_canonicalize_boundary_path(root)
+        if cd:sub(1, #cr + 1) == cr .. "/" then
+            local n = select(2, cd:sub(#cr + 2):gsub("[^/]+", ""))
+            local segs = {}
+            for s in d:gmatch("[^/]+") do segs[#segs + 1] = s end
+            if n > 0 and n <= #segs then return table.concat(segs, "/", #segs - n + 1) end
+        end
+    end
+    return d
+end
+
+--- Recover the state of a build directory whose lock was reclaimed from a
+--- dead or killed holder (spec §19.5 step 5), by the step its lock record
+--- names: `configure` — the units read `unconfigured` (a half-written
+--- configure cannot be trusted; the directory is kept); `build` — units that
+--- read built read not built (`configured`, the configure record kept, no
+--- forced reconfigure); any other operation (clean, reset, delete, nuke) —
+--- unchanged: a deletion already recorded `unknown` (§5.7). Persists the cache
+--- and returns the line to report, or nil when nothing was recorded there.
+--- @param dir string the build directory (any form)
+--- @param reclaimed table the reclaimed lock record
+--- @return string|nil line
+function Workspace:_recover_interrupted_build_dir(dir, reclaimed)
+    local lock_record = require("loomworks.lock_record")
+    local op = lock_record.operation_of(reclaimed)
+    -- Canonical form on both sides: a lock path and a cached build_dir may
+    -- spell one directory differently (8.3 short vs long name on Windows).
+    local canon_cache = {}
+    local function norm(p)
+        if canon_cache[p] == nil then canon_cache[p] = self:_canonicalize_boundary_path(p) end
+        return canon_cache[p]
+    end
+    local key = norm(dir)
+    local who = string.format("%s (pid %s)", lock_record.holder_text(reclaimed),
+        tostring(reclaimed.pid or "?"))
+    local shown = self:_display_build_dir(dir)
+    if op ~= "configure" and op ~= "build" then
+        return string.format("reclaimed %s from %s, which had stopped", shown, who)
+    end
+    local changed = false
+    local function apply(obj, state_field)
+        local st = obj[state_field]
+        if op == "configure" then
+            if st ~= nil and st ~= "unconfigured" and st ~= "unknown" then
+                obj[state_field] = nil
+                obj.last_configured = nil
+                obj.last_built = nil
+                changed = true
+            end
+        elseif st == "built" or st == "failed_build" then
+            obj[state_field] = "configured"
+            obj.last_built = nil
+            changed = true
+        end
+    end
+    local seen_bd = {}
+    for _, unit in pairs(self._config_units or {}) do
+        local bdv = unit.build_dir_value or (unit._build_dir and unit._build_dir.path)
+        if bdv and norm(bdv) == key then
+            apply(unit, "state_value")
+            if unit._build_dir then seen_bd[unit._build_dir] = true; apply(unit._build_dir, "state") end
+        end
+    end
+    for _, bd in pairs(self._build_dirs or {}) do
+        if not seen_bd[bd] and bd.path and norm(bd.path) == key then apply(bd, "state") end
+    end
+    local result = op == "configure" and "unconfigured" or "not built"
+    if changed then
+        self:_save_cache()
+        pcall(self._core._deps.events.emit, "active_set_changed", self._active_set)
+    end
+    local line = string.format("reclaimed %s from %s, interrupted during %s — %s", shown, who, op,
+        changed and ("its state now reads " .. result) or "no build state to recover")
+    pcall(self._core._deps.log.info, self._core._deps.log, "%s", line)
+    return line
+end
+
+--- The key of a build dir in `_build_dir_file_locks`: its identity
+--- (`_build_dir_identity`, spec §4.6), or the key of an entry taken by this
+--- very spelling (so a release matches even if the identity moved meanwhile).
+--- @param dir string build dir (any spelling) or a key
+--- @return string
+function Workspace:_file_lock_key(dir)
+    local locks = self._build_dir_file_locks or {}
+    if locks[dir] then return dir end
+    local key = self:_build_dir_identity(dir)
+    if locks[key] then return key end
+    local n = self._core._deps.normalize(dir)
+    for k, e in pairs(locks) do
+        if e.spellings and e.spellings[n] then return k end
+    end
+    return key
+end
+
 --- Release one reference to the cross-process file lock; frees it at zero refs.
---- @param dir string normalized build dir
+--- @param dir string build dir (any spelling) or the key `_deletion_build_locks` returned
 function Workspace:_release_file_lock(dir)
     local locks = self._build_dir_file_locks
-    local entry = locks and locks[dir]
+    if not locks then return end
+    local key = self:_file_lock_key(dir)
+    local entry = locks[key]
     if not entry then return end
     entry.refs = entry.refs - 1
     if entry.refs <= 0 then
-        require("loomworks.build_lock").release(entry.handle)
-        locks[dir] = nil
+        (entry.build or require("loomworks.build_lock")).release(entry.handle)
+        locks[key] = nil
     end
 end
 
 --- Dequeue and run compatible operations from the build dir lock queue.
---- @param dir string
+--- @param dir string the lock's key (`_find_lock`)
 function Workspace:_dequeue_build_dir_lock(dir)
     local lock = self._build_dir_locks[dir]
     if not lock or #lock.queue == 0 then
@@ -2083,18 +2419,18 @@ function Workspace:_dequeue_build_dir_lock(dir)
 end
 
 --- Check whether a build dir has any queued operations waiting.
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @return boolean
 function Workspace:has_queued_operations(dir)
-    local lock = self._build_dir_locks[dir]
+    local lock = self:_find_lock(dir)
     return lock ~= nil and #lock.queue > 0
 end
 
 --- Check whether a build dir currently has an active lock (exclusive or shared).
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @return boolean locked, string|nil lock_type
 function Workspace:is_build_dir_locked(dir)
-    local lock = self._build_dir_locks[dir]
+    local lock = self:_find_lock(dir)
     if not lock then return false, nil end
     if lock.exclusive then return true, "exclusive" end
     if lock.shared_count > 0 then return true, "shared" end
@@ -2239,6 +2575,53 @@ function Workspace:tool_entries_for(set_name, mod_types)
     return entries
 end
 
+--- The kit toolchains of the resolved SDKs for the module types
+--- `mod_types` (API.md §11 `tool_choices`: after the SDKs' own entries),
+--- each a module's toolchain entry carrying `sdk_key`, the key of the SDK
+--- that provides it; sorted by SDK, then module type, then key. Each entry
+--- carries the existing profile of that set and toolchain, if any.
+--- @param set_name string
+--- @param mod_types table<string, true>
+--- @return loomworks.ToolEntry[]
+function Workspace:kit_tool_entries_for(set_name, mod_types)
+    local merge_mod = self._core._deps.merge
+    local profiles_by_key = {}
+    for _, p in pairs(self._profiles) do profiles_by_key[p.key] = p end
+    local entries = {}
+    for _, sdk in ipairs(self._sdks) do
+        if sdk:is_resolved() then
+            local kits = {}
+            for mod_type, tools in pairs(self._tools_by_type or {}) do
+                if mod_types[mod_type] then
+                    for _, tool in ipairs(tools) do
+                        if tool.tool_key and tool.sdk == sdk then
+                            kits[#kits + 1] = { mod_type = mod_type, tool = tool }
+                        end
+                    end
+                end
+            end
+            table.sort(kits, function(a, b)
+                if a.mod_type ~= b.mod_type then return a.mod_type < b.mod_type end
+                return a.tool.tool_key < b.tool.tool_key
+            end)
+            for _, k in ipairs(kits) do
+                local pkey = merge_mod.profile_key(set_name, { [k.mod_type] = { key = k.tool.tool_key } })
+                entries[#entries + 1] = {
+                    profile_key = pkey,
+                    tool_key = k.tool.tool_key,
+                    tool_data = k.tool.tool_data,
+                    tool_label = k.tool.tool_label,
+                    tool_mod_type = k.mod_type,
+                    sdk_key = sdk.key,
+                    cached = true,
+                    profile = profiles_by_key[pkey],
+                }
+            end
+        end
+    end
+    return entries
+end
+
 --- Get detected tools organized by module type.
 --- @return table<string, loomworks.DetectedTool[]>
 function Workspace:get_tools_by_type()
@@ -2297,7 +2680,11 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
     end
 
     local changed = false
+    -- A configuration refused its build directory (spec §1.7) gets no unit
+    -- and never re-populates the owner's.
+    local refused = self:_build_dir_refusals()
     for project, config in pairs(config_set.mappings) do
+        if refused[project] and refused[project][config] then goto continue end
         local variant = config.name
         -- tool_key applies only to projects whose module type matches the tool
         local project_tool_key = tools and tools[project.type]
@@ -2306,6 +2693,9 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
 
         -- Compute the unit id (spec §1.7 "Unit identity")
         local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
+        -- (None for a configuration the module reported an `error` for, §8
+        -- `info`: no ConfigUnit exists for it.)
+        if not rel_key then goto continue end
 
         -- Ensure ConfigUnit exists (or reuse stale one from prior deletion)
         local existing_unit = nil
@@ -2321,8 +2711,12 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
         end
 
         if existing_unit then
-            -- Re-populate stale unit (e.g. after deletion cleared state)
-            if not existing_unit._configuration then
+            -- Re-populate stale unit (e.g. after deletion cleared state) —
+            -- only this project's: another project's unit at this id is its
+            -- configuration's, which keeps the directory (§1.7).
+            local unit_pk = existing_unit._project and existing_unit._project.key
+                or existing_unit._init_project_key
+            if not existing_unit._configuration and (unit_pk == nil or unit_pk == project.key) then
                 existing_unit:_apply({
                     project = project,
                     tool = tool_obj,
@@ -2342,6 +2736,7 @@ function Workspace:_materialize_from_data(config_set, tool_entry)
             self._config_units[#self._config_units + 1] = unit
             changed = true
         end
+        ::continue::
     end
     if profile then
         self:_rebuild_profile_projects_for(profile)
@@ -2429,6 +2824,45 @@ end
 --- module (e.g. android) doesn't require touching this collector
 --- — the per-module shape stays in the per-class predicate.
 ---
+--- Program-bearing fields ignored in loomworks.json that the working copy does
+--- not supply in their place (spec §17.6): what the status page's Trust row
+--- counts and a build's trust notice names (§17.10).
+--- @return table[] ignored entries `{ project, kind, path, label, detail, ... }`
+function Workspace:ignored_program_settings()
+    return require("loomworks.program_fields").active(self._shared_ignored, self._merged_config)
+end
+
+--- The load's warnings and errors as persistent workspace diagnostics
+--- (core daemon.md §19.13 "Load warnings"): `source = "load"`, the message
+--- without the notification's `loomworks: ` prefix, in the order raised.
+--- Kept apart from the structural `diagnostics()` (which `lw status` lists
+--- and `--check` gates on): the CLI prints them as the load's notes. A note a
+--- structural diagnostic already shows (`in_diagnostics`) is left out.
+--- @return loomworks.Diagnostic[]
+function Workspace:load_diagnostics()
+    local out = {}
+    for _, n in ipairs(self._load_notes or {}) do
+        if not n.in_diagnostics then
+            out[#out + 1] = { severity = n.severity, source = "load",
+                message = (n.text:gsub("^loomworks: ", "")) }
+        end
+    end
+    return out
+end
+
+--- The load's warnings and errors as the notifications they were raised as
+--- (text and role, §19.15 "Roles and verbose"): what a request that uses
+--- this workspace carries in its reply notes.
+--- @return string[] texts, string[] roles
+function Workspace:load_notes()
+    local texts, roles = {}, {}
+    for _, n in ipairs(self._load_notes or {}) do
+        texts[#texts + 1] = n.text
+        roles[#roles + 1] = n.severity == "error" and "fail" or "warn"
+    end
+    return texts, roles
+end
+
 --- Sorted by `(severity, source)` so the order is stable across
 --- calls and severities cluster.
 --- @return loomworks.Diagnostic[]
@@ -2794,21 +3228,329 @@ function Workspace:diagnostics()
     return result
 end
 
+--- `loomworks.view.Workspace/1`'s state over this workspace (spec §19.13 "The
+--- workspace view"; loomworks.view_state.workspace) with this host's file
+--- checks (`published`, the stray build directories) and the caller's `id` /
+--- `bind`.
+--- `busy`: whether the caller runs an operation on a profile itself (the
+--- daemon's own tasks, API.md §14.4), beside the profile's own operations.
+--- @param opts? { id?: fun(obj: table): string, bind?: fun(row: table, obj: table), busy?: fun(profile: loomworks.Profile): boolean }
+--- @return table
+function Workspace:view_workspace(opts)
+    opts = opts or {}
+    local uv = vim.uv or vim.loop
+    return require("loomworks.view_state").workspace(self, {
+        published = uv.fs_stat(self.root .. "/loomworks.json") ~= nil,
+        stray_dirs = self:_view_stray_build_dirs(),
+        id = opts.id, bind = opts.bind, busy = opts.busy,
+    })
+end
+
+--- Both comparable forms of `dir`: its plain normalized spelling and its
+--- canonical one (`_canonicalize_boundary_path`); one entry when they agree.
+--- @param dir string
+--- @return string[]
+function Workspace:_path_forms(dir)
+    local n = self._core._deps.normalize(dir)
+    local c = self:_canonicalize_boundary_path(dir)
+    if n == c then return { n } end
+    return { n, c }
+end
+
+--- Every form (`_path_forms`) of every build dir referenced by a ConfigUnit,
+--- except a dir whose identity (`_build_dir_identity`) is in `exempt`.
+--- The normalized spelling is kept beside the canonical form because a build
+--- dir reached through a link/junction canonicalizes OUTSIDE `.nvim/build`,
+--- where only its recorded spelling still sits under its parent. Resolves
+--- (realpath) once per unit per call.
+--- @param exempt? table<string, true> build-dir identities to leave out
+--- @return string[]
+function Workspace:_live_build_dir_forms(exempt)
+    local known, seen = {}, {}
+    for _, unit in pairs(self._config_units) do
+        local bd = unit:build_dir()
+        if bd and bd ~= "" and not (exempt and exempt[self:_build_dir_identity(bd)]) then
+            for _, f in ipairs(self:_path_forms(bd)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
+--- The directories a stray scan treats as known (`find_stray_build_dirs`):
+--- every form of each live build dir (`_live_build_dir_forms`) and of each
+--- held one (`_held_build_dirs`: an invalid configuration's entry), so the
+--- directory of a configuration that is only temporarily invalid is never a
+--- stray either.
+--- @return string[]
+function Workspace:_stray_known_forms()
+    local known = self:_live_build_dir_forms()
+    local seen = {}
+    for _, f in ipairs(known) do seen[f] = true end
+    for _, bd in ipairs(self:_held_build_dirs()) do
+        if bd.path and bd.path ~= "" then
+            for _, f in ipairs(self:_path_forms(bd.path)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
+--- Every form (`_path_forms`) of every held build dir (`_held_build_dirs`:
+--- an invalid configuration's entry). A deletion other than the reset of all
+--- treats these like live build dirs (deletion safety) — including an entry
+--- of the batch itself that became held after the deletion was planned, so it
+--- keeps its own tree.
+--- @return string[]
+function Workspace:_held_build_dir_forms()
+    local known, seen = {}, {}
+    for _, bd in ipairs(self:_held_build_dirs()) do
+        if bd.path and bd.path ~= "" then
+            for _, f in ipairs(self:_path_forms(bd.path)) do
+                if not seen[f] then seen[f] = true; known[#known + 1] = f end
+            end
+        end
+    end
+    return known
+end
+
+--- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
+--- of each side, separator-bounded) — such a dir must never be deleted as
+--- stray or orphaned. "Lies inside" only counts for a live dir that is not a
+--- strict ancestor of `<root>/.nvim/build`: an in-source unit (build_dir ==
+--- workspace root, allowed by `_pre_configure_reset`) contains the whole build
+--- tree without owning any of it, and must not shield every stray dir.
+--- @param dir string
+--- @param known? string[] precomputed `_live_build_dir_forms()`
+--- @return boolean
+function Workspace:_overlaps_live_build_dir(dir, known)
+    known = known or self:_live_build_dir_forms()
+    local function is_ancestor(a, b) return b:sub(1, #a + 1) == a .. "/" end
+    local build_roots = self:_path_forms(self.root .. "/.nvim/build")
+    local function contains_build_root(k)
+        for _, br in ipairs(build_roots) do
+            if is_ancestor(k, br) then return true end
+        end
+        return false
+    end
+    for _, c in ipairs(self:_path_forms(dir)) do
+        for _, k in ipairs(known) do
+            if k == c or is_ancestor(c, k)
+                or (is_ancestor(k, c) and not contains_build_root(k)) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+--- Find build directories on disk under {root}/.nvim/build/ that are not
+--- referenced by any cache entry. Uses top-down pruning: reports the
+--- highest-level directory whose entire subtree contains no cache entries.
+--- Directory identity is compared through every form of each side: the plain
+--- normalized spelling AND the canonical one (`_canonicalize_boundary_path`:
+--- 8.3 short<->long + case reconciled, links resolved). A unit's build dir can
+--- be recorded under another spelling of the same location than `self.root`
+--- (an 8.3 short temp path on a Windows runner); compared by spelling alone,
+--- a live build dir's parent looks stray and orphan cleanup would delete it.
+--- Reported paths keep the scanned (normalized) spelling under `self.root`.
+--- Always a fresh scan (deletion safety reads it); the view reads it through
+--- `_view_stray_build_dirs`.
+--- @param opts? { known?: string[], on_list?: fun(dir: string) } `known`:
+---   precomputed `_live_build_dir_forms()`; `on_list(dir)`: called for every
+---   directory whose children the scan lists (the build root first), just
+---   before it lists them
+--- @return string[] absolute paths of stray directories
+function Workspace:find_stray_build_dirs(opts)
+    local uv = vim.uv or vim.loop
+    local build_root = self.root .. "/.nvim/build"
+    local normalize = self._core._deps.normalize
+    local on_list = opts and opts.on_list
+
+    -- Every form of every build dir referenced by a ConfigUnit object, and
+    -- of every held one (an invalid configuration's, `_held_build_dirs`)
+    local known_dirs = opts and opts.known or self:_stray_known_forms()
+    local function forms(dir) return self:_path_forms(dir) end
+
+    -- Build a set for exact match and a list for prefix checks
+    local known_set = {}
+    for _, d in ipairs(known_dirs) do known_set[d] = true end
+
+    --- Check if any known cache dir is a proper child of the candidate.
+    --- @param candidate string normalized dir path
+    --- @return boolean
+    local function has_cache_entry_below(candidate)
+        local prefix = candidate .. "/"
+        for _, known in ipairs(known_dirs) do
+            if known:sub(1, #prefix) == prefix then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Top-down walk:
+    -- - If this dir IS a cache entry → stop (it's a valid build dir).
+    -- - If no cache entry lives below it → report as stray, stop.
+    -- - Otherwise → recurse into children.
+    local stray = {}
+    local function scan(dir)
+        local normalized = normalize(dir)
+        local fs = forms(dir)
+        for _, f in ipairs(fs) do
+            if known_set[f] then
+                return -- this dir is a known build dir, don't touch it
+            end
+        end
+        local below = false
+        for _, f in ipairs(fs) do
+            if has_cache_entry_below(f) then below = true; break end
+        end
+        if not below then
+            stray[#stray + 1] = normalized
+            return
+        end
+        -- Some cache entry lives deeper — recurse into children
+        if on_list then on_list(dir) end
+        local handle = uv.fs_scandir(dir)
+        if not handle then return end
+        while true do
+            local name, ftype = uv.fs_scandir_next(handle)
+            if not name then break end
+            if ftype == "directory" then
+                scan(dir .. "/" .. name)
+            end
+        end
+    end
+
+    local norm_root = normalize(build_root)
+    if on_list then on_list(build_root) end
+    local stat = uv.fs_stat(build_root)
+    if stat and stat.type == "directory" then
+        -- Scan each top-level child (not the build root itself)
+        local handle = uv.fs_scandir(build_root)
+        if handle then
+            while true do
+                local name, ftype = uv.fs_scandir_next(handle)
+                if not name then break end
+                if ftype == "directory" then
+                    scan(norm_root .. "/" .. name)
+                end
+            end
+        end
+    end
+
+    table.sort(stray)
+    return stray
+end
+
+--- A directory's modification stamp (its children added or removed change
+--- it), or false when it does not exist.
+--- @param dir string
+--- @return string|false
+local function dir_stamp(dir)
+    local st = (vim.uv or vim.loop).fs_stat(dir)
+    if not st then return false end
+    return st.type .. ":" .. st.mtime.sec .. "." .. st.mtime.nsec
+end
+
+--- The stray build directories for the workspace view (`view_workspace`):
+--- `find_stray_build_dirs`, its result reused while nothing it depends on
+--- changed — the same live build dir forms, and the same modification stamp
+--- of every directory the scan listed (a directory added or removed there
+--- changes its parent's stamp). The view is rebuilt at every check (the
+--- daemon's `views.check`, the status page), so the disk walk runs only
+--- when its answer can differ. Deletion safety never reads this cache.
+--- @return string[]
+function Workspace:_view_stray_build_dirs()
+    local known = self:_stray_known_forms()
+    local sorted = vim.list_slice(known)
+    table.sort(sorted)
+    local sig = table.concat(sorted, "\0")
+    local c = self._stray_cache
+    if c and c.sig == sig then
+        local same = true
+        for i, dir in ipairs(c.dirs) do
+            if dir_stamp(dir) ~= c.stamps[i] then same = false; break end
+        end
+        if same then return vim.list_slice(c.stray) end
+    end
+    -- Each directory is stamped just before the scan lists it: a child
+    -- created after the listing changes the stamp, so it is not missed.
+    local visited, stamps = {}, {}
+    local stray = self:find_stray_build_dirs({ known = known, on_list = function(dir)
+        visited[#visited + 1] = dir
+        stamps[#stamps + 1] = dir_stamp(dir)
+    end })
+    self._stray_cache = { sig = sig, dirs = visited, stamps = stamps, stray = stray }
+    return vim.list_slice(stray)
+end
+
+--- The BuildDirs of configurations that still exist but are invalid: the
+--- module reported an `error` for them (§8 `info`), so no ConfigUnit adopts
+--- their cache entry. Such an entry is held for the configuration — not an
+--- orphan, its directory not a stray — until the configuration is valid
+--- again and adopts it (deletion safety: never offer to delete the build
+--- directory of a configuration that is only temporarily invalid).
+--- Matched on the stable (project_key, config_key) identity
+--- (`find_cache_entry_for`).
+--- @return loomworks.BuildDir[]
+function Workspace:_held_build_dirs()
+    local invalid = {}
+    for _, project in pairs(self._projects or {}) do
+        if not project._removed then
+            for _, cfg in pairs(project._configurations or {}) do
+                if not cfg._removed and cfg.module_error and cfg:module_error() then
+                    invalid[#invalid + 1] = { project = project, name = cfg.name }
+                end
+            end
+        end
+    end
+    if #invalid == 0 then return {} end
+    local build_config_key = self._core._deps.merge.build_config_key
+    local out = {}
+    for _, bd in pairs(self._build_dirs) do
+        for _, ic in ipairs(invalid) do
+            if bd.project_key == ic.project.key then
+                local tool_key = bd.tool_snapshot and bd.tool_snapshot.key or nil
+                if bd.config_key == ic.name or bd.variant == ic.name
+                        or bd.config_key == build_config_key(ic.name, tool_key) then
+                    out[#out + 1] = bd
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
 --- Get orphaned BuildDirs: build directories with state not referenced by
 --- any ConfigUnit (and therefore not referenced by any profile).
---- Orphaned BuildDirs are domain objects, not raw cache entries.
+--- Orphaned BuildDirs are domain objects, not raw cache entries. A held
+--- BuildDir (`_held_build_dirs`: a configuration that still exists but the
+--- module reported an `error` for) is not orphaned, except for a caller that
+--- removes every build dir (`opts.include_held`: the reset of all, §16.30).
+--- @param opts? { include_held?: boolean }
 --- @return loomworks.OrphanedConfig[]
-function Workspace:get_orphaned_configs()
+function Workspace:get_orphaned_configs(opts)
     -- Build set of BuildDirs that are live (referenced by a ConfigUnit)
     local live_bds = {}
     for _, unit in pairs(self._config_units) do
         if unit._build_dir then live_bds[unit._build_dir] = true end
     end
+    -- An invalid configuration's entry is held, not orphaned (unless the
+    -- caller removes every build dir, `opts.include_held`).
+    local held = {}
+    if not (opts and opts.include_held) then
+        for _, bd in ipairs(self:_held_build_dirs()) do held[bd] = true end
+    end
 
     -- Find BuildDirs not referenced by any ConfigUnit
     local result = {}
     for _, bd in pairs(self._build_dirs) do
-        if not live_bds[bd] and bd:has_state() then
+        if not live_bds[bd] and not held[bd] and bd:has_state() then
             result[#result + 1] = {
                 project_key = bd.project_key,
                 config_key = bd.config_key or bd.variant,
@@ -2871,6 +3613,10 @@ function Workspace:create_operation(profile, action, units, target_states, opts)
         action = action,
         operation = op,
     })
+
+    -- Nothing to run (every ProfileProject refused, core §5.4): no unit will
+    -- report, so it ends (failed) now.
+    if #units == 0 then op:_check_completion() end
 
     return op
 end
@@ -3008,7 +3754,7 @@ function Workspace:get_build_dir_locks_info()
     for dir, lock in pairs(self._build_dir_locks or {}) do
         if lock.exclusive or lock.shared_count > 0 or #lock.queue > 0 then
             out[#out + 1] = {
-                dir = dir,
+                dir = lock.dir or dir,
                 exclusive = lock.exclusive,
                 shared_count = lock.shared_count,
                 queue_depth = #lock.queue,
@@ -3029,16 +3775,17 @@ end
 --- went sideways and a lock got stuck without a live holder. The UI
 --- surfaces it as the "force release" action in the Tasks section.
 ---
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @return boolean released true if there was a lock to release
 function Workspace:force_release_build_dir_lock(dir)
-    local lock = self._build_dir_locks and self._build_dir_locks[dir]
+    if not self._build_dir_locks then return false end
+    local lock, key = self:_find_lock(dir)
     if not lock then return false end
     lock.exclusive = false
     lock.shared_count = 0
     -- Drain whatever the dequeuer is willing to start. This also
     -- garbage-collects the entry if nothing's left waiting.
-    self:_dequeue_build_dir_lock(dir)
+    self:_dequeue_build_dir_lock(key)
     return true
 end
 
@@ -3196,6 +3943,9 @@ function Workspace:record_task_result(result)
                 dir_rel = cache_mod.relative_build_dir(result.build_dir, self.root)
                 dir_abs = result.build_dir
             end
+            -- No build dir (a configuration the module reported an `error`
+            -- for, §8 `info`): no ConfigUnit to record against.
+            if not dir_rel then return end
             rel_key = cache_mod.unit_id(dir_rel, shared, result.configuration_key)
         elseif result.build_dir then
             rel_key = cache_mod.relative_build_dir(result.build_dir, self.root)
@@ -3536,10 +4286,28 @@ function Workspace._nudge_lsp(build_dir)
     end
 end
 
+--- Whether this model generates the owned LSP databases (§8.4
+--- `refresh_lsp_database`; daemon.md §19.16 "LSP configuration"): always —
+--- a `daemon`-mode editor holds no model (step 6b-α), so every model is the
+--- daemon's, the CLI's or the deprecated in-process editor's, and each
+--- generates them. Modules ask it before a generation they schedule on their
+--- own (cmake's `lsp_configs`).
+--- @return boolean
+function Workspace:generates_lsp_databases()
+    return true
+end
+
 --- @param unit loomworks.ConfigUnit
 --- @param on_settled? fun() called once when the primary DB refresh settles
 function Workspace:_refresh_lsp_database_for(unit, on_settled)
     if not unit then return end
+    -- Not this model's to generate (a daemon-mode editor, §19.16 "LSP
+    -- configuration"): nothing runs, nothing is watched; it settles at once
+    -- (the model's own readiness takes no part in any LSP decision there).
+    if not self:generates_lsp_databases() then
+        if on_settled then on_settled() end
+        return
+    end
     local project = unit._project
     local mod = project and project._module and project._module.impl or nil
     if not mod or not mod.refresh_lsp_database then return end
@@ -3564,7 +4332,12 @@ function Workspace:_refresh_lsp_database_for(unit, on_settled)
     -- the generic LSP entry point — no module-type branching here.
     local function on_db_changed(changed)
         if not changed then return end
+        -- Raise the entry's `db_rev` (§19.20) before the nudge re-reads it.
+        require("loomworks.lsp_config").bump_db_rev(self, build_dir)
         Workspace._nudge_lsp(build_dir)
+        -- The workspace daemon's `LspConfig/1.changed` (§19.20); nothing
+        -- listens in the editor.
+        self._core._deps.events.emit("lsp_database_written", { workspace = self, db_dir = build_dir })
     end
     -- The primary refresh drives both the nudge and (when the caller asked) the
     -- readiness gate. `on_settled` fires once regardless of `changed`, since a
@@ -3612,7 +4385,8 @@ end
 --- @field source string|nil representative compiled source of the borrowed group, or nil
 
 --- @class loomworks.CompileCommandResult
---- @field status "ok"|"no_profile"|"no_project"|"unowned"|"unattributed"
+--- @field status "ok"|"no_profile"|"no_project"|"unowned"|"unattributed"|"refused" ("refused": `daemon` mode, spec §19.16 "Public API")
+--- @field message string|nil why it was refused
 --- @field entry { directory: string, file: string, arguments: string[], origin: loomworks.CompileCommandOrigin }|nil resolved command on "ok"
 --- @field project loomworks.Project|nil owning project (set once one is resolved)
 
@@ -3689,69 +4463,130 @@ end
 --- @param build_dir_key string relative build dir key
 --- @param on_done? function callback after deletion
 --- Delete an orphaned build directory. Returns a Future.
---- Runs through `_run_deletion` like the bulk orphan cleanup (spec §4.6,
---- §5.7): the tree is kept (only the entry is dropped) when a live unit still
---- references the dir (shared refs) or the dir is, contains or lies inside a
---- live build dir under any spelling (`_overlaps_live_build_dir`, e.g. an
---- 8.3 short name, or a build-dir template that gained a level); otherwise the
---- entry is `unknown` on disk before the removal and leaves the cache only
---- after the removal succeeded. A dir outside the workspace root is never
---- removed; its entry is dropped.
---- Resolves the outcome: "removed" (tree removed, entry dropped), "kept"
---- (tree kept as it holds a live build dir, entry dropped), "dropped" (no
---- removable dir — none recorded, or outside the workspace root — entry
---- dropped) or "failed" (removal failed, reported; the entry stays `unknown`).
 --- @param build_dir_key string
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
-function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
+--- Crash-safe like `_run_deletion` (Deletion Safety rule 4, spec §4.7): the
+--- entry says `unknown` on disk before the tree is removed, and it leaves the
+--- cache only after the removal succeeded; a failed or stopped removal keeps
+--- it (`unknown`) and resolves `false`. `opts.stop` (the daemon's
+--- cancellation, §19.15 "Reset") is asked before the removal starts and
+--- during it. Runs through `_run_deletion`, so the tree is kept (the entry
+--- still dropped) when a live unit references the dir under any spelling or
+--- the dir contains / lies inside a live build dir — like the bulk cleanup.
+--- `opts.overlap_exempt` / `opts.report`: as `_run_deletion`'s.
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
+function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
+    return self:_delete_orphan_unlocked(self:find_build_dir(build_dir_key), on_done, opts)
+end
+
+--- `_delete_orphaned_build_dir_unlocked` on the BuildDir object itself (a
+--- caller that resolved it at its input boundary, `Maintenance/1`'s
+--- `{ build_dir }` target through loomworks.deletion_plan). `bd` nil: the
+--- entry is gone; nothing is removed. A `bd` that is held at execution
+--- (`_held_build_dirs`, unless `opts.include_held`) is not an orphan any more:
+--- tree and entry are kept, reported as kept `"held"`.
+--- @param bd loomworks.BuildDir|nil
+--- @param on_done? function
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
+--- @return loomworks.Future
+function Workspace:_delete_orphan_unlocked(bd, on_done, opts)
     local future_mod = require("loomworks.future")
-    local bd = self:find_build_dir(build_dir_key)
+    local stop = opts and opts.stop or nil
+    -- Whether `bd` is held now (`_held_build_dirs`: its configuration
+    -- exists but turned invalid since the deletion was planned) — then it is
+    -- not an orphan: neither its tree nor its entry is removed.
+    local function held_now()
+        if opts and opts.include_held then return false end
+        for _, h in ipairs(self:_held_build_dirs()) do
+            if h == bd then return true end
+        end
+        return false
+    end
+    local function drop()
+        if held_now() then return end
+        for i, b in ipairs(self._build_dirs) do
+            if b == bd then table.remove(self._build_dirs, i); break end
+        end
+    end
+    if bd and held_now() then
+        local dir = bd.path and self._core._deps.normalize(bd.path) or tostring(bd.rel_path)
+        self._core._deps.notify("loomworks: kept " .. dir
+            .. " — it is the build dir of an invalid configuration, not an orphan",
+            vim.log.levels.INFO)
+        local report = opts and opts.report or nil
+        if report then
+            report.kept = { { dir = dir, why = "held" } }
+            report.removed, report.removed_ids = {}, {}
+        end
+        if on_done then on_done() end
+        return future_mod.resolved(true)
+    end
     if bd then
-        local normalize = self._core._deps.normalize
-        local dir = bd.path and normalize(bd.path) or nil
-        local outcome = "removed"
-        if dir and not self:_validate_build_dir(dir, normalize(self.root)) then
-            dir, outcome = nil, "dropped"
-        end
-        if dir and self:_overlaps_live_build_dir(dir) then
-            self._core._deps.notify("loomworks: kept " .. dir
-                .. " — it holds a live build dir; only its orphaned entry is dropped",
-                vim.log.levels.INFO)
-            dir, outcome = nil, "kept"
-        end
-        if not dir and outcome == "removed" then outcome = "dropped" end
-        -- Runs only once every removal succeeded (`_run_deletion`), which
-        -- then saves the cache and resyncs the refs.
-        local removed = false
-        local ws = self
-        local function drop()
-            removed = true
-            for i, b in ipairs(ws._build_dirs) do
-                if b == bd then table.remove(ws._build_dirs, i); break end
+        if bd.path then
+            local abs_dir = self._core._deps.normalize(bd.path)
+            local safe_prefix = self._core._deps.normalize(self.root)
+            if self:_validate_build_dir(abs_dir, safe_prefix) then
+                if stop and stop() then
+                    if on_done then on_done() end
+                    return future_mod.resolved(false)
+                end
+                -- The bulk cleanup's path (`_run_deletion`): the dir is kept
+                -- when a live unit still references it under any spelling
+                -- (shared refs by `_build_dir_identity`, e.g. an 8.3 short
+                -- name) or when it contains / lies inside a live build dir
+                -- (`_overlaps_live_build_dir`, e.g. a template that gained a
+                -- level) — only the entry is dropped then. Otherwise the
+                -- entry is `unknown` on disk before the removal, leaves the
+                -- cache only after it succeeded, and its owned LSP database
+                -- follows the confirmed removal (§4.6, §5.7).
+                return self:_run_deletion({
+                    { project_key = bd.project_key, config_key = bd.config_key or bd.variant,
+                      build_dir = bd.path, build_dir_obj = bd, disposition = "clean" },
+                }, drop, on_done, nil, { stop = stop,
+                    overlap_exempt = opts and opts.overlap_exempt or nil,
+                    include_held = opts and opts.include_held or nil,
+                    report = opts and opts.report or nil })
             end
         end
-        return self:_run_deletion({
-            { project_key = bd.project_key, config_key = bd.config_key,
-              build_dir = dir, build_dir_obj = bd, disposition = "clean" },
-        }, drop, on_done):next(function()
-            return removed and outcome or "failed"
-        end)
+        -- No path, or one outside the workspace root: nothing is removed from
+        -- disk; the entry leaves the cache.
+        drop()
     end
 
     self:_save_cache()
     self._core._deps.events.emit("active_set_changed", self._active_set)
     if on_done then on_done() end
-    return future_mod.resolved("dropped")
+    return future_mod.resolved(true)
+end
+
+--- Drop the deploy records sourced from a config unit / build dir and remove
+--- their destination files (spec §8.8.5): only files inside the workspace
+--- are unlinked (`deploy.cleanup_disposition`); one outside is left in place
+--- and reported, an invalid key dropped with a debug log.
+--- @param build_dir_id string config unit id / build dir rel path
+--- @return string[] removed_keys
+function Workspace:_clean_deploy_records(build_dir_id)
+    local deps = self._core._deps
+    return require("loomworks.deploy").clean_deploy_records(self._deploy_records, build_dir_id, {
+        root = self.root,
+        normalize = deps.normalize,
+        on_left = function(dest)
+            deps.notify("loomworks: deploy cleanup: left " .. dest
+                .. " (outside the workspace)", vim.log.levels.WARN)
+        end,
+        on_invalid = function(dest)
+            if deps.log then deps.log:debug("deploy cleanup: dropped invalid record %s", dest) end
+        end,
+    })
 end
 
 function Workspace:delete_cached_configs(items)
-    local deploy = require("loomworks.deploy")
     for _, item in ipairs(items) do
         if item.unit then
             -- Clean deploy records sourced from this build dir
             if item.unit.id then
-                deploy.clean_deploy_records(self._deploy_records, item.unit.id)
+                self:_clean_deploy_records(item.unit.id)
             end
             -- Clear BuildDir state (by reference or by path lookup)
             local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
@@ -3774,12 +4609,11 @@ end
 --- Keeps the cache entry skeleton (variant, tool_key, tool_data) intact.
 --- @param items loomworks.DeletionItem[]
 function Workspace:reset_cached_configs(items)
-    local deploy = require("loomworks.deploy")
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
         -- Clean deploy records sourced from this build dir
         if item.unit.id then
-            deploy.clean_deploy_records(self._deploy_records, item.unit.id)
+            self:_clean_deploy_records(item.unit.id)
         end
         -- Clear BuildDir state (by reference or by path lookup)
         local bd = item.unit._build_dir or self:find_build_dir(item.unit.id)
@@ -3795,14 +4629,32 @@ function Workspace:reset_cached_configs(items)
 end
 
 --- Mark cached configs as cleaned (reset build state but keep build_dir
---- and configuration metadata). Used after module clean tasks complete.
---- @param items table[] { project_key, config_key }
+--- and configuration metadata). Used for module clean tasks (the editor's
+--- clean, and the headless clean after a step succeeded,
+--- build_run.after_clean_step). The unit's BuildDir is updated too: the
+--- cache serializes a unit that has one from the BuildDir
+--- (`_serialize_cache`), so updating only the unit would leave the persisted
+--- entry claiming `built` (spec §3, §16.18).
+--- Only the built states move: `built` / `failed_build` → `configured`
+--- (spec §4.7). Every other state is kept — a unit whose configure failed,
+--- or `unknown` after an interrupted wipe, is not configured, and recording
+--- it so would make the next build skip the configure.
+--- @param items table[] { unit }
 function Workspace:mark_cached_configs_cleaned(items)
+    local CLEANABLE = { built = true, failed_build = true }
     for _, item in ipairs(items) do
-        if not item.unit then goto continue end
-        -- Update first-class fields
-        item.unit.state_value = "configured"
-        item.unit.last_built = nil
+        local unit = item.unit
+        if not unit then goto continue end
+        local bd = unit._build_dir
+        -- The persisted state is the BuildDir's when the unit has one.
+        local prior = (bd and bd.state) or unit.state_value
+        if not CLEANABLE[prior] then goto continue end
+        unit.state_value = "configured"
+        unit.last_built = nil
+        if bd then
+            bd.state = "configured"
+            bd.last_built = nil
+        end
         ::continue::
     end
     self:_save_cache()
@@ -3834,25 +4686,26 @@ function Workspace:_snapshot_build_states(items, siblings)
     end
 end
 
---- Set cache state to "unknown" for items that have build directories. An
+--- Set cache state to "unknown" for items that have build directories. The
+--- unit's BuildDir is marked too: the cache serializes a unit that has one
+--- from the BuildDir (`_serialize_cache`), so marking only the unit would
+--- leave the persisted entry claiming its old state (spec §4.7, §5.7). An
 --- item without a unit (an orphaned entry, `get_orphaned_configs`) carries
---- its BuildDir as `build_dir_obj`, which is marked directly: the cache
---- serializes it from the BuildDir (`_serialize_cache`). A unit's BuildDir is
---- marked too, for the same reason: marking only the unit would leave the
---- persisted entry claiming its old state during the rm-rf (spec §4.6).
+--- its BuildDir as `build_dir_obj`, which is marked directly.
 --- Only items whose build dir is in `to_remove` (the dirs actually handed to
---- rm-rf, keyed by directory identity, `_build_dir_ref_key`) are marked —
---- every item naming such a dir, under any spelling (long or 8.3 short): a skipped dir (shared with a live unit, or failing
---- validation) stays as it is, since nothing would restore it if another
---- removal in the batch failed — a shared BuildDir left `unknown` would block
---- the surviving unit from configure/build.
+--- rm-rf, by directory identity `_build_dir_identity`, so every item naming
+--- one under any spelling — long or 8.3 short) are marked: a skipped dir
+--- (shared with a live unit, overlapping a
+--- live build dir, or failing validation) stays as it is, since nothing would
+--- restore it if another removal in the batch failed — a shared BuildDir left
+--- `unknown` would block the surviving unit from configure/build.
 --- `siblings` (`_orphan_siblings`): the orphaned BuildDirs outside `items`
 --- that name a dir in `to_remove` — in a module's shared tree each unit has
 --- its own BuildDir on the one directory (spec §1.7), so an orphaned sibling
 --- entry would otherwise keep claiming its state while the tree is removed.
 --- They are marked `unknown` too.
 --- @param items loomworks.DeletionItem[]
---- @param to_remove? table<string, true> identity keys (`_build_dir_ref_key`)
+--- @param to_remove? table<string, true> identity keys (`_build_dir_identity`)
 ---   of the build dirs handed to rm-rf; nil marks every item (no skip set known)
 --- @param siblings? loomworks.BuildDir[]
 function Workspace:_mark_cache_unknown(items, to_remove, siblings)
@@ -3860,7 +4713,7 @@ function Workspace:_mark_cache_unknown(items, to_remove, siblings)
         if bd:has_state() then bd.state = "unknown" end
     end
     for _, item in ipairs(items) do
-        if to_remove and not (item.build_dir and to_remove[self:_build_dir_ref_key(item.build_dir)]) then
+        if to_remove and not (item.build_dir and to_remove[self:_build_dir_identity(item.build_dir)]) then
             goto continue
         end
         if not item.unit then
@@ -3878,7 +4731,7 @@ function Workspace:_mark_cache_unknown(items, to_remove, siblings)
 end
 
 --- The orphaned BuildDirs (no ConfigUnit references them) with state whose
---- directory is one of `to_remove` (by `_build_dir_ref_key`), other than
+--- directory is one of `to_remove` (by `_build_dir_identity`), other than
 --- the batch's own: the siblings of a removed shared tree (spec §1.7). A live
 --- unit outside the batch naming such a dir would have kept it (shared refs),
 --- so only orphans can be siblings here.
@@ -3898,7 +4751,7 @@ function Workspace:_orphan_siblings(items, to_remove)
     local out = {}
     for _, bd in ipairs(self._build_dirs) do
         if not skip[bd] and bd.path and bd:has_state()
-                and to_remove[self:_build_dir_ref_key(bd.path)] then
+                and to_remove[self:_build_dir_identity(bd.path)] then
             out[#out + 1] = bd
         end
     end
@@ -3916,12 +4769,11 @@ function Workspace:_drop_orphan_siblings(siblings)
     for _, unit in pairs(self._config_units) do
         if unit._build_dir then adopted[unit._build_dir] = true end
     end
-    local deploy = require("loomworks.deploy")
     local drop = {}
     for _, bd in ipairs(siblings) do
         if not adopted[bd] then
             drop[bd] = true
-            deploy.clean_deploy_records(self._deploy_records, bd.rel_path)
+            self:_clean_deploy_records(bd.rel_path)
             bd:clear_state()
         end
     end
@@ -3982,81 +4834,6 @@ function Workspace:_canonicalize_boundary_path(path)
     return canon(path)
 end
 
---- Every form of every build dir referenced by a ConfigUnit: its canonical
---- form (`_canonicalize_boundary_path`: 8.3 short<->long + case reconciled,
---- symlinks resolved) AND its plain normalized spelling. Stray/orphan
---- detection and deletion compare DIRECTORY IDENTITY through these, never one
---- raw spelling: a unit's build dir can be recorded in a different spelling of
---- the same location than ws.root (e.g. an 8.3 short temp path on a Windows
---- runner), and a mismatch would make a live build dir's parent look stray —
---- and orphan cleanup would delete it. The normalized spelling is kept too
---- because a build dir reached through a link/junction canonicalizes OUTSIDE
---- .nvim/build, where only its recorded spelling still sits under its parent.
---- Resolves (realpath) once per unit per call — i.e. per render/cleanup.
---- @return string[]
-function Workspace:_live_build_dirs_canonical()
-    local normalize = self._core._deps.normalize
-    local known, seen = {}, {}
-    local function add(p)
-        if not seen[p] then
-            seen[p] = true
-            known[#known + 1] = p
-        end
-    end
-    for _, unit in pairs(self._config_units) do
-        local bd = unit:build_dir()
-        if bd and bd ~= "" then
-            add(normalize(bd))
-            add(self:_canonicalize_boundary_path(bd))
-        end
-    end
-    return known
-end
-
---- Both comparable forms (normalized spelling, canonical) of `dir`.
---- @param dir string
---- @return string[]
-function Workspace:_path_forms(dir)
-    local n = self._core._deps.normalize(dir)
-    local c = self:_canonicalize_boundary_path(dir)
-    if n == c then return { n } end
-    return { n, c }
-end
-
---- True when `a` is a strict, separator-bounded ancestor of `b`.
-local function is_path_ancestor(a, b)
-    return b:sub(1, #a + 1) == a .. "/"
-end
-
---- True when `dir` IS, CONTAINS, or lies INSIDE a live build dir (every form
---- of each side, separator-bounded) — such a dir must never be deleted as
---- stray/orphaned. "Lies inside" only counts for a live dir that is not a
---- strict ancestor of `<root>/.nvim/build`: an in-source unit (build_dir ==
---- workspace root, allowed by _pre_configure_reset) contains the whole build
---- tree without owning any of it, and must not shield every stray dir.
---- @param dir string
---- @param known? string[] precomputed `_live_build_dirs_canonical()`
---- @return boolean
-function Workspace:_overlaps_live_build_dir(dir, known)
-    known = known or self:_live_build_dirs_canonical()
-    local build_roots = self:_path_forms(self.root .. "/.nvim/build")
-    local function contains_build_root(k)
-        for _, br in ipairs(build_roots) do
-            if is_path_ancestor(k, br) then return true end
-        end
-        return false
-    end
-    for _, c in ipairs(self:_path_forms(dir)) do
-        for _, k in ipairs(known) do
-            if k == c or is_path_ancestor(c, k)
-                or (is_path_ancestor(k, c) and not contains_build_root(k)) then
-                return true
-            end
-        end
-    end
-    return false
-end
-
 --- Validate a build directory path is safe to delete (under workspace root).
 --- Both paths are canonicalized (8.3 short<->long + case reconciled, symlinks
 --- resolved) and compared with a directory boundary check (trailing "/") to
@@ -4067,25 +4844,28 @@ end
 --- configure-state reset, `_pre_configure_reset`) passes `opts.allow_root`.
 --- @param build_dir string path (normalized or raw) to the build dir
 --- @param safe_prefix string path (normalized or raw) to the workspace root
---- @param opts? { allow_root?: boolean }
+--- `opts.quiet`: a planning check (reset_plan.plan, spec §16.30) — no
+--- notification on refusal; the verdict is the same.
+--- @param opts? { allow_root?: boolean, quiet?: boolean }
 --- @return boolean safe
 function Workspace:_validate_build_dir(build_dir, safe_prefix, opts)
-    if not build_dir or build_dir == "" then
-        self._core._deps.notify("loomworks: refusing to delete empty build dir path", vim.log.levels.ERROR)
+    local quiet = opts and opts.quiet
+    local function refuse(msg)
+        if not quiet then self._core._deps.notify(msg, vim.log.levels.ERROR) end
         return false
+    end
+    if not build_dir or build_dir == "" then
+        return refuse("loomworks: refusing to delete empty build dir path")
     end
     local abs = self:_canonicalize_boundary_path(build_dir)
     local root = self:_canonicalize_boundary_path(safe_prefix)
     if abs == root and not (opts and opts.allow_root) then
-        self._core._deps.notify("loomworks: refusing to delete the workspace root as a build dir: " .. abs,
-            vim.log.levels.ERROR)
-        return false
+        return refuse("loomworks: refusing to delete the workspace root as a build dir: " .. abs)
     end
     local is_under = abs == root
         or abs:sub(1, #root + 1) == root .. "/"
     if not is_under then
-        self._core._deps.notify("loomworks: refusing to delete build dir outside workspace: " .. abs, vim.log.levels.ERROR)
-        return false
+        return refuse("loomworks: refusing to delete build dir outside workspace: " .. abs)
     end
     return true
 end
@@ -4187,10 +4967,14 @@ end
 --- @param callback fun(results: {dir: string, ok: boolean, err: string|nil}[])
 --- Delete build directories asynchronously. Returns a Future resolving
 --- with an array of { dir, ok, err } results.
+--- `opts.stop` (optional predicate) is handed to the removal and asked before
+--- each entry: once it returns true no further entry is started (what was
+--- removed stays removed) and that directory's result carries `stopped`.
 --- @param dirs string[]
 --- @param callback? function legacy callback (deprecated)
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Workspace:_delete_build_dirs_async(dirs, callback)
+function Workspace:_delete_build_dirs_async(dirs, callback, opts)
     local future_mod = require("loomworks.future")
     if #dirs == 0 then
         if callback then callback({}) end
@@ -4198,16 +4982,17 @@ function Workspace:_delete_build_dirs_async(dirs, callback)
     end
 
     local build_root = self._core._deps.normalize(self.root .. "/.nvim/build")
+    local stop = opts and opts.stop
     local dir_futures = {}
     for _, dir in ipairs(dirs) do
         local captured_dir = dir
         local df = future_mod.create(function(resolve, _, token)
-            self._core._deps.io.rm_rf_async(captured_dir, function(ok, err)
+            self._core._deps.io.rm_rf_async(captured_dir, function(ok, err, stopped)
                 if ok then
                     self:_cleanup_empty_ancestors(captured_dir, build_root)
                 end
-                resolve({ dir = captured_dir, ok = ok, err = err })
-            end)
+                resolve({ dir = captured_dir, ok = ok, err = err, stopped = stopped or nil })
+            end, stop and { stop = stop } or nil)
             token:on_cancel(function()
                 -- Can't cancel rm -rf mid-flight, but resolve to let chain continue
                 resolve({ dir = captured_dir, ok = false, err = "cancelled" })
@@ -4228,6 +5013,61 @@ function Workspace:_delete_build_dirs_async(dirs, callback)
         f:next(function(results) callback(results) end)
     end
     return f
+end
+
+--- Shared-directory protection (spec §4.6): how many config units OUTSIDE the
+--- batch being deleted still reference the build directory `dir`, compared
+--- by real path (`_build_dir_identity`: another spelling of the same folder
+--- is the same directory). A deletion removes the directory only when this
+--- is 0.
+--- @param dir string build directory path (any spelling)
+--- @param deleting_units table<loomworks.ConfigUnit, true> the batch's units
+--- @return integer
+function Workspace:_remaining_build_dir_refs(dir, deleting_units)
+    local remaining = 0
+    for _, ref_unit in ipairs(self:get_build_dir_refs(dir)) do
+        if not deleting_units[ref_unit] then remaining = remaining + 1 end
+    end
+    return remaining
+end
+
+--- Core-performed clean wipe (`wipe_build_dir`, spec §8.1) of `build_dir`,
+--- done as a build-directory DELETION (spec §4.6, §4.7) rather than a bare rm:
+--- validated against the workspace root, the cache marked `unknown` on disk
+--- before the tree is removed, the units reset to unconfigured only after the
+--- removal succeeded, and a directory still referenced by a config unit
+--- outside `units` kept (their cache entries are still reset). `units` are ALL
+--- the clean's units whose build directory is `build_dir`: they are deleted as
+--- one batch, so a directory shared only among them is wiped once (one unit
+--- per batch would see the others as outside references and keep it). Holds
+--- the operation and build-directory locks like any deletion. Returns a Future
+--- resolving `true` when the wipe happened (or the directory was kept because
+--- it is shared) and `false` when it did not (a lock was refused or the
+--- removal failed — both reported), plus whether the directory is kept
+--- because it is shared.
+--- `opts.stop` (optional predicate, the workspace daemon's cancellation, spec
+--- §19.15 "Clean") is asked before each entry of the removal: a stopped wipe
+--- resolves `false` with the cache left `unknown` (never reset after a partial
+--- removal).
+--- @param units loomworks.ConfigUnit[] the clean's units using `build_dir` (may be empty)
+--- @param build_dir string
+--- @param opts? { stop?: fun(): boolean }
+--- @return loomworks.Future, boolean shared
+function Workspace:clean_wipe_build_dir(units, build_dir, opts)
+    local batch, items = {}, {}
+    for _, unit in ipairs(units or {}) do
+        if not batch[unit] then
+            batch[unit] = true
+            items[#items + 1] = { unit = unit, build_dir = build_dir, disposition = "reset" }
+        end
+    end
+    if #items == 0 then
+        items[1] = { build_dir = build_dir, disposition = "reset" }
+    end
+    local shared = self:_remaining_build_dir_refs(build_dir, batch) > 0
+    local f = self:execute_deletion({ items = items },
+        { reason = "cleaning", stop = opts and opts.stop or nil })
+    return f, shared
 end
 
 -- ===========================================================================
@@ -4292,7 +5132,7 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     -- Deleted dirs by directory identity, so a remaining entry naming one under
     -- another spelling (8.3 short vs long) does not keep its mirror alive.
     local gone = {}
-    for _, d in ipairs(deleted) do gone[self:_build_dir_ref_key(d.dir)] = true end
+    for _, d in ipairs(deleted) do gone[self:_build_dir_identity(d.dir)] = true end
 
     -- Candidates: mirror per deleted dir (deduplicated, normalized).
     local candidates, seen = {}, {}
@@ -4311,7 +5151,7 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     -- Rule 2: mirrors still mapped from a remaining build directory.
     local kept = {}
     local function keep_for(mod, dir)
-        if not dir or dir == "" or gone[self:_build_dir_ref_key(dir)] then return end
+        if not dir or dir == "" or gone[self:_build_dir_identity(dir)] then return end
         local m = self:_lsp_db_mirror(mod, dir)
         if m then kept[normalize((m:gsub("\\", "/")))] = true end
     end
@@ -4368,11 +5208,12 @@ function Workspace:_remove_owned_lsp_dbs(deleted)
     return future_mod.when_all(futures):next(function() return true end)
 end
 
---- Return a function that clears the runtime deleting/cleaning mark of
---- `units` the first time it is called and does nothing afterwards, so every
---- exit path of a clean/deletion (success, failure, cancel, refusal, throw)
---- can call it and the mark is still cleared exactly once. Touches only the
---- in-memory mark, never cache state.
+--- Return a function that ends the runtime deleting/cleaning mark this
+--- clean/deletion set on `units` the first time it is called and does
+--- nothing afterwards, so every exit path (success, failure, cancel,
+--- refusal, throw) can call it and the mark still ends exactly once. Marks
+--- nest (ConfigUnit:mark_deleting): an enclosing clean's mark stays. Touches
+--- only the in-memory mark, never cache state.
 --- @param units loomworks.ConfigUnit[]
 --- @return fun()
 function Workspace:_deleting_mark_clearer(units)
@@ -4387,22 +5228,43 @@ end
 --- Common async deletion workflow: cancel conflicting operations, mark items
 --- as deleting, stop running tasks, delete build dirs via async subprocess,
 --- then apply cache mutations.
---- Crash-safe: cache is set to "unknown" before async deletion starts. When
---- those marks cannot be saved (`_save_cache` false: write failure, or the
---- concurrent-writer guard refused) nothing is removed: the marks are undone
---- in memory and every item fails through the deletion_failed path.
+--- Crash-safe: cache is set to "unknown" before async deletion starts.
 --- @param items table[] list of { project_key, config_key, ... }
 --- @param work_fn function called after build dirs are successfully deleted (cache mutations)
 --- @param on_done? function called when complete
 --- @param reason? "deleting"|"cleaning" reason for the deletion flag (default "deleting")
---- Common async deletion workflow. Returns a Future.
+--- Common async deletion workflow. Returns a Future that resolves `true`
+--- when every build directory removal succeeded (cache mutations applied) and
+--- `false` when a removal failed (reported; units left `unknown`, cache not
+--- reset) — the outcome is explicit, never to be inferred from unit state
+--- (a unit with no cached build directory is not marked `unknown`).
+--- When the `unknown` marks cannot be saved (`_save_cache` false: lost lock,
+--- torn down while the tasks stopped, write failure) nothing is removed: the
+--- marks are undone in memory, every item fails with the save error and the
+--- Future resolves `false`.
 --- @param items table[]
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
 --- @param reason? "deleting"|"cleaning"
---- @return loomworks.Future resolves `true` when every removal succeeded, `false` when
---- one failed (reported via notify + `deletion_failed`; the cache keeps those `unknown`)
-function Workspace:_run_deletion(items, work_fn, on_done, reason)
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
+---   `include_held`: the reset of all (§16.30) — held build dirs
+---   (`_held_build_dirs`) get no protection; every other deletion keeps a dir
+---   that is, contains or holds one (kept as `"held"`).
+---   `stop`: asked before each entry of the removal; a stopped removal is a
+---   failed one (resolves `false`, units left `unknown`) without an error
+---   report of its own. `overlap_exempt`: live build dirs an orphaned entry's
+---   tree may contain or lie inside (every form of each) — only the dirs a
+---   reset-all has itself just removed (`_reset_all_unlocked`); the shared-
+---   refs and root checks still apply. `report`: a table that receives
+---   `kept` = `{ dir, why = "shared"|"live"|"held" }[]`, the dirs left on disk by
+---   those checks (their entries still dropped), `removed` = the
+---   normalized dirs whose removal was confirmed (never a dir refused by
+---   `_validate_build_dir` or kept by those checks), and `removed_ids` = the
+---   identities (`_build_dir_identity`) of those same dirs, taken BEFORE the
+---   removal while each still resolved — after it, an 8.3 short leaf no
+---   longer canonicalizes to its long one.
+--- @return loomworks.Future
+function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     local future_mod = require("loomworks.future")
     if #items == 0 then
         if on_done then on_done() end
@@ -4415,16 +5277,26 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
     end
     self:cancel_conflicting_operations(units)
 
+    -- `mark_deleting` never raises (a failing listener is logged), so every
+    -- unit is marked and the clearer below ends exactly these marks.
     for _, unit in ipairs(units) do
         unit:mark_deleting(true, reason)
     end
     local clear_mark = self:_deleting_mark_clearer(units)
-    self._core._deps.events.emit("deletion_started", items)
-
-    local running = self:find_running_tasks_for_items(items)
-    local task_ids = {}
-    for task_id in pairs(running) do
-        task_ids[#task_ids + 1] = task_id
+    -- Up to the removal Future, a throw clears the mark it just set (nothing
+    -- is removed and no cache entry is marked yet) and propagates.
+    local ok_stop, stopped = pcall(function()
+        self._core._deps.events.emit("deletion_started", items)
+        local running = self:find_running_tasks_for_items(items)
+        local task_ids = {}
+        for task_id in pairs(running) do
+            task_ids[#task_ids + 1] = task_id
+        end
+        return self:stop_tasks_then(task_ids)
+    end)
+    if not ok_stop then
+        clear_mark()
+        error(stopped, 0)
     end
 
     local ws = self
@@ -4432,61 +5304,140 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
     -- validated, non-shared ones). Their owned LSP database mirrors are removed
     -- only once each dir's deletion is confirmed (spec §4.6 rule 1).
     local dir_owner = {}
+    -- Normalized build dir handed to rm-rf → its identity, taken before the
+    -- removal (`report.removed_ids`).
+    local dir_ident = {}
     local function deleted_ok(results)
         local out = {}
+        local report = opts and opts.report or nil
+        if report then report.removed, report.removed_ids = {}, {} end
         for _, r in ipairs(results) do
-            if r.ok then out[#out + 1] = { dir = r.dir, mod = dir_owner[r.dir] } end
+            if r.ok then
+                out[#out + 1] = { dir = r.dir, mod = dir_owner[r.dir] }
+                if report then
+                    report.removed[#report.removed + 1] = r.dir
+                    if dir_ident[r.dir] then
+                        report.removed_ids[#report.removed_ids + 1] = dir_ident[r.dir]
+                    end
+                end
+            end
         end
         return out
     end
-    -- The in-flight rm-rf, once started. It cannot be stopped, and cancelling
-    -- the returned Future does not reach it (a joined Future is not recorded
-    -- as upstream), so it keeps running after a cancel.
+    -- The in-flight rm-rf, once started. Only `opts.stop` (asked between
+    -- entries) can stop it; cancelling the returned Future does not reach it
+    -- (a joined Future is not recorded as upstream), so it keeps running
+    -- after a cancel.
     local removal
     -- Orphaned sibling BuildDirs of the removed dirs (`_orphan_siblings`):
     -- marked with the batch, dropped only after the removal succeeded.
     local siblings = {}
-    local f = self:stop_tasks_then(task_ids):next(function()
+    local f = stopped:next(function()
         local deleting_units = {}
         for _, unit in ipairs(units) do deleting_units[unit] = true end
 
         local safe_prefix = ws._core._deps.normalize(ws.root)
         local dirs = {}
         local seen_dirs = {}
-        -- Identity keys of the dirs handed to rm-rf: every item naming one of
-        -- them, under any spelling, is marked `unknown` before the removal.
+        -- Identity keys (`_build_dir_identity`) of the dirs handed to rm-rf:
+        -- every item naming one of them, under any spelling, is marked
+        -- `unknown` before the removal.
         local to_remove = {}
-        -- Re-index now so the refs keys and the lookups below are canonicalized
-        -- against the same on-disk state (a dir created since the last sync
-        -- would otherwise key differently on the two sides).
-        ws:_sync_build_dir_refs()
+        local live_forms -- lazily, only when an orphaned entry is present
+        -- Held build dirs (`_held_build_dirs`: an invalid configuration's
+        -- entry) are protected like live ones, except by the reset of all
+        -- (`opts.include_held`). Read now, at execution: an orphaned entry of
+        -- this batch that became held since it was planned (its
+        -- configuration turned invalid on a reload) protects its own tree.
+        local held_forms -- lazily
+        local function held_build_dir_forms()
+            if opts and opts.include_held then return {} end
+            return ws:_held_build_dir_forms()
+        end
+        local report = opts and opts.report or nil
+        if report then report.kept = {} end
+        local function kept(dir, why)
+            if report then report.kept[#report.kept + 1] = { dir = dir, why = why } end
+        end
+        local function live_build_dir_forms()
+            local exempt_dirs = opts and opts.overlap_exempt
+            if not exempt_dirs or #exempt_dirs == 0 then return ws:_live_build_dir_forms() end
+            -- Exempt by directory IDENTITY, per live dir: a live unit naming an
+            -- exempt dir under another spelling (8.3 short vs long) is exempt
+            -- too, and every form of it is dropped — not only the forms that
+            -- happen to equal the exempt spelling's.
+            local exempt = {}
+            for _, d in ipairs(exempt_dirs) do
+                local id = ws:_build_dir_identity(d)
+                if id then exempt[id] = true end
+            end
+            return ws:_live_build_dir_forms(exempt)
+        end
         for _, item in ipairs(items) do
             if item.build_dir then
                 local normalized = ws._core._deps.normalize(item.build_dir)
-                -- Shared-dir check and dedup by directory IDENTITY, not
-                -- spelling: an 8.3 short and a long spelling of one dir are
-                -- the same tree (spec §4.6).
-                local ident = ws:_build_dir_ref_key(item.build_dir)
+                -- Dedup by directory IDENTITY, not spelling: an 8.3 short and
+                -- a long spelling of one dir are the same tree (spec §4.6).
+                local ident = ws:_build_dir_identity(item.build_dir)
                 if not seen_dirs[ident] and ws:_validate_build_dir(normalized, safe_prefix) then
                     seen_dirs[ident] = true
-                    local ref_units = ws._build_dir_refs[ident]
-                    if ref_units then
-                        local remaining_refs = 0
-                        for _, ref_unit in ipairs(ref_units) do
-                            if not deleting_units[ref_unit] then
-                                remaining_refs = remaining_refs + 1
-                            end
-                        end
+                    do
+                        local remaining_refs = ws:_remaining_build_dir_refs(normalized, deleting_units)
                         if remaining_refs > 0 then
                             ws._core._deps.notify(
                                 "loomworks: skipped deleting " .. normalized
                                     .. " — still referenced by " .. remaining_refs .. " config(s)",
                                 vim.log.levels.INFO)
+                            kept(normalized, "shared")
+                            goto skip_dir
+                        end
+                    end
+                    -- A held build dir: a unit's dir that IS or CONTAINS it
+                    -- (the shared-refs analogue), an orphaned entry's that
+                    -- is, contains or lies inside it (as for a live dir).
+                    -- A unit's dir that lies INSIDE a held dir is removed,
+                    -- exactly as one nested in a live build dir is: it is the
+                    -- unit's own configured build tree (its path comes from a
+                    -- valid configuration, not the cache), the held dir's
+                    -- other contents stay, and a held in-source dir (the
+                    -- workspace root) would otherwise refuse every unit.
+                    held_forms = held_forms or held_build_dir_forms()
+                    if #held_forms > 0 then
+                        local hit
+                        if item.unit then
+                            for _, c in ipairs(ws:_path_forms(normalized)) do
+                                for _, h in ipairs(held_forms) do
+                                    if h == c or h:sub(1, #c + 1) == c .. "/" then hit = true; break end
+                                end
+                                if hit then break end
+                            end
+                        else
+                            hit = ws:_overlaps_live_build_dir(normalized, held_forms)
+                        end
+                        if hit then
+                            ws._core._deps.notify("loomworks: skipped deleting " .. normalized
+                                .. " — it holds the build dir of an invalid configuration",
+                                vim.log.levels.INFO)
+                            kept(normalized, "held")
+                            goto skip_dir
+                        end
+                    end
+                    -- An orphaned entry (no unit): its dir comes from the
+                    -- cache (never trusted) and may be, contain or lie inside
+                    -- a live build dir under another spelling (#293) — keep
+                    -- the tree; the entry itself is still dropped.
+                    if not item.unit then
+                        live_forms = live_forms or live_build_dir_forms()
+                        if ws:_overlaps_live_build_dir(normalized, live_forms) then
+                            ws._core._deps.notify("loomworks: skipped deleting " .. normalized
+                                .. " — it holds a live build dir", vim.log.levels.INFO)
+                            kept(normalized, "live")
                             goto skip_dir
                         end
                     end
                     dirs[#dirs + 1] = normalized
                     to_remove[ident] = true
+                    dir_ident[normalized] = ident
                     -- An orphaned entry (no unit) carries its BuildDir.
                     dir_owner[normalized] = ws:_lsp_db_module_for(item.unit,
                         item.unit and item.unit._build_dir or item.build_dir_obj)
@@ -4495,19 +5446,26 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             end
         end
 
-        -- Crash safety (spec §4.6): every dir about to be removed is `unknown`
+        -- Crash safety (spec §5.7): every dir about to be removed is `unknown`
         -- on disk before the async rm-rf starts — every entry naming one, by
         -- directory identity, including an orphaned sibling entry of a
         -- shared tree outside the batch; skipped dirs are untouched.
+        -- Never staged in an open transaction (spec §19.4).
+        assert(not require("loomworks.txn").active(),
+            "loomworks: a deletion's cache write ran inside a transaction")
         siblings = ws:_orphan_siblings(items, to_remove)
-        local restore = ws:_snapshot_build_states(items, siblings)
+        local prior = ws:_snapshot_build_states(items, siblings)
         ws:_mark_cache_unknown(items, to_remove, siblings)
         if not ws:_save_cache() then
-            -- The marks never reached the disk (the write failed, or the
-            -- concurrent-writer guard refused the save): removing a tree now
-            -- would leave the cache claiming it. Remove nothing; undo the
-            -- marks and fail every item through the failure path below.
-            restore()
+            -- The marks never reached the disk (the runtime lost its lock, the
+            -- workspace was torn down while its tasks stopped, or the write
+            -- failed): removing a tree now would leave the cache claiming it.
+            -- Remove nothing; every item fails with the save error and the
+            -- entries keep the state they had.
+            prior()
+            local why = ws._torn_down and "the workspace was unloaded"
+                or (ws._no_write and ("cache is read-only: " .. tostring(ws._no_write)))
+                or "the cache could not be saved"
             local failed, seen = {}, {}
             for _, item in ipairs(items) do
                 local d = item.build_dir and ws._core._deps.normalize(item.build_dir)
@@ -4515,13 +5473,13 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                 if not seen[d] then
                     seen[d] = true
                     failed[#failed + 1] = { dir = d, ok = false,
-                        err = "not deleted: the cache could not be saved before the removal" }
+                        err = "not deleted — " .. why .. " before the removal" }
                 end
             end
             return failed
         end
 
-        removal = ws:_delete_build_dirs_async(dirs)
+        removal = ws:_delete_build_dirs_async(dirs, nil, { stop = opts and opts.stop or nil })
         return removal
     end):next(function(results)
         local errors = {}
@@ -4531,7 +5489,11 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
 
         if #errors > 0 then
             for _, e in ipairs(errors) do
-                ws._core._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
+                -- A stopped removal is the caller's cancellation, reported by
+                -- the caller; only a genuine failure is an error here.
+                if not e.stopped then
+                    ws._core._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
+                end
             end
             clear_mark()
             ws:_save_cache()
@@ -4585,10 +5547,11 @@ end
 --- @param on_done? function called when deletion is complete
 --- Execute a deletion plan asynchronously. Returns a Future.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
+--- `opts.report`: as `_run_deletion`'s (`kept`, `removed`).
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table, include_held?: boolean }
 --- @param on_done? function legacy callback (deprecated)
---- @return loomworks.Future resolves `true`, or `false` when a build-dir removal failed
-function Workspace:execute_deletion(plan, opts, on_done)
+--- @return loomworks.Future
+function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
     local future_mod = require("loomworks.future")
     opts = opts or {}
 
@@ -4596,15 +5559,27 @@ function Workspace:execute_deletion(plan, opts, on_done)
         opts.deactivate_profile:deactivate()
     end
 
-    if plan.profile then
-        local profile = plan.profile
-        profile._removed = true
-        for i, p in ipairs(self._profiles) do
-            if p == profile then table.remove(self._profiles, i); break end
+    -- The working copy and the cache commit together (spec §19.4); the build
+    -- trees are removed afterwards under the §5.7 crash rule.
+    local t = self:_txn_begin("delete")
+    local ok_s, serr = pcall(function()
+        if plan.profile then
+            local profile = plan.profile
+            profile._removed = true
+            for i, p in ipairs(self._profiles) do
+                if p == profile then table.remove(self._profiles, i); break end
+            end
+            self:_save_user()
         end
-        self:_save_user()
+        self:_save_cache()
+    end)
+    if not ok_s then self:_txn_abort(t); error(serr, 0) end
+    if not self:_txn_finish(t) then
+        -- The working copy / cache commit failed (reported): remove no tree
+        -- while the cache may still claim it.
+        if on_done then on_done() end
+        return require("loomworks.future").resolved(false)
     end
-    self:_save_cache()
 
     local actionable = {}
     local clean_units = {}
@@ -4641,7 +5616,8 @@ function Workspace:execute_deletion(plan, opts, on_done)
         if #eff_reset > 0 then
             self:reset_cached_configs(eff_reset)
         end
-    end, on_done)
+    end, on_done, opts.reason, { stop = opts.stop, report = opts.report,
+        include_held = opts.include_held })
 
     return f
 end
@@ -4650,11 +5626,19 @@ end
 --- config unit that has a build directory across all profiles, plus every
 --- orphaned build directory (cached state no ConfigUnit references). Removes the
 --- directories from disk and clears build state to `unconfigured`; no profile is
---- removed. Returns a Future that resolves after both phases complete.
+--- removed. Returns a Future that resolves after both phases complete
+--- (`true` when every removal succeeded). `opts.stop` (the daemon's
+--- cancellation, §19.15 "Reset") is asked before each entry: during the
+--- batched removal of phase 1, and before (and during) each orphan's removal
+--- in phase 2, which runs sequentially. A stopped reset resolves `false`; what
+--- it did not finish stays `unknown` in the cache (never reset after a
+--- partial removal).
 --- @param on_done? function called when the whole reset is complete
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Workspace:reset_all(on_done)
+function Workspace:_reset_all_unlocked(on_done, opts)
     local future_mod = require("loomworks.future")
+    local stop = opts and opts.stop or nil
 
     -- Phase 1: every referenced unit with a build dir → one batched reset plan.
     -- No Operation is created (see Profile:reset): headless reset runs no tasks,
@@ -4670,31 +5654,413 @@ function Workspace:reset_all(on_done)
         end
     end
 
-    -- Phase 2: orphaned build dirs (state, no ConfigUnit). Snapshot their keys
+    -- Phase 2: orphaned build dirs (state, no ConfigUnit; held ones too: a
+    -- reset of all leaves no build dirs, §16.30). Snapshot their keys
     -- before any mutation so the list is stable across the async phases.
     local orphan_keys = {}
-    for _, o in ipairs(self:get_orphaned_configs()) do
+    for _, o in ipairs(self:get_orphaned_configs({ include_held = true })) do
         orphan_keys[#orphan_keys + 1] = o.build_dir_key
     end
 
     local ws = self
-    -- Phase 1 clears each confirmed-reset unit's build_dir_value, so its dir
-    -- no longer shields an orphan dir that held it (the orphan delete's
-    -- live-overlap check): the reset removes that tree too (§16.30). A unit
-    -- whose removal failed keeps its dir (`unknown`) and still protects it.
+    local all_ok = true
+    -- Every live unit's dir is removed in phase 1, so an orphan's tree that
+    -- contains or lies inside only those dirs is removed too (a reset-all
+    -- leaves no build dirs, spec §16.30; `reset_plan` lists it as removed).
+    -- Only after phase 1 succeeded, and only the dirs whose removal phase 1
+    -- CONFIRMED: a live dir it failed to remove, refused (`_validate_build_dir`,
+    -- e.g. a junction leading outside the root) or kept as shared keeps the
+    -- overlap protection, and an orphan kept for it is not removed (the reset
+    -- does not succeed). Shared refs and the root check still apply. Each
+    -- removed dir is exempted by its spelling AND by the identity phase 1 took
+    -- before removing it: a live host's remerge between the phases re-derives
+    -- a reset unit's dir from its template, possibly under another spelling
+    -- (the long leaf of a dir recorded under its 8.3 short one), and once the
+    -- dir is gone that spelling no longer resolves to the removed one.
+    local exempt = nil
+    local phase1 = {}
     local function delete_orphans(i)
-        if i > #orphan_keys then
+        if i > #orphan_keys or (stop and stop()) then
+            if i <= #orphan_keys then all_ok = false end
             if on_done then on_done() end
-            return future_mod.resolved(true)
+            return future_mod.resolved(all_ok)
         end
-        return ws:delete_orphaned_build_dir(orphan_keys[i]):next(function()
+        local report = {}
+        return ws:delete_orphaned_build_dir(orphan_keys[i], nil,
+                { stop = stop, overlap_exempt = exempt, report = report,
+                  include_held = true }):next(function(ok)
+            if ok ~= true then all_ok = false end
+            for _, k in ipairs(report.kept or {}) do
+                if k.why == "live" then all_ok = false end
+            end
             return delete_orphans(i + 1)
         end)
     end
 
-    return self:execute_deletion({ items = items }, nil):next(function()
+    return self:execute_deletion({ items = items },
+            { stop = stop, report = phase1, include_held = true }):next(function(ok)
+        if ok ~= true then
+            all_ok = false
+        else
+            exempt = {}
+            for _, d in ipairs(phase1.removed or {}) do exempt[#exempt + 1] = d end
+            for _, d in ipairs(phase1.removed_ids or {}) do exempt[#exempt + 1] = d end
+        end
         return delete_orphans(1)
     end)
+end
+
+-- ===========================================================================
+-- Workspace operation lock (spec §19.3)
+-- ===========================================================================
+
+--- Acquire the workspace operation lock O for `operation` (re-entrant in this
+--- process). On refusal the host is told (`deps.on_lock_refused` — the CLI
+--- dies there — else an error notification) and nil + message is returned.
+--- A reclaimed dead holder's lock is reported.
+--- @param operation string
+--- @return table|nil token, string|nil message
+function Workspace:_op_lock(operation)
+    local deps = self._core._deps
+    local op_lock = require("loomworks.op_lock").locks(deps, self.root).op
+    local tok, msg = op_lock.acquire(self.root, operation)
+    if not tok then
+        if deps.on_lock_refused then deps.on_lock_refused(msg) end
+        deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        return nil, msg
+    end
+    if tok.reclaimed and op_lock.reclaimed_line then
+        local line = op_lock.reclaimed_line(tok.reclaimed)
+        deps.notify("loomworks: " .. line, vim.log.levels.WARN)
+        pcall(deps.log.info, deps.log, "%s", line)
+    end
+    if tok.recovered then
+        deps.notify("loomworks: " .. tok.recovered, vim.log.levels.WARN)
+        pcall(deps.log.info, deps.log, "%s", tok.recovered)
+    end
+    self._op_tokens = self._op_tokens or {}
+    self._op_tokens[tok] = true
+    return tok
+end
+
+--- Is the working copy on disk still the one this workspace last read or
+--- wrote (spec §2.7)? An operation that planned its change before taking the
+--- workspace operation lock checks this under the lock, before writing.
+--- @return boolean
+function Workspace:_working_copy_fresh()
+    local base = self._disk_baseline and self._disk_baseline.user
+    if not base then return true end
+    local disk = self:_read_disk(user_mod.filepath(self.root))
+    return disk == false or disk == base.text
+end
+
+--- Begin a transaction (spec §19.4) for `operation`: the workspace-file writes
+--- until `_txn_finish` are staged and commit together. A no-op (nil) with
+--- fake or inert locks (tests on a fake root, `op_lock.locks`).
+--- @param operation string
+--- @return table|nil txn
+function Workspace:_txn_begin(operation)
+    if require("loomworks.op_lock").locks(self._core._deps, self.root).fake then return nil end
+    return require("loomworks.txn").begin(self.root, operation)
+end
+
+--- Commit a transaction from `_txn_begin`. Returns true, or false + err
+--- (reported as an error notification).
+--- @param t table|nil
+--- @return boolean ok, string|nil err
+function Workspace:_txn_finish(t)
+    if not t then return true end
+    local ok, err = require("loomworks.txn").finish(t)
+    if not ok then
+        self._core._deps.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+    end
+    return ok, err
+end
+
+--- Abandon a transaction from `_txn_begin` (its staged files are removed).
+--- @param t table|nil
+function Workspace:_txn_abort(t)
+    if t then require("loomworks.txn").abort(t) end
+end
+
+--- Before a guarded operation (op_lock.guard): the in-memory state a reload
+--- from disk does not put back — each item's sticky intent (data_model keeps
+--- an item's prior `_intent`) and its removed-upstream flag — and the
+--- identity fields the reload matches objects by, put back first so every
+--- object comes back as itself: project keys, configuration-set names,
+--- profile keys (set name, tool keys, mappings), config-unit ids (with the
+--- variant, config key and build directory a configuration rename rewrites)
+--- and BuildDir project keys (a project rename retags them).
+--- Without them a renamed unit is dropped and replaced (one with a running
+--- task kept as a ghost under the new id), and the active profile replaced.
+--- @return table snapshot for `_txn_rollback`
+function Workspace:_txn_snapshot()
+    local items, fields = {}, {}
+    local function add(o) items[#items + 1] = { o, o._intent, o._removed_upstream } end
+    local function keep(o, names)
+        for _, f in ipairs(names) do
+            local v = o[f]
+            if type(v) == "table" and getmetatable(v) == nil then v = vim.deepcopy(v) end
+            fields[#fields + 1] = { o, f, v }
+        end
+    end
+    for _, p in pairs(self._projects or {}) do
+        add(p)
+        keep(p, { "key", "path" })
+        for _, cfg in ipairs(p._configurations or {}) do add(cfg) end
+    end
+    for _, cs in pairs(self._config_sets or {}) do
+        add(cs)
+        keep(cs, { "name" })
+    end
+    for _, pr in pairs(self._profiles or {}) do
+        add(pr)
+        keep(pr, { "key", "_configuration_set_name", "_tool_keys", "mappings" })
+    end
+    for _, u in pairs(self._config_units or {}) do
+        keep(u, { "id", "_init_project_key", "_variant", "_config_key", "_build_dir",
+            "build_dir_value", "state_value", "last_configured", "last_built", "module_info",
+            "_cached_options", "_cached_module_config" })
+    end
+    -- A BuildDir's project key: a project rename retags its BuildDirs, and
+    -- a reload that ignores an unsigned cache would not put it back.
+    local build_dirs = {}
+    for i, bd in ipairs(self._build_dirs or {}) do
+        build_dirs[i] = bd
+        keep(bd, { "project_key" })
+    end
+    return { items = items, fields = fields, build_dirs = build_dirs }
+end
+
+--- After a guarded operation whose commit failed, or which raised: nothing
+--- reached disk (or, after a failed apply whose journal could not be
+--- completed at once — txn.finish rolls it forward itself — not everything;
+--- the journal stays for the next operation-lock holder), so its in-memory
+--- change is dropped by reloading the model from the files on disk (API.md
+--- §11: a refused write changes neither the files nor the model). The
+--- identity fields from `_txn_snapshot` are put back first, so every
+--- project, set, profile and config unit comes back as the same object.
+--- Files the load would refuse (signature, schema) take the full
+--- `Core:setup` path instead, as `_on_file_changed`'s refuse path does —
+--- also in the daemon, whose teardown of this workspace cancels its running
+--- tasks. That setup's `_recover_journal` leaves a remaining journal alone
+--- while this process holds the operation lock (`op_lock.held`).
+--- @param snap table from `_txn_snapshot`
+function Workspace:_txn_rollback(snap)
+    for _, it in ipairs(snap.items) do
+        it[1]._intent, it[1]._removed_upstream = it[2], it[3]
+    end
+    for _, f in ipairs(snap.fields) do f[1][f[2]] = f[3] end
+    if self._build_dirs then
+        for i = #self._build_dirs, 1, -1 do self._build_dirs[i] = nil end
+        for i, bd in ipairs(snap.build_dirs) do self._build_dirs[i] = bd end
+    end
+    local deps = self._core._deps
+    local read = deps.io.read_file
+    if type(read) ~= "function" or self._torn_down then return end
+    local paths = M.paths(self.root)
+    local texts = { [paths.config] = read(paths.config), [paths.user] = read(paths.user),
+        [paths.cache] = read(paths.cache) }
+    local data = M.assemble(self.root, texts[paths.config], texts[paths.user], texts[paths.cache],
+        { trust = deps.trust, modules = deps.modules })
+    if not data or (data.user_trust and data.user_trust ~= "valid")
+            or data.cache_trust == "invalid" or data.user_newer
+            or data.cache_newer or data.cache_version_mismatch or data.cache_inconsistent
+            or data.user_version_mismatch or data.user_projects_invalid then
+        -- Mirrors `_on_file_changed`'s refuse path; the swap tears this
+        -- workspace down (its running tasks are cancelled, daemon included).
+        if self._core._workspace == self then self._core:setup({ root = self.root }) end
+        return
+    end
+    -- An unsigned cache is ignored (as at load): the in-memory build state stays.
+    if data.cache_trust == "unsigned" then data.cache = nil end
+    self._shared_ignored = data.shared_ignored or {}
+    self:remerge(data.config, data.cache, data.user)
+    self:_adopt_disk("user", texts[paths.user])
+    self:_adopt_disk("cache", texts[paths.cache])
+    if self._tracker then
+        for path, text in pairs(texts) do self._tracker:mark_written(path, text) end
+    end
+end
+
+--- Release a token from `_op_lock`.
+--- @param tok table|nil
+function Workspace:_op_unlock(tok)
+    if self._op_tokens then self._op_tokens[tok] = nil end
+    require("loomworks.op_lock").locks(self._core._deps, self.root).op.release(tok)
+end
+
+--- Take the build-directory locks of the directories a deletion will remove
+--- (spec §19.3: after O, in canonical order) as COUNTED references in this
+--- workspace's file-lock table (`_acquire_file_lock`): an editor task that
+--- holds the same directory (and is cancelled by the deletion) releases only
+--- its own reference, and two deletions of one directory each hold one, so
+--- the lockfile stays until the last of them ends. A lock this process holds
+--- outside the table — the CLI's `lw reset`, which keeps it until the
+--- deletion has completed — is left to its holder. Directories go by identity
+--- (`_build_dir_identity`, spec §4.6): one folder spelled two ways is one
+--- lock. Returns the keys referenced (release with `_release_file_lock`), or
+--- nil + the refusal message (nothing held).
+--- @param dirs string[] validated build directories
+--- @param operation string
+--- @return string[]|nil refs, string|nil message
+function Workspace:_deletion_build_locks(dirs, operation)
+    local build_lock = require("loomworks.op_lock").locks(self._core._deps, self.root).build
+    local lock_break = require("loomworks.lock_break")
+    local norm = self._core._deps.normalize
+    local keyed, seen = {}, {}
+    for _, d in ipairs(dirs) do
+        local k = self:_file_lock_key(d)
+        if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
+    end
+    table.sort(keyed, function(a, b) return a.k < b.k end)
+    self._build_dir_file_locks = self._build_dir_file_locks or {}
+    local refs = {}
+    local function undo()
+        for _, k in ipairs(refs) do self:_release_file_lock(k) end
+    end
+    for _, e in ipairs(keyed) do
+        local entry = self._build_dir_file_locks[e.k]
+        if entry then
+            entry.refs = entry.refs + 1
+            refs[#refs + 1] = e.k
+        elseif not build_lock.held_by_me(e.d) then
+            local shown = self:_display_build_dir(e.d)
+            local ctx = { what = shown, command = lock_break.command, unlock = shown,
+                prefix = "cannot " .. operation .. ": " }
+            local h, msg = lock_break.acquire(function()
+                local hh, _, info = build_lock.acquire(e.d, operation, ctx)
+                return hh, info
+            end, ctx)
+            if not h then
+                undo()
+                return nil, msg
+            end
+            self._build_dir_file_locks[e.k] = { handle = h, refs = 1, build = build_lock,
+                spellings = { [norm(e.d)] = true } }
+            refs[#refs + 1] = e.k
+            if h.reclaimed then
+                local line = self:_recover_interrupted_build_dir(e.d, h.reclaimed)
+                if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
+            end
+        end
+    end
+    return refs
+end
+
+--- Run `start()` (-> Future) holding O and the build locks of `dirs`; both are
+--- released when the future settles. A refused lock calls `on_done` and
+--- resolves false without running anything. A `start` that finished
+--- synchronously returns its outcome as a boolean instead of a Future: the
+--- locks are released at once and the result resolves to it.
+--- @param operation string
+--- @param dirs string[]
+--- @param start fun(): loomworks.Future|boolean
+--- @param on_done? function
+--- @param on_refused? fun(message: string) a refused lock's message (the
+---   holder), before `on_done`; it was already reported
+--- @return loomworks.Future
+function Workspace:_locked_deletion(operation, dirs, start, on_done, on_refused)
+    local future_mod = require("loomworks.future")
+    local tok, omsg = self:_op_lock(operation)
+    if not tok then
+        if on_refused then on_refused(omsg) end
+        if on_done then on_done() end
+        return future_mod.resolved(false)
+    end
+    local held, msg = self:_deletion_build_locks(dirs, operation)
+    if not held then
+        self:_op_unlock(tok)
+        local deps = self._core._deps
+        if deps.on_lock_refused then deps.on_lock_refused(msg) end
+        deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        if on_refused then on_refused(msg) end
+        if on_done then on_done() end
+        return future_mod.resolved(false)
+    end
+    local function release()
+        for _, k in ipairs(held) do self:_release_file_lock(k) end
+        held = {}
+        self:_op_unlock(tok)
+    end
+    local ok, f = pcall(start)
+    if not ok then release(); error(f, 0) end
+    if type(f) == "boolean" then
+        release()
+        return future_mod.resolved(f)
+    end
+    if f == nil then
+        release()
+        error("loomworks: _locked_deletion: start returned neither a Future nor an outcome", 0)
+    end
+    self._deletions = self._deletions or {}
+    self._deletions[f] = true
+    local function settle()
+        if self._deletions then self._deletions[f] = nil end
+        release()
+    end
+    f:next(settle):catch(settle)
+    return f
+end
+
+--- The validated build directories a deletion plan removes (clean / reset
+--- items with a directory under the workspace root).
+--- @param items table[]|nil
+--- @return string[]
+function Workspace:_deletion_dirs(items)
+    local dirs = {}
+    local norm = self._core._deps.normalize
+    local safe_prefix = norm(self.root)
+    for _, item in ipairs(items or {}) do
+        if item.build_dir and (item.disposition == "clean" or item.disposition == "reset")
+                and self:_validate_build_dir(norm(item.build_dir), safe_prefix) then
+            dirs[#dirs + 1] = item.build_dir
+        end
+    end
+    return dirs
+end
+
+--- Execute a deletion plan holding the workspace operation lock and the
+--- build-directory locks of the directories it removes (spec §19.3); see
+--- `_execute_deletion_unlocked`.
+--- @param plan loomworks.DeletionPlan
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean, report?: table, include_held?: boolean }
+--- @param on_done? function
+--- @return loomworks.Future
+function Workspace:execute_deletion(plan, opts, on_done)
+    return self:_locked_deletion("delete", self:_deletion_dirs(plan and plan.items), function()
+        return self:_execute_deletion_unlocked(plan, opts, on_done)
+    end, on_done)
+end
+
+--- Hard-reset every build directory (see `_reset_all_unlocked`) holding the
+--- workspace operation lock across both phases (spec §16.30, §19.3); each
+--- phase takes its directories' build locks itself.
+--- @param on_done? function
+--- @param opts? { stop?: fun(): boolean }
+--- @return loomworks.Future
+function Workspace:reset_all(on_done, opts)
+    return self:_locked_deletion("reset", {}, function()
+        return self:_reset_all_unlocked(on_done, opts)
+    end, on_done)
+end
+
+--- Delete an orphaned build directory (see `_delete_orphaned_build_dir_unlocked`)
+--- holding the workspace operation lock and its build-directory lock.
+--- @param build_dir_key string
+--- @param on_done? function
+--- @param opts? { stop?: fun(): boolean, overlap_exempt?: string[], report?: table, include_held?: boolean }
+--- @return loomworks.Future
+function Workspace:delete_orphaned_build_dir(build_dir_key, on_done, opts)
+    local norm = self._core._deps.normalize
+    local bd = self:find_build_dir(build_dir_key)
+    local dirs = {}
+    if bd and bd.path and self:_validate_build_dir(norm(bd.path), norm(self.root)) then
+        dirs[1] = bd.path
+    end
+    return self:_locked_deletion("delete", dirs, function()
+        return self:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
+    end, on_done)
 end
 
 -- ===========================================================================
@@ -4712,7 +6078,17 @@ function Workspace:_scan_tools()
 end
 
 --- Scan tools asynchronously and remerge when complete.
-function Workspace:_scan_tools_async()
+--- @param opts? { force?: boolean } `force`: detect every module type again,
+--- never reusing a machine-level cached result (a rescan, spec §16.43; a
+--- detector without that cache ignores it)
+function Workspace:_scan_tools_async(opts)
+    -- A newer scan supersedes any scan still running: only the newest one's
+    -- completion is taken in, marks the toolchains `scanned` and emits
+    -- `tools_detected`. A superseded scan's late result is dropped, so it
+    -- cannot end a wait for the newer scan (the daemon's `await_tools`) and
+    -- swallow the newer scan's change signal.
+    local gen = (self._tool_scan_gen or 0) + 1
+    self._tool_scan_gen = gen
     self._tool_state = "scanning"
     -- A fresh scan cycle: the active profile's owned LSP databases must be
     -- re-evaluated, so the deferred-LSP gate (§9.7) holds again until the
@@ -4726,7 +6102,11 @@ function Workspace:_scan_tools_async()
         config, cache,
         function(tools_by_type)
             self._core._deps.schedule(function()
-                if not self._core._workspace then return end
+                -- A torn-down workspace (unloaded, e.g. the daemon abandoned
+                -- this detection past BACKGROUND_MAX_DURATION, §19.11) drops
+                -- the late result.
+                if self._torn_down or not self._core._workspace then return end
+                if gen ~= self._tool_scan_gen then return end
                 self._tools_by_type = tools_by_type
                 -- Enrich with SDK-derived tools
                 self:_enrich_tools_from_sdks(tools_by_type)
@@ -4744,8 +6124,62 @@ function Workspace:_scan_tools_async()
                 -- Scan targets for existing build dirs (async, runtime only)
                 self:_scan_targets_async()
             end)
-        end
+        end,
+        -- A detector that works per module type (the CLI's tool cache,
+        -- §16.43) starts no further type once this workspace is torn down;
+        -- merge.detect_tools_async ignores it. A superseded scan stops too.
+        { cancelled = function() return self._torn_down == true or gen ~= self._tool_scan_gen end,
+            force = opts and opts.force or nil }
     )
+end
+
+--- The startup pass of `_scan_targets_async` without the target scan (a
+--- host with `deps.scan_targets = false` and `deps.lsp_databases`, the
+--- workspace daemon): regenerate the owned LSP database of every unit
+--- configured on this machine that has a build dir and a module owning one
+--- (§8.4 `refresh_lsp_database`, mtime-gated), one after another, the active
+--- profile's first. `mark_ready` is called once the active profile's settled
+--- (at once when it has none) — the §9.7 readiness `LspConfig/1.get`
+--- reports as `ready`.
+--- @param mark_ready fun()
+function Workspace:_refresh_lsp_databases_async(mark_ready)
+    local ws = self
+    local active_units = {}
+    local profile = self._active_profile
+    if profile and not profile._removed then
+        for _, pp in ipairs(profile:projects()) do
+            if pp._config_unit then active_units[pp._config_unit] = true end
+        end
+    end
+    local active, other = {}, {}
+    for _, unit in pairs(self._config_units or {}) do
+        local project = unit._project
+        local mod = project and project._module and project._module.impl or nil
+        if mod and mod.refresh_lsp_database and unit:build_dir() and unit:configured_here() then
+            if active_units[unit] then active[#active + 1] = unit else other[#other + 1] = unit end
+        end
+    end
+    local pending = #active
+    if pending == 0 then mark_ready() end
+    local units = {}
+    for _, u in ipairs(active) do units[#units + 1] = { unit = u, gating = true } end
+    for _, u in ipairs(other) do units[#units + 1] = { unit = u } end
+    local idx = 0
+    local function next_unit()
+        idx = idx + 1
+        local e = units[idx]
+        if not e or ws._torn_down then return end
+        ws:_refresh_lsp_database_for(e.unit, function()
+            ws._core._deps.schedule(function()
+                if e.gating then
+                    pending = pending - 1
+                    if pending <= 0 then mark_ready() end
+                end
+                next_unit()
+            end)
+        end)
+    end
+    next_unit()
 end
 
 --- Scan targets for all ConfigUnits that have a build directory.
@@ -4771,6 +6205,13 @@ function Workspace:_scan_targets_async()
     end
 
     if self._core._deps.scan_targets == false then
+        -- The workspace daemon scans no targets but generates the owned LSP
+        -- databases its `LspConfig/1` clients read (daemon.md §19.16 "LSP
+        -- configuration": while carried, only the daemon generates them).
+        if self._core._deps.lsp_databases then
+            self:_refresh_lsp_databases_async(mark_lsp_ready)
+            return
+        end
         -- The standalone CLI never surfaces targets and never installs LSP
         -- servers; nothing to generate or gate on.
         mark_lsp_ready()
@@ -4911,14 +6352,15 @@ function Workspace:_add_launch_config_targets()
 
     for _, unit in pairs(self._config_units) do
         local project = unit._project
-        if project and project.launch then
+        if project and project:has_launches() then
             unit.targets = unit.targets or {}
-            for name, cfg in pairs(project.launch) do
+            for _, launch in ipairs(project:launch_configs()) do
+                local name = launch.name
                 local launch_key = "launch:" .. name
                 if not unit.targets[launch_key] then
                     unit.targets[launch_key] = Target.new(unit, launch_key, {
                         type = "launch_config",
-                        artifact = cfg.command,
+                        artifact = launch.command,
                     })
                 end
             end
@@ -4928,14 +6370,16 @@ end
 
 --- Re-scan tools and remerge. Used for manual rescan from UI.
 --- Each module may implement `invalidate_tools()` to clear its own
---- detection cache before the rescan. Core stays module-agnostic.
+--- detection cache before the rescan. Core stays module-agnostic. Every
+--- module type is detected again (`force`: no machine-level cached result is
+--- reused, as `lw tools` rescans, spec §16.43).
 function Workspace:rescan_tools()
     for _, mod in pairs(self._modules) do
         if mod.impl and mod.impl.invalidate_tools then
             pcall(mod.impl.invalidate_tools)
         end
     end
-    self:_scan_tools_async()
+    self:_scan_tools_async({ force = true })
 end
 
 -- ---------------------------------------------------------------------------
@@ -4969,7 +6413,7 @@ function Workspace:_config_from_objects()
                 type = project.type,
                 type_config = tc,
                 depends_on = project._depends_on_keys,
-                launch = project.launch,
+                launch = project:serialize_launches(),
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
@@ -5076,8 +6520,9 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     if project._depends_on_keys then
         entry.depends_on = project._depends_on_keys
     end
-    if project.launch then
-        entry.launch = project.launch
+    local launch = project:serialize_launches()
+    if launch then
+        entry.launch = launch
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
@@ -5124,8 +6569,9 @@ function Workspace:_serialize_project(project)
     if project._depends_on_keys then
         entry.depends_on = project._depends_on_keys
     end
-    if project.launch then
-        entry.launch = project.launch
+    local launch = project:serialize_launches()
+    if launch then
+        entry.launch = launch
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
@@ -5478,7 +6924,7 @@ function Workspace:_user_config_from_objects()
                 type = project.type,
                 type_config = tc,
                 depends_on = project._depends_on_keys,
-                launch = project.launch,
+                launch = project:serialize_launches(),
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
@@ -5641,7 +7087,7 @@ function Workspace:is_project_modified(project)
     -- Check launch configs
     local bp = self:_baseline_project(project.key)
     local baseline_launch = bp and bp.launch
-    local current_launch = project.launch
+    local current_launch = project:serialize_launches()
     -- Published launch configs: compare per-key
     if current_launch or baseline_launch then
         -- Collect all launch names
@@ -6043,7 +7489,10 @@ function Workspace:_save_config()
     if ok and self._tracker then
         self._tracker:mark_written(path)
     end
-    if ok then self:_report_dropped_test_args(dropped) end
+    if ok then
+        self:_report_dropped_test_args(dropped)
+        self:_emit_written("config")
+    end
     return ok, err
 end
 
@@ -6166,6 +7615,7 @@ function Workspace:publish_one(item)
     if self._tracker then
         self._tracker:mark_written(path)
     end
+    self:_emit_written("config")
 
     -- Update baseline for the named item only, so its `+` clears while
     -- other items keep theirs. The baseline is the parsed (internal) shape
@@ -6485,7 +7935,7 @@ function Workspace:_serialize_config_internal()
                 type = project.type,
                 type_config = tc,
                 depends_on = project._depends_on_keys,
-                launch = project.launch,
+                launch = project:serialize_launches(),
                 deploy = project.deploy,
                 device = project.device,
                 description = item_description(project),
@@ -6572,8 +8022,9 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     if project._depends_on_keys then
         entry.depends_on = project._depends_on_keys
     end
-    if project.launch then
-        entry.launch = project.launch
+    local launch = project:serialize_launches()
+    if launch then
+        entry.launch = launch
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
@@ -6771,21 +8222,29 @@ function Workspace:_serialize_user()
     return data
 end
 
---- Write the current user data to loomworks.user.json.
---- Updates the file tracker's cached content to suppress self-write detection.
+--- Set the debug adapter for a language (spec §8.9.6 "Adapter
+--- configuration") and persist it to user.json (`debug.adapters`, the
+--- working copy only). A nil `adapter_name` removes the override, so the
+--- integration's default applies; emptied tables are dropped. The name is
+--- stored as given. A save that is refused or fails leaves the model as it
+--- was (the file is never written then): the previous settings are put back,
+--- unless the refusal reloaded the working copy, whose settings stand.
+--- @param language string
+--- @param adapter_name string|nil
 --- @return boolean ok, string|nil err
---- Set the debug adapter for a module type and persist to user.json.
---- @param module_type string
---- @param adapter_name string
-function Workspace:set_debug_adapter(module_type, adapter_name)
-    if not self._debug_settings then
-        self._debug_settings = {}
-    end
-    if not self._debug_settings.adapters then
-        self._debug_settings.adapters = {}
-    end
-    self._debug_settings.adapters[module_type] = adapter_name
-    self:_save_user()
+function Workspace:set_debug_adapter(language, adapter_name)
+    local before = self._debug_settings
+    local settings = vim.deepcopy(before or {})
+    settings.adapters = settings.adapters or {}
+    settings.adapters[language] = adapter_name
+    if not next(settings.adapters) then settings.adapters = nil end
+    if not next(settings) then settings = nil end
+    self._debug_settings = settings
+    local base = self._disk_baseline.user
+    local ok, err = self:_save_user()
+    -- (A stale refusal re-read the working copy: a new baseline.)
+    if not ok and self._disk_baseline.user == base then self._debug_settings = before end
+    return ok == true, err
 end
 
 -- ---------------------------------------------------------------------------
@@ -6824,6 +8283,58 @@ local LSP_OPTION_SCHEMAS = {
     },
 }
 
+--- Whether `value` is one of a string-enum's allowed values.
+--- @param allowed string[]
+--- @param value any
+--- @return boolean
+local function lsp_enum_allows(allowed, value)
+    for _, v in ipairs(allowed) do
+        if value == v then return true end
+    end
+    return false
+end
+
+--- What is wrong with setting `server`'s option `key` to `value`, checked
+--- against LSP_OPTION_SCHEMAS (nil `value`: only the server and key, a
+--- removal), or nil when nothing is. Shared by Workspace:set_lsp_option and
+--- `LspConfig/1.set_option` (§19.20), which refuse such a write before
+--- anything is written. Stricter than reading user.json
+--- (Workspace:_validate_lsp_options), which keeps an unknown server verbatim
+--- and drops non-string `extra_args` elements: a write is refused instead.
+--- @param server any
+--- @param key any
+--- @param value any
+--- @return string|nil problem
+function M.lsp_option_problem(server, key, value)
+    if type(server) ~= "string" or type(key) ~= "string" then
+        return "an LSP option needs a server and a key (strings)"
+    end
+    local schema = LSP_OPTION_SCHEMAS[server]
+    if not schema then
+        return string.format("lsp server %q has no options", server)
+    end
+    local expect = schema.keys[key]
+    if not expect then
+        return string.format("lsp.%s.%s is not an option", server, key)
+    end
+    if value == nil then return nil end
+    if type(value) ~= expect then
+        return string.format("lsp.%s.%s expects %s, got %s", server, key, expect, type(value))
+    end
+    if schema.enums[key] and not lsp_enum_allows(schema.enums[key], value) then
+        return string.format("lsp.%s.%s = %q is not one of %s",
+            server, key, value, table.concat(schema.enums[key], "|"))
+    end
+    if expect == "table" then
+        for k, v in pairs(value) do
+            if type(k) ~= "number" or type(v) ~= "string" then
+                return string.format("lsp.%s.%s expects a list of strings", server, key)
+            end
+        end
+    end
+    return nil
+end
+
 --- Validate a raw `lsp` block parsed from user.json. Unknown server
 --- names pass through (the integration may not have been registered
 --- yet); unknown / mistyped fields within a server table are stripped
@@ -6860,11 +8371,7 @@ function Workspace:_validate_lsp_options(raw)
                                 server, key, expect, type(value)),
                             vim.log.levels.WARN)
                     elseif schema.enums[key] then
-                        local allowed = false
-                        for _, v in ipairs(schema.enums[key]) do
-                            if value == v then allowed = true; break end
-                        end
-                        if not allowed then
+                        if not lsp_enum_allows(schema.enums[key], value) then
                             self._core._deps.notify(
                                 string.format(
                                     "loomworks: user.json lsp.%s.%s = %q is not one of %s; using default",
@@ -6909,31 +8416,57 @@ function Workspace:get_lsp_options(server)
     return out
 end
 
+--- The servers that have options: those with defaults and those with a
+--- stored override, sorted.
+--- @return string[]
+function Workspace:lsp_option_servers()
+    local seen, out = {}, {}
+    for server in pairs(LSP_OPTION_DEFAULTS) do seen[server] = true end
+    for server in pairs(self._lsp_options or {}) do seen[server] = true end
+    for server in pairs(seen) do out[#out + 1] = server end
+    table.sort(out)
+    return out
+end
+
 --- Set a single LSP option for a server and persist to user.json.
 --- Stores only when the value differs from the integration default,
 --- so loading + saving an untouched workspace doesn't bloat user.json.
+--- A nil `value` removes the key (the default applies again). A write that
+--- is refused (a stale or untrusted working copy, §2.7) or fails changes
+--- neither user.json nor the model (also `LspConfig/1.set_option`, §19.20).
+--- An unknown server or key, or a value of the wrong type
+--- (`M.lsp_option_problem`), is refused before anything is written.
 --- @param server string
 --- @param key string
 --- @param value any
+--- @return boolean ok
+--- @return string|nil err why user.json was not written
 function Workspace:set_lsp_option(server, key, value)
+    local problem = M.lsp_option_problem(server, key, value)
+    if problem then return false, problem end
     local defaults = LSP_OPTION_DEFAULTS[server] or {}
-    if not self._lsp_options then self._lsp_options = {} end
-    if not self._lsp_options[server] then self._lsp_options[server] = {} end
-    if defaults[key] ~= nil and vim.deep_equal(defaults[key], value) then
+    local before = self._lsp_options
+    local options = vim.deepcopy(before or {})
+    options[server] = options[server] or {}
+    if value == nil or (defaults[key] ~= nil and vim.deep_equal(defaults[key], value)) then
         -- Storing the default would be redundant; drop the entry.
-        self._lsp_options[server][key] = nil
-        if next(self._lsp_options[server]) == nil then
-            self._lsp_options[server] = nil
-        end
-        if next(self._lsp_options) == nil then
-            self._lsp_options = nil
-        end
+        options[server][key] = nil
     else
-        self._lsp_options[server][key] = value
+        options[server][key] = value
     end
-    self:_save_user()
+    if next(options[server]) == nil then options[server] = nil end
+    if next(options) == nil then options = nil end
+    self._lsp_options = options
+    local base = self._disk_baseline.user
+    local ok, err = self:_save_user()
+    if not ok then
+        -- (A stale refusal re-read the working copy: a new baseline.)
+        if self._disk_baseline.user == base then self._lsp_options = before end
+        return false, err
+    end
     self._core._deps.events.emit("lsp_options_changed",
         { server = server, key = key, value = value })
+    return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -7208,12 +8741,13 @@ function Workspace:add_sdk(sdk_type, path, opts)
     return sdk
 end
 
---- Remove an SDK from the workspace.
---- @param key string SDK key
---- @return boolean ok
-function Workspace:remove_sdk(key)
+--- Remove an SDK from the workspace: the declared object itself (by
+--- identity, never another SDK of its key).
+--- @param target loomworks.SDK
+--- @return boolean ok false: `target` is not declared
+function Workspace:remove_sdk(target)
     for i, sdk in ipairs(self._sdks) do
-        if sdk.key == key then
+        if sdk == target then
             sdk._removed = true
             table.remove(self._sdks, i)
             self:_save_user()
@@ -7244,6 +8778,10 @@ function Workspace:_set_profile_variables_raw(profile_key, dict)
 end
 
 --- The message of a refused stale working-copy save (spec §2.7).
+--- How long `teardown` waits for an in-flight deletion to finish removing
+--- its trees before it releases the deletion's locks anyway.
+M.TEARDOWN_WAIT_MS = 30000
+
 M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on disk"
     .. " (another lw or editor) — reloaded it; your last change was not saved, redo it"
 
@@ -7273,8 +8811,12 @@ end
 --- change is discarded) and the refusal is reported (editor: error
 --- notification; CLI: `lw: …`, exit 1). Item-level replay is not attempted:
 --- working-copy mutations are cross-item (renames, cascade, self-containment).
---- @return boolean ok, string|nil err
+--- The third return is `"stale"` for that refusal: the in-memory state is then
+--- the reloaded one, so a caller must not undo its change over it.
+--- @return boolean ok, string|nil err, "stale"|nil reason
 function Workspace:_save_user()
+    if self._torn_down then return false, "the workspace was unloaded" end
+    if self._no_write then return false, self._no_write end
     local deps = self._core._deps
     local path = user_mod.filepath(self.root)
     -- A refused working copy loaded as absent for an import (spec §16.39) is
@@ -7297,7 +8839,7 @@ function Workspace:_save_user()
             if self._tracker then self._tracker:mark_written(path, disk) end
             self:_on_file_changed(path, disk)
             self:_report_save_refused(M.STALE_USER_MESSAGE)
-            return false, M.STALE_USER_MESSAGE
+            return false, M.STALE_USER_MESSAGE, "stale"
         end
     end
     local ok, err, _, written = deps.user.save(self.root, data)
@@ -7376,7 +8918,7 @@ function Workspace:remove_project(project)
     end
 
     -- Remove from domain objects
-    project._removed = true
+    project:_mark_removed()
     for i, p in ipairs(self._projects) do
         if p == project then table.remove(self._projects, i); break end
     end
@@ -7460,7 +9002,10 @@ function Workspace:rename_project(project, new_key)
         end
     end
 
-    local ok, err = self:_save_user()
+    -- A key the build directory derives from (shell `${project_path}`) may
+    -- move it onto another configuration's (spec §1.7): refused, nothing written.
+    local ok, err = false, self:_new_build_dir_collision()
+    if not err then ok, err = self:_save_user() end
     if not ok then
         -- Rollback
         project.key = old_key
@@ -7688,7 +9233,10 @@ function Workspace:_ensure_profile_config_units(profile)
     local units_by_id = {}
     for _, u in pairs(self._config_units) do units_by_id[u.id] = u end
 
+    -- A configuration refused its build directory (spec §1.7) gets no unit.
+    local refused = self:_build_dir_refusals()
     for project, config in pairs(config_set.mappings) do
+        if refused[project] and refused[project][config] then goto continue end
         local variant = config.name
         local project_key = project.key
         -- Tool key applies only to projects whose module type matches
@@ -7700,8 +9248,9 @@ function Workspace:_ensure_profile_config_units(profile)
         -- Compute the unit id (spec §1.7 "Unit identity")
         local rel_key, abs_path = self:_compute_unit_id(project, variant, project_tool_data, project_tool_key)
 
-        -- Create skeleton ConfigUnit if absent
-        if not units_by_id[rel_key] then
+        -- Create skeleton ConfigUnit if absent (none for a configuration the
+        -- module reported an `error` for, §8 `info`: no build dir resolved)
+        if rel_key and not units_by_id[rel_key] then
             local entry = {
                 project_key = project_key,
                 config_key = config_key,
@@ -7716,6 +9265,7 @@ function Workspace:_ensure_profile_config_units(profile)
             self._config_units[#self._config_units + 1] = unit
             units_by_id[rel_key] = unit
         end
+        ::continue::
     end
 end
 
@@ -7978,14 +9528,13 @@ end
 --- @param tool_entry? table
 --- @param activate? boolean
 --- @return loomworks.Profile|nil
+--- @return string|nil err the refusal of a new profile that would take
+---   another configuration's build directory (spec §1.7)
 function Workspace:create_profile(config_set, tool_entry, activate)
-    local profile
     if activate then
-        profile = config_set:activate(tool_entry)
-    else
-        profile = config_set:ensure_profile(tool_entry)
+        return config_set:activate(tool_entry)
     end
-    return profile
+    return config_set:ensure_profile(tool_entry)
 end
 
 --- Activate a profile by key. Writes user.json and remerges.
@@ -8129,16 +9678,29 @@ function Workspace:_start_tracking(paths)
     if self._tracker then
         self._tracker:stop()
     end
+    local manual = self._core._deps.manual_file_tracking and true or false
     self._tracker = self._core._deps.FileTracker.new({
         callback = function(path, content)
             self:_on_file_changed(path, content)
         end,
+        -- One sync's changes are applied together (spec §2.7).
+        batch = function(deliver) self:_apply_file_changes(deliver) end,
         schedule = self._core._deps.schedule,
         read_file = self._core._deps.io.read_file,
+        -- The workspace daemon applies external changes itself (spec §19.13
+        -- "Freshness of views", §19.15): its tracker watches the files and
+        -- signals it (`file_signal`); a file that cannot be parsed is held
+        -- back, and one missing beside its staged copy is a save in progress.
+        manual = manual or nil,
+        signal = manual and self._core._deps.file_signal or nil,
+        hold = manual and function(path, content) return self:_hold_file_change(path, content) end or nil,
+        saves = manual or nil,
     })
     self._tracker:watch(paths.config)
     self._tracker:watch(paths.user)
-    self._tracker:watch(paths.cache)
+    -- (The daemon watches loomworks.json and the working copy; the cache,
+    -- which it writes itself, reaches it at each check, §19.13.)
+    self._tracker:watch(paths.cache, { passive = true })
 end
 
 --- Stop file tracking.
@@ -8201,6 +9763,19 @@ end
 --- @return loomworks.Future resolves once tasks are confirmed stopped
 function Workspace:teardown()
     self:_stop_tracking()
+    -- A deletion still removing its trees keeps its locks until it ends: wait
+    -- for it (bounded, `TEARDOWN_WAIT_MS`) before the locks below are
+    -- released, so no other process enters a directory being removed.
+    if self._deletions and next(self._deletions) then
+        vim.wait(M.TEARDOWN_WAIT_MS, function() return next(self._deletions) == nil end, 20)
+    end
+    -- A torn-down workspace writes nothing again (a late task callback must
+    -- not resurrect state, e.g. a cache a nuke just removed).
+    self._torn_down = true
+    -- The status page's rows bound to this workspace's objects
+    -- (status_source.bind) name nothing any more.
+    local status_source = package.loaded["loomworks.status_source"]
+    if status_source then status_source.forget() end
 
     local events = self._core._deps.events
     for _, entry in ipairs(self._event_handlers) do
@@ -8222,13 +9797,45 @@ function Workspace:teardown()
     if self._build_dir_file_locks then
         local build_lock = require("loomworks.build_lock")
         for _, entry in pairs(self._build_dir_file_locks) do
-            build_lock.release(entry.handle)
+            (entry.build or build_lock).release(entry.handle)
         end
         self._build_dir_file_locks = {}
     end
+    -- A multi-file operation whose future never settled (a deletion stuck in
+    -- its removal) must not keep the workspace operation lock (spec §19.3).
+    for tok in pairs(self._op_tokens or {}) do
+        pcall(require("loomworks.op_lock").locks(self._core._deps, self.root).op.release, tok)
+    end
+    self._op_tokens = {}
     self._status_cursor_row = nil
 
     return self:stop_tasks_then(task_ids)
+end
+
+--- Apply one sync's external changes together (the file tracker's `batch`
+--- wrapper, spec §2.7, §19.15). The tracker has already read every watched
+--- file, so a loomworks.json reassembly sees the working copy's new bytes. The
+--- working copy is re-saved once, after every change is applied: saving it
+--- in between (before its own change was reconciled) would compare the disk
+--- against an outdated baseline and refuse the pending external edit as a
+--- concurrent write.
+--- @param deliver fun() fires `_on_file_changed` for each change
+function Workspace:_apply_file_changes(deliver)
+    if self._file_batch then return deliver() end
+    local batch = { save_user = false }
+    self._file_batch = batch
+    -- The traceback is taken at the error point, so the rethrow keeps it.
+    local ok, err = xpcall(deliver, function(e)
+        if type(e) == "string" and not e:find("stack traceback:", 1, true) then
+            return debug.traceback(e, 2)
+        end
+        return e
+    end)
+    self._file_batch = nil
+    if not ok then error(err, 0) end
+    -- (A refused file that reloaded the workspace, §17.4, tore this one
+    -- down: `_save_user` then writes nothing.)
+    if batch.save_user then self:_save_user() end
 end
 
 --- Handle a tracked file change.
@@ -8264,61 +9871,91 @@ function Workspace:_on_file_changed(path, content)
         end
     end
 
-    if path == paths.config then
-        -- loomworks.json changed: full reassemble
-        local data, err = M.assemble(
-            self.root,
-            content,
-            self._tracker:content(paths.user),
-            self._tracker:content(paths.cache),
-            { trust = deps.trust, modules = deps.modules }
-        )
-        if data and (data.user_trust == "unsigned" or data.user_trust == "invalid"
-                or data.cache_trust == "invalid") then
-            return refuse()
-        end
-        if data and data.cache_trust == "unsigned" then
-            -- Keep the in-memory build state (remerge serializes it).
-            data.cache = nil
-        end
-        if data then
-            local ok, val_err = self._core:_validate_projects(data.config, data.root)
-            if ok then
-                -- Capture old baseline for removed-upstream detection.
-                local old_baseline = self._shared_baseline
-                -- Auto-update synced items: if user.json had items that matched
-                -- the old baseline, update them to match the new shared config
-                -- so they stay synced instead of showing spurious '+'.
-                if self._shared_baseline and data.user then
-                    self:_auto_sync_user_projects(data.config, data.user)
-                end
-                -- Update workspace data fields in place
-                self.root = data.root
-                self.name = data.name
-                self._shared_ignored = data.shared_ignored or {}
-                self:_scan_tools_async()
-                self:remerge(data.config, data.cache, data.user)
-                -- In-memory state was rebuilt from the files: re-take the
-                -- cache's per-entry snapshot (spec §2.7).
-                self._cache_snapshot = save_guard.snapshot_cache(self:_serialize_cache())
-                -- After remerge, _shared_baseline is the new baseline.
-                -- Detect items present in old baseline but not in new (and
-                -- effective local+shared in working copy) — flag as
-                -- removed-upstream.
-                self:_mark_removed_upstream(old_baseline)
-                -- Persist user.json after every baseline change so sticky
-                -- intent survives Neovim restarts.
-                -- _serialize_user records any intent that differs from the
-                -- new baseline's default, including overrides that became
-                -- necessary because upstream removed an item.
-                self:_save_user()
-                self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
-            else
-                self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
+    -- A re-assembly after an edit to loomworks.json or user.json is a load
+    -- (core daemon.md §19.13 "Load warnings"): what it raises replaces this
+    -- workspace's load diagnostics — a fixed warning goes, a new one is
+    -- carried — and `notify.once` reports again (`_begin_load_notes`). Not
+    -- inside a load already capturing (`fn(own)` is false then); a refusal's
+    -- setup starts its own.
+    local function as_load(fn)
+        local core = self._core
+        local notes = not core._load_capture and core:_begin_load_notes() or nil
+        local ok, e = xpcall(function() return fn(notes ~= nil) end, function(x)
+            if type(x) == "string" and not x:find("stack traceback:", 1, true) then
+                return debug.traceback(x, 2)
             end
-        else
-            self._core._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
+            return x
+        end)
+        if notes and core._load_capture and core._load_capture.list == notes then
+            core:_end_load_notes()
+            self._load_notes = notes
         end
+        if not ok then error(e, 0) end
+    end
+
+    if path == paths.config then
+        -- loomworks.json changed: full reassemble.
+        local function reassemble()
+            local data, err = M.assemble(
+                self.root,
+                content,
+                self._tracker:content(paths.user),
+                self._tracker:content(paths.cache),
+                { trust = deps.trust, modules = deps.modules }
+            )
+            if data and (data.user_trust == "unsigned" or data.user_trust == "invalid"
+                    or data.cache_trust == "invalid") then
+                return refuse()
+            end
+            if data and data.cache_trust == "unsigned" then
+                -- Keep the in-memory build state (remerge serializes it).
+                data.cache = nil
+            end
+            if data then
+                local ok, val_err = self._core:_validate_projects(data.config, data.root)
+                if ok then
+                    -- Capture old baseline for removed-upstream detection.
+                    local old_baseline = self._shared_baseline
+                    -- Auto-update synced items: if user.json had items that matched
+                    -- the old baseline, update them to match the new shared config
+                    -- so they stay synced instead of showing spurious '+'.
+                    if self._shared_baseline and data.user then
+                        self:_auto_sync_user_projects(data.config, data.user)
+                    end
+                    -- Update workspace data fields in place
+                    self.root = data.root
+                    self.name = data.name
+                    self._shared_ignored = data.shared_ignored or {}
+                    self:_scan_tools_async()
+                    self:remerge(data.config, data.cache, data.user)
+                    -- In-memory state was rebuilt from the files: re-take the
+                    -- cache's per-entry snapshot (spec §2.7).
+                    self._cache_snapshot = save_guard.snapshot_cache(self:_serialize_cache())
+                    -- After remerge, _shared_baseline is the new baseline.
+                    -- Detect items present in old baseline but not in new (and
+                    -- effective local+shared in working copy) — flag as
+                    -- removed-upstream.
+                    self:_mark_removed_upstream(old_baseline)
+                    -- Persist user.json after every baseline change so sticky
+                    -- intent survives Neovim restarts.
+                    -- _serialize_user records any intent that differs from the
+                    -- new baseline's default, including overrides that became
+                    -- necessary because upstream removed an item.
+                    -- Inside a tracker sync, once all its changes are applied.
+                    if self._file_batch then
+                        self._file_batch.save_user = true
+                    else
+                        self:_save_user()
+                    end
+                    self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
+                else
+                    self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)
+                end
+            else
+                self._core._deps.notify("loomworks: config reload failed: " .. (err or "unknown"), vim.log.levels.WARN)
+            end
+        end
+        as_load(reassemble)
 
     elseif path == paths.user then
         -- user.json changed: normalize user projects and pass through remerge
@@ -8327,19 +9964,33 @@ function Workspace:_on_file_changed(path, content)
         -- A newer schema is never reconciled (it would read as defaults and
         -- the next save would drop it): back to the refused state (spec §2.7).
         if newer then return refuse() end
-        local warning = save_guard.newer_writer_warning(path, ".nvim/loomworks.user.json", user_data._meta)
-        if warning then deps.notify("loomworks: " .. warning, vim.log.levels.WARN) end
-        if user_data.projects and next(user_data.projects) then
-            local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
-            if normalized then
-                user_data.projects = normalized
-            else
-                self._core._deps.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
-                user_data.projects = nil
+        as_load(function(own)
+            -- The shared layer's warnings are part of this load's too: the
+            -- delivered loomworks.json is parsed and validated again for its
+            -- warnings only (the model keeps its shared layer), recorded
+            -- without showing them to the host again.
+            local shared = self._tracker and self._tracker:content(paths.config)
+            local capture = self._core._load_capture
+            if own and shared and capture then
+                capture.quiet = true
+                local okp, parsed = pcall(config_mod.parse, shared, self.root)
+                if okp and parsed then pcall(self._core._validate_projects, self._core, parsed, self.root) end
+                capture.quiet = nil
             end
-        end
-        self:remerge(nil, nil, user_data)
-        self:_adopt_disk("user", raw)
+            local warning = save_guard.newer_writer_warning(path, ".nvim/loomworks.user.json", user_data._meta)
+            if warning then deps.notify("loomworks: " .. warning, vim.log.levels.WARN) end
+            if user_data.projects and next(user_data.projects) then
+                local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
+                if normalized then
+                    user_data.projects = normalized
+                else
+                    self._core._deps.notify("loomworks: user.json projects invalid: " .. (norm_err or "unknown"), vim.log.levels.WARN)
+                    user_data.projects = nil
+                end
+            end
+            self:remerge(nil, nil, user_data)
+            self:_adopt_disk("user", raw)
+        end)
 
     elseif path == paths.cache then
         -- cache.json changed: update cache data and remerge
@@ -8353,6 +10004,84 @@ function Workspace:_on_file_changed(path, content)
     end
 end
 
+--- Hold back a tracked file change that cannot be parsed (the workspace
+--- daemon's tracker `hold`, core daemon.md §19.13 "Freshness of views"): a
+--- file that is not a JSON object, or a working copy whose signature envelope
+--- cannot be read (a save caught half-written), never unloads or replaces the
+--- model. The last good model stays, a load warning names the file — once,
+--- however often it is seen — and the next change retries; the warning goes
+--- when the file can be parsed again. A well-formed working copy that fails
+--- its signature is not held: `_on_file_changed` refuses it (§17.4).
+--- @param path string
+--- @param content string|nil
+--- @return boolean hold
+function Workspace:_hold_file_change(path, content)
+    local paths = M.paths(self.root)
+    local why
+    if content ~= nil then
+        local ok, decoded = pcall(vim.json.decode, content)
+        if not ok or type(decoded) ~= "table" then
+            why = "it is not JSON"
+        elseif path == paths.user and require("loomworks.trust").envelope_unreadable(content) then
+            why = "its signature envelope cannot be read"
+        end
+    end
+    local held = self._held_notes or {}
+    self._held_notes = held
+    local note = held[path]
+    if not why then
+        if note then
+            held[path] = nil
+            for i, n in ipairs(self._load_notes or {}) do
+                if n == note then
+                    table.remove(self._load_notes, i)
+                    break
+                end
+            end
+        end
+        return false
+    end
+    if not note then
+        local rel = path:sub(1, #self.root + 1) == self.root .. "/" and path:sub(#self.root + 2) or path
+        note = { severity = "warn", text = string.format(
+            "loomworks: %s cannot be parsed (%s): the last good state is kept until it changes", rel, why) }
+        held[path] = note
+        self._load_notes = self._load_notes or {}
+        table.insert(self._load_notes, note)
+    end
+    return true
+end
+
+--- Would applying this tracked file change reload the workspace or run a
+--- tool detection? A loomworks.json change reassembles and rescans tools; a
+--- working copy not signed by this machine, an invalid cache signature or a
+--- newer schema puts the workspace back into the refused state (a reload),
+--- as `_on_file_changed` decides.
+--- @param path string
+--- @param content string|nil
+--- @return boolean
+function Workspace:_change_needs_reload(path, content)
+    local paths = M.paths(self.root)
+    if path == paths.config then return true end
+    if content == nil or (path ~= paths.user and path ~= paths.cache) then return false end
+    local kind = (path == paths.user) and "user" or "cache"
+    local status, body = self._core._deps.trust.verify(kind, content)
+    if status ~= "valid" then return kind == "user" or status == "invalid" end
+    local _, _, newer = (kind == "user" and user_mod or cache_mod).parse(body)
+    return newer and true or false
+end
+
+--- Apply the changes another process made to the working copy and the
+--- cache that need no reload and no tool detection (the workspace daemon's
+--- view check, spec §19.13 "Freshness of views"); a change that needs either
+--- stays pending, with every file changed with it, for the next
+--- state-changing request's sync, so the model is never half-applied.
+function Workspace:sync_light()
+    local tr = self._tracker
+    if not (tr and tr.sync) then return end
+    tr:sync({ accept = function(path, content) return not self:_change_needs_reload(path, content) end })
+end
+
 --- Force-reload loomworks.json from disk and remerge.
 --- Used after programmatic writes to loomworks.json to avoid waiting
 --- for the file watcher poll interval.
@@ -8360,6 +10089,21 @@ function Workspace:reload_config()
     local paths = M.paths(self.root)
     local content = self._core._deps.io.read_file(paths.config)
     self:_on_file_changed(paths.config, content)
+end
+
+-- Multi-file operations run holding the workspace operation lock (§19.3).
+do
+    local op_lock = require("loomworks.op_lock")
+    local function self_ws(ws) return ws end
+    op_lock.guard(Workspace, "publish", "publish", self_ws)
+    op_lock.guard(Workspace, "publish_one", "publish", self_ws)
+    op_lock.guard(Workspace, "commit_import", "import", self_ws)
+    op_lock.guard(Workspace, "rename_project", "rename", self_ws)
+    op_lock.guard(Workspace, "rename_configuration_set", "rename", self_ws)
+    op_lock.guard(Workspace, "remove_profile", "remove", self_ws)
+    -- Profile keys renamed into the cache and the working copy.
+    op_lock.guard(Workspace, "upgrade_profiles_for_tool", "rename", self_ws)
+    op_lock.guard(Workspace, "downgrade_profiles_from_tool", "rename", self_ws)
 end
 
 M.Workspace = Workspace
