@@ -56,6 +56,7 @@
 --- @field output_path string|nil path for structured result output
 --- @field prepare (fun(): boolean, string|nil)|nil runs when the step executes, before its program (e.g. a saved launch entry's deploy); `false, err` fails the step without running it
 --- @field test_id string|nil the node a failed `prepare` marks failed
+--- @field debug_adapter string|nil the nvim-dap adapter a debug of it uses (default "codelldb")
 
 --- @class loomtest.TestResult
 --- @field test_id string matches a TestNode id

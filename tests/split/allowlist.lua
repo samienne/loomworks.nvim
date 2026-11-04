@@ -74,17 +74,12 @@ return {
             "loomworks.cpp_compilers",
             "loomworks.exe",
             "loomworks.future",
-            "loomworks.io",
             "loomworks.modules",
-            "loomworks.nice",
-            "loomworks.progress",
             "loomworks.term",
             "loomworks.variables",
         },
-        ["lua/loomworks/session_tracker.lua"] = {
-            "loomworks.exe",
-            "loomworks.future",
-        },
+        -- (session_tracker.lua: loomworks.exe and loomworks.future dropped with
+        -- its in-process launch chain.)
         ["lua/loomworks/ui/deploy_editor.lua"] = {
             "loomworks.paths",
         },
@@ -139,7 +134,8 @@ return {
         ["lua/loomworks/lsp.lua"] = 1,
     },
     reach_ins = {
-        ["lua/loomtest/runner.lua"] = 1,
+        -- loomtest/runner.lua 1 -> 0: a debug's adapter is the RunSpec's
+        -- (loomtest reads no workspace model).
         -- daemon/editor_ops.lua 1 -> 0: step 6b-α A1b (operations by ids, no
         -- scope workspace).
         -- device_log.lua 1 -> 0: step 5n C2 — the dropped-lines warning
@@ -149,18 +145,24 @@ return {
         -- `lw.loaded_root`, `lw.shutdown`); 57 -> 55: A1b (the facade);
         -- 55 -> 26: the plugin runs in daemon mode only (no in-process
         -- branches, getters or pickers); 26 -> 21: the UI reads the daemon
-        -- only (its task, lock and cancel accessors removed).
-        ["lua/loomworks/init.lua"] = 21,
+        -- only (its task, lock and cancel accessors removed); 21 -> 14:
+        -- overseer and the sources read the daemon only (lsp_ready,
+        -- nuke_check, has_pending_deletions, after_deletions and
+        -- create_operation removed; the device getters pass no workspace).
+        ["lua/loomworks/init.lua"] = 14,
         -- loomtest_adapter.lua 2 -> 0, neotest/init.lua 5 -> 0: step 5m part A
-        -- routes the test adapters' reads through test_source.lua; its one
-        -- site is the in-process source's model read (the daemon source
-        -- arrives in 5m C1).
-        ["lua/loomworks/test_source.lua"] = 1,
-        -- lsp.lua 7 -> 0, clangd.lua / qmlls.lua 1 -> 0: step 5l part A routes
-        -- the LSP layer's reads through lsp_source.lua; its one site is the
-        -- in-process source's model read (the daemon source arrives in 5l C).
-        ["lua/loomworks/lsp_source.lua"] = 1,
-        ["lua/loomworks/overseer.lua"] = 22,
+        -- routes the test adapters' reads through test_source.lua; lsp.lua 7
+        -- -> 0, clangd.lua / qmlls.lua 1 -> 0: step 5l part A routes the LSP
+        -- layer's reads through lsp_source.lua. test_source.lua and
+        -- lsp_source.lua 1 -> 0: both read the daemon only (their in-process
+        -- sources removed).
+        -- overseer.lua 22 -> 5: it no longer runs the editor's operations
+        -- (run_profile_action, run_configuration_action, the cleans,
+        -- launch_single_task, build_spec_for and their task tracking
+        -- removed); what is left is the planning half the binary still
+        -- calls (unit / profile workspace back-references) — it moves out
+        -- with the binary-side files.
+        ["lua/loomworks/overseer.lua"] = 5,
         -- actions.lua 9 -> 5, orphaned.lua 1 -> 0, tree.lua 4 -> 3: step 5o
         -- C2c-2 (the deletions and the nuke name their rows; their
         -- confirmations come from Maintenance/1).
@@ -207,7 +209,9 @@ return {
         -- built or run in-process for it.
         ["lua/loomworks/loomtest_adapter.lua"] = 1,
         ["lua/loomworks/profile.lua"] = 3,
-        ["lua/loomworks/session_tracker.lua"] = 5,
+        -- 5 -> 2: the in-process launch chain removed (only the daemon's
+        -- launch targets run).
+        ["lua/loomworks/session_tracker.lua"] = 2,
         ["lua/loomworks/target.lua"] = 3,
         -- ui/actions.lua 12 -> 0, ui/model_calls.lua 0 -> 6 -> 0 (deleted): step 5o
         -- C2d-1 moved the in-process bodies there; daemon-only removed them.

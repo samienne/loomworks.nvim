@@ -125,9 +125,13 @@ describe("shared build dir protection by real path (spec 4.6)", function()
     assert.equals(2, #ws:get_build_dir_refs(dir), "both spellings index one directory")
     assert.equals(2, #ws:get_build_dir_refs(alias), "looked up by either spelling")
 
-    local ok, done = wait(by.Dev:clean())
-    assert.is_true(done, "clean settles")
-    assert.is_true(ok, "clean succeeds (the shared dir is kept)")
+    -- The clean's wipe (build_run's wipe step, the daemon's Build/1.clean)
+    -- names the real spelling; the other unit references the alias.
+    local f, shared = ws:clean_wipe_build_dir({ dev }, dir)
+    assert.is_true(shared, "the dir is reported shared with the other unit")
+    local ok, done = wait(f)
+    assert.is_true(done, "the wipe settles")
+    assert.is_true(ok, "the wipe succeeds (the shared dir is kept)")
     assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"),
       "a build dir still referenced under another spelling must survive")
     assert.equals("built", rel.state_value, "the other config's state is untouched")

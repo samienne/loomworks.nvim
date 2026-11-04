@@ -89,16 +89,6 @@ describe("editor operations as daemon calls (§19.16, step 5k C1)", function()
         pcall(function() core:shutdown() end)
     end)
 
-    it("in-process mode: nothing is routed, the entry points run in-process as before", function()
-        assert.is_nil(observer.current())
-        assert.is_nil(editor_ops.carrier("build", ws))
-        assert.is_false((editor_ops.daemon_of(ws)))
-        local f = require("loomworks.overseer").run_profile_action(profile, "build")
-        assert.is_nil(f.routed)
-        assert.is_true(vim.wait(5000, function() return #created > 0 end, 10))
-        assert.same({}, sent)
-    end)
-
     -- The daemon-mode editor names an operation's scope by the view rows'
     -- ids (editor_ops.run_ids; it holds no model, step 6b-alpha): the
     -- profile row `P` and its unit row `U`.

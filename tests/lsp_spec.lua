@@ -112,43 +112,6 @@ describe("lsp", function()
             end
         end)
 
-        it("returns project path for cmake project buffers", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = { MyLib = {} },
-            })
-
-            core._deps.buf_name = function()
-                return "/workspace/MyLib/src/main.cpp"
-            end
-
-            -- Override init.lua facade to delegate to test core
-            local lw = require("loomworks")
-            local orig_pfb = lw.project_for_buf
-            local orig_gw = lw.get_workspace
-            local orig_bp, orig_gp = lw.buf_project, lw.get_projects
-            -- The LSP layer maps a buffer by `lw.buf_project` (§19.13), here
-            -- the test core's project of the faked buffer name.
-            lw.buf_project = function(bufnr)
-                local p = core:project_for_buf(bufnr)
-                return p and { key = p.key } or nil
-            end
-            lw.get_projects = function() return core:get_projects() end
-            lw.get_workspace = function() return core:get_workspace() end
-
-            local root_fn = lsp.clangd_root_dir(function(_, on_dir)
-                on_dir("/fallback")
-            end)
-
-            local result = nil
-            root_fn(1, function(dir) result = dir end)
-            assert.equals("/workspace/MyLib", result)
-
-            lw.project_for_buf = orig_pfb
-            lw.buf_project, lw.get_projects = orig_bp, orig_gp
-            lw.get_workspace = orig_gw
-        end)
-
         it("calls fallback for non-cmake project buffers", function()
             local core = setup_core({
                 root = "/workspace",
@@ -180,44 +143,6 @@ describe("lsp", function()
             root_fn(1, function(dir) result = dir end)
             assert.is_true(fallback_called)
             assert.equals("/fallback", result)
-
-            lw.project_for_buf = orig_pfb
-            lw.buf_project, lw.get_projects = orig_bp, orig_gp
-            lw.get_workspace = orig_gw
-        end)
-
-        it("picks the innermost cmake project for nested projects", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = {
-                    Root = { type_config = {} },
-                    ["Root/SubLib"] = { type_config = {} },
-                },
-                config_sets = { debug = { Root = "Debug", ["Root/SubLib"] = "Debug" } },
-            })
-
-            core._deps.buf_name = function() return "/workspace/Root/SubLib/src/foo.cpp" end
-
-            local lw = require("loomworks")
-            local orig_pfb = lw.project_for_buf
-            local orig_gw = lw.get_workspace
-            local orig_bp, orig_gp = lw.buf_project, lw.get_projects
-            -- The LSP layer maps a buffer by `lw.buf_project` (§19.13), here
-            -- the test core's project of the faked buffer name.
-            lw.buf_project = function(bufnr)
-                local p = core:project_for_buf(bufnr)
-                return p and { key = p.key } or nil
-            end
-            lw.get_projects = function() return core:get_projects() end
-            lw.get_workspace = function() return core:get_workspace() end
-
-            local root_fn = lsp.clangd_root_dir(function(_, on_dir)
-                on_dir("/fallback")
-            end)
-
-            local result = nil
-            root_fn(1, function(dir) result = dir end)
-            assert.equals("/workspace/Root/SubLib", result)
 
             lw.project_for_buf = orig_pfb
             lw.buf_project, lw.get_projects = orig_bp, orig_gp
@@ -260,84 +185,6 @@ describe("lsp", function()
             assert.equals(0, #status)
 
             lw.get_workspace = orig_gw
-        end)
-
-        it("returns project info for cmake projects", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = { MyLib = {} },
-                config_sets = { debug = { MyLib = "Debug" } },
-                user = { active_profile = "debug" },
-                cache = {
-                    profiles = {
-                        debug = { configuration_set = "debug", projects = { MyLib = { config_key = "Debug" } } },
-                    },
-                    projects = {
-                        MyLib = {
-                            type = "cmake",
-                            configurations = {
-                                Debug = { state = "built", build_dir = "/workspace/.nvim/build/MyLib/Debug" },
-                            },
-                        },
-                    },
-                },
-            })
-
-            -- Patch init.lua to use our test core
-            local lw = require("loomworks")
-            local orig_gw = lw.get_workspace
-            local orig_gp = lw.get_projects
-            lw.get_workspace = function() return core:get_workspace() end
-            lw.get_projects = function() return core:get_projects() end
-
-            local orig_get_clients = vim.lsp.get_clients
-            vim.lsp.get_clients = function() return {} end
-
-            local status = lsp.get_status()
-            assert.equals(1, #status)
-            assert.equals("MyLib", status[1].project_key)
-            assert.equals("cmake", status[1].project_type)
-            assert.equals("/workspace/MyLib", status[1].root_dir)
-            assert.equals(0, #status[1].clients)
-
-            vim.lsp.get_clients = orig_get_clients
-            lw.get_workspace = orig_gw
-            lw.get_projects = orig_gp
-        end)
-
-        it("matches clangd clients by root_dir", function()
-            local core = setup_core({
-                root = "/workspace",
-                projects = { MyLib = {} },
-                config_sets = { debug = { MyLib = "Debug" } },
-                user = { active_profile = "debug" },
-            })
-
-            local lw = require("loomworks")
-            local orig_gw = lw.get_workspace
-            local orig_gp = lw.get_projects
-            lw.get_workspace = function() return core:get_workspace() end
-            lw.get_projects = function() return core:get_projects() end
-
-            local orig_get_clients = vim.lsp.get_clients
-            vim.lsp.get_clients = function(opts)
-                if opts and opts.name == "clangd" then
-                    return {
-                        { root_dir = "/workspace/MyLib", name = "clangd", id = 1, config = { cmd = { "clangd" } } },
-                        { root_dir = "/workspace/Other", name = "clangd", id = 2, config = { cmd = { "clangd" } } },
-                    }
-                end
-                return {}
-            end
-
-            local status = lsp.get_status()
-            assert.equals(1, #status)
-            assert.equals(1, #status[1].clients)
-            assert.equals("clangd", status[1].clients[1].name)
-
-            vim.lsp.get_clients = orig_get_clients
-            lw.get_workspace = orig_gw
-            lw.get_projects = orig_gp
         end)
 
         it("excludes project types without LSP server mapping", function()

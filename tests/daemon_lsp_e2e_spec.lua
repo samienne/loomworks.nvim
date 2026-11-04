@@ -9,8 +9,8 @@
 -- model being asked.
 --
 -- One process holds both sides: the build host loads the daemon's model
--- into `require("loomworks")._core()`, so the editor is its own Core here,
--- and the LSP source reads it through its facade seam (`_facade`).
+-- into `require("loomworks")._core()`; the LSP source reads only the
+-- observer's state.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local server_mod = require("loomworks.daemon.server")
@@ -52,14 +52,6 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         core = Core.new()
         core:setup({ root = root })
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        -- The LSP source reads the editor's model (the facade's Core is the
-        -- daemon's here).
-        source._facade = setmetatable({
-            get_workspace = function() return core:get_workspace() end,
-            get_projects = function() return core:get_projects() end,
-            lsp_ready = function() return core:lsp_ready() end,
-            get_lsp_options = function(s) return core:get_lsp_options(s) end,
-        }, { __index = require("loomworks") })
         source._reset_changes()
         hits = { active = 0 }
         lsp.register("e2esrv", { on_active_set_changed = function() hits.active = hits.active + 1 end })
@@ -73,7 +65,6 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
         sess = nil
         if srv and not srv.stopped then srv:stop("test end", 0) end
         srv = nil
-        source._facade = nil
         pcall(function() core:shutdown() end)
         pcall(function() require("loomworks")._core():shutdown() end)
         trust._set_key_path(nil)
@@ -99,11 +90,8 @@ describe("editor LSP configuration from a real daemon /lsp (§19.16, step 5l)", 
     end
 
     it("an attaching editor makes the daemon load; a configure in the daemon makes the entry ready", function()
-        -- In-process first: the reference (the unit is not configured).
-        local inproc = source.projects()
-        assert.equals("app", inproc[1].project)
-        assert.equals("clangd", inproc[1].entries[1].server)
-        assert.equals("unconfigured", inproc[1].entries[1].db_state)
+        -- Nothing loaded before the editor attaches.
+        assert.same({}, source.projects())
 
         start_server()
         assert.equals("unloaded", header_state())

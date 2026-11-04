@@ -4,29 +4,22 @@
 --- integrations read projects, entries, options and readiness only through
 --- this module, never from the workspace model.
 ---
---- One source per runtime mode, one shape (as §19.13):
----
----   * `daemon` mode (the editor's observer of the workspace daemon is
----     attached): **only** the daemon's `LspConfig/1.get` state, cached per
----     connection by the observer (loomworks.daemon.observer `lsp_phase`).
----     It is **in use** while the last read answered `loaded`; otherwise the
----     editor is **waiting** for it (connecting, the daemon's workspace
----     `unloaded`, or unloaded by a lost connection — the §9.7 hold with no
----     timeout) or it is **unavailable** (no host binary, the interface not
----     carried, a declined or failed read, a state `error` / `refused` — the
----     buffers are withheld). There is no in-process fallback: this module
----     never builds the state from the editor's model in `daemon` mode.
----   * `in-process` mode (transition, until step 6b): the state
----     loomworks/lsp_config.lua builds from the editor's own model, reached
----     through the `loomworks` facade.
+--- The source is **only** the workspace daemon the editor observes: its
+--- `LspConfig/1.get` state, cached per connection by the observer
+--- (loomworks.daemon.observer `lsp_phase`). It is **in use** while the last
+--- read answered `loaded`; otherwise the editor is **waiting** for it
+--- (connecting, the daemon's workspace `unloaded`, or unloaded by a lost
+--- connection — the §9.7 hold with no timeout) or it is **unavailable** (no
+--- host binary, the interface not carried, a declined or failed read, a state
+--- `error` / `refused` — the buffers are withheld). Without an observer
+--- nothing is loaded: a root set but not observed yet is pending. There is no
+--- fallback: the state is never built in the editor.
 
 local lsp_config = require("loomworks.lsp_config")
 
 local M = {}
 
---- Test seam: the facade to read instead of `require("loomworks")` (a test
---- holding a daemon and an editor model in one process points it at the
---- editor's).
+--- Test seam: the facade to read instead of `require("loomworks")`.
 --- @type table|nil
 M._facade = nil
 
@@ -39,24 +32,8 @@ local function facade()
     return lw
 end
 
---- The in-process workspace model (the one place the LSP layer touches it).
---- @param lw table|nil
---- @return loomworks.Workspace|nil
-local function model(lw)
-    if not lw or type(lw.get_workspace) ~= "function" then return nil end
-    return lw.get_workspace()
-end
-
---- The in-process projects, as the facade lists them.
---- @param lw table
---- @return table<any, loomworks.Project>
-local function projects(lw)
-    return type(lw.get_projects) == "function" and lw.get_projects() or {}
-end
-
---- The editor's observer of the workspace daemon (daemon runtime mode; the
---- editor then holds no model, step 6b-α), or nil. Never loads the daemon
---- modules: in in-process mode they are not loaded and there is none.
+--- The editor's observer of the workspace daemon, or nil. Never loads the
+--- daemon modules.
 --- @return loomworks.daemon.Observer|nil
 local function observer()
     local mod = package.loaded["loomworks.daemon.observer"]
@@ -64,16 +41,16 @@ local function observer()
     return mod.current()
 end
 
---- The runtime mode the LSP state follows: "daemon" while the editor
---- observes the workspace daemon, else "in-process".
---- @return "daemon"|"in-process"
+--- "daemon" while the editor observes a workspace daemon (the LSP state's
+--- only source), else "detached" (nothing loaded).
+--- @return "daemon"|"detached"
 function M.mode()
-    return observer() and "daemon" or "in-process"
+    return observer() and "daemon" or "detached"
 end
 
 --- Where the daemon's LSP state stands (daemon mode; loomworks.daemon.observer
 --- `lsp_phase`): "loaded" with the state (in use), "waiting" with
---- `{ why }`, "unavailable" with `{ kind, note }`. nil in in-process mode.
+--- `{ why }`, "unavailable" with `{ kind, note }`. nil while detached.
 --- @return "loaded"|"waiting"|"unavailable"|nil phase
 --- @return table|nil detail
 function M.daemon_phase()
@@ -104,23 +81,12 @@ function M.waiting()
     return (M.daemon_phase()) == "waiting"
 end
 
---- Whether a LOADED workspace exists AND the active profile's owned LSP
---- databases are ready (§9.7): in daemon mode the daemon's state in use and
---- `ready` (the editor model's readiness takes no part); in-process, a live
---- model and its readiness. Before any workspace is loaded readiness alone
---- reports ready-to-resolve, but a buffer of a workspace must still be held —
---- so this requires a loaded workspace. True when the facade has no workspace
---- notion at all.
+--- Whether a workspace is loaded AND the active profile's owned LSP
+--- databases are ready (§9.7): the daemon's state in use and `ready`.
 --- @return boolean
 function M.loaded_and_ready()
-    if observer() then
-        local st = daemon_state()
-        return st ~= nil and st.ready == true
-    end
-    local lw = facade()
-    if not lw or type(lw.get_workspace) ~= "function" then return true end
-    if not model(lw) then return false end
-    return type(lw.lsp_ready) == "function" and lw.lsp_ready() == true
+    local st = daemon_state()
+    return st ~= nil and st.ready == true
 end
 
 --- Whether the facade can be loaded at all (never false in practice).
@@ -129,65 +95,44 @@ function M.available()
     return facade() ~= nil
 end
 
---- Whether a workspace is loaded: in daemon mode, the daemon's state in use.
+--- Whether a workspace is loaded: the daemon's state in use.
 --- @return boolean
 function M.loaded()
-    if observer() then return daemon_state() ~= nil end
-    return model(facade()) ~= nil
+    return daemon_state() ~= nil
 end
 
---- Whether a workspace load is pending: readiness is not reported (the
---- facade reports ready-to-resolve when nothing is pending, §9.7), or — in
---- daemon mode — the editor waits for the daemon or for its `ready`.
+--- Whether a workspace load is pending: a root is set but not observed yet,
+--- or the editor waits for the daemon or for its `ready`.
 --- @return boolean
 function M.pending()
-    local lw = facade()
-    if not lw or type(lw.lsp_ready) ~= "function" then return false end
     local phase, st = M.daemon_phase()
     if phase then
         return phase == "waiting" or (phase == "loaded" and type(st) == "table" and st.ready ~= true)
     end
-    return lw.lsp_ready() ~= true
+    local lw = facade()
+    return lw ~= nil and type(lw.workspace_root) == "function" and lw.workspace_root() ~= nil
 end
 
---- The loaded workspace's root (in daemon mode the observed one), or nil.
+--- The observed workspace's root, or nil.
 --- @return string|nil
 function M.root()
     local obs = observer()
-    if obs then return obs.root end
-    local ws = model(facade())
-    return ws and ws.root or nil
+    return obs and obs.root or nil
 end
 
---- The whole state (the §19.20 `LspConfig/1.get` shape). In daemon mode
---- the daemon's while in use, else an empty `unloaded` one — never built
---- from the editor's model.
+--- The whole state (the §19.20 `LspConfig/1.get` shape): the daemon's while
+--- in use, else an empty `unloaded` one — never built in the editor.
 --- @return loomworks.LspConfigState
 function M.state()
-    if observer() then
-        return daemon_state() or { state = "unloaded", ready = false, projects = {}, options = {} }
-    end
-    local lw = facade()
-    local ws = model(lw)
-    if not ws then
-        local err = lw and type(lw.get_setup_error) == "function" and lw.get_setup_error() or nil
-        return lsp_config.state(nil, { state = err and "error" or "unloaded" })
-    end
-    return lsp_config.state(ws, { projects = projects(lw) })
+    return daemon_state() or { state = "unloaded", ready = false, projects = {}, options = {} }
 end
 
---- The project records in ascending key order (empty when nothing is
---- loaded, and in daemon mode while the daemon's state is not in use).
+--- The project records in ascending key order (empty while the daemon's
+--- state is not in use).
 --- @return loomworks.LspConfigProject[]
 function M.projects()
-    if observer() then
-        local st = daemon_state()
-        return st and type(st.projects) == "table" and st.projects or {}
-    end
-    local lw = facade()
-    local ws = model(lw)
-    if not ws then return {} end
-    return lsp_config.project_records(ws, projects(lw))
+    local st = daemon_state()
+    return st and type(st.projects) == "table" and st.projects or {}
 end
 
 --- The record of the project a buffer belongs to, or nil: the record whose
@@ -226,40 +171,27 @@ function M.find_by_root(server, root_dir)
     return nil, nil
 end
 
---- A project's module type (for display), or nil: in daemon mode from the
---- project index (loomworks.views, the daemon's), in-process from the model.
+--- A project's module type (for display), from the daemon's project index
+--- (loomworks.views), or nil.
 --- @param key string
 --- @return string|nil
 function M.project_type(key)
-    local lw = facade()
-    if not lw then return nil end
-    if observer() then
-        local index = require("loomworks.views").projects_index()
-        for _, rec in ipairs(type(index) == "table" and type(index.projects) == "table" and index.projects or {}) do
-            if rec.key == key then return rec.type end
-        end
-        return nil
-    end
-    for _, p in pairs(projects(lw)) do
-        if p.key == key then return p.type end
+    if not observer() then return nil end
+    local index = require("loomworks.views").projects_index()
+    for _, rec in ipairs(type(index) == "table" and type(index.projects) == "table" and index.projects or {}) do
+        if rec.key == key then return rec.type end
     end
     return nil
 end
 
---- A server's options with defaults applied, or nil when the source offers
---- none (the integration then uses its own defaults): in daemon mode the
---- daemon's while in use — never the model's.
+--- A server's options with defaults applied: the daemon's while its state is
+--- in use, else nil (the integration then uses its own defaults).
 --- @param server string
 --- @return table|nil
 function M.options(server)
-    local lw = facade()
-    if observer() then
-        local st = daemon_state()
-        local opts = st and type(st.options) == "table" and st.options[server] or nil
-        return type(opts) == "table" and opts or nil
-    end
-    if not lw or type(lw.get_lsp_options) ~= "function" then return nil end
-    return lw.get_lsp_options(server)
+    local st = daemon_state()
+    local opts = st and type(st.options) == "table" and st.options[server] or nil
+    return type(opts) == "table" and opts or nil
 end
 
 --- Write a per-server option in daemon mode (§19.16 "LSP configuration"
@@ -274,9 +206,7 @@ end
 --- @return boolean sent false (with the error, `cb` called) when it failed at once
 --- @return string|nil err
 function M.set_option(server, key, value, cb)
-    -- (Daemon mode: no model, step 6b-alpha.)
-    local ws = not observer() and model(facade()) or nil
-    return require("loomworks.daemon.editor_ops").set_lsp_option(ws, server, key, value, cb)
+    return require("loomworks.daemon.editor_ops").set_lsp_option(nil, server, key, value, cb)
 end
 
 -- ---------------------------------------------------------------------------
@@ -327,7 +257,7 @@ local function revs_of(recs)
     return out
 end
 
---- The per-key option changes from `before` to `now`, as the in-process
+--- The per-key option changes from `before` to `now`, as the
 --- `lsp_options_changed` payloads `{ server, key, value }`.
 --- @param before table<string, table>
 --- @param now table<string, table>
@@ -357,8 +287,7 @@ local function option_changes(before, now)
 end
 
 --- What changed in the daemon's LSP state since the last call (the
---- observer's `daemon_lsp_config`; daemon mode only — in-process mode
---- reports nothing): `switched` — the state started or stopped being in
+--- observer's `daemon_lsp_config`; nothing while detached): `switched` — the state started or stopped being in
 --- use, or moved between waiting and unavailable; `entries` — the entries in
 --- use differ (other than `db_rev`); `written` — the `db_dir`s whose `db_rev`
 --- rose (an owned database the daemon wrote); `options` — the options in use
@@ -368,9 +297,8 @@ end
 --- disconnect": the controlled clients are stopped).
 --- @return { switched: boolean, entries: boolean, written: string[], options: { server: string, key: string, value: any }[], lost: boolean }
 function M.changes()
-    -- (What the state belongs to: the observer in daemon mode — a new one
-    -- for another root — else the in-process model.)
-    local owner = observer() or model(facade())
+    -- (What the state belongs to: the observer — a new one for another root.)
+    local owner = observer()
     local phase, detail = M.daemon_phase()
     local ch = { switched = false, entries = false, written = {}, options = {}, lost = false }
     local prev = _last

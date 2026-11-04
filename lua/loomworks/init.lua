@@ -232,8 +232,8 @@ function M.get_active_configuration_set()
     return daemon_rows().active_configuration_set()
 end
 
---- Get the active workspace: always nil (the editor holds no model, spec
---- §19.16 "Public API"; its remaining callers go with the UI and overseer).
+--- Get the active workspace: always nil in the editor (it holds no model,
+--- spec §19.16 "Public API"); the `lw` binary's loaded one (cli.lua).
 --- @return loomworks.Workspace|nil
 function M.get_workspace()
     return core:get_workspace()
@@ -243,15 +243,6 @@ end
 --- @return { root: string, message: string }|nil
 function M.get_setup_error()
     return core:get_setup_error()
-end
-
---- Whether the active profile's owned LSP databases are ready (generated on
---- disk, or nothing to generate). The deferred-LSP gate (spec §9.7) uses this
---- to decide whether to hold a server start for a buffer under the workspace
---- root, so the server starts once against a populated compile-commands dir.
---- @return boolean
-function M.lsp_ready()
-    return core:lsp_ready()
 end
 
 --- The configured workspace root, known synchronously even during async init
@@ -361,23 +352,14 @@ end
 --- notified, `callback(nil, err)`).
 --- @param callback? fun(devices: loomworks.DeviceRecord[]|nil, err: string|nil)
 function M.scan_devices(callback)
-    require("loomworks.device_source").scan(M.get_workspace(), callback)
+    require("loomworks.device_source").scan(nil, callback)
 end
 
 --- Get the current list of discovered devices (the daemon's registry,
 --- `Devices/1.list`, as last read).
 --- @return loomworks.DeviceRecord[]
 function M.get_devices()
-    return require("loomworks.device_source").list(M.get_workspace())
-end
-
---- Would a nuke of `root` run now (no other process's build or workspace
---- operation in the way)? Checked before the confirmation, so a refused nuke
---- shows only its refusal. Returns true, or nil + the refusal message.
---- @param root string
---- @return boolean|nil ok, string|nil message
-function M.nuke_check(root)
-    return core:nuke_check(root, { skip_own = true })
+    return require("loomworks.device_source").list(nil)
 end
 
 --- The root whose working copy the deletion of the working copy acts on
@@ -485,33 +467,6 @@ end
 --- @return string|nil err
 function M.set_lsp_option(server, key, value, cb)
     return require("loomworks.lsp_source").set_option(server, key, value, cb)
-end
-
--- ---------------------------------------------------------------------------
--- Deletion
--- ---------------------------------------------------------------------------
-
---- Check if any items are currently being deleted.
---- @return boolean
-function M.has_pending_deletions()
-    return core:has_pending_deletions()
-end
-
---- Wait for all pending deletions to finish, then call fn.
---- @param fn function
-function M.after_deletions(fn)
-    core:after_deletions(fn)
-end
-
---- Create an Operation for a profile action.
---- @param profile loomworks.Profile
---- @param action string
---- @param units loomworks.ConfigUnit[]
---- @param target_states table<loomworks.ConfigUnit, loomworks.ConfigUnitState>
---- @param opts? { track_tasks?: boolean } see `Operation.new`
---- @return loomworks.Operation
-function M.create_operation(profile, action, units, target_states, opts)
-    return core:create_operation(profile, action, units, target_states, opts)
 end
 
 --- Get orphaned cached configs (configs with state not referenced by any

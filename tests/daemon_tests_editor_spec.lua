@@ -234,27 +234,14 @@ describe("the editor's tests read path in daemon mode (§19.16 Tests)", function
         end)
     end)
 
-    describe("the test source (no in-process discovery in daemon mode)", function()
-        it("reports daemon mode and never discovers from the model", function()
+    describe("the test source (the daemon only)", function()
+        it("is attached with an observer", function()
             fake_obs()
-            assert.equals("daemon", test_source.mode())
-            local spy = 0
-            for _, u in ipairs(test_source.units()) do
-                u.unit.discover_tests = function() spy = spy + 1 end
-                u.unit.discover_tests_async = function() spy = spy + 1 end
-            end
-            assert.is_nil(test_source.discover({ discover_tests = function() spy = spy + 1 end }))
-            local cb_got = "unset"
-            test_source.discover_async({ discover_tests_async = function() spy = spy + 1 end },
-                function(e) cb_got = e end)
-            assert.is_nil(cb_got)
-            test_source.warm(true)
-            test_source.warm(false)
-            assert.equals(0, spy)
+            assert.is_true(test_source.attached())
         end)
 
-        it("is in-process without an observer", function()
-            assert.equals("in-process", test_source.mode())
+        it("is not attached without one", function()
+            assert.is_false(test_source.attached())
         end)
     end)
 

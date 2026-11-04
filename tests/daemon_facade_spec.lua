@@ -319,15 +319,5 @@ describe("the daemon-mode facade (§19.16 Public API, step 6b-alpha)", function(
             vim.api.nvim_buf_delete(buf, { force = true })
             vim.fn.delete(dir, "rf")
         end)
-
-        it("overseer.run_profile_action refuses a profile row (never in-process)", function()
-            full_view()
-            local f = require("loomworks.overseer").run_profile_action(lw.get_active_profile(), "build")
-            local rejected
-            f:catch(function(e) rejected = e end)
-            assert.is_true(vim.wait(1000, function() return rejected ~= nil end, 10))
-            assert.is_true(noted("lw.build_profile()"), vim.inspect(notes))
-            assert.same({}, sent)
-        end)
     end)
 end)

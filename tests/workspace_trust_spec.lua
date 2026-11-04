@@ -718,11 +718,6 @@ describe("executable paths come from detection (§17.7)", function()
         local unit = profile:projects()[1]._config_unit
         local ov = require("loomworks.overseer")
         assert.is_nil(ov._exec_tool_data(unit))
-        local notify = vim.notify
-        vim.notify = function() end
-        local spec = ov.build_spec_for(unit)
-        vim.notify = notify
-        assert.is_nil(spec, "no build spec from cached tool data")
     end)
 end)
 

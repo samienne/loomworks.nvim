@@ -152,30 +152,6 @@ describe("configure / build command line", function()
         assert.truthy(text2:find("    $ ", 1, true), text2)
     end)
 
-    it("the editor task path logs the configure argv + cwd", function()
-        local ws, profile, r = make_core()
-        root = r
-        local created = {}
-        package.loaded["overseer"] = {
-            new_task = function(spec)
-                created[#created + 1] = spec
-                return {
-                    id = #created, subscribe = function() end, start = function() end,
-                    is_complete = function() return false end,
-                }
-            end,
-        }
-        local unit = profile:projects()[1]._config_unit
-        with_ws(ws, function() return overseer.run_configuration_action(unit, "configure") end)
-        vim.wait(3000, function() return #created > 0 end)
-        assert.equals(1, #created)
-        assert.is_nil(created[1].display_cmd, "display_cmd is not handed to overseer")
-        local log = log_text(ws)
-        assert.truthy(log:find("App: configure", 1, true), log)
-        assert.truthy(log:find('"-DFOO=a b"', 1, true), log)
-        assert.truthy(log:find("(in " .. root .. "/App)", 1, true), log)
-    end)
-
     if vim.fn.has("win32") == 1 then
         it("a vcvarsall-wrapped cmake command is shown as the inner cmake argv", function()
             local vroot = (vim.fn.tempname():gsub("\\", "/"))

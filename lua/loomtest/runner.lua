@@ -421,8 +421,6 @@ function M.debug(adapter, spec, test_ids, opts)
     local function start_debug()
         -- The spec's own preparation (a saved launch entry's deploy) first.
         if not prepare_spec(spec, test_ids, loomtest, explorer) then return end
-        local lw = require("loomworks")
-        local ws = lw.get_workspace()
 
         for _, id in ipairs(test_ids) do
             local node = loomtest.get_node(id)
@@ -443,10 +441,9 @@ function M.debug(adapter, spec, test_ids, opts)
             args[#args + 1] = spec.cmd[i]
         end
 
-        local adapter_type = "codelldb"
-        if ws then
-            adapter_type = require("loomworks.debug_config").resolve_adapter(ws, "c++")
-        end
+        -- The adapter the RunSpec names, else loomtest's default (loomtest
+        -- reads no workspace model).
+        local adapter_type = spec.debug_adapter or "codelldb"
 
         debug_mod.run({
             name = "Debug test",

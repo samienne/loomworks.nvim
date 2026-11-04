@@ -169,16 +169,6 @@ describe("editor launches through the daemon's preparation (§19.16, step 5k C2)
         return false
     end
 
-    it("in-process mode: nothing is sent, the in-process chain builds first", function()
-        assert.is_nil(observer.current())
-        require("loomworks.session_tracker").start(lt("run"), "launch")
-        assert.is_true(in_process_chain())
-        assert.same({}, sent)
-        assert.equals(1, #created)
-        -- No `(in-process)` marker outside daemon mode.
-        assert.equals("Launching app: run", titles[1])
-    end)
-
     it("a launch is a Launch/1.prepare_run the editor owns; its `launch` runs here", function()
         obs = fake_observer()
         require("loomworks.session_tracker").start(rt("run"), "launch")

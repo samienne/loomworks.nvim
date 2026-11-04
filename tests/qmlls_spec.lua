@@ -258,41 +258,6 @@ describe("qmlls root_dir_factory", function()
         assert.equals("/fallback/root", result)
     end)
 
-    it("resolves the entry root_dir for a matching project buffer", function()
-        local lw = require("loomworks")
-        local orig_pfb = lw.project_for_buf
-        local orig_gw = lw.get_workspace
-        -- entry_for asks lsp.entry_for_project which calls the module's
-        -- lsp_configs; give the project a module whose impl emits a qmlls
-        -- entry rooted at /work/myapp.
-        local fake_project = {
-            key = "App",
-            _module = {
-                impl = {
-                    lsp_configs = function()
-                        return { { server = "qmlls", root_dir = "/work/myapp" } }
-                    end,
-                },
-            },
-        }
-        local orig_bp, orig_gp = lw.buf_project, lw.get_projects
-        lw.project_for_buf = function() return fake_project end
-        lw.buf_project = function() return { key = "App" } end
-        lw.get_projects = function() return { App = fake_project } end
-        lw.get_workspace = function() return {} end
-
-        local result = nil
-        local root_fn = qmlls.root_dir_factory(function(_, on_dir)
-            on_dir("/should/not/be/used")
-        end)
-        root_fn(1, function(dir) result = dir end)
-        assert.equals("/work/myapp", result)
-
-        lw.project_for_buf = orig_pfb
-        lw.buf_project, lw.get_projects = orig_bp, orig_gp
-        lw.get_workspace = orig_gw
-    end)
-
     it("skips excluded buffers before any resolution", function()
         lsp.setup_servers({})  -- default excludes
         local bufnr = vim.api.nvim_create_buf(false, true)

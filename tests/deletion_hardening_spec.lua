@@ -142,7 +142,7 @@ describe("shell module default clean", function()
 end)
 
 describe("core-performed wipe (wipe_build_dir)", function()
-    local overseer_mod = require("loomworks.overseer")
+    local build_run = require("loomworks.build_run")
     local Workspace = require("loomworks.workspace").Workspace
     local tmp
 
@@ -166,29 +166,28 @@ describe("core-performed wipe (wipe_build_dir)", function()
     end)
     after_each(function() vim.fn.delete(tmp, "rf") end)
 
-    it("removes a build dir under the workspace root", function()
-        local ws = real_ws(tmp .. "/ws")
-        local ok = wait_future(overseer_mod._wipe_build_dir(ws,
-            { loomworks = { build_dir = tmp .. "/ws/build/App", wipe_build_dir = true } }))
-        assert.is_true(ok)
-        assert.is_false(exists(tmp .. "/ws/build/App"))
-        assert.is_true(exists(tmp .. "/ws/src.c"))
-    end)
+    --- The wipe step's exit code (build_run.wipe_step, the one wipe path of
+    --- `lw clean` and the daemon's Build/1.clean).
+    local function wipe_code(ws, dir)
+        local code
+        build_run.wipe_step(ws, { kind = "clean", build_dir = dir, wipe_build_dir = true }, nil, nil,
+            function(c) code = c end)
+        vim.wait(5000, function() return code ~= nil end, 10)
+        return code
+    end
 
     it("refuses the workspace root and paths outside it", function()
         local ws = real_ws(tmp .. "/ws")
-        assert.is_false(wait_future(overseer_mod._wipe_build_dir(ws,
-            { loomworks = { build_dir = tmp .. "/ws", wipe_build_dir = true } })))
-        assert.is_false(wait_future(overseer_mod._wipe_build_dir(ws,
-            { loomworks = { build_dir = tmp .. "/other", wipe_build_dir = true } })))
-        assert.is_false(wait_future(overseer_mod._wipe_build_dir(ws,
-            { loomworks = { build_dir = tmp .. "/ws/../other", wipe_build_dir = true } })))
+        assert.equals(1, wipe_code(ws, tmp .. "/ws"))
+        assert.equals(1, wipe_code(ws, tmp .. "/other"))
+        assert.equals(1, wipe_code(ws, tmp .. "/ws/../other"))
         assert.is_true(exists(tmp .. "/ws/src.c"))
         assert.is_true(exists(tmp .. "/other/keep.txt"))
     end)
 
-    it("treats a missing build dir as nothing to wipe", function()
+    it("refuses a step without a build directory", function()
         local ws = real_ws(tmp .. "/ws")
-        assert.is_true(wait_future(overseer_mod._wipe_build_dir(ws, { loomworks = { wipe_build_dir = true } })))
+        assert.equals(1, wipe_code(ws, nil))
+        assert.is_true(exists(tmp .. "/ws/build/App/a.o"))
     end)
 end)

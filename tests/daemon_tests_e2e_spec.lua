@@ -59,9 +59,6 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
         core = Core.new()
         core:setup({ root = root })
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        test_source._facade = setmetatable({
-            get_workspace = function() return core:get_workspace() end,
-        }, { __index = require("loomworks") })
         notes = {}
         orig_notify = vim.notify
         vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
@@ -88,7 +85,6 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
         sess = nil
         if srv and not srv.stopped then srv:stop("test end", 0) end
         srv = nil
-        test_source._facade = nil
         pcall(function() core:shutdown() end)
         pcall(function() require("loomworks")._core():shutdown() end)
         trust._set_key_path(nil)
@@ -133,7 +129,7 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
             local v = test_source.daemon_view()
             return type(v) == "table" and v.state == "loaded" and test_source.daemon_status() == nil
         end, 20), obs:runtime_line() .. " " .. vim.inspect(test_source.daemon_status()))
-        assert.equals("daemon", test_source.mode())
+        assert.is_true(test_source.attached())
 
         -- The adapter's first ask discovers the stale view (Tests/1.discover).
         adapter_mod.setup()

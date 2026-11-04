@@ -203,27 +203,6 @@ describe("lw device list / select", function()
         assert.is_nil(res.stdout:find("cleared", 1, true), res.stdout)
     end)
 
-    it("the editor's device source reports a failed write and tells no one", function()
-        local ds = require("loomworks.device_source")
-        local p = mock_profile("Debug", "SER1")
-        p.fail = "disk full"
-        local emitted, notified = 0, {}
-        local ws = { _active_set = {}, _core = { _deps = { events = { emit = function() emitted = emitted + 1 end } } } }
-        local real_notify = vim.notify
-        vim.notify = function(msg, level) notified[#notified + 1] = { msg, level } end
-        local ok1, err1 = ds.select(ws, p, { key = "SER9", label = "SER9", state = "online" })
-        local ok2, err2 = ds.clear(ws, p)
-        vim.notify = real_notify
-        assert.is_false(ok1)
-        assert.equals("disk full", err1)
-        assert.is_false(ok2)
-        assert.equals("disk full", err2)
-        assert.equals(0, emitted)
-        assert.equals(2, #notified)
-        assert.truthy(notified[1][1]:find("disk full", 1, true), notified[1][1])
-        assert.equals(vim.log.levels.ERROR, notified[1][2])
-    end)
-
     it("device clean removes this workspace's staging tree and its sync records", function()
         local saved = vim.env.LOOMWORKS_DEVICE_LOCK_DIR
         local lockroot = fx.mkroot()

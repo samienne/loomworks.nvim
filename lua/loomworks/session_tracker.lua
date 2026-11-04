@@ -18,11 +18,8 @@
 --- target's launch (step 5n C2, §19.16 "Devices") is the daemon's too:
 --- `Launch/1.build`, then `Devices/1.install` and `Devices/1.launch`, each
 --- a task the editor owns (start_device_run); its stop is `Devices/1.stop`
---- and its device log is unavailable until the daemon carries it. In the
---- deprecated `in-process` mode every launch runs the chain below in the
---- editor.
-
-local Future = require("loomworks.future")
+--- and its device log is unavailable until the daemon carries it. Nothing
+--- else is launched: the editor holds no model, so no other target exists.
 
 local M = {}
 
@@ -32,10 +29,6 @@ local M = {}
 --- @field multi_adapter boolean
 --- @field fidget_handle table|nil
 --- @field started_at number
---- @field device_serial string|nil
---- @field device_bundle string|nil
---- @field device_pid number|nil
---- @field pidof_timer uv_timer_t|nil
 --- @field device_task any|nil `daemon` mode: the `Devices/1.launch` task that launched the program (a stop names it, step 5n C2)
 --- @field device_conn loomworks.daemon.Conn|nil `daemon` mode: the connection that launch was sent on; once it closed the daemon has forgotten the launch (API.md §15) and the run is over
 
@@ -82,139 +75,11 @@ local function is_active_running()
     end
 end
 
---- Clear the device's log buffer before a fresh launch so the
---- device-log view doesn't mix in stale entries from previous
---- sessions. Best-effort: a clear failure doesn't fail the launch.
---- Runs synchronously (it's one quick RPC to the device connector).
---- The command is the target's (LaunchTarget:device_log_clear_command, which
---- the workspace daemon's `Launch/1.device_log` runs too).
---- @param target loomworks.LaunchTarget
---- @param device_serial string
-local function clear_device_log(target, device_serial)
-    local command = target:device_log_clear_command(device_serial)
-    if not command then return end
-    local cmd = vim.list_extend({ command.cmd }, command.args or {})
-    pcall(function()
-        require("loomworks.exe").system(cmd, { text = true, timeout = 3000 }):wait()
-    end)
-end
-
---- Start the device-log view + streaming task for the active run.
---- Composes the module's `device_log` cmd spec and hands it to the
---- device_log module, which owns the view, ring buffer, and the
---- streaming overseer task. The task handle is kept inside
---- device_log, not on the active run record — session_tracker just
---- asks device_log to stop during teardown.
----
---- Modules with device-log support own the soft-filter level and any
---- module-specific log-stream options: the target's
---- `device_log_command` (shared with the workspace daemon's
---- `Launch/1.device_log`) reads them via the module's optional
---- `device_log_options(tool_data)` hook and passes `pid` through when
---- the module asks for strict-pid filtering. The level travels into
---- device_log purely as the initial soft filter — re-rendering only,
---- never restarts.
----
---- @param target loomworks.LaunchTarget
---- @param device_serial string
---- @param bundle string
---- @param pid number
-local function start_device_log_view(target, device_serial, bundle, pid)
-    local command, log_options = target:device_log_command(device_serial, pid)
-    if not command then return end
-    local level = log_options.level
-    local strict_pid = log_options.strict_pid
-    local cmd = vim.list_extend({ command.cmd }, command.args or {})
-
-    -- Clear the on-device log buffer right before starting the stream
-    -- so the view doesn't mix in stale entries from previous sessions,
-    -- but AFTER the device_launch completed so any launch-time logs
-    -- the app has already emitted are still on the device and will
-    -- stream in.
-    clear_device_log(target, device_serial)
-
-    local device_log = require("loomworks.device_log")
-    local pid_label = strict_pid and "strict-pid " .. pid or "no pid filter"
-    device_log.start({
-        name = target._project.key .. ": device logs (pid " .. pid .. ")",
-        cmd = cmd,
-        prefilter = device_log.make_prefilter({ pid = pid, bundle = bundle }),
-        banner = string.format(
-            "device-log session: %s  bundle=%s  pid=%d  %s  soft-level=%s",
-            target._project.key, bundle, pid, pid_label, level),
-        -- On the first launch in this nvim process, apply the
-        -- configured soft level so the user isn't drowning in V/D
-        -- noise. On subsequent launches we preserve whatever filter
-        -- they tuned with `cl` / `cf` — explicit soft_filter is NOT
-        -- passed, so device_log keeps the existing filter instead of
-        -- reapplying the default.
-        default_soft_filter = { level = level },
-    })
-end
-
---- Start a periodic pidof poll for auto-stop when the app exits on
---- device. Two consecutive empty results = app is gone; tear the
---- session down the same way a user-initiated stop would.
----
---- 3s cadence is long enough that device-connector RTT isn't a
---- burden but short enough that users see the session clean up
---- promptly. Two misses
---- before closing smooths over a transient shell hiccup or a brief
---- respawn.
---- @param target loomworks.LaunchTarget
---- @param device_serial string
---- @param bundle string
-local function start_pidof_poll(target, device_serial, bundle)
-    local uv = vim.uv or vim.loop
-    local timer = uv.new_timer()
-    if not timer then return end
-
-    local consecutive_misses = 0
-    local function tick()
-        if not _active_run or _active_run.target ~= target then
-            pcall(function() timer:stop(); timer:close() end)
-            return
-        end
-        target:device_resolve_pid(device_serial, bundle,
-            { tries = 1, interval_ms = 0 })
-            :next(function(pid)
-                if not _active_run or _active_run.target ~= target then
-                    pcall(function() timer:stop(); timer:close() end)
-                    return
-                end
-                if pid then
-                    consecutive_misses = 0
-                else
-                    consecutive_misses = consecutive_misses + 1
-                    if consecutive_misses >= 2 then
-                        pcall(function() timer:stop(); timer:close() end)
-                        _active_run.pidof_timer = nil
-                        vim.notify(
-                            "loomworks: device app exited, closing log stream",
-                            vim.log.levels.INFO)
-                        local device_log = require("loomworks.device_log")
-                        pcall(device_log.stop)
-                        _active_run = nil
-                    end
-                end
-            end)
-    end
-
-    timer:start(3000, 3000, vim.schedule_wrap(tick))
-    _active_run.pidof_timer = timer
-end
-
---- Tear down the device-log session attached to the run, if any:
---- the pidof poll timer, the log streaming task, and the soft
---- binding between the session and the log view. Swallow errors —
---- this is cleanup and timer / task state varies with lifecycle.
+--- Tear down the device-log session attached to the run, if any: the log
+--- stream and the soft binding between the session and the log view.
+--- Swallow errors — this is cleanup and task state varies with lifecycle.
 local function stop_log_session()
     if not _active_run then return end
-    if _active_run.pidof_timer then
-        pcall(function() _active_run.pidof_timer:stop() end)
-        pcall(function() _active_run.pidof_timer:close() end)
-        _active_run.pidof_timer = nil
-    end
     local ok, device_log = pcall(require, "loomworks.device_log")
     if ok then
         pcall(device_log.set_source, nil)
@@ -275,21 +140,7 @@ local function stop_run()
         require("loomworks.daemon.editor_ops").device_stop(nil, _active_run.device_task,
             _active_run.device_conn)
     elseif _active_run.mode == "launch" then
-        -- Device launch: `<target>:stop()` only knows how to kill a
-        -- local process; the app is running on the device, so
-        -- delegate to the module's `device_stop` RPC. Fire and
-        -- forget — failures are a notify-worthy warning, not a
-        -- reason to block teardown.
-        if _active_run.device_serial and _active_run.device_bundle then
-            local target = _active_run.target
-            local serial = _active_run.device_serial
-            local bundle = _active_run.device_bundle
-            target:device_stop(serial, bundle):catch(function(err)
-                vim.notify(
-                    "loomworks: device stop failed: " .. tostring(err),
-                    vim.log.levels.WARN)
-            end)
-        elseif _active_run.target:is_running() then
+        if _active_run.target:is_running() then
             _active_run.target:stop()
         end
     else
@@ -362,8 +213,8 @@ end
 
 --- Start a debug session from a resolved spec: the first adapter launches
 --- the program, the others attach to its pid (§8.9.6 "Multi-adapter
---- debugging"). The in-process multi-adapter path and every debug launch the
---- workspace daemon prepared start here. Fails the progress entry when
+--- debugging"). Every debug launch the workspace daemon prepared starts
+--- here. Fails the progress entry when
 --- nvim-dap cannot start it.
 --- @param handle table|nil fidget handle
 --- @param target loomworks.LaunchTarget
@@ -411,188 +262,12 @@ local function start_dap(handle, target, adapters, data)
     register_debug_listeners(handle, multi)
 end
 
---- Execute the build → deploy → launch/debug chain in-process (the
---- deprecated `in-process` mode only).
---- Handles both single and multi-adapter debug uniformly.
---- @param target loomworks.LaunchTarget
---- @param mode "launch"|"debug"
-local function start_run_in_process(target, mode)
-    local fidget = require("loomworks.fidget")
-    local multi = mode == "debug" and target:is_multi_adapter()
-    local label = mode == "debug" and "Debugging " or "Launching "
-    local handle = fidget.start_action(label .. target:display_name())
-
-    local chain
-    if target:is_buildable() then
-        fidget.report(handle, "building...")
-        chain = target:build()
-    else
-        chain = Future.resolved(true)
-    end
-
-    chain
-        :next(function()
-            fidget.report(handle, "deploying...")
-            return target:deploy()
-        end)
-        :next(function()
-            -- Device target path: install + launch on device, then return
-            if target:requires_device() then
-                local device_source = require("loomworks.device_source")
-                local serial = target._profile:device_serial()
-                if not serial then
-                    -- Prompt for device selection
-                    return Future.create(function(resolve, reject)
-                        device_source.scan(target:workspace(), function(devices)
-                            local items = {}
-                            for _, d in ipairs(devices or {}) do
-                                if d.state == "online" then
-                                    items[#items + 1] = d
-                                end
-                            end
-                            if #items == 0 then
-                                reject("no online devices found")
-                                return
-                            end
-                            vim.ui.select(items, {
-                                prompt = "Select device:",
-                                format_item = function(d)
-                                    return d.label .. " (" .. d.key .. ")"
-                                end,
-                            }, function(choice)
-                                if not choice then
-                                    reject("device selection cancelled")
-                                    return
-                                end
-                                device_source.select(target:workspace(), target._profile, choice)
-                                resolve(choice.key)
-                            end)
-                        end)
-                    end)
-                end
-                return serial
-            end
-        end)
-        :next(function(device_serial)
-            if target:requires_device() then
-                if not device_serial then return end  -- chain was handled above
-                fidget.report(handle, "installing on device...")
-                return target:device_install(device_serial):next(function()
-                    return device_serial
-                end)
-            end
-        end)
-        :next(function(device_serial)
-            if target:requires_device() then
-                if not device_serial then return end
-                fidget.report(handle, "launching on device...")
-                return target:device_launch(device_serial):next(function()
-                    fidget.finish(handle, "running on device")
-                    _active_run = {
-                        target = target,
-                        mode = "launch",
-                        multi_adapter = false,
-                        started_at = os.clock(),
-                        device_serial = device_serial,
-                    }
-                    -- Kick off the log view asynchronously. The
-                    -- launch already succeeded; a log stream that
-                    -- fails to attach is a notification, not a
-                    -- chain failure.
-                    --
-                    -- We do NOT trust the device connector's on-device
-                    -- filter flags (they're inconsistent across releases)
-                    -- — device_log parses the raw stream client-side
-                    -- and applies a prefilter {pid, bundle} with
-                    -- union semantics, catching both the app's main
-                    -- process and any runtime helper that logs under
-                    -- a different PID but for the same app.
-                    local info = target:device_launch_info()
-                    local bundle = info and info.bundle_name
-                    if bundle then
-                        target:device_resolve_pid(device_serial, bundle)
-                            :next(function(pid)
-                                if not _active_run
-                                    or _active_run.target ~= target then
-                                    return
-                                end
-                                if not pid then
-                                    vim.notify(
-                                        "loomworks: app PID didn't appear — skipping log stream",
-                                        vim.log.levels.WARN)
-                                    return
-                                end
-                                _active_run.device_pid = pid
-                                _active_run.device_bundle = bundle
-                                _active_run.device_serial = device_serial
-                                start_device_log_view(target, device_serial, bundle, pid)
-                                start_pidof_poll(target, device_serial, bundle)
-                            end)
-                            :catch(function(err)
-                                vim.notify(
-                                    "loomworks: device log stream failed: " .. tostring(err),
-                                    vim.log.levels.WARN)
-                            end)
-                    end
-                end)
-            end
-
-            -- Non-device path: launch or debug locally
-            if mode == "debug" then
-                fidget.report(handle, "starting debugger...")
-
-                _active_run = {
-                    target = target,
-                    mode = "debug",
-                    multi_adapter = multi,
-                    fidget_handle = handle,
-                    started_at = os.clock(),
-                }
-
-                if multi then
-                    -- Multi-adapter: launch primary, attach rest via PID
-                    local adapters, spec_data = target:multi_adapter_specs()
-                    if not adapters then
-                        _active_run = nil
-                        error(spec_data)
-                    end
-                    start_dap(handle, target, adapters, spec_data)
-                else
-                    -- Single adapter: delegate to LaunchTarget:debug()
-                    target:debug()
-
-                    local ok, dap = pcall(require, "dap")
-                    if ok and dap.session() then
-                        register_debug_listeners(handle, false)
-                    else
-                        -- dap unavailable or fell back to launch
-                        fidget.finish(handle, "launched")
-                        _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock() }
-                    end
-                end
-            else
-                fidget.report(handle, "launching...")
-                target:launch()
-                fidget.finish(handle, "launched")
-                _active_run = { target = target, mode = "launch", multi_adapter = false, started_at = os.clock() }
-            end
-        end)
-        :catch(function(err)
-            fidget.fail(handle, err)
-            vim.notify("loomworks: " .. (err or "unknown error"), vim.log.levels.ERROR)
-        end)
-end
-
 --- Start the program of a launch the workspace daemon prepared (step 5k C2):
 --- a run's `launch` in the task runner (LaunchTarget:launch_resolved), a
---- debug's `debug` handed to nvim-dap (start_dap). A `device` result (a
---- foreign artifact, §18.1, found once the daemon built it) continues as the
---- in-process chain from the post-build deploy, never building again
---- (§19.15 "Run", "Build scope of a launch"): its launch is refused there as
---- in-process. The progress entry covers only this final phase (the
---- preparation's own task was its build phase, D13). A program still
---- running is stopped first, never left untracked. An error starting it is
---- notified and fails the progress entry, as the in-process chain's.
+--- debug's `debug` handed to nvim-dap (start_dap). The progress entry
+--- covers only this final phase (the preparation's own task was its build
+--- phase, D13). A program still running is stopped first, never left
+--- untracked. An error starting it is notified and fails the progress entry.
 --- A run whose preparation found the target foreign (`device = true`, spec
 --- §18.1) is refused (spec §19.16 "Editor operations", §18.11): no program
 --- is started and nothing of the run continues in the editor.
@@ -766,7 +441,7 @@ end
 --- The build → deploy → launch/debug chain: in `daemon` mode prepared by the
 --- workspace daemon (spec §19.16 "Editor operations") — refused when it
 --- cannot carry it ("Availability") — and a device target's run in the
---- editor only while connected; in the `in-process` mode in-process.
+--- editor only while connected.
 --- A debug without nvim-dap launches (as LaunchTarget:debug does); a debug
 --- whose launching adapter is not installed stops here with the install
 --- hint, before the preparation (§8.9.6: the client's check) - the adapter
@@ -778,7 +453,11 @@ end
 --- @param target loomworks.LaunchTarget
 --- @param mode "launch"|"debug"
 local function start_run(target, mode)
-    if not require("loomworks.daemon.launch_ref").is(target) then return start_run_in_process(target, mode) end
+    if not require("loomworks.daemon.launch_ref").is(target) then
+        -- Only the daemon's launch targets run (the editor holds no model).
+        vim.notify("loomworks: not a launch target of the workspace daemon", vim.log.levels.ERROR)
+        return
+    end
     local ops = require("loomworks.daemon.editor_ops")
     if target:requires_device() then
         -- Not carried now: refused like any operation, nothing of it run.
