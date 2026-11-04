@@ -11,7 +11,7 @@
 --
 -- Most cases drive a real loaded (shell) workspace with a fake connected
 -- observer whose connection answers `get` / `set_option` as the test says;
--- one case runs the observer against an in-process server.
+-- one case runs the observer against a real daemon (the lw of LOOMWORKS_LW).
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local observer = require("loomworks.daemon.observer")
@@ -878,13 +878,8 @@ describe("the editor's LspConfig/1 client (§19.16 LSP configuration)", function
     end)
 end)
 
-describe("the observer subscribes to /lsp and reads it (in-process server)", function()
-    local server_mod = require("loomworks.daemon.server")
-    local client = require("loomworks.daemon.client")
-    local FR = require("tests.daemon_fake_relay")
-    client.TIMEOUT_MS = 30000
-    local root, core, ws, srv, obs
-    local STATE
+describe("the observer subscribes to /lsp and reads it (a real daemon)", function()
+    local root, env, obs
 
     local function daemon_mode(name)
         if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -893,50 +888,51 @@ describe("the observer subscribes to /lsp and reads it (in-process server)", fun
     end
 
     before_each(function()
-        root = H.shell_workspace({ profile = true })
-        core = require("loomworks")._core()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
-        ws = core:get_workspace()
+        -- The working copy with `dev` active and app's compile database
+        -- declared: one clangd entry (spec/modules/shell.md).
+        root = H.shell_workspace()
+        local cfg = vim.json.decode(table.concat(vim.fn.readfile(root .. "/loomworks.json"), "\n"))
+        cfg.projects.app.shell.compile_commands = "${build_dir}/compile_commands.json"
+        local user = { _meta = { version = 2 }, active_profile = "dev",
+            profiles = { dev = { configuration_set = "dev" } }, projects = { app = cfg.projects.app } }
+        local f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb"))
+        f:write(H.signed_user(root, user)); f:close()
+        env = H.editor_env({ LOOMWORKS_RUNTIME = "daemon" })
         source._reset_changes()
-        STATE = { state = "loaded", ready = true, options = {},
-            projects = { { project = "app", id = "p1", path = "app", entries = {
-                { server = "clangd", root_dir = root .. "/app", db_state = "unconfigured", db_rev = 0 } } } } }
-        srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000 })
-        assert(srv:start())
-        local reg = srv:registry()
-        assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = H.workspace_stub({
-            header = function() return { root = srv.root, state = "loaded" } end,
-        }) }))
-        assert(reg:mount("/lsp", "core", "loomworks.LspConfig", 1, { methods = {
-            get = function() return vim.deepcopy(STATE) end,
-            set_option = function() return { outcome = "ok" } end,
-        } }))
     end)
     after_each(function()
         if obs then obs:stop() end
         obs = nil
-        if srv and not srv.stopped then srv:stop("test end", 0) end
-        pcall(function() core:shutdown() end)
+        observer.detach()
+        H.track_root(root, env)
+        if H.daemon(root, env) then H.stop_daemon(root, env) end
+        H.cleanup()
     end)
 
     it("reads the state once discovered, again on `changed`, and waits when the daemon goes", function()
-        local fr = FR.new({})
-        obs = observer.attach(ws.root, { getenv = daemon_mode, keepalive_ms = 100,
-            resolve = function() return "lw" end, relay = fr.relay })
-        assert.is_true(vim.wait(10000, function() return source.in_use() end, 10), obs:runtime_line())
+        obs = observer.attach(root, { getenv = daemon_mode, keepalive_ms = 500,
+            resolve = function() return "lw" end, relay = H.real_relay() })
+        H.track_root(root, env)
+        assert.is_true(vim.wait(60000, function() return source.in_use() end, 10), obs:runtime_line())
         assert.equals("unconfigured", source.projects()[1].entries[1].db_state)
-        STATE.projects[1].entries[1].db_state = "ready"
-        srv:registry():emit("/lsp", "loomworks.LspConfig", 1, "changed", { seq = 1 })
-        assert.is_true(vim.wait(5000, function()
+        -- A build in the daemon (another client): `changed`, then ready.
+        local r = H.lw({ "--no-input", "build", "dev" }, { env = env, cwd = root })
+        assert.equals(0, r.code, r.stderr .. r.stdout)
+        assert.is_true(vim.wait(60000, function()
             return source.in_use() and source.projects()[1].entries[1].db_state == "ready"
-        end, 10))
-        srv:stop("test end", 0)
-        assert.is_true(vim.wait(5000, function()
+        end, 10), vim.inspect(source.projects()))
+        -- The daemon goes (`lw daemon kill`): waiting, nothing in use.
+        r = H.lw({ "daemon", "kill" }, { env = env, cwd = root })
+        assert.equals(0, r.code, r.stderr .. r.stdout)
+        assert.is_true(vim.wait(30000, function()
             local phase, d = source.daemon_phase()
             return phase == "waiting" and d.why == "disconnected"
-        end, 10))
+        end, 10), vim.inspect({ source.daemon_phase() }))
         assert.is_false(source.in_use())
         assert.same({}, source.projects())
+    end)
+
+    it("leaves no daemon running", function()
+        assert.equals(0, H.survivors)
     end)
 end)

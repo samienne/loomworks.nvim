@@ -1,35 +1,21 @@
--- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
--- daemon in-process (loomworks.daemon.server) with its own trust key, which
--- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
--- with the binary side.
 -- The editor's test runs and test debug end to end (step 5m part C2;
 -- daemon.md §19.16 "Tests", §19.20 `Tests/1`; LOOMTEST.md §13.1): the daemon
--- side is real — an in-process server with the real build service
--- (cli._daemon_build_host) on the conformance runner's `tests` fixture (the
--- harness-only teststub module) — and the editor side is the real observer
--- subscription feeding loomworks.test_source and the loomtest adapter. A run
--- from loomtest is one `Tests/1.run_cases` whose `results` and view updates
--- move the nodes; a node's output comes from `Tests/1.result`; a debug is
--- `prepare_debug` → the editor's debugger (stubbed: no nvim-dap here) →
--- `collect`. Nothing is discovered, built or run in the editor's model.
+-- is the real lw of LOOMWORKS_LW (tests/daemon_helpers.lua), with the
+-- harness-only `teststub` module (tests/fixtures/teststub) installed as an
+-- acquired module in this editor's data dir (`<data>/modules/teststub`,
+-- where `lw module install` puts one), and the editor side is the real
+-- observer (through a real `--stdio` relay) feeding loomworks.test_source
+-- and the loomtest adapter. A run from loomtest is one `Tests/1.run_cases`
+-- whose `results` and view updates move the nodes; a node's output comes
+-- from `Tests/1.result`; a debug is `prepare_debug` → the editor's debugger
+-- (stubbed: no nvim-dap here) → `collect`. Nothing is discovered, built or
+-- run in the editor.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
-_G.LW_CONFORMANCE_LIB = true
-local server_mod = require("loomworks.daemon.server")
-local service = require("loomworks.daemon.service")
-local client = require("loomworks.daemon.client")
 local observer = require("loomworks.daemon.observer")
-local trust = require("loomworks.trust")
-local Core = require("loomworks.core")
 local test_source = require("loomworks.test_source")
 local adapter_mod = require("loomworks.loomtest_adapter")
 local loomtest = require("loomtest")
-local H = require("tests.binary_helpers")
-local FR = require("tests.daemon_fake_relay")
-
-local runner = dofile(H.REPO .. "/scripts/conformance.lua")
-
-client.TIMEOUT_MS = 30000
+local H = require("tests.daemon_helpers")
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -45,24 +31,32 @@ local TESTS_JSON = {
     failures = { ["Math.Sub"] = "math.cpp:7" },
 }
 
+--- The `tests` fixture: the shell workspace's project `app` as a `teststub`
+--- project with tests, the profile `dev` active (signed by lw).
+local function tests_workspace()
+    local root = H.shell_workspace()
+    local f = assert(io.open(root .. "/loomworks.json", "rb"))
+    local cfg = vim.json.decode(f:read("*a")); f:close()
+    cfg.projects.app = { path = "app", teststub = cfg.projects.app.shell }
+    f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
+    f = assert(io.open(root .. "/app/tests.json", "wb")); f:write(vim.json.encode(TESTS_JSON)); f:close()
+    local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
+        projects = { app = cfg.projects.app }, active_profile = "dev" }
+    local signed = H.signed_user(root, user)
+    f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb")); f:write(signed); f:close()
+    return root
+end
+
 describe("editor test runs and debug through a real daemon /tests (§19.16 Tests, step 5m C2)", function()
-    local root, srv, core, obs, sess
+    local root, env, obs
     local notes, orig_notify
     local dbg = require("loomworks.debug")
     local orig_installed, orig_run, dap_runs
 
     before_each(function()
-        local key = H.tmp() .. "/trust.key"
-        trust._set_key_path(key)
-        root = runner.fixture("tests", key)
-        runner.register_teststub()
-        local f = assert(io.open(root .. "/app/tests.json", "wb"))
-        f:write(vim.json.encode(TESTS_JSON))
-        f:close()
-        trust._set_key_path(key)
-        core = Core.new()
-        core:setup({ root = root })
-        assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
+        H.install_stub_module("teststub")
+        env = H.editor_env({ LOOMWORKS_RUNTIME = "daemon" })
+        root = tests_workspace()
         notes = {}
         orig_notify = vim.notify
         vim.notify = function(msg, level) notes[#notes + 1] = { msg = msg, level = level } end
@@ -85,13 +79,10 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
         adapter_mod._reset()
         if obs then obs:stop() end
         obs = nil
-        if sess then sess:close() end
-        sess = nil
-        if srv and not srv.stopped then srv:stop("test end", 0) end
-        srv = nil
-        pcall(function() core:shutdown() end)
-        pcall(function() require("loomworks")._core():shutdown() end)
-        trust._set_key_path(nil)
+        observer.detach()
+        H.track_root(root, env)
+        if H.daemon(root, env) then H.stop_daemon(root, env) end
+        H.cleanup()
     end)
 
     local function errors()
@@ -112,23 +103,20 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
         return nil
     end
 
-    it("runs, reads a failed node's output and debugs through Tests/1", function()
-        srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000,
-            log = function() end })
-        srv:registry()
-        service.attach(srv, require("loomworks.cli")._daemon_build_host())
-        assert(srv:start())
-        -- Built beforehand by a CLI client (the unit is configured here).
-        sess = assert(client.session(srv.address))
-        local env = require("loomworks.daemon.envscope").capture()
-        local res, cerr = client.call_sync(sess, "/build", "loomworks.Build", 1, "build",
-            { profile = { key = "dev" } }, { env = env })
-        assert.is_not_nil(res, cerr and cerr.message)
-        assert.is_true(vim.wait(120000, function() return not srv.service.tasks:busy() end, 20))
+    --- Does the daemon of `root` run no task (`lw daemon list --json`)?
+    local function daemon_idle()
+        local d = H.daemon(root, env)
+        return d ~= nil and d.busy == false
+    end
 
-        local fr = FR.new({})
-        obs = observer.attach(core:get_workspace().root, { getenv = daemon_mode, keepalive_ms = 100,
-            resolve = function() return "lw" end, relay = fr.relay })
+    it("runs, reads a failed node's output and debugs through Tests/1", function()
+        -- Built beforehand by a CLI client (the unit is configured here).
+        local r = H.lw({ "--no-input", "build", "dev" }, { env = env, cwd = root })
+        assert.equals(0, r.code, r.stderr .. r.stdout)
+
+        obs = observer.attach(root, { getenv = daemon_mode, keepalive_ms = 500,
+            resolve = function() return "lw" end, relay = H.real_relay() })
+        H.track_root(root, env)
         assert.is_true(vim.wait(60000, function()
             local v = test_source.daemon_view()
             return type(v) == "table" and v.state == "loaded" and test_source.daemon_status() == nil
@@ -151,10 +139,11 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
         loomtest.run(sub.id)
         assert.is_true(vim.wait(120000, function()
             local n = loomtest.get_node(sub.id)
-            return n ~= nil and n.status == "failed" and not srv.service.tasks:busy()
+            return n ~= nil and n.status == "failed" and not obs:owns_tasks()
         end, 20), vim.inspect(loomtest.get_node(sub.id)))
         assert.is_true(results_seen >= 1)
         assert.same({}, errors())
+        assert.is_true(vim.wait(30000, daemon_idle, 200))
 
         -- Its output and error location come from Tests/1.result.
         local got
@@ -178,5 +167,9 @@ describe("editor test runs and debug through a real daemon /tests (§19.16 Tests
             return n ~= nil and n.status ~= "pending"
         end, 20))
         assert.same({}, errors())
+    end)
+
+    it("leaves no daemon running", function()
+        assert.equals(0, H.survivors)
     end)
 end)

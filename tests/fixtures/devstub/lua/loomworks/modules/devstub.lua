@@ -60,7 +60,8 @@ end
 --- The device script's command for `op`.
 local function command(op, serial, arg)
     return {
-        cmd = (vim.v.progpath:gsub("\\", "/")),
+        -- (A standalone lw, where the module is an acquired one: $LW_TEST_NVIM.)
+        cmd = (((vim.v and vim.v.progpath) or os.getenv("LW_TEST_NVIM")):gsub("\\", "/")),
         args = { "--headless", "-u", "NONE", "-l", fixture_dir() .. "/device.lua", op, serial, arg or "-" },
         env = { LW_TEST_DEVICE_OP = op },
     }

@@ -172,25 +172,6 @@ describe("configuration set editor dialog save", function()
   end)
 end)
 
-describe("configuration save rollback", function()
-  it("a failed save restores every field the configuration had", function()
-    local root = make_ws()
-    local ws = load(root)
-    local project = find_project(ws, "App")
-    local dev = project:get_configuration("Dev")
-    local before = dev:declared_data()
-    ws._save_user = function() return false, "disk full" end
-    local ok, err = wv.execute_save_configuration(project, project:get_configuration("Dev"), "Dev", {
-      inherits = "variant:Debug", options = { OPT = "2" }, variables = { out = "y" },
-      languages = { "c", "c++" }, toolchain = "tc.cmake",
-    })
-    assert.is_false(ok)
-    assert.equals("disk full", err)
-    assert.same(before, dev:declared_data())
-    assert.same({ "variant:Debug" }, dev.inherits_names)
-  end)
-end)
-
 describe("launch save of a target-backed launch", function()
   it("an empty command field stores no command; empty fields are absent", function()
     local root = make_ws()

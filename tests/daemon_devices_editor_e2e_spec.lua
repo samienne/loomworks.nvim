@@ -1,14 +1,12 @@
--- TODO(step3): kept on the old path (tests/binary_helpers.lua): this spec runs the
--- daemon in-process (loomworks.daemon.server) with its own trust key, which
--- lw's CLI does not expose. Port it to a real lw (LOOMWORKS_LW) or delete it
--- with the binary side.
 -- The editor's devices end to end (step 5n part C2; daemon.md §19.16
--- "Devices", API.md §11 `set_device`, §15 `Devices/1`): the daemon side is
--- real — an in-process server with the real build service
--- (cli._daemon_build_host) on the conformance runner's `devices` fixture (the
--- harness-only devstub module: SER1 online, SER2 offline, `dev` active with
--- its device target `app` as the default target) — and the editor side is
--- the real observer feeding loomworks.device_source and the session tracker.
+-- "Devices", API.md §11 `set_device`, §15 `Devices/1`): the daemon is the
+-- real lw of LOOMWORKS_LW (tests/daemon_helpers.lua) on the `devices`
+-- fixture (the harness-only devstub module, installed as an acquired module
+-- of this editor's data dir: SER1 online, SER2 offline, `dev` active with
+-- its device target `app` as the default target), and the editor side is
+-- the real observer (through a real `--stdio` relay) feeding
+-- loomworks.device_source and the session tracker. A disconnect is the
+-- daemon killed (`lw daemon kill`).
 -- The list comes only from `Devices/1.list` and its `changed` signal, a scan
 -- is a `Devices/1.scan` task the editor owns, the choice is
 -- `Profiles/1.set_device` / `clear_device`, and a launch is
@@ -16,26 +14,14 @@
 -- `Devices/1.stop` — nothing of it in the editor's model. Disconnected, each
 -- is refused, never run in-process.
 
-_G.LOOMWORKS_CLI_NO_AUTORUN = true
-_G.LW_CONFORMANCE_LIB = true
-local server_mod = require("loomworks.daemon.server")
-local service = require("loomworks.daemon.service")
-local client = require("loomworks.daemon.client")
 local observer = require("loomworks.daemon.observer")
-local trust = require("loomworks.trust")
-local events = require("loomworks.events")
+local events = require("loomworks")
 local device_source = require("loomworks.device_source")
 local editor_ops = require("loomworks.daemon.editor_ops")
 local session_tracker = require("loomworks.session_tracker")
 local dl = require("loomworks.device_log")
-local devices_mod = require("loomworks.daemon.devices")
 local views = require("loomworks.views")
-local H = require("tests.binary_helpers")
-local FR = require("tests.daemon_fake_relay")
-
-local runner = dofile(H.REPO .. "/scripts/conformance.lua")
-
-client.TIMEOUT_MS = 30000
+local H = require("tests.daemon_helpers")
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -59,12 +45,30 @@ local function rec(list, serial)
     return nil
 end
 
+--- The `devices` fixture: the shell workspace's project `app` as a
+--- `devstub` project (its device target `app`), the profile `dev` active
+--- with that device target as its default target and no device chosen
+--- (signed by lw).
+local function devices_workspace()
+    local root = H.shell_workspace()
+    local f = assert(io.open(root .. "/loomworks.json", "rb"))
+    local cfg = vim.json.decode(f:read("*a")); f:close()
+    cfg.projects.app = { path = "app", devstub = cfg.projects.app.shell }
+    f = assert(io.open(root .. "/loomworks.json", "wb")); f:write(vim.json.encode(cfg)); f:close()
+    local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
+        projects = { app = cfg.projects.app }, active_profile = "dev",
+        default_target = { dev = { project = "app", device_target = "app", device_target_label = "app app" } } }
+    local signed = H.signed_user(root, user)
+    f = assert(io.open(root .. "/.nvim/loomworks.user.json", "wb")); f:write(signed); f:close()
+    return root
+end
+
 -- The `daemon`-mode editor holds no model (step 6b-alpha): the registry,
 -- the scan and the device choice are calls (device_source with no model,
 -- `Profiles/1.set_device` / `clear_device` by the profile row's id), the
 -- default target a `Launch/1.targets` record (loomworks.daemon.LaunchRef).
 describe("editor devices through a real daemon /devices (§19.16 Devices, step 5n C2)", function()
-    local root, srv, obs, sess
+    local root, env, obs, sess
     local notes, orig_notify, saved_env, started, handlers, log
 
     local function on(ev, fn)
@@ -73,19 +77,16 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
     end
 
     before_each(function()
-        local key = H.tmp() .. "/trust.key"
-        trust._set_key_path(key)
-        root = runner.fixture("devices", key)
-        runner.register_devstub()
-        trust._set_key_path(key)
+        H.install_stub_module("devstub")
+        env = H.editor_env({ LOOMWORKS_RUNTIME = "daemon" })
+        root = devices_workspace()
         -- The editor's environment, which its calls carry: a fresh device-lock
         -- directory and the stub device's command log.
         log = H.tmp() .. "/device.log"
         saved_env = { lock = vim.env.LOOMWORKS_DEVICE_LOCK_DIR, log = vim.env.LW_TEST_DEVICE_LOG,
             fail = vim.env.LW_TEST_DEVICE_FAIL, sleep = vim.env.LW_TEST_DEVICE_SLEEP,
             scan = vim.env.LW_TEST_SCAN_SLEEP, build = vim.env.LW_TEST_SLEEP,
-            log_count = vim.env.LW_TEST_LOG_COUNT, log_sleep = vim.env.LW_TEST_LOG_SLEEP,
-            queue_max = devices_mod.LOG_QUEUE_MAX }
+            log_count = vim.env.LW_TEST_LOG_COUNT, log_sleep = vim.env.LW_TEST_LOG_SLEEP }
         dl._reset_for_tests()
         vim.env.LOOMWORKS_DEVICE_LOCK_DIR = H.tmp() .. "/locks"
         vim.env.LW_TEST_DEVICE_LOG = log
@@ -103,9 +104,10 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         obs = nil
         if sess then sess:close() end
         sess = nil
-        if srv and not srv.stopped then srv:stop("test end", 0) end
-        srv = nil
         observer.detach()
+        H.track_root(root, env)
+        if H.daemon(root, env) then H.stop_daemon(root, env) end
+        H.cleanup()
         vim.env.LOOMWORKS_DEVICE_LOCK_DIR = saved_env.lock
         vim.env.LW_TEST_DEVICE_LOG = saved_env.log
         vim.env.LW_TEST_DEVICE_FAIL = saved_env.fail
@@ -114,9 +116,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         vim.env.LW_TEST_SLEEP = saved_env.build
         vim.env.LW_TEST_LOG_COUNT = saved_env.log_count
         vim.env.LW_TEST_LOG_SLEEP = saved_env.log_sleep
-        devices_mod.LOG_QUEUE_MAX = saved_env.queue_max
         dl._reset_for_tests()
-        trust._set_key_path(nil)
     end)
 
     local function errors()
@@ -141,17 +141,12 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         return false
     end
 
-    --- The daemon (the real build service) and the editor's observer,
-    --- connected with the device list read.
+    --- The daemon (started by the editor's relay) and the editor's
+    --- observer, connected with the device list read.
     local function serve()
-        srv = server_mod.new(root, { exit = function() end, tick_ms = 100, auth_timeout_ms = 30000,
-            log = function() end })
-        srv:registry()
-        service.attach(srv, require("loomworks.cli")._daemon_build_host())
-        assert(srv:start())
-        local fr = FR.new({})
-        obs = observer.attach(root, { getenv = daemon_mode, keepalive_ms = 100,
-            resolve = function() return "lw" end, relay = fr.relay })
+        obs = observer.attach(root, { getenv = daemon_mode, keepalive_ms = 500,
+            resolve = function() return "lw" end, relay = H.real_relay() })
+        H.track_root(root, env)
         assert.is_true(vim.wait(60000, function()
             return obs:can_call("device_scan") and obs:can_call("Profiles/1.set_device") and obs._devices ~= nil
         end, 20), obs:runtime_line())
@@ -161,6 +156,12 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
             local header = views.daemon_state(obs, "header")
             return type(header) == "table" and header.state == "loaded"
         end, 20), obs:runtime_line())
+    end
+
+    --- The daemon goes away under the editor (`lw daemon kill`).
+    local function drop()
+        local r = H.lw({ "daemon", "kill" }, { env = env, cwd = root })
+        assert.equals(0, r.code, r.stderr .. r.stdout)
     end
 
     --- The profile row (`dev`) of the daemon's workspace view.
@@ -253,11 +254,10 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.equals("scan", started[1].kind)
 
         -- `changed` refreshes it: another client chooses SER1 for `dev`.
-        sess = assert(client.session(srv.address))
-        local env = require("loomworks.daemon.envscope").capture()
-        local res = client.call_sync(sess, "/profiles", "loomworks.Profiles", 1, "set_device",
-            { profile = { key = "dev" }, device = { key = "SER1" } }, { env = env })
-        assert.equals("ok", res and res.outcome, vim.inspect(res))
+        sess = H.session(root)
+        local res, err = H.call(sess, "/profiles", "loomworks.Profiles", 1, "set_device",
+            { profile = { key = "dev" }, device = { key = "SER1" } }, vim.fn.environ())
+        assert.equals("ok", res and res.outcome, vim.inspect(err or res))
         assert.is_true(vim.wait(30000, function()
             local d = rec(device_source.list(nil), "SER1")
             return d ~= nil and d.profiles ~= nil and d.profiles[1] == "dev"
@@ -313,7 +313,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
             read(log))
 
         -- Disconnected: refused, never run in-process.
-        srv:stop("test", 0)
+        drop()
         assert.is_true(vim.wait(30000, function() return not obs:can_call("device_scan") end, 20))
         notes = {}
         local refused
@@ -324,8 +324,11 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.same({}, device_source.list(nil))
         local before = #started
         session_tracker.start(target, "launch")
-        vim.wait(200)
-        assert.is_true(noted("loomworks: launch: "))
+        -- Refused: by the launch's call, or (once the editor has seen the
+        -- workspace unloaded) before it.
+        assert.is_true(vim.wait(10000, function()
+            return noted("loomworks: launch: ") or noted("loomworks: cannot run ")
+        end, 20), vim.inspect(notes))
         assert.equals(before, #started)
         assert.is_false(session_tracker.is_running())
         local wrote
@@ -381,14 +384,13 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         local target = default_target()
         session_tracker.start(target, "launch")
         assert.is_true(vim.wait(180000, function() return task_of("install") ~= nil end, 20), vim.inspect(notes))
-        srv:stop("test", 0)
+        drop()
         assert.is_true(vim.wait(30000, function() return #errors() > 0 end, 20), vim.inspect(notes))
         assert.is_nil(task_of("launch"))
         assert.is_false(session_tracker.is_running())
         -- Nothing left preparing: a new launch asks nothing (refused: unloaded).
         assert.is_false(start_asked(target))
-        vim.wait(200)
-        assert.is_true(noted("loomworks: cannot run "), vim.inspect(notes))
+        assert.is_true(vim.wait(10000, function() return noted("loomworks: cannot run ") end, 20), vim.inspect(notes))
     end)
 
     it("a launched run is forgotten when the daemon disconnects: its stop sends nothing, no error", function()
@@ -397,7 +399,7 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         session_tracker.start(default_target(), "launch")
         assert.is_true(vim.wait(180000, function() return session_tracker.is_running() end, 20),
             vim.inspect(errors()))
-        srv:stop("test", 0)
+        drop()
         assert.is_true(vim.wait(30000, function() return not session_tracker.is_running() end, 20))
         notes = {}
         session_tracker.stop()
@@ -459,16 +461,10 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.equals("D", dl._filter_for_tests().level)
     end)
 
-    it("records the daemon's queue dropped are a gap line in the view", function()
-        devices_mod.LOG_QUEUE_MAX = 5
-        vim.env.LW_TEST_LOG_COUNT = "20"
-        launched_with_log()
-        assert.is_true(vim.wait(60000, function() return view_has("device log stream ended ──") end, 20),
-            table.concat(dl._lines_for_tests(), "\n"))
-        assert.is_true(view_has("records dropped"), table.concat(dl._lines_for_tests(), "\n"))
-        assert.is_true(view_has("flood 20"))
-        assert.same({}, errors())
-    end)
+    -- GAP: the daemon's log queue bound (2000 records) cannot be lowered
+    -- in a real lw, and a flood past it is too slow for a spec.
+    pending("records the daemon's queue dropped are a gap line in the view "
+        .. "(GAP: the daemon's log queue bound is not settable through lw's CLI or the protocol)")
 
     it("closing the view cancels the device log task; the run goes on", function()
         vim.env.LW_TEST_LOG_SLEEP = "20000"
@@ -485,5 +481,9 @@ describe("editor devices through a real daemon /devices (§19.16 Devices, step 5
         assert.is_false(view_has("device log stream ended"))
         assert.is_true(view_has("device log stream stopped"))
         assert.same({}, errors())
+    end)
+
+    it("leaves no daemon running", function()
+        assert.equals(0, H.survivors)
     end)
 end)

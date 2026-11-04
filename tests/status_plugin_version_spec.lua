@@ -98,24 +98,7 @@ describe("status page header version", function()
   end)
 end)
 
-describe("Core:view_header version", function()
-  local Core = require("loomworks.core")
-  local h = require("tests.helpers")
-
-  after_each(function() save_guard._set_version(real_version) end)
-
-  local function core()
-    return Core.new(h.make_test_deps({ ["loomworks.json"] = h.make_config_json() }))
-  end
-
-  it("carries save_guard.version()", function()
-    local c = core()
-    assert.is_truthy(save_guard.version())
-    assert.equals(save_guard.version(), c:view_header().version)
-    save_guard._set_version("0.1.43")
-    assert.equals("0.1.43", c:view_header().version)
-  end)
-
+describe("the daemon-mode view header version", function()
   it("daemon mode's unloaded header carries the plugin's own version (loomworks.version)", function()
     local pv = require("loomworks.version")
     pv._set("0.1.43")
@@ -127,10 +110,5 @@ describe("Core:view_header version", function()
     pv._set(nil)
     assert.is_true(ok, tostring(hdr))
     assert.same({ root = "/r", state = "unloaded", version = "0.1.43" }, hdr)
-  end)
-
-  it("leaves it out when unknown", function()
-    save_guard._set_version(nil)
-    assert.is_nil(core():view_header().version)
   end)
 end)

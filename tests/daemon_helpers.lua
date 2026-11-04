@@ -442,6 +442,66 @@ function M.cleanup()
     return n
 end
 
+--- The `relay` of `observer.attach` that spawns real relays of the lw under
+--- test (`lw daemon run --stdio`): the editor's daemon is a real one.
+--- @return function
+function M.real_relay()
+    local relay_client = require("loomworks.daemon.client.relay")
+    return function(ro, cb)
+        ro.argv = { M.lw_path() }
+        return relay_client.connect(ro, cb)
+    end
+end
+
+--- A protocol session to `root`'s daemon as another client (`client`,
+--- default "cli": not the editor, so it never makes the daemon load),
+--- through a real relay that starts the daemon when none runs. Uses the
+--- plugin's own relay client; `cleanup` cannot see it, so close it.
+--- @param root string
+--- @param client? string
+--- @return table conn (loomworks.daemon.Conn)
+function M.session(root, client)
+    local relay_client = require("loomworks.daemon.client.relay")
+    local conn, err, info
+    local r, serr = relay_client.connect({ argv = { M.lw_path() }, root = root, form = "ordinary",
+        client = client or "cli" }, function(c, e, x) conn, err, info = c, e, x end)
+    assert(r, serr)
+    assert(vim.wait(60000, function() return conn ~= nil or err ~= nil end, 20), "no welcome from " .. root)
+    assert(conn, tostring(err) .. " " .. vim.inspect(info))
+    return conn
+end
+
+--- One interface call on a `M.session`, waited for: its result, or nil + err.
+--- `env`: the caller's environment the call carries (a command that runs or
+--- writes needs one, as the editor's carry `vim.fn.environ()`).
+--- @return any result, table|nil err
+function M.call(conn, object, iface, v, method, args, env, ms)
+    local done, res, err = false, nil, nil
+    conn:call(object, iface, v, method, args or {}, function(r, e) done, res, err = true, r, e end, env)
+    assert(vim.wait(ms or 60000, function() return done end, 20), "no reply to " .. method)
+    return res, err
+end
+
+--- Install the harness-only module `tests/fixtures/<name>` (teststub,
+--- devstub) as an acquired module of this editor's data dir
+--- (`<data>/modules/<name>`, where `lw module install` puts one), so the
+--- daemon the editor's relay starts can build its projects. Its scripts run
+--- through this nvim ($LW_TEST_NVIM, which spawned lw inherits).
+--- @param name string
+function M.install_stub_module(name)
+    vim.env.LW_TEST_NVIM = vim.v.progpath
+    local src = M.REPO .. "/tests/fixtures/" .. name
+    local dst = vim.env.LOOMWORKS_DATA_DIR .. "/modules/" .. name
+    if uv.fs_stat(dst) then return end
+    for rel, typ in vim.fs.dir(src, { depth = 10 }) do
+        if typ == "file" then
+            local to = dst .. "/" .. rel
+            vim.fn.mkdir(vim.fn.fnamemodify(to, ":h"), "p")
+            assert(uv.fs_copyfile(src .. "/" .. rel, to))
+        end
+    end
+end
+
 --- A stub `loomworks.Workspace/1` handler table: `methods` (its `header`)
 --- plus every command method (step 5o part B1) answering `refused`, so a
 --- test registry mounts the interface (a method without a handler is not

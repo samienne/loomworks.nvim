@@ -42,9 +42,11 @@ local function fixture_dir()
     return (src:gsub("/lua/loomworks/modules/teststub%.lua$", ""))
 end
 
---- The nvim that runs the fixture's scripts.
+--- The nvim that runs the fixture's scripts: the host's own when it is an
+--- nvim, else (a standalone lw, where the module is an acquired one)
+--- $LW_TEST_NVIM.
 local function nvim()
-    return (vim.v.progpath:gsub("\\", "/"))
+    return (((vim.v and vim.v.progpath) or os.getenv("LW_TEST_NVIM")):gsub("\\", "/"))
 end
 
 local TestUnit = {}
