@@ -1350,6 +1350,13 @@ used as-is. If you pass a non-default `--channel` while a `release-url` override
 `lw self-update` warns that the channel was ignored — the override wins by
 design, so unset it to follow a channel. `lw version` shows the active channel.
 
+`lw self-update` follows the newest 0.1.x release in samienne/loomworks.nvim on
+either channel. lw 0.2 and later is published in samienne/loomworks; to move a
+repository to it, pin it explicitly (`lw bootstrap install --version 0.2.x`).
+A pinned version is always fetched from the repository it was published in —
+below 0.2 samienne/loomworks.nvim, 0.2 and later samienne/loomworks — and a
+`release-url` override is one mirror for all versions.
+
 **Updating the `lw` binary itself** (spec §16.32). `lw self-update` updates the
 release bundle *and then the `lw` executable*, from the same release, so fixes
 to the binary's own argument handling and update logic reach you too. The new

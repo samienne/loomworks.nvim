@@ -62,6 +62,12 @@ case "$version" in
     echo "lw: invalid pinned version '$version'" >&2; exit 1 ;;
 esac
 want=$(printf '%s' "$want" | tr 'A-Z' 'a-z')
+# The repository the pinned version is published in: lw below 0.2 lives in
+# samienne/loomworks.nvim, 0.2 and later in samienne/loomworks (no fallback).
+case "$version" in
+  0.0.*|0.1.*) repo=samienne/loomworks.nvim ;;
+  *) repo=samienne/loomworks ;;
+esac
 
 cache="$here/.nvim/cache"
 bin="$cache/lw-$version-$asset"
@@ -136,7 +142,7 @@ if [ ! -f "$bin" ] || [ "$(sha_of "$bin" | tr 'A-Z' 'a-z')" != "$want" ]; then
   if [ -n "${LOOMWORKS_RELEASE_URL:-}" ]; then
     url="$LOOMWORKS_RELEASE_URL/$asset"
   else
-    url="https://github.com/samienne/loomworks.nvim/releases/download/v$version/$asset"
+    url="https://github.com/$repo/releases/download/v$version/$asset"
   fi
   echo "lw: fetching pinned lw $version ($asset) for $pin..." >&2
   tmp="$bin.dl.$$"
@@ -154,7 +160,7 @@ fi
 # --- optional stronger provenance check (never required) ------------------
 if [ "$do_verify" = "1" ]; then
   if command -v gh >/dev/null 2>&1; then
-    gh attestation verify "$bin" --repo samienne/loomworks.nvim \
+    gh attestation verify "$bin" --repo "$repo" \
       || { echo "lw: gh attestation verify failed" >&2; exit 1; }
   else
     echo "lw: --verify: gh not found; skipping attestation (sha256 already verified)" >&2
@@ -211,6 +217,11 @@ rem reject a malicious pinned version before it reaches a URL (a repo must not
 rem be able to redirect the fetch): forbid anything outside [-0-9A-Za-z._+] or `..`
 echo(!version!| "%SystemRoot%\System32\findstr.exe" /r /c:"[^-0-9A-Za-z._+]" >nul && ( 1>&2 echo lw: invalid pinned version !version!& exit /b 1 )
 echo(!version!| "%SystemRoot%\System32\findstr.exe" /c:".." >nul && ( 1>&2 echo lw: invalid pinned version !version!& exit /b 1 )
+rem the repository the pinned version is published in: lw below 0.2 lives in
+rem samienne/loomworks.nvim, 0.2 and later in samienne/loomworks (no fallback)
+set "repo=samienne/loomworks"
+if "!version:~0,4!"=="0.0." set "repo=samienne/loomworks.nvim"
+if "!version:~0,4!"=="0.1." set "repo=samienne/loomworks.nvim"
 
 set "cache=%here%.nvim\cache"
 set "bin=%cache%\lw-!version!-%asset%"
@@ -233,7 +244,7 @@ if not exist "%cache%" mkdir "%cache%"
 if defined LOOMWORKS_RELEASE_URL (
   set "url=%LOOMWORKS_RELEASE_URL%/%asset%"
 ) else (
-  set "url=https://github.com/samienne/loomworks.nvim/releases/download/v!version!/%asset%"
+  set "url=https://github.com/!repo!/releases/download/v!version!/%asset%"
 )
 1>&2 echo lw: fetching pinned lw !version! ^(%asset%^) for %pin%...
 set "tmp=%bin%.dl"
@@ -286,7 +297,7 @@ if "!do_verify!"=="1" (
   if errorlevel 1 (
     1>&2 echo lw: --verify: gh not found; skipping attestation ^(sha256 already verified^)
   ) else (
-    gh attestation verify "%bin%" --repo samienne/loomworks.nvim || exit /b 1
+    gh attestation verify "%bin%" --repo !repo! || exit /b 1
   )
 )
 rem Forward args with delayed expansion OFF so a forwarded arg containing `!`
@@ -352,6 +363,11 @@ end
 -- one fixes.
 M.GENERATIONS = {
   sh = {
+    -- v0.1.37-beta.2 .. v0.1.50-beta.1
+    ["e320286c13d612f12424ff36e0219f18bb29b4924b997e5177b7ca23ed0c0b44"] = {
+      gen = 3, releases = "0.1.37-beta.2-0.1.50-beta.1",
+      defects = {},
+    },
     -- v0.1.36-beta.1 .. v0.1.37-beta.1
     ["1fe5b9caafc2872e26eb971b4cea89411a08b8f9a3bc0f09db3ac7292c91b696"] = {
       gen = 2, releases = "0.1.36-beta.1-0.1.37-beta.1",
@@ -368,6 +384,11 @@ M.GENERATIONS = {
     },
   },
   cmd = {
+    -- v0.1.40 .. v0.1.50-beta.1
+    ["2561fcb70a8ffa46f96577cb2105cf43ff875b7b9ba8d1f73fe04be619d366a5"] = {
+      gen = 6, releases = "0.1.40-0.1.50-beta.1",
+      defects = {},
+    },
     -- v0.1.6 .. v0.1.34
     ["f52183ec829018f3352a60b60411410400cffe76fd4e899fb3aeb9f7b8791b35"] = {
       gen = 1, releases = "0.1.6-0.1.34",

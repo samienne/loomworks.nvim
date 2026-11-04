@@ -230,7 +230,8 @@ function M.run_checks(root, env)
       else
         local c = launcher.classify(kind, bytes, env.sha256)
         entry.generation, entry.releases = c.status, c.releases
-        if c.status == "known" then
+        -- A known generation with no defect works as it is: no finding.
+        if c.status == "known" and #c.defects > 0 then
           local texts = {}
           for _, d in ipairs(c.defects or {}) do texts[#texts + 1] = d.text end
           if c.breaks then

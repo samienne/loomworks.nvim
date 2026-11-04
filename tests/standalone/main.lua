@@ -1086,7 +1086,39 @@ print("boot.update — versioned_base URL shapes")
 do
   eq(update.versioned_base("1.2.3", { url = update.DEFAULT_RELEASE_URL }),
     "https://github.com/samienne/loomworks.nvim/releases/download/v1.2.3",
-    "GitHub default -> versioned download path")
+    "GitHub latest-shaped override -> its versioned download path")
+  eq(update.versioned_base("0.1.40", { url = update.DEFAULT_RELEASE_URL }),
+    "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.40",
+    "an override is one mirror for all versions")
+  eq(update.versioned_base("0.2.0", { url = update.DEFAULT_RELEASE_URL }),
+    "https://github.com/samienne/loomworks.nvim/releases/download/v0.2.0",
+    "an override is one mirror for all versions, current ones included")
+  -- No override (sandboxed config, env cleared): the version picks the origin.
+  local sb = root .. "/tests/.tmp-origin"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
+  if not update.url_override() then
+    eq(update.versioned_base("0.1.50-beta.1"),
+      "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.50-beta.1",
+      "default: a 0.1 pre-release comes from loomworks.nvim")
+    eq(update.versioned_base("0.1.50"),
+      "https://github.com/samienne/loomworks.nvim/releases/download/v0.1.50",
+      "default: a 0.1 release comes from loomworks.nvim")
+    eq(update.versioned_base("0.2.0-beta.1"),
+      "https://github.com/samienne/loomworks/releases/download/v0.2.0-beta.1",
+      "default: a 0.2 pre-release comes from loomworks")
+    eq(update.versioned_base("0.10.0"),
+      "https://github.com/samienne/loomworks/releases/download/v0.10.0",
+      "default: 0.10 comes from loomworks")
+  else
+    print("  skip: a LOOMWORKS_RELEASE_URL from the real environment is in effect")
+  end
+  eq(update.DEFAULT_RELEASE_URL, "https://github.com/samienne/loomworks.nvim/releases/latest/download",
+    "the latest release is only ever looked up in loomworks.nvim")
+  eq(update.RELEASES_API_URL, "https://api.github.com/repos/samienne/loomworks.nvim/releases",
+    "the releases API is loomworks.nvim's")
+  paths.rm_rf(sb)
   eq(update.versioned_base("1.2.3", { url = "/tmp/mirror" }), "/tmp/mirror",
     "local mirror stays flat")
   eq(update.versioned_base("1.2.3", { url = "https://example.com/mirror" }),
